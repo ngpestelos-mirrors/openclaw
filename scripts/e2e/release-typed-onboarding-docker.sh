@@ -83,11 +83,11 @@ export OPENCLAW_E2E_INSTALL_DIAGNOSTICS_UID="$(
   node scripts/lib/openclaw-e2e-install-diagnostics.mjs owner "$OPENCLAW_E2E_INSTALL_DIAGNOSTICS"
 )"
 exec "$@"
-' bash bash scripts/e2e/lib/release-typed-onboarding/scenario.sh >"$run_log" 2>&1; then
+' bash bash -E scripts/e2e/lib/release-typed-onboarding/scenario.sh >"$run_log" 2>&1; then
   :
 else
   status=$?
-  docker_e2e_print_log "$run_log" >&5
+  docker_e2e_print_log "$run_log" >&5 || true
   exit "$status"
 fi
 

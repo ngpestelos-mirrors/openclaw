@@ -10,6 +10,7 @@ const installDiagnosticsScript = path.resolve("scripts/lib/openclaw-e2e-install-
 const tsxPreload = path.resolve("scripts/tsx.mjs");
 const typedOnboardingScript = path.resolve("scripts/e2e/release-typed-onboarding-docker.sh");
 const installDiagnosticsPrefix = "[release typed onboarding install] ";
+const installSucceededOutput = `${installDiagnosticsPrefix}[succeeded; scenario failed afterward]\n`;
 
 function publishInstallDiagnostics(diagnosticsPath: string, extraArgs: string[] = []) {
   return spawnSync(
@@ -51,7 +52,7 @@ describe("Docker E2E observability", () => {
     const diagnosticsPath = path.join(tempDir, "install.log");
     writeFileSync(
       diagnosticsPath,
-      "\u001B[31mOPENAI_API_KEY=sk-openclaw-install-secret-1234567890\u001B[0m\n::error::fixture failure\nplain\u0000text\n",
+      "\u001B[31mOPENAI_API_KEY=sk-openclaw-install-secret-1234567890\u001B[0m\n::error::fixture failure\nplain\u0000text\u009B31m\n",
       { mode: 0o622 },
     );
     chmodSync(diagnosticsPath, 0o622);
@@ -63,6 +64,7 @@ describe("Docker E2E observability", () => {
     expect(result.stdout).not.toMatch(/^::/mu);
     expect(result.stdout).not.toContain("\u001B");
     expect(result.stdout).not.toContain("\u0000");
+    expect(result.stdout).not.toContain("\u009B");
     expect(result.stdout.match(/fixture failure/g)).toHaveLength(1);
     for (const line of result.stdout.trimEnd().split("\n")) {
       expect(line.startsWith(installDiagnosticsPrefix)).toBe(true);
@@ -95,6 +97,24 @@ describe("Docker E2E observability", () => {
     expect(readFileSync(diagnosticsPath)).toEqual(Buffer.from("abc"));
     expect(published.status, published.stderr).toBe(0);
     expect(published.stdout).toBe(`${installDiagnosticsPrefix}abc\n`);
+
+    const lineBoundEnv = {
+      ...env,
+      OPENCLAW_E2E_LOG_TAIL_BYTES: "64",
+      OPENCLAW_E2E_LOG_TAIL_LINES: "2",
+    };
+    const lineCapture = spawnSync(
+      process.execPath,
+      [installDiagnosticsScript, "capture", diagnosticsPath],
+      { encoding: "utf8", env: lineBoundEnv, input: "old\rolder\rnew" },
+    );
+    const linePublished = publishInstallDiagnostics(diagnosticsPath);
+
+    expect(lineCapture.status, lineCapture.stderr).toBe(0);
+    expect(linePublished.status, linePublished.stderr).toBe(0);
+    expect(linePublished.stdout).toBe(
+      `${installDiagnosticsPrefix}older\n${installDiagnosticsPrefix}new\n`,
+    );
   });
 
   it("uses only the fixed omission marker for unsafe input or redaction failure", () => {
@@ -186,15 +206,94 @@ export async function load(url, context, nextLoad) {
       '-v "$ROOT_DIR/scripts/lib/openclaw-e2e-instance.sh:/app/scripts/lib/openclaw-e2e-instance.sh:ro"',
     );
     expect(wrapper).not.toContain('-v "$install_diagnostics_dir:/tmp/openclaw-install-diagnostics');
+    expect(wrapper).toContain(
+      "' bash bash -E scripts/e2e/lib/release-typed-onboarding/scenario.sh",
+    );
+    expect(wrapper).toContain('docker_e2e_print_log "$run_log" >&5 || true');
     expect(scenario).toContain('rm -rf "$scenario_tmp"');
     expect(scenario).not.toContain("openclaw-install-diagnostics.log");
+  });
+
+  it("preserves scenario status when diagnostic printing fails", () => {
+    const wrapper = readFileSync(typedOnboardingScript, "utf8");
+    const start = wrapper.indexOf("else\n  status=$?");
+    const end = wrapper.indexOf("\nfi", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const failureBranch = wrapper.slice(start, end + "\nfi".length);
+
+    const result = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        [
+          "set -euo pipefail",
+          "exec 5>&1",
+          "run_log=fixture",
+          "docker_e2e_print_log() { return 2; }",
+          "scenario() { return 42; }",
+          "if scenario; then",
+          "  :",
+          failureBranch,
+        ].join("\n"),
+      ],
+      { encoding: "utf8" },
+    );
+
+    expect(result.status, result.stderr).toBe(42);
+  });
+
+  it("keeps frozen scenario ERR traps active inside helper functions", () => {
+    const wrapper = readFileSync(typedOnboardingScript, "utf8");
+    const match = wrapper.match(
+      /' bash (bash) (-E) scripts\/e2e\/lib\/release-typed-onboarding\/scenario\.sh/u,
+    );
+    expect(match).not.toBeNull();
+
+    const result = spawnSync(
+      match![1],
+      [
+        match![2],
+        "-c",
+        `
+set -euo pipefail
+dump_debug_logs() { printf 'dump:%s\\n' "$1" >&2; }
+trap 'status=$?; dump_debug_logs "$status"; exit "$status"' ERR
+helper_failure() { false; }
+helper_failure
+`,
+      ],
+      { encoding: "utf8" },
+    );
+
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toBe("dump:1\n");
+  });
+
+  it("reports a later scenario failure without an install omission", () => {
+    const tempDir = tempDirs.make("openclaw-typed-onboarding-post-install-");
+    const diagnosticsPath = path.join(tempDir, "install.log");
+    writeFileSync(diagnosticsPath, "", { mode: 0o622 });
+    chmodSync(diagnosticsPath, 0o622);
+
+    const marked = spawnSync(
+      process.execPath,
+      [installDiagnosticsScript, "success", diagnosticsPath],
+      { encoding: "utf8" },
+    );
+    const published = publishInstallDiagnostics(diagnosticsPath);
+
+    expect(marked.status, marked.stderr).toBe(0);
+    expect(published.status, published.stderr).toBe(0);
+    expect(published.stdout).toBe(installSucceededOutput);
+    expect(published.stdout).not.toContain("diagnostics omitted");
   });
 
   it("resolves the wrapper sidecar owner inside the container namespace", () => {
     const tempDir = tempDirs.make("openclaw-typed-onboarding-owner-");
     const script = readFileSync(typedOnboardingScript, "utf8");
     const startMarker = '-i "$IMAGE_NAME" bash -c \'\n';
-    const endMarker = "\n' bash bash scripts/e2e/lib/release-typed-onboarding/scenario.sh";
+    const endMarker = "\n' bash bash -E scripts/e2e/lib/release-typed-onboarding/scenario.sh";
     const start = script.indexOf(startMarker);
     const end = script.indexOf(endMarker, start);
     expect(start).toBeGreaterThanOrEqual(0);

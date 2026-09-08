@@ -280,7 +280,7 @@ openclaw_e2e_install_package() {
     [ "$install_status" -ne 0 ] || install_status="${pipeline_status[2]:-1}"
     [ "$install_status" -ne 0 ] || install_status="${pipeline_status[1]:-1}"
     if [ "$install_status" -eq 0 ]; then
-      node "$diagnostics_tool" clear "$diagnostics_path" || return $?
+      node "$diagnostics_tool" success "$diagnostics_path" || return $?
       return 0
     fi
   elif openclaw_e2e_maybe_timeout "$timeout_value" npm install "${args[@]}" "$package_tgz" --no-fund --no-audit >"$log_file" 2>&1; then

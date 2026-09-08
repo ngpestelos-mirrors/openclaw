@@ -1,6 +1,8 @@
 import fs from "node:fs";
 const prefix = "[release typed onboarding install] ";
 const omitted = `${prefix}[diagnostics omitted]\n`;
+const succeeded = `${prefix}[succeeded; scenario failed afterward]\n`;
+const successMarker = Buffer.from("\0openclaw-install-succeeded-v1\0");
 function requireInvariant(value) {
   if (!value) {
     throw new Error();
@@ -74,7 +76,7 @@ async function capture(file) {
     }
   }
   tail = trimUtf8Start(tail);
-  const text = tail.toString("utf8");
+  const text = tail.toString("utf8").replaceAll("\r\n", "\n").replaceAll("\r", "\n");
   const trailingNewline = text.endsWith("\n");
   const lines = text.split("\n");
   if (trailingNewline) {
@@ -90,10 +92,12 @@ async function capture(file) {
 function readSidecar(file) {
   return useSidecar(file, fs.constants.O_RDONLY, (fd, before) => {
     const limit = readLimit("OPENCLAW_E2E_LOG_TAIL_BYTES", 262144);
-    requireInvariant(before.size > 0 && before.size <= limit);
+    requireInvariant(
+      before.size > 0 && (before.size <= limit || before.size === successMarker.length),
+    );
     const bytes = fs.readFileSync(fd);
     requireInvariant(bytes.length === before.size);
-    return { size: before.size, unchanged: true, value: bytes.toString("utf8") };
+    return { size: before.size, unchanged: true, value: bytes };
   });
 }
 function stripFraming(text) {
@@ -104,12 +108,16 @@ function stripFraming(text) {
       .replaceAll("\r\n", "\n")
       .replaceAll("\r", "\n")
       // eslint-disable-next-line no-control-regex -- Remove non-printing control bytes from logs.
-      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/gu, "")
   );
 }
 function formatInstallDiagnostics(file, redactSensitiveText) {
   try {
-    const redacted = redactSensitiveText(stripFraming(readSidecar(file)), { mode: "tools" });
+    const bytes = readSidecar(file);
+    if (bytes.equals(successMarker)) {
+      return succeeded;
+    }
+    const redacted = redactSensitiveText(stripFraming(bytes.toString("utf8")), { mode: "tools" });
     requireInvariant(typeof redacted === "string");
     const safe = stripFraming(redacted);
     const lines = safe.endsWith("\n") ? safe.slice(0, -1).split("\n") : safe.split("\n");
@@ -123,8 +131,8 @@ async function main() {
   const [mode, file] = process.argv.slice(2);
   if (mode === "capture") {
     await capture(file);
-  } else if (mode === "clear") {
-    writeSidecar(file, Buffer.alloc(0));
+  } else if (mode === "success") {
+    writeSidecar(file, successMarker);
   } else if (mode === "owner") {
     const stat = fs.lstatSync(file);
     requireInvariant(validSidecar(stat, stat.uid));

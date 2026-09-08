@@ -634,7 +634,7 @@ describe("scripts/lib/openclaw-e2e-instance.sh", () => {
     });
   });
 
-  it("clears captured install diagnostics after npm succeeds", () => {
+  it("marks successful installation for later scenario failures", () => {
     withTempDir("openclaw-e2e-instance-install-capture-success-", (tempDir) => {
       const fixture = createPackageInstallFixture(tempDir);
       const diagnosticsPath = path.join(tempDir, "install-diagnostics.log");
@@ -655,7 +655,21 @@ describe("scripts/lib/openclaw-e2e-instance.sh", () => {
       });
 
       expectShellSuccess(result);
-      expect(fs.readFileSync(diagnosticsPath, "utf8")).toBe("");
+      const published = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          path.resolve("scripts/tsx.mjs"),
+          path.resolve("scripts/lib/openclaw-e2e-install-diagnostics.mjs"),
+          "publish",
+          diagnosticsPath,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(published.status, published.stderr).toBe(0);
+      expect(published.stdout).toBe(
+        "[release typed onboarding install] [succeeded; scenario failed afterward]\n",
+      );
     });
   });
 
