@@ -39,10 +39,14 @@ afterEach(() => {
   closeOpenClawStateDatabaseForTest();
 });
 
-async function initializeRepository(root: string, name: string): Promise<string> {
+async function initializeRepository(
+  root: string,
+  name: string,
+  objectFormat: "sha1" | "sha256" = "sha1",
+): Promise<string> {
   const repo = path.join(root, name);
   await fs.mkdir(repo, { recursive: true });
-  await execFileAsync("git", ["init", "-b", "main", repo]);
+  await execFileAsync("git", ["init", "-b", "main", `--object-format=${objectFormat}`, repo]);
   await execFileAsync("git", ["-C", repo, "config", "user.name", "OpenClaw Tests"]);
   await execFileAsync("git", ["-C", repo, "config", "user.email", "tests@openclaw.invalid"]);
   await fs.writeFile(path.join(repo, "README.md"), `${name}\n`);
@@ -232,6 +236,25 @@ describe("project registry", () => {
       ).toBe(sourceHead);
     },
   );
+
+  it("refreshes a managed SHA-256 checkout with its native object format", async () => {
+    const root = tempDirs.make("openclaw-project-refresh-sha256-");
+    const source = await initializeRepository(root, "source", "sha256");
+    const target = path.join(root, "managed", "fixture");
+    await cloneProjectCheckout({ url: source, target });
+    await fs.writeFile(path.join(source, "later.txt"), "later\n");
+    await execFileAsync("git", ["-C", source, "add", "later.txt"]);
+    await execFileAsync("git", ["-C", source, "commit", "-m", "later"]);
+    const sourceHead = (
+      await execFileAsync("git", ["-C", source, "rev-parse", "HEAD"])
+    ).stdout.trim();
+
+    await refreshProjectCheckout({ url: source, target });
+
+    expect(
+      (await execFileAsync("git", ["-C", target, "rev-parse", "origin/main"])).stdout.trim(),
+    ).toBe(sourceHead);
+  });
 
   it("rejects a record-aligned truncated ref inventory before deleting tracking refs", async () => {
     const root = tempDirs.make("openclaw-project-refresh-truncated-refs-");

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProjectCloneFailureCause } from "../../packages/gateway-protocol/src/index.js";
+import { executeGitCommand, requireGitCommandOutput } from "../infra/git-exec.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 
 const PROJECT_CLONE_TIMEOUT_MS = 10 * 60_000;
@@ -151,16 +152,31 @@ export async function refreshProjectCheckout(
   input: { target: string; url: string },
   options: ProjectCloneOptions = {},
 ): Promise<void> {
-  const objectPath = await runProjectCheckoutGit(input, options, [
-    "rev-parse",
-    "--path-format=absolute",
-    "--git-path",
-    "objects",
+  const [objectPath, objectFormatResult, currentRefs] = await Promise.all([
+    runProjectCheckoutGit(input, options, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "objects",
+    ]),
+    runProjectCheckoutGit(input, options, ["rev-parse", "--show-object-format"]),
+    readProjectRemoteRefs(input, options),
   ]);
   if (objectPath.code !== 0 || objectPath.termination !== "exit") {
     throw new ProjectCloneError(
       "clone_failed",
       "The managed repository object store could not be verified. Remove the repository and retry.",
+    );
+  }
+  const objectFormat = objectFormatResult.stdout.trim();
+  if (
+    objectFormatResult.code !== 0 ||
+    objectFormatResult.termination !== "exit" ||
+    (objectFormat !== "sha1" && objectFormat !== "sha256")
+  ) {
+    throw new ProjectCloneError(
+      "clone_failed",
+      "The managed repository object format could not be verified. Remove the repository and retry.",
     );
   }
   const objects = await fs.realpath(objectPath.stdout.trim());
@@ -169,6 +185,7 @@ export async function refreshProjectCheckout(
     const initialized = await runProjectCheckoutGit({ target: staging }, options, [
       "init",
       "--bare",
+      `--object-format=${objectFormat}`,
     ]);
     if (initialized.code !== 0 || initialized.termination !== "exit") {
       throw new ProjectCloneError(
@@ -176,16 +193,41 @@ export async function refreshProjectCheckout(
         "Git could not prepare a safe repository refresh. Retry the session.",
       );
     }
-    // The isolated repository owns all transport configuration. Only content-addressed
-    // objects cross into the managed checkout before its refs are updated locally.
+    const stagingOptions = { ...options, objectDirectory: objects };
+    if (currentRefs.size > 0) {
+      // Seed only refs already owned by the managed checkout. Besides enabling
+      // incremental negotiation, this keeps transport isolated from local branches.
+      const seeded = await runProjectCheckoutGit(
+        { target: staging },
+        stagingOptions,
+        ["update-ref", "--stdin"],
+        {
+          input: `${Array.from(currentRefs, ([ref, commit]) => `update ${ref} ${commit}`).join("\n")}\n`,
+        },
+      );
+      if (seeded.code !== 0 || seeded.termination !== "exit") {
+        throw new ProjectCloneError(
+          "clone_failed",
+          "Git could not prepare the managed repository refs for refresh. Retry the session.",
+        );
+      }
+    }
+    // The isolated repository owns transport, but it borrows the managed object store.
+    // It must not run maintenance using its incomplete temporary ref inventory.
     const result = await runProjectCheckoutGit(
       { target: staging },
       {
-        ...options,
-        objectDirectory: objects,
+        ...stagingOptions,
         timeoutMs: options.timeoutMs ?? PROJECT_FETCH_TIMEOUT_MS,
       },
-      ["fetch", "--no-recurse-submodules", "--", input.url, "+refs/heads/*:refs/remotes/origin/*"],
+      [
+        "fetch",
+        "--no-auto-maintenance",
+        "--no-recurse-submodules",
+        "--",
+        input.url,
+        "+refs/heads/*:refs/remotes/origin/*",
+      ],
     );
     if (result.code !== 0 || result.termination !== "exit") {
       throw classifyProjectGitFailure({
@@ -195,10 +237,7 @@ export async function refreshProjectCheckout(
         timedOut: result.termination === "timeout" || result.termination === "no-output-timeout",
       });
     }
-    const [fetchedRefs, currentRefs] = await Promise.all([
-      readProjectRemoteRefs({ target: staging }, options),
-      readProjectRemoteRefs(input, options),
-    ]);
+    const fetchedRefs = await readProjectRemoteRefs({ target: staging }, stagingOptions);
     const updates = [
       ...Array.from(fetchedRefs, ([ref, commit]) => `update ${ref} ${commit}`),
       ...Array.from(currentRefs.keys())
@@ -230,17 +269,16 @@ async function readProjectRemoteRefs(
     "--format=%(refname) %(objectname) %(symref)",
     "refs/remotes/origin",
   ]);
-  if (result.code !== 0 || result.termination !== "exit") {
-    throw new ProjectCloneError("clone_failed", "Git could not read the managed repository refs.");
-  }
-  if (result.stdoutTruncatedBytes) {
-    throw new ProjectCloneError(
-      "clone_failed",
-      "Git returned too many managed repository refs to refresh safely. Remove obsolete remote branches, then retry.",
-    );
-  }
+  const stdout = requireGitCommandOutput("git for-each-ref", result, (_command, failed) =>
+    failed.outputLimitExceeded
+      ? new ProjectCloneError(
+          "clone_failed",
+          "Git returned too many managed repository refs to refresh safely. Remove obsolete remote branches, then retry.",
+        )
+      : new ProjectCloneError("clone_failed", "Git could not read the managed repository refs."),
+  );
   const refs = new Map<string, string>();
-  for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
+  for (const line of stdout.trim().split("\n").filter(Boolean)) {
     const match = /^(refs\/remotes\/origin\/\S+) ([a-f0-9]{40}|[a-f0-9]{64})(?: (\S+))?$/u.exec(
       line.trimEnd(),
     );
@@ -271,17 +309,9 @@ function runProjectCheckoutGit(
   args: string[],
   commandOptions: { input?: string } = {},
 ) {
-  return runCommandWithTimeout(
-    [
-      "git",
-      "-c",
-      `core.hooksPath=${os.devNull}`,
-      "-c",
-      "core.fsmonitor=false",
-      "-C",
-      input.target,
-      ...args,
-    ],
+  return executeGitCommand(
+    input.target,
+    ["-c", `core.hooksPath=${os.devNull}`, "-c", "core.fsmonitor=false", ...args],
     {
       env: {
         ...cloneCommandEnv(options.token, options.env ?? process.env),
