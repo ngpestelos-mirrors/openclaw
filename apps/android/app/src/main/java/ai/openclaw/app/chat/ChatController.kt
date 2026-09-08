@@ -775,6 +775,21 @@ class ChatController internal constructor(
   // across durable outbox suspension points; same-owner history reloads keep their projection.
   private val chatSelectionGeneration = MutableStateFlow(0L)
   internal val selectionGeneration: StateFlow<Long> = chatSelectionGeneration.asStateFlow()
+
+  /** A captured selection owns synchronous effects until the same selection lock is released. */
+  internal fun withCurrentSelection(
+    generation: Long,
+    action: () -> Unit,
+  ): Boolean =
+    synchronized(gatewayScopeApplyLock) {
+      if (chatSelectionGeneration.value != generation) {
+        false
+      } else {
+        action()
+        true
+      }
+    }
+
   private val historyRequestSequence = AtomicLong(0)
   private val settingsPublicationGeneration = AtomicLong(0)
   private val sessionsRequestSequence = AtomicLong(0)

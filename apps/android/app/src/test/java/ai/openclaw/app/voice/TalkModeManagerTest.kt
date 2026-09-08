@@ -65,6 +65,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -106,6 +107,177 @@ import kotlin.coroutines.CoroutineContext
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class TalkModeManagerTest {
+  @Test
+  fun selectionRetirementDiscardsQueuedAudioBeforeFinalEnqueue() =
+    runBlocking {
+      for (retire in listOf(false, true)) {
+        val selection = AtomicLong()
+        val frames = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
+        val reads =
+          java.util.concurrent.atomic
+            .AtomicInteger()
+        val frameQueued = CountDownLatch(1)
+        val appends = ConcurrentLinkedQueue<String>()
+        org.robolectric.shadows.ShadowAudioRecord.setSourceProvider { recorder ->
+          assertEquals(android.media.AudioRecord.RECORDSTATE_RECORDING, recorder.recordingState)
+          object : org.robolectric.shadows.ShadowAudioRecord.AudioRecordSource {
+            override fun readInByteArray(
+              bytes: ByteArray,
+              offset: Int,
+              size: Int,
+              blocking: Boolean,
+            ): Int {
+              if (reads.incrementAndGet() == 2) frameQueued.countDown()
+              val frame = checkNotNull(frames.poll(5, TimeUnit.SECONDS)) { "Capture fixture needs its next frame" }
+              frame.copyInto(bytes, destinationOffset = offset)
+              return frame.size
+            }
+          }
+        }
+        try {
+          withStartedTalk(currentChatSelection = { selection.get() }, interceptRequest = { request, _ ->
+            if (request["method"]?.jsonPrimitive?.content == "talk.session.appendAudio") {
+              appends.add(request["params"]!!.jsonObject["audioBase64"]!!.jsonPrimitive.content)
+            }
+            false
+          }) { proof ->
+            val gateway = readPrivateField(proof.manager, "session") as GatewaySession
+            val transport = readPrivateField(gateway, "writeLock") as kotlinx.coroutines.sync.Mutex
+            val owner = Any()
+            transport.lock(owner)
+            var held = true
+            var capture: Thread? = null
+            try {
+              frames.put(byteArrayOf(1, 2))
+              capture = Thread { proof.drainCancelledCapture() }.also { it.start() }
+              assertTrue("Real recording must queue the frame", frameQueued.await(5, TimeUnit.SECONDS))
+              proof.drainCancelledCapture()
+              if (retire) selection.incrementAndGet()
+              transport.unlock(owner)
+              held = false
+              proof.drainCancelledCapture()
+              withTimeout(5_000) { gateway.request("test.barrier", "{}") }
+              println("selection-audio retired=$retire recordingReads=" + reads.get() + " audioFrames=" + appends.size)
+              assertEquals(if (retire) emptyList<String>() else listOf(Base64.encodeToString(byteArrayOf(1, 2), Base64.NO_WRAP)), appends.toList())
+            } finally {
+              if (held) transport.unlock(owner)
+              proof.manager.stopAllCapture()
+              frames.offer(byteArrayOf())
+              capture?.join(5_000)
+              assertFalse("Capture worker must finish", capture?.isAlive == true)
+              proof.drainCancelledCapture()
+            }
+          }
+        } finally {
+          org.robolectric.shadows.ShadowAudioRecord
+            .clearSource()
+        }
+      }
+    }
+
+  @Test
+  fun relayAdmissionRejectsSelectionRevokedAtCreateOrAck() =
+    runBlocking {
+      for (retirement in listOf("none", "create", "ack")) {
+        val retire = retirement != "none"
+        val selection = AtomicLong()
+        val retireOnRead = AtomicBoolean(false)
+        val catalogSeen = AtomicBoolean(false)
+        val creates = ConcurrentLinkedQueue<String>()
+        val closes = ConcurrentLinkedQueue<String>()
+        withStartedTalk(
+          currentChatSelection = {
+            val captured = selection.get()
+            if (retireOnRead.compareAndSet(true, false)) selection.incrementAndGet()
+            captured
+          },
+          responseForRequest = { request, _ ->
+            when (val method = request["method"]?.jsonPrimitive?.content) {
+              "talk.config" -> {
+                """{"config":{"talk":{"realtime":{"mode":"realtime","transport":"gateway-relay"}}}}"""
+              }
+
+              "talk.catalog" -> {
+                catalogSeen.set(true)
+                retireOnRead.set(retirement == "create")
+                null
+              }
+
+              "talk.session.create" -> {
+                creates.add(method)
+                if (retirement == "ack") selection.incrementAndGet()
+                null
+              }
+
+              "talk.session.close" -> {
+                closes.add(method)
+                null
+              }
+
+              else -> {
+                null
+              }
+            }
+          },
+          startReady = { manager ->
+            catalogSeen.get() && (
+              readPrivateField(manager, "realtimeSessionId") != null ||
+                (readPrivateField(manager, "gatewayWorkJob") as Job).children.none { it.isActive }
+            )
+          },
+        ) { proof ->
+          val captureAssigned = readPrivateField(proof.manager, "realtimeCaptureJob") != null
+          println("relay-admission retirement=$retirement createFrames=" + creates.size + " captureAssigned=" + captureAssigned)
+          assertEquals(if (retirement == "create") 0 else 1, creates.size)
+          assertEquals(!retire, captureAssigned)
+          assertEquals(if (retirement == "ack") 1 else 0, closes.size)
+        }
+      }
+    }
+
+  @Test
+  fun unsetModePreservesReleasedNativeSpeechSelection() =
+    runBlocking {
+      installSpeechRecognitionService()
+      for ((mode, model, nativeSpeech) in listOf(
+        Triple(null, "gpt-live", true),
+        Triple(null, "gpt-realtime-2.1", false),
+        Triple("stt-tts", "gpt-realtime-2.1", true),
+        Triple("realtime", "gpt-live", false),
+      )) {
+        val creates = ConcurrentLinkedQueue<String>()
+        val config =
+          buildJsonObject {
+            put(
+              "config",
+              buildJsonObject {
+                put(
+                  "talk",
+                  buildJsonObject {
+                    put(
+                      "realtime",
+                      buildJsonObject {
+                        put("model", JsonPrimitive(model))
+                        mode?.let { put("mode", JsonPrimitive(it)) }
+                      },
+                    )
+                  },
+                )
+              },
+            )
+          }.toString()
+        withStartedTalk(responseForRequest = { request, _ ->
+          val method = request["method"]?.jsonPrimitive?.content
+          if (method == "talk.session.create" || method == "talk.client.create") creates.add(method)
+          if (method == "talk.config") config else null
+        }) { proof ->
+          println("released-mode mode=$mode model=$model native=" + (readPrivateField(proof.manager, "recognizer") != null) + " creates=" + creates.size)
+          assertEquals(nativeSpeech, readPrivateField(proof.manager, "recognizer") != null)
+          assertEquals(if (nativeSpeech) 0 else 1, creates.size)
+        }
+      }
+    }
+
   @Test
   fun phoneRealtimeRetriesWithoutLanguageWhenOlderGatewayRejectsCreateParams() =
     runTest {
@@ -456,13 +628,22 @@ class TalkModeManagerTest {
 
   @Test
   fun duplicateFinalForPendingTalkRunDoesNotStartAllResponseTts() {
-    val manager = createManager()
+    val manager =
+      createManager(currentChatTarget = {
+        ai.openclaw.app.chat
+          .ChatComposerOwner("gateway", "main", "agent:main:selected")
+      })
     val final = CompletableDeferred<Boolean>()
 
     manager.ttsOnAllResponses = true
     setPrivateField(manager, "pendingRunId", "run-talk")
     setPrivateField(manager, "pendingFinal", final)
 
+    for (key in listOf("agent:main:selected", "agent:other:foreign")) {
+      manager.handleGatewayEvent("chat", chatFinalPayload(runId = "run-talk", text = "wrong owner", sessionKey = key))
+      assertFalse(final.isCompleted)
+      assertEquals(0L, playbackGeneration(manager).get())
+    }
     manager.handleGatewayEvent("chat", chatFinalPayload(runId = "run-talk", text = "spoken once"))
     assertTrue(final.isCompleted)
     assertEquals(0L, playbackGeneration(manager).get())
@@ -480,6 +661,34 @@ class TalkModeManagerTest {
     manager.handleGatewayEvent("chat", chatFinalPayload(runId = "run-other", text = "speak this"))
 
     assertEquals(1L, playbackGeneration(manager).get())
+  }
+
+  @Test
+  fun unsolicitedFinalUsesSelectedChatAndRejectsMainForeignAndLateFinals() {
+    val owner = SupervisorJob()
+    var target: ai.openclaw.app.chat.ChatComposerOwner? =
+      ai.openclaw.app.chat
+        .ChatComposerOwner("gateway", "main", "agent:main:selected")
+    val manager = createManager(scope = CoroutineScope(owner + StandardTestDispatcher()), currentChatTarget = { target })
+    try {
+      manager.ttsOnAllResponses = true
+      manager.handleGatewayEvent("chat", chatFinalPayload("selected", "speak selected", sessionKey = "agent:main:selected"))
+      assertEquals(1L, playbackGeneration(manager).get())
+      for (key in listOf("main", "agent:other:foreign")) {
+        manager.handleGatewayEvent("chat", chatFinalPayload("foreign-$key", "do not speak", sessionKey = key))
+        assertEquals(1L, playbackGeneration(manager).get())
+      }
+      target = target!!.copy(sessionKey = "agent:main:next")
+      manager.handleGatewayEvent("chat", chatFinalPayload("late", "old selection", sessionKey = "agent:main:selected"))
+      assertEquals(1L, playbackGeneration(manager).get())
+      manager.handleGatewayEvent("chat", chatFinalPayload("next", "new selection", sessionKey = "agent:main:next"))
+      assertEquals(2L, playbackGeneration(manager).get())
+      target = null
+      manager.handleGatewayEvent("chat", chatFinalPayload("default", "main fallback"))
+      assertEquals(3L, playbackGeneration(manager).get())
+    } finally {
+      owner.cancel()
+    }
   }
 
   @Test
@@ -503,12 +712,30 @@ class TalkModeManagerTest {
     manager.realtimeEvent("""{"relaySessionId":"relay-1","type":"close","reason":"error"}""")
 
     assertFalse(manager.isEnabled.value)
+    assertTrue(manager.hasFailure.value)
     assertTrue(stoppedByRelay)
     assertEquals(
       "Talk failed: Realtime provider closed unexpectedly.",
       manager.statusText.value,
     )
   }
+
+  @Test
+  fun explicitStopAndNewStartClearTypedFailure() =
+    runTest {
+      val manager = createManager(scope = this)
+      setTalkFailure(manager, verbatimText("Échec de Talk : session refusée."))
+      assertTrue(manager.hasFailure.value)
+      manager.setEnabled(false)
+      assertFalse(manager.hasFailure.value)
+      assertEquals("Off", manager.statusText.value)
+      setTalkFailure(manager, verbatimText("Échec de Talk : session refusée."))
+      manager.setEnabled(true)
+      assertFalse(manager.hasFailure.value)
+      assertEquals("Connecting…", manager.statusText.value)
+      manager.stopAllCapture()
+      advanceUntilIdle()
+    }
 
   @Test
   fun aDeferredTerminalNotificationCannotStopAReplacementTalkStart() {
@@ -812,6 +1039,7 @@ class TalkModeManagerTest {
       assertFalse(manager.isEnabled.value)
       assertFalse(manager.isListening.value)
       assertEquals("Gateway not connected", manager.statusText.value)
+      assertTrue(manager.hasFailure.value)
       assertTrue(stoppedByRelay.get())
     }
 
@@ -994,7 +1222,7 @@ class TalkModeManagerTest {
             "talk",
             buildJsonObject {
               put("speechLocale", locale)
-              put("realtime", buildJsonObject { put("model", "gpt-live") })
+              put("realtime", buildJsonObject { put("mode", "stt-tts") })
               interrupt?.let { put("interruptOnSpeech", it) }
             },
           )
@@ -1248,7 +1476,7 @@ class TalkModeManagerTest {
       responseForRequest = { request, _ ->
         when (request.getValue("method").jsonPrimitive.content) {
           "talk.config" -> {
-            """{"config":{"talk":{"realtime":{"model":"gpt-live"},"silenceTimeoutMs":800}}}"""
+            """{"config":{"talk":{"realtime":{"mode":"stt-tts"},"silenceTimeoutMs":800}}}"""
           }
 
           "talk.session.create" -> {
@@ -2540,11 +2768,418 @@ class TalkModeManagerTest {
       }
     }
 
+  @Test
+  @Config(shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
+  fun webRtcSetupTimeoutRespectsAutoAndStrictPolicy() = verifyWebRtcStartupFailure(timeout = true)
+
+  @Test
+  @Config(shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
+  fun webRtcAsyncStartupFailureRespectsAutoAndStrictPolicy() = verifyWebRtcStartupFailure(timeout = false)
+
+  private fun verifyWebRtcStartupFailure(timeout: Boolean) =
+    runBlocking {
+      for (selection in listOf("{}", """{"transport":"webrtc"}""")) {
+        StartupPeerConnection.reset()
+        StartupDataChannel.reset()
+        val strict = selection != "{}"
+        val realtimeSelection = JsonObject(Json.parseToJsonElement(selection).jsonObject + ("mode" to JsonPrimitive("realtime"))).toString()
+        val methods = ConcurrentLinkedQueue<String>()
+        var injected = false
+        withStartedTalk(
+          responseForRequest = { request, _ ->
+            val method = request.getValue("method").jsonPrimitive.content
+            methods.add(method)
+            when (method) {
+              "talk.config" -> """{"config":{"talk":{"realtime":$realtimeSelection}}}"""
+              "talk.catalog" -> """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["webrtc","gateway-relay"]}]}}"""
+              "talk.client.create" -> """{"voiceSessionId":"startup-fixture","transport":"webrtc","provider":"openai","clientSecret":"synthetic-capability","offerUrl":"/fixture/offer"}"""
+              else -> null
+            }
+          },
+          duringStart = { _, scheduler ->
+            val offer = StartupPeerConnection.offer
+            if (!injected && offer != null) {
+              injected = true
+              if (timeout) {
+                scheduler.advanceTimeBy(30_000)
+              } else {
+                StartupPeerConnection.observer!!.onConnectionChange(org.webrtc.PeerConnection.PeerConnectionState.FAILED)
+                scheduler.runCurrent()
+                offer.onCreateFailure("synthetic SDP failure after connection failure")
+              }
+              scheduler.runCurrent()
+            }
+          },
+          expectFailure = strict,
+        ) { proof ->
+          assertTrue("The test must reach the actual peer startup boundary", injected)
+          assertEquals(!strict, proof.manager.isEnabled.value)
+          assertEquals(!strict, proof.manager.isListening.value)
+          assertEquals(strict, proof.manager.hasFailure.value)
+          assertEquals(!strict, methods.contains("talk.session.create"))
+          assertEquals(1, methods.count { it == "talk.client.close" })
+          assertTrue(StartupPeerConnection.disposed)
+          assertNull(readPrivateField(proof.manager, "realtimeClient"))
+        }
+      }
+    }
+
+  @Test
+  fun autoRecoveryPreservesPushToTalkReservationUntilRelease() =
+    runBlocking {
+      installSpeechRecognitionService()
+      for (beforeClient in listOf(false, true)) {
+        val automatic = AtomicBoolean(false)
+        val pendingCatalog = CompletableDeferred<Pair<String, WebSocket>>()
+        val pendingClient = CompletableDeferred<Pair<String, WebSocket>>()
+        val catalog = """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["webrtc","gateway-relay"]}]}}"""
+        var catalogReleased = !beforeClient
+        var clientRejected = false
+        withStartedTalk(
+          responseForRequest = { request, _ ->
+            when (request.getValue("method").jsonPrimitive.content) {
+              "talk.config" -> if (automatic.get()) """{"config":{"talk":{"realtime":{"mode":"realtime"}}}}""" else null
+              "talk.catalog" -> catalog
+              else -> null
+            }
+          },
+          interceptRequest = { request, socket ->
+            when {
+              beforeClient && automatic.get() && request.getValue("method").jsonPrimitive.content == "talk.catalog" -> {
+                pendingCatalog.complete(request.getValue("id").jsonPrimitive.content to socket)
+                true
+              }
+
+              request.getValue("method").jsonPrimitive.content == "talk.client.create" -> {
+                pendingClient.complete(request.getValue("id").jsonPrimitive.content to socket)
+                true
+              }
+
+              else -> {
+                false
+              }
+            }
+          },
+        ) { proof ->
+          try {
+            proof.manager.setEnabled(false)
+            proof.drainCancelledCapture()
+            automatic.set(true)
+            val refreshed = proof.scope.async { proof.manager.refreshConfig() }
+            awaitTalkWork(proof) { refreshed.isCompleted }
+            refreshed.await()
+            proof.manager.setEnabled(true)
+            awaitTalkWork(proof) { if (beforeClient) pendingCatalog.isCompleted else pendingClient.isCompleted }
+            val beginning = proof.scope.async { proof.manager.beginPushToTalk(allowNewCapture = true) }
+            awaitTalkWork(proof) { beginning.isCompleted }
+            val captureId = beginning.await().captureId
+            val generation = (readPrivateField(proof.manager, "startGeneration") as AtomicLong).get()
+            val recognizer = readPrivateField(proof.manager, "recognizer") as SpeechRecognizer
+            shadowOf(Looper.getMainLooper()).idle()
+            assertNotNull(shadowOf(recognizer).lastRecognizerIntent)
+            if (beforeClient) {
+              val (id, socket) = pendingCatalog.await()
+              socket.send("""{"type":"res","id":"$id","ok":true,"payload":$catalog}""")
+              catalogReleased = true
+              awaitTalkWork(proof) { pendingClient.isCompleted }
+              assertSame("Adopting a client must not retire the PTT recognizer", recognizer, readPrivateField(proof.manager, "recognizer"))
+            }
+            val (requestId, socket) = pendingClient.await()
+            socket.send("""{"type":"res","id":"$requestId","ok":false,"error":{"code":"UNAVAILABLE","message":"synthetic client failure during PTT"}}""")
+            clientRejected = true
+            awaitTalkWork(proof) { readPrivateField(proof.manager, "realtimeSessionId") != null }
+            assertEquals(generation, (readPrivateField(proof.manager, "startGeneration") as AtomicLong).get())
+            assertEquals(captureId, proof.manager.activePushToTalkCaptureId)
+            assertSame(recognizer, readPrivateField(proof.manager, "recognizer"))
+            assertNull("Recovery must not install a second microphone while PTT is active", readPrivateField(proof.manager, "realtimeCaptureJob"))
+            assertNull(readPrivateField(proof.manager, "realtimeAppendJob"))
+            val pause = readPrivateField(proof.manager, "realtimeCapturePause")!!
+            assertEquals(captureId, readPrivateField(pause, "pttCaptureId"))
+            assertEquals("playback-relay", readPrivateField(pause, "sessionId"))
+            val cancelled = proof.scope.async { proof.manager.cancelPushToTalk(captureId) }
+            awaitTalkWork(proof) { cancelled.isCompleted }
+            cancelled.await()
+            assertNull(proof.manager.activePushToTalkCaptureId)
+            assertNull(readPrivateField(proof.manager, "realtimeCapturePause"))
+            assertNotNull("Talk resumes capture only after PTT releases ownership", readPrivateField(proof.manager, "realtimeCaptureJob"))
+            assertTrue(proof.manager.isListening.value)
+          } finally {
+            var drainedStartup = false
+            if (!catalogReleased && pendingCatalog.isCompleted) {
+              drainedStartup = true
+              val (id, socket) = pendingCatalog.await()
+              socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"UNAVAILABLE","message":"fixture cleanup"}}""")
+            }
+            if (!clientRejected && pendingClient.isCompleted) {
+              drainedStartup = true
+              val (id, socket) = pendingClient.await()
+              socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"UNAVAILABLE","message":"fixture cleanup"}}""")
+            }
+            if (drainedStartup) {
+              awaitTalkWork(proof) {
+                !proof.manager.audioRetirement.pending && (proof.manager.hasFailure.value || readPrivateField(proof.manager, "realtimeSessionId") != null)
+              }
+            }
+          }
+        }
+      }
+    }
+
+  @Test
+  fun catalogAndCreateUseTheSameCapturedChatTarget() =
+    runBlocking {
+      val target =
+        ai.openclaw.app.chat
+          .ChatComposerOwner("fixture-gateway", "work", "agent:work:readiness")
+      val observed = ConcurrentLinkedQueue<JsonObject>()
+      withStartedTalk(currentChatTarget = { target }, interceptRequest = { request, _ ->
+        if (request["method"]?.jsonPrimitive?.content in listOf("talk.catalog", "talk.session.create")) observed.add(request)
+        false
+      }) {
+        assertEquals(listOf("talk.catalog", "talk.session.create"), observed.map { it.getValue("method").jsonPrimitive.content })
+        for (request in observed) {
+          val params = request.getValue("params").jsonObject
+          assertEquals(JsonPrimitive(target.agentId), params["agentId"])
+          assertEquals(JsonPrimitive(target.sessionKey), params["sessionKey"])
+        }
+      }
+    }
+
+  @Test
+  @Config(shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
+  fun errorOwnerPublishesRecoverableClientErrorsWithoutEndingOrResumingPtt() =
+    runBlocking {
+      StartupPeerConnection.reset()
+      StartupDataChannel.reset()
+      var answered = false
+      withStartedTalk(serveOffer = true, responseForRequest = { request, _ ->
+        when (request["method"]?.jsonPrimitive?.content) {
+          "talk.config" -> """{"config":{"talk":{"realtime":{"mode":"realtime","transport":"webrtc"}}}}"""
+          "talk.catalog" -> """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["webrtc"]}]}}"""
+          "talk.client.create" -> """{"provider":"openai","transport":"webrtc","voiceSessionId":"error-owner","clientSecret":"fixture","offerUrl":"/fixture-offer","model":"gpt-realtime-2.1","voice":"alloy","controlSource":"transcript"}"""
+          else -> null
+        }
+      }, duringStart = { _, _ ->
+        if (!answered && StartupPeerConnection.offer != null) {
+          answered = true
+          StartupPeerConnection.offer!!.onCreateSuccess(org.webrtc.SessionDescription(org.webrtc.SessionDescription.Type.OFFER, "v=0"))
+          StartupDataChannel.open()
+        }
+      }) { proof ->
+        val client = readPrivateField(proof.manager, "realtimeClient") as TalkRealtimeClient
+        val peer = readPrivateField(client, "peer")!!
+        val before = listOf(proof.manager.isListening.value, proof.manager.isSpeaking.value, proof.manager.awaitingAgent.value)
+        StartupDataChannel.message("""{"type":"error","error":{"message":"fixture-private-detail"}}""")
+        proof.scheduler.runCurrent()
+        assertTrue(
+          proof.manager.statusText.value
+            .contains("Recoverable provider event error"),
+        )
+        assertFalse(
+          proof.manager.statusText.value
+            .contains("fixture-private-detail"),
+        )
+        assertEquals(before, listOf(proof.manager.isListening.value, proof.manager.isSpeaking.value, proof.manager.awaitingAgent.value))
+        assertTrue(proof.manager.isEnabled.value)
+        assertFalse(proof.manager.hasFailure.value)
+        val pause = proof.scope.async { proof.manager.prepareRealtimeCapturePause("error-ptt", null)() }
+        proof.scheduler.runCurrent()
+        pause.await()
+        val pausedOwner = readPrivateField(proof.manager, "realtimeCapturePause")
+        StartupDataChannel.message("""{"type":"conversation.item.input_audio_transcription.failed","item_id":"speech"}""")
+        proof.scheduler.runCurrent()
+        assertTrue(
+          proof.manager.statusText.value
+            .contains("Recoverable input transcription error"),
+        )
+        assertEquals(pausedOwner, readPrivateField(proof.manager, "realtimeCapturePause"))
+        assertEquals(listOf(false, false), listOf(readPrivateField(peer, "captureEnabled"), readPrivateField(peer, "playbackEnabled")))
+        assertTrue(proof.manager.isEnabled.value)
+        assertFalse(proof.manager.hasFailure.value)
+        proof.manager.resumeRealtimeCaptureAfterPushToTalk("error-ptt")
+        proof.scheduler.runCurrent()
+        assertEquals(true, readPrivateField(peer, "captureEnabled"))
+        assertTrue(
+          proof.manager.statusText.value
+            .contains("Listening"),
+        )
+        @Suppress("UNCHECKED_CAST")
+        val retiredError = readPrivateField(client, "onRecoverableError") as (String) -> Unit
+        proof.manager.stopAllCapture()
+        val stoppedStatus = proof.manager.statusText.value
+        retiredError("late error from retired call")
+        assertEquals(stoppedStatus, proof.manager.statusText.value)
+        assertFalse(proof.manager.isEnabled.value)
+      }
+    }
+
+  @Test fun talkTargetLegacyRelayWithoutCapability() = verifyTalkWireTarget(null, false)
+
+  @Test fun talkTargetLegacyRelayWithEmptyCapabilities() = verifyTalkWireTarget("[]", false)
+
+  @Test fun talkTargetLegacyGlobalCatalogCannotBlockAuto() = verifyTalkWireTarget(null, false, advisoryMissing = true)
+
+  @Test
+  @Config(shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
+  fun talkTargetLegacyAutoWithoutCatalogCanCreateClient() = verifyTalkWireTarget(null, true, advisoryMissing = true, catalogFailure = true)
+
+  @Test fun talkTargetLegacyAutoWithoutCatalogCanRecoverToRelay() = verifyTalkWireTarget(null, false, advisoryMissing = true, catalogFailure = true)
+
+  @Test fun talkTargetModernRelay() = verifyTalkWireTarget("[\"talk-session-target-v1\"]", false)
+
+  @Test
+  @Config(shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
+  fun talkTargetLegacyClientUsesStableSchemas() = verifyTalkWireTarget(null, true)
+
+  private fun verifyTalkWireTarget(
+    capabilities: String?,
+    webRtc: Boolean,
+    advisoryMissing: Boolean = false,
+    catalogFailure: Boolean = false,
+  ) = runBlocking {
+    val schemas =
+      Json
+        .parseToJsonElement(checkNotNull(javaClass.classLoader!!.getResourceAsStream("talk-target-stable-schemas.json")).bufferedReader().use { it.readText() })
+        .jsonObject
+        .getValue("schemas")
+        .jsonObject
+    val modern = capabilities?.contains("talk-session-target-v1") == true
+    val seen = ConcurrentLinkedQueue<JsonObject>()
+    val rejected = ConcurrentLinkedQueue<String>()
+    val target =
+      ai.openclaw.app.chat
+        .ChatComposerOwner("fixture", "work", "agent:work:target-proof")
+    var selectedTarget = target
+    StartupPeerConnection.reset()
+    StartupDataChannel.reset()
+    var offered = false
+    withStartedTalk(
+      currentChatTarget = { selectedTarget },
+      serveOffer = webRtc,
+      responseForRequest = { request, _ ->
+        when (request["method"]?.jsonPrimitive?.content) {
+          "connect" -> {
+            val features = capabilities?.let { ",\"features\":{\"capabilities\":$it}" } ?: ""
+            """{"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:main:main"}}$features}"""
+          }
+
+          "talk.config" -> {
+            if (advisoryMissing) {
+              """{"config":{"talk":{"realtime":{"mode":"realtime"}}}}"""
+            } else if (webRtc) {
+              """{"config":{"talk":{"realtime":{"mode":"realtime","transport":"webrtc"}}}}"""
+            } else {
+              null
+            }
+          }
+
+          "talk.catalog" -> {
+            if (advisoryMissing) """{"realtime":{"ready":false,"providers":[]}}""" else """{"realtime":{"ready":$modern,"activeProvider":"openai","providers":[{"id":"openai","configured":$modern,"transports":["webrtc","gateway-relay"]}]}}"""
+          }
+
+          "talk.client.create" -> {
+            """{"provider":"openai","transport":"webrtc","voiceSessionId":"target-client","clientSecret":"fixture","offerUrl":"/fixture-offer","model":"gpt-realtime-2.1","controlSource":"transcript"}"""
+          }
+
+          else -> {
+            null
+          }
+        }
+      },
+      interceptRequest = { request, socket ->
+        val method = request.getValue("method").jsonPrimitive.content
+        if (method.startsWith("talk.")) seen.add(request)
+        val params = request["params"]?.jsonObject ?: JsonObject(emptyMap())
+        val keyless = method in listOf("talk.session.steer", "talk.session.close", "talk.session.submitToolResult")
+        val invalid =
+          (!modern || keyless) &&
+            schemas.values.any { tag ->
+              val schema = tag.jsonObject[method]?.jsonObject
+              schema != null && (
+                params.keys.any { it !in schema.getValue("properties").jsonObject } ||
+                  (schema["required"] as? kotlinx.serialization.json.JsonArray)?.any { it.jsonPrimitive.content !in params } == true
+              )
+            }
+        if (invalid) {
+          rejected.add(method)
+          val id = request.getValue("id").jsonPrimitive.content
+          socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"INVALID_REQUEST","message":"Stable schema rejected target fields"}}""")
+        }
+        val unavailable = advisoryMissing && (method == if (webRtc) "talk.session.create" else "talk.client.create")
+        if (!invalid && ((catalogFailure && method == "talk.catalog") || unavailable)) {
+          val id = request.getValue("id").jsonPrimitive.content
+          val code = if (unavailable) "UNAVAILABLE" else "INVALID_REQUEST"
+          val message = if (unavailable) "This target cannot use this transport" else "Talk session ownership has no explicit owner"
+          socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"$code","message":"$message"}}""")
+          true
+        } else {
+          invalid
+        }
+      },
+      duringStart = { manager, _ ->
+        check(!manager.hasFailure.value) { "Target negotiation failed: $rejected / " + manager.statusText.value }
+        if (webRtc && !offered && StartupPeerConnection.offer != null) {
+          offered = true
+          StartupPeerConnection.offer!!.onCreateSuccess(org.webrtc.SessionDescription(org.webrtc.SessionDescription.Type.OFFER, "v=0"))
+          StartupDataChannel.open()
+        }
+      },
+    ) { proof ->
+      val agent = readPrivateField(proof.manager, "realtimeAgentCoordinator") as RealtimeAgentCoordinator
+      assertTrue(agent.handleToolCall("consult", "openclaw_agent_consult", JsonObject(emptyMap()), false))
+      assertTrue(agent.handleToolCall("control", "openclaw_agent_control", JsonObject(emptyMap()), false))
+      if (webRtc) {
+        StartupDataChannel.message("""{"type":"input_audio_buffer.committed","item_id":"spoken","previous_item_id":null}""")
+        StartupDataChannel.message("""{"type":"conversation.item.input_audio_transcription.completed","item_id":"spoken","transcript":"fixture speech"}""")
+      }
+      val expected = if (webRtc) setOf("talk.client.toolCall", "talk.client.steer", "talk.client.transcript") else setOf("talk.client.toolCall", "talk.session.steer", "talk.session.submitToolResult")
+      withTimeout(5_000) {
+        while (!seen.map { it.getValue("method").jsonPrimitive.content }.containsAll(expected)) {
+          proof.scheduler.runCurrent()
+          withContext(Dispatchers.Default) { delay(1) }
+        }
+      }
+      selectedTarget = target.copy(agentId = "other", sessionKey = "agent:other:next")
+      // Runtime navigation ownership is covered through NodeRuntimeTalkOwnershipTest.
+      proof.manager.stopAllCapture()
+      withTimeout(5_000) {
+        while (proof.manager.audioRetirement.pending) {
+          proof.scheduler.runCurrent()
+          proof.drainCancelledCapture()
+          withContext(Dispatchers.Default) { delay(1) }
+        }
+      }
+      val catalog = seen.single { it["method"]?.jsonPrimitive?.content == "talk.catalog" }.getValue("params").jsonObject
+      assertEquals(if (modern) setOf("sessionKey", "agentId") else emptySet<String>(), catalog.keys)
+      assertTrue("No Stable schema rejection or error-driven replay", rejected.isEmpty())
+      val keyed = setOf("talk.client.create", "talk.session.create", "talk.client.toolCall", "talk.client.transcript", "talk.client.close", "talk.client.steer")
+      for (request in seen) {
+        val method = request.getValue("method").jsonPrimitive.content
+        val params = request["params"]?.jsonObject ?: continue
+        if (method in keyed) {
+          assertEquals(JsonPrimitive(target.sessionKey), params["sessionKey"])
+          assertEquals(if (modern) JsonPrimitive("work") else null, params["agentId"])
+        }
+        if (method == "talk.session.steer") assertEquals(setOf("sessionId", "text"), params.keys)
+      }
+      assertEquals(1, seen.count { it["method"]?.jsonPrimitive?.content == if (webRtc) "talk.client.create" else "talk.session.create" })
+      assertTrue(seen.any { it["method"]?.jsonPrimitive?.content == if (webRtc) "talk.client.close" else "talk.session.close" })
+      if (webRtc && advisoryMissing) assertFalse(seen.any { it["method"]?.jsonPrimitive?.content == "talk.session.create" })
+      if (!webRtc && advisoryMissing) assertEquals(1, seen.count { it["method"]?.jsonPrimitive?.content == "talk.client.create" })
+    }
+  }
+
   private suspend fun withStartedTalk(
     sessionKey: String = "main",
+    currentChatSelection: () -> Long = { 0L },
+    startReady: ((TalkModeManager) -> Boolean)? = null,
+    currentChatTarget: () -> ai.openclaw.app.chat.ChatComposerOwner? = { null },
+    serveOffer: Boolean = false,
     captureRelayStopNotification: () -> ((() -> Boolean) -> Unit) = { {} },
     responseForRequest: (JsonObject, WebSocket) -> String? = { _, _ -> null },
     interceptRequest: (JsonObject, WebSocket) -> Boolean = { _, _ -> false },
+    expectFailure: Boolean = false,
+    duringStart: (TalkModeManager, TestCoroutineScheduler) -> Unit = { _, _ -> },
     block: suspend (RealtimePlaybackProof) -> Unit,
   ) {
     val app = RuntimeEnvironment.getApplication()
@@ -2590,6 +3225,8 @@ class TalkModeManagerTest {
         realtimeCaptureDispatcher = captureDispatcher,
         realtimePlaybackDispatcher = StandardTestDispatcher(scheduler),
         captureRelayStopNotification = captureRelayStopNotification,
+        currentChatTarget = currentChatTarget,
+        currentChatSelection = currentChatSelection,
       )
     val writes = mutableListOf<Triple<AudioTrack, ByteArray, AudioFormat>>()
     val listener = ShadowAudioTrack.OnAudioDataWrittenListener { track, bytes, format -> writes += Triple(track, bytes, format) }
@@ -2617,8 +3254,9 @@ class TalkModeManagerTest {
                 val id = request.getValue("id").jsonPrimitive.content
                 val payload =
                   responseForRequest(request, webSocket) ?: when (request.getValue("method").jsonPrimitive.content) {
-                    "connect" -> """{"snapshot":{"sessionDefaults":{"mainSessionKey":"main"}}}"""
-                    "talk.config" -> """{"config":{}}"""
+                    "connect" -> """{"features":{"capabilities":["talk-session-target-v1"]},"snapshot":{"sessionDefaults":{"mainSessionKey":"main"}}}"""
+                    "talk.config" -> """{"config":{"talk":{"realtime":{"mode":"realtime","transport":"gateway-relay"}}}}"""
+                    "talk.catalog" -> """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["gateway-relay"]}]}}"""
                     "talk.session.create" -> """{"relaySessionId":"playback-relay"}"""
                     else -> "{}"
                   }
@@ -2627,6 +3265,7 @@ class TalkModeManagerTest {
             },
           ),
         )
+        if (serveOffer) server.enqueue(MockResponse().setBody("v=0"))
         server.start()
         session.connect(
           endpoint =
@@ -2654,9 +3293,10 @@ class TalkModeManagerTest {
         manager.setMainSessionKey(sessionKey)
         manager.setEnabled(true)
         val deadline = System.nanoTime() + 5_000_000_000L
-        while (!manager.isListening.value) {
+        while (startReady?.invoke(manager)?.not() ?: if (expectFailure) !manager.hasFailure.value else !manager.isListening.value) {
           scheduler.runCurrent()
-          check(System.nanoTime() < deadline) { "Real gateway session did not start realtime Talk: ${manager.statusText.value}" }
+          duringStart(manager, scheduler)
+          check(System.nanoTime() < deadline) { "Real gateway session did not reach expected Talk state: ${manager.statusText.value}" }
           withContext(Dispatchers.Default) { delay(10) }
         }
         ShadowAudioTrack.addAudioDataListener(listener)
@@ -2676,11 +3316,15 @@ class TalkModeManagerTest {
       } finally {
         manager.stopAllCapture()
         managerJob.cancel()
-        scheduler.runCurrent()
-        while (true) (captureTasks.poll() ?: break).run()
-        scheduler.runCurrent()
-        withTimeout(5_000) { managerJob.join() }
-        shadowOf(Looper.getMainLooper()).idle()
+        // Physical WebRTC cleanup returns from IO to this virtual Main scheduler.
+        withTimeout(5_000) {
+          while (!managerJob.isCompleted) {
+            scheduler.runCurrent()
+            while (true) (captureTasks.poll() ?: break).run()
+            shadowOf(Looper.getMainLooper()).idle()
+            withContext(Dispatchers.Default) { delay(1) }
+          }
+        }
         scheduler.runCurrent()
         ShadowAudioTrack.removeAudioDataListener(listener)
         withContext(Dispatchers.Default) {
@@ -2991,6 +3635,86 @@ class TalkModeManagerTest {
   }
 
   @Test
+  fun queuedClientResumeCannotEnableCaptureAfterANewerPushToTalkClaim() = assertClientMediaStaysPaused(queuedResume = true)
+
+  @Test
+  fun playbackPreferenceDoesNotUnmutePushToTalk() = assertClientMediaStaysPaused(queuedResume = false)
+
+  private fun assertClientMediaStaysPaused(queuedResume: Boolean) =
+    runBlocking {
+      val mainTasks = ConcurrentLinkedQueue<Runnable>()
+      val main =
+        object : CoroutineDispatcher() {
+          override fun dispatch(
+            context: CoroutineContext,
+            block: Runnable,
+          ) {
+            mainTasks.add(block)
+          }
+        }
+      val job = SupervisorJob()
+      val scope = CoroutineScope(job + Dispatchers.Unconfined)
+      Dispatchers.setMain(main)
+      val manager = createManager(scope = scope)
+      val client = createTestTalkRealtimeClient(RuntimeEnvironment.getApplication(), scope, GatewaySession.RequestLease("fixture", requestImpl = { _, _, _, _ -> "{}" }), "main", {}, { _, _, _ -> }, {})
+      val lock = readPrivateField(manager, "realtimeCapturePauseLock")!!
+
+      fun drainMain() {
+        while (true) (mainTasks.poll() ?: break).run()
+      }
+      try {
+        setPrivateField(manager, "realtimeClient", client)
+        setMutableStateFlow(manager, "_isEnabled", true)
+        val paused =
+          scope.async(Dispatchers.Main.immediate) {
+            synchronized(lock) { manager.prepareRealtimeCapturePause("old", lease = null) }()
+          }
+        drainMain()
+        paused.await()
+        // Main already has a new PTT claim queued when the old resume runs on IO.
+        val newer =
+          scope.async(Dispatchers.Main.immediate) {
+            val action =
+              synchronized(lock) {
+                setPrivateField(manager, "activePttCaptureId", "new")
+                manager.prepareRealtimeCapturePause("new", lease = null)
+              }
+            action()
+          }
+        if (queuedResume) manager.resumeRealtimeCaptureAfterPushToTalk("old")
+        drainMain()
+        newer.await()
+        if (!queuedResume) {
+          manager.setPlaybackEnabled(false)
+          manager.setPlaybackEnabled(true)
+          drainMain()
+        }
+        assertEquals("new", manager.activePushToTalkCaptureId)
+        val peer = readPrivateField(client, "peer")!!
+        assertEquals(
+          "PTT must retain capture and playback ownership across the delayed operation",
+          listOf(false, false),
+          listOf(readPrivateField(peer, "captureEnabled"), readPrivateField(peer, "playbackEnabled")),
+        )
+      } finally {
+        try {
+          manager.stopAllCapture()
+          withTimeout(5_000) {
+            while (manager.audioRetirement.pending) {
+              drainMain()
+              withContext(Dispatchers.Default) { delay(1) }
+            }
+          }
+          job.cancel()
+          drainMain()
+          withTimeout(5_000) { job.join() }
+        } finally {
+          Dispatchers.resetMain()
+        }
+      }
+    }
+
+  @Test
   fun stalePushToTalkCompletionCannotResumeNewerPause() =
     runTest {
       val manager = createManager()
@@ -3167,8 +3891,13 @@ class TalkModeManagerTest {
 
       manager.realtimeEvent("""{"relaySessionId":"relay-1","type":"close","reason":"completed"}""")
 
-      assertNull(readPrivateField(manager, "realtimeCapturePause"))
+      val pause = readPrivateField(manager, "realtimeCapturePause")!!
+      assertEquals("capture-1", readPrivateField(pause, "pttCaptureId"))
+      assertNull(readPrivateField(pause, "sessionId"))
       assertEquals("capture-1", manager.finishingPushToTalkCaptureId)
+      setPrivateField(manager, "finishingPttCaptureId", null)
+      manager.resumeRealtimeCaptureAfterPushToTalk("capture-1")
+      assertNull(readPrivateField(manager, "realtimeCapturePause"))
     }
 
   @Test
@@ -3222,6 +3951,7 @@ class TalkModeManagerTest {
     realtimeCaptureDispatcher: CoroutineDispatcher = Dispatchers.IO,
     realtimePlaybackDispatcher: CoroutineDispatcher = Dispatchers.IO,
     realtimeMarkAcknowledger: (suspend (String, String) -> Unit)? = null,
+    currentChatTarget: () -> ai.openclaw.app.chat.ChatComposerOwner? = { null },
   ): TalkModeManager {
     val app = RuntimeEnvironment.getApplication()
     val session =
@@ -3246,6 +3976,7 @@ class TalkModeManagerTest {
       realtimeCaptureDispatcher = realtimeCaptureDispatcher,
       realtimePlaybackDispatcher = realtimePlaybackDispatcher,
       realtimeMarkAcknowledger = realtimeMarkAcknowledger,
+      currentChatTarget = currentChatTarget,
     ).also { setPrivateField(it, "relayStopNotification", onStoppedByRelay) }
   }
 
@@ -3378,7 +4109,8 @@ class TalkModeManagerTest {
     runId: String,
     text: String,
     role: String = "assistant",
-  ): String = """{"runId":"$runId","sessionKey":"main","state":"final","message":{"role":"$role","content":[{"type":"text","text":"$text"}]}}"""
+    sessionKey: String = "main",
+  ): String = """{"runId":"$runId","sessionKey":"$sessionKey","state":"final","message":{"role":"$role","content":[{"type":"text","text":"$text"}]}}"""
 
   private fun realtimeTranscriptPayload(
     role: String,

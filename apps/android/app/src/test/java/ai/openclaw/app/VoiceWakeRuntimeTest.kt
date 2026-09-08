@@ -233,23 +233,6 @@ class VoiceWakeRuntimeTest {
   }
 
   @Test
-  fun reassertingActiveTalkDoesNotInvalidateItsTerminalOwner() {
-    val runtime = createTestRuntime()
-    shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.RECORD_AUDIO)
-    val manager = readField<Lazy<TalkModeManager>>(runtime, "talkMode\$delegate").value
-    readField<MutableStateFlow<VoiceCaptureMode>>(runtime, "_voiceCaptureMode").value = VoiceCaptureMode.TalkMode
-    readField<MutableStateFlow<Boolean>>(runtime, "externalAudioCaptureActive").value = true
-    readField<MutableStateFlow<Boolean>>(manager, "_isEnabled").value = true
-    val notification = readField<() -> ((() -> Boolean) -> Unit)>(manager, "captureRelayStopNotification").invoke()
-
-    runtime.setTalkModeEnabled(true)
-    readField<MutableStateFlow<Boolean>>(manager, "_isEnabled").value = false
-    notification { true }
-
-    assertEquals(VoiceCaptureMode.Off, runtime.voiceCaptureMode.value)
-  }
-
-  @Test
   fun stoppingNativePttKeepsMicOwnedUntilMainDestroysTheRetiredRecognizer() =
     runBlocking {
       val runtime = createTestRuntime()

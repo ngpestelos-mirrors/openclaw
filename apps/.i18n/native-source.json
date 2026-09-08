@@ -1178,6 +1178,7 @@
     {"id":"native.android.fe88871678a936ca","source":"Reply alerts","surface":"android","sites":[{"kind":"resource-string","path":"apps/android/wear/src/main/res/values/strings.xml"}]},
     {"id":"native.android.2e8741a989de1f93","source":"Reply not sent","surface":"android","sites":[{"kind":"resource-string","path":"apps/android/wear/src/main/res/values/strings.xml"}]},
     {"id":"native.android.eccf5d8f34624ecb","source":"Reply to OpenClaw…","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ConversationNotifications.kt"},{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/SystemAgentSettingsScreen.kt"}]},
+    {"id":"native.android.6ab848d4738f7fce","source":"Requested","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/SettingsScreens.kt"}]},
     {"id":"native.android.6eaeee8d9880a635","source":"Requested by $agent • $session","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/chat/ChatQuestionCard.kt"}]},
     {"id":"native.android.7dcd219c88de7154","source":"Requires operator.admin","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/chat/ChatScreen.kt"}]},
     {"id":"native.android.fa60aa5bc35add8b","source":"Reset pinned items","surface":"android","sites":[{"kind":"ui-call","path":"apps/android/app/src/main/java/ai/openclaw/app/ui/SidebarContent.kt"}]},

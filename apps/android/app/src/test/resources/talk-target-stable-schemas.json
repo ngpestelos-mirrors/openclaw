@@ -1,0 +1,450 @@
+{
+  "provenance": {
+    "v2026.8.1": {
+      "commit": "ea806575e6450e4d1efdfc72c19f04be982a1b9b",
+      "path": "packages/gateway-protocol/src/schema/channels.ts",
+      "sha256": "37d5d4d69411920bea7e2a21773ca61dcbb13fa80e2ee88a394146813469cc55",
+      "schemaRef": "talk-target-v2026.8"
+    },
+    "v2026.8.2": {
+      "commit": "0965053fe6b9341776df147a6934b7485c60b5ca",
+      "path": "packages/gateway-protocol/src/schema/channels.ts",
+      "sha256": "165710553ca660aad9e87cf9a83d0016542efb03100915e376a1cd719fd6a169",
+      "schemaRef": "talk-target-v2026.8"
+    }
+  },
+  "schemas": {
+    "talk-target-v2026.8": {
+      "talk.catalog": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "talk.client.create": {
+        "type": "object",
+        "properties": {
+          "sessionKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voiceSessionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "vadThreshold": {
+            "type": "number"
+          },
+          "silenceDurationMs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "prefixPaddingMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reasoningEffort": {
+            "type": "string"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "realtime"
+              },
+              {
+                "type": "string",
+                "const": "stt-tts"
+              },
+              {
+                "type": "string",
+                "const": "transcription"
+              }
+            ]
+          },
+          "transport": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "webrtc"
+              },
+              {
+                "type": "string",
+                "const": "provider-websocket"
+              },
+              {
+                "type": "string",
+                "const": "gateway-relay"
+              },
+              {
+                "type": "string",
+                "const": "managed-room"
+              }
+            ]
+          },
+          "brain": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "agent-consult"
+              },
+              {
+                "type": "string",
+                "const": "direct-tools"
+              },
+              {
+                "type": "string",
+                "const": "none"
+              }
+            ]
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "camera-frame"
+                },
+                {
+                  "type": "string",
+                  "const": "voice-transcript"
+                },
+                {
+                  "type": "string",
+                  "const": "gateway-control-v1"
+                }
+              ]
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "talk.session.create": {
+        "type": "object",
+        "properties": {
+          "sessionKey": {
+            "type": "string"
+          },
+          "spawnedBy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "pattern": "^[a-z]{2}$"
+          },
+          "vadThreshold": {
+            "type": "number"
+          },
+          "silenceDurationMs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "prefixPaddingMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reasoningEffort": {
+            "type": "string"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "realtime"
+              },
+              {
+                "type": "string",
+                "const": "stt-tts"
+              },
+              {
+                "type": "string",
+                "const": "transcription"
+              }
+            ]
+          },
+          "transport": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "webrtc"
+              },
+              {
+                "type": "string",
+                "const": "provider-websocket"
+              },
+              {
+                "type": "string",
+                "const": "gateway-relay"
+              },
+              {
+                "type": "string",
+                "const": "managed-room"
+              }
+            ]
+          },
+          "brain": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "agent-consult"
+              },
+              {
+                "type": "string",
+                "const": "direct-tools"
+              },
+              {
+                "type": "string",
+                "const": "none"
+              }
+            ]
+          },
+          "ttlMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 3600000
+          }
+        },
+        "additionalProperties": false
+      },
+      "talk.client.toolCall": {
+        "type": "object",
+        "required": [
+          "sessionKey",
+          "callId",
+          "name"
+        ],
+        "properties": {
+          "sessionKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voiceSessionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "args": {},
+          "relaySessionId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "talk.client.transcript": {
+        "type": "object",
+        "required": [
+          "sessionKey",
+          "voiceSessionId",
+          "entryId",
+          "role",
+          "text"
+        ],
+        "properties": {
+          "sessionKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voiceSessionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "entryId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "user"
+              },
+              {
+                "type": "string",
+                "const": "assistant"
+              }
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      },
+      "talk.client.close": {
+        "type": "object",
+        "required": [
+          "sessionKey",
+          "voiceSessionId"
+        ],
+        "properties": {
+          "sessionKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "voiceSessionId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "talk.client.steer": {
+        "type": "object",
+        "required": [
+          "sessionKey",
+          "text"
+        ],
+        "properties": {
+          "sessionKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "status"
+              },
+              {
+                "type": "string",
+                "const": "steer"
+              },
+              {
+                "type": "string",
+                "const": "cancel"
+              },
+              {
+                "type": "string",
+                "const": "followup"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "talk.session.steer": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "text"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sessionKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "status"
+              },
+              {
+                "type": "string",
+                "const": "steer"
+              },
+              {
+                "type": "string",
+                "const": "cancel"
+              },
+              {
+                "type": "string",
+                "const": "followup"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "talk.session.close": {
+        "type": "object",
+        "required": [
+          "sessionId"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "talk.session.submitToolResult": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "callId",
+          "result"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {},
+          "options": {
+            "type": "object",
+            "properties": {
+              "suppressResponse": {
+                "type": "boolean"
+              },
+              "willContinue": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

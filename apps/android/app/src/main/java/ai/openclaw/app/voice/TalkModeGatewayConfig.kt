@@ -20,7 +20,10 @@ internal data class TalkModeGatewayConfigState(
   val realtimeRelayModelSupported: Boolean,
   val realtimeTransport: String? = null,
   val realtimeMode: String? = null,
-)
+) {
+  val usesNativeSpeech: Boolean
+    get() = realtimeMode == "stt-tts" || (realtimeMode == null && !realtimeRelayModelSupported)
+}
 
 internal object TalkModeGatewayConfigParser {
   /** Reads gateway talk/session config into the runtime state TalkMode needs. */

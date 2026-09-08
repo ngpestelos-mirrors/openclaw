@@ -43,6 +43,101 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 class NodeRuntimeAgentSelectionTest {
   @Test
+  fun legacyTalkCatalogIsAdvisoryForSelectedAgent() =
+    runBlocking {
+      for (globalReady in listOf(false, true)) {
+        val runtime = createConnectedRuntime(talkTargetSupported = false)
+        val requested = Channel<Pair<JsonObject, Job>>(Channel.UNLIMITED)
+        try {
+          runtime.gatewayDataRequestOverrideForTests = { _, method, raw ->
+            check(method == "talk.catalog")
+            requested.send(Json.parseToJsonElement(raw ?: "{}").jsonObject to currentCoroutineContext().job)
+            talkCatalog(globalReady)
+          }
+          runtime.switchChatSession("agent:work:readiness", "work")
+          runtime.refreshTalkSetupReadiness()
+          val (params, job) = withTimeout(2_000) { requested.receive() }
+          withTimeout(2_000) { job.join() }
+          assertTrue(params.isEmpty())
+          assertTrue(runtime.talkSetupReadiness.value.realtimeTalk is GatewayTalkSetupState.Unverified)
+        } finally {
+          closeNodeRuntimeTestFixture(runtime)
+          requested.close()
+        }
+      }
+    }
+
+  @Test
+  fun talkCatalogReadinessUsesTheSelectedChatOwner() =
+    runBlocking {
+      for (availableAgent in listOf("work", "main")) {
+        val runtime = createConnectedRuntime()
+        val requested = Channel<Pair<JsonObject, Job>>(Channel.UNLIMITED)
+        try {
+          runtime.gatewayDataRequestOverrideForTests = { _, method, raw ->
+            check(method == "talk.catalog")
+            val params = Json.parseToJsonElement(raw ?: "{}").jsonObject
+            val ready = (params["agentId"]?.jsonPrimitive?.content ?: "main") == availableAgent
+            requested.send(params to currentCoroutineContext().job)
+            talkCatalog(ready)
+          }
+          runtime.switchChatSession("agent:work:readiness", "work")
+          runtime.refreshTalkSetupReadiness()
+          val (params, job) = withTimeout(2_000) { requested.receive() }
+          withTimeout(2_000) { job.join() }
+          assertEquals(JsonPrimitive("work"), params["agentId"])
+          assertEquals(JsonPrimitive("agent:work:readiness"), params["sessionKey"])
+          assertEquals(availableAgent == "work", runtime.talkSetupReadiness.value.realtimeTalk.isReady)
+        } finally {
+          closeNodeRuntimeTestFixture(runtime)
+          requested.close()
+        }
+      }
+    }
+
+  @Test
+  fun talkCatalogRejectsAReplyAfterChatChangesAwayAndBack() = assertRetiredTalkCatalog(gatewayChange = false)
+
+  @Test
+  fun talkCatalogRejectsAReplyAfterGatewayRetirement() = assertRetiredTalkCatalog(gatewayChange = true)
+
+  private fun assertRetiredTalkCatalog(gatewayChange: Boolean) =
+    runBlocking {
+      val runtime = createConnectedRuntime()
+      val started = CompletableDeferred<Job>()
+      val release = CompletableDeferred<String>()
+      val calls = AtomicInteger()
+      try {
+        runtime.gatewayDataRequestOverrideForTests = { _, method, _ ->
+          check(method == "talk.catalog")
+          if (calls.getAndIncrement() == 0) {
+            started.complete(currentCoroutineContext().job)
+            release.await()
+          } else {
+            talkCatalog(false)
+          }
+        }
+        runtime.switchChatSession("agent:work:readiness", "work")
+        runtime.refreshTalkSetupReadiness()
+        val oldJob = withTimeout(2_000) { started.await() }
+        if (gatewayChange) {
+          ReflectionHelpers.callInstanceMethod<Unit>(runtime, "prepareDisconnect", ReflectionHelpers.ClassParameter.from(Boolean::class.javaPrimitiveType, false))
+        } else {
+          runtime.switchChatSession("agent:other:other", "other")
+          runtime.switchChatSession("agent:work:readiness", "work")
+        }
+        release.complete(talkCatalog(true))
+        withTimeout(2_000) { oldJob.join() }
+        assertFalse("Retired catalog must not publish Ready", runtime.talkSetupReadiness.value.realtimeTalk.isReady)
+      } finally {
+        release.complete(talkCatalog(false))
+        closeNodeRuntimeTestFixture(runtime)
+      }
+    }
+
+  private fun talkCatalog(ready: Boolean): String = """{"realtime":{"activeProvider":"openai","ready":$ready,"providers":[{"id":"openai","label":"OpenAI","configured":$ready}]}}"""
+
+  @Test
   fun publicationsRereadSelectedAgentModelsWithoutDiscovery() =
     runBlocking {
       for (event in listOf("config.changed", "chat.metadata.changed")) {
@@ -1232,7 +1327,7 @@ class NodeRuntimeAgentSelectionTest {
     ReflectionHelpers.setField(chat, "requestGatewayForGateway", request)
   }
 
-  private fun createConnectedRuntime(): NodeRuntime {
+  private fun createConnectedRuntime(talkTargetSupported: Boolean = true): NodeRuntime {
     val app = RuntimeEnvironment.getApplication()
     val securePrefs =
       app.getSharedPreferences(
@@ -1240,8 +1335,18 @@ class NodeRuntimeAgentSelectionTest {
         Context.MODE_PRIVATE,
       )
     return NodeRuntime(app, SecurePrefs(app, securePrefsOverride = securePrefs)).also { runtime ->
-      ReflectionHelpers.setField(runtime, "connectedEndpoint", GatewayEndpoint.manual("127.0.0.1", 18789))
+      val endpoint = GatewayEndpoint.manual("127.0.0.1", 18789)
+      ReflectionHelpers.setField(runtime, "connectedEndpoint", endpoint)
       ReflectionHelpers.setField(runtime, "operatorConnected", true)
+      runtime.talkRequestLeaseOverrideForTests =
+        ai.openclaw.app.gateway.GatewaySession.RequestLease(
+          endpoint.stableId,
+          supportsTalkSessionTarget = talkTargetSupported,
+          requestImpl = { method, params, _, enqueue ->
+            enqueue {}
+            checkNotNull(runtime.gatewayDataRequestOverrideForTests).invoke(endpoint.stableId, method, params)
+          },
+        )
     }
   }
 }

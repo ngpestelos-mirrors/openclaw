@@ -1144,6 +1144,7 @@ internal val nativeStringResourceIds: Map<String, Int> =
     "Replies play aloud" to R.string.native_50bae925225d054b,
     "Reply" to R.string.native_c253f451bdd56431,
     "Reply to OpenClaw…" to R.string.native_91fe7ca2ad2e19cd,
+    "Requested" to R.string.native_2d9e28289facab94,
     "Requested by \$agent • \$session" to R.string.native_a966b5465775b7e7,
     "Requires operator.admin" to R.string.native_a5ce966f2cb8f0b6,
     "Reset pinned items" to R.string.native_0a93bfca7b918f7e,
