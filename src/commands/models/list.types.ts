@@ -17,7 +17,6 @@ export type ModelRow = {
   local: boolean | null;
   available: boolean | null;
   tags: string[];
-  missing: boolean;
 };
 
 /** Provider auth summary shown by `models status`. */

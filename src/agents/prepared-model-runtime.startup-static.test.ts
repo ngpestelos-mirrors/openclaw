@@ -314,7 +314,7 @@ describe("prepareScopedReadOnlyModelAuthModes", () => {
 });
 
 describe("prepared model runtime Gateway catalog mode", () => {
-  it("initializes cold inventory once on ordinary demand while prepared reads stay static", async () => {
+  it("initializes cold inventory once on explicit refresh while prepared reads stay static", async () => {
     const config = { agents: { defaults: { model: "openai/gpt-5.5" } } };
     const params = { agentId: "default", config, readOnly: true };
     const discovery = createDeferred<ModelCatalogSnapshot>();
@@ -329,8 +329,8 @@ describe("prepared model runtime Gateway catalog mode", () => {
     expect(prepared.entries.map(({ id }) => id)).toEqual(["gpt-5.5"]);
     expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
 
-    const first = loadPreparedModelCatalogSnapshot({ ...params, refreshFullCatalog: "stale" });
-    const second = loadPreparedModelCatalogSnapshot({ ...params, refreshFullCatalog: "stale" });
+    const first = loadPreparedModelCatalogSnapshot({ ...params, refreshFullCatalog: true });
+    const second = loadPreparedModelCatalogSnapshot({ ...params, refreshFullCatalog: true });
     try {
       await vi.waitFor(() => expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce());
       await expect(loadPreparedModelCatalogSnapshot(params)).resolves.toBe(prepared);
@@ -339,7 +339,7 @@ describe("prepared model runtime Gateway catalog mode", () => {
       expect(firstCatalog.entries.map(({ id }) => id)).toEqual(["discovered-model", "gpt-5.5"]);
       expect(secondCatalog).toBe(firstCatalog);
       await expect(
-        loadPreparedModelCatalogSnapshot({ ...params, refreshFullCatalog: "stale" }),
+        loadPreparedModelCatalogSnapshot({ ...params, refreshFullCatalog: true }),
       ).resolves.toBe(firstCatalog);
       expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledOnce();
     } finally {
@@ -357,7 +357,7 @@ describe("prepared model runtime Gateway catalog mode", () => {
       gatewayLifecycle: true,
       catalogMode: "static",
     });
-    const first = loadPreparedModelCatalogSnapshot({ ...params, refreshFullCatalog: "stale" });
+    const first = loadPreparedModelCatalogSnapshot({ ...params, refreshFullCatalog: true });
     let replacement: Promise<void> | undefined;
     const publications: string[] = [];
     const unregister = registerPreparedModelRuntimePublicationListener((event) =>

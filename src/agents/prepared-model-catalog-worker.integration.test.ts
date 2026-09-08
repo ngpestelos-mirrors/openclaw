@@ -656,7 +656,10 @@ describe("prepared model catalog worker boundary", () => {
       } as unknown as GatewayRequestContext;
       return {
         projected,
-        result: await buildModelsListResult({ context, params: { view: "all" } }),
+        result: await buildModelsListResult({
+          source: { kind: "gateway", context },
+          params: { view: "all" },
+        }),
       };
     };
     const writeDurableProfile = (key?: string) =>
@@ -842,7 +845,10 @@ describe("prepared model catalog worker boundary", () => {
         loadGatewayModelCatalogSnapshot: loadSnapshot,
         logGateway: { debug: () => undefined },
       } as unknown as GatewayRequestContext;
-      return await buildModelsListResult({ context, params: { view: "all", refresh: true } });
+      return await buildModelsListResult({
+        source: { kind: "gateway", context },
+        params: { view: "all", refresh: true },
+      });
     };
 
     expect((await listModels()).models).toContainEqual(

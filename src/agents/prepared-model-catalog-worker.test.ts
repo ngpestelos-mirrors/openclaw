@@ -1,14 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
-import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { describe, expect, it } from "vitest";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import {
   createPreparedModelCatalogWorkerInput,
   fingerprintPreparedModelWorkerRequest,
 } from "./prepared-model-catalog-worker.js";
 import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.catalog-contract.js";
-
-vi.mock("../plugins/manifest-registry-installed.js", () => ({
-  resolveInstalledManifestRegistryIndexFingerprint: () => "test-plugin-index",
-}));
 
 describe("prepared model catalog worker input", () => {
   it("preserves captured auth identity and distinguishes source from built artifacts", () => {
@@ -62,12 +58,7 @@ describe("prepared model catalog worker input", () => {
         configuredGeneratedCatalogPluginIds: [],
         templateAuthStorage: {} as never,
       } satisfies PreparedModelRuntimeAgentFacts,
-      pluginMetadataSnapshot: {
-        policyHash: "test-policy",
-        configFingerprint: "test-config",
-        index: {} as never,
-        plugins: [],
-      } as unknown as PluginMetadataSnapshot,
+      pluginMetadataSnapshot: createPluginMetadataSnapshotFixture(),
     };
     const workerInput = createPreparedModelCatalogWorkerInput(params);
 
