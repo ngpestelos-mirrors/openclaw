@@ -3,6 +3,7 @@ package ai.openclaw.app
 import ai.openclaw.app.chat.ChatController
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewaySession
+import ai.openclaw.app.voice.RealtimeAgentCoordinator
 import ai.openclaw.app.voice.RealtimeAgentSession
 import ai.openclaw.app.voice.StartupDataChannel
 import ai.openclaw.app.voice.StartupMediaSource
@@ -56,6 +57,163 @@ import java.util.concurrent.atomic.AtomicReference
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
 class NodeRuntimeTalkOwnershipTest {
+  @Test
+  fun relayConsultSelectionAdmission() =
+    runBlocking {
+      assertRelaySelectionAdmission("talk.client.toolCall", "openclaw_agent_consult")
+    }
+
+  @Test
+  fun relayControlSelectionAdmission() =
+    runBlocking {
+      assertRelaySelectionAdmission("talk.session.steer", "openclaw_agent_control")
+    }
+
+  private suspend fun assertRelaySelectionAdmission(
+    method: String,
+    tool: String,
+  ) {
+    val violations = mutableListOf<String>()
+    for (schedule in listOf("allowed", "selection-first", "concurrent")) {
+      withRuntime { runtime, manager, frames ->
+        runtime.setTalkModeEnabled(true)
+        awaitState { manager.isListening.value }
+        val coordinator = field<RealtimeAgentCoordinator>(manager, "realtimeAgentCoordinator")
+        val session = field<RealtimeAgentSession>(coordinator, "activeSession")
+        val request = session.requestGateway!!
+        val done = CountDownLatch(1)
+        val outcome = AtomicReference<Result<String>>()
+        val observed: suspend (String, String?, Long) -> String = { name, params, timeout ->
+          if (name == method) {
+            val result = runCatching { request(name, params, timeout) }
+            outcome.set(result)
+            done.countDown()
+            result.getOrThrow()
+          } else {
+            request(name, params, timeout)
+          }
+        }
+        ReflectionHelpers.setField(session, "requestGateway", observed)
+        val gateway = field<GatewaySession>(runtime, "operatorSession")
+        val connection = field<Any>(gateway, "currentConnection")
+        val socket = field<WebSocket>(connection, "socket")
+        val atSend = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        // Delegate to the actual OkHttp socket. Stop at send, after any admission reads,
+        // without replacing the selection owner, coordinator or Gateway transport.
+        ReflectionHelpers.setField(
+          connection,
+          "socket",
+          object : WebSocket by socket {
+            override fun send(text: String): Boolean {
+              if (schedule == "concurrent" && Json
+                  .parseToJsonElement(text)
+                  .jsonObject["method"]
+                  ?.jsonPrimitive
+                  ?.content == method
+              ) {
+                atSend.countDown()
+                check(release.await(8, TimeUnit.SECONDS)) { "Relay final enqueue was not released" }
+              }
+              return socket.send(text)
+            }
+          },
+        )
+        val chat = field<ChatController>(runtime, "chat")
+        val selectionLock = field<Any>(chat, "gatewayScopeApplyLock")
+        val generation = chat.selectionGeneration.value
+        val navigationDone = CountDownLatch(1)
+        val navigationError = AtomicReference<Throwable>()
+        var navigation: Thread? = null
+        try {
+          synchronized(field<Any>(runtime, "voiceCaptureOwnershipLock")) {
+            if (schedule == "selection-first") chat.switchSession("agent:work:b", "work")
+            assertTrue(coordinator.handleToolCall("relay-race", tool, Json.parseToJsonElement("""{"text":"status"}"""), false))
+            if (schedule == "concurrent") {
+              assertTrue("Actual coordinator request must reach socket send", atSend.await(8, TimeUnit.SECONDS))
+              navigation =
+                Thread {
+                  try {
+                    chat.switchSession("agent:work:b", "work")
+                  } catch (error: Throwable) {
+                    navigationError.set(error)
+                  } finally {
+                    navigationDone.countDown()
+                  }
+                }.also { it.start() }
+              val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+              while (navigationDone.count != 0L) {
+                val info = ManagementFactory.getThreadMXBean().getThreadInfo(navigation.threadId())
+                if (info?.lockInfo?.identityHashCode == System.identityHashCode(selectionLock) && info.threadState == Thread.State.BLOCKED) break
+                check(System.nanoTime() < deadline) { "Navigation reached neither retirement nor its selection lock" }
+                Thread.yield()
+              }
+            }
+            val retired = chat.selectionGeneration.value != generation
+            release.countDown()
+            assertTrue("Coordinator request must settle", done.await(8, TimeUnit.SECONDS))
+            navigation?.join(8_000)
+            assertFalse("Navigation must finish", navigation?.isAlive == true)
+            navigationError.get()?.let { throw it }
+            runBlocking { withTimeout(8_000) { gateway.request("test.barrier", "{}") } }
+            val sent = frames.count { it["method"]?.jsonPrimitive?.content == method }
+            println("selection-relay method=$method schedule=$schedule retiredBeforeEnqueue=$retired frames=$sent success=" + outcome.get().isSuccess)
+            if (sent != if (retired) 0 else 1) violations += "$method/$schedule retired=$retired frames=$sent"
+            if (outcome.get().isSuccess == retired) violations += "$method/$schedule wrong outcome"
+            assertTrue("Physical lease remains current", gateway.captureRequestLease()!!.isCurrent())
+            assertTrue("Asynchronous cleanup is held, not substituted for selection retirement", field<RealtimeAgentSession>(coordinator, "activeSession") === session)
+            assertEquals("owned-runtime-relay", field<String>(manager, "realtimeSessionId"))
+          }
+        } finally {
+          release.countDown()
+          navigation?.join(8_000)
+          ReflectionHelpers.setField(connection, "socket", socket)
+          ReflectionHelpers.setField(session, "requestGateway", request)
+        }
+      }
+    }
+    assertTrue(violations.joinToString(), violations.isEmpty())
+  }
+
+  @Test
+  fun relayAcceptedResultAndCloseSurviveSelectionRetirement() =
+    runBlocking {
+      withRuntime { runtime, manager, frames ->
+        runtime.setTalkModeEnabled(true)
+        awaitState { manager.isListening.value }
+        val coordinator = field<RealtimeAgentCoordinator>(manager, "realtimeAgentCoordinator")
+        val chat = field<ChatController>(runtime, "chat")
+        assertTrue(coordinator.handleToolCall("accepted-relay", "openclaw_agent_consult", Json.parseToJsonElement("{}"), false))
+        awaitState {
+          synchronized(field<Any>(coordinator, "lock")) {
+            field<Map<String, Any>>(coordinator, "runs").containsKey("runtime-run")
+          }
+        }
+        synchronized(field<Any>(runtime, "voiceCaptureOwnershipLock")) {
+          chat.switchSession("agent:work:b", "work")
+          assertTrue(coordinator.handleChatEvent("agent:work:a", "runtime-run", "final", Json.parseToJsonElement("""{"role":"assistant","content":"accepted result"}""")))
+          runBlocking {
+            awaitState { frames.any { it["method"]?.jsonPrimitive?.content == "talk.session.submitToolResult" } }
+          }
+          val result = frames.single { it["method"]?.jsonPrimitive?.content == "talk.session.submitToolResult" }["params"]!!.jsonObject
+          assertEquals("accepted-relay", result["callId"]!!.jsonPrimitive.content)
+          assertEquals("owned-runtime-relay", result["sessionId"]!!.jsonPrimitive.content)
+          assertEquals("accepted result", result["result"]!!.jsonObject["text"]!!.jsonPrimitive.content)
+        }
+        awaitState { frames.any { it["method"]?.jsonPrimitive?.content == "talk.session.close" } }
+        assertEquals(
+          "owned-runtime-relay",
+          frames
+            .single { it["method"]?.jsonPrimitive?.content == "talk.session.close" }["params"]!!
+            .jsonObject["sessionId"]!!
+            .jsonPrimitive.content,
+        )
+        // Relay run cancellation belongs to server-side close, not client chat.abort.
+        assertFalse(frames.any { it["method"]?.jsonPrimitive?.content == "chat.abort" })
+        println("selection-relay acceptedResult=1 close=1 clientAbort=0")
+      }
+    }
+
   @Test
   fun chatSelectionRetirementSerializesClientConsultFinalAdmission() =
     runBlocking {
@@ -314,6 +472,7 @@ class NodeRuntimeTalkOwnershipTest {
                       "talk.catalog" -> if (webRtc) """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["webrtc"]}]}}""" else """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["gateway-relay"]}]}}"""
                       "talk.client.create" -> """{"provider":"openai","transport":"webrtc","voiceSessionId":"owned-runtime-client","clientSecret":"synthetic-offer","offerUrl":"/plugins/openai/realtime/calls","model":"synthetic-voice-model","voice":"synthetic-voice","controlSource":"transcript"}"""
                       "talk.session.create" -> """{"relaySessionId":"owned-runtime-relay"}"""
+                      "talk.client.toolCall" -> if (webRtc) "{}" else """{"runId":"runtime-run","agentSessionKey":"agent:work:a"}"""
                       "chat.history" -> """{"messages":[]}"""
                       "sessions.list" -> """{"sessions":[]}"""
                       else -> "{}"

@@ -1286,7 +1286,16 @@ class TalkModeManager internal constructor(
               relaySessionId = sessionId,
               sessionKey = callKey,
               agentId = target.agentId,
-              requestGateway = { method, params, timeout -> target.request(method, params, timeout) },
+              requestGateway = { method, params, timeout ->
+                target.request(method, params, timeout) { enqueue ->
+                  // New agent work needs selection authority; provider-owned tool results still settle.
+                  if (method == "talk.client.toolCall" || method == "talk.session.steer") {
+                    withCurrentStart(generation, enqueue)
+                  } else {
+                    enqueue()
+                  }
+                }
+              },
             ),
           )
           realtimeSessionId = sessionId
