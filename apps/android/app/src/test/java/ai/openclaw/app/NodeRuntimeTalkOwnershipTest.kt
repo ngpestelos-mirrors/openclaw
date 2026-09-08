@@ -3,6 +3,8 @@ package ai.openclaw.app
 import ai.openclaw.app.chat.ChatController
 import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewaySession
+import ai.openclaw.app.node.TalkCameraPreview
+import ai.openclaw.app.node.TalkPreviewViewShadow
 import ai.openclaw.app.voice.RealtimeAgentCoordinator
 import ai.openclaw.app.voice.RealtimeAgentSession
 import ai.openclaw.app.voice.StartupDataChannel
@@ -17,7 +19,9 @@ import ai.openclaw.app.voice.VoiceWakeManager
 import ai.openclaw.app.voice.VoiceWakeSuppressionReason
 import android.Manifest
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Looper
+import androidx.camera.view.PreviewView
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -45,6 +49,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
 import org.robolectric.util.ReflectionHelpers
 import org.webrtc.SessionDescription
 import java.lang.management.ManagementFactory
@@ -55,8 +60,169 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
+@Config(sdk = [34], shadows = [TalkPreviewViewShadow::class, StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
 class NodeRuntimeTalkOwnershipTest {
+  @Test fun cameraFinalAdmissionAllowsCurrentImage() = assertCameraFinalAdmission("allowed")
+
+  @Test fun cameraFinalAdmissionRejectsRetiredSelection() = assertCameraFinalAdmission("selection")
+
+  @Test fun cameraFinalAdmissionRejectsRetiredGateway() = assertCameraFinalAdmission("gateway")
+
+  @Test fun cameraFinalAdmissionRejectsRetiredCapture() = assertCameraFinalAdmission("capture")
+
+  @Test fun cameraFinalAdmissionRejectsRetiredLogicalCall() = assertCameraFinalAdmission("logical")
+
+  @Test fun cameraFinalAdmissionRejectsReplacedPreview() = assertCameraFinalAdmission("camera")
+
+  @Test fun cameraFinalAdmissionRejectsReplacedOperation() = assertCameraFinalAdmission("camera-operation")
+
+  @Test fun cameraFinalAdmissionSerializesPhysicalRetirement() = assertCameraFinalAdmission("gateway-during-send")
+
+  @Test fun cameraFinalAdmissionRejectsRetiredToolOutput() = assertCameraFinalAdmission("tool-output")
+
+  @Test fun cameraFinalAdmissionRejectsRetiredResponse() = assertCameraFinalAdmission("response")
+
+  private fun assertCameraFinalAdmission(schedule: String) =
+    runBlocking {
+      withRuntime(webRtc = true) { runtime, manager, _ ->
+        StartupPeerConnection.reset()
+        StartupDataChannel.reset()
+        runtime.setTalkModeEnabled(true)
+        awaitState { StartupPeerConnection.offerCreated.isCompleted }
+        StartupPeerConnection.offerCreated.await().onCreateSuccess(SessionDescription(SessionDescription.Type.OFFER, "v=0"))
+        StartupDataChannel.open()
+        awaitState { manager.isListening.value }
+        val client = field<TalkRealtimeClient>(manager, "realtimeClient")
+        val gateway = field<GatewaySession>(runtime, "operatorSession")
+        val lease = checkNotNull(gateway.captureRequestLease())
+        val connection = field<Any>(gateway, "currentConnection")
+        val chat = field<ChatController>(runtime, "chat")
+        val locks = listOf(field<Any>(gateway, "lifecycleLock"), field<Any>(chat, "gatewayScopeApplyLock"), field<Any>(manager, "realtimeCapturePauseLock"), field<Any>(client, "callLifecycleLock"))
+        val view = Shadow.newInstanceOf(PreviewView::class.java)
+        val bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        Shadow.extract<TalkPreviewViewShadow>(view).frame = bitmap
+        val camera = TalkCameraPreview(view, AutoCloseable {}) { true }
+        ReflectionHelpers.setField(client, "camera", camera)
+        var stateRead = false
+        var stateReads = 0
+        val retireAtRead =
+          when (schedule) {
+            "tool-output" -> 2
+            "response" -> 3
+            else -> 1
+          }
+        val admissionAtSend = mutableListOf<Boolean>()
+        var readyDuringSend: Boolean? = null
+        var retirement: Thread? = null
+        val retirementDone = CountDownLatch(1)
+        val retirementError = AtomicReference<Throwable>()
+
+        fun retireGateway() {
+          val socket = field<WebSocket?>(connection, "socket")
+          connection.javaClass
+            .getDeclaredMethod("finishTransport", String::class.java, Throwable::class.java)
+            .apply { isAccessible = true }
+            .invoke(connection, "fixture retirement", IllegalStateException("fixture retirement"))
+          socket?.cancel()
+        }
+        StartupDataChannel.onStateRead = {
+          stateRead = true
+          stateReads++
+          if (stateReads == retireAtRead) {
+            // The last SDK readiness read is after capture and the old caller currency check.
+            // These invoke actual retirement producers; normal runtime cleanup is held below.
+            when (schedule) {
+              "selection", "tool-output", "response" -> {
+                chat.switchSession("agent:work:b", "work")
+              }
+
+              "gateway" -> {
+                retireGateway()
+              }
+
+              "capture" -> {
+                manager.setEnabled(false)
+              }
+
+              "logical" -> {
+                client.javaClass
+                  .getDeclaredMethod("retire")
+                  .apply { isAccessible = true }
+                  .invoke(client)
+              }
+
+              "camera" -> {
+                ReflectionHelpers.setField(client, "camera", null)
+              }
+
+              "camera-operation" -> {
+                ReflectionHelpers.setField(client, "cameraOperation", field<Long>(client, "cameraOperation") + 1)
+              }
+            }
+          }
+        }
+        StartupDataChannel.onSend = { message ->
+          admissionAtSend.add(locks.all(Thread::holdsLock))
+          if (schedule == "gateway-during-send" && message.contains("input_image")) {
+            retirement =
+              Thread {
+                try {
+                  retireGateway()
+                } catch (error: Throwable) {
+                  retirementError.set(error)
+                } finally {
+                  retirementDone.countDown()
+                }
+              }.also { it.start() }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+            while (retirementDone.count != 0L) {
+              val info = ManagementFactory.getThreadMXBean().getThreadInfo(retirement.threadId())
+              if (info?.lockInfo?.identityHashCode == System.identityHashCode(locks.first()) && info.threadState == Thread.State.BLOCKED) break
+              check(System.nanoTime() < deadline) { "Physical retirement neither finished nor waited for admission" }
+              Thread.yield()
+            }
+            readyDuringSend = lease.isCurrent()
+          }
+        }
+        try {
+          synchronized(field<Any>(runtime, "voiceCaptureOwnershipLock")) {
+            StartupDataChannel.message("""{"type":"response.done","response":{"id":"camera-final","status":"completed","output":[{"type":"function_call","status":"completed","call_id":"view-final","name":"describe_view","arguments":"{}"}]}}""")
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+            while (!stateRead) {
+              shadowOf(Looper.getMainLooper()).idle()
+              check(System.nanoTime() < deadline) { "Camera never reached final SDK readiness" }
+              Thread.yield()
+            }
+            // Main has drained the image coroutine; no wall-clock guess is used for absence.
+            shadowOf(Looper.getMainLooper()).idle()
+            retirement?.join(8_000)
+            assertFalse(retirement?.isAlive == true)
+            retirementError.get()?.let { throw it }
+            val images = StartupDataChannel.sent.count { it.contains("input_image") }
+            val expected = if (schedule in listOf("allowed", "gateway-during-send", "tool-output", "response")) 1 else 0
+            println("camera-final schedule=$schedule images=$images locked=$admissionAtSend readyDuringSend=$readyDuringSend")
+            assertTrue(bitmap.isRecycled)
+            assertEquals("Captured image must respect final $schedule admission", expected, images)
+            assertTrue("Every new DataChannel effect must retain physical/selection/capture/call locks", admissionAtSend.all { it })
+            if (schedule == "allowed") {
+              assertEquals(1, StartupDataChannel.sent.count { it.contains("function_call_output") })
+              assertEquals(1, StartupDataChannel.sent.count { it.contains("response.create") })
+            }
+            if (schedule == "gateway-during-send") assertEquals(true, readyDuringSend)
+            if (schedule in listOf("tool-output", "response")) {
+              assertEquals(if (schedule == "response") 1 else 0, StartupDataChannel.sent.count { it.contains("function_call_output") })
+              assertEquals(0, StartupDataChannel.sent.count { it.contains("response.create") })
+            }
+          }
+        } finally {
+          StartupDataChannel.onStateRead = null
+          StartupDataChannel.onSend = null
+          retirement?.join(8_000)
+          camera.close()
+        }
+      }
+    }
+
   @Test
   fun startupSdpContinuationsRequireCurrentSelection() =
     runBlocking {
@@ -710,7 +876,7 @@ class NodeRuntimeTalkOwnershipTest {
                     when (request["method"]?.jsonPrimitive?.content) {
                       "connect" -> """{"features":{"methods":[],"capabilities":["talk-session-target-v1"]},"auth":{"scopes":["operator.admin","operator.read","operator.write"]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:work:main","mainKey":"main"}}}"""
                       "talk.config" -> if (webRtc) """{"config":{"talk":{"realtime":{"mode":"realtime","transport":"webrtc"}}}}""" else """{"config":{"talk":{"realtime":{"mode":"realtime","transport":"gateway-relay"}}}}"""
-                      "talk.catalog" -> if (webRtc) """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["webrtc"]}]}}""" else """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["gateway-relay"]}]}}"""
+                      "talk.catalog" -> if (webRtc) """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["webrtc"],"supportsVideoFrames":true}]}}""" else """{"realtime":{"activeProvider":"openai","providers":[{"id":"openai","transports":["gateway-relay"]}]}}"""
                       "talk.client.create" -> """{"provider":"openai","transport":"webrtc","voiceSessionId":"owned-runtime-client","clientSecret":"synthetic-offer","offerUrl":"/plugins/openai/realtime/calls","model":"synthetic-voice-model","voice":"synthetic-voice","controlSource":"transcript"}"""
                       "talk.session.create" -> """{"relaySessionId":"owned-runtime-relay"}"""
                       "talk.client.toolCall" -> if (webRtc) "{}" else """{"runId":"runtime-run","agentSessionKey":"agent:work:a"}"""

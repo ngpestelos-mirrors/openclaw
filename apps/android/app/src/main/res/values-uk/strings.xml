@@ -30,6 +30,7 @@
     <string name="native_009506aeb0484b2a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Дозвіл надано та збережено."</string>
     <string name="native_00d108e2e6466940" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Показати історію останніх викликів"</string>
     <string name="native_00e8aeba41d79ce3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"1 очікує"</string>
+    <string name="native_010cb16676d447c8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Камера недоступна. Надайте доступ до камери й закрийте інші вікна, що використовують камеру, а потім повторіть спробу."</string>
     <string name="native_010f6550a1c8f554" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Непідтримуване вкладення"</string>
     <string name="native_01267be21eb77392" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"0 = точно"</string>
     <string name="native_0138259aa2e15ead" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Не вдалося відновити останній чат. Виберіть чат на бічній панелі."</string>
@@ -219,6 +220,7 @@
     <string name="native_1f5bb9791a310e13" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"hide"</string>
     <string name="native_1f64fff08d787e73" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"runs"</string>
     <string name="native_1f7fb11b1887a589" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Потрібен пароль Gateway. Введіть його ще раз або змініть це підключення."</string>
+    <string name="native_2050f56db225c04a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Вимкнути камеру"</string>
     <string name="native_205dac381e0872e8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Текст події"</string>
     <string name="native_2065cc867eba1b39" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Не вдалося завантажити конфігурацію моделі постачальника."</string>
     <string name="native_207ccb22d618db05" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s застосунку дозволено пересилання."</string>
@@ -470,6 +472,7 @@
     <string name="native_43db639fb5a5acc4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Налаштувати Gateway"</string>
     <string name="native_43e3c3b1379bb838" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Відтворити відео"</string>
     <string name="native_4408aaecc2b1470d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Збережені дані автентифікації недійсні. Пройдіть автентифікацію повторно або скиньте це підключення до Gateway."</string>
+    <string name="native_4415fc73930f783c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Використовувати фронтальну камеру"</string>
     <string name="native_44173ba2044fb22f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Під час використання"</string>
     <string name="native_4441146b0fe1d5c6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"screenshot"</string>
     <string name="native_447575533b63241f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Повернутися до цього моменту"</string>
@@ -556,6 +559,7 @@
     <string name="native_526e0087cc3f254d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Опис"</string>
     <string name="native_529ef4c48988f2fb" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Нещодавні розмови"</string>
     <string name="native_52aadec039d80320" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Ваш телефон надсилає цю інформацію до вашого Gateway, а не на сервер OpenClaw. Ваш Gateway може включати її в запити до вибраного вами постачальника ШІ."</string>
+    <string name="native_52b6d96ce86df5f3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Використовувати задню камеру"</string>
     <string name="native_52bfe584a5fc4505" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Доставлення"</string>
     <string name="native_52d200a2d9f278ad" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Вимкнути звук динаміка"</string>
     <string name="native_52d9f53cde594ded" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s Виконується · %2$s Завершено · %3$s Невдало"</string>
@@ -1015,6 +1019,7 @@
     <string name="native_953a8bd0a18d7a3d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Ласкаво просимо до OpenClaw"</string>
     <string name="native_958074a2ffa6bae8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Керувати іншими застосунками"</string>
     <string name="native_95d0536838bd0e14" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Індекс сигналів"</string>
+    <string name="native_95e9fb569c93eb7b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Увімкнути камеру"</string>
     <string name="native_95f20b63460b030c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Введіть секрет…"</string>
     <string name="native_966dccd25d82bd2a" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"скажи OpenClaw: %1$s"</string>
     <string name="native_96a5ba634bfc2ed4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Виявлено"</string>

@@ -30,6 +30,7 @@
     <string name="native_009506aeb0484b2a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Persetujuan diberikan dan disimpan."</string>
     <string name="native_00d108e2e6466940" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Tampilkan riwayat panggilan terbaru"</string>
     <string name="native_00e8aeba41d79ce3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"1 tertunda"</string>
+    <string name="native_010cb16676d447c8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Kamera tidak tersedia. Izinkan akses kamera dan tutup tampilan kamera lainnya, lalu coba lagi."</string>
     <string name="native_010f6550a1c8f554" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Lampiran tidak didukung"</string>
     <string name="native_01267be21eb77392" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"0 = persis"</string>
     <string name="native_0138259aa2e15ead" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Tidak dapat memulihkan percakapan terakhir. Pilih percakapan dari bilah samping."</string>
@@ -219,6 +220,7 @@
     <string name="native_1f5bb9791a310e13" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"hide"</string>
     <string name="native_1f64fff08d787e73" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"runs"</string>
     <string name="native_1f7fb11b1887a589" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Kata sandi Gateway diperlukan. Masukkan kembali atau edit koneksi ini."</string>
+    <string name="native_2050f56db225c04a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Matikan kamera"</string>
     <string name="native_205dac381e0872e8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Teks peristiwa"</string>
     <string name="native_2065cc867eba1b39" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Tidak dapat memuat konfigurasi model penyedia."</string>
     <string name="native_207ccb22d618db05" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s aplikasi diizinkan meneruskan."</string>
@@ -470,6 +472,7 @@
     <string name="native_43db639fb5a5acc4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Siapkan Gateway"</string>
     <string name="native_43e3c3b1379bb838" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Putar video"</string>
     <string name="native_4408aaecc2b1470d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Autentikasi tersimpan tidak valid. Lakukan autentikasi ulang atau atur ulang koneksi Gateway ini."</string>
+    <string name="native_4415fc73930f783c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Gunakan kamera depan"</string>
     <string name="native_44173ba2044fb22f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Saat Digunakan"</string>
     <string name="native_4441146b0fe1d5c6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"screenshot"</string>
     <string name="native_447575533b63241f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Kembalikan ke sini"</string>
@@ -556,6 +559,7 @@
     <string name="native_526e0087cc3f254d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Deskripsi"</string>
     <string name="native_529ef4c48988f2fb" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Percakapan terbaru"</string>
     <string name="native_52aadec039d80320" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Ponsel Anda mengirimkan informasi ini ke Gateway Anda, bukan ke server yang dikelola oleh OpenClaw. Gateway Anda dapat menyertakannya dalam permintaan ke penyedia AI yang Anda pilih."</string>
+    <string name="native_52b6d96ce86df5f3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Gunakan kamera belakang"</string>
     <string name="native_52bfe584a5fc4505" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Pengiriman"</string>
     <string name="native_52d200a2d9f278ad" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Bisukan speaker"</string>
     <string name="native_52d9f53cde594ded" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s Berjalan · %2$s Selesai · %3$s Gagal"</string>
@@ -1015,6 +1019,7 @@
     <string name="native_953a8bd0a18d7a3d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Selamat datang di OpenClaw"</string>
     <string name="native_958074a2ffa6bae8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Kontrol aplikasi lain"</string>
     <string name="native_95d0536838bd0e14" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Indeks Signal"</string>
+    <string name="native_95e9fb569c93eb7b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Nyalakan kamera"</string>
     <string name="native_95f20b63460b030c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Masukkan rahasia…"</string>
     <string name="native_966dccd25d82bd2a" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"minta OpenClaw untuk %1$s"</string>
     <string name="native_96a5ba634bfc2ed4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Ditemukan"</string>

@@ -30,6 +30,7 @@
     <string name="native_009506aeb0484b2a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Udzielono zgody i zapisano decyzję."</string>
     <string name="native_00d108e2e6466940" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Pokaż historię ostatnich połączeń"</string>
     <string name="native_00e8aeba41d79ce3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"1 oczekuje"</string>
+    <string name="native_010cb16676d447c8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Kamera jest niedostępna. Zezwól na dostęp do kamery i zamknij inne widoki korzystające z kamery, a następnie spróbuj ponownie."</string>
     <string name="native_010f6550a1c8f554" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Nieobsługiwany załącznik"</string>
     <string name="native_01267be21eb77392" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"0 = dokładnie"</string>
     <string name="native_0138259aa2e15ead" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Nie udało się przywrócić ostatniego czatu. Wybierz czat z panelu bocznego."</string>
@@ -219,6 +220,7 @@
     <string name="native_1f5bb9791a310e13" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"hide"</string>
     <string name="native_1f64fff08d787e73" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"runs"</string>
     <string name="native_1f7fb11b1887a589" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Hasło Gateway jest wymagane. Wprowadź je ponownie lub edytuj to połączenie."</string>
+    <string name="native_2050f56db225c04a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Wyłącz kamerę"</string>
     <string name="native_205dac381e0872e8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Tekst zdarzenia"</string>
     <string name="native_2065cc867eba1b39" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Nie udało się wczytać konfiguracji modeli dostawcy."</string>
     <string name="native_207ccb22d618db05" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s aplikacja z zezwoleniem na przekazywanie."</string>
@@ -470,6 +472,7 @@
     <string name="native_43db639fb5a5acc4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Skonfiguruj Gateway"</string>
     <string name="native_43e3c3b1379bb838" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Odtwórz wideo"</string>
     <string name="native_4408aaecc2b1470d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Zapisane dane uwierzytelniające są nieprawidłowe. Uwierzytelnij się ponownie lub zresetuj to połączenie z Gateway."</string>
+    <string name="native_4415fc73930f783c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Użyj przedniej kamery"</string>
     <string name="native_44173ba2044fb22f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Podczas używania"</string>
     <string name="native_4441146b0fe1d5c6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"screenshot"</string>
     <string name="native_447575533b63241f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Cofnij do tego miejsca"</string>
@@ -556,6 +559,7 @@
     <string name="native_526e0087cc3f254d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Opis"</string>
     <string name="native_529ef4c48988f2fb" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Ostatnie rozmowy"</string>
     <string name="native_52aadec039d80320" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Twój telefon wysyła te informacje do Twojego Gateway, a nie na serwer obsługiwany przez OpenClaw. Twój Gateway może je dołączać do żądań wysyłanych do wybranego przez Ciebie dostawcy AI."</string>
+    <string name="native_52b6d96ce86df5f3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Użyj tylnej kamery"</string>
     <string name="native_52bfe584a5fc4505" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Dostarczenie"</string>
     <string name="native_52d200a2d9f278ad" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Wycisz głośnik"</string>
     <string name="native_52d9f53cde594ded" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s W toku · %2$s Ukończone · %3$s Nieudane"</string>
@@ -1015,6 +1019,7 @@
     <string name="native_953a8bd0a18d7a3d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Witamy w OpenClaw"</string>
     <string name="native_958074a2ffa6bae8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Steruj innymi aplikacjami"</string>
     <string name="native_95d0536838bd0e14" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Indeks Sygnałów"</string>
+    <string name="native_95e9fb569c93eb7b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Włącz kamerę"</string>
     <string name="native_95f20b63460b030c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Wprowadź sekret…"</string>
     <string name="native_966dccd25d82bd2a" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"powiedz OpenClaw, aby %1$s"</string>
     <string name="native_96a5ba634bfc2ed4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"Wykryte"</string>

@@ -16,6 +16,7 @@ internal fun createTestTalkRealtimeClient(
   onInputRequested: (String?) -> Unit = {},
   coordinator: RealtimeAgentCoordinator = RealtimeAgentCoordinator(scope, { method, params, timeout -> lease.request(method, params, timeout) }),
   isCurrent: () -> Boolean = { true },
+  supportsCamera: Boolean = false,
   onRecoverableError: (String) -> Unit = {},
 ): TalkRealtimeClient =
   TalkRealtimeClient(
@@ -25,6 +26,7 @@ internal fun createTestTalkRealtimeClient(
     sessionKey,
     coordinator,
     isCurrent,
+    supportsCamera = supportsCamera,
     onStatus = onStatus,
     onTranscript = onTranscript,
     onFailure = onFailure,

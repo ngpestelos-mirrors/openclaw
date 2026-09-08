@@ -2307,6 +2307,7 @@ class NodeRuntime private constructor(
       currentChatTarget = ::currentTalkTarget,
       currentChatSelection = { chat.selectionGeneration.value },
       withChatSelection = chat::withCurrentSelection,
+      camera = camera,
       onRequestedAudioInputChanged = { key ->
         if (_voiceCaptureMode.value == VoiceCaptureMode.TalkMode) {
           _activeAudioInputDevicePreference.value = AudioInputPreferenceState.Requested(key)
@@ -2338,6 +2339,14 @@ class NodeRuntime private constructor(
 
   val talkModeStatusText: StateFlow<String>
     get() = talkMode.statusText
+
+  internal val talkCameraCallId: StateFlow<String?> get() = talkMode.cameraCallId
+
+  internal suspend fun openTalkCamera(
+    callId: String,
+    view: androidx.camera.view.PreviewView,
+    facing: String,
+  ): AutoCloseable = talkMode.openCamera(callId, view, facing)
 
   val talkModeHasFailure: StateFlow<Boolean>
     get() = talkMode.hasFailure

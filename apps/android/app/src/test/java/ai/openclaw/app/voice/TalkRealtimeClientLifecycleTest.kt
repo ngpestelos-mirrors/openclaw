@@ -2,7 +2,11 @@ package ai.openclaw.app.voice
 
 import ai.openclaw.app.gateway.GatewayRealtimeOffer
 import ai.openclaw.app.gateway.GatewaySession
+import ai.openclaw.app.node.TalkCameraPreview
+import ai.openclaw.app.node.TalkPreviewViewShadow
+import android.graphics.Bitmap
 import android.util.Log
+import androidx.camera.view.PreviewView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,6 +43,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowLog
 import org.webrtc.SessionDescription
 import java.util.concurrent.Executors
@@ -46,7 +51,7 @@ import java.util.concurrent.Executors
 @RunWith(RobolectricTestRunner::class)
 @Config(
   sdk = [34],
-  shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class],
+  shadows = [TalkPreviewViewShadow::class, StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class],
 )
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class TalkRealtimeClientLifecycleTest {
@@ -277,6 +282,81 @@ class TalkRealtimeClientLifecycleTest {
       }
     }
 
+  @Test fun describeViewErrorsKeepCallOpenAndNextRequestSendsExactlyOneImage() =
+    runBlocking {
+      withStartedClient("transcript", supportsCamera = true) { client, failures, requests ->
+        val view = Shadow.newInstanceOf(PreviewView::class.java)
+        val frames = Shadow.extract<TalkPreviewViewShadow>(view)
+        var released = 0
+        val camera = TalkCameraPreview(view, AutoCloseable { released++ }) { true }
+        realtimeTestField(client, "camera").set(client, camera)
+        // A missing current bitmap is a camera/tool error, not a voice-call failure.
+        StartupDataChannel.message(describeViewEvent("missing"))
+        withTimeout(5_000) { while (StartupDataChannel.sent.none { it.contains("call-missing") }) yield() }
+        assertTrue(StartupDataChannel.sent.any { it.contains("Camera image unavailable") })
+        assertTrue(failures.isEmpty())
+        assertFalse(StartupPeerConnection.disposed)
+        assertFalse(requests.contains("talk.client.close"))
+        frames.frame = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        StartupDataChannel.message(describeViewEvent("image"))
+        withTimeout(5_000) { while (StartupDataChannel.sent.none { it.contains("call-image") }) yield() }
+        assertEquals(1, StartupDataChannel.sent.count { it.contains("data:image/jpeg;base64,") })
+        assertEquals(2, StartupDataChannel.sent.count { it.contains("function_call_output") })
+        assertEquals(2, frames.reads)
+        assertTrue(frames.frame!!.isRecycled)
+        assertTrue(failures.isEmpty())
+        client.close()
+        assertEquals(1, released)
+      }
+    }
+
+  @Test fun describeViewDropsFrameWhenChatOrGatewayOwnerChangesDuringCapture() =
+    runBlocking {
+      for (changeGateway in listOf(false, true)) {
+        var chatCurrent = true
+        var gatewayCurrent = true
+        withStartedClient("transcript", supportsCamera = true, isCurrent = { chatCurrent }, leaseCurrent = { gatewayCurrent }) { client, failures, _ ->
+          val view = Shadow.newInstanceOf(PreviewView::class.java)
+          val frames = Shadow.extract<TalkPreviewViewShadow>(view)
+          frames.frame = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+          frames.onRead = { if (changeGateway) gatewayCurrent = false else chatCurrent = false }
+          val camera = TalkCameraPreview(view, AutoCloseable {}) { chatCurrent && gatewayCurrent }
+          realtimeTestField(client, "camera").set(client, camera)
+          val owner = coroutineContext[Job]!!
+          val existingJobs = owner.children.toSet()
+          StartupDataChannel.message(describeViewEvent("retired"))
+          withTimeout(5_000) { while (frames.frame?.isRecycled != true) yield() }
+          // Join the actual per-call coroutine before asserting absence of late sends.
+          val toolJobs = owner.children.filter { it !in existingJobs }.toList()
+          withTimeout(5_000) { toolJobs.joinAll() }
+          assertEquals(1, frames.reads)
+          assertTrue(frames.frame!!.isRecycled)
+          assertTrue("A retired owner must send neither image nor tool output", StartupDataChannel.sent.isEmpty())
+          assertTrue(failures.isEmpty())
+        }
+      }
+    }
+
+  @Test fun stoppedCallReleasesPreviewAndRejectsLateDescribeViewCallback() =
+    runBlocking {
+      withStartedClient("transcript", supportsCamera = true) { client, failures, requests ->
+        val view = Shadow.newInstanceOf(PreviewView::class.java)
+        val frames = Shadow.extract<TalkPreviewViewShadow>(view)
+        var released = 0
+        val camera = TalkCameraPreview(view, AutoCloseable { released++ }) { true }
+        realtimeTestField(client, "camera").set(client, camera)
+        client.close()
+        assertEquals(1, released)
+        // Existing JNI shadow deliberately retains the callback after unregister/dispose.
+        StartupDataChannel.message(describeViewEvent("late"))
+        yield()
+        assertEquals(0, frames.reads)
+        assertTrue(StartupDataChannel.sent.isEmpty())
+        assertEquals(1, requests.count { it == "talk.client.close" })
+        assertTrue(failures.isEmpty())
+      }
+    }
+
   @Test fun errorOwnerCompletesConsultOnlyAfterSdkAcceptance() =
     runBlocking {
       withStartedClient("transcript", acceptedConsult = true) { client, failures, requests ->
@@ -339,6 +419,25 @@ class TalkRealtimeClientLifecycleTest {
         assertTrue(StartupDataChannel.sent.isEmpty())
         assertTrue(StartupPeerConnection.disposed)
       }
+    }
+
+  @Test fun errorOwnerContainsDescribeViewOutputSendFailure() =
+    runBlocking {
+      val escaped =
+        runCatching {
+          withStartedClient("transcript") { client, failures, _ ->
+            val owner = coroutineContext[Job]!!
+            val existing = owner.children.toSet()
+            StartupDataChannel.allowSend = false
+            StartupDataChannel.message(describeViewEvent("rejected-view"))
+            withTimeout(5_000) { while (StartupDataChannel.attempts.isEmpty()) yield() }
+            val jobs = owner.children.filter { it !in existing }.toList()
+            withTimeout(5_000) { jobs.joinAll() }
+            assertEquals(1, failures.size)
+            assertTrue((realtimeTestField(client, "toolBatch").get(client) as TalkRealtimeToolBatch).hasPending)
+          }
+        }.exceptionOrNull()
+      assertEquals("Output failure must be contained by the client owner", null, escaped)
     }
 
   @Test fun errorOwnerShowsRecoverableProviderFailure() =
@@ -461,6 +560,7 @@ class TalkRealtimeClientLifecycleTest {
   private suspend fun withStartedClient(
     controlSource: String?,
     transcriptOwner: String? = null,
+    supportsCamera: Boolean = false,
     isCurrent: () -> Boolean = { true },
     leaseCurrent: () -> Boolean = { true },
     acceptedConsult: Boolean = false,
@@ -504,7 +604,7 @@ class TalkRealtimeClientLifecycleTest {
               "{}"
             }
           })
-        val client = createTestTalkRealtimeClient(RuntimeEnvironment.getApplication(), this, lease, "main", onStatus, { _, _, _ -> }, { failures.add(it) }, isCurrent = { isCurrent() && leaseCurrent() }, onRecoverableError = onStatus)
+        val client = createTestTalkRealtimeClient(RuntimeEnvironment.getApplication(), this, lease, "main", onStatus, { _, _, _ -> }, { failures.add(it) }, isCurrent = { isCurrent() && leaseCurrent() }, supportsCamera = supportsCamera, onRecoverableError = onStatus)
         try {
           val starting = async { client.start() }
           val offer = withTimeout(5_000) { StartupPeerConnection.offerCreated.await() }

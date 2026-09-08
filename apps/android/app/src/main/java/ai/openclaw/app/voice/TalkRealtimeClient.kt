@@ -47,6 +47,7 @@ internal class TalkRealtimeClient(
   private val agent: RealtimeAgentCoordinator,
   private val isCurrent: () -> Boolean,
   agentId: String? = null,
+  private val supportsCamera: Boolean = false,
   private val onStatus: (String) -> Unit,
   private val onTranscript: (String, String, Boolean) -> Unit,
   private val onFailure: (String) -> Unit,
@@ -67,6 +68,9 @@ internal class TalkRealtimeClient(
   private val responseState = TalkRealtimeResponseState()
   private var voiceSessionId: String? = null
   private var gatewayTranscripts = false
+  private var camera: ai.openclaw.app.node.TalkCameraPreview? = null
+  private var cameraOperation = 0L
+  val cameraCallId: String? get() = voiceSessionId.takeIf { started && supportsCamera && !closed }
 
   private enum class OutputControl { Ga, Frameless }
 
@@ -161,6 +165,7 @@ internal class TalkRealtimeClient(
             JsonArray(
               buildList {
                 add(JsonPrimitive("voice-transcript"))
+                if (supportsCamera) add(JsonPrimitive("camera-frame"))
               },
             ),
           )
@@ -364,7 +369,11 @@ internal class TalkRealtimeClient(
             val admitted = runCatching { toolBatch.admit(calls.map { it.id }).toMutableSet() }.getOrElse { return fail("Realtime tool-call limit exceeded") }
             for (call in calls) {
               if (!admitted.remove(call.id)) continue
-              agent.handleToolCall(call.id, call.name, call.args, false)
+              if (call.name == "describe_view") {
+                scope.launch { describeView(call.id) }
+              } else {
+                agent.handleToolCall(call.id, call.name, call.args, false)
+              }
             }
           }
 
@@ -527,6 +536,55 @@ internal class TalkRealtimeClient(
       }
   }
 
+  suspend fun openCamera(
+    manager: ai.openclaw.app.node.CameraCaptureManager,
+    view: androidx.camera.view.PreviewView,
+    facing: String,
+  ): AutoCloseable =
+    withContext(Dispatchers.Main.immediate) {
+      check(cameraCallId != null && isCurrent()) { "This Talk call does not support camera input" }
+      val operation = ++cameraOperation
+      camera?.close()
+      camera = null
+      val acquired = manager.openTalkPreview(view, facing) { !closed && isCurrent() && cameraOperation == operation }
+      if (closed || !isCurrent() || cameraOperation != operation) {
+        acquired.close()
+        error("Talk camera request expired")
+      }
+      camera = acquired
+      AutoCloseable {
+        if (camera === acquired) {
+          cameraOperation++
+          camera = null
+        }
+        acquired.close()
+      }
+    }
+
+  private suspend fun describeView(callId: String) {
+    val current = camera
+    val operation = cameraOperation
+    val result =
+      try {
+        check(supportsCamera && current != null) { "Camera is off; enable it in Talk first" }
+        val message = current.captureMessage(peer.maxMessageBytes)
+        peer.send(message) { send ->
+          withCurrentCall {
+            // Camera mutations and this final SDK call are Main-confined. Check
+            // the sampled preview after admission callbacks, with no intervening await.
+            check(camera === current && cameraOperation == operation) { "Camera changed before the image could be sent" }
+            send()
+          }
+        }
+        buildJsonObject { put("text", "One current camera image was attached.") }
+      } catch (error: kotlinx.coroutines.CancellationException) {
+        throw error
+      } catch (_: Exception) {
+        buildJsonObject { put("error", "Camera image unavailable. Enable the camera and wait for its preview, then try again.") }
+      }
+    if (!closed && isCurrent()) submitToolResult(callId, result)
+  }
+
   private suspend fun submitToolResult(
     callId: String,
     result: JsonObject,
@@ -637,6 +695,9 @@ internal class TalkRealtimeClient(
         closing?.takeUnless { it.isCompleted && voiceSessionId != null } ?: async<Unit>(start = CoroutineStart.LAZY) {
           retire()
           snapshot = null
+          cameraOperation++
+          camera?.close()
+          camera = null
           voiceSessionId?.let { agent.endSession(it) }
           try {
             peer.close()

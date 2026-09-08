@@ -30,6 +30,7 @@
     <string name="native_009506aeb0484b2a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"อนุมัติและบันทึกแล้ว."</string>
     <string name="native_00d108e2e6466940" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"แสดงประวัติการโทรล่าสุด"</string>
     <string name="native_00e8aeba41d79ce3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"รอดำเนินการ 1 รายการ"</string>
+    <string name="native_010cb16676d447c8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ไม่สามารถใช้กล้องได้ โปรดอนุญาตให้เข้าถึงกล้องและปิดมุมมองกล้องอื่น ๆ แล้วลองอีกครั้ง"</string>
     <string name="native_010f6550a1c8f554" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ไม่รองรับไฟล์แนบนี้"</string>
     <string name="native_01267be21eb77392" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"0 = ตรงกันทุกประการ"</string>
     <string name="native_0138259aa2e15ead" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ไม่สามารถกู้คืนแชทล่าสุดได้. เลือกแชทจากแถบด้านข้าง."</string>
@@ -219,6 +220,7 @@
     <string name="native_1f5bb9791a310e13" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"hide"</string>
     <string name="native_1f64fff08d787e73" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"runs"</string>
     <string name="native_1f7fb11b1887a589" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ต้องระบุรหัสผ่าน Gateway. ป้อนรหัสผ่านอีกครั้งหรือแก้ไขการเชื่อมต่อนี้."</string>
+    <string name="native_2050f56db225c04a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ปิดกล้อง"</string>
     <string name="native_205dac381e0872e8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ข้อความเหตุการณ์"</string>
     <string name="native_2065cc867eba1b39" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ไม่สามารถโหลดการกำหนดค่าโมเดลของผู้ให้บริการได้."</string>
     <string name="native_207ccb22d618db05" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"อนุญาตให้แอป %1$s แอปส่งต่อได้."</string>
@@ -470,6 +472,7 @@
     <string name="native_43db639fb5a5acc4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ตั้งค่า Gateway"</string>
     <string name="native_43e3c3b1379bb838" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"เล่นวิดีโอ"</string>
     <string name="native_4408aaecc2b1470d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ข้อมูลการยืนยันตัวตนที่บันทึกไว้ไม่ถูกต้อง. โปรดยืนยันตัวตนอีกครั้งหรือรีเซ็ตการเชื่อมต่อ Gateway นี้."</string>
+    <string name="native_4415fc73930f783c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ใช้กล้องหน้า"</string>
     <string name="native_44173ba2044fb22f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ขณะใช้งาน"</string>
     <string name="native_4441146b0fe1d5c6" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"screenshot"</string>
     <string name="native_447575533b63241f" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ย้อนกลับมาที่นี่"</string>
@@ -556,6 +559,7 @@
     <string name="native_526e0087cc3f254d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"คำอธิบาย"</string>
     <string name="native_529ef4c48988f2fb" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"การสนทนาล่าสุด"</string>
     <string name="native_52aadec039d80320" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"โทรศัพท์ของคุณส่งข้อมูลนี้ไปยัง Gateway ของคุณ ไม่ใช่เซิร์ฟเวอร์ที่ดำเนินการโดย OpenClaw. Gateway ของคุณอาจรวมข้อมูลนี้ไว้ในคำขอที่ส่งไปยังผู้ให้บริการ AI ที่คุณเลือก."</string>
+    <string name="native_52b6d96ce86df5f3" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ใช้กล้องหลัง"</string>
     <string name="native_52bfe584a5fc4505" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"การส่ง"</string>
     <string name="native_52d200a2d9f278ad" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ปิดเสียงลำโพง"</string>
     <string name="native_52d9f53cde594ded" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"%1$s กำลังทำงาน · %2$s เสร็จสิ้น · %3$s ล้มเหลว"</string>
@@ -1015,6 +1019,7 @@
     <string name="native_953a8bd0a18d7a3d" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ยินดีต้อนรับสู่ OpenClaw"</string>
     <string name="native_958074a2ffa6bae8" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ควบคุมแอปอื่น"</string>
     <string name="native_95d0536838bd0e14" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ดัชนี Signal"</string>
+    <string name="native_95e9fb569c93eb7b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"เปิดกล้อง"</string>
     <string name="native_95f20b63460b030c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ป้อนค่าลับ…"</string>
     <string name="native_966dccd25d82bd2a" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"บอก OpenClaw ให้ %1$s"</string>
     <string name="native_96a5ba634bfc2ed4" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ค้นพบแล้ว"</string>

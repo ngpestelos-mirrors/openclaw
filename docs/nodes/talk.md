@@ -540,6 +540,12 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
   the call or resuming a paused microphone. Oversized tool results become explicit
   tool errors, not truncated answers. Unsendable results or response continuations
   end the call visibly instead of leaving it waiting indefinitely.
+- When the committed WebRTC call advertises camera support, enable its local camera
+  preview before using visual context. `describe_view` samples one current JPEG,
+  compressed to fit the complete data-channel message budget (at most 64 KiB,
+  including the JSON/base64 envelope). There is no continuous video track. An off
+  or unready preview yields a tool error; images from a retired preview or call are
+  not forwarded. Stopping or replacing the call releases its preview binding.
 - Dictation and voice-note recording stop when the app leaves the foreground or
   the user leaves Chat. Native STT/TTS and Gateway-relay AudioTrack playback support
   `pcm_16000`, `pcm_22050`, `pcm_24000`, and `pcm_44100`; WebRTC uses its negotiated audio path.

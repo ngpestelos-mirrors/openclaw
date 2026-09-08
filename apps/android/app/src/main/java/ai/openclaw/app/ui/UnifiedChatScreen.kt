@@ -2,6 +2,7 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.ui.chat.ChatScreen
+import ai.openclaw.app.ui.chat.TalkCameraControls
 import ai.openclaw.app.ui.chat.rememberChatRealtimeTalkLauncher
 import ai.openclaw.app.ui.design.ClawScaffold
 import androidx.compose.foundation.layout.Box
@@ -45,6 +46,7 @@ internal fun UnifiedChatShellScreen(
   ) {
     Column(Modifier.fillMaxSize()) {
       TalkStatusRow(talkModeEnabled, talkHasFailure, talkStatus)
+      TalkCameraControls(viewModel)
       Box(Modifier.weight(1f)) {
         ChatScreen(
           viewModel = viewModel,
