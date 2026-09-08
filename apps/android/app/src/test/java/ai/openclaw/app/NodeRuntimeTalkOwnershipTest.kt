@@ -58,6 +58,175 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34], shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
 class NodeRuntimeTalkOwnershipTest {
   @Test
+  fun delayedOfferRequiresCurrentChatSelection() =
+    runBlocking {
+      val violations = mutableListOf<String>()
+      for (retire in listOf(false, true)) {
+        val offers =
+          java.util.concurrent.atomic
+            .AtomicInteger()
+        withRuntime(webRtc = true, httpOffers = offers) { runtime, manager, frames ->
+          StartupPeerConnection.reset()
+          StartupDataChannel.reset()
+          runtime.setTalkModeEnabled(true)
+          awaitState { StartupPeerConnection.offerCreated.isCompleted }
+          val client = field<TalkRealtimeClient>(manager, "realtimeClient")
+          val peer = field<Any>(client, "peer")
+          val setup = field<CompletableDeferred<Unit>>(peer, "startup")
+          val chat = field<ChatController>(runtime, "chat")
+          val gateway = field<GatewaySession>(runtime, "operatorSession")
+          synchronized(field<Any>(runtime, "voiceCaptureOwnershipLock")) {
+            if (retire) chat.switchSession("agent:work:b", "work")
+            assertTrue("Physical Gateway remains current while selection cleanup is held", gateway.captureRequestLease()!!.isCurrent())
+            StartupPeerConnection.offer!!.onCreateSuccess(SessionDescription(SessionDescription.Type.OFFER, "v=0"))
+            StartupDataChannel.open()
+            runBlocking { awaitState { setup.isCompleted } }
+            println("offer-admission retired=$retire httpOffers=" + offers.get())
+            if (offers.get() != if (retire) 0 else 1) violations += "retired=$retire httpOffers=" + offers.get()
+          }
+          if (retire) {
+            awaitState { frames.any { it["method"]?.jsonPrimitive?.content == "talk.client.close" } }
+            assertEquals(1, frames.count { it["method"]?.jsonPrimitive?.content == "talk.client.close" })
+          }
+        }
+      }
+      assertTrue(violations.joinToString(), violations.isEmpty())
+    }
+
+  @Test fun dataChannelFinalAdmissionAllowsCurrentOutput() = assertDataChannelFinalAdmission("allowed")
+
+  @Test fun dataChannelFinalAdmissionRejectsRetiredSelection() = assertDataChannelFinalAdmission("selection")
+
+  @Test fun dataChannelFinalAdmissionRejectsRetiredGateway() = assertDataChannelFinalAdmission("gateway")
+
+  @Test fun dataChannelFinalAdmissionRejectsRetiredCapture() = assertDataChannelFinalAdmission("capture")
+
+  @Test fun dataChannelFinalAdmissionRejectsRetiredLogicalCall() = assertDataChannelFinalAdmission("logical")
+
+  @Test fun dataChannelFinalAdmissionSerializesPhysicalRetirement() = assertDataChannelFinalAdmission("gateway-during-send")
+
+  @Test fun dataChannelFinalAdmissionRejectsRetiredResponse() = assertDataChannelFinalAdmission("response")
+
+  private fun assertDataChannelFinalAdmission(schedule: String) =
+    runBlocking {
+      withRuntime(webRtc = true) { runtime, manager, _ ->
+        StartupPeerConnection.reset()
+        StartupDataChannel.reset()
+        runtime.setTalkModeEnabled(true)
+        awaitState { StartupPeerConnection.offerCreated.isCompleted }
+        StartupPeerConnection.offerCreated.await().onCreateSuccess(SessionDescription(SessionDescription.Type.OFFER, "v=0"))
+        StartupDataChannel.open()
+        awaitState { manager.isListening.value }
+        val client = field<TalkRealtimeClient>(manager, "realtimeClient")
+        val gateway = field<GatewaySession>(runtime, "operatorSession")
+        val lease = checkNotNull(gateway.captureRequestLease())
+        val connection = field<Any>(gateway, "currentConnection")
+        val chat = field<ChatController>(runtime, "chat")
+        val locks = listOf(field<Any>(gateway, "lifecycleLock"), field<Any>(chat, "gatewayScopeApplyLock"), field<Any>(manager, "realtimeCapturePauseLock"), field<Any>(client, "callLifecycleLock"))
+        var stateRead = false
+        var stateReads = 0
+        val retireAtRead = if (schedule == "response") 2 else 1
+        val admissionAtSend = mutableListOf<Boolean>()
+        var readyDuringSend: Boolean? = null
+        var retirement: Thread? = null
+        val retirementDone = CountDownLatch(1)
+        val retirementError = AtomicReference<Throwable>()
+
+        fun retireGateway() {
+          val socket = field<WebSocket?>(connection, "socket")
+          connection.javaClass
+            .getDeclaredMethod("finishTransport", String::class.java, Throwable::class.java)
+            .apply { isAccessible = true }
+            .invoke(connection, "fixture retirement", IllegalStateException("fixture retirement"))
+          socket?.cancel()
+        }
+        StartupDataChannel.onStateRead = {
+          stateRead = true
+          stateReads++
+          if (schedule == "gateway-during-send" && stateReads > 1) {
+            // The next effect runs only after the already-started physical retirement.
+            check(retirementDone.await(8, TimeUnit.SECONDS))
+          }
+          if (stateReads == retireAtRead) {
+            // The last SDK readiness read is after the old caller currency check.
+            // These invoke actual retirement producers; normal runtime cleanup is held below.
+            when (schedule) {
+              "selection", "response" -> {
+                chat.switchSession("agent:work:b", "work")
+              }
+
+              "gateway" -> {
+                retireGateway()
+              }
+
+              "capture" -> {
+                manager.setEnabled(false)
+              }
+
+              "logical" -> {
+                client.javaClass
+                  .getDeclaredMethod("retire")
+                  .apply { isAccessible = true }
+                  .invoke(client)
+              }
+            }
+          }
+        }
+        StartupDataChannel.onSend = { message ->
+          admissionAtSend.add(locks.all(Thread::holdsLock))
+          if (schedule == "gateway-during-send" && message.contains("function_call_output")) {
+            retirement =
+              Thread {
+                try {
+                  retireGateway()
+                } catch (error: Throwable) {
+                  retirementError.set(error)
+                } finally {
+                  retirementDone.countDown()
+                }
+              }.also { it.start() }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+            while (retirementDone.count != 0L) {
+              val info = ManagementFactory.getThreadMXBean().getThreadInfo(retirement.threadId())
+              if (info?.lockInfo?.identityHashCode == System.identityHashCode(locks.first()) && info.threadState == Thread.State.BLOCKED) break
+              check(System.nanoTime() < deadline) { "Physical retirement neither finished nor waited for admission" }
+              Thread.yield()
+            }
+            readyDuringSend = lease.isCurrent()
+          }
+        }
+        try {
+          synchronized(field<Any>(runtime, "voiceCaptureOwnershipLock")) {
+            StartupDataChannel.message("""{"type":"response.done","response":{"id":"tool-final","status":"completed","output":[{"type":"function_call","status":"completed","call_id":"output-final","name":"unsupported_test_tool","arguments":"{}"}]}}""")
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+            while (!stateRead) {
+              shadowOf(Looper.getMainLooper()).idle()
+              check(System.nanoTime() < deadline) { "Tool output never reached final SDK readiness" }
+              Thread.yield()
+            }
+            // Main has drained the tool coroutine; no wall-clock guess is used for absence.
+            shadowOf(Looper.getMainLooper()).idle()
+            retirement?.join(8_000)
+            assertFalse(retirement?.isAlive == true)
+            retirementError.get()?.let { throw it }
+            val outputs = StartupDataChannel.sent.count { it.contains("function_call_output") }
+            val responses = StartupDataChannel.sent.count { it.contains("response.create") }
+            val expected = if (schedule in listOf("allowed", "gateway-during-send", "response")) 1 else 0
+            println("data-channel-final schedule=$schedule outputs=$outputs responses=$responses locked=$admissionAtSend readyDuringSend=$readyDuringSend")
+            assertEquals("Tool output must respect final $schedule admission", expected, outputs)
+            assertEquals(if (schedule == "allowed") 1 else 0, responses)
+            assertTrue("Every new DataChannel effect must retain physical/selection/capture/call locks", admissionAtSend.all { it })
+            if (schedule == "gateway-during-send") assertEquals(true, readyDuringSend)
+          }
+        } finally {
+          StartupDataChannel.onStateRead = null
+          StartupDataChannel.onSend = null
+          retirement?.join(8_000)
+        }
+      }
+    }
+
+  @Test
   fun relayConsultSelectionAdmission() =
     runBlocking {
       assertRelaySelectionAdmission("talk.client.toolCall", "openclaw_agent_consult")
@@ -433,6 +602,7 @@ class NodeRuntimeTalkOwnershipTest {
 
   private suspend fun withRuntime(
     webRtc: Boolean = false,
+    httpOffers: java.util.concurrent.atomic.AtomicInteger? = null,
     block: suspend (NodeRuntime, TalkModeManager, ConcurrentLinkedQueue<JsonObject>) -> Unit,
   ) {
     val app = RuntimeEnvironment.getApplication() as NodeApp
@@ -446,6 +616,7 @@ class NodeRuntimeTalkOwnershipTest {
       object : Dispatcher() {
         override fun dispatch(request: RecordedRequest): MockResponse =
           if (request.path == "/plugins/openai/realtime/calls") {
+            httpOffers?.incrementAndGet()
             MockResponse().setBody("v=0")
           } else {
             MockResponse().withWebSocketUpgrade(

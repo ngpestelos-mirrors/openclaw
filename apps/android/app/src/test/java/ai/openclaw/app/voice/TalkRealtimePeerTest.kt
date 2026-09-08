@@ -241,6 +241,7 @@ class StartupDataChannel {
     val attempts = mutableListOf<String>()
     var allowSend = true
     var onSend: ((String) -> Unit)? = null
+    var onStateRead: (() -> Unit)? = null
 
     fun message(payload: String) {
       observer!!.onMessage(DataChannel.Buffer(java.nio.ByteBuffer.wrap(payload.toByteArray()), false))
@@ -258,6 +259,7 @@ class StartupDataChannel {
       attempts.clear()
       allowSend = true
       onSend = null
+      onStateRead = null
     }
   }
 
@@ -265,7 +267,10 @@ class StartupDataChannel {
     observer = value
   }
 
-  @Implementation fun state(): DataChannel.State = state
+  @Implementation fun state(): DataChannel.State {
+    onStateRead?.invoke()
+    return state
+  }
 
   @Implementation fun send(buffer: DataChannel.Buffer): Boolean {
     val bytes = ByteArray(buffer.data.remaining())

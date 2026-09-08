@@ -208,7 +208,7 @@ internal class TalkRealtimeClient(
             agentId = wireTarget.agentId,
           ),
         )
-        peer.start { offer -> route.exchange(secret, headers, offer) }
+        peer.start { offer -> route.exchange(secret, headers, offer, ::withCurrentCall) }
         check(!closed && isCurrent() && wireTarget.lease.isCurrent()) { "Realtime call replaced during setup" }
         if (!closed) {
           started = true
@@ -554,7 +554,7 @@ internal class TalkRealtimeClient(
             encode(buildJsonObject { put("error", "Tool result exceeds the Realtime message budget") })
           }
         }
-      peer.send(output)
+      peer.send(output, ::withCurrentCall)
       if (toolBatch.complete(callId) == true) sendResponse()
     } catch (error: kotlinx.coroutines.CancellationException) {
       throw error
@@ -572,6 +572,7 @@ internal class TalkRealtimeClient(
             put("type", "response.create")
             put("event_id", eventId)
           }.toString(),
+          ::withCurrentCall,
         )
       } catch (error: kotlinx.coroutines.CancellationException) {
         throw error
@@ -585,13 +586,16 @@ internal class TalkRealtimeClient(
   private suspend fun cancelResponse(id: String) {
     if (closed || !remember(cancelledResponses, id)) return
     try {
+      // These controls cancel only this peer's already-owned output. Selection
+      // retirement must not suppress cleanup; the peer still fences physical close.
       peer.send(
         buildJsonObject {
           put("type", "response.cancel")
           put("response_id", id)
         }.toString(),
+        withSend = { it() },
       )
-      peer.send("{\"type\":\"output_audio_buffer.clear\"}")
+      peer.send("{\"type\":\"output_audio_buffer.clear\"}", withSend = { it() })
     } catch (error: kotlinx.coroutines.CancellationException) {
       throw error
     } catch (_: Exception) {
@@ -620,7 +624,9 @@ internal class TalkRealtimeClient(
       }
       val id = responseState.cancel()
       if (id != null) cancelResponse(id)
-      if (id == null && responseState.responseId == null && !responseState.createInFlight && !gatewayTranscripts) peer.send("{\"type\":\"output_audio_buffer.clear\"}")
+      if (id == null && responseState.responseId == null && !responseState.createInFlight && !gatewayTranscripts) {
+        peer.send("{\"type\":\"output_audio_buffer.clear\"}", withSend = { it() })
+      }
     }
 
   suspend fun close() =

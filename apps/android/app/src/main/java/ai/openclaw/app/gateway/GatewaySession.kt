@@ -1281,9 +1281,16 @@ class GatewaySession(
 
     fun markReady(): Boolean = state.compareAndSet(ConnectionState.CONNECTING, ConnectionState.READY)
 
+    // Physical retirement and RequestLease.commitIfCurrent share one admission lock.
+    // Cancellation callbacks and transport cleanup remain outside this state transition.
+    private fun markClosed(): Boolean =
+      synchronized(lifecycleLock) {
+        state.getAndSet(ConnectionState.CLOSED) != ConnectionState.CLOSED
+      }
+
     fun closeQuietly() {
       realtimeOfferLifetime.cancel()
-      if (state.getAndSet(ConnectionState.CLOSED) != ConnectionState.CLOSED) {
+      if (markClosed()) {
         incomingMessages.close()
         if (!connectDeferred.isCompleted) {
           connectDeferred.completeExceptionally(IllegalStateException("Gateway closed"))
@@ -1301,7 +1308,7 @@ class GatewaySession(
     ) {
       if (!terminalCallbackClaimed.compareAndSet(false, true)) return
       realtimeOfferLifetime.cancel()
-      val shouldNotify = state.getAndSet(ConnectionState.CLOSED) != ConnectionState.CLOSED
+      val shouldNotify = markClosed()
       incomingMessages.close()
       // Completion handlers run synchronously and cannot own app-level disconnect cleanup.
       connectionScope.launch(Dispatchers.IO, start = CoroutineStart.ATOMIC) {

@@ -35,6 +35,7 @@ internal class GatewayRealtimeOffer(
     secret: String,
     headers: Map<String, String>,
     sdp: String,
+    withEnqueue: (() -> Unit) -> Unit = { it() },
   ): String =
     suspendCancellableCoroutine { continuation ->
       if (!isCurrent()) {
@@ -51,7 +52,7 @@ internal class GatewayRealtimeOffer(
       // before network I/O even when a canceled call is later promoted by its dispatcher.
       val retirement = lifetime?.invokeOnCompletion { call.cancel() }
       continuation.invokeOnCancellation { call.cancel() }
-      call.enqueue(
+      val callback =
         object : Callback {
           override fun onFailure(
             call: Call,
@@ -86,7 +87,18 @@ internal class GatewayRealtimeOffer(
               retirement?.dispose()
             }
           }
-        },
-      )
+        }
+      try {
+        // Admission covers only synchronous enqueue, after setup and cancellation registration.
+        // The response wait never retains the activation or logical-call locks.
+        withEnqueue {
+          check(continuation.isActive && isCurrent() && lifetime?.isActive != false) { "Realtime offer retired before enqueue" }
+          call.enqueue(callback)
+        }
+      } catch (error: Exception) {
+        retirement?.dispose()
+        call.cancel()
+        if (continuation.isActive) continuation.resumeWithException(error)
+      }
     }
 }

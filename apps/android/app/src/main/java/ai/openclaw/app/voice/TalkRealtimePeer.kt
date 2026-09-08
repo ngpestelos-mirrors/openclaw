@@ -187,14 +187,22 @@ internal class TalkRealtimePeer(
       }
     }
 
-  suspend fun send(event: String) =
-    withContext(Dispatchers.Main.immediate) {
-      val current = channel
-      check(!closed && current?.state() == DataChannel.State.OPEN) { "Realtime data channel is not open" }
-      val bytes = event.toByteArray(Charsets.UTF_8)
-      check(bytes.size <= maxMessageBytes) { "Realtime event exceeds message budget" }
-      check(current.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), false))) { "Realtime event was not sent" }
+  suspend fun send(
+    event: String,
+    withSend: (() -> Unit) -> Unit,
+  ) = withContext(Dispatchers.Main.immediate) {
+    val current = channel
+    check(!closed && current?.state() == DataChannel.State.OPEN) { "Realtime data channel is not open" }
+    val bytes = event.toByteArray(Charsets.UTF_8)
+    check(bytes.size <= maxMessageBytes) { "Realtime event exceeds message budget" }
+    val buffer = DataChannel.Buffer(ByteBuffer.wrap(bytes), false)
+    // Dispatch, SDK readiness and encoding precede admission. Retain the caller's
+    // authority only around synchronous DataChannel.send, never around setup or awaits.
+    withSend {
+      check(!closed && channel === current) { "Realtime data channel changed before send" }
+      check(current.send(buffer)) { "Realtime event was not sent" }
     }
+  }
 
   suspend fun setCaptureEnabled(enabled: Boolean) =
     withContext(Dispatchers.Main.immediate) {

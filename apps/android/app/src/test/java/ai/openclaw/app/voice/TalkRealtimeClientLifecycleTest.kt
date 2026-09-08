@@ -201,6 +201,25 @@ class TalkRealtimeClientLifecycleTest {
       }
     }
 
+  @Test fun retiredSelectionStillAllowsOwnedOutputCancellationAndClose() =
+    runBlocking {
+      var current = true
+      withStartedClient("transcript", isCurrent = { current }) { client, failures, requests ->
+        StartupDataChannel.message("""{"type":"response.created","response":{"id":"owned-output"}}""")
+        val response = realtimeTestField(client, "responseState").get(client) as TalkRealtimeResponseState
+        withTimeout(5_000) { while (response.responseId != "owned-output") yield() }
+        current = false
+        client.cancelOutput()
+        assertEquals(1, StartupDataChannel.sent.count { it.contains("response.cancel") && it.contains("owned-output") })
+        assertEquals(1, StartupDataChannel.sent.count { it.contains("output_audio_buffer.clear") })
+        assertTrue(StartupDataChannel.sent.none { it.contains("response.create") || it.contains("function_call_output") })
+        client.close()
+        assertEquals(1, requests.count { it == "talk.client.close" })
+        assertTrue(StartupPeerConnection.disposed)
+        assertTrue(failures.isEmpty())
+      }
+    }
+
   @Test fun rejectsOversizedRetainedProviderIdsBeforeToolOrTranscriptWork() =
     runBlocking {
       val oversized = "x".repeat(1025)
