@@ -3,6 +3,7 @@
 // the operator types, and optional free-text entry appends values the option
 // list does not know. Light DOM so the shared stylesheet applies.
 import WaPopup from "@awesome.me/webawesome/dist/components/popup/popup.js";
+import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeCsvOrLooseStringList } from "@openclaw/normalization-core/string-normalization";
 import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
@@ -143,7 +144,8 @@ export class MultiSelect extends OpenClawLightDomElement {
   }
 
   private activeRowIndex(rows: readonly MultiSelectRow[]): number {
-    return rows[this.activeIndex] && !rows[this.activeIndex].disabled
+    const activeRow = rows[this.activeIndex];
+    return activeRow && !activeRow.disabled
       ? this.activeIndex
       : rows.findIndex((row) => !row.disabled);
   }
@@ -263,7 +265,10 @@ export class MultiSelect extends OpenClawLightDomElement {
         if (indices.length > 0) {
           const current = indices.indexOf(this.activeRowIndex(rows));
           const step = event.key === "ArrowDown" ? 1 : indices.length - 1;
-          this.activeIndex = indices[(current + step) % indices.length];
+          this.activeIndex = expectDefined(
+            indices[(current + step) % indices.length],
+            "selectable option index",
+          );
         }
         return;
       }
