@@ -256,6 +256,25 @@ describe("project registry", () => {
     ).toBe(sourceHead);
   });
 
+  it("prunes seeded tracking refs deleted upstream during refresh", async () => {
+    const root = tempDirs.make("openclaw-project-refresh-prune-");
+    const source = await initializeRepository(root, "source");
+    await execFileAsync("git", ["-C", source, "branch", "old"]);
+    const target = path.join(root, "managed", "fixture");
+    await cloneProjectCheckout({ url: source, target });
+    await execFileAsync("git", ["-C", source, "branch", "-D", "old"]);
+    await execFileAsync("git", ["-C", source, "branch", "new"]);
+
+    await refreshProjectCheckout({ url: source, target });
+
+    await expect(
+      execFileAsync("git", ["-C", target, "rev-parse", "--verify", "origin/old"]),
+    ).rejects.toMatchObject({ code: 128 });
+    await expect(
+      execFileAsync("git", ["-C", target, "rev-parse", "--verify", "origin/new"]),
+    ).resolves.toMatchObject({ stdout: expect.stringMatching(/^[a-f0-9]{40}\n$/u) });
+  });
+
   it("rejects a record-aligned truncated ref inventory before deleting tracking refs", async () => {
     const root = tempDirs.make("openclaw-project-refresh-truncated-refs-");
     const source = await initializeRepository(root, "source");

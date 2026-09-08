@@ -224,6 +224,7 @@ export async function refreshProjectCheckout(
         "fetch",
         "--no-auto-maintenance",
         "--no-recurse-submodules",
+        "--prune",
         "--",
         input.url,
         "+refs/heads/*:refs/remotes/origin/*",
