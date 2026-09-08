@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildMacosCatalog } from "../../scripts/apple-app-i18n.ts";
 import {
   assignNativeI18nIds,
@@ -17,6 +17,11 @@ import {
   validateNativeLocaleArtifact,
 } from "../../scripts/native-app-i18n.ts";
 import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
 
 type NativeTranslationArtifact = {
   glossaryHash: string;
@@ -358,6 +363,73 @@ describe("native app i18n inventory", () => {
 
     expect(entries.map((entry) => entry.source)).toEqual(["off", "Visible choice"]);
   });
+
+  it.each(["android", "apple"] as const)("uses only %s builtins by default", (surface) => {
+    const sources = extractNativeI18nCandidates(
+      surface,
+      `apps/${surface}/Fixture.${surface === "apple" ? "swift" : "kt"}`,
+      'nativeText("Android UI"); Picker("Apple UI"); Text("Shared UI")',
+    )
+      .map((entry) => entry.source)
+      .toSorted();
+    expect(sources).toEqual([surface === "android" ? "Android UI" : "Apple UI", "Shared UI"]);
+  });
+
+  it.each(["android", "apple"] as const)(
+    "collects only %s UI call names across source surfaces",
+    async (surface) => {
+      const fixtures = {
+        android: {
+          path: "apps/android/app/src/main/java/ai/openclaw/app/i18n/NativeStrings.kt",
+          source: [
+            "@Composable fun AndroidSurfaceLabel(value: String) {}",
+            'AndroidSurfaceLabel("Android UI")',
+            'AppleSurfaceLabel("Android protocol")',
+            'Picker("Android builtin collision")',
+            'nativeText("Android native UI")',
+            'Text("assistant")',
+          ].join("\n"),
+          expected: ["Android UI", "Android native UI", "assistant"],
+        },
+        apple: {
+          path: "apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatTalkActivityViews.swift",
+          source: [
+            "func AppleSurfaceLabel(_ value: String) -> some View { Text(value) }",
+            'AppleSurfaceLabel("Apple UI")',
+            'AndroidSurfaceLabel("Apple protocol")',
+            'nativeText("Apple builtin collision")',
+            'Picker("Apple picker UI")',
+            'Text("user")',
+          ].join("\n"),
+          expected: ["Apple UI", "Apple picker UI", "user"],
+        },
+      };
+      const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+      const sources = new Map(
+        Object.values(fixtures).map((fixture) => [path.resolve(fixture.path), fixture.source]),
+      );
+      vi.mocked(readFile).mockImplementation(
+        async (file, options) =>
+          (options === "utf8" ? sources.get(String(file)) : undefined) ??
+          actual.readFile(file, options),
+      );
+      try {
+        const entries = await collectNativeI18nEntries();
+        expect(
+          entries
+            .filter(
+              (entry) =>
+                entry.surface === surface &&
+                hasSite(entry, (site) => site.path === fixtures[surface].path),
+            )
+            .map((entry) => entry.source)
+            .toSorted(),
+        ).toEqual(fixtures[surface].expected.toSorted());
+      } finally {
+        vi.mocked(readFile).mockImplementation(actual.readFile);
+      }
+    },
+  );
 
   it("collects stable Android and Apple UI entries", async () => {
     const entries = await collectNativeI18nEntries();

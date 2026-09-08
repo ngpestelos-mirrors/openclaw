@@ -114,7 +114,6 @@ internal val nativeStringResourceIds: Map<String, Int> =
     "Aborted" to R.string.native_d12da90ae086489f,
     "About" to R.string.native_4efca0d10c5feb8e,
     "Accent color" to R.string.native_baeefbad50a33e7c,
-    "Accept" to R.string.native_89713b9c9c1b8f65,
     "Access" to R.string.native_ec5ba0abb717da87,
     "Access to the Gateway device" to R.string.native_4b5adc86775abf03,
     "Accessibility executor" to R.string.native_d25ec2aa4dcc5d8f,
