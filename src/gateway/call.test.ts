@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { DeviceIdentity } from "../infra/device-identity.js";
@@ -2457,7 +2458,7 @@ describe("callGateway error details", () => {
     setLocalLoopbackGatewayConfig();
     vi.useFakeTimers();
     const response = { models: [{ provider: "fixture", id: "refreshed", name: "Refreshed" }] };
-    const pending = Promise.withResolvers<typeof response>();
+    const pending = createDeferred<typeof response>();
     helloMethods = ["models.list"];
     gatewayClientRequest = async (method, params, requestOpts) => {
       lastRequestOptions = { method, params, opts: requestOpts };
