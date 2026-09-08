@@ -146,12 +146,26 @@ async function openPullPreviewPage(deferPreview = false): Promise<{
   const card = page.locator(".github-link-hovercard");
   await pullLink.waitFor({ state: "visible" });
   // Count transient portals as well as empty mounts; settled DOM checks miss flashes.
-  await page.evaluate(() => {
+  await page.evaluate((pullHref) => {
     document.body.dataset.previewMounts = "0";
     document.body.dataset.previewEmptyMounts = "0";
+    document.body.dataset.titleTooltipMounts = "0";
     new MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.addedNodes) {
+          if (node instanceof Element && node.matches("openclaw-tooltip")) {
+            const tip = node as HTMLElement & { anchor?: Element | null; content?: string };
+            const hintedLink = tip.anchor?.closest("a");
+            // The mobile sidebar can legitimately show its own unrelated hint.
+            if (
+              (hintedLink instanceof HTMLAnchorElement && hintedLink.href.startsWith(pullHref)) ||
+              tip.content?.startsWith(pullHref)
+            ) {
+              document.body.dataset.titleTooltipMounts = String(
+                Number(document.body.dataset.titleTooltipMounts) + 1,
+              );
+            }
+          }
           if (node instanceof Element && node.matches(".github-link-hovercard")) {
             document.body.dataset.previewMounts = String(
               Number(document.body.dataset.previewMounts) + 1,
@@ -165,7 +179,7 @@ async function openPullPreviewPage(deferPreview = false): Promise<{
         }
       }
     }).observe(document.body, { childList: true, subtree: true });
-  });
+  }, PULL_HREF);
   return { card, commentLink, gateway, page, pullLink };
 }
 
@@ -211,6 +225,10 @@ describeControlUiE2e("GitHub link hover cards", () => {
       expect(await page.locator("body").getAttribute("data-preview-mounts")).toBe("0");
       expect(await pullLink.getAttribute("aria-haspopup")).toBeNull();
       await captureArtifact(page, "github-hovercard-pending-silent");
+      expect(await page.locator("openclaw-tooltip wa-tooltip[open]").count()).toBe(0);
+      expect(await page.locator("body").getAttribute("data-title-tooltip-mounts")).toBe("0");
+      expect(await pullLink.getAttribute("title")).toBeFalsy();
+      expect(await pullLink.getAttribute("href")).toBe(PULL_HREF);
 
       if (scenario.fails) {
         const error = "GitHub API rate limit exceeded (HTTP 403). Try again in 2 minutes.";
@@ -314,6 +332,8 @@ describeControlUiE2e("GitHub link hover cards", () => {
     await page.clock.runFor(300);
     expect(await card.count()).toBe(0);
     expect(await page.locator("body").getAttribute("data-preview-mounts")).toBe("0");
+    expect(await page.locator("body").getAttribute("data-title-tooltip-mounts")).toBe("0");
+    expect(await page.locator("openclaw-tooltip wa-tooltip[open]").count()).toBe(0);
     expect((await gateway.getRequests("controlUi.githubPreview")).length).toBe(1);
     expect(await pullLink.getAttribute("aria-haspopup")).toBeNull();
 
