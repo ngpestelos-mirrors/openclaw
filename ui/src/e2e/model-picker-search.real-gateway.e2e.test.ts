@@ -10,6 +10,10 @@ import {
 } from "../../../test/helpers/openclaw-test-instance.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
+import {
+  takeControlUiViewportScreenshot,
+  waitForControlUiProofSurface,
+} from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { pickerValue } from "../test-helpers/select-picker-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -192,6 +196,8 @@ suite.define(() => {
           };
           // Focus attributes and leaf labels cannot expose inline page scripts.
           const capture = async (label: string, picker: Locator) => {
+            const surface = page.locator(".cron-page");
+            await waitForControlUiProofSurface(surface, [picker]);
             const menu = await picker.evaluate((element) => {
               const rect = element.querySelector(".picker-select__menu")!.getBoundingClientRect();
               const active = document.activeElement;
@@ -209,6 +215,17 @@ suite.define(() => {
                   height: rect.height,
                   viewportWidth: innerWidth,
                   viewportHeight: innerHeight,
+                  scrollX,
+                  scrollY,
+                  visualViewport: window.visualViewport
+                    ? {
+                        width: window.visualViewport.width,
+                        height: window.visualViewport.height,
+                        offsetLeft: window.visualViewport.offsetLeft,
+                        offsetTop: window.visualViewport.offsetTop,
+                        scale: window.visualViewport.scale,
+                      }
+                    : null,
                 },
                 focused: {
                   tag: active?.tagName,
@@ -235,7 +252,10 @@ suite.define(() => {
               menu,
               accessibility: await page.locator("body").ariaSnapshot(),
             });
-            await page.screenshot({ path: path.join(directory, `${label}.png`) });
+            await fs.writeFile(
+              path.join(directory, `${label}.png`),
+              await takeControlUiViewportScreenshot(page, surface, [picker]),
+            );
             return menu;
           };
           await page.goto(url.toString());

@@ -1,4 +1,4 @@
-import { render } from "lit";
+import { html, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderModelPicker } from "./model-picker.ts";
 import type { SelectPicker } from "./select-picker.ts";
@@ -106,6 +106,77 @@ describe.runIf("__vitest_browser__" in globalThis)("searchable model menu layout
       expect(onChange).toHaveBeenCalledExactlyOnceWith("fixture/anchor");
     },
   );
+
+  it("displays a saved disabled utility model without making it selectable as primary", async () => {
+    const { page, userEvent } = await import("vitest/browser");
+    const host = document.createElement("div");
+    host.style.cssText = "width:320px;padding:24px";
+    document.body.append(host);
+    const available = [
+      "agent-backup",
+      "fallback-one",
+      "fallback-two",
+      "global-one",
+      "global-three",
+      "global-two",
+    ].map((label) => ({ value: `fixture/${label}`, label }));
+    const unavailable = {
+      value: "retired/not-offered",
+      label: "retired/not-offered",
+      disabled: true,
+    };
+    const utilityChange = vi.fn();
+    const primaryChange = vi.fn();
+    render(
+      html`
+        ${renderModelPicker({
+          id: "saved-utility",
+          label: "Utility Model",
+          value: unavailable.value,
+          options: [
+            { value: "__openclaw_automatic_utility__", label: "Auto" },
+            { value: "", label: "Disabled" },
+            ...available,
+            unavailable,
+          ],
+          onChange: utilityChange,
+        })}
+        ${renderModelPicker({
+          id: "available-primary",
+          label: "Model",
+          value: "fixture/global-three",
+          options: [
+            { value: "", label: "Select a model", disabled: true },
+            ...available,
+            unavailable,
+          ],
+          onChange: primaryChange,
+        })}
+      `,
+      host,
+    );
+    await Promise.all(
+      [...host.querySelectorAll<SelectPicker>("openclaw-select-picker")].map(
+        (picker) => picker.updateComplete,
+      ),
+    );
+    const utility = page.getByRole("button", {
+      name: "Utility Model: retired/not-offered",
+      exact: true,
+    });
+    await expect.element(utility).toBeVisible();
+    await utility.click();
+    await page.getByRole("combobox", { name: "Search", exact: true }).fill("retired/not-offered");
+    await userEvent.keyboard("{Enter}");
+    expect(utilityChange).not.toHaveBeenCalled();
+    await expect.element(utility).toHaveAccessibleName("Utility Model: retired/not-offered");
+    await page.getByRole("combobox", { name: "Search", exact: true }).fill("Auto");
+    await userEvent.keyboard("{Enter}");
+    expect(utilityChange).toHaveBeenCalledExactlyOnceWith("__openclaw_automatic_utility__");
+    await page.getByRole("button", { name: "Model: global-three", exact: true }).click();
+    await userEvent.keyboard("{End}{Enter}");
+    expect(primaryChange).toHaveBeenCalledExactlyOnceWith("fixture/global-two");
+  });
 
   it("caps an intrinsic compact menu at the phone viewport", async () => {
     const { page } = await import("vitest/browser");
