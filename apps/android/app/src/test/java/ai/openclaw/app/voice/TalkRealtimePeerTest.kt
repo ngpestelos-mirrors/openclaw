@@ -55,7 +55,7 @@ class TalkRealtimePeerTest {
       Dispatchers.setMain(StandardTestDispatcher(testScheduler))
       val failures = mutableListOf<String>()
       val peer = TalkRealtimePeer(RuntimeEnvironment.getApplication(), this, {}, { failures.add(it) })
-      val start = async { runCatching { peer.start { "v=0" } } }
+      val start = async { runCatching { peer.start({ it() }) { "v=0" } } }
       try {
         runCurrent()
         if (StartupPeerConnection.offer == null) start.await().getOrThrow()
@@ -82,7 +82,7 @@ class TalkRealtimePeerTest {
     runTest {
       Dispatchers.setMain(StandardTestDispatcher(testScheduler))
       val peer = TalkRealtimePeer(RuntimeEnvironment.getApplication(), this, {}, {})
-      val start = async { runCatching { withTimeout(1_000) { peer.start { error("No offer expected") } } } }
+      val start = async { runCatching { withTimeout(1_000) { peer.start({ it() }) { error("No offer expected") } } } }
       try {
         runCurrent()
         if (StartupPeerConnection.offer == null) start.await().getOrThrow()
@@ -102,7 +102,7 @@ class TalkRealtimePeerTest {
     runTest {
       Dispatchers.setMain(StandardTestDispatcher(testScheduler))
       val peer = TalkRealtimePeer(RuntimeEnvironment.getApplication(), this, {}, {})
-      val start = async { runCatching { peer.start { error("SDP creation has not completed") } } }
+      val start = async { runCatching { peer.start({ it() }) { error("SDP creation has not completed") } } }
       try {
         runCurrent()
         if (StartupPeerConnection.offer == null) start.await().getOrThrow()
@@ -125,7 +125,7 @@ class TalkRealtimePeerTest {
     runTest {
       Dispatchers.setMain(StandardTestDispatcher(testScheduler))
       val peer = TalkRealtimePeer(RuntimeEnvironment.getApplication(), this, {}, {})
-      val start = async { runCatching { peer.start { error("SDP creation has not completed") } } }
+      val start = async { runCatching { peer.start({ it() }) { error("SDP creation has not completed") } } }
       try {
         runCurrent()
         if (StartupPeerConnection.offer == null) start.await().getOrThrow()
@@ -181,12 +181,16 @@ class StartupPeerConnection {
     var observer: PeerConnection.Observer? = null
     var offer: SdpObserver? = null
     var offerCreated = CompletableDeferred<SdpObserver>()
+    var onLocalDescription: (() -> Unit)? = null
+    var onRemoteDescription: (() -> Unit)? = null
     var disposed = false
 
     fun reset() {
       observer = null
       offer = null
       offerCreated = CompletableDeferred()
+      onLocalDescription = null
+      onRemoteDescription = null
       disposed = false
     }
   }
@@ -203,6 +207,7 @@ class StartupPeerConnection {
     observer: SdpObserver,
     description: SessionDescription,
   ) {
+    onLocalDescription?.invoke()
     observer.onSetSuccess()
   }
 
@@ -210,6 +215,7 @@ class StartupPeerConnection {
     observer: SdpObserver,
     description: SessionDescription,
   ) {
+    onRemoteDescription?.invoke()
     observer.onSetSuccess()
   }
 

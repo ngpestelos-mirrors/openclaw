@@ -208,7 +208,7 @@ internal class TalkRealtimeClient(
             agentId = wireTarget.agentId,
           ),
         )
-        peer.start { offer -> route.exchange(secret, headers, offer, ::withCurrentCall) }
+        peer.start(::withCurrentCall) { offer -> route.exchange(secret, headers, offer, ::withCurrentCall) }
         check(!closed && isCurrent() && wireTarget.lease.isCurrent()) { "Realtime call replaced during setup" }
         if (!closed) {
           started = true

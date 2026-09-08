@@ -75,117 +75,126 @@ internal class TalkRealtimePeer(
       }
     }
 
-  suspend fun start(exchangeOffer: suspend (String) -> String) =
-    withContext(Dispatchers.Main.immediate) {
-      check(!closed && peer == null) { "Realtime peer is not available" }
-      val setup = CompletableDeferred<Unit>(coroutineContext[Job]).also { startup = it }
-      try {
-        PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions())
-        val audio =
-          JavaAudioDeviceModule
-            .builder(context)
-            .setAudioAttributes(RealtimeCommunicationAudio.playbackAttributes())
-            .setAudioRecordErrorCallback(audioRecordErrors)
-            .setAudioTrackErrorCallback(audioTrackErrors)
-            .createAudioDeviceModule()
-        audioDevice = audio
-        selectedAudioInputKey = preferredAudioInputDevice()
-        updateAudioRouting()
-        val createdFactory = PeerConnectionFactory.builder().setAudioDeviceModule(audio).createPeerConnectionFactory()
-        factory = createdFactory
-        val config =
-          PeerConnection.RTCConfiguration(emptyList()).apply {
-            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+  suspend fun start(
+    withStartup: (() -> Unit) -> Unit,
+    exchangeOffer: suspend (String) -> String,
+  ) = withContext(Dispatchers.Main.immediate) {
+    check(!closed && peer == null) { "Realtime peer is not available" }
+    val setup = CompletableDeferred<Unit>(coroutineContext[Job]).also { startup = it }
+    try {
+      PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(context).createInitializationOptions())
+      val audio =
+        JavaAudioDeviceModule
+          .builder(context)
+          .setAudioAttributes(RealtimeCommunicationAudio.playbackAttributes())
+          .setAudioRecordErrorCallback(audioRecordErrors)
+          .setAudioTrackErrorCallback(audioTrackErrors)
+          .createAudioDeviceModule()
+      audioDevice = audio
+      selectedAudioInputKey = preferredAudioInputDevice()
+      updateAudioRouting()
+      val createdFactory = PeerConnectionFactory.builder().setAudioDeviceModule(audio).createPeerConnectionFactory()
+      factory = createdFactory
+      val config =
+        PeerConnection.RTCConfiguration(emptyList()).apply {
+          sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        }
+      val createdPeer = checkNotNull(createdFactory.createPeerConnection(config, observer)) { "Could not create realtime peer" }
+      peer = createdPeer
+      createdPeer.setAudioRecording(captureEnabled)
+      createdPeer.setAudioPlayout(playbackEnabled)
+      val createdSource = createdFactory.createAudioSource(MediaConstraints())
+      source = createdSource
+      val createdTrack = createdFactory.createAudioTrack("openclaw-talk-audio", createdSource)
+      track = createdTrack
+      createdTrack.setEnabled(captureEnabled)
+      createdPeer.addTrack(createdTrack, listOf("openclaw-talk"))
+      val createdChannel = checkNotNull(createdPeer.createDataChannel("oai-events", DataChannel.Init()))
+      channel = createdChannel
+      createdChannel.registerObserver(
+        object : DataChannel.Observer {
+          override fun onBufferedAmountChange(previousAmount: Long) = Unit
+
+          override fun onStateChange() {
+            scope.launch(Dispatchers.Main.immediate) {
+              if (closed || channel !== createdChannel) return@launch
+              when (createdChannel.state()) {
+                DataChannel.State.OPEN -> ready.complete(Unit)
+                DataChannel.State.CLOSED -> fail("Realtime data channel closed")
+                else -> Unit
+              }
+            }
           }
-        val createdPeer = checkNotNull(createdFactory.createPeerConnection(config, observer)) { "Could not create realtime peer" }
-        peer = createdPeer
-        createdPeer.setAudioRecording(captureEnabled)
-        createdPeer.setAudioPlayout(playbackEnabled)
-        val createdSource = createdFactory.createAudioSource(MediaConstraints())
-        source = createdSource
-        val createdTrack = createdFactory.createAudioTrack("openclaw-talk-audio", createdSource)
-        track = createdTrack
-        createdTrack.setEnabled(captureEnabled)
-        createdPeer.addTrack(createdTrack, listOf("openclaw-talk"))
-        val createdChannel = checkNotNull(createdPeer.createDataChannel("oai-events", DataChannel.Init()))
-        channel = createdChannel
-        createdChannel.registerObserver(
-          object : DataChannel.Observer {
-            override fun onBufferedAmountChange(previousAmount: Long) = Unit
 
-            override fun onStateChange() {
-              scope.launch(Dispatchers.Main.immediate) {
-                if (closed || channel !== createdChannel) return@launch
-                when (createdChannel.state()) {
-                  DataChannel.State.OPEN -> ready.complete(Unit)
-                  DataChannel.State.CLOSED -> fail("Realtime data channel closed")
-                  else -> Unit
-                }
-              }
+          override fun onMessage(buffer: DataChannel.Buffer) {
+            callbackLock.withLock {
+              if (!acceptingCallbacks) return
+              callbacksInFlight++
             }
-
-            override fun onMessage(buffer: DataChannel.Buffer) {
+            try {
+              // WebRTC frees the native buffer after this callback returns (DataChannel.java).
+              if (buffer.binary || buffer.data.remaining() > 1_048_576) {
+                scope.launch(Dispatchers.Main.immediate) { fail("Invalid realtime event") }
+                return
+              }
+              val bytes = ByteArray(buffer.data.remaining())
+              buffer.data.get(bytes)
+              if (events.trySend(bytes.toString(Charsets.UTF_8)).isFailure) {
+                scope.launch(Dispatchers.Main.immediate) { fail("Realtime event queue overflow") }
+              }
+            } finally {
               callbackLock.withLock {
-                if (!acceptingCallbacks) return
-                callbacksInFlight++
-              }
-              try {
-                // WebRTC frees the native buffer after this callback returns (DataChannel.java).
-                if (buffer.binary || buffer.data.remaining() > 1_048_576) {
-                  scope.launch(Dispatchers.Main.immediate) { fail("Invalid realtime event") }
-                  return
-                }
-                val bytes = ByteArray(buffer.data.remaining())
-                buffer.data.get(bytes)
-                if (events.trySend(bytes.toString(Charsets.UTF_8)).isFailure) {
-                  scope.launch(Dispatchers.Main.immediate) { fail("Realtime event queue overflow") }
-                }
-              } finally {
-                callbackLock.withLock {
-                  callbacksInFlight--
-                  callbacksDrained.signalAll()
-                }
+                callbacksInFlight--
+                callbacksDrained.signalAll()
               }
             }
-          },
-        )
-        withTimeoutOrNull(30_000) {
-          val offer = CompletableDeferred<SessionDescription>()
-          createdPeer.createOffer(SdpResult(offer), MediaConstraints())
-          val local = offer.await()
+          }
+        },
+      )
+      withTimeoutOrNull(30_000) {
+        val offer = CompletableDeferred<SessionDescription>()
+        createdPeer.createOffer(SdpResult(offer), MediaConstraints())
+        val local = offer.await()
+        val localSet = CompletableDeferred<Unit>()
+        withStartup {
           checkCurrent(createdPeer)
-          val localSet = CompletableDeferred<Unit>()
           createdPeer.setLocalDescription(SdpResult(set = localSet), local)
-          localSet.await()
+        }
+        localSet.await()
+        checkCurrent(createdPeer)
+        val answer = exchangeOffer(local.description)
+        checkCurrent(createdPeer)
+        // RFC 8841: absent max-message-size is 64 KiB; zero means unbounded.
+        // Keep our own 64 KiB ceiling even when the remote endpoint allows more.
+        maxMessageBytes = answer
+          .lineSequence()
+          .firstOrNull { it.startsWith("a=max-message-size:") }
+          ?.substringAfter(":")
+          ?.trim()
+          ?.toLongOrNull()
+          ?.takeIf { it > 0 }
+          ?.coerceAtMost(65_536)
+          ?.toInt() ?: 65_536
+        val remoteSet = CompletableDeferred<Unit>()
+        // Receiving an owned HTTP answer does not authorize new native negotiation.
+        // Guard the JNI submission, never the asynchronous SDP completion wait.
+        withStartup {
           checkCurrent(createdPeer)
-          val answer = exchangeOffer(local.description)
-          checkCurrent(createdPeer)
-          // RFC 8841: absent max-message-size is 64 KiB; zero means unbounded.
-          // Keep our own 64 KiB ceiling even when the remote endpoint allows more.
-          maxMessageBytes = answer
-            .lineSequence()
-            .firstOrNull { it.startsWith("a=max-message-size:") }
-            ?.substringAfter(":")
-            ?.trim()
-            ?.toLongOrNull()
-            ?.takeIf { it > 0 }
-            ?.coerceAtMost(65_536)
-            ?.toInt() ?: 65_536
-          val remoteSet = CompletableDeferred<Unit>()
           createdPeer.setRemoteDescription(SdpResult(set = remoteSet), SessionDescription(SessionDescription.Type.ANSWER, answer))
-          remoteSet.await()
-          checkCurrent(createdPeer)
-          ready.await()
-          checkCurrent(createdPeer)
-        } ?: error("Realtime connection timed out")
-      } catch (error: Throwable) {
-        close()
-        throw error
-      } finally {
-        startup = null
-        setup.complete(Unit)
-      }
+        }
+        remoteSet.await()
+        checkCurrent(createdPeer)
+        ready.await()
+        checkCurrent(createdPeer)
+      } ?: error("Realtime connection timed out")
+    } catch (error: Throwable) {
+      close()
+      throw error
+    } finally {
+      startup = null
+      setup.complete(Unit)
     }
+  }
 
   suspend fun send(
     event: String,

@@ -58,6 +58,74 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34], shadows = [StartupPeerFactory::class, StartupPeerFactoryBuilder::class, StartupPeerConnection::class, StartupDataChannel::class, StartupMediaTrack::class, StartupMediaSource::class])
 class NodeRuntimeTalkOwnershipTest {
   @Test
+  fun startupSdpContinuationsRequireCurrentSelection() =
+    runBlocking {
+      val violations = mutableListOf<String>()
+      for (retirement in listOf("none", "offer", "answer")) {
+        val offered = CountDownLatch(1)
+        val releaseAnswer = CountDownLatch(1)
+        val localOwners = mutableListOf<Boolean>()
+        val remoteOwners = mutableListOf<Boolean>()
+        val nativeAdmission = mutableListOf<Boolean>()
+        try {
+          withRuntime(webRtc = true, beforeOfferResponse = {
+            offered.countDown()
+            check(releaseAnswer.await(8, TimeUnit.SECONDS)) { "HTTP answer was not released" }
+          }) { runtime, manager, frames ->
+            StartupPeerConnection.reset()
+            StartupDataChannel.reset()
+            runtime.setTalkModeEnabled(true)
+            awaitState { StartupPeerConnection.offerCreated.isCompleted }
+            val client = field<TalkRealtimeClient>(manager, "realtimeClient")
+            val peer = field<Any>(client, "peer")
+            val setup = field<CompletableDeferred<Unit>>(peer, "startup")
+            val chat = field<ChatController>(runtime, "chat")
+            val selection = chat.selectionGeneration.value
+            val gateway = field<GatewaySession>(runtime, "operatorSession")
+            val locks = listOf(field<Any>(gateway, "lifecycleLock"), field<Any>(chat, "gatewayScopeApplyLock"), field<Any>(manager, "realtimeCapturePauseLock"), field<Any>(client, "callLifecycleLock"))
+            StartupPeerConnection.onLocalDescription = {
+              localOwners += chat.selectionGeneration.value == selection
+              nativeAdmission += locks.all(Thread::holdsLock)
+            }
+            StartupPeerConnection.onRemoteDescription = {
+              remoteOwners += chat.selectionGeneration.value == selection
+              nativeAdmission += locks.all(Thread::holdsLock)
+            }
+            synchronized(field<Any>(runtime, "voiceCaptureOwnershipLock")) {
+              if (retirement == "offer") chat.switchSession("agent:work:b", "work")
+              StartupPeerConnection.offer!!.onCreateSuccess(SessionDescription(SessionDescription.Type.OFFER, "v=0"))
+              if (retirement != "offer") {
+                runBlocking { awaitState { offered.count == 0L } }
+                assertEquals(listOf(true), localOwners)
+                assertTrue(remoteOwners.isEmpty())
+                if (retirement == "answer") chat.switchSession("agent:work:b", "work")
+              }
+              assertTrue("Physical connection remains current", gateway.captureRequestLease()!!.isCurrent())
+              assertFalse("Runtime cleanup remains held", field<Boolean>(client, "closed"))
+              releaseAnswer.countDown()
+              StartupDataChannel.open()
+              runBlocking { awaitState { setup.isCompleted } }
+              println("startup-sdp retirement=$retirement httpEnqueued=" + (offered.count == 0L) + " localOwners=$localOwners remoteOwners=$remoteOwners admission=$nativeAdmission")
+              if (nativeAdmission.any { !it }) violations += "$retirement native submission lacked owner locks"
+              if (localOwners != if (retirement == "offer") emptyList<Boolean>() else listOf(true)) violations += "$retirement localOwners=$localOwners"
+              if (remoteOwners != if (retirement == "none") listOf(true) else emptyList<Boolean>()) violations += "$retirement remoteOwners=$remoteOwners"
+            }
+            if (retirement != "none") {
+              awaitState { frames.any { it["method"]?.jsonPrimitive?.content == "talk.client.close" } }
+              assertEquals(1, frames.count { it["method"]?.jsonPrimitive?.content == "talk.client.close" })
+              assertTrue(StartupPeerConnection.disposed)
+            }
+          }
+        } finally {
+          releaseAnswer.countDown()
+          StartupPeerConnection.onLocalDescription = null
+          StartupPeerConnection.onRemoteDescription = null
+        }
+      }
+      assertTrue(violations.joinToString(), violations.isEmpty())
+    }
+
+  @Test
   fun delayedOfferRequiresCurrentChatSelection() =
     runBlocking {
       val violations = mutableListOf<String>()
@@ -603,6 +671,7 @@ class NodeRuntimeTalkOwnershipTest {
   private suspend fun withRuntime(
     webRtc: Boolean = false,
     httpOffers: java.util.concurrent.atomic.AtomicInteger? = null,
+    beforeOfferResponse: (() -> Unit)? = null,
     block: suspend (NodeRuntime, TalkModeManager, ConcurrentLinkedQueue<JsonObject>) -> Unit,
   ) {
     val app = RuntimeEnvironment.getApplication() as NodeApp
@@ -617,6 +686,7 @@ class NodeRuntimeTalkOwnershipTest {
         override fun dispatch(request: RecordedRequest): MockResponse =
           if (request.path == "/plugins/openai/realtime/calls") {
             httpOffers?.incrementAndGet()
+            beforeOfferResponse?.invoke()
             MockResponse().setBody("v=0")
           } else {
             MockResponse().withWebSocketUpgrade(
