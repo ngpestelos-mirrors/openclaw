@@ -233,6 +233,31 @@ describe("project registry", () => {
     },
   );
 
+  it("rejects a record-aligned truncated ref inventory before deleting tracking refs", async () => {
+    const root = tempDirs.make("openclaw-project-refresh-truncated-refs-");
+    const source = await initializeRepository(root, "source");
+    const target = path.join(root, "managed", "fixture");
+    await cloneProjectCheckout({ url: source, target });
+    const commit = (await execFileAsync("git", ["-C", target, "rev-parse", "HEAD"])).stdout.trim();
+    const refNames = Array.from(
+      { length: 2_049 },
+      (_, index) => `refs/remotes/origin/${String(index).padStart(65, "0")}`,
+    );
+    await fs.writeFile(
+      path.join(target, ".git", "packed-refs"),
+      "# pack-refs with: peeled fully-peeled sorted\n" +
+        refNames.map((ref) => `${commit} ${ref}`).join("\n") +
+        "\n",
+    );
+
+    await expect(refreshProjectCheckout({ url: source, target })).rejects.toThrow(
+      "too many managed repository refs",
+    );
+    await expect(
+      execFileAsync("git", ["-C", target, "rev-parse", "--verify", refNames[0]!]),
+    ).resolves.toMatchObject({ stdout: `${commit}\n` });
+  });
+
   it("returns an existing registration for the same canonical remote without cloning", async () => {
     const root = tempDirs.make("openclaw-project-idempotent-");
     const repo = await initializeRepository(root, "existing");

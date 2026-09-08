@@ -233,6 +233,12 @@ async function readProjectRemoteRefs(
   if (result.code !== 0 || result.termination !== "exit") {
     throw new ProjectCloneError("clone_failed", "Git could not read the managed repository refs.");
   }
+  if (result.stdoutTruncatedBytes) {
+    throw new ProjectCloneError(
+      "clone_failed",
+      "Git returned too many managed repository refs to refresh safely. Remove obsolete remote branches, then retry.",
+    );
+  }
   const refs = new Map<string, string>();
   for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
     const match = /^(refs\/remotes\/origin\/\S+) ([a-f0-9]{40}|[a-f0-9]{64})(?: (\S+))?$/u.exec(
