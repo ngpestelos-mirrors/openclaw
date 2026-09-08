@@ -39,7 +39,10 @@ async function withPublishedCatalog(
 describe("models.list published inventory", () => {
   it("refuses a retired generation and permits a later current read without discovery", async () => {
     await withPublishedCatalog(async (context) => {
-      const first = expectDefined(await readPreparedCatalog(context, "main"));
+      const first = expectDefined(
+        await readPreparedCatalog(context, "main"),
+        "Published catalog fixture must supply its owner",
+      );
       let published = { ...first, isCurrent: () => false };
       const loadDeferred = vi.fn(async () => published);
       registerGatewayModelCatalogPrivateAccess(context.loadGatewayModelCatalogSnapshot, {
@@ -68,7 +71,10 @@ describe("models.list published inventory", () => {
     "reads the %s view without discovery",
     async (view) => {
       await withPublishedCatalog(async (context) => {
-        const published = expectDefined(await readPreparedCatalog(context, "main"));
+        const published = expectDefined(
+          await readPreparedCatalog(context, "main"),
+          "Published catalog fixture must supply its owner",
+        );
         const loadDeferred = vi.fn(async () => {
           throw new Error("Ordinary inventory attempted discovery");
         });
@@ -88,7 +94,10 @@ describe("models.list published inventory", () => {
 
   it("reports a missing published owner without starting acquisition", async () => {
     await withPublishedCatalog(async (context) => {
-      const published = expectDefined(await readPreparedCatalog(context, "main"));
+      const published = expectDefined(
+        await readPreparedCatalog(context, "main"),
+        "Published catalog fixture must supply its owner",
+      );
       const loadDeferred = vi.fn(async () => published);
       registerGatewayModelCatalogPrivateAccess(context.loadGatewayModelCatalogSnapshot, {
         loadDeferred,
@@ -107,7 +116,10 @@ describe("models.list published inventory", () => {
 
   it("returns the generation published by an explicit refresh", async () => {
     await withPublishedCatalog(async (context) => {
-      let published = expectDefined(await readPreparedCatalog(context, "main"));
+      let published = expectDefined(
+        await readPreparedCatalog(context, "main"),
+        "Published catalog fixture must supply its owner",
+      );
       const refreshed = providerCatalogEntry("ollama", "refreshed-model");
       const loadDeferred = vi.fn(async () => {
         published = { ...published, entries: [refreshed], routeVariants: [refreshed] };

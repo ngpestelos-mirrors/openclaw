@@ -251,7 +251,7 @@ describe("prepared model catalog access", () => {
         loadPreparedModelCatalogOwnerSnapshot({ readOnly, refreshFullCatalog }),
       ).resolves.toMatchObject({ modelCatalog: staleCatalog });
       expect(mocks.refreshStaleCatalog).toHaveBeenCalledWith(snapshot, {
-        refresh: refreshFullCatalog === true && !readOnly,
+        refresh: !readOnly,
       });
       expect(snapshot.readFullModelCatalog).not.toHaveBeenCalled();
       expect(snapshot.loadFullModelCatalog).not.toHaveBeenCalled();

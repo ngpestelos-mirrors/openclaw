@@ -79,7 +79,7 @@ async function materializeRequestedModelCatalog(
   const inventoryCatalog =
     refreshFullCatalog === true
       ? await refreshPreparedModelRuntimeCatalog(snapshot, {
-          refresh: refreshFullCatalog === true && readOnly !== true,
+          refresh: readOnly !== true,
         })
       : undefined;
   const modelCatalog =

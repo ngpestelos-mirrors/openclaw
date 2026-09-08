@@ -5,6 +5,7 @@ import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-su
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import * as preparedCatalog from "../../agents/prepared-model-catalog.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { buildPreparedModelsProviderData, handleModelsCommand } from "./commands-models.js";
 import {
@@ -342,7 +343,7 @@ describe("handleModelsCommand", () => {
         authRequirement: "subscription",
         requestTransportOverrides: "none",
       };
-      const selected = {
+      const selected: ModelCatalogEntry = {
         provider: "openai",
         id: "gpt-5.5",
         name: "ChatGPT GPT-5.5",

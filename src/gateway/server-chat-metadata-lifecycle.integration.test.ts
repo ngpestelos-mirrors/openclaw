@@ -546,8 +546,7 @@ describe("gateway chat metadata lifecycle composition", () => {
           const retained = await prepareModelsListResult({
             source: {
               kind: "gateway",
-              context: { ...nativeContext },
-              loadGatewayModelCatalogSnapshot: loader,
+              context: { ...nativeContext, loadGatewayModelCatalogSnapshot: loader },
             },
             agentId: "main",
             params: { view: "configured", preparedOnly: true },

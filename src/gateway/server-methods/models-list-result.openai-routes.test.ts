@@ -88,7 +88,10 @@ describe("models.list OpenAI routes", () => {
   it("passes the resolved default agent to the published reader without acquisition", async () => {
     const config: OpenClawConfig = { agents: { list: [{ id: "worker", default: true }] } };
     const context = createModelsListTestContext({ agentId: "worker", cfg: config, catalog: [] });
-    const published = expectDefined(await readPreparedCatalog(context, "worker"));
+    const published = expectDefined(
+      await readPreparedCatalog(context, "worker"),
+      "Published catalog fixture must supply its owner",
+    );
     const readPrepared = vi.fn(async () => published);
     const loadDeferred = vi.fn(async () => {
       throw new Error("Ordinary inventory acquired models");

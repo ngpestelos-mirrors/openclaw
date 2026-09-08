@@ -12,6 +12,7 @@ import {
   replaceRuntimeAuthProfileStoreSnapshots,
 } from "../../agents/auth-profiles.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
+import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import type { PreparedModelRuntimeAuth } from "../../agents/prepared-model-runtime-auth.js";
 import { materializePreparedModelCatalog } from "../../agents/prepared-model-runtime.full-catalog.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
@@ -278,7 +279,8 @@ function requestModelsList(params: {
   includeProviderCapabilities?: boolean;
   deferredAuth?: Promise<PreparedModelRuntimeAuth>;
   refresh?: boolean;
-  publishedCatalog?: Array<Record<string, unknown>>;
+  publishedCatalog?: ModelCatalogEntry[];
+  catalogComplete?: boolean;
   preparedAuthModes?: PreparedModelRuntimeAuth["authModes"];
 }) {
   const respond = params.respond ?? vi.fn();
@@ -308,7 +310,7 @@ function requestModelsList(params: {
     return {
       ...owner,
       ...(loadParams?.agentId ? { agentId: loadParams.agentId } : {}),
-      catalogComplete: loadParams?.readOnly === false,
+      catalogComplete: params.catalogComplete ?? loadParams?.readOnly === false,
       entries,
       routeVariants: entries,
       authMaterializations: [],
@@ -337,13 +339,13 @@ function requestModelsList(params: {
         return published;
       }
       published = params.publishedCatalog
-        ? ({
+        ? {
             ...resolveOwnerFacts(),
             catalogComplete: false,
             entries: params.publishedCatalog,
             routeVariants: params.publishedCatalog,
             authMaterializations: [],
-          } as PreparedGatewayModelCatalogSnapshot)
+          }
         : await loadSnapshot({ agentId: params.agentId, readOnly: true });
       return published;
     },
@@ -1575,11 +1577,12 @@ describe("models.list", () => {
   });
 
   it.each([
-    { authenticated: true, available: true },
-    { authenticated: false, available: false },
+    { authenticated: true, available: true, catalogComplete: false },
+    { authenticated: false, available: false, catalogComplete: false },
+    { authenticated: false, available: false, catalogComplete: true },
   ])(
-    "projects native Claude runtime availability when authenticated=$authenticated",
-    async ({ authenticated, available }) => {
+    "projects native Claude runtime availability when authenticated=$authenticated, complete=$catalogComplete",
+    async ({ authenticated, available, catalogComplete }) => {
       await withoutAnthropicEnvAuth(async () => {
         await withModelsTestState(
           {
@@ -1607,6 +1610,7 @@ describe("models.list", () => {
               const { request, respond } = requestModelsList({
                 view: "all",
                 runtimeConfig,
+                catalogComplete,
                 preparedAuthModes: authenticated ? { "claude-cli": "api_key" } : {},
                 loadGatewayModelCatalog: vi.fn(() =>
                   Promise.resolve([
@@ -1637,7 +1641,9 @@ describe("models.list", () => {
                       },
                       available,
                       tags: ["configured"],
-                      ...(authenticated ? {} : { unavailableReason: "missing-auth" }),
+                      ...(!authenticated && catalogComplete
+                        ? { unavailableReason: "missing-auth" }
+                        : {}),
                     },
                   ],
                 },

@@ -1,12 +1,4 @@
 // Shared data shapes for model-list and model-status output.
-/** Configured model entry plus tags/aliases used by row builders. */
-export type ConfiguredEntry = {
-  key: string;
-  ref: { provider: string; model: string };
-  tags: Set<string>;
-  aliases: string[];
-};
-
 /** Render-ready model-list row. */
 export type ModelRow = {
   key: string;

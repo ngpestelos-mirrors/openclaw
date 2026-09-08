@@ -2453,6 +2453,28 @@ describe("callGateway error details", () => {
     expect(errMessage).toContain("gateway closed (1006");
   });
 
+  it("returns a catalog refresh after the passive-read deadline", async () => {
+    setLocalLoopbackGatewayConfig();
+    vi.useFakeTimers();
+    const response = { models: [{ provider: "fixture", id: "refreshed", name: "Refreshed" }] };
+    const pending = Promise.withResolvers<typeof response>();
+    helloMethods = ["models.list"];
+    gatewayClientRequest = async (method, params, requestOpts) => {
+      lastRequestOptions = { method, params, opts: requestOpts };
+      return await pending.promise;
+    };
+    const result = callGateway({
+      method: "models.list",
+      params: { refresh: true },
+      timeoutMs: 210_000,
+    });
+    const outcome = expect(result).resolves.toEqual(response);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(lastRequestOptions?.method).toBe("models.list");
+    pending.resolve(response);
+    await outcome;
+  });
+
   it("forwards caller timeout to client requests", async () => {
     setLocalLoopbackGatewayConfig();
 

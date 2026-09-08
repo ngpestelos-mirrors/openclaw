@@ -830,15 +830,18 @@ describe("prepared model catalog worker boundary", () => {
           getConfig: () => config,
           loadPublishedPreparedModelCatalogOwnerSnapshot: async () => owner,
         });
+      let published:
+        | Awaited<ReturnType<typeof loadPreparedGatewayModelCatalogSnapshot>>
+        | undefined;
       registerGatewayModelCatalogPrivateAccess(loadSnapshot, {
-        loadDeferred: (loadParams) =>
-          loadPreparedGatewayModelCatalogSnapshot({
+        loadDeferred: async (loadParams) =>
+          (published = await loadPreparedGatewayModelCatalogSnapshot({
             ...loadParams,
             getConfig: () => config,
             loadPublishedPreparedModelCatalogOwnerSnapshot: async () => owner,
             refreshAuth: true,
-          }),
-        readPrepared: async () => undefined,
+          })),
+        readPrepared: async () => published,
       });
       const context = {
         getRuntimeConfig: () => config,

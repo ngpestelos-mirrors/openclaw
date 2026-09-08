@@ -221,7 +221,7 @@ function apiKeyProviderCapabilities(params: {
   };
 }
 
-export type ModelsListCatalogSource =
+type ModelsListCatalogSource =
   | { kind: "gateway"; context: GatewayRequestContext }
   | {
       kind: "published";

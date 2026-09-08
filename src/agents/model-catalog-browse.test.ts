@@ -4,7 +4,7 @@ import { buildProviderConfigModelCatalogForBrowse } from "./model-catalog-browse
 
 describe("authored model catalog inventory", () => {
   it("builds provider-config inventory independently of picker allowlists", () => {
-    const cfg = {
+    const cfg: OpenClawConfig = {
       agents: {
         defaults: {
           models: {
@@ -15,14 +15,31 @@ describe("authored model catalog inventory", () => {
       models: {
         providers: {
           openai: {
+            baseUrl: "https://api.openai.com/v1",
             models: [
-              { id: "two", name: "Two" },
-              { id: "one", name: "One" },
+              {
+                id: "two",
+                name: "Two",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 8192,
+                maxTokens: 1024,
+              },
+              {
+                id: "one",
+                name: "One",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 8192,
+                maxTokens: 1024,
+              },
             ],
           },
         },
       },
-    } as OpenClawConfig;
+    };
 
     expect(buildProviderConfigModelCatalogForBrowse({ cfg })).toMatchObject([
       { provider: "openai", id: "one", name: "One" },

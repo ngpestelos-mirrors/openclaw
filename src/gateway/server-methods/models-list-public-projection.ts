@@ -56,7 +56,7 @@ export function buildPublicModelProjection(
 
 export function projectProviderCatalogOutcomes(
   outcomes: readonly ProviderCatalogOutcome[] | undefined,
-): readonly ModelCatalogProviderOutcome[] | undefined {
+): ModelCatalogProviderOutcome[] | undefined {
   return outcomes?.map(({ provider, profileId, status }) => ({
     provider,
     ...(profileId ? { profileId } : {}),

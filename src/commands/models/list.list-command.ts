@@ -20,6 +20,9 @@ import type { ModelRow } from "./list.types.js";
 import { loadModelsConfigWithSource } from "./load-config.js";
 import { resolveModelsTargetAgent } from "./shared.js";
 
+// The catalog worker permits three minutes; leave room for connection and result projection.
+const MODEL_CATALOG_REFRESH_TIMEOUT_MS = 210_000;
+
 function toCliModelRow(model: ModelChoice): ModelRow {
   return {
     key: modelKey(model.provider, model.id),
@@ -74,6 +77,7 @@ export async function modelsListCommand(
     result = await callGateway<ModelsListResult>({
       config: cfg,
       method: "models.list",
+      ...(opts.refresh ? { timeoutMs: MODEL_CATALOG_REFRESH_TIMEOUT_MS } : {}),
       requiredCapabilities: [GATEWAY_SERVER_CAPS.PUBLISHED_MODEL_CATALOG],
       ...(gatewayOwner ? { localPortOverride: gatewayOwner.port } : {}),
       params,

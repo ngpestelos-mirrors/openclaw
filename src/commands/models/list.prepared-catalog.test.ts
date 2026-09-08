@@ -144,6 +144,9 @@ describe("models list published transport", () => {
         },
       }),
     );
+    expect(vi.mocked(gateway.callGateway).mock.calls[0]?.[0].timeoutMs).toBe(
+      refresh ? 210_000 : undefined,
+    );
     expect(runtime.writeJson).toHaveBeenCalledWith(
       {
         count: 1,
