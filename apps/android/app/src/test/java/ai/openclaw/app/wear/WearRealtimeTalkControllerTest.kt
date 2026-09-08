@@ -15,6 +15,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertArrayEquals
@@ -636,9 +637,15 @@ class WearRealtimeTalkControllerTest {
 
       assertTrue(gatewayCalls.none { it.first == "talk.client.toolCall" })
       val steer = gatewayCalls.single { it.first == "talk.session.steer" }.second.orEmpty()
-      assertTrue(steer.contains("\"sessionId\":\"relay-1\""))
-      assertTrue(steer.contains("\"sessionKey\":\"session-a\""))
-      assertTrue(steer.contains("\"mode\":\"cancel\""))
+      // The retained relay session owns its target; do not resend chat-routing fields.
+      assertEquals(
+        buildJsonObject {
+          put("sessionId", JsonPrimitive("relay-1"))
+          put("text", JsonPrimitive("stop"))
+          put("mode", JsonPrimitive("cancel"))
+        },
+        Json.parseToJsonElement(steer),
+      )
       val result = gatewayCalls.single { it.first == "talk.session.submitToolResult" }.second.orEmpty()
       assertTrue(result.contains("\"callId\":\"control-1\""))
       assertTrue(result.contains("\"status\":\"steered\""))

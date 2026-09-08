@@ -1371,6 +1371,7 @@ internal val nativeStringResourceIds: Map<String, Int> =
     "Talk mode active" to R.string.native_3be0085a6bd88cdd,
     "Talk or dictate with OpenClaw" to R.string.native_c982ea227c415ce0,
     "Talk settings" to R.string.native_36e8d5e94219dc37,
+    "Talk: \$state — \$details" to R.string.native_c45a50b30fb21d04,
     "Tap to copy" to R.string.native_abefee79c9ed4bb3,
     "Task progress" to R.string.native_e38b9d46e21460d4,
     "Telegram, WhatsApp, email, and other channels appear here after setup." to R.string.native_2a1446dd9ce169e9,

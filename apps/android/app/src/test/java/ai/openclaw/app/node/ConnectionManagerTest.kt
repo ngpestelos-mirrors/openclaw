@@ -3,10 +3,13 @@ package ai.openclaw.app.node
 import ai.openclaw.app.BuildConfig
 import ai.openclaw.app.LocationMode
 import ai.openclaw.app.SecurePrefs
+import ai.openclaw.app.gateway.DeviceAuthStore
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.gateway.GatewayTlsParams
 import ai.openclaw.app.gateway.isLocalCleartextGatewayHost
 import ai.openclaw.app.gateway.isLoopbackGatewayHost
+import ai.openclaw.app.gateway.testDeviceIdentityStore
 import ai.openclaw.app.protocol.OpenClawCallLogCommand
 import ai.openclaw.app.protocol.OpenClawCameraCommand
 import ai.openclaw.app.protocol.OpenClawCapability
@@ -16,6 +19,23 @@ import ai.openclaw.app.protocol.OpenClawMobileUiCommand
 import ai.openclaw.app.protocol.OpenClawMotionCommand
 import ai.openclaw.app.protocol.OpenClawPhotosCommand
 import ai.openclaw.app.protocol.OpenClawSmsCommand
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -27,6 +47,72 @@ import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class ConnectionManagerTest {
+  @Test
+  fun operatorMetadataOptInReachesTheWireWithoutRequiringNewHelloFields() =
+    runBlocking {
+      val app = RuntimeEnvironment.getApplication()
+      val options = newManager().buildOperatorConnectOptions()
+      val owner = SupervisorJob()
+      val hello = CompletableDeferred<Unit>()
+      val connect = CompletableDeferred<JsonObject>()
+      val server = MockWebServer()
+      val session =
+        GatewaySession(
+          scope = CoroutineScope(owner + Dispatchers.Default),
+          identityStore = testDeviceIdentityStore(app),
+          deviceAuthStore = DeviceAuthStore(SecurePrefs(app, app.getSharedPreferences("metadata-opt-in", 0))),
+          onConnected = { hello.complete(Unit) },
+          onDisconnected = {},
+          onEvent = { _, _ -> },
+        )
+      server.enqueue(
+        MockResponse().withWebSocketUpgrade(
+          object : WebSocketListener() {
+            override fun onOpen(
+              webSocket: WebSocket,
+              response: Response,
+            ) {
+              webSocket.send("""{"type":"event","event":"connect.challenge","payload":{"nonce":"metadata-opt-in","ts":1700000000123}}""")
+            }
+
+            override fun onMessage(
+              webSocket: WebSocket,
+              text: String,
+            ) {
+              val frame = Json.parseToJsonElement(text).jsonObject
+              if (frame["method"]?.jsonPrimitive?.content != "connect") return
+              connect.complete(frame.getValue("params").jsonObject)
+              val id = frame.getValue("id").jsonPrimitive.content
+              // An older hello does not echo new client capabilities or Talk metadata.
+              webSocket.send("""{"type":"res","id":"$id","ok":true,"payload":{"features":{"methods":[]},"snapshot":{}}}""")
+            }
+
+            override fun onClosing(
+              webSocket: WebSocket,
+              code: Int,
+              reason: String,
+            ) {
+              webSocket.close(code, reason)
+            }
+          },
+        ),
+      )
+      server.start()
+      try {
+        session.connect(GatewayEndpoint.manual("127.0.0.1", server.port), "synthetic-metadata-token", null, null, options)
+        val params = withTimeout(8_000) { connect.await() }
+        assertEquals("operator", params.getValue("role").jsonPrimitive.content)
+        assertTrue(params.getValue("caps").jsonArray.any { it.jsonPrimitive.content == "talk-client-metadata" })
+        assertEquals(options.caps, params.getValue("caps").jsonArray.map { it.jsonPrimitive.content })
+        withTimeout(8_000) { hello.await() }
+        assertFalse(newManager().buildNodeConnectOptions().caps.contains("talk-client-metadata"))
+      } finally {
+        session.disconnectAndJoin()
+        owner.cancelAndJoin()
+        server.shutdown()
+      }
+    }
+
   @Test
   fun resolveTlsParamsForEndpoint_prefersStoredPinOverAdvertisedFingerprint() =
     assertTls(
@@ -174,6 +260,7 @@ class ConnectionManagerTest {
       listOf(
         ConnectionManager.AGENT_KIND_CLIENT_CAPABILITY,
         ConnectionManager.INLINE_WIDGETS_CLIENT_CAPABILITY,
+        "talk-client-metadata",
         ConnectionManager.USAGE_REFRESHING_CLIENT_CAPABILITY,
       ),
       options.caps,
@@ -187,6 +274,7 @@ class ConnectionManagerTest {
     assertEquals(
       listOf(
         ConnectionManager.AGENT_KIND_CLIENT_CAPABILITY,
+        "talk-client-metadata",
         ConnectionManager.USAGE_REFRESHING_CLIENT_CAPABILITY,
       ),
       options.caps,

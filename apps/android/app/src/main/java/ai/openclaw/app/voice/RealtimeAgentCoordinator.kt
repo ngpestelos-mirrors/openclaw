@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
@@ -15,15 +16,24 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
+internal data class RealtimeAgentClientTransport(
+  val request: suspend (String, String?, Long) -> String,
+  val submit: suspend (String, JsonObject) -> Unit,
+)
+
 internal data class RealtimeAgentSession(
   val relaySessionId: String,
   val sessionKey: String,
+  val clientTransport: RealtimeAgentClientTransport? = null,
+  val agentId: String? = null,
+  val requestGateway: (suspend (String, String?, Long) -> String)? = null,
 )
 
 private data class RealtimeAgentRun(
   val callId: String,
   val session: RealtimeAgentSession,
   val agentSessionKey: String,
+  val agentId: String? = null,
 )
 
 private data class RealtimeAgentCompletion(
@@ -62,6 +72,7 @@ private data class RealtimeAgentRunRegistration(
   val completion: RealtimeAgentCompletion?,
   val errorMessage: String?,
   val unhandled: List<RealtimeAgentUnhandledCompletion>,
+  val abort: Boolean,
 )
 
 /**
@@ -79,6 +90,7 @@ internal class RealtimeAgentCoordinator(
   private val onUnhandledCompletion: (RealtimeAgentUnhandledCompletion) -> Unit = {},
   private val maxCachedCompletions: Int = MAX_CACHED_COMPLETIONS,
 ) {
+  private val cleanupScope = parentScope
   private val json = Json { ignoreUnknownKeys = true }
   private val lock = Any()
   private val parentContext = parentScope.coroutineContext
@@ -252,12 +264,13 @@ internal class RealtimeAgentCoordinator(
       val params =
         buildJsonObject {
           put("sessionKey", JsonPrimitive(session.sessionKey))
+          session.agentId?.let { put("agentId", JsonPrimitive(it)) }
           put("callId", JsonPrimitive(callId))
           put("name", JsonPrimitive(AGENT_CONSULT_TOOL))
-          put("relaySessionId", JsonPrimitive(session.relaySessionId))
+          put(if (session.clientTransport == null) "relaySessionId" else "voiceSessionId", JsonPrimitive(session.relaySessionId))
           if (args != null) put("args", args)
         }
-      val response = requestGateway("talk.client.toolCall", params.toString(), TOOL_CALL_TIMEOUT_MILLIS)
+      val response = request(session, "talk.client.toolCall", params.toString())
       val ack = runCatching { json.parseToJsonElement(response) as? JsonObject }.getOrNull()
       val runId = ack?.get("runId").asStringOrNull()
       if (runId.isNullOrBlank()) {
@@ -268,20 +281,18 @@ internal class RealtimeAgentCoordinator(
       }
       // Stable v2026.8.1 Gateways omit the target; newer ACKs own chat correlation
       // while the original session key continues to identify the voice relay.
-      val run = RealtimeAgentRun(callId, session, ack?.get("agentSessionKey").asStringOrNull() ?: session.sessionKey)
-      if (!isPending(pendingCall)) {
-        synchronized(lock) { retireRunLocked(runId) }
-        return
-      }
+      val run = RealtimeAgentRun(callId, session, ack?.get("agentSessionKey").asStringOrNull() ?: session.sessionKey, ack?.get("agentId").asStringOrNull())
       // Surface callbacks may take their own lifecycle locks, so never invoke one
       // while holding the coordinator lock. A final racing this callback is cached
       // against the pending call and consumed immediately after registration.
-      if (isActive(session)) onWorking(session)
+      if (isActive(session) && isPending(pendingCall)) onWorking(session)
       val registration =
         synchronized(lock) {
+          // Registration or abort owns the ACK atomically, including retirement in onWorking.
+          val abort = activeSession != session
           if (!isPendingLocked(pendingCall)) {
             retireRunLocked(runId)
-            return
+            return@synchronized RealtimeAgentRunRegistration(null, null, emptyList(), abort)
           }
           val cached =
             (earlyCompletions[runId to run.agentSessionKey] ?: earlyCompletions[runId to null])
@@ -316,8 +327,10 @@ internal class RealtimeAgentCoordinator(
             completion = cached.takeIf { activeSession == session && !duplicate },
             errorMessage = errorMessage,
             unhandled = drainUnclaimedCompletionsLocked(),
+            abort = abort,
           )
         }
+      if (registration.abort) abortClientRun(runId, run)
       registration.unhandled.forEach(onUnhandledCompletion)
       if (registration.errorMessage != null) {
         submitError(session, callId, registration.errorMessage)
@@ -362,12 +375,16 @@ internal class RealtimeAgentCoordinator(
           ?.takeIf(String::isNotEmpty)
       val params =
         buildJsonObject {
-          put("sessionId", JsonPrimitive(session.relaySessionId))
-          put("sessionKey", JsonPrimitive(session.sessionKey))
+          if (session.clientTransport == null) {
+            put("sessionId", JsonPrimitive(session.relaySessionId))
+          } else {
+            put("sessionKey", JsonPrimitive(session.sessionKey))
+            session.agentId?.let { put("agentId", JsonPrimitive(it)) }
+          }
           put("text", JsonPrimitive(text.ifEmpty { "status" }))
           if (mode != null) put("mode", JsonPrimitive(mode))
         }
-      val response = requestGateway("talk.session.steer", params.toString(), TOOL_CALL_TIMEOUT_MILLIS)
+      val response = request(session, if (session.clientTransport == null) "talk.session.steer" else "talk.client.steer", params.toString())
       val result = runCatching { json.parseToJsonElement(response) as? JsonObject }.getOrNull()
       if (result == null) {
         submitError(session, callId, "control call returned no result")
@@ -457,6 +474,16 @@ internal class RealtimeAgentCoordinator(
     options: JsonObject? = null,
   ) {
     if (!isActive(session)) return
+    session.clientTransport?.let { client ->
+      try {
+        client.submit(callId, result)
+      } catch (error: CancellationException) {
+        throw error
+      } catch (_: Exception) {
+        onError(session, "Realtime tool result could not be sent")
+      }
+      return
+    }
     val params =
       buildJsonObject {
         put("sessionId", JsonPrimitive(session.relaySessionId))
@@ -465,7 +492,7 @@ internal class RealtimeAgentCoordinator(
         if (options != null) put("options", options)
       }
     try {
-      requestGateway("talk.session.submitToolResult", params.toString(), TOOL_CALL_TIMEOUT_MILLIS)
+      request(session, "talk.session.submitToolResult", params.toString())
     } catch (err: TimeoutCancellationException) {
       onError(session, "realtime submitToolResult timed out")
     } catch (err: CancellationException) {
@@ -481,7 +508,30 @@ internal class RealtimeAgentCoordinator(
 
   private fun isPendingLocked(call: RealtimeAgentPendingCall): Boolean = call in pendingCalls && !call.failed
 
+  private suspend fun request(
+    session: RealtimeAgentSession,
+    method: String,
+    params: String,
+  ): String = (session.clientTransport?.request ?: session.requestGateway ?: requestGateway)(method, params, TOOL_CALL_TIMEOUT_MILLIS)
+
+  private fun abortClientRun(
+    runId: String,
+    run: RealtimeAgentRun,
+  ) {
+    val client = run.session.clientTransport ?: return
+    cleanupScope.launch(Dispatchers.IO) {
+      val params =
+        buildJsonObject {
+          put("sessionKey", JsonPrimitive(run.agentSessionKey))
+          put("runId", JsonPrimitive(runId))
+          run.agentId?.let { put("agentId", JsonPrimitive(it)) }
+        }
+      runCatching { client.request("chat.abort", params.toString(), 5_000) }
+    }
+  }
+
   private fun clearSessionLocked(): List<RealtimeAgentUnhandledCompletion> {
+    runs.forEach { (id, run) -> abortClientRun(id, run) }
     runs.keys.forEach(::retireRunLocked)
     activeSession = null
     sessionScope?.cancel()

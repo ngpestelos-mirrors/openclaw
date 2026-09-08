@@ -1289,6 +1289,7 @@
     <string name="native_c382566dbe2ea49f" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ออนไลน์ %1$s%%"</string>
     <string name="native_c385951198c45d9c" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ไม่มีช่องทาง"</string>
     <string name="native_c420c647b0dce05a" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"การดำเนินการปฏิเสธและกักกันในเวิร์กช็อปทักษะ"</string>
+    <string name="native_c45a50b30fb21d04" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"พูดคุย: %1$s — %2$s"</string>
     <string name="native_c49240206db14522" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"โหนด &amp; อุปกรณ์"</string>
     <string name="native_c49eef4499c7913b" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"ศูนย์สั่งการภายในเครื่อง"</string>
     <string name="native_c4ad0ed067e5bcb2" formatted="false" tools:ignore="Typos,TypographyDashes,TypographyEllipsis">"emoji upload"</string>
