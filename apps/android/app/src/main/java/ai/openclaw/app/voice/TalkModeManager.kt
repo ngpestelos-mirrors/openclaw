@@ -1365,6 +1365,7 @@ class TalkModeManager internal constructor(
         key,
         realtimeAgentCoordinator,
         isCurrent = { isCurrentStart(generation) && lease.isCurrent() },
+        withAdmission = { action -> withCurrentStart(generation, action) },
         agentId = target.agentId,
         wireTarget = target,
         onStatus = { state ->

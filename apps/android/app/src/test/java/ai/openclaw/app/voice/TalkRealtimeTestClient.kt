@@ -31,4 +31,5 @@ internal fun createTestTalkRealtimeClient(
     onRecoverableError = onRecoverableError,
     preferredAudioInputDevice = preferredAudioInputDevice,
     onInputRequested = onInputRequested,
+    withAdmission = { it() },
   )

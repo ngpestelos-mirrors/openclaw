@@ -54,6 +54,7 @@ internal class TalkRealtimeClient(
   preferredAudioInputDevice: () -> String? = { null },
   onInputRequested: (String?) -> Unit = {},
   private val wireTarget: TalkWireTarget = TalkWireTarget(lease, sessionKey, agentId),
+  private val withAdmission: (() -> Unit) -> Unit,
 ) {
   // NodeRuntime owns an IO scope; all client response/lifecycle state belongs to Main.
   private val scope = CoroutineScope(scope.coroutineContext + Dispatchers.Main.immediate)
@@ -114,12 +115,14 @@ internal class TalkRealtimeClient(
       submit = ::submitToolResult,
     )
 
-  /** Physical connection admission takes its lock first; logical retirement shares only this gate. */
+  /** Physical connection -> parent selection/capture admission -> logical call retirement. */
   private fun withCurrentCall(enqueue: () -> Unit) =
-    synchronized(callLifecycleLock) {
-      // A currency callback can itself retire the call; read closed after that callback.
-      if (!isCurrent() || closed) throw GatewayRequestNotEnqueued("realtime call stopped")
-      enqueue()
+    withAdmission {
+      synchronized(callLifecycleLock) {
+        // A currency callback can itself retire the call; read closed after that callback.
+        if (!isCurrent() || closed) throw GatewayRequestNotEnqueued("realtime call stopped")
+        enqueue()
+      }
     }
 
   private fun retire(): Boolean =
