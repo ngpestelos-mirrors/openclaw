@@ -209,6 +209,57 @@ describe.runIf("__vitest_browser__" in globalThis)("searchable model menu layout
     expect(bounds.width).toBeGreaterThan(90);
   });
 
+  it.each([390, 1280])(
+    "keeps the page still when a positioned menu reopens from %i pixels",
+    async (initialWidth) => {
+      const { page, userEvent } = await import("vitest/browser");
+      await page.viewport(initialWidth, 844);
+      const host = document.createElement("div");
+      host.style.cssText =
+        "width:min(320px,calc(100vw - 48px));margin-inline:auto 24px;margin-top:300px";
+      document.body.append(host);
+      const onChange = vi.fn();
+      render(
+        renderModelPicker({
+          label: "Model",
+          value: "fixture/anchor",
+          options: [
+            "anchor",
+            "aurora-large",
+            "aurora-small",
+            "birch",
+            "cedar",
+            "delta",
+            "elm",
+            "forest",
+            "granite",
+          ].map((id) => ({ value: "fixture/" + id, label: id })),
+          onChange,
+        }),
+        host,
+      );
+      const picker = host.querySelector<SelectPicker>("openclaw-select-picker")!;
+      await picker.updateComplete;
+      const trigger = page.getByRole("button", { name: "Model: anchor", exact: true });
+      await trigger.click();
+      await expect
+        .element(page.getByRole("combobox", { name: "Search", exact: true }))
+        .toHaveFocus();
+      await userEvent.keyboard("{Escape}");
+      await expect.element(trigger).toHaveFocus();
+      await page.viewport(390, 844);
+      expect(scrollX).toBe(0);
+      await trigger.click();
+      const search = page.getByRole("combobox", { name: "Search", exact: true });
+      await expect.element(search).toHaveFocus();
+      const bounds = picker.querySelector("button")!.getBoundingClientRect();
+      expect(scrollX).toBe(0);
+      expect(bounds.left).toBeGreaterThanOrEqual(0);
+      expect(bounds.right).toBeLessThanOrEqual(innerWidth);
+      expect(onChange).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps a short menu fitted to its trigger", async () => {
     const { page } = await import("vitest/browser");
     await page.viewport(390, 844);

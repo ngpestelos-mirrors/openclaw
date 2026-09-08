@@ -99,7 +99,7 @@ export class SelectPicker<
     this.params.onOpen?.();
     void this.updateComplete.then(() => {
       if (this.mode !== "closed") {
-        this.querySelector<HTMLElement>("[data-picker-focus]")?.focus();
+        this.querySelector<HTMLElement>("[data-picker-focus]")?.focus({ preventScroll: true });
       }
     });
     return this.mode;

@@ -200,9 +200,16 @@ suite.define(() => {
             await waitForControlUiProofSurface(surface, [picker]);
             const menu = await picker.evaluate((element) => {
               const rect = element.querySelector(".picker-select__menu")!.getBoundingClientRect();
+              const triggerBounds = element.querySelector("button")!.getBoundingClientRect();
               const active = document.activeElement;
               return {
                 trigger: element.querySelector("button")?.getAttribute("aria-label"),
+                triggerBounds: {
+                  x: triggerBounds.x,
+                  y: triggerBounds.y,
+                  width: triggerBounds.width,
+                  height: triggerBounds.height,
+                },
                 expanded: element.querySelector("button")?.getAttribute("aria-expanded"),
                 query: element.querySelector<HTMLInputElement>(".picker-select__search")?.value,
                 placement: element
@@ -345,6 +352,15 @@ suite.define(() => {
           await trigger.click();
           await search.fill("no-matches-741");
           const phone = await capture("draft-phone-no-results", picker);
+          expect(phone.menu.scrollX).toBe(0);
+          expect(phone.triggerBounds.x).toBeGreaterThanOrEqual(0);
+          expect(phone.triggerBounds.x + phone.triggerBounds.width).toBeLessThanOrEqual(
+            phone.menu.viewportWidth,
+          );
+          expect(phone.triggerBounds.y).toBeGreaterThanOrEqual(0);
+          expect(phone.triggerBounds.y + phone.triggerBounds.height).toBeLessThanOrEqual(
+            phone.menu.viewportHeight,
+          );
           expect(phone.menu.x).toBeGreaterThanOrEqual(0);
           expect(phone.menu.x + phone.menu.width).toBeLessThanOrEqual(phone.menu.viewportWidth);
           expect(phone.menu.y).toBeGreaterThanOrEqual(0);
