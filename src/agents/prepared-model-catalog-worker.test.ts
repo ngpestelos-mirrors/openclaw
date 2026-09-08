@@ -58,7 +58,11 @@ describe("prepared model catalog worker input", () => {
         configuredGeneratedCatalogPluginIds: [],
         templateAuthStorage: {} as never,
       } satisfies PreparedModelRuntimeAgentFacts,
-      pluginMetadataSnapshot: createPluginMetadataSnapshotFixture(),
+      pluginMetadataSnapshot: {
+        ...createPluginMetadataSnapshotFixture(),
+        policyHash: "test-policy",
+        configFingerprint: "test-config",
+      },
     };
     const workerInput = createPreparedModelCatalogWorkerInput(params);
 
