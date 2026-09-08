@@ -22,7 +22,8 @@ import {
 
 describe("buildModelOptions", () => {
   it("keeps known unavailable choices visible but disabled", () => {
-    const options = buildModelOptions(null, "fixture/blocked", [
+    const config = { agents: { defaults: { models: { "fixture/blocked": {} } } } };
+    const options = buildModelOptions(config, "fixture/blocked", [
       { provider: "fixture", id: "blocked", name: "Blocked model", available: false },
       { provider: "fixture", id: "ready", name: "Ready model", available: true },
       { provider: "fixture", id: "unknown", name: "Unknown model" },
@@ -375,6 +376,7 @@ describe("buildAgentContext", () => {
 
     expect(context.workspace).toBe("/tmp/default-workspace");
     expect(context.model).toBe("openai/gpt-5.5 (+1 fallback)");
+    expect(context.runtime).toBe("-");
   });
 
   it("shows inherited skill filters in the agent context", () => {
