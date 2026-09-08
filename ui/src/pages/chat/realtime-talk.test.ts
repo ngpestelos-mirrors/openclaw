@@ -804,46 +804,54 @@ describe("RealtimeTalkSession", () => {
     expect(relayStart).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to Gateway relay when a successful config read resolves Auto", async () => {
-    const request = vi.fn(async (method: string) => {
-      if (method === "talk.client.create") {
-        throw new Error("browser session unavailable");
-      }
-      if (method === "talk.config") {
-        return { config: {} };
-      }
-      if (method === "talk.session.create") {
-        return {
-          provider: "example",
+  it.each(["provider-direct", "force-agent-consult"])(
+    "falls back to Gateway relay when Auto uses %s",
+    async (consultRouting) => {
+      const request = vi.fn(async (method: string) => {
+        if (method === "talk.client.create") {
+          throw new Error("browser session unavailable");
+        }
+        if (method === "talk.config") {
+          return {
+            config: {
+              talk: { realtime: { provider: "openai", model: "gpt-realtime-2.1", consultRouting } },
+            },
+          };
+        }
+        if (method === "talk.session.create") {
+          return {
+            provider: "openai",
+            model: "gpt-realtime-2.1",
+            transport: "gateway-relay",
+            relaySessionId: "relay-1",
+            audio: {
+              inputEncoding: "pcm16",
+              inputSampleRateHz: 24000,
+              outputEncoding: "pcm16",
+              outputSampleRateHz: 24000,
+            },
+          };
+        }
+        throw new Error(`Unexpected request: ${method}`);
+      });
+      const session = new RealtimeTalkSession({ request } as never, "main");
+
+      await session.start();
+
+      expect(request).toHaveBeenNthCalledWith(
+        3,
+        "talk.session.create",
+        {
+          sessionKey: "main",
+          mode: "realtime",
           transport: "gateway-relay",
-          relaySessionId: "relay-1",
-          audio: {
-            inputEncoding: "pcm16",
-            inputSampleRateHz: 24000,
-            outputEncoding: "pcm16",
-            outputSampleRateHz: 24000,
-          },
-        };
-      }
-      throw new Error(`Unexpected request: ${method}`);
-    });
-    const session = new RealtimeTalkSession({ request } as never, "main");
-
-    await session.start();
-
-    expect(request).toHaveBeenNthCalledWith(
-      3,
-      "talk.session.create",
-      {
-        sessionKey: "main",
-        mode: "realtime",
-        transport: "gateway-relay",
-        brain: "agent-consult",
-      },
-      requestTimeoutOptions,
-    );
-    expect(relayInstances).toHaveLength(1);
-  });
+          brain: "agent-consult",
+        },
+        requestTimeoutOptions,
+      );
+      expect(relayInstances).toHaveLength(1);
+    },
+  );
 
   it("does not fall back when the effective config cannot be read", async () => {
     const clientError = new Error("browser session unavailable");
