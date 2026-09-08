@@ -2,11 +2,7 @@ import { normalizeStringEntries } from "@openclaw/normalization-core/string-norm
 // Agent model selection staged against the runtime config form, split out of
 // agents-page.ts to keep that page inside the TS LOC ratchet.
 import type { ApplicationContext } from "../../app/context.ts";
-import {
-  resolveAgentConfig,
-  resolveEffectiveModelFallbacks,
-  resolveModelPrimary,
-} from "../../lib/agents/display.ts";
+import { resolveAgentConfig, resolveEffectiveModelFallbacks } from "../../lib/agents/display.ts";
 import {
   currentConfigObject,
   type AgentConfigEntryTarget,
@@ -75,7 +71,7 @@ export function stageAgentPrimaryModel(
   stageModelShape(runtimeConfig, entry.path, modelId, existingModelParts(entry.existing).fallbacks);
 }
 
-/** Stage fallback-list edits, preserving the effective primary model shape. */
+/** Stage fallback-list edits, preserving the authored primary model shape. */
 export function stageAgentModelFallbacks(
   runtimeConfig: RuntimeConfig,
   agentId: string,
@@ -94,10 +90,10 @@ export function stageAgentModelFallbacks(
     return;
   }
   const entry = modelEntry(target);
-  const primary =
-    existingModelParts(entry.existing).primary ??
-    resolveModelPrimary(resolved.entry?.model) ??
-    resolveModelPrimary(resolved.defaults?.model) ??
-    null;
-  stageModelShape(runtimeConfig, entry.path, primary, normalized.length > 0 ? normalized : null);
+  stageModelShape(
+    runtimeConfig,
+    entry.path,
+    existingModelParts(entry.existing).primary,
+    normalized,
+  );
 }

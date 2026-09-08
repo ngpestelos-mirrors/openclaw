@@ -315,6 +315,7 @@ type ConfiguredModelOption = {
   provider?: string;
   tags?: string[];
   alias?: string;
+  disabled?: boolean;
 };
 
 function resolveConfiguredModels(
@@ -387,6 +388,7 @@ export function buildModelOptions(
         ...option,
         provider: entry.provider,
         tags: entry.tags,
+        ...(entry.available === false ? { disabled: true } : {}),
       });
     }
   }

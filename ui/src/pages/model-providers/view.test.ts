@@ -89,6 +89,35 @@ function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProviders
   };
 }
 
+it("retains a saved unavailable model without offering it for another default setting", () => {
+  const container = document.createElement("div");
+  render(
+    renderModelProviders(
+      props({
+        configuredModels: [
+          { provider: "fixture", id: "ready", name: "Ready", available: true },
+          { provider: "fixture", id: "blocked", name: "Blocked", available: false },
+        ],
+        defaultModels: {
+          primary: "fixture/ready",
+          fallbacks: ["fixture/blocked"],
+          utilityModel: null,
+        },
+      }),
+    ),
+    container,
+  );
+
+  const blocked = [...container.querySelectorAll('wa-option[value="fixture/blocked"]')];
+  expect(blocked.length).toBeGreaterThan(0);
+  expect(blocked.every((option) => option.hasAttribute("disabled"))).toBe(true);
+  expect(
+    [...container.querySelectorAll('wa-option[value="fixture/ready"]')].every(
+      (option) => !option.hasAttribute("disabled"),
+    ),
+  ).toBe(true);
+});
+
 function mount(viewProps: ModelProvidersViewProps): HTMLDivElement {
   const container = document.createElement("div");
   document.body.append(container);

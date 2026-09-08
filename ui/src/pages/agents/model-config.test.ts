@@ -31,6 +31,46 @@ function createRuntimeConfig(sourceConfig: Record<string, unknown>) {
 }
 
 describe("agent model config", () => {
+  it("keeps the primary inherited when editing an agent's fallbacks", async () => {
+    const runtimeConfig = createRuntimeConfig({
+      agents: {
+        defaults: { model: { primary: "fixture/global", fallbacks: ["fixture/global-backup"] } },
+        entries: { writer: {} },
+      },
+    });
+    await runtimeConfig.ensureLoaded();
+
+    stageAgentModelFallbacks(runtimeConfig, "writer", ["fixture/agent-backup"]);
+
+    expect(runtimeConfig.state.configForm).toEqual({
+      agents: {
+        defaults: { model: { primary: "fixture/global", fallbacks: ["fixture/global-backup"] } },
+        entries: { writer: { model: { fallbacks: ["fixture/agent-backup"] } } },
+      },
+    });
+    runtimeConfig.dispose();
+  });
+
+  it("keeps an explicit empty fallback override without pinning the global primary", async () => {
+    const runtimeConfig = createRuntimeConfig({
+      agents: {
+        defaults: { model: { primary: "fixture/global", fallbacks: ["fixture/global-backup"] } },
+        entries: { writer: { model: { fallbacks: ["fixture/agent-backup"] } } },
+      },
+    });
+    await runtimeConfig.ensureLoaded();
+
+    stageAgentModelFallbacks(runtimeConfig, "writer", []);
+
+    expect(runtimeConfig.state.configForm).toEqual({
+      agents: {
+        defaults: { model: { primary: "fixture/global", fallbacks: ["fixture/global-backup"] } },
+        entries: { writer: { model: { fallbacks: [] } } },
+      },
+    });
+    runtimeConfig.dispose();
+  });
+
   it("writes primary and fallback changes through keyed agent entries", async () => {
     const runtimeConfig = createRuntimeConfig({
       agents: {

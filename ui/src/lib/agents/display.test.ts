@@ -11,6 +11,7 @@ import {
 import {
   buildAgentContext,
   buildModelOptions,
+  formatAgentRuntimeLabel,
   formatBytes,
   listSelectableAgents,
   normalizeAgentLabel,
@@ -20,6 +21,20 @@ import {
 } from "./display.ts";
 
 describe("buildModelOptions", () => {
+  it("keeps known unavailable choices visible but disabled", () => {
+    const options = buildModelOptions(null, "fixture/blocked", [
+      { provider: "fixture", id: "blocked", name: "Blocked model", available: false },
+      { provider: "fixture", id: "ready", name: "Ready model", available: true },
+      { provider: "fixture", id: "unknown", name: "Unknown model" },
+    ]);
+
+    expect(options).toContainEqual(
+      expect.objectContaining({ value: "fixture/blocked", disabled: true }),
+    );
+    expect(options.find((option) => option.value === "fixture/ready")?.disabled).not.toBe(true);
+    expect(options.find((option) => option.value === "fixture/unknown")?.disabled).not.toBe(true);
+  });
+
   const model = "openai/gpt-5.6-luna";
   const catalog = [
     {
@@ -56,6 +71,18 @@ describe("buildModelOptions", () => {
       provider: "openai",
       tags: ["default", "configured"],
     });
+  });
+});
+
+describe("formatAgentRuntimeLabel", () => {
+  it.each([undefined, {}, { id: "  " }])("does not invent a runtime for %j", (runtime) => {
+    expect(formatAgentRuntimeLabel(runtime)).toBe("-");
+  });
+
+  it("retains a known runtime and its reported fallback", () => {
+    expect(formatAgentRuntimeLabel({ id: "custom", fallback: "remote" })).toBe(
+      "custom (fallback remote)",
+    );
   });
 });
 
