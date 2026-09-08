@@ -1084,6 +1084,8 @@ function renderMaturityScorecard({
     "",
     "Use this page to answer one question: which OpenClaw surfaces are credible choices for a release, and what evidence supports that judgment? Coverage comes from deterministic QA evidence; quality and completeness are maintained as reviewed maturity scores.",
     "",
+    "Aggregate Quality and Completeness exclude Planned roadmap surfaces.",
+    "",
     "## At a glance",
     "",
     '<div className="maturity-summary-grid">',

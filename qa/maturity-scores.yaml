@@ -6,17 +6,17 @@ counts:
 rollups:
   surface_average:
     quality:
-      score: 65
+      score: 66
       label: Alpha
     completeness:
-      score: 72
+      score: 73
       label: Beta
   category_average:
     quality:
       score: 67
       label: Alpha
     completeness:
-      score: 73
+      score: 74
       label: Beta
 surfaces:
   - id: gateway

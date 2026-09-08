@@ -846,14 +846,18 @@ function validateQaMaturityScoresAgainstTaxonomy(params: {
   }
 
   const rollups = params.scores.rollups;
+  const rollupScoreSurfaces = scoreSurfaces.filter(
+    (scoreSurface) => taxonomyIndex.surfaces.get(scoreSurface.id)?.surface.level !== "planned",
+  );
+  const rollupScoreCategories = rollupScoreSurfaces.flatMap((surface) => surface.categories);
   for (const key of QA_MATURITY_SCORE_KEYS) {
-    const expectedSurfaceAverage = averageSurfaceScore(scoreSurfaces, key);
+    const expectedSurfaceAverage = averageSurfaceScore(rollupScoreSurfaces, key);
     if (rollups.surface_average[key].score !== expectedSurfaceAverage) {
       throw new Error(
         `${scoresPath}.rollups.surface_average.${key}.score must be ${expectedSurfaceAverage}`,
       );
     }
-    const expectedCategoryAverage = averageCategoryScore(allScoreCategories, key);
+    const expectedCategoryAverage = averageCategoryScore(rollupScoreCategories, key);
     if (rollups.category_average[key].score !== expectedCategoryAverage) {
       throw new Error(
         `${scoresPath}.rollups.category_average.${key}.score must be ${expectedCategoryAverage}`,

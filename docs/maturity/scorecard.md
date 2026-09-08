@@ -18,21 +18,23 @@ summary: "OpenClaw release readiness scores for product areas, integrations, and
 
 Use this page to answer one question: which OpenClaw surfaces are credible choices for a release, and what evidence supports that judgment? Coverage comes from deterministic QA evidence; quality and completeness are maintained as reviewed maturity scores.
 
+Aggregate Quality and Completeness exclude Planned roadmap surfaces.
+
 ## At a glance
 
 <div className="maturity-summary-grid">
-  <div className="maturity-summary-item maturity-score-alpha">
+  <div className="maturity-summary-item maturity-score-beta">
     <div className="maturity-summary-heading">
-      <span className="maturity-summary-value">69%</span>
+      <span className="maturity-summary-value">70%</span>
       <span>Maturity score</span>
     </div>
-    <div className="maturity-summary-bar" style={{ "--score": "69" }}><span /></div>
+    <div className="maturity-summary-bar" style={{ "--score": "70" }}><span /></div>
     <div className="maturity-summary-meta">
-      <span className="maturity-level-pill maturity-level-alpha">Alpha</span>
+      <span className="maturity-level-pill maturity-level-beta">Beta</span>
       <span>Quality + completeness</span>
       <span>Coverage Experimental - 16%</span>
-      <span>Quality Alpha - 65%</span>
-      <span>Completeness Beta - 72%</span>
+      <span>Quality Alpha - 66%</span>
+      <span>Completeness Beta - 73%</span>
     </div>
   </div>
 </div>
