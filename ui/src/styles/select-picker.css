@@ -175,6 +175,10 @@ openclaw-select-picker {
   z-index: var(--z-dropdown);
 }
 
+.picker-select wa-popup:has(.picker-select__search)::part(popup) {
+  min-width: min(20rem, calc(100vw - 24px));
+}
+
 .picker-select__menu {
   box-sizing: border-box;
   display: flex;
