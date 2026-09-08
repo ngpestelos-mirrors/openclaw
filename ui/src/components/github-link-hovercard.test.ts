@@ -578,6 +578,175 @@ describe("openclaw-github-link-hovercard-provider", () => {
     },
   );
 
+  it("shares the first displayed success across providers while suppressing cached failures", async () => {
+    const first = createDeferred<ReturnType<typeof issuePreviewResponse>>();
+    const failure = createDeferred<ReturnType<typeof issuePreviewResponse>>();
+    const retry = createDeferred<ReturnType<typeof issuePreviewResponse>>();
+    const request = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(failure.promise)
+      .mockReturnValueOnce(retry.promise);
+    const client = {
+      request,
+      connectionGeneration: 1,
+      recoveryScope: "principal-a",
+    } as unknown as GatewayBrowserClient;
+    const one = createLink(ISSUE_HREF);
+    one.provider.client = client;
+    await hover(one.anchor);
+    expect(hovercard()).toBeNull();
+    first.resolve(issuePreviewResponse());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(titleLinkInCard()?.textContent).toBe("Keep hover previews reachable");
+    one.provider.remove();
+    const two = createLink("https://github.com/openclaw/openclaw/issues/99816");
+    two.provider.client = client;
+    const mounted = observeHovercardMounts();
+    two.anchor.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, composed: true }));
+    await vi.advanceTimersByTimeAsync(249);
+    expect(mounted).toEqual([]);
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hovercard()?.dataset.loading).toBe("true");
+    expect(hovercard()?.getAttribute("aria-label")).toBe("Loading GitHub details…");
+    failure.reject(new Error("Not Found"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hovercard()).toBeNull();
+    const mountsAfterFailure = mounted.length;
+    leave(two.anchor);
+    await hover(two.anchor);
+    expect(hovercard()).toBeNull();
+    expect(mounted).toHaveLength(mountsAfterFailure);
+    expect(request).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await hover(two.anchor);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(hovercard()?.dataset.loading).toBe("true");
+    leave(two.anchor);
+    retry.resolve(issuePreviewResponse({ number: 99816 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hovercard()).toBeNull();
+  });
+
+  it.each(["client", "agent", "agent round trip", "connection", "principal"])(
+    "resets the shared success gate and cached previews after a %s change",
+    async (change) => {
+      const pending = createDeferred<ReturnType<typeof issuePreviewResponse>>();
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(issuePreviewResponse())
+        .mockReturnValue(pending.promise);
+      const client = { request, connectionGeneration: 1, recoveryScope: "principal-a" };
+      const { anchor, provider } = createLink(ISSUE_HREF);
+      provider.client = client as unknown as GatewayBrowserClient;
+      await hover(anchor);
+      expect(titleLinkInCard()).not.toBeNull();
+      leave(anchor);
+      await vi.advanceTimersByTimeAsync(120);
+      if (change === "client") {
+        provider.client = { ...client } as unknown as GatewayBrowserClient;
+      } else if (change === "agent" || change === "agent round trip") {
+        provider.agentId = "other";
+        if (change === "agent round trip") {
+          provider.agentId = undefined;
+        }
+      } else if (change === "connection") {
+        client.connectionGeneration += 1;
+      } else {
+        client.recoveryScope = "principal-b";
+      }
+      const mounted = observeHovercardMounts();
+      await hover(anchor);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(hovercard()).toBeNull();
+      expect(mounted).toEqual([]);
+      pending.resolve(issuePreviewResponse());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(titleLinkInCard()).not.toBeNull();
+    },
+  );
+
+  it.each(["agent", "client"])(
+    "preserves other agents when a peer changes its %s",
+    async (change) => {
+      const pending = createDeferred<ReturnType<typeof issuePreviewResponse>>();
+      const next = createDeferred<ReturnType<typeof issuePreviewResponse>>();
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(issuePreviewResponse())
+        .mockResolvedValueOnce(issuePreviewResponse({ number: 99816 }))
+        .mockRejectedValueOnce(new Error("Not Found"))
+        .mockReturnValueOnce(pending.promise)
+        .mockReturnValueOnce(next.promise);
+      const client = {
+        request,
+        connectionGeneration: 1,
+        recoveryScope: "principal",
+      } as unknown as GatewayBrowserClient;
+      const one = createLink(ISSUE_HREF);
+      one.provider.client = client;
+      one.provider.agentId = "agent-a";
+      await hover(one.anchor);
+      leave(one.anchor);
+      await vi.advanceTimersByTimeAsync(120);
+      const two = createLink("https://github.com/openclaw/openclaw/issues/99816");
+      two.provider.client = client;
+      two.provider.agentId = "agent-b";
+      await hover(two.anchor);
+      leave(two.anchor);
+      await vi.advanceTimersByTimeAsync(120);
+      const failed = document.createElement("a");
+      failed.href = "https://github.com/openclaw/openclaw/issues/99818";
+      one.provider.append(failed);
+      await hover(failed);
+      expect(hovercard()).toBeNull();
+      one.anchor.href = "https://github.com/openclaw/openclaw/issues/99817";
+      await hover(one.anchor);
+      expect(hovercard()?.dataset.loading).toBe("true");
+      if (change === "agent") {
+        two.provider.agentId = "agent-c";
+      } else {
+        two.provider.client = { request } as unknown as GatewayBrowserClient;
+      }
+      pending.resolve(issuePreviewResponse({ number: 99817, title: "Agent A remains current" }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(titleLinkInCard()?.textContent).toBe("Agent A remains current");
+      leave(one.anchor);
+      await vi.advanceTimersByTimeAsync(120);
+      await hover(failed);
+      expect(hovercard()).toBeNull();
+      expect(request).toHaveBeenCalledTimes(4);
+      one.anchor.href = "https://github.com/openclaw/openclaw/issues/99819";
+      await hover(one.anchor);
+      expect(hovercard()?.dataset.loading).toBe("true");
+      leave(one.anchor);
+      next.resolve(issuePreviewResponse({ number: 99819 }));
+      await vi.advanceTimersByTimeAsync(0);
+    },
+  );
+
+  it("does not unlock a new auth generation with a stale successful response", async () => {
+    const stale = createDeferred<ReturnType<typeof issuePreviewResponse>>();
+    const current = createDeferred<ReturnType<typeof issuePreviewResponse>>();
+    const request = vi.fn().mockReturnValueOnce(stale.promise).mockReturnValueOnce(current.promise);
+    const client = { request, connectionGeneration: 1, recoveryScope: "principal-a" };
+    const one = createLink(ISSUE_HREF);
+    one.provider.client = client as unknown as GatewayBrowserClient;
+    await hover(one.anchor);
+    client.connectionGeneration += 1;
+    stale.resolve(issuePreviewResponse());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hovercard()).toBeNull();
+    const two = createLink(ISSUE_HREF);
+    two.provider.client = client as unknown as GatewayBrowserClient;
+    await hover(two.anchor);
+    expect(hovercard()).toBeNull();
+    current.resolve(issuePreviewResponse());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(titleLinkInCard()).not.toBeNull();
+  });
+
   it("stays open while the pointer travels from the link onto the card", async () => {
     const { anchor } = createIssueLink();
 

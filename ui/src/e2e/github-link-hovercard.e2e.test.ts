@@ -245,6 +245,56 @@ describeControlUiE2e("GitHub link hover cards", () => {
     },
   );
 
+  it("enables loaders across providers only after success and forgets the gate on reload", async () => {
+    const { card, gateway, page, pullLink } = await openPullPreviewPage(true);
+    await pullLink.focus();
+    await gateway.waitForRequest("controlUi.githubPreview");
+    expect(await card.count()).toBe(0);
+    await gateway.resolveDeferred("controlUi.githubPreview");
+    await expectText(card, pullPreviewResponse.title);
+    await page.keyboard.press("Escape");
+    await expect.poll(() => card.count()).toBe(0);
+
+    await page.evaluate(() => {
+      const source = document.querySelector(
+        "openclaw-github-link-hovercard-provider",
+      ) as HTMLElement & {
+        client: unknown;
+        agentId?: string;
+      };
+      const peer = source.cloneNode(false) as typeof source;
+      peer.client = source.client;
+      peer.agentId = source.agentId;
+      const anchor = document.createElement("a");
+      anchor.href = "https://github.com/openclaw/openclaw/pull/99817";
+      anchor.textContent = "Cross-provider preview";
+      anchor.style.cssText = "position: fixed; top: 12px; right: 12px; z-index: 10000";
+      peer.append(anchor);
+      document.body.append(peer);
+    });
+    await gateway.deferNext("controlUi.githubPreview");
+    const peerLink = page.getByRole("link", { name: "Cross-provider preview", exact: true });
+    await peerLink.hover();
+    await expect.poll(() => card.getAttribute("data-loading")).toBe("true");
+    expect(await card.getAttribute("aria-label")).toBe("Loading GitHub details…");
+    await gateway.rejectDeferred("controlUi.githubPreview", { message: "Not Found" });
+    await expect.poll(() => card.count()).toBe(0);
+    const mounts = await page.locator("body").getAttribute("data-preview-mounts");
+    await page.mouse.move(1, 1);
+    await peerLink.hover();
+    await page.clock.runFor(300);
+    expect(await card.count()).toBe(0);
+    expect(await page.locator("body").getAttribute("data-preview-mounts")).toBe(mounts);
+    expect((await gateway.getRequests("controlUi.githubPreview")).length).toBe(2);
+
+    await page.reload();
+    await pullLink.waitFor({ state: "visible" });
+    await pullLink.focus();
+    await gateway.waitForRequest("controlUi.githubPreview");
+    await page.clock.runFor(300);
+    expect(await card.count()).toBe(0);
+  });
+
   it("keeps failed permalinks silent during backoff and leaves keyboard navigation usable", async () => {
     const { card, commentLink, gateway, page, pullLink } = await openPullPreviewPage(true);
     await pullLink.focus();
