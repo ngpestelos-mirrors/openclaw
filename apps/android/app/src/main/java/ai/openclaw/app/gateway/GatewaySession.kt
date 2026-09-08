@@ -381,9 +381,13 @@ class GatewaySession(
     val endpointStableId: String,
     private val isCurrentImpl: () -> Boolean = { true },
     private val commitIfCurrentImpl: ((block: () -> Unit) -> Boolean)? = null,
+    private val offerRouteImpl: ((String) -> GatewayRealtimeOffer)? = null,
+    val supportsTalkSessionTarget: Boolean = false,
     private val requestImpl: suspend (method: String, paramsJson: String?, timeoutMs: Long, withEnqueue: (() -> Unit) -> Unit) -> String,
   ) {
     fun isCurrent(): Boolean = isCurrentImpl()
+
+    fun realtimeOfferRoute(url: String): GatewayRealtimeOffer = checkNotNull(offerRouteImpl) { "Realtime HTTP transport unavailable" }(url)
 
     fun commitIfCurrent(block: () -> Unit): Boolean {
       commitIfCurrentImpl?.let { return it(block) }
@@ -834,6 +838,8 @@ class GatewaySession(
       val conn = readyConnection(expectedEndpointStableId) ?: return@synchronized null
       RequestLease(
         endpointStableId = conn.target.endpoint.stableId,
+        supportsTalkSessionTarget = conn.supportsTalkSessionTarget,
+        offerRouteImpl = { url -> conn.realtimeOfferRoute(url) },
         isCurrentImpl = { currentConnection === conn && conn.isReady() },
         commitIfCurrentImpl = { block ->
           synchronized(lifecycleLock) {
@@ -1068,6 +1074,23 @@ class GatewaySession(
       )
     }
 
+    private val realtimeOfferLifetime = Job()
+
+    fun realtimeOfferRoute(rawUrl: String): GatewayRealtimeOffer {
+      val uri = URI(rawUrl)
+      check(uri.rawUserInfo == null && uri.rawFragment == null) { "Invalid realtime offer URL" }
+      val relative = !uri.isAbsolute && uri.rawAuthority == null && rawUrl.startsWith("/") && !rawUrl.startsWith("//")
+      val isCurrent = { currentConnection === this && isReady() }
+      if (relative) {
+        val scheme = if (tlsConfig != null) "https" else "http"
+        val url = "$scheme://${formatGatewayAuthority(target.endpoint.host, target.endpoint.port)}${target.endpoint.contextPath}$rawUrl"
+        return GatewayRealtimeOffer(url, client, mediaTransportHeaders(), realtimeOfferLifetime, isCurrent)
+      }
+      check(uri.scheme == "https" && uri.host != null) { "Realtime provider offer must use HTTPS" }
+      // Provider endpoints never inherit Gateway certificate pins or proxy headers.
+      return GatewayRealtimeOffer(rawUrl, OkHttpClient(), emptyMap(), realtimeOfferLifetime, isCurrent)
+    }
+
     fun bufferedMedia(
       bytes: ByteArray,
       mimeType: String,
@@ -1251,11 +1274,15 @@ class GatewaySession(
       connectionJob.cancelAndJoin()
     }
 
+    var supportsTalkSessionTarget: Boolean = false
+      private set
+
     fun isReady(): Boolean = state.get() == ConnectionState.READY
 
     fun markReady(): Boolean = state.compareAndSet(ConnectionState.CONNECTING, ConnectionState.READY)
 
     fun closeQuietly() {
+      realtimeOfferLifetime.cancel()
       if (state.getAndSet(ConnectionState.CLOSED) != ConnectionState.CLOSED) {
         incomingMessages.close()
         if (!connectDeferred.isCompleted) {
@@ -1273,6 +1300,7 @@ class GatewaySession(
       connectError: Throwable,
     ) {
       if (!terminalCallbackClaimed.compareAndSet(false, true)) return
+      realtimeOfferLifetime.cancel()
       val shouldNotify = state.getAndSet(ConnectionState.CLOSED) != ConnectionState.CLOSED
       incomingMessages.close()
       // Completion handlers run synchronously and cannot own app-level disconnect cleanup.
@@ -1507,6 +1535,8 @@ class GatewaySession(
           .asArrayOrNull()
           ?.mapNotNull { it.asStringOrNull()?.trim()?.takeIf { capability -> capability.isNotEmpty() } }
           ?.toSet()
+      // Written once by this physical handshake, before connectDeferred/markReady publication.
+      supportsTalkSessionTarget = capabilities?.contains("talk-session-target-v1") == true
       val authObj = obj["auth"].asObjectOrNull()
       val deviceToken = authObj?.get("deviceToken").asStringOrNull()
       val authRole = authObj?.get("role").asStringOrNull() ?: target.options.role

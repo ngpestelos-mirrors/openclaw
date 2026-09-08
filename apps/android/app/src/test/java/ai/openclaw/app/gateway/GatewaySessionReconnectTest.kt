@@ -163,6 +163,91 @@ private data class ReconnectServer(
 @Config(sdk = [34])
 class GatewaySessionReconnectTest {
   @Test
+  fun connectionRetirementCancelsQueuedOffersBeforeDestinationIo() =
+    runBlocking {
+      val connected = CompletableDeferred<Unit>()
+      val server =
+        startGatewayServer(Json) { socket, id, method ->
+          socket.send(if (method == "connect") connectResponseFrame(id) else """{"type":"res","id":"$id","ok":true,"payload":{}}""")
+        }
+      val harness = createReconnectHarness(onConnected = { connected.complete(Unit) })
+      val release = CountDownLatch(1)
+      val blocked = CompletableDeferred<Unit>()
+      val blockerDone = CompletableDeferred<Unit>()
+      val offers = ConcurrentLinkedQueue<String>()
+      var blocker: okhttp3.Call? = null
+      try {
+        connectNodeSession(harness.session, server.port)
+        withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { connected.await() }
+        val originalDispatcher = server.server.dispatcher
+        server.server.dispatcher =
+          object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+              when (request.path) {
+                "/offer" -> {
+                  offers.add(request.body.readUtf8())
+                  MockResponse().setBody("v=0\r\nanswer")
+                }
+
+                "/block" -> {
+                  blocked.complete(Unit)
+                  check(release.await(LIFECYCLE_TEST_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+                  MockResponse().setBody("released")
+                }
+
+                else -> {
+                  originalDispatcher.dispatch(request)
+                }
+              }
+          }
+        val route = checkNotNull(harness.session.captureRequestLease()).realtimeOfferRoute("/offer")
+        val http = readField<OkHttpClient>(route, "client")
+        assertEquals("v=0\r\nanswer", route.exchange("synthetic-capability", emptyMap(), "v=0\r\nallowed"))
+        withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) {
+          while (http.dispatcher.runningCalls().any { it.request().url.encodedPath == "/offer" }) kotlinx.coroutines.yield()
+        }
+        http.dispatcher.maxRequests = http.dispatcher.runningCallsCount() + 1
+        blocker = http.newCall(Request.Builder().url(server.server.url("/block")).build())
+        blocker.enqueue(
+          object : okhttp3.Callback {
+            override fun onFailure(
+              call: okhttp3.Call,
+              e: IOException,
+            ) {
+              blockerDone.complete(Unit)
+            }
+
+            override fun onResponse(
+              call: okhttp3.Call,
+              response: Response,
+            ) {
+              response.close()
+              blockerDone.complete(Unit)
+            }
+          },
+        )
+        withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { blocked.await() }
+        val queued =
+          async(start = CoroutineStart.UNDISPATCHED) {
+            runCatching { route.exchange("synthetic-capability", emptyMap(), "v=0\r\nretired") }
+          }
+        assertTrue("Offer must be queued in the real OkHttp dispatcher", http.dispatcher.queuedCalls().any { it.request().url.encodedPath == "/offer" })
+        harness.session.disconnectAndJoin()
+        release.countDown()
+        withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) {
+          blockerDone.await()
+          assertTrue(queued.await().isFailure)
+        }
+        println("offer-destination allowed=" + offers.count { it.contains("allowed") } + " retired=" + offers.count { it.contains("retired") })
+        assertEquals(listOf("v=0\r\nallowed"), offers.toList())
+      } finally {
+        release.countDown()
+        blocker?.cancel()
+        shutdownReconnectHarness(harness, server)
+      }
+    }
+
+  @Test
   fun networkAttachmentPreservesReadyTransport() =
     runBlocking {
       val connected = CompletableDeferred<Unit>()
