@@ -43,8 +43,10 @@ export class MultiSelect extends OpenClawLightDomElement {
   @property({ attribute: false }) options: readonly MultiSelectOption[] = [];
   /** Current values in display order. Controlled: the host owns them. */
   @property({ attribute: false }) value: readonly string[] = [];
-  /** Values kept out of the dropdown without being chips, e.g. a primary model. */
-  @property({ attribute: false }) exclude: readonly string[] = [];
+  /** Caller-owned exclusions, such as the effective primary model. */
+  @property({ attribute: false }) isExcluded: (value: string) => boolean = () => false;
+  /** The caller owns value identity; search remains case-insensitive. */
+  @property({ attribute: false }) getValueKey: (value: string) => string = (value) => value;
   @property({ attribute: false }) placeholder = "";
   @property({ attribute: false }) accessibleLabel = "";
   /** Accept typed values, including comma-separated input, outside the option list. */
@@ -66,7 +68,13 @@ export class MultiSelect extends OpenClawLightDomElement {
     if (changed.has("disabled") && this.disabled && this.open) {
       this.closeMenu();
     }
-    if (this.open && (changed.has("options") || changed.has("value") || changed.has("exclude"))) {
+    if (
+      this.open &&
+      (changed.has("options") ||
+        changed.has("value") ||
+        changed.has("isExcluded") ||
+        changed.has("getValueKey"))
+    ) {
       this.activeIndex = Math.min(this.activeIndex, Math.max(0, this.rows().length - 1));
     }
   }
@@ -74,8 +82,8 @@ export class MultiSelect extends OpenClawLightDomElement {
   protected override updated(changed: PropertyValues) {
     if (
       !this.open ||
-      !["open", "query", "activeIndex", "options", "value", "exclude"].some((key) =>
-        changed.has(key),
+      !["open", "query", "activeIndex", "options", "value", "isExcluded", "getValueKey"].some(
+        (key) => changed.has(key),
       )
     ) {
       return;
@@ -96,23 +104,24 @@ export class MultiSelect extends OpenClawLightDomElement {
   }
 
   private optionFor(value: string): MultiSelectOption | undefined {
-    const key = value.toLowerCase();
-    return this.options.find((option) => option.value.toLowerCase() === key);
+    const key = this.getValueKey(value);
+    return this.options.find((option) => this.getValueKey(option.value) === key);
   }
 
   /** Dropdown rows: unchosen options matching the query, then the custom entry. */
   private rows(): MultiSelectRow[] {
-    const taken = new Set([...this.value, ...this.exclude].map((entry) => entry.toLowerCase()));
+    const taken = new Set(this.value.map((entry) => this.getValueKey(entry)));
     const custom = this.query.trim();
+    const customKey = this.getValueKey(custom);
     const query = custom.toLowerCase();
     const rows: MultiSelectRow[] = [];
     let exact: MultiSelectRow | null = null;
     for (const option of this.options) {
-      const key = option.value.toLowerCase();
-      if (taken.has(key)) {
+      const key = this.getValueKey(option.value);
+      if (taken.has(key) || this.isExcluded(option.value)) {
         continue;
       }
-      if (key === query) {
+      if (key === customKey) {
         exact = option;
         continue;
       }
@@ -123,7 +132,7 @@ export class MultiSelect extends OpenClawLightDomElement {
     }
     if (exact) {
       rows.unshift(exact);
-    } else if (this.allowCustom && custom && !taken.has(query)) {
+    } else if (this.allowCustom && custom && !taken.has(customKey) && !this.isExcluded(custom)) {
       rows.push({
         value: custom,
         label: custom,
@@ -160,12 +169,12 @@ export class MultiSelect extends OpenClawLightDomElement {
     if (this.disabled) {
       return;
     }
-    const taken = new Set([...this.value, ...this.exclude].map((entry) => entry.toLowerCase()));
+    const taken = new Set(this.value.map((entry) => this.getValueKey(entry)));
     const additions: string[] = [];
     for (const value of values) {
       const next = value.trim();
-      const key = next.toLowerCase();
-      if (next && !taken.has(key) && !this.optionFor(next)?.disabled) {
+      const key = this.getValueKey(next);
+      if (next && !taken.has(key) && !this.isExcluded(next) && !this.optionFor(next)?.disabled) {
         taken.add(key);
         additions.push(next);
       }
@@ -178,10 +187,7 @@ export class MultiSelect extends OpenClawLightDomElement {
   }
 
   private commitTypedQuery() {
-    const values = normalizeCsvOrLooseStringList(this.query).map(
-      (value) => this.optionFor(value)?.value ?? value,
-    );
-    this.commit(values);
+    this.commit(normalizeCsvOrLooseStringList(this.query));
   }
 
   private selectRow(row: MultiSelectRow) {
