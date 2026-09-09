@@ -52,8 +52,17 @@ function resolveMigrationProviderPluginResolution(params: {
   });
   const pluginIds = new Set(resolution.pluginIds);
   const bundledCompatPluginIds = new Set(resolution.bundledCompatPluginIds);
-  const publicPlugins: MigrationProviderArtifactPlugin[] = resolution.plugins.filter(
-    (plugin) => plugin.origin === "global" && pluginIds.has(plugin.id),
+  const publicPlugins: MigrationProviderArtifactPlugin[] = resolution.plugins.flatMap((plugin) =>
+    plugin.origin === "global" && pluginIds.has(plugin.id)
+      ? [
+          {
+            id: plugin.id,
+            origin: "global" as const,
+            rootDir: plugin.rootDir,
+            contracts: plugin.contracts,
+          },
+        ]
+      : [],
   );
 
   // Install migration can persist a deliberately pruned bundled-plugin index.
@@ -72,7 +81,7 @@ function resolveMigrationProviderPluginResolution(params: {
     publicPlugins.push({
       id: plugin.manifest.id,
       origin: "bundled",
-      rootDir: plugin.rootDir,
+      dirName: plugin.dirName,
       contracts: { migrationProviders: providerIds },
     });
   }

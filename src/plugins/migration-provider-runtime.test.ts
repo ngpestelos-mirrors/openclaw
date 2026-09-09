@@ -57,7 +57,9 @@ const mocks = vi.hoisted(() => ({
   })),
   acquirePluginRegistryForInspection: vi.fn(),
   release: vi.fn(async () => {}),
-  listBundledPluginMetadata: vi.fn(() => []),
+  listBundledPluginMetadata: vi.fn<
+    typeof import("./bundled-plugin-metadata.js").listBundledPluginMetadata
+  >(() => []),
 }));
 
 vi.mock("./loader.js", async (importOriginal) => ({
@@ -154,54 +156,85 @@ describe("migration provider runtime", () => {
     withPluginMigrationProviders = runtime.withPluginMigrationProviders;
   });
 
-  it("uses the selected installed public artifact without acquiring or replacing a registry", async () => {
-    const rootDir = tempDirs.make("openclaw-migration-artifact-");
-    fs.writeFileSync(
-      path.join(rootDir, "migration-provider-api.js"),
-      `
-      export function buildMigrationProvider() {
-        return { id: "fixture-import", label: "Installed fixture",
-          plan: async () => ({ providerId: "fixture-import", source: "selected-install", items: [],
-            summary: { total: 0, planned: 0, migrated: 0, skipped: 0, conflicts: 0, errors: 0, sensitive: 0 } }),
-          apply: async (_ctx, plan) => plan };
-      }
-    `,
-    );
-    const active = createEmptyPluginRegistry();
-    mocks.resolveRuntimePluginRegistry.mockReturnValue(active);
-    mocks.loadPluginRegistrySnapshot.mockReturnValue(
-      createMockPluginIndex([{ pluginId: "fixture", origin: "global", enabled: true }]),
-    );
-    mocks.loadPluginManifestRegistry.mockReturnValue({
-      diagnostics: [],
-      plugins: [
-        {
+  it.each(["global", "bundled"] as const)(
+    "uses the selected %s public artifact without acquiring or replacing a registry",
+    async (origin) => {
+      const scanDir = tempDirs.make("openclaw-migration-artifact-");
+      const rootDir = path.join(scanDir, "fixture-dir");
+      fs.mkdirSync(rootDir);
+      fs.writeFileSync(
+        path.join(rootDir, "package.json"),
+        JSON.stringify({
+          name: "@openclaw/fixture",
+          version: "1.0.0",
+          type: "module",
+          openclaw: { extensions: ["./index.js"] },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(rootDir, "openclaw.plugin.json"),
+        JSON.stringify({
           id: "fixture",
-          origin: "global",
-          rootDir,
           contracts: { migrationProviders: ["fixture-import"] },
-        },
-      ],
-    });
-    mocks.listBundledPluginMetadata.mockReturnValue([
-      {
-        rootDir: "/unselected-bundled-fixture",
-        manifest: { id: "fixture", contracts: { migrationProviders: ["fixture-import"] } },
-      },
-    ] as never);
-
-    const label = await withPluginMigrationProviders(
-      {
-        providerId: "fixture-import",
-        cfg: { plugins: { entries: { fixture: { enabled: true } } } },
-      },
-      async (providers) => providers.find((provider) => provider.id === "fixture-import")?.label,
-    );
-
-    expect(label).toBe("Installed fixture");
-    expect(mocks.acquirePluginRegistryForInspection).not.toHaveBeenCalled();
-    expect(active.migrationProviders).toEqual([]);
-  });
+          configSchema: { type: "object", additionalProperties: false, properties: {} },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(rootDir, "index.js"),
+        'throw new Error("Heavy plugin runtime loaded");',
+      );
+      fs.writeFileSync(
+        path.join(rootDir, "migration-provider-api.js"),
+        `
+        export function buildMigrationProvider() {
+          return { id: "fixture-import", label: "Fixture public owner",
+            plan: async () => ({ providerId: "fixture-import", source: "fixture", items: [],
+              summary: { total: 0, planned: 0, migrated: 0, skipped: 0, conflicts: 0, errors: 0, sensitive: 0 } }),
+            apply: async (_ctx, plan) => plan };
+        }
+      `,
+      );
+      const { listBundledPluginMetadata } = await vi.importActual<
+        typeof import("./bundled-plugin-metadata.js")
+      >("./bundled-plugin-metadata.js");
+      const bundled = listBundledPluginMetadata({ scanDir, includeChannelConfigs: false });
+      mocks.listBundledPluginMetadata.mockReturnValue(bundled);
+      const active = createEmptyPluginRegistry();
+      mocks.resolveRuntimePluginRegistry.mockReturnValue(active);
+      if (origin === "global") {
+        mocks.loadPluginRegistrySnapshot.mockReturnValue(
+          createMockPluginIndex([{ pluginId: "fixture", origin, enabled: true }]),
+        );
+        mocks.loadPluginManifestRegistry.mockReturnValue({
+          diagnostics: [],
+          plugins: [
+            {
+              id: "fixture",
+              origin,
+              rootDir,
+              contracts: { migrationProviders: ["fixture-import"] },
+            },
+          ],
+        });
+      }
+      vi.stubEnv("OPENCLAW_BUNDLED_PLUGINS_DIR", scanDir);
+      try {
+        const label = await withPluginMigrationProviders(
+          {
+            providerId: "fixture-import",
+            cfg: { plugins: { entries: { fixture: { enabled: true } } } },
+          },
+          async (providers) =>
+            providers.find((provider) => provider.id === "fixture-import")?.label,
+        );
+        expect(label).toBe("Fixture public owner");
+        expect(mocks.acquirePluginRegistryForInspection).not.toHaveBeenCalled();
+        expect(active.migrationProviders).toEqual([]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it("loads bundled migration providers through compat config", async () => {
     mocks.loadPluginRegistrySnapshot.mockReturnValue(
@@ -247,7 +280,7 @@ describe("migration provider runtime", () => {
           id: "migrate-hermes",
           contracts: { migrationProviders: ["hermes"] },
         },
-        rootDir: "/missing-migration-fixture",
+        dirName: "missing-migration-fixture",
       },
     ] as never);
 
@@ -384,7 +417,7 @@ describe("migration provider runtime", () => {
           id: "migrate-hermes",
           contracts: { migrationProviders: ["hermes"] },
         },
-        rootDir: "/missing-migration-fixture",
+        dirName: "missing-migration-fixture",
       },
     ] as never);
 
