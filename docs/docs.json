@@ -1506,6 +1506,14 @@
                     "group": "iMessage",
                     "pages": [
                       "channels/imessage",
+                      "channels/imessage/setup",
+                      "channels/imessage/private-api",
+                      "channels/imessage/access-control",
+                      "channels/imessage/deployment",
+                      "channels/imessage/media",
+                      "channels/imessage/rich-messages",
+                      "channels/imessage/messaging",
+                      "channels/imessage/troubleshooting",
                       "channels/imessage-from-bluebubbles"
                     ]
                   },
