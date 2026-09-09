@@ -6,7 +6,10 @@ import {
   loadAuthProfileStoreForSecretsRuntime,
 } from "openclaw/plugin-sdk/agent-runtime";
 import type { MigrationProviderContext } from "openclaw/plugin-sdk/plugin-entry";
-import { upsertAuthProfile } from "openclaw/plugin-sdk/provider-auth";
+import {
+  updateAuthProfileStoreWithLock,
+  upsertAuthProfile,
+} from "openclaw/plugin-sdk/provider-auth";
 import {
   resolvePreferredOpenClawTmpDir,
   tempWorkspace,
@@ -1059,7 +1062,7 @@ describe("buildCodexMigrationProvider", () => {
       resultStatus: "skipped",
     },
   ])(
-    "preserves a same-account OAuth profile that is $state",
+    "preserves a same-account local OAuth profile that is $state",
     async ({ state, expires, planStatus, resultStatus }) => {
       const clock = vi.spyOn(Date, "now").mockReturnValue(1_900_000_000_000);
       try {
@@ -1079,12 +1082,16 @@ describe("buildCodexMigrationProvider", () => {
           accountId: "same-account",
         };
         const unrelated = { type: "api_key" as const, provider: "other", key: "unrelated-key" };
-        upsertAuthProfile({ profileId, credential: existing, agentDir: targetAgentDir(fixture) });
-        upsertAuthProfile({
-          profileId: "other:retained",
-          credential: unrelated,
+        const seeded = await updateAuthProfileStoreWithLock({
           agentDir: targetAgentDir(fixture),
+          stateDir: fixture.stateDir,
+          updater(store) {
+            store.profiles[profileId] = existing;
+            store.profiles["other:retained"] = unrelated;
+            return true;
+          },
         });
+        expect(seeded?.profiles).toEqual({ [profileId]: existing, "other:retained": unrelated });
         await writeFile(
           path.join(fixture.codexHome, "auth.json"),
           JSON.stringify({
