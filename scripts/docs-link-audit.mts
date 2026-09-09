@@ -462,6 +462,14 @@ function parseAuditUrl(
 }
 
 /**
+ * Explains that a fragment into a ClawHub-mirrored route could not be checked
+ * because the upstream source is absent from this checkout.
+ */
+function mirroredFragmentReason(terminal: string, hash: string) {
+  return `fragment unverified without the ClawHub source checkout (terminal: ${terminal}${hash}); set ${CLAWHUB_REPO_ENV}`;
+}
+
+/**
  * Audits local docs links against route, file, and redirect indexes.
  */
 export function auditDocsLinks(
@@ -545,6 +553,22 @@ export function auditDocsLinks(
           link: record.source,
           reason: `redirect fragment not found: ${record.destination}`,
         });
+        continue;
+      }
+      // A redirect into a ClawHub-mirrored route now resolves off the navigation
+      // declaration, which proves the route but not the fragment. Say so instead
+      // of letting the destination fragment go silently unchecked.
+      if (!page && destination.hash) {
+        const terminal = normalizeRoute(destination.pathname);
+        if (index.mirroredRoutes.has(terminal)) {
+          unverifiedMirroredFragments++;
+          broken.push({
+            file: "docs.json",
+            line: 0,
+            link: record.source,
+            reason: mirroredFragmentReason(terminal, destination.hash),
+          });
+        }
       }
     }
   }
@@ -586,18 +610,22 @@ export function auditDocsLinks(
       // Markdown page exists locally. Its existence is proven by the declaration;
       // only its fragments need the real source checkout.
       const mirroredOnly = !page && index.mirroredRoutes.has(terminal);
-      if (mirroredOnly && !destination.hash) {
+      if (mirroredOnly) {
+        // Plain mode does not inspect fragments at all, so a declared mirrored
+        // route resolves there whether or not the link carries one. Only anchor
+        // mode reports the fragment it cannot verify without the source.
+        if (options.anchors && destination.hash) {
+          unverifiedMirroredFragments++;
+          broken.push({
+            file: rel,
+            line,
+            link: raw,
+            reason: mirroredFragmentReason(terminal, destination.hash),
+          });
+        }
         continue;
       }
-      if (mirroredOnly) {
-        unverifiedMirroredFragments++;
-        broken.push({
-          file: rel,
-          line,
-          link: raw,
-          reason: `fragment unverified without the ClawHub source checkout (terminal: ${terminal}${destination.hash}); set ${CLAWHUB_REPO_ENV}`,
-        });
-      } else if (
+      if (
         !page &&
         (options.anchors || !resolved.ok) &&
         !index.relAllFiles.has(url.pathname.slice(1))
