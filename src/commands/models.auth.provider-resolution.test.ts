@@ -218,7 +218,7 @@ describe("resolveRequestedLoginProviderOrThrow", () => {
 });
 
 describe("models auth login explicit credential selection", () => {
-  it.each(["force", "profile-id"])(
+  it.each(["force", "profile-id", "set-default"])(
     "bypasses import for --%s with the gateway stopped",
     async (selection) => {
       const state = await createOpenClawTestState({
@@ -270,7 +270,7 @@ describe("models auth login explicit credential selection", () => {
               auth: [{ id: "token", label: "Fixture token", kind: "token",
                 credentialImport: { migrationProviderId: ${JSON.stringify(provider)}, itemId: "auth:shared", credentialKind: "token" },
                 async run() {
-                  return ${JSON.stringify({ profiles: [{ profileId: `${provider}:fresh`, credential: fresh }] })};
+                  return ${JSON.stringify({ profiles: [{ profileId: `${provider}:fresh`, credential: fresh }], defaultModel: `${provider}/recommended` })};
                 }
               }]
             });
@@ -278,7 +278,10 @@ describe("models auth login explicit credential selection", () => {
         };`,
         );
         const config: OpenClawConfig = {
-          agents: { list: [{ id: "main", workspace: state.workspaceDir }] },
+          agents: {
+            defaults: { model: { primary: "other-proof/existing" } },
+            list: [{ id: "main", workspace: state.workspaceDir }],
+          },
           plugins: { allow: [provider], entries: { [provider]: { enabled: true } } },
           gateway: {
             mode: "local",
@@ -308,7 +311,11 @@ describe("models auth login explicit credential selection", () => {
           provider,
           method: "token",
           agent: "main",
-          ...(selection === "force" ? { force: true } : { profileId: freshId }),
+          ...(selection === "force"
+            ? { force: true }
+            : selection === "profile-id"
+              ? { profileId: freshId }
+              : { setDefault: true }),
           config,
           runtime,
           prompter: createWizardPrompter({
@@ -318,18 +325,22 @@ describe("models auth login explicit credential selection", () => {
           }),
         });
 
+        const savedConfig = JSON.parse(await fs.readFile(state.configPath, "utf8"));
+        expect(savedConfig.agents.defaults.model.primary).toBe(
+          selection === "set-default" ? "authstore-proof/recommended" : "other-proof/existing",
+        );
         expect(loadPersistedAuthProfileStore()?.profiles).toEqual({
-          ...(selection === "profile-id" ? { [`${provider}:shared`]: expired } : {}),
+          ...(selection !== "force" ? { [`${provider}:shared`]: expired } : {}),
           [freshId]: fresh,
           "other-proof:shared": unrelated,
         });
         const local = loadPersistedAuthProfileStore(state.agentDir());
         expect(local?.profiles).toEqual({
-          ...(selection === "profile-id" ? { [`${provider}:local`]: expired } : {}),
+          ...(selection !== "force" ? { [`${provider}:local`]: expired } : {}),
           "other-proof:local": unrelated,
         });
         expect(loadAuthProfileStoreWithoutExternalProfiles(state.agentDir()).profiles).toEqual({
-          ...(selection === "profile-id"
+          ...(selection !== "force"
             ? { [`${provider}:shared`]: expired, [`${provider}:local`]: expired }
             : {}),
           [freshId]: fresh,

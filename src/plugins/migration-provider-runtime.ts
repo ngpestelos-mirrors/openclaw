@@ -3,7 +3,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getLoadedRuntimePluginRegistry } from "./active-runtime-registry.js";
 import { withBundledPluginEnablementCompat } from "./bundled-compat.js";
 import { listBundledPluginMetadata } from "./bundled-plugin-metadata.js";
+import { isBundledProviderCompatContract } from "./bundled-provider-compat.js";
+import { normalizePluginsConfig } from "./config-state.js";
 import { acquirePluginRegistryForInspection } from "./loader.js";
+import { isManifestPluginOwnerAllowedByControlPlanePolicy } from "./manifest-contract-eligibility.js";
 import { resolveManifestContractRuntimePluginResolution } from "./manifest-contract-runtime.js";
 import {
   resolveMigrationProviderPublicArtifacts,
@@ -65,6 +68,7 @@ function resolveMigrationProviderPluginResolution(params: {
       : [],
   );
 
+  const normalizedConfig = normalizePluginsConfig(params.cfg?.plugins);
   // Install migration can persist a deliberately pruned bundled-plugin index.
   // Migration contracts still need manifest discovery to repair older indexes.
   for (const plugin of listBundledPluginMetadata({ includeChannelConfigs: false })) {
@@ -72,7 +76,17 @@ function resolveMigrationProviderPluginResolution(params: {
     if (
       providerIds.length === 0 ||
       (params.providerId && !providerIds.includes(params.providerId)) ||
-      publicPlugins.some((owner) => owner.id === plugin.manifest.id)
+      publicPlugins.some((owner) => owner.id === plugin.manifest.id) ||
+      !isManifestPluginOwnerAllowedByControlPlanePolicy({
+        plugin: {
+          id: plugin.manifest.id,
+          origin: "bundled",
+          channels: plugin.manifest.channels,
+        },
+        config: params.cfg,
+        normalizedConfig,
+        allowBundledProviderCompat: isBundledProviderCompatContract("migrationProviders"),
+      })
     ) {
       continue;
     }

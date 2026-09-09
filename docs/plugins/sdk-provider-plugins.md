@@ -29,12 +29,16 @@ catalog, API-key auth, and dynamic model resolution.
 An auth method can declare `credentialImport` with a `migrationProviderId`,
 an exact `itemId`, and a `credentialKind` (`api_key`, `oauth`, or `token`).
 `models auth login` asks that migration owner for an auth-only plan before
-starting interactive sign-in. `--force` and `--profile-id` skip import.
+starting interactive sign-in. `--force`, `--profile-id`, and `--set-default` skip
+import. `--set-default` uses the auth method's recommended model through the normal
+sign-in flow.
 
 The migration plugin declares its ID in `contracts.migrationProviders` and can
 export `buildMigrationProvider()` from a top-level `migration-provider-api.ts`
 public artifact. Keep that entry lightweight. Bundled plugins and enabled
 installed plugins can supply it without replacing the running plugin registry.
+Explicitly disabled or denied migration owners cannot execute their artifacts.
+The existing bundled migration compatibility rules still apply.
 
 The login caller selects only the declared auth item. Its details must contain
 the matching `provider` and `credentialKind`; a migrated result also supplies

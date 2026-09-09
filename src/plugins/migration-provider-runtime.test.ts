@@ -156,11 +156,19 @@ describe("migration provider runtime", () => {
     withPluginMigrationProviders = runtime.withPluginMigrationProviders;
   });
 
-  it.each(["global", "bundled"] as const)(
-    "uses the selected %s public artifact without acquiring or replacing a registry",
-    async (origin) => {
+  it.each([
+    { origin: "global", policy: "enabled", allowed: true },
+    { origin: "global", policy: "disabled", allowed: false },
+    { origin: "global", policy: "denied", allowed: false },
+    { origin: "bundled", policy: "enabled", allowed: true },
+    { origin: "bundled", policy: "disabled", allowed: false },
+    { origin: "bundled", policy: "denied", allowed: false },
+  ] as const)(
+    "enforces $policy owner policy before executing a $origin public artifact",
+    async ({ origin, policy, allowed }) => {
       const scanDir = tempDirs.make("openclaw-migration-artifact-");
       const rootDir = path.join(scanDir, "fixture-dir");
+      const executedPath = path.join(scanDir, "artifact-executed");
       fs.mkdirSync(rootDir);
       fs.writeFileSync(
         path.join(rootDir, "package.json"),
@@ -186,6 +194,8 @@ describe("migration provider runtime", () => {
       fs.writeFileSync(
         path.join(rootDir, "migration-provider-api.js"),
         `
+        import fs from "node:fs";
+        fs.writeFileSync(${JSON.stringify(executedPath)}, "executed");
         export function buildMigrationProvider() {
           return { id: "fixture-import", label: "Fixture public owner",
             plan: async () => ({ providerId: "fixture-import", source: "fixture", items: [],
@@ -222,12 +232,18 @@ describe("migration provider runtime", () => {
         const label = await withPluginMigrationProviders(
           {
             providerId: "fixture-import",
-            cfg: { plugins: { entries: { fixture: { enabled: true } } } },
+            cfg: {
+              plugins: {
+                entries: { fixture: { enabled: policy !== "disabled" } },
+                ...(policy === "denied" ? { deny: ["fixture"] } : {}),
+              },
+            },
           },
           async (providers) =>
             providers.find((provider) => provider.id === "fixture-import")?.label,
         );
-        expect(label).toBe("Fixture public owner");
+        expect(label).toBe(allowed ? "Fixture public owner" : undefined);
+        expect(fs.existsSync(executedPath)).toBe(allowed);
         expect(mocks.acquirePluginRegistryForInspection).not.toHaveBeenCalled();
         expect(active.migrationProviders).toEqual([]);
       } finally {

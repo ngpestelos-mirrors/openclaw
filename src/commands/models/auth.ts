@@ -1052,7 +1052,7 @@ export async function runModelsAuthLoginFlowCore(
   }
 
   const imported =
-    !opts.force && !opts.profileId
+    !opts.force && !opts.profileId && !opts.setDefault
       ? await tryImportProviderCredential({
           method: chosenMethod,
           providerId: selectedProvider.id,
