@@ -139,7 +139,10 @@ async function readNativeCredential(
       { refreshToken: false },
       { signal },
     );
-    if (account.account?.type !== "apiKey" || account.requiresOpenaiAuth !== true) {
+    if (
+      asOptionalRecord(account.account)?.type !== "apiKey" ||
+      account.requiresOpenaiAuth !== true
+    ) {
       return undefined;
     }
   }
