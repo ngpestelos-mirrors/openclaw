@@ -18,10 +18,12 @@ import { codexAppInventoryResponse } from "../app-server/app-inventory.test-help
 import { CODEX_PLUGINS_MARKETPLACE_NAME } from "../app-server/config.js";
 import { buildCodexPluginAppCacheKey } from "../app-server/plugin-app-cache-key.js";
 import type { CodexGetAccountResponse, v2 } from "../app-server/protocol.js";
+import type { CodexAppServerCloseResult } from "../app-server/transport.js";
 import { readCodexCliActiveApiKeyAsync } from "./cli-credentials.js";
 import { buildCodexMigrationProvider } from "./provider.js";
 import { discoverCodexSource } from "./source.js";
 
+const closeCredentialReader = vi.hoisted(() => vi.fn<() => Promise<CodexAppServerCloseResult>>());
 const appServerRequest = vi.hoisted(() => vi.fn());
 const sourceAppServerClientScope = vi.hoisted(() => vi.fn());
 const credentialStorage = vi.hoisted(() => ({
@@ -45,7 +47,7 @@ vi.mock("../app-server/client.js", () => ({
         getModelCatalogRevision: () => 0,
         getCloseError: () => undefined,
         close: () => undefined,
-        closeAndWait: async () => ({ exited: true, cleanup: "closed" }),
+        closeAndWait: closeCredentialReader,
         async request(method: string) {
           if (method === "account/read") {
             return { account: { type: credentialStorage.accountType }, requiresOpenaiAuth: true };
@@ -237,6 +239,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   clearRuntimeAuthProfileStoreSnapshots();
+  closeCredentialReader.mockReset();
   appServerRequest.mockReset();
   sourceAppServerClientScope.mockReset();
   defaultCodexAppInventoryCache.clear();
@@ -245,6 +248,7 @@ afterEach(async () => {
 
 describe("buildCodexMigrationProvider", () => {
   beforeEach(() => {
+    closeCredentialReader.mockResolvedValue({ exited: true, cleanup: "closed" });
     credentialStorage.mode = "file";
     credentialStorage.requiredMode = undefined;
     credentialStorage.accountType = "apiKey";
@@ -885,6 +889,34 @@ describe("buildCodexMigrationProvider", () => {
     });
     expect(ctx.config).toEqual(before);
   });
+
+  it.each([false, true])(
+    "does not persist credentials after uncertain reader cleanup (exited=%s)",
+    async (exited) => {
+      const fixture = await createCodexFixture();
+      await writeFile(
+        path.join(fixture.codexHome, "auth.json"),
+        JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "fixture-selected-key" }),
+      );
+      const ctx = makeContext({
+        source: fixture.codexHome,
+        stateDir: fixture.stateDir,
+        workspaceDir: fixture.workspaceDir,
+        itemKinds: ["auth"],
+        includeSecrets: true,
+        providerOptions: { credentialKind: "api_key", configPatchMode: "none" },
+      });
+      const provider = buildCodexMigrationProvider();
+      const plan = await provider.plan(ctx);
+      closeCredentialReader.mockResolvedValue({ exited, cleanup: "uncertain" });
+
+      await expect(provider.apply(ctx, plan)).rejects.toThrow(
+        "The Codex credential reader could not stop. No credential was imported.",
+      );
+
+      expect(loadTargetAuthStore(fixture).profiles["openai:codex-import"]).toBeUndefined();
+    },
+  );
 
   it.each(["changed", "cancelled"])("does not persist a %s selected import", async (change) => {
     const fixture = await createCodexFixture();

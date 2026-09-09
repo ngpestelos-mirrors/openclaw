@@ -110,7 +110,8 @@ async function readSelectedCredentialStorage(
     // Unsupported or unavailable native storage leaves interactive sign-in available.
   }
   signal.removeEventListener("abort", abort);
-  const closed = await client.closeAndWait({ forceKillDelayMs: 200, exitTimeoutMs: 300 });
+  // 2026-09-09: the pinned native reader took five seconds to exit after replying.
+  const closed = await client.closeAndWait({ forceKillDelayMs: 6_000, exitTimeoutMs: 7_000 });
   if (!closed.exited || closed.cleanup !== "closed") {
     throw new Error("The Codex credential reader could not stop. No credential was imported.", {
       cause: options.signal?.reason,
