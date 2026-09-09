@@ -9,7 +9,7 @@ import { createDocsMarkdown, parseDocsDocument } from "../../scripts/lib/docs-ma
 import { normalizeRoute } from "../../scripts/lib/docs-published-routes.mts";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 
-const { prepareExternalLinkAuditTree, prepareMirroredDocsDir, resolveRoute } =
+const { auditDocsLinks, prepareExternalLinkAuditTree, prepareMirroredDocsDir, resolveRoute } =
   await import("../../scripts/docs-link-audit.mts");
 
 type AuditCliCase = {
@@ -432,6 +432,87 @@ describe("docs-link-audit", () => {
       }
     },
   );
+
+  describe("ClawHub routes mirrored from openclaw/clawhub", () => {
+    // /clawhub/** pages are authored upstream and injected by the publisher, so a
+    // checkout without the ClawHub source has the navigation entries but no pages.
+    const buildDocsTree = (tempDirs: string[], link: string) => {
+      const docsRoot = path.join(makeTempDir(tempDirs, "docs-clawhub-mirror-"), "docs");
+      fs.mkdirSync(docsRoot, { recursive: true });
+      fs.writeFileSync(
+        path.join(docsRoot, "docs.json"),
+        JSON.stringify({
+          navigation: [{ group: "ClawHub", pages: ["clawhub/index", "clawhub/publishing"] }],
+          redirects: [{ source: "/tools/clawhub", destination: "/clawhub" }],
+        }),
+      );
+      fs.writeFileSync(path.join(docsRoot, "page.md"), `## Page\n\n[hub](${link})\n`);
+      return docsRoot;
+    };
+
+    it("accepts declared mirrored routes in anchors mode when the source is absent", () => {
+      const tempDirs: string[] = [];
+      try {
+        const result = auditDocsLinks({
+          docsDir: buildDocsTree(tempDirs, "/clawhub/publishing"),
+          allowExternalClawHubRoutes: true,
+          anchors: true,
+        });
+        expect(result.broken).toEqual([]);
+        expect(result.unverifiedMirroredFragments).toBe(0);
+      } finally {
+        cleanupTempDirs(tempDirs);
+      }
+    });
+
+    it("reports fragments into mirrored routes as unverified rather than missing", () => {
+      const tempDirs: string[] = [];
+      try {
+        const result = auditDocsLinks({
+          docsDir: buildDocsTree(tempDirs, "/clawhub/publishing#package-publish-source"),
+          allowExternalClawHubRoutes: true,
+          anchors: true,
+        });
+        expect(result.unverifiedMirroredFragments).toBe(1);
+        expect(result.broken).toHaveLength(1);
+        expect(result.broken[0]?.reason).toContain("fragment unverified");
+        expect(result.broken[0]?.reason).toContain("OPENCLAW_DOCS_SYNC_CLAWHUB_REPO");
+      } finally {
+        cleanupTempDirs(tempDirs);
+      }
+    });
+
+    it("still reports undeclared routes under /clawhub as missing", () => {
+      const tempDirs: string[] = [];
+      try {
+        const result = auditDocsLinks({
+          docsDir: buildDocsTree(tempDirs, "/clawhub/not-in-navigation"),
+          allowExternalClawHubRoutes: true,
+          anchors: true,
+        });
+        expect(result.broken).toHaveLength(1);
+        expect(result.broken[0]?.reason).toContain("route/file not found");
+      } finally {
+        cleanupTempDirs(tempDirs);
+      }
+    });
+
+    it("does not accept mirrored routes when the allowance is off", () => {
+      const tempDirs: string[] = [];
+      try {
+        const result = auditDocsLinks({
+          docsDir: buildDocsTree(tempDirs, "/clawhub/publishing"),
+          allowExternalClawHubRoutes: false,
+          anchors: true,
+        });
+        expect(result.broken.some((item) => item.reason.includes("route/file not found"))).toBe(
+          true,
+        );
+      } finally {
+        cleanupTempDirs(tempDirs);
+      }
+    });
+  });
 
   it("normalizes route fragments away", () => {
     expect(normalizeRoute("/plugins/building-plugins#registering-agent-tools")).toBe(
