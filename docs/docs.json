@@ -1877,7 +1877,17 @@
                   "automation/tasks",
                   "automation/taskflow",
                   "automation/standing-orders",
-                  "automation/hooks"
+                  "automation/hooks",
+                  {
+                    "group": "Hooks",
+                    "pages": [
+                      "automation/hooks/writing-hooks",
+                      "automation/hooks/configuration",
+                      "automation/hooks/bundled-hooks",
+                      "automation/hooks/event-types",
+                      "automation/hooks/troubleshooting"
+                    ]
+                  }
                 ]
               },
               {
