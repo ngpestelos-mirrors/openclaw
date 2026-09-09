@@ -45,8 +45,9 @@ the matching `provider` and `credentialKind`; a migrated result also supplies
 the saved `profileId`. The owner must honor cancellation, reread the selected
 source before persistence, and reject a changed credential. Login passes
 `configPatchMode: "none"` so import preserves model defaults and restrictions.
-Unavailable storage continues to interactive sign-in. A failed selected import
-stops the operation instead of silently starting a different login.
+Unavailable storage or an unusable matching OAuth profile continues to interactive
+sign-in. A matching account identity alone does not make expired credentials usable.
+A failed selected import stops the operation instead of silently starting a different login.
 
 ## Walkthrough
 

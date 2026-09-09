@@ -218,8 +218,8 @@ describe("resolveRequestedLoginProviderOrThrow", () => {
 });
 
 describe("models auth login explicit credential selection", () => {
-  it.each(["force", "profile-id", "set-default"])(
-    "bypasses import for --%s with the gateway stopped",
+  it.each(["force", "profile-id", "set-default", "unavailable-import"])(
+    "uses fresh authentication for %s with the gateway stopped",
     async (selection) => {
       const state = await createOpenClawTestState({
         label: "auth-force-login",
@@ -233,11 +233,42 @@ describe("models auth login explicit credential selection", () => {
           OPENCLAW_GATEWAY_PASSWORD: undefined,
         },
       });
-      const importOwner = vi
-        .spyOn(migrationRuntime, "withPluginMigrationProviders")
-        .mockRejectedValue(
+      const importOwner = vi.spyOn(migrationRuntime, "withPluginMigrationProviders");
+      if (selection === "unavailable-import") {
+        importOwner.mockImplementation(async (_params, run) =>
+          run([
+            {
+              id: "authstore-proof",
+              label: "Auth store proof",
+              plan() {
+                const items: MigrationItem[] = [
+                  {
+                    id: "auth:shared",
+                    kind: "auth",
+                    action: "skip",
+                    status: "skipped",
+                    message: "The existing sign-in needs to be renewed.",
+                    details: { credentialImportUnavailable: true },
+                  },
+                ];
+                return {
+                  providerId: "authstore-proof",
+                  source: "/fixture",
+                  items,
+                  summary: summarizeMigrationItems(items),
+                };
+              },
+              apply() {
+                throw new Error("Unavailable credentials cannot be applied");
+              },
+            },
+          ]),
+        );
+      } else {
+        importOwner.mockRejectedValue(
           new Error("Explicit credential selection must not acquire an import owner"),
         );
+      }
       try {
         pluginLoaderCacheState.clear();
         resetPluginRuntimeStateForTest();
@@ -315,7 +346,9 @@ describe("models auth login explicit credential selection", () => {
             ? { force: true }
             : selection === "profile-id"
               ? { profileId: freshId }
-              : { setDefault: true }),
+              : selection === "set-default"
+                ? { setDefault: true }
+                : {}),
           config,
           runtime,
           prompter: createWizardPrompter({

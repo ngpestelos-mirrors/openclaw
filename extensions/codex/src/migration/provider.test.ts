@@ -1039,6 +1039,100 @@ describe("buildCodexMigrationProvider", () => {
     );
   });
 
+  it.each([
+    {
+      state: "expired",
+      expires: 1_899_999_999_999,
+      planStatus: "skipped",
+      resultStatus: "skipped",
+    },
+    {
+      state: "usable",
+      expires: 2_000_000_000_000,
+      planStatus: "planned",
+      resultStatus: "migrated",
+    },
+    {
+      state: "expires before apply",
+      expires: 2_000_000_000_000,
+      planStatus: "planned",
+      resultStatus: "skipped",
+    },
+  ])(
+    "preserves a same-account OAuth profile that is $state",
+    async ({ state, expires, planStatus, resultStatus }) => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_900_000_000_000);
+      try {
+        const fixture = await createCodexFixture();
+        credentialStorage.accountType = "chatgpt";
+        const claims = {
+          chatgpt_account_id: "same-account",
+          chatgpt_user_id: "same-user",
+        };
+        const profileId = "openai:existing-account";
+        const existing = {
+          type: "oauth" as const,
+          provider: "openai",
+          access: fakeJwt({ exp: expires / 1000, "https://api.openai.com/auth": claims }),
+          refresh: "old-refresh",
+          expires,
+          accountId: "same-account",
+        };
+        const unrelated = { type: "api_key" as const, provider: "other", key: "unrelated-key" };
+        upsertAuthProfile({ profileId, credential: existing, agentDir: targetAgentDir(fixture) });
+        upsertAuthProfile({
+          profileId: "other:retained",
+          credential: unrelated,
+          agentDir: targetAgentDir(fixture),
+        });
+        await writeFile(
+          path.join(fixture.codexHome, "auth.json"),
+          JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+              access_token: fakeJwt({ exp: 2_100_000_000, "https://api.openai.com/auth": claims }),
+              refresh_token: "new-native-refresh",
+              account_id: "same-account",
+            },
+          }),
+        );
+        const ctx = makeContext({
+          source: fixture.codexHome,
+          stateDir: fixture.stateDir,
+          workspaceDir: fixture.workspaceDir,
+          itemKinds: ["auth"],
+          includeSecrets: true,
+          providerOptions: { credentialKind: "oauth", configPatchMode: "none" },
+          config: {
+            agents: { defaults: { model: "other/retained", workspace: fixture.workspaceDir } },
+          },
+        });
+        const configBefore = structuredClone(ctx.config);
+        const provider = buildCodexMigrationProvider();
+        const plan = await provider.plan(ctx);
+        expect(findItem(plan.items, "auth:openai").status).toBe(planStatus);
+        if (state === "expired") {
+          expect(findItem(plan.items, "auth:openai")).toMatchObject({
+            reason: "existing OAuth profile requires sign-in",
+            details: { credentialImportUnavailable: true },
+          });
+        }
+        if (state === "expires before apply") {
+          clock.mockReturnValue(2_000_000_000_001);
+        }
+        const result = await provider.apply(ctx, plan);
+        expect(findItem(result.items, "auth:openai").status).toBe(resultStatus);
+        expect(loadTargetAuthStore(fixture).profiles).toEqual({
+          [profileId]: existing,
+          "other:retained": unrelated,
+        });
+        expect(ctx.config).toEqual(configBefore);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
   it("imports Codex auth.json OAuth into the selected agent and seeds cached models", async () => {
     const fixture = await createCodexFixture();
     const reportDir = path.join(fixture.root, "report");

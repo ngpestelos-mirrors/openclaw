@@ -15,6 +15,7 @@ import {
   buildApiKeyCredential,
   buildOpenAICodexCredentialExtra,
   buildOauthProviderAuthResult,
+  hasUsableOAuthCredential,
   resolveOpenAICodexAuthIdentity,
   resolveOpenAICodexImportProfileName,
   updateAuthProfileStoreWithLock,
@@ -40,6 +41,7 @@ const OPENAI_CODEX_DEFAULT_MODEL = "openai/gpt-5.6-sol";
 const CODEX_IMPORT_DISPLAY_NAME = "Codex import";
 const CODEX_REASON_AUTH_NOT_SELECTED = "auth credential migration not selected";
 const CODEX_REASON_AUTH_PROFILE_EXISTS = "auth profile exists";
+const CODEX_REASON_AUTH_PROFILE_UNUSABLE = "existing OAuth profile requires sign-in";
 const CODEX_REASON_AUTH_PROFILE_WRITE_FAILED = "failed to write auth profile";
 const CODEX_REASON_AUTH_NO_LONGER_PRESENT = "auth credential no longer present";
 const CODEX_REASON_MISSING_AUTH_METADATA = "missing auth metadata";
@@ -516,7 +518,7 @@ export async function buildCodexAuthItems(params: {
   const skipped = !params.ctx.includeSecrets;
   return credentials.map((credential) => {
     const { profileId, matchedExisting } = itemProfileTarget(credential, store);
-    const targetExists = Boolean(store.profiles[profileId]);
+    const existing = store.profiles[profileId];
     const configProfile = authProfileConfigForCredential(credential, profileId);
     const configConflict = configProfile
       ? hasAuthProfileConfigConflict(
@@ -526,24 +528,33 @@ export async function buildCodexAuthItems(params: {
         )
       : false;
     const conflict =
-      ((targetExists && !matchedExisting && !params.ctx.overwrite) || configConflict) && !skipped;
+      ((existing && !matchedExisting && !params.ctx.overwrite) || configConflict) && !skipped;
+    const unavailable =
+      !skipped &&
+      !conflict &&
+      !params.ctx.overwrite &&
+      existing?.type === "oauth" &&
+      !hasUsableOAuthCredential(existing);
     return createMigrationItem({
       id: authItemId(credential),
       kind: "auth",
-      action: skipped ? "skip" : "create",
+      action: skipped || unavailable ? "skip" : "create",
       source: params.source.codexHome,
       // Credentials land in the agent's SQLite auth profile store; naming the
       // retired JSON file here promised operators a file that is never created.
       target: `${params.targets.agentDir}/openclaw-agent.sqlite#auth_profile_store:${profileId}`,
-      status: skipped ? "skipped" : conflict ? "conflict" : "planned",
+      status: skipped || unavailable ? "skipped" : conflict ? "conflict" : "planned",
       sensitive: true,
       reason: skipped
         ? CODEX_REASON_AUTH_NOT_SELECTED
         : conflict
           ? CODEX_REASON_AUTH_PROFILE_EXISTS
-          : undefined,
-      message:
-        credential.kind === "oauth"
+          : unavailable
+            ? CODEX_REASON_AUTH_PROFILE_UNUSABLE
+            : undefined,
+      message: unavailable
+        ? "The existing OpenAI sign-in needs to be renewed. Continue with sign-in."
+        : credential.kind === "oauth"
           ? configPatchMode === "none"
             ? "Import Codex OAuth credentials."
             : "Import Codex OAuth credentials and configure OpenAI Codex models."
@@ -555,6 +566,7 @@ export async function buildCodexAuthItems(params: {
         sourceCredentialFingerprint: sourceCredentialFingerprint(credential),
         sourceKind: "codex-native-selected-storage",
         credentialKind: credential.kind,
+        credentialImportUnavailable: unavailable,
       },
     });
   });
@@ -615,6 +627,7 @@ export async function applyCodexAuthItems(params: {
     return [markMigrationItemConflict(item, CODEX_REASON_AUTH_PROFILE_EXISTS)];
   }
   let conflicted = false;
+  let unusable = false;
   let wrote = false;
   const store = await updateAuthProfileStoreWithLock({
     agentDir: targets.agentDir,
@@ -628,6 +641,8 @@ export async function applyCodexAuthItems(params: {
             ? findMatchingOAuthProfile(freshStore, oauthCredential!)
             : findMatchingApiKeyProfile(freshStore, credential.provider, credential.key);
         if (matchedProfileId === profileId) {
+          // A matching account cannot turn an expired or fenced profile into a successful login.
+          unusable = existing.type === "oauth" && !hasUsableOAuthCredential(existing);
           return false;
         }
         conflicted = true;
@@ -649,6 +664,9 @@ export async function applyCodexAuthItems(params: {
   });
   if (conflicted) {
     return [markMigrationItemConflict(item, CODEX_REASON_AUTH_PROFILE_EXISTS)];
+  }
+  if (unusable) {
+    return [markMigrationItemSkipped(item, CODEX_REASON_AUTH_PROFILE_UNUSABLE)];
   }
   if (!store?.profiles[profileId]) {
     return [markMigrationItemError(item, CODEX_REASON_AUTH_PROFILE_WRITE_FAILED)];
