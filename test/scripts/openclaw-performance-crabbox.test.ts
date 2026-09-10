@@ -458,6 +458,22 @@ collect_diagnostics "$SOURCE" "$DESTINATION" "$SUBTREE"
     { name: "source summary failure", lane: "source", summaryExit: 37, expected: 37 },
     { name: "custom diagnostic summary", admitted: false, expected: 0 },
     { name: "custom failed evidence summary", admitted: false, validationExit: 1, expected: 1 },
+    {
+      name: "custom setup failure",
+      admitted: false,
+      setupExit: 23,
+      collectionExit: 41,
+      expected: 23,
+    },
+    {
+      name: "custom build failure",
+      admitted: false,
+      buildExit: 29,
+      collectionExit: 41,
+      expected: 29,
+    },
+    { name: "custom unsafe collection", admitted: false, collectionExit: 41, expected: 41 },
+    { name: "custom summary failure", admitted: false, summaryExit: 37, expected: 37 },
   ])("finalizes quiesced workloads with trusted phase policy: $name", (entry) => {
     const root = tempDirs.make("performance-failed-export-");
     const source = readFileSync(SCRIPT, "utf8");
@@ -501,7 +517,8 @@ as_runner() {
       ;;
     __source-cli) printf runner-measurement > "$ROOT/runner-cli" ;;
     *)
-      if [[ "$1" == /usr/bin/git ]]; then printf '%s\\n' "$SHA"
+      if [[ "$1" == /bin/sh && "$SUMMARY_EXIT" != 0 ]]; then return "$SUMMARY_EXIT"
+      elif [[ "$1" == /usr/bin/git ]]; then printf '%s\\n' "$SHA"
       elif [[ "$1" == /usr/bin/stat ]]; then command node -e 'console.log(require("node:fs").statSync(process.argv[1]).size)' "$4"
       elif [[ "$1" == /usr/bin/cat ]]; then command cat "$2"
       else "$@"; fi ;;
@@ -527,11 +544,15 @@ node() {
   fi
 }
 collect_diagnostics() {
+  ((COLLECTION_EXIT == 0)) || { echo "unsafe diagnostic fixture" >&2; exit "$COLLECTION_EXIT"; }
   [[ "$3" != .artifacts/openclaw-performance/source || -d "$1/$3" ]] ||
     die "diagnostic subtree is missing"
 }
 quiesce_sut() { printf quiesced > "$ROOT/quiesced"; }
-write_payload() { printf '%s\\n' "\${19:-missing}" > "$ROOT/exported"; }
+write_payload() {
+  printf '%s\\n' "\${19:-missing}" > "$ROOT/exported"
+  ((COLLECTION_EXIT == 0)) || return 43
+}
 finish() {
   local root="$ROOT" openclaw_sha="$SHA" kova_sha="$SHA" status
   local kova="$ROOT/kova" results="$ROOT" workload_results="$ROOT" admitted="$ADMITTED" executor=as_runner
@@ -561,6 +582,7 @@ finish
           MATRIX_EXIT: String(entry.matrixExit ?? 0),
           BUNDLE_EXIT: String(entry.bundleExit ?? 0),
           SUMMARY_EXIT: String(entry.summaryExit ?? 0),
+          COLLECTION_EXIT: String(entry.collectionExit ?? 0),
           GATED: String(entry.gated ?? false),
           ADAPTED: String(entry.adapted ?? false),
           ADMITTED: String(entry.admitted ?? true),
@@ -583,19 +605,22 @@ finish
           "utf8",
         ),
       ),
-    ).toMatchObject({ exitCode: entry.expected, exportExitCode: 0 });
+    ).toMatchObject({ exitCode: entry.expected, exportExitCode: entry.collectionExit ? 43 : 0 });
     if (entry.lane === "source") {
       expect(existsSync(join(root, "runner-cli"))).toBe(!entry.setupExit && !entry.buildExit);
       if (!entry.setupExit && !entry.buildExit) {
         expect(readFileSync(join(root, "runner-cli"), "utf8")).toBe("runner-measurement");
       }
     } else if (entry.admitted === false) {
-      const summary = readFileSync(
-        join(root, ".artifacts/kova/summaries/mock-provider.md"),
-        "utf8",
-      );
-      expect(summary).toContain("candidate-derived summary");
-      expect(summary).toContain("candidate-produced diagnostics only; not gate evidence");
+      const summaryPath = join(root, ".artifacts/kova/summaries/mock-provider.md");
+      if (entry.collectionExit) {
+        expect(existsSync(summaryPath)).toBe(false);
+        expect(existsSync(join(root, "validated-matrix-exit"))).toBe(false);
+      } else if (!entry.summaryExit) {
+        const summary = readFileSync(summaryPath, "utf8");
+        expect(summary).toContain("candidate-derived summary");
+        expect(summary).toContain("candidate-produced diagnostics only; not gate evidence");
+      }
     } else if (!entry.setupExit && !entry.buildExit && !entry.bundleExit) {
       expect(readFileSync(join(root, "validated-matrix-exit"), "utf8")).toBe(
         `${entry.matrixExit ?? 0}\n`,

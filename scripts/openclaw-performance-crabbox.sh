@@ -772,10 +772,28 @@ remote_main() {
     source_status=$?
     set -e
     if ((status == 0)); then status="$source_status"; fi
+  elif [[ "$admitted" != true ]]; then
+    local finalization_status
+    set +e
+    (
+      set -e
+      collect_diagnostics "$root/openclaw" "$results" ".artifacts/kova"
+      local validation_status=0
+      as_runner "$0" __validate-kova "$lane" "$root" "$profile" "$repeat" "$include_filters" \
+        "$expected_entries" "$fail_on_regression" "$helpers" "$model" "$require_instrumented" \
+        "$results" "$status" "$admitted" || validation_status=$?
+      as_runner /bin/sh -eu -c '
+        mkdir -p "$(dirname "$1")"
+        printf "\nCustom Kova: candidate-produced diagnostics only; not gate evidence.\n" >> "$1"
+      ' sh "$results/.artifacts/kova/summaries/$lane.md"
+      exit "$validation_status"
+    )
+    finalization_status=$?
+    set -e
+    if ((status == 0)); then status="$finalization_status"; fi
   else
-    [[ "$admitted" == true ]] || collect_diagnostics "$root/openclaw" "$results" ".artifacts/kova"
     local validation_status=0 matrix_status="$status"
-    if [[ "$admitted" == true && "$status" == 0 ]]; then
+    if [[ "$status" == 0 ]]; then
       local matrix_receipt="$results/.artifacts/kova/$lane-matrix-exit" matrix_receipt_size
       matrix_receipt_size="$(as_runner /usr/bin/stat -c %s "$matrix_receipt")"
       ((matrix_receipt_size >= 2 && matrix_receipt_size <= 4)) || die "invalid matrix phase receipt size"
@@ -786,12 +804,6 @@ remote_main() {
     as_runner "$0" __validate-kova "$lane" "$root" "$profile" "$repeat" "$include_filters" \
       "$expected_entries" "$fail_on_regression" "$helpers" "$model" "$require_instrumented" \
       "$results" "$matrix_status" "$admitted" || validation_status=$?
-    if [[ "$admitted" != true ]]; then
-      as_runner /bin/sh -eu -c '
-        mkdir -p "$(dirname "$1")"
-        printf "\nCustom Kova: candidate-produced diagnostics only; not gate evidence.\n" >> "$1"
-      ' sh "$results/.artifacts/kova/summaries/$lane.md"
-    fi
     if ((status == 0)); then status="$validation_status"; fi
   fi
   local export_status
