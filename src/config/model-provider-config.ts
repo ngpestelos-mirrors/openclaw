@@ -38,28 +38,17 @@ export function matchesProviderScopedModelId(params: {
 }
 
 /** Uses the same authored row for transport materialization and early auth selection. */
-export function findConfiguredProviderModel(
-  providerConfig: { models?: ModelDefinitionConfig[] } | undefined,
+export function findConfiguredProviderModel<T extends { id: string }>(
+  providerConfig: { models?: readonly T[] } | undefined,
   provider: string,
   modelId: string,
   canonicalizeModelId?: (modelId: string) => string,
 ) {
-  const exact = providerConfig?.models?.find((candidate) =>
-    matchesProviderScopedModelId({ candidateId: candidate.id, provider, modelId }),
-  );
-  return (
-    exact ??
-    (canonicalizeModelId
-      ? providerConfig?.models?.find((candidate) =>
-          matchesProviderScopedModelId({
-            candidateId: candidate.id,
-            provider,
-            modelId,
-            normalizeModelId: canonicalizeModelId,
-          }),
-        )
-      : undefined)
-  );
+  return createConfiguredProviderModelResolver(
+    providerConfig,
+    provider,
+    canonicalizeModelId,
+  )(modelId);
 }
 
 const BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS = new Set([
@@ -149,32 +138,59 @@ export function isBuiltInModelProviderOverlayId(providerId: string): boolean {
   return BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS.has(normalizeProviderId(providerId));
 }
 
-/** Indexes configured model rows after caller-owned model-id normalization. */
-export function resolveMergedModelProviderModels(params: {
-  models: readonly ModelDefinitionConfig[] | undefined;
+/** Indexes exact configured rows ahead of caller-owned model-id equivalents. */
+export function resolveMergedModelProviderModels<T extends { id: string }>(params: {
+  models: readonly T[] | undefined;
   normalizeModelId: (modelId: string) => string | undefined;
-}): ReadonlyMap<string, ModelDefinitionConfig> {
-  const models = new Map<string, ModelDefinitionConfig>();
+}): ReadonlyMap<string, T> {
+  const exactRows = new Map<string, T>();
   for (const model of params.models ?? []) {
-    const modelId = params.normalizeModelId(model.id);
-    if (!modelId) {
-      continue;
-    }
-    const existing = models.get(modelId);
-    // Earlier rows stay authoritative, including explicit empty objects;
-    // later duplicates only supply top-level fields the first row omitted.
-    models.set(modelId, existing ? { ...model, ...existing } : model);
+    // Exact selections can inherit omissions only from same-spelling duplicates.
+    const id = model.id.trim();
+    const exact = exactRows.get(id);
+    exactRows.set(id, exact ? { ...model, ...exact } : model);
   }
-  return models;
+  const models = new Map<string, T>();
+  for (const [id, model] of exactRows) {
+    const modelId = params.normalizeModelId(id);
+    if (!modelId) {
+      exactRows.delete(id);
+    } else if (!models.has(modelId)) {
+      models.set(modelId, model);
+    }
+  }
+  return new Map([...models, ...exactRows]);
 }
 
-function normalizeModelId(provider: string, modelId: string): string {
-  const trimmed = modelId.trim();
-  const slashIndex = trimmed.indexOf("/");
-  return slashIndex > 0 &&
-    normalizeProviderId(trimmed.slice(0, slashIndex)) === normalizeProviderId(provider)
-    ? trimmed.slice(slashIndex + 1).trim()
-    : trimmed;
+function createConfiguredProviderModelResolver<T extends { id: string }>(
+  providerConfig: { models?: readonly T[] } | undefined,
+  provider: string,
+  canonicalizeModelId?: (modelId: string) => string,
+): (modelId: string) => T | undefined {
+  const canonicalize = (id: string) =>
+    stripSelfProviderModelPrefix(provider, id) !== id ? id : canonicalizeModelId?.(id).trim() || id;
+  let configuredModels: ReadonlyMap<string, T> | undefined;
+  return (modelId) => {
+    const id = modelId.trim();
+    const rows = (configuredModels ??= resolveMergedModelProviderModels({
+      models: providerConfig?.models,
+      normalizeModelId: (candidate) => canonicalize(candidate.trim()),
+    }));
+    const canonicalId = canonicalize(id);
+    const exact = rows.get(id) ?? rows.get(canonicalId);
+    if (exact) {
+      return exact;
+    }
+    // Declared equivalents precede legacy self-provider prefixes. The selected
+    // namespace itself is never stripped or merged with a legacy row.
+    for (const [candidate, row] of rows) {
+      const legacy = stripSelfProviderModelPrefix(provider, candidate);
+      if (legacy !== candidate && (legacy === id || canonicalize(legacy.trim()) === canonicalId)) {
+        return row;
+      }
+    }
+    return undefined;
+  };
 }
 
 function hasNonEmptyRecord(value: unknown): boolean {
@@ -224,22 +240,16 @@ export function createModelProviderRouteOverrideResolver(params: {
   ) {
     return () => "present";
   }
-  const canonicalize = (modelId: string) => {
-    const normalized = normalizeModelId(params.provider, modelId);
-    const canonical = params.canonicalizeModelId?.(normalized).trim();
-    return canonical || normalized;
-  };
-  let configuredModels: ReadonlyMap<string, ModelDefinitionConfig> | undefined;
+  const findModel = createConfiguredProviderModelResolver(
+    providerConfig,
+    params.provider,
+    params.canonicalizeModelId,
+  );
   return (modelId) => {
     if (!modelId) {
       return "none";
     }
-    // Keep provider-only queries lazy and normalize the query before the first row pass.
-    const canonicalModelId = canonicalize(modelId);
-    const configuredModel = (configuredModels ??= resolveMergedModelProviderModels({
-      models: providerConfig.models,
-      normalizeModelId: canonicalize,
-    })).get(canonicalModelId);
+    const configuredModel = findModel(modelId);
     return configuredModel &&
       (hasNonEmptyRecord(configuredModel.headers) ||
         hasNonEmptyRecord(configuredModel.params) ||
