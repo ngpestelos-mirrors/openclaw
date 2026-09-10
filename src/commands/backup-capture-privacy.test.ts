@@ -489,9 +489,12 @@ describe("private update capture exclusion", () => {
           },
         }),
       );
-      for (const key of ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"]) vi.stubEnv(key, "OpenClaw Test");
-      for (const key of ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"])
+      for (const key of ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"]) {
+        vi.stubEnv(key, "OpenClaw Test");
+      }
+      for (const key of ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"]) {
         vi.stubEnv(key, "test@example.invalid");
+      }
       const runtime = createTestRuntime();
       const repository = path.join(home.home, "command-backup");
       const create = () =>
