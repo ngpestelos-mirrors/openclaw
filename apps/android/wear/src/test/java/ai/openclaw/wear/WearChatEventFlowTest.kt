@@ -264,38 +264,24 @@ class WearChatEventFlowTest {
     }
 
   @Test
-  fun matchingErrorAfterAnonymousDeltaSettles() =
-    withFlow { flow ->
-      flow.send()
-      assertNotNull(flow.state.pendingReply)
-      flow.emit("delta", eventRunId = null, text = "Anonymous partial reply", complete = false)
-      assertNull(flow.state.activeRunId)
-      assertNotNull(flow.state.streamText)
-      val before = flow.historyRequests
-      flow.emit("error")
-      assertEquals(before + 1, flow.historyRequests)
-      assertNull(flow.state.activeRunId)
-      assertNull(flow.state.streamText)
-      assertTrue(flow.state.messages.isEmpty())
-      assertNull("Matching terminal and inactive canonical history must settle the pending reply", flow.state.pendingReply)
+  fun matchingErrorAndAbortAfterAnonymousDeltaSettle() {
+    for (terminal in listOf("error", "aborted")) {
+      withFlow { flow ->
+        flow.send()
+        assertNotNull(flow.state.pendingReply)
+        flow.emit("delta", eventRunId = null, text = "Anonymous partial reply", complete = false)
+        assertNull(flow.state.activeRunId)
+        assertNotNull(flow.state.streamText)
+        val before = flow.historyRequests
+        flow.emit(terminal)
+        assertEquals(before + 1, flow.historyRequests)
+        assertNull(flow.state.activeRunId)
+        assertNull(flow.state.streamText)
+        assertTrue(flow.state.messages.isEmpty())
+        assertNull("Matching terminal and inactive canonical history must settle the pending reply", flow.state.pendingReply)
+      }
     }
-
-  @Test
-  fun matchingAbortedAfterAnonymousDeltaSettles() =
-    withFlow { flow ->
-      flow.send()
-      assertNotNull(flow.state.pendingReply)
-      flow.emit("delta", eventRunId = null, text = "Anonymous partial reply", complete = false)
-      assertNull(flow.state.activeRunId)
-      assertNotNull(flow.state.streamText)
-      val before = flow.historyRequests
-      flow.emit("aborted")
-      assertEquals(before + 1, flow.historyRequests)
-      assertNull(flow.state.activeRunId)
-      assertNull(flow.state.streamText)
-      assertTrue(flow.state.messages.isEmpty())
-      assertNull("Matching terminal and inactive canonical history must settle the pending reply", flow.state.pendingReply)
-    }
+  }
 
   @Test
   fun matchingTerminalWaitsForInactiveCanonicalHistory() =

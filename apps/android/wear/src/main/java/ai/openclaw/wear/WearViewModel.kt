@@ -241,33 +241,17 @@ internal fun reduceWearTerminalChatEvent(
       observedMessage = finalMessage,
     )
   }
-  return when (event.state) {
-    "final" -> {
-      WearTerminalChatTransition(
-        state =
-          current.copy(
-            messages = event.message?.let { mergeEventMessage(current.messages, it) } ?: current.messages,
-            streamText = if (event.message == null) current.streamText else null,
-            activeRunId = null,
-            pendingReply = null,
-            replyTerminal = terminal,
-          ),
-        reloadHistory = true,
-        observedMessage = event.message,
-      )
-    }
-
-    "aborted", "error" -> {
-      WearTerminalChatTransition(
-        state = current.copy(streamText = null, activeRunId = null, pendingReply = null, replyTerminal = terminal),
-        reloadHistory = true,
-      )
-    }
-
-    else -> {
-      WearTerminalChatTransition(state = current, reloadHistory = false)
-    }
-  }
+  return WearTerminalChatTransition(
+    state =
+      preservedState.copy(
+        streamText = if (outcome == WearReplyOutcome.Final && finalMessage == null) current.streamText else null,
+        activeRunId = null,
+        pendingReply = null,
+        replyTerminal = terminal,
+      ),
+    reloadHistory = true,
+    observedMessage = finalMessage,
+  )
 }
 
 internal fun WearUiState.reconcileReplyHistory(transcript: WearTranscript): WearUiState {
