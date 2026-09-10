@@ -3,19 +3,26 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import * as tar from "tar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetConfigRuntimeState } from "../config/config.js";
 import { createBackupArchive } from "../infra/backup-create.js";
 import { createGitBackup } from "../snapshot/git-backup.js";
 import { createLocalSqliteSnapshotProvider } from "../snapshot/local-repository.js";
+import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
+import { OPENCLAW_AGENT_SCHEMA_SQL } from "../state/openclaw-agent-schema.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../state/openclaw-state-schema.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../test-utils/temp-home.js";
+import { backupGitCreateCommand } from "./backup-git.js";
+import { backupSqliteCreateCommand } from "./backup-sqlite.js";
 import { verifyBackupArchive } from "./backup-verify.js";
+import { createTestRuntime } from "./test-runtime-config-helpers.js";
 
 describe("private update capture exclusion", () => {
   let home: TempHomeEnv;
   let stateDir: string;
   let captureRoot: string;
   beforeEach(async () => {
+    resetConfigRuntimeState();
     home = await createTempHomeEnv("backup-capture-privacy-");
     stateDir = path.join(home.home, ".openclaw");
     captureRoot = `${stateDir}.update-captures`;
@@ -30,6 +37,7 @@ describe("private update capture exclusion", () => {
     );
   });
   afterEach(async () => {
+    resetConfigRuntimeState();
     vi.unstubAllEnvs();
     await home.restore();
   });
@@ -394,6 +402,122 @@ describe("private update capture exclusion", () => {
     await expect(create).rejects.toThrow("Private update captures are excluded");
     expect(await fs.readFile(databasePath)).toEqual(before);
   });
+
+  it.each(["valid", "invalid"])(
+    "refuses a %s marked agent root selection before canonicalization",
+    async (mode) => {
+      const marked = path.join(home.home, "marked-agent-parent");
+      const target = path.join(home.home, "external-agent");
+      await fs.mkdir(marked);
+      await fs.mkdir(target);
+      const marker = path.join(marked, ".openclaw-private-update-capture");
+      const markerBytes = mode === "valid" ? "openclaw-private-update-capture-v1\n" : "incomplete";
+      await fs.writeFile(marker, markerBytes);
+      await fs.writeFile(path.join(target, "agent-private.txt"), "synthetic private agent bytes");
+      const alias = path.join(marked, "agent");
+      await fs.symlink(target, alias, process.platform === "win32" ? "junction" : "dir");
+      await fs.writeFile(
+        path.join(stateDir, "openclaw.json"),
+        JSON.stringify({
+          agents: {
+            ownership: "explicit",
+            entries: { main: { agentDir: alias, workspace: `${captureRoot}-notes` } },
+          },
+        }),
+      );
+      const output = path.join(path.dirname(home.home), `${path.basename(home.home)}-agent.tar.gz`);
+      try {
+        await expect(createBackupArchive({ output })).rejects.toThrow("Private update capture");
+        await expect(fs.stat(output)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await fs.readFile(path.join(target, "agent-private.txt"), "utf8")).toBe(
+          "synthetic private agent bytes",
+        );
+        expect(await fs.readFile(marker, "utf8")).toBe(markerBytes);
+      } finally {
+        await fs.rm(output, { force: true });
+      }
+    },
+  );
+
+  it.each([
+    ["sqlite", "global"],
+    ["git", "global"],
+    ["sqlite", "agent"],
+    ["git", "agent"],
+  ])(
+    "refuses lexical markers before %s %s database selection and keeps healthy aliases usable",
+    async (kind, role) => {
+      const target = path.join(home.home, "external-database");
+      await fs.mkdir(target);
+      const marked =
+        role === "global"
+          ? path.join(stateDir, "state")
+          : path.join(home.home, "marked-agent-parent");
+      await fs.mkdir(marked, { recursive: true });
+      const marker = path.join(marked, ".openclaw-private-update-capture");
+      const databasePath = path.join(
+        target,
+        role === "global" ? "openclaw.sqlite" : "openclaw-agent.sqlite",
+      );
+      const version =
+        role === "global" ? OPENCLAW_STATE_SCHEMA_VERSION : OPENCLAW_AGENT_SCHEMA_VERSION;
+      const db = new DatabaseSync(databasePath);
+      db.exec(role === "global" ? OPENCLAW_STATE_SCHEMA_SQL : OPENCLAW_AGENT_SCHEMA_SQL);
+      db.exec(`PRAGMA user_version=${version}`);
+      db.prepare(
+        "INSERT INTO schema_meta(meta_key,role,schema_version,agent_id,created_at,updated_at) VALUES('primary',?,?,?,1,1)",
+      ).run(role, version, role === "agent" ? "main" : null);
+      db.close();
+      const alias =
+        role === "global" ? path.join(marked, "openclaw.sqlite") : path.join(marked, "agent");
+      await fs.symlink(
+        role === "global" ? databasePath : target,
+        alias,
+        role === "global" ? "file" : process.platform === "win32" ? "junction" : "dir",
+      );
+      await fs.writeFile(
+        path.join(stateDir, "openclaw.json"),
+        JSON.stringify({
+          agents: {
+            ownership: "explicit",
+            entries: {
+              main: {
+                ...(role === "agent" ? { agentDir: alias } : {}),
+                workspace: `${captureRoot}-notes`,
+              },
+            },
+          },
+        }),
+      );
+      for (const key of ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"]) vi.stubEnv(key, "OpenClaw Test");
+      for (const key of ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"])
+        vi.stubEnv(key, "test@example.invalid");
+      const runtime = createTestRuntime();
+      const repository = path.join(home.home, "command-backup");
+      const create = () =>
+        kind === "sqlite"
+          ? backupSqliteCreateCommand(runtime, {
+              repository,
+              ...(role === "global" ? { global: true } : { agent: "main" }),
+            })
+          : backupGitCreateCommand(runtime, {
+              repository,
+              ...(role === "global" ? { global: true } : { agents: ["main"] }),
+            });
+      const before = await fs.readFile(databasePath);
+      for (const bytes of ["incomplete", "openclaw-private-update-capture-v1\n"]) {
+        await fs.writeFile(marker, bytes);
+        await expect(create()).rejects.toThrow("Private update capture");
+        await expect(fs.stat(repository)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await fs.readFile(databasePath)).toEqual(before);
+        expect(await fs.readFile(marker, "utf8")).toBe(bytes);
+      }
+      // Only remove this fixture-owned marker. The same ordinary alias must remain usable.
+      await fs.unlink(marker);
+      await expect(create()).resolves.toBeDefined();
+      expect((await fs.readdir(repository)).length).toBeGreaterThan(0);
+    },
+  );
 
   it.each([false, true])(
     "refuses a raw capture selected as config, onlyConfig=%s",

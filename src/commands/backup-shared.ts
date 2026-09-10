@@ -29,6 +29,7 @@ import {
 } from "../skills/loading/skill-root-discovery.js";
 import { tryRealpath } from "../skills/loading/symlink-targets.js";
 import { recordBackupRunOutcome } from "../state/backup-run-records.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { pathExists, resolveUserPath, shortenHomePath } from "../utils.js";
 import {
   createBackupResourceInventory,
@@ -48,6 +49,8 @@ export function recordBackupOutcomeBestEffort(
   params: Parameters<typeof recordBackupRunOutcome>[0],
 ): void {
   try {
+    // A rejected private input must not be reopened for best-effort outcome writes.
+    assertNotUpdateCapturePath(resolveOpenClawStateSqlitePath(), resolveStateDir());
     recordBackupRunOutcome(params);
   } catch (error) {
     const label = params.kind === "git" ? "Git backup" : "backup";
@@ -574,7 +577,9 @@ export async function resolveBackupAgentRoot(
   config: OpenClawConfig,
   agentId: string,
 ): Promise<BackupAgentRoot> {
-  const sourcePath = await canonicalizePathForContainment(resolveAgentDir(config, agentId));
+  const selectedPath = resolveAgentDir(config, agentId);
+  assertNotUpdateCapturePath(selectedPath, resolveStateDir());
+  const sourcePath = await canonicalizePathForContainment(selectedPath);
   return {
     agentId,
     sourcePath,
