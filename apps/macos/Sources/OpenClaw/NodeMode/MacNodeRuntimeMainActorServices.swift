@@ -4,8 +4,6 @@ import OpenClawKit
 
 @MainActor
 protocol MacNodeRuntimeMainActorServices: Sendable {
-    var desktopAvailability: MacDesktopAvailabilityCoordinator { get }
-
     func snapshotScreen(
         screenIndex: Int?,
         maxWidth: Int?,
