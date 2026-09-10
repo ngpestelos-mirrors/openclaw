@@ -27,6 +27,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -354,40 +355,18 @@ internal fun OpenClawWearApp(
     }
   }
 
-  LaunchedEffect(
-    snapshot?.activeSessionId,
-    state.messages,
-    state.activeRunId,
-    state.sending,
-    state.failure,
-    awaitingReply,
-  ) {
-    if (!awaitingReply) return@LaunchedEffect
-    val activeSnapshot = snapshot
-    if (
-      state.failure != null ||
-      activeSnapshot == null ||
-      activeSnapshot.activeSessionId != awaitingReplySessionId
-    ) {
-      awaitingReply = false
-      awaitingReplySessionId = null
-      expectedAssistantKey = null
-      interaction = WearInteractionState.READY
-      return@LaunchedEffect
-    }
-    if (state.sending || state.activeRunId != null) return@LaunchedEffect
-    val reply =
-      newAssistantReplyForSession(
-        awaitingSessionId = awaitingReplySessionId,
-        activeSessionId = activeSnapshot.activeSessionId,
-        expectedAssistantKey = expectedAssistantKey,
-        latestAssistantMessage = activeSnapshot.latestAssistantMessage(),
-      )
+  WearReplyCompletionEffect(
+    state = state,
+    snapshot = snapshot,
+    awaitingReply = awaitingReply,
+    awaitingReplySessionId = awaitingReplySessionId,
+    expectedAssistantKey = expectedAssistantKey,
+  ) { reply ->
+    awaitingReply = false
+    awaitingReplySessionId = null
+    expectedAssistantKey = null
+    interaction = WearInteractionState.READY
     if (reply != null) {
-      awaitingReply = false
-      awaitingReplySessionId = null
-      expectedAssistantKey = null
-      interaction = WearInteractionState.READY
       view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
       if (autoSpeak) speaker.speak(reply.text)
     }
@@ -416,13 +395,13 @@ internal fun OpenClawWearApp(
   }
 
   val failure =
-    state.failure
+    state.conversationFailure
       ?: WearConversationFailure.PHONE_UNAVAILABLE.takeIf {
         state.phoneNodeId == null && !state.loading
       }
   val resolvedInteraction =
     when {
-      state.failure != null -> WearInteractionState.ERROR
+      state.conversationFailure != null -> WearInteractionState.ERROR
       state.sending -> WearInteractionState.SENDING
       state.activeRunId != null -> WearInteractionState.AGENT_WORKING
       else -> interaction
@@ -567,6 +546,61 @@ internal fun OpenClawWearApp(
         onStopSpeaking = speaker::stop,
       )
     }
+  }
+}
+
+@Composable
+internal fun WearReplyCompletionEffect(
+  state: WearUiState,
+  snapshot: WearConversationSnapshot?,
+  awaitingReply: Boolean,
+  awaitingReplySessionId: String?,
+  expectedAssistantKey: String?,
+  onCompleted: (WearChatMessage?) -> Unit,
+) {
+  val complete by rememberUpdatedState(onCompleted)
+  LaunchedEffect(
+    snapshot?.activeSessionId,
+    state.messages,
+    state.activeRunId,
+    state.sending,
+    state.failure,
+    state.pendingReply,
+    state.replyTerminal,
+    awaitingReply,
+    awaitingReplySessionId,
+    expectedAssistantKey,
+  ) {
+    if (!awaitingReply) return@LaunchedEffect
+    if (
+      state.failure != null ||
+      snapshot == null ||
+      snapshot.activeSessionId != awaitingReplySessionId
+    ) {
+      complete(null)
+      return@LaunchedEffect
+    }
+    if (state.sending || state.activeRunId != null || state.pendingReply != null) return@LaunchedEffect
+    // Preserved foreign finals are not evidence for this reply. The terminal
+    // history must reconcile the transcript before choosing text to confirm or speak.
+    if (state.replyTerminal != null && state.replyTerminal.history == null) return@LaunchedEffect
+    val terminal = state.replyTerminal
+    val ownedMessage =
+      if (terminal == null) {
+        snapshot.latestAssistantMessage()
+      } else {
+        terminal.runId?.let { runId ->
+          snapshot.messages.lastOrNull { it.role == "assistant" && it.idempotencyKey == runId }
+        } ?: terminal.message?.takeIf { it.role == "assistant" }
+      }
+    val reply =
+      newAssistantReplyForSession(
+        awaitingSessionId = awaitingReplySessionId,
+        activeSessionId = snapshot.activeSessionId,
+        expectedAssistantKey = expectedAssistantKey,
+        latestAssistantMessage = ownedMessage,
+      )
+    if (reply != null || state.replyTerminal?.history != null) complete(reply)
   }
 }
 

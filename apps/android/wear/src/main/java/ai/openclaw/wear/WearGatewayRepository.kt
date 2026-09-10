@@ -145,6 +145,7 @@ internal data class WearChatMessage(
   val role: String,
   val text: String,
   val timestamp: Long?,
+  val idempotencyKey: String? = null,
 )
 
 internal data class WearTranscript(
@@ -680,6 +681,7 @@ internal fun parseChatMessage(element: JsonElement?): WearChatMessage? {
     role = role,
     text = text,
     timestamp = source.long("timestamp"),
+    idempotencyKey = source.string("idempotencyKey"),
   )
 }
 

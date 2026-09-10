@@ -23,6 +23,55 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import java.util.UUID
 
+internal data class WearPendingReply(
+  val runId: String,
+  val terminalAwaitingHistory: WearReplyTerminal? = null,
+)
+
+internal enum class WearReplyOutcome {
+  Final,
+  Aborted,
+  Error,
+}
+
+internal data class WearReplyHistory(
+  val latestAssistantMessage: WearChatMessage?,
+) {
+  fun isSupersededBy(messages: List<WearChatMessage>): Boolean {
+    val latest = messages.lastOrNull { it.role == "assistant" } ?: return false
+    val previous = latestAssistantMessage ?: return true
+    val boundaryIndex =
+      messages.indexOfLast { message ->
+        when {
+          previous.id != null && message.id != null -> {
+            previous.id == message.id
+          }
+
+          previous.id == null && message.id == null && previous.timestamp != null && message.timestamp != null -> {
+            previous.timestamp == message.timestamp && previous.role == message.role
+          }
+
+          else -> {
+            previous == message
+          }
+        }
+      }
+    // In-place rewrites preserve identity; deletion may expose an older tail.
+    // Require canonical ordering or a later timestamp, not merely a different ID.
+    if (boundaryIndex >= 0) return messages.drop(boundaryIndex + 1).any { it.role == "assistant" }
+    return previous.timestamp != null && latest.timestamp != null && latest.timestamp > previous.timestamp
+  }
+}
+
+internal data class WearReplyTerminal(
+  val sessionKey: String,
+  val phoneNodeId: String?,
+  val runId: String?,
+  val outcome: WearReplyOutcome,
+  val history: WearReplyHistory? = null,
+  val message: WearChatMessage? = null,
+)
+
 internal data class WearUiState(
   val loading: Boolean = true,
   val connected: Boolean = false,
@@ -45,6 +94,8 @@ internal data class WearUiState(
   val streamText: String? = null,
   val activeRunId: String? = null,
   val sending: Boolean = false,
+  val pendingReply: WearPendingReply? = null,
+  val replyTerminal: WearReplyTerminal? = null,
   val realtimeTalk: WearRealtimeTalkSnapshot = WearRealtimeTalkSnapshot(),
   val realtimeCapturing: Boolean = false,
   val realtimePlaying: Boolean = false,
@@ -56,7 +107,10 @@ internal data class WearUiState(
   val agentPulse: WearAgentPulseSnapshot? = null,
   val agentPulseLoading: Boolean = false,
   val agentPulseFailure: WearConversationFailure? = null,
-)
+) {
+  val conversationFailure: WearConversationFailure?
+    get() = failure ?: WearConversationFailure.INTERNAL_ERROR.takeIf { replyTerminal?.outcome == WearReplyOutcome.Error }
+}
 
 internal fun WearUiState.resetForPhoneChange(): WearUiState = WearUiState()
 
@@ -75,6 +129,8 @@ internal fun WearUiState.switchAgentContext(agentId: String): WearUiState =
     messages = emptyList(),
     streamText = null,
     activeRunId = null,
+    pendingReply = null,
+    replyTerminal = null,
     selectedModelRef = null,
     models = emptyList(),
     agentPulse = null,
@@ -94,6 +150,8 @@ internal fun WearUiState.switchSessionContext(session: WearSession): WearUiState
     messages = emptyList(),
     streamText = null,
     activeRunId = null,
+    pendingReply = null,
+    replyTerminal = null,
     selectedModelRef = session.modelRef,
     models = emptyList(),
     realtimeTalk = WearRealtimeTalkSnapshot(),
@@ -137,7 +195,7 @@ internal fun reduceWearTerminalChatEvent(
   current: WearUiState,
   event: WearChatEvent,
 ): WearTerminalChatTransition {
-  if (event.sessionKey != current.selectedSession?.key) {
+  if (current.selectedSession == null || event.sessionKey != current.selectedSession.key) {
     return WearTerminalChatTransition(state = current, reloadHistory = false)
   }
   val finalMessage = event.message?.takeIf { event.state == "final" }
@@ -145,18 +203,40 @@ internal fun reduceWearTerminalChatEvent(
     finalMessage?.let { message ->
       current.copy(messages = mergeEventMessage(current.messages, message))
     } ?: current
-  if (current.activeRunId != null && event.runId != null && current.activeRunId != event.runId) {
+  // A send's idempotency key is its Gateway client run ID, including before
+  // the first delta. A completed terminal is an outcome, not a live run owner.
+  // An anonymous live stream still requires history to resolve identity.
+  val ownedRunId =
+    current.activeRunId
+      ?: current.pendingReply?.runId.takeIf { current.streamText == null }
+  if (ownedRunId != null && event.runId != null && ownedRunId != event.runId) {
     // Preserve older finals and notifications without canceling another
     // identified run or replacing it with a stale history snapshot.
     return WearTerminalChatTransition(state = preservedState, reloadHistory = false)
   }
-  val hasLiveReply = current.activeRunId != null || !current.streamText.isNullOrBlank()
-  if (hasLiveReply && (current.activeRunId == null || event.runId == null)) {
+  val outcome =
+    when (event.state) {
+      "final" -> WearReplyOutcome.Final
+      "aborted" -> WearReplyOutcome.Aborted
+      "error" -> WearReplyOutcome.Error
+      else -> return WearTerminalChatTransition(state = current, reloadHistory = false)
+    }
+  val terminal = WearReplyTerminal(checkNotNull(event.sessionKey), current.phoneNodeId, event.runId, outcome, message = finalMessage)
+  val hasLiveReply = ownedRunId != null || current.streamText != null
+  if (hasLiveReply && (ownedRunId == null || event.runId == null)) {
     // Missing run identity cannot distinguish a delayed terminal from the
     // live run's first identified terminal. Preserve the live reply until
     // authoritative history resolves which run actually remains active.
     return WearTerminalChatTransition(
-      state = preservedState,
+      state =
+        preservedState.copy(
+          // Remember only the pending send's identified terminal. It cannot own or
+          // clear an anonymous live stream; an inactive history snapshot must settle it.
+          pendingReply =
+            preservedState.pendingReply?.let { pending ->
+              if (event.runId == pending.runId) pending.copy(terminalAwaitingHistory = terminal) else pending
+            },
+        ),
       reloadHistory = true,
       observedMessage = finalMessage,
     )
@@ -169,6 +249,8 @@ internal fun reduceWearTerminalChatEvent(
             messages = event.message?.let { mergeEventMessage(current.messages, it) } ?: current.messages,
             streamText = if (event.message == null) current.streamText else null,
             activeRunId = null,
+            pendingReply = null,
+            replyTerminal = terminal,
           ),
         reloadHistory = true,
         observedMessage = event.message,
@@ -177,7 +259,7 @@ internal fun reduceWearTerminalChatEvent(
 
     "aborted", "error" -> {
       WearTerminalChatTransition(
-        state = current.copy(streamText = null, activeRunId = null),
+        state = current.copy(streamText = null, activeRunId = null, pendingReply = null, replyTerminal = terminal),
         reloadHistory = true,
       )
     }
@@ -186,6 +268,46 @@ internal fun reduceWearTerminalChatEvent(
       WearTerminalChatTransition(state = current, reloadHistory = false)
     }
   }
+}
+
+internal fun WearUiState.reconcileReplyHistory(transcript: WearTranscript): WearUiState {
+  val latestAssistant = transcript.messages.lastOrNull { it.role == "assistant" }
+  val recoveredTerminal =
+    pendingReply
+      ?.takeIf {
+        activeRunId == null && streamText == null &&
+          transcript.sessionKey == selectedSession?.key && transcript.phoneNodeId == phoneNodeId
+      }?.let { pending ->
+        // A run-correlated canonical assistant can complete a missed terminal even
+        // when another run has appended a later message to the transcript.
+        transcript.messages.lastOrNull { it.role == "assistant" && it.idempotencyKey == pending.runId }?.let { message ->
+          WearReplyTerminal(transcript.sessionKey, transcript.phoneNodeId, pending.runId, WearReplyOutcome.Final, message = message)
+        }
+      }
+  val observedTerminal =
+    replyTerminal
+      ?: pendingReply?.terminalAwaitingHistory?.takeIf { activeRunId == null && streamText == null }
+      ?: recoveredTerminal
+  val terminal =
+    observedTerminal
+      ?.takeIf {
+        it.sessionKey == transcript.sessionKey && it.phoneNodeId == transcript.phoneNodeId &&
+          ((activeRunId == null && streamText == null) || (it.runId != null && it.runId == activeRunId)) &&
+          // The first terminal history anchors its outcome. A later canonical reply
+          // supersedes it even when that reply's live terminal event was missed.
+          it.history?.isSupersededBy(transcript.messages) != true
+      }?.let { if (it.history == null) it.copy(history = WearReplyHistory(latestAssistant)) else it }
+  return copy(
+    // A lagging history response cannot resurrect the run we observed terminating.
+    // A different identified run or an anonymous live snapshot supersedes that outcome.
+    activeRunId = if (terminal != null) null else activeRunId,
+    streamText = if (terminal != null) null else streamText,
+    replyTerminal = terminal,
+    pendingReply =
+      pendingReply?.takeUnless {
+        terminal != null || (activeRunId != null && activeRunId != it.runId)
+      },
+  )
 }
 
 internal class WearViewModel(
@@ -352,6 +474,8 @@ internal class WearViewModel(
         messages = emptyList(),
         streamText = null,
         activeRunId = null,
+        pendingReply = null,
+        replyTerminal = null,
         selectedModelRef = null,
         realtimeTalk = WearRealtimeTalkSnapshot(),
         talkBusy = false,
@@ -442,7 +566,14 @@ internal class WearViewModel(
     val attempt = sendAttemptTracker.begin(session.key, normalized, session.phoneNodeId)
     viewModelScope.launch {
       if (!isCurrentSessionAction(session, routeGeneration)) return@launch
-      mutableState.update { it.copy(sending = true, failure = null) }
+      mutableState.update {
+        it.copy(
+          sending = true,
+          failure = null,
+          pendingReply = WearPendingReply(attempt.idempotencyKey),
+          replyTerminal = null,
+        )
+      }
       try {
         repository.send(attempt, requirePreferredPhone = true)
         sendAttemptTracker.markSucceeded(attempt)
@@ -474,7 +605,7 @@ internal class WearViewModel(
       try {
         repository.abort(session.key, current.activeRunId, session.phoneNodeId)
         if (!isCurrentSessionAction(session, routeGeneration)) return@launch
-        mutableState.update { it.copy(streamText = null, activeRunId = null, failure = null) }
+        mutableState.update { it.copy(streamText = null, activeRunId = null, pendingReply = null, replyTerminal = null, failure = null) }
         reloadHistoryIfSelected(session, routeGeneration)
       } catch (err: CancellationException) {
         throw err
@@ -763,6 +894,8 @@ internal class WearViewModel(
               messages = if (selectionChanged || !status.connected) emptyList() else it.messages,
               streamText = if (selectionChanged || !status.connected) null else it.streamText,
               activeRunId = if (selectionChanged || !status.connected) null else it.activeRunId,
+              pendingReply = if (selectionChanged || !status.connected) null else it.pendingReply,
+              replyTerminal = if (selectionChanged || !status.connected) null else it.replyTerminal,
             )
           }
           pendingEvents.forEach(::handleEvent)
@@ -838,30 +971,31 @@ internal class WearViewModel(
             )
           loadJob = null
           mutableState.update {
-            it.copy(
-              loading = false,
-              connected = true,
-              selectedSession = loadedSession,
-              selectedModelRef = loadedSession.modelRef,
-              models = if (catalogScopeChanged) emptyList() else it.models,
-              sessions =
-                it.sessions.map { item ->
-                  if (item.key == session.key) {
-                    item.copy(modelRef = loadedSession.modelRef)
-                  } else {
-                    item
-                  }
-                },
-              messages =
-                observedMessage?.let { message ->
-                  mergeObservedMessageIntoSnapshot(transcript.messages, message)
-                } ?: transcript.messages,
-              streamText =
-                loadResult.liveStream?.let { live ->
-                  reconcileWearStreamSnapshot(transcript.activeText, live.text, live.complete)
-                } ?: transcript.activeText,
-              activeRunId = loadResult.liveStream?.runId ?: transcript.activeRunId,
-            )
+            it
+              .copy(
+                loading = false,
+                connected = true,
+                selectedSession = loadedSession,
+                selectedModelRef = loadedSession.modelRef,
+                models = if (catalogScopeChanged) emptyList() else it.models,
+                sessions =
+                  it.sessions.map { item ->
+                    if (item.key == session.key) {
+                      item.copy(modelRef = loadedSession.modelRef)
+                    } else {
+                      item
+                    }
+                  },
+                messages =
+                  observedMessage?.let { message ->
+                    mergeObservedMessageIntoSnapshot(transcript.messages, message)
+                  } ?: transcript.messages,
+                streamText =
+                  loadResult.liveStream?.let { live ->
+                    reconcileWearStreamSnapshot(transcript.activeText, live.text, live.complete)
+                  } ?: transcript.activeText,
+                activeRunId = loadResult.liveStream?.runId ?: transcript.activeRunId,
+              ).reconcileReplyHistory(transcript)
           }
           pendingEvents.forEach(::handleEvent)
           restartAgentPulsePolling(forceLoading = true)
@@ -1068,12 +1202,18 @@ internal class WearViewModel(
       loadSessions(event.sourceNodeId)
       return
     }
+    mutableState.update {
+      it.copy(
+        streamText = null,
+        activeRunId = null,
+        // A missing sequence or changed epoch cannot confirm an ambiguous terminal.
+        pendingReply = it.pendingReply?.copy(terminalAwaitingHistory = null),
+      )
+    }
     val selected = mutableState.value.selectedSession
     if (selected != null) {
-      mutableState.update { it.copy(streamText = null, activeRunId = null) }
       loadHistory(selected)
     } else {
-      mutableState.update { it.copy(streamText = null, activeRunId = null) }
       loadSessions(event.sourceNodeId)
     }
   }
@@ -1129,6 +1269,8 @@ internal class WearViewModel(
         connected = connected,
         streamText = if (connected) it.streamText else null,
         activeRunId = if (connected) it.activeRunId else null,
+        pendingReply = if (connected) it.pendingReply else null,
+        replyTerminal = if (connected) it.replyTerminal else null,
         realtimeTalk = if (connected) it.realtimeTalk else WearRealtimeTalkSnapshot(),
         talkBusy = if (connected) it.talkBusy else false,
         failure = wearConversationFailureForConnection(payload),
@@ -1148,7 +1290,13 @@ internal class WearViewModel(
           val projectedComplete = event.streamTextComplete || event.message != null || event.replace
           val nextText =
             if (projectedText != null) {
-              reconcileWearStreamSnapshot(current.streamText, projectedText, projectedComplete)
+              if (projectedComplete) {
+                // Ordered Phone projections replace the live value, including shrink/clear.
+                // Prefix preservation belongs only to a history/snapshot race.
+                updateWearStreamText(current = null, delta = projectedText, replace = true)
+              } else {
+                reconcileWearStreamSnapshot(current.streamText, projectedText, liveComplete = false)
+              }
             } else {
               updateWearStreamText(current = current.streamText, delta = event.deltaText, replace = event.replace)
             }
@@ -1162,6 +1310,11 @@ internal class WearViewModel(
             loading = false,
             streamText = nextText,
             activeRunId = event.runId ?: current.activeRunId,
+            pendingReply =
+              current.pendingReply
+                ?.takeIf { event.runId == null || event.runId == it.runId }
+                ?.copy(terminalAwaitingHistory = null),
+            replyTerminal = null,
           )
         }
       }
@@ -1446,6 +1599,8 @@ internal class WearViewModel(
         connected = if (disconnected) false else it.connected,
         streamText = if (disconnected) null else it.streamText,
         activeRunId = if (disconnected) null else it.activeRunId,
+        pendingReply = if (disconnected) null else it.pendingReply,
+        replyTerminal = if (disconnected) null else it.replyTerminal,
         realtimeTalk = if (disconnected) WearRealtimeTalkSnapshot() else it.realtimeTalk,
         talkBusy = if (disconnected) false else it.talkBusy,
         failure = error.toWearConversationFailure(),
