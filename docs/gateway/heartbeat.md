@@ -79,7 +79,7 @@ Example config:
 - Prompt body (configurable via `agents.defaults.heartbeat.prompt`): `Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply NO_REPLY.`
 - Timeout: unset heartbeat turns use `agents.defaults.timeoutSeconds` when set. Otherwise, they use the heartbeat cadence capped at 600 seconds. Set `agents.defaults.heartbeat.timeoutSeconds` or per-agent `agents.entries.*.heartbeat.timeoutSeconds` for longer heartbeat work.
 - The heartbeat prompt is sent **verbatim** as the scheduled user message. Heartbeat runs use the same system prompt as ordinary agent turns. There is no heartbeat-specific system-prompt section.
-- When recurring heartbeats are disabled with `0m`, the monitor automation job stays but is disabled, and its scratch is retained for when you re-enable the cadence. Targeted event-driven wakes remain available.
+- When recurring heartbeats are disabled with `0m`, the automation job stays but is disabled, and its monitor scratch is retained for when you re-enable the cadence. Targeted event-driven wakes remain available.
 - When automations are disabled entirely, scheduled heartbeats do not run even if heartbeat cadence remains enabled.
 - Active hours (`heartbeat.activeHours`) are checked in the configured timezone. Outside the window, heartbeats are skipped until the next tick inside the window.
 - Scheduled heartbeats defer while the main queue or automation work is active or queued, while any reply or embedded run for the same agent is active, and while the resolved target session has active or queued work. Immediate and manual wakes bypass the broad same-agent active-run check, but still honor the main, automation, and target-session busy guards. Sibling agents do not pause each other.
@@ -427,7 +427,7 @@ If **all three** are false, OpenClaw skips the heartbeat run entirely (no model 
 
 ## Monitor scratch (optional)
 
-Each heartbeat monitor automation job owns a private scratch document stored in the shared state database. Think of it as your "heartbeat checklist": small, stable, and safe to consider every 30 minutes. When scratch exists, its content is appended to the heartbeat prompt.
+Each heartbeat automation job owns a private monitor scratch stored in the shared state database. Think of it as your "heartbeat checklist": small, stable, and safe to consider every 30 minutes. When scratch exists, its content is appended to the heartbeat prompt.
 
 Manage it with the automations CLI (the job id comes from `openclaw cron list --all`):
 
@@ -464,7 +464,7 @@ Example scratch:
 
 ### Schedule recurring checks with automations
 
-Heartbeat scratch is prompt context, not a scheduler. Create each recurring check as an [automation job](/automation/cron-jobs) so it has its own cadence, enable/disable state, and run history. Automation jobs can still target the main session when the check should use the normal conversation context.
+Monitor scratch is prompt context, not a scheduler. Create each recurring check as an [automation job](/automation/cron-jobs) so it has its own cadence, enable/disable state, and run history. Automation jobs can still target the main session when the check should use the normal conversation context.
 
 Older scratch may contain a structured `tasks:` block. Run `openclaw doctor --fix` once after upgrading: Doctor converts every valid entry into an independently scheduled automation job, preserves its interval and previous last-run timing, and removes the retired block while keeping surrounding scratch prose. Runtime heartbeat turns do not parse `tasks:` text as schedules.
 
@@ -472,7 +472,7 @@ Doctor-created heartbeat task jobs keep heartbeat active-hours, cooldown, flood,
 
 ### Can the agent update its scratch?
 
-Yes. During a heartbeat turn, the agent can pass a `scratch` value to `heartbeat_respond` to fully replace the monitor prose for future heartbeats. You can also ask it in a normal chat to run `openclaw cron scratch <jobId> --set ...`, or edit the scratch yourself with the same command. Manage recurring schedules with automations instead of writing scheduler syntax into scratch.
+Yes. During a heartbeat turn, the agent can pass a `scratch` value to `heartbeat_respond` to fully replace the monitor scratch for future heartbeats. You can also ask it in a normal chat to run `openclaw cron scratch <jobId> --set ...`, or edit the scratch yourself with the same command. Manage recurring schedules with automations instead of writing scheduler syntax into scratch.
 
 <Warning>
 Don't put secrets (API keys, phone numbers, private tokens) into monitor scratch - it becomes part of the prompt context.

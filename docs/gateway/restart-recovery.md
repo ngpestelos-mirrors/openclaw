@@ -11,7 +11,7 @@ Conversations, transcripts, scheduled jobs, background task records, and queued
 outbound messages live on disk. After a gateway restart, eligible work interrupted
 mid-turn is detected and resumed automatically. Recovery is always on and
 normally needs no manual intervention. Exhausted infrastructure retries, or a
-missing durable message-action authority claim, may quarantine one session
+missing durable message-action authority claim, may tombstone one session
 until you inspect or replace it.
 
 This page describes what survives a restart, how interrupted work is detected,

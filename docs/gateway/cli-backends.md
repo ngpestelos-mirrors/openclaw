@@ -9,7 +9,7 @@ title: "CLI backends"
 
 OpenClaw can run a local AI CLI as a text-only fallback when API providers are down, rate-limited, or misbehaving. It is intentionally conservative:
 
-- OpenClaw tools are not injected directly, but a backend with `bundleMcp: true` can receive gateway tools through a loopback MCP bridge.
+- OpenClaw tools are not injected directly, but a backend with `bundleMcp: true` can receive Gateway tools through a loopback MCP bridge.
 - JSONL streaming for CLIs that support it.
 - Sessions are supported, so follow-up turns stay coherent.
 - Images pass through if the CLI accepts image paths.
@@ -125,7 +125,7 @@ refreshes, or forwards native tokens, or sends synthesized Anthropic API
 requests. Compatible agent turns share one warm Claude Code subprocess.
 A changed model, system prompt, or tool policy starts a
 new subprocess. Persisted Claude session IDs still provide
-conversation continuity when the gateway or subprocess restarts.
+conversation continuity when the Gateway or subprocess restarts.
 
 For local plugin-managed turns, prompt-build hook context stays private: Claude
 receives it as a native hook attachment, while OpenClaw history preserves the original user message. The
@@ -145,7 +145,7 @@ installed executable:
 ```bash
 claude --version
 claude update
-# Restart the OpenClaw gateway after updating.
+# Restart the OpenClaw Gateway after updating.
 ```
 
 The bundled `claude-cli` backend prefers Claude Code's native skill resolver. When the current skills snapshot has at least one selected skill with a materialized path, OpenClaw passes a temporary Claude Code plugin via `--plugin-dir` and omits the duplicate OpenClaw skills catalog from the appended system prompt. Without a materialized plugin skill, OpenClaw keeps the prompt catalog as a fallback. Skill env/API key overrides still apply to the child process environment for the run.
@@ -216,7 +216,7 @@ and sandboxing. Use a [paired node](/nodes) or the embedded runtime with
 
 ### Claude browser tools and 1Password sign-in
 
-Claude Code can drive a Chrome browser through the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome), including [1Password for Claude](/gateway/1password#browser-sign-in-with-1password-for-claude) credential autofill. The bundled backend does not enable it. Register a [CLI backend plugin](/plugins/cli-backend-plugins) that appends `--chrome` to the launch args of a `claude-stream-json`-dialect backend. OpenClaw preserves a configured `--chrome` on normal runs and always forces `--no-chrome` on runs with a restricted tool policy, such as side questions. The Chrome window, the extension, and any 1Password approval prompts live on the gateway host, so someone must be at that machine to approve credential use.
+Claude Code can drive a Chrome browser through the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome), including [1Password for Claude](/gateway/1password#browser-sign-in-with-1password-for-claude) credential autofill. The bundled backend does not enable it. Register a [CLI backend plugin](/plugins/cli-backend-plugins) that appends `--chrome` to the launch args of a `claude-stream-json`-dialect backend. OpenClaw preserves a configured `--chrome` on normal runs and always forces `--no-chrome` on runs with a restricted tool policy, such as side questions. The Chrome window, the extension, and any 1Password approval prompts live on the Gateway host, so someone must be at that machine to approve credential use.
 
 The backend maps OpenClaw `/think` levels to Claude Code's native `--effort` flag: `minimal`/`low` -> `low`, `medium` -> `medium`, and `high`/`xhigh`/`max` pass through directly. For models that allow fixed thinking budgets, it also launches Claude Code with `MAX_THINKING_TOKENS`: `off=0`, `minimal=1024`, `low=2048`, `medium=8192`, `high`/`xhigh=16384`, and `max=32768`. Positive fixed budgets disable adaptive thinking. Models that require adaptive thinking omit the fixed budget and continue to use `--effort`. `adaptive` removes configured effort flags and fixed-budget environment overrides, so Claude Code resolves effective thinking from its own environment, settings, and model defaults. Other CLI backends need their owning plugin to map the selected level before `/think` affects the spawned CLI.
 
@@ -241,7 +241,7 @@ register a small wrapper backend plugin.
   - `always`: always send a session id (new UUID if none stored).
   - `existing`: only send a session id if one was stored before.
   - `none`: never send a session id.
-- `claude-cli` defaults to `liveSession: "claude-stdio"`, `output: "jsonl"`, and `input: "stdin"`. The owning Anthropic plugin keeps one Claude Code subprocess warm for compatible consecutive agent turns through its direct CLI transport. If the gateway restarts or the idle process exits, OpenClaw resumes from the stored Claude session id. Stored session ids are verified against a readable project transcript before resume. A missing transcript clears the binding (logged as `reason=transcript-missing`) instead of silently starting a fresh session under `--resume`.
+- `claude-cli` defaults to `liveSession: "claude-stdio"`, `output: "jsonl"`, and `input: "stdin"`. The owning Anthropic plugin keeps one Claude Code subprocess warm for compatible consecutive agent turns through its direct CLI transport. If the Gateway restarts or the idle process exits, OpenClaw resumes from the stored Claude session id. Stored session ids are verified against a readable project transcript before resume. A missing transcript clears the binding (logged as `reason=transcript-missing`) instead of silently starting a fresh session under `--resume`.
 - Stored CLI sessions are provider-owned continuity. Automatic reset is disabled by default. `/reset` and explicit daily or idle `session.reset` policies still cut them.
 - Fresh CLI sessions can recover OpenClaw history from the canonical session SQLite database when its independent account boundary matches the selected credential. Compacted recovery includes the latest summary, retained messages, and subsequent turns on the active branch. A backend can opt in to bounded recovery before compaction with `reseedFromRawTranscriptWhenUncompacted: true`, including after its native session binding is cleared. Recovery includes saved tool-result text and error markers. It does not execute past tools. The current user turn is sent once, outside the recovered history.
 - Helper runs with a caller-owned in-memory transcript use that history for hooks, bounded session notes, and fresh-session reseeding, including meaningful history before compaction. Empty memory stays empty even when the run carries another session's storage identity. Context-engine maintenance rewrites that same memory before the helper returns, even when the engine requests background maintenance. Durable transcripts retain their background maintenance path. An explicitly owned native CLI binding can still resume. Resumed turns send the current prompt and bounded session notes without replaying the conversation history.
@@ -405,7 +405,7 @@ CLI backends do not receive OpenClaw tool calls directly, but a backend can opt 
 
 When bundle MCP is enabled, OpenClaw:
 
-- spawns a loopback HTTP MCP server that exposes gateway tools to the CLI process, authenticated with a per-run context grant (`OPENCLAW_MCP_TOKEN`) active only for the current execution attempt
+- spawns a loopback HTTP MCP server that exposes Gateway tools to the CLI process, authenticated with a per-run context grant (`OPENCLAW_MCP_TOKEN`) active only for the current execution attempt
 - binds tool access to the Gateway-selected session, account, and channel context instead of trusting child-process headers
 - loads enabled bundle-MCP servers for the current workspace and merges them with any existing backend MCP config or settings shape
 - rewrites the launch config using the backend-owned integration mode from the owning plugin.
@@ -472,7 +472,7 @@ Claude CLI backends scale this cap with the resolved Claude context window inste
 
 ## Limitations
 
-- OpenClaw does not inject tool calls into the CLI backend protocol. Backends only see gateway tools when they opt into `bundleMcp: true`.
+- OpenClaw does not inject tool calls into the CLI backend protocol. Backends only see Gateway tools when they opt into `bundleMcp: true`.
 - Streaming is backend-specific: some backends stream JSONL, others buffer until exit.
 - Structured outputs depend on the CLI's own JSON format.
 
@@ -491,7 +491,7 @@ retry, authentication, timeout, or fallback classification.
 
 | Symptom               | Fix                                                                                            |
 | --------------------- | ---------------------------------------------------------------------------------------------- |
-| CLI not found         | Put the CLI on the gateway service's `PATH`, or update the owning plugin's registered command. |
+| CLI not found         | Put the CLI on the Gateway service's `PATH`, or update the owning plugin's registered command. |
 | Wrong model name      | Update the plugin's `modelAliases` mapping.                                                    |
 | No session continuity | Check the plugin's `sessionArgs` and `sessionMode`.                                            |
 | Images ignored        | Check the plugin's `imageArg` and the CLI's file-path support.                                 |

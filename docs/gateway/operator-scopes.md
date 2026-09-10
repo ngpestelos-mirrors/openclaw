@@ -54,7 +54,7 @@ already holds `operator.admin`.
 
 ## Named operator roles
 
-Team Gateways can bind authenticated user profiles to named operator roles.
+Team Gateways can bind authenticated durable profiles to named operator roles.
 Each role combines four closed policies: access to other people's sessions,
 agents available for session creation and agent runs, a maximum set of operator
 scopes, and whether newly created sessions require sandboxing.
@@ -174,7 +174,7 @@ reject grants without a matching durable identity when roles are enabled.
 Include `operator.admin` explicitly only when that role should retain
 administrative connection authority.
 
-Named roles apply only to connections with an authenticated durable user
+Named roles apply only to connections with an authenticated durable
 profile. They organize collaboration within one trusted Gateway domain and do
 not replace separate Gateways when hostile-tenant isolation is required.
 Diagnostic audit methods, including `audit.run.inspect`, remain shared-domain
