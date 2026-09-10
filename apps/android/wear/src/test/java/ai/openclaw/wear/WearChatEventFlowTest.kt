@@ -41,6 +41,13 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(application = WearApplication::class, sdk = [35])
 class WearChatEventFlowTest {
+  private val terminalHistoryOutcomes =
+    listOf(
+      "settled-finalization-fallback" to WearReplyOutcome.Final,
+      "assistant" to WearReplyOutcome.Aborted,
+      "terminal-error" to WearReplyOutcome.Error,
+    )
+
   @Test
   fun acceptedSendSettlesOnRemoteErrorAndAbortWithUnchangedHistory() {
     for ((terminal, outcome) in listOf("error" to WearReplyOutcome.Error, "aborted" to WearReplyOutcome.Aborted)) {
@@ -644,34 +651,47 @@ class WearChatEventFlowTest {
     }
 
   @Test
-  fun settledFallbackHistoryBeforeForeignTailSettlesAMissedTerminal() =
-    withFlow { flow ->
-      flow.send()
-      flow.observeReplyCompletion()
-      flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:settled-finalization-fallback"},{"id":"foreign","role":"assistant","content":"Foreign fallback","idempotencyKey":"foreign-run:settled-finalization-fallback"}]"""
-      flow.vm.refresh()
-      flow.idle()
-      assertNull(flow.state.pendingReply)
-      assertEquals(WearReplyOutcome.Final, flow.state.replyTerminal?.outcome)
-      assertEquals(
-        "${flow.runId}:settled-finalization-fallback",
-        flow.state.replyTerminal
-          ?.message
-          ?.idempotencyKey,
-      )
-      assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+  fun terminalHistoryBeforeForeignTailSettlesAMissedTerminal() {
+    for ((suffix, outcome) in terminalHistoryOutcomes) {
+      withFlow { flow ->
+        flow.send()
+        flow.observeReplyCompletion()
+        flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:$suffix"},{"id":"foreign","role":"assistant","content":"Foreign fallback","idempotencyKey":"foreign-run:$suffix"}]"""
+        flow.vm.refresh()
+        flow.idle()
+        assertNull(flow.state.pendingReply)
+        assertEquals(outcome, flow.state.replyTerminal?.outcome)
+        assertEquals(
+          "${flow.runId}:$suffix",
+          flow.state.replyTerminal
+            ?.message
+            ?.idempotencyKey,
+        )
+        assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+        flow.vm.refresh()
+        flow.idle()
+        assertEquals(outcome, flow.state.replyTerminal?.outcome)
+        assertEquals(if (outcome == WearReplyOutcome.Error) WearConversationFailure.INTERNAL_ERROR else null, flow.state.conversationFailure)
+      }
     }
+  }
 
   @Test
-  fun settledFallbackTerminalCompletionSelectsOwnedTextBeforeForeignTail() =
-    withFlow { flow ->
-      flow.send()
-      flow.observeReplyCompletion()
-      flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:settled-finalization-fallback"},{"id":"foreign","role":"assistant","content":"Foreign fallback","idempotencyKey":"foreign-run:settled-finalization-fallback"}]"""
-      flow.emit("final")
-      assertNull(flow.state.pendingReply)
-      assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+  fun terminalHistorySelectsOwnedTextWithoutReplacingTheObservedOutcome() {
+    for ((suffix) in terminalHistoryOutcomes) {
+      for ((terminal, outcome) in listOf("final" to WearReplyOutcome.Final, "aborted" to WearReplyOutcome.Aborted, "error" to WearReplyOutcome.Error)) {
+        withFlow { flow ->
+          flow.send()
+          flow.observeReplyCompletion()
+          flow.historyMessages = """[{"id":"owned","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:$suffix"},{"id":"foreign","role":"assistant","content":"Foreign fallback","idempotencyKey":"foreign-run:$suffix"}]"""
+          flow.emit(terminal)
+          assertNull(flow.state.pendingReply)
+          assertEquals(outcome, flow.state.replyTerminal?.outcome)
+          assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+        }
+      }
     }
+  }
 
   @Test
   fun foreignAndUnrecognizedFallbackKeysCannotRecoverAMissedTerminal() =
@@ -685,6 +705,15 @@ class WearChatEventFlowTest {
         "${flow.runId}:settled-finalization-fallback:extra",
         "${flow.runId}:other-fallback",
         "${flow.runId}:settled-finalization",
+        "foreign-run:assistant",
+        "${flow.runId}-other:assistant",
+        "prefix-${flow.runId}:assistant",
+        "${flow.runId}:assistant:extra",
+        "foreign-run:terminal-error",
+        "${flow.runId}-other:terminal-error",
+        "${flow.runId}:terminal-error:extra",
+        "cli-assistant:${flow.runId}",
+        "hook-block:before_agent_run:user:${flow.runId}",
       )) {
         flow.historyMessages = """[{"id":"unowned","role":"assistant","content":"Unowned reply","idempotencyKey":"$key"}]"""
         flow.vm.refresh()
@@ -701,38 +730,16 @@ class WearChatEventFlowTest {
     }
 
   @Test
-  fun nonAssistantFallbackKeysCannotRecoverAMissedTerminal() =
-    withFlow { flow ->
-      flow.send()
-      flow.observeReplyCompletion()
-      for (role in listOf("user", "system")) {
-        flow.historyMessages = """[{"id":"non-assistant","role":"$role","content":"Not an assistant reply","idempotencyKey":"${flow.runId}:settled-finalization-fallback"}]"""
-        flow.vm.refresh()
-        flow.idle()
-        assertNotNull(flow.state.pendingReply)
-        assertNull(flow.state.replyTerminal)
-        assertTrue(flow.completedReplies.isEmpty())
-      }
-    }
-
-  @Test
-  fun settledFallbackHistoryDoesNotClearAnActiveHistorySnapshot() {
-    for (run in listOf(null, "pending", "newer-run")) {
-      for (text in listOf("New live reply", "")) {
-        withFlow { flow ->
-          flow.send()
-          flow.observeReplyCompletion()
-          flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:settled-finalization-fallback"}]"""
-          val activeRun = if (run == "pending") flow.runId else run
-          flow.historyRun =
-            buildJsonObject {
-              activeRun?.let { put("runId", it) }
-              put("text", text)
-            }
+  fun nonAssistantTerminalKeysCannotRecoverAMissedTerminal() {
+    for ((suffix) in terminalHistoryOutcomes) {
+      withFlow { flow ->
+        flow.send()
+        flow.observeReplyCompletion()
+        for (role in listOf("user", "system")) {
+          flow.historyMessages = """[{"id":"non-assistant","role":"$role","content":"Not an assistant reply","idempotencyKey":"${flow.runId}:$suffix"}]"""
           flow.vm.refresh()
           flow.idle()
-          assertEquals(activeRun, flow.state.activeRunId)
-          assertEquals(text, flow.state.streamText)
+          assertNotNull(flow.state.pendingReply)
           assertNull(flow.state.replyTerminal)
           assertTrue(flow.completedReplies.isEmpty())
         }
@@ -741,26 +748,56 @@ class WearChatEventFlowTest {
   }
 
   @Test
-  fun settledFallbackHistoryWaitsForAConcurrentAnonymousDelta() =
-    withFlow { flow ->
-      flow.send()
-      flow.observeReplyCompletion()
-      flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:settled-finalization-fallback"}]"""
-      flow.historyGate = CompletableDeferred()
-      flow.vm.refresh()
-      flow.idle()
-      flow.emit("delta", eventRunId = null, text = "Unknown live reply")
-      flow.historyGate?.complete(Unit)
-      flow.idle()
-      assertNotNull(flow.state.pendingReply)
-      assertEquals("Unknown live reply", flow.state.streamText)
-      assertNull(flow.state.replyTerminal)
-      assertTrue(flow.completedReplies.isEmpty())
-      flow.vm.refresh()
-      flow.idle()
-      assertNull(flow.state.pendingReply)
-      assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+  fun terminalHistoryDoesNotClearAnActiveHistorySnapshot() {
+    for ((suffix) in terminalHistoryOutcomes) {
+      for (run in listOf(null, "pending", "newer-run")) {
+        for (text in listOf("New live reply", "")) {
+          withFlow { flow ->
+            flow.send()
+            flow.observeReplyCompletion()
+            flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:$suffix"}]"""
+            val activeRun = if (run == "pending") flow.runId else run
+            flow.historyRun =
+              buildJsonObject {
+                activeRun?.let { put("runId", it) }
+                put("text", text)
+              }
+            flow.vm.refresh()
+            flow.idle()
+            assertEquals(activeRun, flow.state.activeRunId)
+            assertEquals(text, flow.state.streamText)
+            assertNull(flow.state.replyTerminal)
+            assertTrue(flow.completedReplies.isEmpty())
+          }
+        }
+      }
     }
+  }
+
+  @Test
+  fun terminalHistoryWaitsForAConcurrentAnonymousDelta() {
+    for ((suffix) in terminalHistoryOutcomes) {
+      withFlow { flow ->
+        flow.send()
+        flow.observeReplyCompletion()
+        flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:$suffix"}]"""
+        flow.historyGate = CompletableDeferred()
+        flow.vm.refresh()
+        flow.idle()
+        flow.emit("delta", eventRunId = null, text = "Unknown live reply")
+        flow.historyGate?.complete(Unit)
+        flow.idle()
+        assertNotNull(flow.state.pendingReply)
+        assertEquals("Unknown live reply", flow.state.streamText)
+        assertNull(flow.state.replyTerminal)
+        assertTrue(flow.completedReplies.isEmpty())
+        flow.vm.refresh()
+        flow.idle()
+        assertNull(flow.state.pendingReply)
+        assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+      }
+    }
+  }
 
   private fun withFlow(block: (Flow) -> Unit) {
     val flow = Flow()

@@ -264,8 +264,10 @@ internal fun WearUiState.reconcileReplyHistory(transcript: WearTranscript): Wear
       }?.let { pending ->
         // A run-correlated canonical assistant can complete a missed terminal even
         // when another run has appended a later message to the transcript.
-        transcript.messages.lastOrNull { it.isReplyForRun(pending.runId) }?.let { message ->
-          WearReplyTerminal(transcript.sessionKey, transcript.phoneNodeId, pending.runId, WearReplyOutcome.Final, message = message)
+        transcript.messages.asReversed().firstNotNullOfOrNull { message ->
+          message.replyOutcomeForRun(pending.runId)?.let { outcome ->
+            WearReplyTerminal(transcript.sessionKey, transcript.phoneNodeId, pending.runId, outcome, message = message)
+          }
         }
       }
   val observedTerminal =
