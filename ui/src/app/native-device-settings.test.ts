@@ -99,6 +99,10 @@ describe("native device settings wire contract", () => {
     ["appearance", { app: { appearance: "sepia" } }],
     ["notifications", { app: { notificationsEnabled: "true" } }],
     ["iOS capability", { capabilities: { healthSummaryEnabled: "true" } }],
+    ["unattended desktop toggle", { capabilities: { unattendedDesktopEnabled: "true" } }],
+    ...[null, {}, { state: "available" }, { state: true }].map(
+      (desktopAvailability) => ["desktop availability", { desktopAvailability }] as const,
+    ),
     ...[
       null,
       { selectedId: 1, available: [] },

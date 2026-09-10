@@ -99,17 +99,20 @@ export function startNodeHostConnection({
   prepared,
   client,
   onManifestChanged,
+  onWorkerHostingChanged,
   writeStderrLine,
 }: {
   prepared: PreparedRuntime;
   client: NodeHostClient;
   onManifestChanged: NonNullable<Parameters<PreparedRuntime["start"]>[0]["onManifestChanged"]>;
+  onWorkerHostingChanged?: (enabled: boolean) => void;
   writeStderrLine: (message: string) => void;
 }) {
   let publicationClient = client;
   let workerHostingEnabled = prepared.workerHostingEnabled;
   let inventory: NodeHostInventory = prepared.initialInventory;
   let workerCapacity: NodeWorkerCapacitySnapshot | undefined;
+  let reportedWorkerHostingEnabled = false;
   let gatewayHelloReceived = false;
   let gatewayConnectionGeneration = 0;
   let connectedGatewayProtocol = 0;
@@ -350,34 +353,39 @@ export function startNodeHostConnection({
   };
 
   const publishRunnerInventory = () => {
+    const hostingCapacity = workerHostingEnabled ? workerCapacity : undefined;
+    const hostingEnabled = hostingCapacity !== undefined;
+    if (hostingEnabled !== reportedWorkerHostingEnabled) {
+      reportedWorkerHostingEnabled = hostingEnabled;
+      onWorkerHostingChanged?.(hostingEnabled);
+    }
     queueOptionalPublication(
       NODE_RUNNER_INVENTORY_UPDATE_METHOD,
       {
         protocolFeatures: [NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE],
-        workerHost:
-          workerHostingEnabled && workerCapacity
-            ? {
-                enabled: true,
-                capacity: workerCapacity,
-                ...(prepared.preparedWorkspacesEnabled
-                  ? { preparedWorkspace: NODE_WORKER_PREPARED_WORKSPACE_VERSION }
-                  : {}),
-                bundlePrewarm: WORKER_BUNDLE_PREWARM_VERSION,
-                ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_BUNDLE_RETENTION)
-                  ? { bundleRetention: NODE_WORKER_BUNDLE_RETENTION_VERSION }
-                  : {}),
-                ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_BUNDLE_RETENTION) &&
-                gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_BUNDLE_STATUS)
-                  ? { bundleStatus: NODE_WORKER_BUNDLE_STATUS_VERSION }
-                  : {}),
-                ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_PORTAL_STREAM)
-                  ? { portalStream: NODE_WORKER_PORTAL_STREAM_VERSION }
-                  : {}),
-                ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_ENVIRONMENT_SESSION)
-                  ? { environmentSession: NODE_WORKER_ENVIRONMENT_SESSION_VERSION }
-                  : {}),
-              }
-            : { enabled: false },
+        workerHost: hostingCapacity
+          ? {
+              enabled: true,
+              capacity: hostingCapacity,
+              ...(prepared.preparedWorkspacesEnabled
+                ? { preparedWorkspace: NODE_WORKER_PREPARED_WORKSPACE_VERSION }
+                : {}),
+              bundlePrewarm: WORKER_BUNDLE_PREWARM_VERSION,
+              ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_BUNDLE_RETENTION)
+                ? { bundleRetention: NODE_WORKER_BUNDLE_RETENTION_VERSION }
+                : {}),
+              ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_BUNDLE_RETENTION) &&
+              gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_BUNDLE_STATUS)
+                ? { bundleStatus: NODE_WORKER_BUNDLE_STATUS_VERSION }
+                : {}),
+              ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_PORTAL_STREAM)
+                ? { portalStream: NODE_WORKER_PORTAL_STREAM_VERSION }
+                : {}),
+              ...(gatewayCapabilities.has(GATEWAY_SERVER_CAPS.NODE_WORKER_ENVIRONMENT_SESSION)
+                ? { environmentSession: NODE_WORKER_ENVIRONMENT_SESSION_VERSION }
+                : {}),
+            }
+          : { enabled: false },
       },
       "runner inventory",
     );
@@ -433,6 +441,8 @@ export function startNodeHostConnection({
     disconnect,
     close() {
       retireGatewayConnection();
+      workerHostingEnabled = false;
+      publishRunnerInventory();
       runtime.updateGatewayConnection();
       return runtime.close();
     },

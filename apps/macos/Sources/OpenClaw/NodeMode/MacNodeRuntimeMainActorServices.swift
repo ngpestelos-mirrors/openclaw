@@ -4,11 +4,14 @@ import OpenClawKit
 
 @MainActor
 protocol MacNodeRuntimeMainActorServices: Sendable {
+    var desktopAvailability: MacDesktopAvailabilityCoordinator { get }
+
     func snapshotScreen(
         screenIndex: Int?,
         maxWidth: Int?,
         quality: Double?,
-        format: OpenClawScreenSnapshotFormat?) async throws
+        format: OpenClawScreenSnapshotFormat?,
+        desktopPermit: MacDesktopAvailabilityCoordinator.Permit) async throws
         -> ScreenSnapshotResult
 
     func recordScreen(
@@ -27,12 +30,15 @@ protocol MacNodeRuntimeMainActorServices: Sendable {
 
     func performComputerAct(
         _ params: OpenClawComputerActParams,
-        lifecycleGeneration: UInt64) async throws -> OpenClawComputerActResult
+        lifecycleGeneration: UInt64,
+        desktopPermit: MacDesktopAvailabilityCoordinator.Permit) async throws -> OpenClawComputerActResult
+    func releaseExecutionInput(_ permit: MacDesktopAvailabilityCoordinator.Permit) async
     func releaseHeldInput(lifecycleGeneration: UInt64) async
 }
 
 @MainActor
 final class LiveMacNodeRuntimeMainActorServices: MacNodeRuntimeMainActorServices, @unchecked Sendable {
+    let desktopAvailability = MacDesktopAvailabilityCoordinator.shared
     private let screenSnapshotter = ScreenSnapshotService()
     private let screenRecorder = ScreenRecordService()
     private let locationService = MacNodeLocationService()
@@ -42,14 +48,18 @@ final class LiveMacNodeRuntimeMainActorServices: MacNodeRuntimeMainActorServices
         screenIndex: Int?,
         maxWidth: Int?,
         quality: Double?,
-        format: OpenClawScreenSnapshotFormat?) async throws
+        format: OpenClawScreenSnapshotFormat?,
+        desktopPermit: MacDesktopAvailabilityCoordinator.Permit) async throws
         -> ScreenSnapshotResult
     {
-        try await self.screenSnapshotter.snapshot(
+        try self.desktopAvailability.validate(desktopPermit)
+        let result = try await self.screenSnapshotter.snapshot(
             screenIndex: screenIndex,
             maxWidth: maxWidth,
             quality: quality,
             format: format)
+        try self.desktopAvailability.validate(desktopPermit)
+        return result
     }
 
     func recordScreen(
@@ -88,11 +98,19 @@ final class LiveMacNodeRuntimeMainActorServices: MacNodeRuntimeMainActorServices
 
     func performComputerAct(
         _ params: OpenClawComputerActParams,
-        lifecycleGeneration: UInt64) async throws -> OpenClawComputerActResult
+        lifecycleGeneration: UInt64,
+        desktopPermit: MacDesktopAvailabilityCoordinator.Permit) async throws -> OpenClawComputerActResult
     {
-        try await self.computerAction.perform(
+        try self.desktopAvailability.validate(desktopPermit)
+        return try await self.computerAction.perform(
             params,
-            lifecycleGeneration: lifecycleGeneration)
+            lifecycleGeneration: lifecycleGeneration,
+            inputScopeId: desktopPermit.inputScopeId,
+            checkScopeAllowed: { try self.desktopAvailability.validate(desktopPermit) })
+    }
+
+    func releaseExecutionInput(_ permit: MacDesktopAvailabilityCoordinator.Permit) async {
+        await self.computerAction.releaseHeldInput(inputScopeId: permit.inputScopeId)
     }
 
     func releaseHeldInput(lifecycleGeneration: UInt64) async {

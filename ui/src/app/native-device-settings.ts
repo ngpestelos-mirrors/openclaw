@@ -1,3 +1,4 @@
+import type { DesktopAvailability } from "@openclaw/gateway-protocol";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 
 type PermissionId =
@@ -48,7 +49,9 @@ export type NativeDeviceSettingsSnapshot = {
     cuaDriverBundled?: boolean;
     peekabooBridgeEnabled?: boolean;
     activeComputerPresenceEnabled?: boolean;
+    unattendedDesktopEnabled?: boolean;
   };
+  desktopAvailability?: DesktopAvailability;
   browser?: {
     importAvailable: boolean; // app in local mode and a Chrome-family profile with cookies exists
     cookieSync: {
@@ -113,6 +116,7 @@ export type SettingKey =
   | "capabilities.computerControlProvider"
   | "capabilities.peekabooBridgeEnabled"
   | "capabilities.activeComputerPresenceEnabled"
+  | "capabilities.unattendedDesktopEnabled"
   | "browser.cookieSync.enabled"
   | "browser.cookieSync.domains"
   | "browser.cookieSync.targetProfile"
@@ -248,7 +252,8 @@ function isSnapshot(value: unknown): value is NativeDeviceSettingsSnapshot {
   if (!isRecord(value) || value.contract !== 1) {
     return false;
   }
-  const { device, app, capabilities, browser, permissions, voice, updates } = value;
+  const { device, app, capabilities, desktopAvailability, browser, permissions, voice, updates } =
+    value;
   if (
     !isRecord(device) ||
     (app !== undefined && !isRecord(app)) ||
@@ -305,10 +310,16 @@ function isSnapshot(value: unknown): value is NativeDeviceSettingsSnapshot {
         "cuaDriverBundled",
         "peekabooBridgeEnabled",
         "activeComputerPresenceEnabled",
+        "unattendedDesktopEnabled",
       ]) &&
         (capabilities.computerControlProvider === undefined ||
           capabilities.computerControlProvider === "peekaboo" ||
           capabilities.computerControlProvider === "cua"))) &&
+    (desktopAvailability === undefined ||
+      (isRecord(desktopAvailability) &&
+        (desktopAvailability.state === "locked" ||
+          desktopAvailability.state === "unlocked" ||
+          desktopAvailability.state === "unknown"))) &&
     (browser === undefined ||
       (typeof browser.importAvailable === "boolean" &&
         isRecord(cookieSync) &&

@@ -120,6 +120,48 @@ struct MacNodeHostWorkerTests {
         await worker.stop()
     }
 
+    @Test(arguments: [("true", true), ("false", false), ("1", false), ("null", false)])
+    func `worker hosting readiness requires an explicit Boolean fact`(raw: String, expected: Bool) async throws {
+        let worker = MacNodeHostWorker(session: GatewayNodeSession())
+        let script = """
+        printf '%s\\n' '{"type":"ready","version":"test","workerHostingEnabled":\(raw),"manifest":{"caps":[],"commands":[],"pathEnv":"/bin"}}'
+        while IFS= read -r line; do :; done
+        """
+        _ = try await worker.start(launch: MacNodeHostWorkerLaunch(command: ["/bin/sh", "-c", script]))
+        #expect(await worker.isWorkerHostingEnabled() == expected)
+        await worker.stop()
+        #expect(await worker.isWorkerHostingEnabled() == false)
+    }
+
+    @Test func `private worker hosting transitions notify once without changing its manifest`() async throws {
+        let worker = MacNodeHostWorker(session: GatewayNodeSession())
+        let changes = OSAllocatedUnfairLock(initialState: 0)
+        let observer = NotificationCenter.default.addObserver(
+            forName: .openclawNodeHostHostingChanged,
+            object: worker,
+            queue: nil) { _ in changes.withLock { $0 += 1 } }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let script = """
+        printf '%s\\n' '{"type":"ready","version":"test","workerHostingEnabled":true,"manifest":{"caps":["system"],"commands":["system.run"],"pathEnv":"/bin"}}'
+        IFS= read -r invoke
+        printf '%s\\n' '{"type":"worker-hosting","enabled":true}'
+        printf '%s\\n' '{"type":"worker-hosting","enabled":false}'
+        printf '%s\\n' '{"type":"worker-hosting","enabled":1}'
+        printf '%s\\n' '{"type":"invoke-result","generation":0,"result":{"id":"hosting-proof","ok":true}}'
+        while IFS= read -r line; do :; done
+        """
+        _ = try await worker.start(launch: MacNodeHostWorkerLaunch(command: ["/bin/sh", "-c", script]))
+        #expect(await worker.isWorkerHostingEnabled())
+        #expect(changes.withLock { $0 } == 1)
+        let response = await worker.invoke(BridgeInvokeRequest(id: "hosting-proof", command: "system.run"))
+        #expect(response.ok)
+        #expect(await worker.isWorkerHostingEnabled() == false)
+        #expect(await worker.supports("system.run"))
+        #expect(changes.withLock { $0 } == 2)
+        await worker.stop()
+        #expect(changes.withLock { $0 } == 2)
+    }
+
     @Test(arguments: [
         OpenClawSystemCommand.run.rawValue,
         "mcp.tools.call.v1",
@@ -143,8 +185,11 @@ struct MacNodeHostWorkerTests {
     @Test(arguments: [MacNodeScreenCommand.snapshot.rawValue, OpenClawComputerCommand.act.rawValue])
     func `selected CUA provider gives the command pair exclusively to the worker`(command: String) async {
         let worker = StubMacNodeHostWorker(commands: [command])
-        let runtime = MacNodeRuntime(
+        let services = await MainActor.run { MacNodeRuntimeTests.MainActorServicesProbe() }
+        let runtime = await MacNodeRuntime(
             nodeHostWorker: worker,
+            desktopAvailability: services.desktopAvailability,
+            makeMainActorServices: { services },
             computerControlEnabled: { true },
             computerControlProvider: { .cua })
 
@@ -160,8 +205,11 @@ struct MacNodeHostWorkerTests {
 
     @Test func `selected CUA provider never falls back to native snapshot`() async {
         let worker = StubMacNodeHostWorker(commands: [])
-        let runtime = MacNodeRuntime(
+        let services = await MainActor.run { MacNodeRuntimeTests.MainActorServicesProbe() }
+        let runtime = await MacNodeRuntime(
             nodeHostWorker: worker,
+            desktopAvailability: services.desktopAvailability,
+            makeMainActorServices: { services },
             computerControlEnabled: { true },
             computerControlProvider: { .cua })
 
@@ -550,7 +598,7 @@ struct MacNodeHostWorkerTests {
                 exitGate.open()
             }
             let script = """
-            printf '%s\\n' '{"type":"ready","version":"test","manifest":{"caps":["system"],"commands":["system.run"],"pathEnv":"/usr/bin:/bin"},"inventory":{"skills":null,"pluginTools":[]}}'
+            printf '%s\\n' '{"type":"ready","version":"test","workerHostingEnabled":true,"manifest":{"caps":["system"],"commands":["system.run"],"pathEnv":"/usr/bin:/bin"},"inventory":{"skills":null,"pluginTools":[]}}'
             sleep 0.05
             exit 7
             """
@@ -559,6 +607,7 @@ struct MacNodeHostWorkerTests {
                 command: ["/bin/sh", "-c", script],
                 configurationGeneration: expectedGeneration))
             await exitGate.wait()
+            #expect(await worker.isWorkerHostingEnabled() == false)
         }
     }
 
@@ -628,7 +677,7 @@ struct MacNodeHostWorkerTests {
         // pending on stdin until the owner's existing termination deadline reaps it.
         let firstScript = """
         trap 'printf "%s\n" "$$" > "$1"; IFS= read -r _; exit 0' TERM
-        printf '%s\n' '{"type":"ready","version":"first","manifest":{"caps":[],"commands":[],"pathEnv":"/bin"}}'
+        printf '%s\n' '{"type":"ready","version":"first","workerHostingEnabled":true,"manifest":{"caps":[],"commands":[],"pathEnv":"/bin"}}'
         while IFS= read -r line; do :; done
         """
         let replacementScript = """
@@ -654,6 +703,7 @@ struct MacNodeHostWorkerTests {
             ]))
         }
         _ = try await TestProcessSupport.waitForPID(in: cleanupStartedPIDFile)
+        #expect(await worker.isWorkerHostingEnabled() == false)
 
         await worker.stop()
 

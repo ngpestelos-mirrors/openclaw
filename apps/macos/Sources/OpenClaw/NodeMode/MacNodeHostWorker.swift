@@ -1,3 +1,4 @@
+import CoreFoundation
 import Darwin
 import Foundation
 import OpenClawKit
@@ -7,6 +8,7 @@ import Subprocess
 
 extension Notification.Name {
     static let openclawNodeHostManifestChanged = Notification.Name("openclaw.node-host-worker.manifest-changed")
+    static let openclawNodeHostHostingChanged = Notification.Name("openclaw.node-host-worker.hosting-changed")
     static let openclawNodeHostWorkerFailed = Notification.Name("openclaw.node-host-worker.failed")
     static let openclawNodeHostWorkerRetryExhausted = Notification.Name(
         "openclaw.node-host-worker.retry-exhausted")
@@ -109,6 +111,7 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
     // first; without this the operator-visible error is just "exited(1)".
     private var stderrCapture = PipeTextCapture(characterLimit: 700, retention: .head)
     private var manifest: MacNodeHostManifest?
+    private var workerHostingEnabled = false
     private var route: GatewayNodeSessionRoute?
     private var routeAuthorityGeneration: UInt64 = 0
     private var startContinuation: CheckedContinuation<MacNodeHostManifest, Error>?
@@ -154,6 +157,14 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         await withCheckedContinuation { continuation in
             self.queue.async {
                 continuation.resume(returning: self.manifest?.commands.contains(command) == true)
+            }
+        }
+    }
+
+    func isWorkerHostingEnabled() async -> Bool {
+        await withCheckedContinuation { continuation in
+            self.queue.async {
+                continuation.resume(returning: self.workerHostingEnabled)
             }
         }
     }
@@ -533,10 +544,16 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
                 pathEnv: pathEnv)
             self.manifest = manifest
             if type == "ready" {
+                self.updateWorkerHostingLocked(Self.decodeWorkerHosting(message["workerHostingEnabled"]) ?? false)
                 self.finishStartLocked(.success(manifest))
             } else {
                 NotificationCenter.default.post(name: .openclawNodeHostManifestChanged, object: nil)
             }
+        case "worker-hosting":
+            guard self.manifest != nil,
+                  let enabled = Self.decodeWorkerHosting(message["enabled"])
+            else { return }
+            self.updateWorkerHostingLocked(enabled)
         case "invoke-result":
             guard let result = message["result"] as? [String: Any],
                   let id = result["id"] as? String,
@@ -591,6 +608,17 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         default:
             break
         }
+    }
+
+    private func updateWorkerHostingLocked(_ enabled: Bool) {
+        guard self.workerHostingEnabled != enabled else { return }
+        self.workerHostingEnabled = enabled
+        NotificationCenter.default.post(name: .openclawNodeHostHostingChanged, object: self)
+    }
+
+    private static func decodeWorkerHosting(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
     }
 
     private func handleGatewayRequest(
@@ -705,6 +733,7 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         self.launchedWorker = nil
         self.stdoutBuffer.removeAll(keepingCapacity: false)
         self.manifest = nil
+        self.updateWorkerHostingLocked(false)
         self.route = nil
         if !preserveStart {
             self.finishStartLocked(.failure(WorkerError.unavailable(reason: reason, diagnostic: diagnostic)))
