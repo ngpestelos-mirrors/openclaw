@@ -31,7 +31,7 @@ export function createConnectionHandle(overrides: Partial<DesktopConnectionHandl
     sendBackspace: vi.fn(),
     sendKeyboardEvent: vi.fn(),
     sendText: vi.fn(),
-    setScaleViewport: vi.fn(),
+    setSizingMode: vi.fn(),
     ...overrides,
   } satisfies DesktopConnectionHandle;
 }
