@@ -14,8 +14,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expectDefined } from "../packages/normalization-core/src/expect.js";
 import {
+  assertCompatibleCliStartupExecutionModes,
   assertCompatibleCliStartupMemoryMetrics,
   CLI_RUNTIME_MEMORY_METRIC,
+  type CliStartupExecutionMode,
   cliStartupMemoryMetric,
 } from "./lib/cli-startup-memory-contract.mts";
 import {
@@ -93,6 +95,7 @@ type CaseSummary = {
 
 type SuiteResult = {
   entry: string;
+  executionMode?: CliStartupExecutionMode;
   memoryMetric?: string;
   cases: Array<{
     id: string;
@@ -1408,6 +1411,7 @@ function printDelta(primary: SuiteResult, secondary: SuiteResult): void {
 }
 
 function buildCaseDeltas(primary: SuiteResult, secondary: SuiteResult): CaseDelta[] {
+  assertCompatibleCliStartupExecutionModes(primary, secondary);
   assertCompatibleCliStartupMemoryMetrics(primary, secondary);
   const primaryById = new Map(primary.cases.map((commandCase) => [commandCase.id, commandCase]));
   const deltas: CaseDelta[] = [];
@@ -1485,6 +1489,7 @@ export function collectFailedSamples(result: SuiteResult): string[] {
 
 async function buildSuiteResult(params: {
   entry: string;
+  executionMode: CliStartupExecutionMode;
   options: CliOptions;
   rssHookPath: string;
 }): Promise<SuiteResult> {
@@ -1525,6 +1530,7 @@ async function buildSuiteResult(params: {
   }
   return {
     entry: params.entry,
+    executionMode: params.executionMode,
     ...(params.options.runtimeRss ? { memoryMetric: CLI_RUNTIME_MEMORY_METRIC } : {}),
     cases,
   };
@@ -1648,12 +1654,14 @@ async function main(): Promise<void> {
   try {
     const primary = await buildSuiteResult({
       entry: options.entryPrimary,
+      executionMode: transport ? "transport" : "native",
       options,
       rssHookPath,
     });
     const secondary = options.entrySecondary
       ? await buildSuiteResult({
           entry: options.entrySecondary,
+          executionMode: transport ? "transport" : "native",
           options,
           rssHookPath,
         })

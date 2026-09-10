@@ -103,9 +103,9 @@ console.log("fixture version");
         },
       );
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(readFileSync(output, "utf8")).primary.cases[0].samples).toMatchObject([
-        { exitCode: 0, signal: null },
-      ]);
+      const report = JSON.parse(readFileSync(output, "utf8"));
+      expect(report.primary.executionMode).toBe("transport");
+      expect(report.primary.cases[0].samples).toMatchObject([{ exitCode: 0, signal: null }]);
       const invocations = readFileSync(calls, "utf8")
         .trim()
         .split("\n")
@@ -271,7 +271,9 @@ if (isMainThread && !runtime) {
         ...(runtimeRss ? ["--runtime-rss"] : []),
       ]);
       expect(result.status, result.stderr).toBe(0);
-      const sample = JSON.parse(result.stdout).primary.cases[0].samples[0];
+      const report = JSON.parse(result.stdout);
+      expect(report.primary.executionMode).toBe("native");
+      const sample = report.primary.cases[0].samples[0];
       expect(sample.maxRssMb).toBeGreaterThan(0);
       if (runtimeRss) {
         expect(sample.firstOutputMs).toBeNull();
@@ -697,6 +699,41 @@ try {
       ]);
       expect(compatible.status, compatible.stderr).toBe(0);
       expect(JSON.parse(compatible.stdout)).toEqual(comparison);
+
+      for (const [before, after, error] of [
+        [undefined, "native", null],
+        ["native", undefined, null],
+        ["native", "native", null],
+        ["transport", "transport", null],
+        [undefined, "transport", "Incompatible CLI execution modes"],
+        ["transport", "native", "Incompatible CLI execution modes"],
+        ["unknown", "unknown", "Unknown CLI execution mode"],
+        [null, "native", "Unknown CLI execution mode"],
+        ["native", 1, "Unknown CLI execution mode"],
+      ] satisfies Array<[unknown, unknown, string | null]>) {
+        writeFileSync(
+          baselinePath,
+          JSON.stringify({ primary: { ...makeReport(100, 50).primary, executionMode: before } }),
+        );
+        writeFileSync(
+          candidatePath,
+          JSON.stringify({ primary: { ...makeReport(125, 60).primary, executionMode: after } }),
+        );
+        const result = runBenchmarkCli([
+          "--compare-baseline",
+          baselinePath,
+          "--compare-candidate",
+          candidatePath,
+          "--json",
+        ]);
+        expect(result.status, result.stderr).toBe(error ? 1 : 0);
+        if (error) {
+          expect(result.stderr).toContain(error);
+          expect(result.stdout).toBe("");
+        } else {
+          expect(JSON.parse(result.stdout)).toEqual(comparison);
+        }
+      }
     } finally {
       tempDirs.cleanup();
     }
