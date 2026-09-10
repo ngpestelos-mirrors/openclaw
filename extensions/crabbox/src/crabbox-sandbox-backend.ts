@@ -5,6 +5,8 @@
 // with a fixed, scope-derived lease ID and that the built-in SSH backend then
 // drives. Replaying the same lease ID adopts the existing box, so a Gateway
 // restart or a second session in the same scope never allocates a duplicate.
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { runCommandWithTimeout, type SpawnResult } from "openclaw/plugin-sdk/process-runtime";
 import {
   createRemoteShellSandboxFsBridge,
@@ -19,7 +21,11 @@ import {
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveCrabboxBinary } from "./crabbox-binary.js";
 import type { ResolvedCrabboxSandboxConfig } from "./crabbox-sandbox-config.js";
-import { crabboxSandboxLeaseId } from "./crabbox-sandbox-lease.js";
+import {
+  candidateCrabboxSandboxLeaseIds,
+  CRABBOX_SANDBOX_LEASE_ID_PATTERN,
+  mintCrabboxSandboxLeaseId,
+} from "./crabbox-sandbox-lease.js";
 import {
   parseCrabboxSshCommand,
   type CrabboxSandboxEndpoint,
@@ -38,7 +44,6 @@ const CRABBOX_SANDBOX_MAX_OUTPUT_BYTES = 64 * 1024;
  * are re-resolved well before that.
  */
 const CRABBOX_SANDBOX_ENDPOINT_REFRESH_MS = 10 * 60_000;
-const LEASE_ID_PATTERN = /^cbx_[a-f0-9]{12}$/u;
 const READY_STATES = new Set(["started", "running", "ready"]);
 
 type CrabboxSandboxCommandRunner = (
@@ -155,7 +160,9 @@ async function resolveEndpoint(
     ["ssh", ...providerArgs(client.pluginConfig), "--id", leaseId, "--show-secret"],
     { ...options, timeoutMs: CRABBOX_SANDBOX_SSH_TIMEOUT_MS },
   );
-  return parseCrabboxSshCommand(result.stdout);
+  const endpoint = parseCrabboxSshCommand(result.stdout);
+  await ensureKnownHost(client, endpoint);
+  return endpoint;
 }
 
 async function ensureLease(
@@ -188,6 +195,33 @@ async function ensureLease(
   }
 }
 
+/**
+ * Adopt the newest registered lease that is still alive; otherwise mint a new
+ * fixed ID for this runtime generation. A stopped lease's ID is terminal in
+ * Crabbox, so `openclaw sandbox recreate` always provisions under a fresh one.
+ */
+async function selectLease(
+  client: CrabboxSandboxClient,
+  params: CreateSandboxBackendParams,
+): Promise<string> {
+  for (const candidate of candidateCrabboxSandboxLeaseIds(params.registeredRuntimeIds)) {
+    let lease: LeaseState;
+    try {
+      lease = await inspectLease(client, candidate, { cwd: params.workspaceDir });
+    } catch {
+      continue;
+    }
+    if (!lease.ready) {
+      continue;
+    }
+    await ensureLease(client, candidate, { cwd: params.workspaceDir });
+    return candidate;
+  }
+  const leaseId = mintCrabboxSandboxLeaseId();
+  await ensureLease(client, leaseId, { cwd: params.workspaceDir });
+  return leaseId;
+}
+
 function createClient(dependencies: CrabboxSandboxBackendDependencies): CrabboxSandboxClient {
   return {
     binary: resolveCrabboxBinary({
@@ -197,6 +231,53 @@ function createClient(dependencies: CrabboxSandboxBackendDependencies): CrabboxS
     pluginConfig: dependencies.pluginConfig,
     runCommand: dependencies.runCommand ?? runCommandWithTimeout,
   };
+}
+
+/**
+ * Crabbox connects with its own SSH client, so its per-lease known_hosts may not
+ * hold the OpenSSH-formatted key yet. Record the host key on first contact
+ * (the same trust-on-first-use OpenSSH applies with accept-new) and require it
+ * to match afterwards, so a token carried in the SSH user cannot be captured by
+ * an impostor on later connections.
+ */
+async function ensureKnownHost(
+  client: CrabboxSandboxClient,
+  endpoint: CrabboxSandboxEndpoint,
+): Promise<void> {
+  if (!endpoint.knownHostsFile) {
+    return;
+  }
+  const at = endpoint.target.lastIndexOf("@");
+  const hostPort = endpoint.target.slice(at + 1);
+  const colon = hostPort.lastIndexOf(":");
+  const host = hostPort.slice(0, colon).replace(/^\[|\]$/gu, "");
+  const port = hostPort.slice(colon + 1);
+  const lookup = `[${host}]:${port}`;
+  const known = await client.runCommand(
+    ["ssh-keygen", "-F", lookup, "-f", endpoint.knownHostsFile],
+    {
+      killProcessTree: true,
+      maxOutputBytes: CRABBOX_SANDBOX_MAX_OUTPUT_BYTES,
+      timeoutMs: CRABBOX_SANDBOX_INSPECT_TIMEOUT_MS,
+    },
+  );
+  if (known.code === 0 && known.stdout.trim()) {
+    return;
+  }
+  const scanned = await client.runCommand(["ssh-keyscan", "-p", port, "-T", "10", host], {
+    killProcessTree: true,
+    maxOutputBytes: CRABBOX_SANDBOX_MAX_OUTPUT_BYTES,
+    timeoutMs: CRABBOX_SANDBOX_INSPECT_TIMEOUT_MS,
+  });
+  const keys = scanned.stdout
+    .split(/\r?\n/u)
+    .filter((line) => line.trim() && !line.startsWith("#"))
+    .map((line) => (port === "22" ? line : line.replace(/^\S+/u, lookup)));
+  if (keys.length === 0) {
+    throw new Error(`no SSH host key could be recorded for ${host}:${port}`);
+  }
+  await mkdir(path.dirname(endpoint.knownHostsFile), { recursive: true, mode: 0o700 });
+  await appendFile(endpoint.knownHostsFile, `${keys.join("\n")}\n`, { mode: 0o600 });
 }
 
 function sshParamsFor(
@@ -215,11 +296,12 @@ function sshParamsFor(
         identityData: undefined,
         certificateFile: undefined,
         certificateData: undefined,
-        // Crabbox records the lease's host key in its per-lease known_hosts on
-        // first contact; leases are fresh machines, so keys are not pinned.
+        // Crabbox recorded the lease's host key in its per-lease known_hosts on
+        // first contact (accept-new); every later connection must match it so a
+        // token carried in the SSH user cannot be captured by an impostor.
         knownHostsFile: endpoint.knownHostsFile,
         knownHostsData: undefined,
-        strictHostKeyChecking: false,
+        strictHostKeyChecking: endpoint.knownHostsFile !== undefined,
         updateHostKeys: false,
       },
     },
@@ -250,8 +332,7 @@ export function createCrabboxSandboxBackendFactory(
     if ((params.cfg.docker.binds?.length ?? 0) > 0) {
       throw new Error("Crabbox sandbox backend does not support sandbox.docker.binds.");
     }
-    const leaseId = crabboxSandboxLeaseId(params.scopeKey);
-    await ensureLease(client, leaseId, { cwd: params.workspaceDir });
+    const leaseId = await selectLease(client, params);
     const sshFactory = requireSandboxBackendFactory("ssh");
     let inner = await sshFactory(
       sshParamsFor(params, await resolveEndpoint(client, leaseId, { cwd: params.workspaceDir })),
@@ -324,7 +405,7 @@ export function createCrabboxSandboxBackendManager(
   const configLabel = crabboxSandboxConfigLabel(dependencies.pluginConfig);
   return {
     async describeRuntime({ entry }) {
-      if (!LEASE_ID_PATTERN.test(entry.containerName)) {
+      if (!CRABBOX_SANDBOX_LEASE_ID_PATTERN.test(entry.containerName)) {
         return { running: false, configLabelMatch: false };
       }
       let lease: LeaseState;
@@ -340,7 +421,7 @@ export function createCrabboxSandboxBackendManager(
       };
     },
     async removeRuntime({ entry }) {
-      if (!LEASE_ID_PATTERN.test(entry.containerName)) {
+      if (!CRABBOX_SANDBOX_LEASE_ID_PATTERN.test(entry.containerName)) {
         throw new Error(`Crabbox sandbox runtime ${entry.containerName} is not a fixed lease id`);
       }
       await runCrabbox(

@@ -16,7 +16,7 @@ import {
   createCrabboxSandboxBackendFactory,
   createCrabboxSandboxBackendManager,
 } from "./crabbox-sandbox-backend.js";
-import { crabboxSandboxLeaseId } from "./crabbox-sandbox-lease.js";
+import { CRABBOX_SANDBOX_LEASE_ID_PATTERN } from "./crabbox-sandbox-lease.js";
 
 const LIVE = process.env.OPENCLAW_E2E_CRABBOX === "1";
 const LIVE_TIMEOUT_MS = 15 * 60_000;
@@ -74,7 +74,10 @@ describe.skipIf(!LIVE)("crabbox sandbox backend (live)", () => {
           prune: createSandboxPruneConfig(),
         },
       };
-      const leaseId = crabboxSandboxLeaseId(scopeKey);
+      const handle: SandboxBackendHandle = await factory(params);
+      expect(handle.id).toBe("crabbox");
+      const leaseId = handle.runtimeId;
+      expect(leaseId).toMatch(CRABBOX_SANDBOX_LEASE_ID_PATTERN);
       const entry = {
         containerName: leaseId,
         backendId: "crabbox",
@@ -87,10 +90,6 @@ describe.skipIf(!LIVE)("crabbox sandbox backend (live)", () => {
       cleanups.push(async () => {
         await manager.removeRuntime({ entry, config }).catch(() => undefined);
       });
-
-      const handle: SandboxBackendHandle = await factory(params);
-      expect(handle.id).toBe("crabbox");
-      expect(handle.runtimeId).toBe(leaseId);
 
       // Exec runs on the box; the seeded workspace carries the marker file.
       const exec = await handle.runShellCommand({
@@ -123,8 +122,8 @@ describe.skipIf(!LIVE)("crabbox sandbox backend (live)", () => {
       expect(readBack.toString("utf8")).toBe("written-through-bridge\n");
       await expect(fs.access(path.join(workspaceDir, "bridge.txt"))).rejects.toThrow();
 
-      // A second factory call for the same scope adopts the same lease.
-      const again = await factory(params);
+      // A later factory call with the registered runtime adopts the same lease.
+      const again = await factory({ ...params, registeredRuntimeIds: [leaseId] });
       expect(again.runtimeId).toBe(leaseId);
       await expect(manager.describeRuntime({ entry, config })).resolves.toMatchObject({
         running: true,
@@ -134,6 +133,18 @@ describe.skipIf(!LIVE)("crabbox sandbox backend (live)", () => {
       await expect(manager.describeRuntime({ entry, config })).resolves.toMatchObject({
         running: false,
       });
+
+      // Recreate: the stopped id is terminal in Crabbox, so a fresh lease is minted.
+      const recreated = await factory({ ...params, registeredRuntimeIds: [leaseId] });
+      expect(recreated.runtimeId).toMatch(CRABBOX_SANDBOX_LEASE_ID_PATTERN);
+      expect(recreated.runtimeId).not.toBe(leaseId);
+      const recreatedEntry = { ...entry, containerName: recreated.runtimeId };
+      cleanups.push(async () => {
+        await manager.removeRuntime({ entry: recreatedEntry, config }).catch(() => undefined);
+      });
+      const recreatedExec = await recreated.runShellCommand({ script: "echo recreated-ok" });
+      expect(recreatedExec.stdout.toString("utf8")).toContain("recreated-ok");
+      await manager.removeRuntime({ entry: recreatedEntry, config });
     },
     LIVE_TIMEOUT_MS,
   );

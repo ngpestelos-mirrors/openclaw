@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { SpawnResult } from "openclaw/plugin-sdk/process-runtime";
 import type { CreateSandboxBackendParams } from "openclaw/plugin-sdk/sandbox";
@@ -13,7 +15,7 @@ import {
   resolveCrabboxSandboxWorkdir,
 } from "./crabbox-sandbox-backend.js";
 import { resolveCrabboxSandboxConfig } from "./crabbox-sandbox-config.js";
-import { crabboxSandboxLeaseId } from "./crabbox-sandbox-lease.js";
+import { CRABBOX_SANDBOX_LEASE_ID_PATTERN } from "./crabbox-sandbox-lease.js";
 import { parseCrabboxSshCommand } from "./crabbox-sandbox-ssh-command.js";
 
 type CrabboxSandboxCommandRunner = NonNullable<
@@ -22,7 +24,7 @@ type CrabboxSandboxCommandRunner = NonNullable<
 
 const OPENCLAW_ROOT = path.resolve(path.sep, "workspace", "openclaw");
 const SCOPE_KEY = "agent:main:session:abc";
-const LEASE_ID = crabboxSandboxLeaseId(SCOPE_KEY);
+const LEASE_ID = "cbx_0123456789ab";
 
 function spawnResult(stdout: string, code = 0): SpawnResult {
   return { stdout, stderr: "", code, signal: null, termination: "exit" } as SpawnResult;
@@ -43,7 +45,10 @@ function inspectJson(overrides: Record<string, unknown> = {}): string {
 }
 
 const KEY_PATH = "/home/user/.config/crabbox/testboxes/lease/id_ed25519";
-const KNOWN_HOSTS = "/home/user/.config/crabbox/testboxes/lease/known_hosts";
+const KNOWN_HOSTS = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-crabbox-test-")),
+  "known_hosts",
+);
 
 function sshCommand(
   user = "token-abc",
@@ -55,14 +60,26 @@ function sshCommand(
   return `warning: something informational\n'ssh' '-o' 'BatchMode=yes' ${key}'-p' '${port}' '-o' 'StrictHostKeyChecking=accept-new' '-o' 'UserKnownHostsFile=${KNOWN_HOSTS}' '${user}@${host}'\n`;
 }
 
-function respond(argv: string[], inspect = inspectJson(), ssh = sshCommand()): SpawnResult {
+function leaseIdFromArgv(argv: string[]): string {
+  const flag = argv.includes("--lease-id") ? "--lease-id" : "--id";
+  const index = argv.indexOf(flag);
+  return index >= 0 ? (argv[index + 1] ?? LEASE_ID) : LEASE_ID;
+}
+
+function respond(argv: string[], inspect?: string, ssh = sshCommand()): SpawnResult {
+  if (argv[0] === "ssh-keygen") {
+    return spawnResult("");
+  }
+  if (argv[0] === "ssh-keyscan") {
+    return spawnResult("ssh.example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEY\n");
+  }
   switch (argv[1]) {
     case "inspect":
-      return spawnResult(inspect);
+      return spawnResult(inspect ?? inspectJson({ id: leaseIdFromArgv(argv) }));
     case "ssh":
       return spawnResult(ssh);
     default:
-      return spawnResult(`leased ${LEASE_ID} slug=openclaw-sandbox\n`);
+      return spawnResult(`leased ${leaseIdFromArgv(argv)} slug=openclaw-sandbox\n`);
   }
 }
 
@@ -104,10 +121,51 @@ function createRunner(handler: (argv: string[]) => SpawnResult | Promise<SpawnRe
 }
 
 describe("crabbox sandbox lease identity", () => {
-  it("derives a stable fixed lease id from the scope key", () => {
-    expect(LEASE_ID).toMatch(/^cbx_[a-f0-9]{12}$/u);
-    expect(crabboxSandboxLeaseId(SCOPE_KEY)).toBe(LEASE_ID);
-    expect(crabboxSandboxLeaseId("agent:main:session:other")).not.toBe(LEASE_ID);
+  it("mints a fresh fixed id when no live registered lease exists", async () => {
+    const seen: string[] = [];
+    const { runCommand } = createRunner((argv) => {
+      if (argv[1] === "warmup") {
+        seen.push(leaseIdFromArgv(argv));
+      }
+      return respond(argv);
+    });
+    const factory = createCrabboxSandboxBackendFactory({
+      openclawRoot: OPENCLAW_ROOT,
+      pluginConfig: { binary: "/opt/bin/crabbox" },
+      runCommand,
+    });
+    const first = await factory(createParams());
+    const second = await factory(createParams());
+    expect(first.runtimeId).toMatch(CRABBOX_SANDBOX_LEASE_ID_PATTERN);
+    expect(second.runtimeId).toMatch(CRABBOX_SANDBOX_LEASE_ID_PATTERN);
+    // Without a registry entry each generation mints its own single-use id.
+    expect(second.runtimeId).not.toBe(first.runtimeId);
+    expect(seen).toEqual([first.runtimeId, second.runtimeId]);
+  });
+
+  it("adopts the newest live registered lease and skips released ones", async () => {
+    const released = "cbx_deaddeaddead";
+    const { calls, runCommand } = createRunner((argv) => {
+      if (argv[1] === "inspect" && argv.includes(released)) {
+        return spawnResult(`lease ${released} is terminal\n`, 4);
+      }
+      return respond(argv);
+    });
+    const factory = createCrabboxSandboxBackendFactory({
+      openclawRoot: OPENCLAW_ROOT,
+      pluginConfig: { binary: "/opt/bin/crabbox" },
+      runCommand,
+    });
+    const handle = await factory(
+      createParams({ registeredRuntimeIds: [released, LEASE_ID, "not-a-lease"] }),
+    );
+    expect(handle.runtimeId).toBe(LEASE_ID);
+    const warmups = calls.filter((argv) => argv[1] === "warmup");
+    expect(warmups).toHaveLength(1);
+    expect(warmups[0]).toContain(LEASE_ID);
+    expect(calls.filter((argv) => argv[1] === "inspect" && argv.includes(released))).toHaveLength(
+      1,
+    );
   });
 });
 
@@ -125,7 +183,7 @@ describe("crabbox sandbox backend factory", () => {
       },
       runCommand,
     });
-    const params = createParams();
+    const params = createParams({ registeredRuntimeIds: [LEASE_ID] });
     const handle = await factory(params);
     expect(handle.id).toBe("crabbox");
     expect(handle.runtimeId).toBe(LEASE_ID);
@@ -134,6 +192,15 @@ describe("crabbox sandbox backend factory", () => {
     expect(handle.configLabelKind).toBe("Lease");
     expect(handle.workdir.startsWith("/tmp/openclaw-sandboxes/")).toBe(true);
     expect(calls[0]).toEqual([
+      "/opt/bin/crabbox",
+      "inspect",
+      "--provider",
+      "daytona",
+      "--id",
+      LEASE_ID,
+      "--json",
+    ]);
+    expect(calls[1]).toEqual([
       "/opt/bin/crabbox",
       "warmup",
       "--provider",
@@ -150,7 +217,7 @@ describe("crabbox sandbox backend factory", () => {
       "--idle-timeout",
       "30m",
     ]);
-    expect(calls[1]).toEqual([
+    expect(calls[2]).toEqual([
       "/opt/bin/crabbox",
       "inspect",
       "--provider",
@@ -159,12 +226,22 @@ describe("crabbox sandbox backend factory", () => {
       LEASE_ID,
       "--json",
     ]);
-    expect(runCommand.mock.calls[0]?.[1]).toMatchObject({
+    expect(calls[3]).toEqual([
+      "/opt/bin/crabbox",
+      "ssh",
+      "--provider",
+      "daytona",
+      "--id",
+      LEASE_ID,
+      "--show-secret",
+    ]);
+    expect(runCommand.mock.calls[1]?.[1]).toMatchObject({
       cwd: params.workspaceDir,
       killProcessTree: true,
     });
+    expect(runCommand.mock.calls[3]?.[1]).toMatchObject({ cwd: params.workspaceDir });
 
-    // A second creation for the same scope replays the same lease id instead of allocating.
+    // A later creation for the same registered runtime replays the same lease id instead of allocating.
     const again = await factory(params);
     expect(again.runtimeId).toBe(LEASE_ID);
     expect(calls.filter((argv) => argv[1] === "warmup")).toHaveLength(2);
@@ -180,9 +257,10 @@ describe("crabbox sandbox backend factory", () => {
       pluginConfig: { binary: "/opt/bin/crabbox" },
       runCommand,
     });
-    await factory(createParams());
-    expect(calls[2]).toEqual(["/opt/bin/crabbox", "ssh", "--id", LEASE_ID, "--show-secret"]);
-    expect(calls[0]).toEqual([
+    const handle = await factory(createParams({ registeredRuntimeIds: [LEASE_ID] }));
+    expect(handle.runtimeId).toBe(LEASE_ID);
+    expect(calls[3]).toEqual(["/opt/bin/crabbox", "ssh", "--id", LEASE_ID, "--show-secret"]);
+    expect(calls[1]).toEqual([
       "/opt/bin/crabbox",
       "warmup",
       "--lease-id",
@@ -217,7 +295,7 @@ describe("crabbox sandbox backend factory", () => {
     ).rejects.toThrow(/did not print an ssh command/u);
 
     const notReady = createRunner((argv) =>
-      respond(argv, inspectJson({ ready: false, state: "stopped" })),
+      respond(argv, inspectJson({ id: leaseIdFromArgv(argv), ready: false, state: "stopped" })),
     );
     await expect(
       createCrabboxSandboxBackendFactory({
@@ -280,6 +358,45 @@ describe("crabbox ssh command parsing", () => {
     expect(() => parseCrabboxSshCommand("'ssh' '-p' '70000' 'user@host'")).toThrow(/invalid port/u);
     expect(() => parseCrabboxSshCommand("'ssh' '-F' 'cfg' 'host'")).toThrow(/config-file/u);
     expect(() => parseCrabboxSshCommand("'ssh' 'hostonly'")).toThrow(/user@host/u);
+  });
+});
+
+describe("crabbox sandbox host keys", () => {
+  it("records the host key on first contact and skips the scan once known", async () => {
+    let known = false;
+    const { calls, runCommand } = createRunner((argv) => {
+      if (argv[0] === "ssh-keygen") {
+        return known
+          ? spawnResult("# Host found\n[ssh.example.test]:2222 ssh-ed25519 AAAA\n")
+          : spawnResult("", 1);
+      }
+      if (argv[0] === "ssh-keyscan") {
+        known = true;
+      }
+      return respond(argv);
+    });
+    const factory = createCrabboxSandboxBackendFactory({
+      openclawRoot: OPENCLAW_ROOT,
+      pluginConfig: { binary: "/opt/bin/crabbox" },
+      runCommand,
+      now: () => 0,
+      endpointRefreshMs: 0,
+    });
+    const handle = await factory(createParams({ registeredRuntimeIds: [LEASE_ID] }));
+    expect(calls.find((argv) => argv[0] === "ssh-keygen")).toEqual([
+      "ssh-keygen",
+      "-F",
+      "[ssh.example.test]:2222",
+      "-f",
+      KNOWN_HOSTS,
+    ]);
+    expect(calls.filter((argv) => argv[0] === "ssh-keyscan")).toEqual([
+      ["ssh-keyscan", "-p", "2222", "-T", "10", "ssh.example.test"],
+    ]);
+    // A refresh re-resolves the endpoint but the recorded key is reused.
+    await handle.buildExecSpec({ command: "true", env: {}, usePty: false }).catch(() => undefined);
+    expect(calls.filter((argv) => argv[0] === "ssh-keyscan")).toHaveLength(1);
+    expect(calls.filter((argv) => argv[0] === "ssh-keygen")).toHaveLength(2);
   });
 });
 

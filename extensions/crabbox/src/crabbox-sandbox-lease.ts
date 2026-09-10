@@ -1,10 +1,20 @@
-import { createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
+
+export const CRABBOX_SANDBOX_LEASE_ID_PATTERN = /^cbx_[a-f0-9]{12}$/u;
 
 /**
- * One fixed lease per sandbox scope. The ID is derived from the scope key so
- * every process that serves the scope replays the same Crabbox operation.
+ * Fixed Crabbox lease IDs are single-use: a stopped lease leaves a terminal
+ * tombstone that refuses replay. Each sandbox runtime generation therefore
+ * mints its own ID, and the sandbox registry (`registeredRuntimeIds`) carries
+ * it across Gateway restarts so warmup replays adopt the live lease.
  */
-export function crabboxSandboxLeaseId(scopeKey: string): string {
-  const digest = createHash("sha256").update(`openclaw-sandbox:${scopeKey}`).digest("hex");
-  return `cbx_${digest.slice(0, 12)}`;
+export function mintCrabboxSandboxLeaseId(): string {
+  return `cbx_${randomBytes(6).toString("hex")}`;
+}
+
+/** Newest registered runtime first, so the current generation wins. */
+export function candidateCrabboxSandboxLeaseIds(
+  registeredRuntimeIds: readonly string[] | undefined,
+): string[] {
+  return (registeredRuntimeIds ?? []).filter((id) => CRABBOX_SANDBOX_LEASE_ID_PATTERN.test(id));
 }
