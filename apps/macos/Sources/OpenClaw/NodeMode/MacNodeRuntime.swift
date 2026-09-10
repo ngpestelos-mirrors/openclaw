@@ -961,8 +961,11 @@ extension MacNodeRuntime {
 
 extension MacNodeRuntime {
     private static func invalidDesktopParamsResponse(_ req: BridgeInvokeRequest) -> BridgeInvokeResponse {
-        let command = req.command == MacNodeScreenCommand.snapshot.rawValue ? "screen snapshot" : "computer.act"
-        return Self.errorResponse(req, code: .invalidRequest, message: "INVALID_REQUEST: invalid \(command) params")
+        if req.command == MacNodeScreenCommand.snapshot.rawValue {
+            return self.errorResponse(
+                req, code: .invalidRequest, message: "INVALID_REQUEST: invalid screen snapshot params")
+        }
+        return self.errorResponse(req, code: .invalidRequest, message: "INVALID_REQUEST: invalid computer.act params")
     }
 
     private static func decodeParams<T: Decodable>(_ type: T.Type, from json: String?) throws -> T {
