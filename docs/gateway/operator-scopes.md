@@ -45,7 +45,7 @@ read-only behavior: `users.github.*` requires `operator.read` plus the exact
 authenticated durable profile. An identified reader can connect, poll, cancel,
 reconnect, or disconnect only their own account. These methods do not expose
 team secrets, mutate shared configuration, or grant OpenClaw write/admin scopes. System
-and per-agent GitHub changes remain `operator.admin`; publication remains
+and per-agent GitHub changes remain `operator.admin`. Publication remains
 `operator.write` plus current session authorization. See
 [GitHub connections](/concepts/user-model#github-connections).
 
@@ -223,7 +223,7 @@ The result is used for both `hello.auth.scopes` and Gateway method
 authorization. Identity grants are session-only: they do not create or modify
 pairing records or request a device scope upgrade. Token, password, and no-auth
 connections carry no verified identity and receive no grant.
-Identity grants apply only to `operator`-role connections; `node`-role connections never receive them.
+Identity grants apply only to `operator`-role connections. `node`-role connections never receive them.
 
 ## Method scope is only the first gate
 
@@ -240,23 +240,23 @@ dispatch so authorization failures have one canonical structured response:
   requests and `operator.admin` when `nodeId` targets a node. Its handler limits
   non-admin Gateway-host browsing to configured agent workspaces.
 - `plugins.sessionAction` requires every scope declared in the selected action's
-  `requiredScopes`; omitted or empty lists default to `operator.write`.
+  `requiredScopes`. Omitted or empty lists default to `operator.write`.
   `operator.write` satisfies `operator.read` and `operator.talk`. Other scopes
   require an exact match, or `operator.admin`.
 - `sessions.create` needs `operator.write` for ordinary creation, including a
   `projectId`, and `operator.admin` for incognito sessions or any `execNode`
   request. For non-admin callers, the handler limits `cwd` to configured agent
-  workspaces; `projectId` cannot be combined with `cwd` or `execNode`.
+  workspaces. `projectId` cannot be combined with `cwd` or `execNode`.
 - `environments.list` needs `operator.read` for plain inventory and
   `operator.write` when `runtimeId` requests runtime-specific command eligibility.
   Session placement methods derive
   their scope from the requested target before schema validation:
   `sessions.dispatch` needs `operator.write` for `deviceId` and
   `operator.admin` for `profileId` or a target-less
-  `cloudWorkers.projectProfiles` lookup; `sessions.move` needs `operator.write`
-  for Gateway or device targets and `operator.admin` for profile targets;
+  `cloudWorkers.projectProfiles` lookup. `sessions.move` needs `operator.write`
+  for Gateway or device targets and `operator.admin` for profile targets.
   `abandonSource: true` remains `operator.write` but is schema-valid only with
-  a Gateway target and runtime-valid only for an exact offline device source;
+  a Gateway target and runtime-valid only for an exact offline device source.
   `sessions.reclaim` remains `operator.write`. Malformed dispatch params or a
   malformed move target use `operator.write` so the handler can return the
   precise schema error. All three methods retain session ownership,
@@ -268,7 +268,7 @@ dispatch so authorization failures have one canonical structured response:
 - `worktrees.branches` needs `operator.write`. Its handler limits non-admin
   callers to workspace-contained paths or registered-project roots. Other host
   paths require `operator.admin`.
-- `talk.config` needs `operator.read`; `includeSecrets: true` also needs
+- `talk.config` needs `operator.read`. `includeSecrets: true` also needs
   `operator.talk.secrets`.
 - `talk.client.*`, `talk.session.*`, `talk.speak`, and `talk.mode` need
   `operator.talk` (or the compatible broader `operator.write`).

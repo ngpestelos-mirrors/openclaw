@@ -92,7 +92,7 @@ See [Database schemas](/reference/database-schemas) for downgrade precautions.
 ## Graceful restarts drain first
 
 Startup migration warnings do not prevent the Gateway from starting. It logs the
-warnings once and starts degraded; `openclaw status` and `openclaw doctor` show the
+warnings once and starts degraded. `openclaw status` and `openclaw doctor` show the
 running Gateway's warning report. Read-only operators receive the repair hint.
 Warning details are restricted to administrators and startup logs.
 Run `openclaw doctor --fix` against the same
@@ -170,7 +170,7 @@ openclaw triage --agent codex
 
 JSON, `--yes`, and non-interactive update invocations collect diagnostics without
 starting an external coding agent. `openclaw triage --non-interactive` also prepares
-diagnostics without launching an agent; `--update-result <path>` includes an
+diagnostics without launching an agent. `--update-result <path>` includes an
 updater's saved failure artifact. Printed handoff commands preserve installation
 selectors and use PowerShell on Windows or POSIX shells on macOS, Linux, and WSL.
 
@@ -241,12 +241,12 @@ never triggers automatic re-enablement of the rejected installation.
 
 On macOS, a terminated update helper can leave the selected Gateway LaunchAgent
 installed but unloaded and disabled across logins. `openclaw doctor` and
-`openclaw doctor --fix` diagnose this state; `--fix` leaves an already-stopped
+`openclaw doctor --fix` diagnose this state. `--fix` leaves an already-stopped
 Gateway stopped. If the update was interrupted or installation safety is
 uncertain, rerun `openclaw update` or use Doctor and triage before starting it.
 Once verified, run `openclaw gateway start` (or
 `openclaw --profile <profile> gateway start`) to re-enable and start that service.
-Keep the same state/config and custom-label overrides; Doctor prints the selected
+Keep the same state/config and custom-label overrides. Doctor prints the selected
 label and recovery command. Interactive Doctor can offer bootstrap repair.
 
 A cancellation before package mutation can restore the original service under
@@ -443,10 +443,10 @@ its durable `update_runs` record. The new Gateway records its observed running
 version, build, and startup facts there. It preserves a terminal outcome already
 written by the updater and waits while a managed handoff is still pending.
 If the existing restart-verification retry window expires, a still-running row
-finishes as failed with `restart-unhealthy`; an already-finalized CLI outcome
+finishes as failed with `restart-unhealthy`. An already-finalized CLI outcome
 stays intact.
 The post-restart notice is rendered from that row using the same report as
-`openclaw update status`; consuming the sentinel does not remove run history.
+`openclaw update status`. Consuming the sentinel does not remove run history.
 Sentinels left by older releases retain their existing delivery route.
 
 Any update run with an existing internal origin session, including Control UI
