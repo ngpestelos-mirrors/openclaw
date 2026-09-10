@@ -657,6 +657,125 @@ class WearChatEventFlowTest {
       assertNull("A timestamp after the missing boundary still proves a later reply", flow.state.replyTerminal)
     }
 
+  @Test
+  fun settledFallbackHistoryBeforeForeignTailSettlesAMissedTerminal() =
+    withFlow { flow ->
+      flow.send()
+      flow.observeReplyCompletion()
+      flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:settled-finalization-fallback"},{"id":"foreign","role":"assistant","content":"Foreign fallback","idempotencyKey":"foreign-run:settled-finalization-fallback"}]"""
+      flow.vm.refresh()
+      flow.idle()
+      assertNull(flow.state.pendingReply)
+      assertEquals(WearReplyOutcome.Final, flow.state.replyTerminal?.outcome)
+      assertEquals(
+        "${flow.runId}:settled-finalization-fallback",
+        flow.state.replyTerminal
+          ?.message
+          ?.idempotencyKey,
+      )
+      assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+    }
+
+  @Test
+  fun settledFallbackTerminalCompletionSelectsOwnedTextBeforeForeignTail() =
+    withFlow { flow ->
+      flow.send()
+      flow.observeReplyCompletion()
+      flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:settled-finalization-fallback"},{"id":"foreign","role":"assistant","content":"Foreign fallback","idempotencyKey":"foreign-run:settled-finalization-fallback"}]"""
+      flow.emit("final")
+      assertNull(flow.state.pendingReply)
+      assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+    }
+
+  @Test
+  fun foreignAndUnrecognizedFallbackKeysCannotRecoverAMissedTerminal() =
+    withFlow { flow ->
+      flow.send()
+      flow.observeReplyCompletion()
+      for (key in listOf(
+        "foreign-run:settled-finalization-fallback",
+        "${flow.runId}-other:settled-finalization-fallback",
+        "prefix-${flow.runId}:settled-finalization-fallback",
+        "${flow.runId}:settled-finalization-fallback:extra",
+        "${flow.runId}:other-fallback",
+        "${flow.runId}:settled-finalization",
+      )) {
+        flow.historyMessages = """[{"id":"unowned","role":"assistant","content":"Unowned reply","idempotencyKey":"$key"}]"""
+        flow.vm.refresh()
+        flow.idle()
+        assertNotNull("Only the exact runtime-owned key may settle this reply: $key", flow.state.pendingReply)
+        assertNull(flow.state.replyTerminal)
+        assertTrue(flow.completedReplies.isEmpty())
+      }
+      flow.historyMessages = """[{"id":"bare","role":"assistant","content":"Bare-key reply","idempotencyKey":"${flow.runId}"}]"""
+      flow.vm.refresh()
+      flow.idle()
+      assertNull(flow.state.pendingReply)
+      assertEquals(listOf("Bare-key reply"), flow.completedReplies.map { it?.text })
+    }
+
+  @Test
+  fun nonAssistantFallbackKeysCannotRecoverAMissedTerminal() =
+    withFlow { flow ->
+      flow.send()
+      flow.observeReplyCompletion()
+      for (role in listOf("user", "system")) {
+        flow.historyMessages = """[{"id":"non-assistant","role":"$role","content":"Not an assistant reply","idempotencyKey":"${flow.runId}:settled-finalization-fallback"}]"""
+        flow.vm.refresh()
+        flow.idle()
+        assertNotNull(flow.state.pendingReply)
+        assertNull(flow.state.replyTerminal)
+        assertTrue(flow.completedReplies.isEmpty())
+      }
+    }
+
+  @Test
+  fun settledFallbackHistoryDoesNotClearAnActiveHistorySnapshot() {
+    for (run in listOf(null, "pending", "newer-run")) {
+      for (text in listOf("New live reply", "")) {
+        withFlow { flow ->
+          flow.send()
+          flow.observeReplyCompletion()
+          flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:settled-finalization-fallback"}]"""
+          val activeRun = if (run == "pending") flow.runId else run
+          flow.historyRun =
+            buildJsonObject {
+              activeRun?.let { put("runId", it) }
+              put("text", text)
+            }
+          flow.vm.refresh()
+          flow.idle()
+          assertEquals(activeRun, flow.state.activeRunId)
+          assertEquals(text, flow.state.streamText)
+          assertNull(flow.state.replyTerminal)
+          assertTrue(flow.completedReplies.isEmpty())
+        }
+      }
+    }
+  }
+
+  @Test
+  fun settledFallbackHistoryWaitsForAConcurrentAnonymousDelta() =
+    withFlow { flow ->
+      flow.send()
+      flow.observeReplyCompletion()
+      flow.historyMessages = """[{"id":"owned-fallback","role":"assistant","content":"Owned fallback","idempotencyKey":"${flow.runId}:settled-finalization-fallback"}]"""
+      flow.historyGate = CompletableDeferred()
+      flow.vm.refresh()
+      flow.idle()
+      flow.emit("delta", eventRunId = null, text = "Unknown live reply")
+      flow.historyGate?.complete(Unit)
+      flow.idle()
+      assertNotNull(flow.state.pendingReply)
+      assertEquals("Unknown live reply", flow.state.streamText)
+      assertNull(flow.state.replyTerminal)
+      assertTrue(flow.completedReplies.isEmpty())
+      flow.vm.refresh()
+      flow.idle()
+      assertNull(flow.state.pendingReply)
+      assertEquals(listOf("Owned fallback"), flow.completedReplies.map { it?.text })
+    }
+
   private fun withFlow(block: (Flow) -> Unit) {
     val flow = Flow()
     try {

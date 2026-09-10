@@ -590,7 +590,7 @@ internal fun WearReplyCompletionEffect(
         snapshot.latestAssistantMessage()
       } else {
         terminal.runId?.let { runId ->
-          snapshot.messages.lastOrNull { it.role == "assistant" && it.idempotencyKey == runId }
+          snapshot.messages.lastOrNull { it.isReplyForRun(runId) }
         } ?: terminal.message?.takeIf { it.role == "assistant" }
       }
     val reply =

@@ -148,6 +148,12 @@ internal data class WearChatMessage(
   val idempotencyKey: String? = null,
 )
 
+// The runtime persists settled-tool fallback replies under this exact derived key.
+// Do not infer ownership from arbitrary suffixes or a shared run-ID prefix.
+internal fun WearChatMessage.isReplyForRun(runId: String): Boolean =
+  role == "assistant" &&
+    (idempotencyKey == runId || idempotencyKey == "$runId:settled-finalization-fallback")
+
 internal data class WearTranscript(
   val sessionKey: String,
   val messages: List<WearChatMessage>,
