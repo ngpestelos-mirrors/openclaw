@@ -8,10 +8,22 @@ read_when:
 title: "Mantis Slack desktop runbook"
 ---
 
-Mantis Slack desktop QA is the real-UI lane for Slack-class bugs that need a
-Linux desktop, VNC rescue, Slack Web, a real OpenClaw gateway, screenshots,
-videos, and a PR evidence comment. Use it when unit tests or the headless
-Slack live lane cannot prove the bug.
+[Mantis](/concepts/mantis) Slack desktop QA is the real-UI lane for Slack-class
+bugs that need a Linux desktop, VNC rescue, Slack Web, a real OpenClaw gateway,
+screenshots, videos, and a PR evidence comment. Use it when unit tests or the
+headless Slack live lane cannot prove the bug.
+
+## Terms
+
+- **Mantis** - the OpenClaw system that runs these scenarios and publishes visual
+  CI evidence and a PR comment.
+- **Crabbox** - the `openclaw/crabbox` service that supplies warmed Linux
+  machines, leases, and VNC access.
+- **Convex** - the credential broker that leases QA Slack credentials to a run,
+  so a workflow needs only the Convex broker secret and never a raw Slack token.
+- **Warm lease** - a Crabbox lease that is still alive from an earlier run. A
+  warm lease can keep a logged-in browser profile, a pnpm cache, and a prepared
+  source checkout.
 
 ## Storage model
 
