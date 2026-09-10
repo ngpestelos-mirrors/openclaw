@@ -350,8 +350,23 @@ async function resolveBackupPlanFromPaths(params: {
   }
 
   const uniqueCandidates: BackupAssetCandidate[] = [];
+  const skipped: SkippedBackupAsset[] = [];
   const seenCanonicalPaths = new Set<string>();
   for (const candidate of [...candidates].toSorted(compareCandidates)) {
+    // Check both the original selection and the already resolved target before deduplication.
+    const privateSelection = isUpdateCapturePath(candidate.sourcePath, stateDir);
+    const privateTarget =
+      candidate.canonicalPath !== candidate.sourcePath &&
+      isUpdateCapturePath(candidate.canonicalPath, stateDir);
+    if (privateSelection || privateTarget) {
+      skipped.push({
+        kind: candidate.kind,
+        sourcePath: candidate.sourcePath,
+        displayPath: shortenHomePath(candidate.sourcePath),
+        reason: "private",
+      });
+      continue;
+    }
     if (seenCanonicalPaths.has(candidate.canonicalPath)) {
       continue;
     }
@@ -359,18 +374,8 @@ async function resolveBackupPlanFromPaths(params: {
     uniqueCandidates.push(candidate);
   }
   const included: BackupAsset[] = [];
-  const skipped: SkippedBackupAsset[] = [];
 
   for (const candidate of uniqueCandidates) {
-    if (isUpdateCapturePath(candidate.canonicalPath, stateDir)) {
-      skipped.push({
-        kind: candidate.kind,
-        sourcePath: candidate.canonicalPath,
-        displayPath: shortenHomePath(candidate.canonicalPath),
-        reason: "private",
-      });
-      continue;
-    }
     if (!candidate.exists) {
       if (
         candidate.kind === "agent" &&
@@ -485,6 +490,10 @@ function resolveManagedSkillSymlinkTargetCandidates(params: {
     allowedSymlinkTargetRealPaths: [],
   });
   for (const candidate of discovered.candidates) {
+    // Preserve the operator's lexical selection before promoting its real target.
+    if (isUpdateCapturePath(candidate.skillDir, params.stateDir)) {
+      continue;
+    }
     if (
       !loadSingleSkillDirectory({
         skillDir: candidate.skillDir,
