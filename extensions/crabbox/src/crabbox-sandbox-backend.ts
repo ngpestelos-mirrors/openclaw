@@ -195,31 +195,49 @@ async function ensureLease(
   }
 }
 
+// Crabbox's own wording for leases that are gone or terminal; anything else
+// (timeouts, provider errors, malformed output) leaves the outcome unknown.
+const MISSING_LEASE_PATTERN =
+  /\b(?:not found|no longer exists|is terminal|terminal and cannot|unknown lease|released|is not claimed by Crabbox|has no matching local ownership claim|has no active create attempt|cannot allocate a replacement)\b/iu;
+
+type SelectedLease = { leaseId: string; allocated: boolean };
+
 /**
  * Adopt the newest registered lease that is still alive; otherwise mint a new
  * fixed ID for this runtime generation. A stopped lease's ID is terminal in
  * Crabbox, so `openclaw sandbox recreate` always provisions under a fresh one.
+ * Only a confirmed missing or terminal lease is skipped: an inspection whose
+ * outcome is unknown propagates, so a live lease is never duplicated.
  */
 async function selectLease(
   client: CrabboxSandboxClient,
   params: CreateSandboxBackendParams,
-): Promise<string> {
+): Promise<SelectedLease> {
   for (const candidate of candidateCrabboxSandboxLeaseIds(params.registeredRuntimeIds)) {
     let lease: LeaseState;
     try {
       lease = await inspectLease(client, candidate, { cwd: params.workspaceDir });
-    } catch {
-      continue;
+    } catch (error) {
+      if (error instanceof Error && MISSING_LEASE_PATTERN.test(error.message)) {
+        continue;
+      }
+      throw error;
     }
     if (!lease.ready) {
       continue;
     }
     await ensureLease(client, candidate, { cwd: params.workspaceDir });
-    return candidate;
+    return { leaseId: candidate, allocated: false };
   }
   const leaseId = mintCrabboxSandboxLeaseId();
   await ensureLease(client, leaseId, { cwd: params.workspaceDir });
-  return leaseId;
+  return { leaseId, allocated: true };
+}
+
+async function stopLease(client: CrabboxSandboxClient, leaseId: string): Promise<void> {
+  await runCrabbox(client, "stop", ["stop", ...providerArgs(client.pluginConfig), leaseId], {
+    timeoutMs: CRABBOX_SANDBOX_STOP_TIMEOUT_MS,
+  });
 }
 
 function createClient(dependencies: CrabboxSandboxBackendDependencies): CrabboxSandboxClient {
@@ -252,7 +270,8 @@ async function ensureKnownHost(
   const colon = hostPort.lastIndexOf(":");
   const host = hostPort.slice(0, colon).replace(/^\[|\]$/gu, "");
   const port = hostPort.slice(colon + 1);
-  const lookup = `[${host}]:${port}`;
+  // OpenSSH records port-22 hosts by bare name and other ports as [host]:port.
+  const lookup = port === "22" ? host : `[${host}]:${port}`;
   const known = await client.runCommand(
     ["ssh-keygen", "-F", lookup, "-f", endpoint.knownHostsFile],
     {
@@ -332,11 +351,20 @@ export function createCrabboxSandboxBackendFactory(
     if ((params.cfg.docker.binds?.length ?? 0) > 0) {
       throw new Error("Crabbox sandbox backend does not support sandbox.docker.binds.");
     }
-    const leaseId = await selectLease(client, params);
+    const { leaseId, allocated } = await selectLease(client, params);
     const sshFactory = requireSandboxBackendFactory("ssh");
-    let inner = await sshFactory(
-      sshParamsFor(params, await resolveEndpoint(client, leaseId, { cwd: params.workspaceDir })),
-    );
+    let inner: SandboxBackendHandle;
+    try {
+      inner = await sshFactory(
+        sshParamsFor(params, await resolveEndpoint(client, leaseId, { cwd: params.workspaceDir })),
+      );
+    } catch (error) {
+      // A lease that never reached the registry would otherwise be orphaned.
+      if (allocated) {
+        await stopLease(client, leaseId).catch(() => undefined);
+      }
+      throw error;
+    }
     let resolvedAt = now();
     let refreshing: Promise<SandboxBackendHandle> | null = null;
     const current = async (): Promise<SandboxBackendHandle> => {
@@ -424,12 +452,7 @@ export function createCrabboxSandboxBackendManager(
       if (!CRABBOX_SANDBOX_LEASE_ID_PATTERN.test(entry.containerName)) {
         throw new Error(`Crabbox sandbox runtime ${entry.containerName} is not a fixed lease id`);
       }
-      await runCrabbox(
-        client,
-        "stop",
-        ["stop", ...providerArgs(client.pluginConfig), entry.containerName],
-        { timeoutMs: CRABBOX_SANDBOX_STOP_TIMEOUT_MS },
-      );
+      await stopLease(client, entry.containerName);
     },
   };
 }

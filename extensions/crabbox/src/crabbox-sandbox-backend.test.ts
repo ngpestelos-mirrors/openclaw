@@ -147,7 +147,10 @@ describe("crabbox sandbox lease identity", () => {
     const released = "cbx_deaddeaddead";
     const { calls, runCommand } = createRunner((argv) => {
       if (argv[1] === "inspect" && argv.includes(released)) {
-        return spawnResult(`lease ${released} is terminal\n`, 4);
+        return spawnResult(
+          `Daytona fixed lease ${released} has no active create attempt; it cannot allocate a replacement\n`,
+          4,
+        );
       }
       return respond(argv);
     });
@@ -397,6 +400,70 @@ describe("crabbox sandbox host keys", () => {
     await handle.buildExecSpec({ command: "true", env: {}, usePty: false }).catch(() => undefined);
     expect(calls.filter((argv) => argv[0] === "ssh-keyscan")).toHaveLength(1);
     expect(calls.filter((argv) => argv[0] === "ssh-keygen")).toHaveLength(2);
+  });
+});
+
+describe("crabbox sandbox lease lifecycle safety", () => {
+  it("looks up port-22 hosts by bare name so recorded keys are reused", async () => {
+    const { calls, runCommand } = createRunner((argv) => {
+      if (argv[0] === "ssh-keygen") {
+        return spawnResult("ssh.example.test ssh-ed25519 AAAA\n");
+      }
+      return respond(argv, undefined, sshCommand("token", "ssh.example.test", 22, false));
+    });
+    await createCrabboxSandboxBackendFactory({
+      openclawRoot: OPENCLAW_ROOT,
+      pluginConfig: { binary: "/opt/bin/crabbox" },
+      runCommand,
+    })(createParams({ registeredRuntimeIds: [LEASE_ID] }));
+    expect(calls.find((argv) => argv[0] === "ssh-keygen")).toEqual([
+      "ssh-keygen",
+      "-F",
+      "ssh.example.test",
+      "-f",
+      KNOWN_HOSTS,
+    ]);
+    expect(calls.filter((argv) => argv[0] === "ssh-keyscan")).toHaveLength(0);
+  });
+
+  it("propagates an inspection whose outcome is unknown instead of allocating a duplicate", async () => {
+    const { calls, runCommand } = createRunner((argv) =>
+      argv[1] === "inspect" ? spawnResult("", 1) : respond(argv),
+    );
+    await expect(
+      createCrabboxSandboxBackendFactory({
+        openclawRoot: OPENCLAW_ROOT,
+        pluginConfig: { binary: "/opt/bin/crabbox" },
+        runCommand,
+      })(createParams({ registeredRuntimeIds: [LEASE_ID] })),
+    ).rejects.toThrow(/inspect failed/u);
+    expect(calls.filter((argv) => argv[1] === "warmup")).toHaveLength(0);
+  });
+
+  it("stops a newly allocated lease when initialization fails, but keeps an adopted one", async () => {
+    const fresh = createRunner((argv) => (argv[1] === "ssh" ? spawnResult("", 4) : respond(argv)));
+    await expect(
+      createCrabboxSandboxBackendFactory({
+        openclawRoot: OPENCLAW_ROOT,
+        pluginConfig: { binary: "/opt/bin/crabbox" },
+        runCommand: fresh.runCommand,
+      })(createParams()),
+    ).rejects.toThrow(/ssh failed/u);
+    const minted = fresh.calls.find((argv) => argv[1] === "warmup");
+    expect(minted).toBeDefined();
+    expect(fresh.calls.at(-1)).toEqual(["/opt/bin/crabbox", "stop", leaseIdFromArgv(minted!)]);
+
+    const adopted = createRunner((argv) =>
+      argv[1] === "ssh" ? spawnResult("", 4) : respond(argv),
+    );
+    await expect(
+      createCrabboxSandboxBackendFactory({
+        openclawRoot: OPENCLAW_ROOT,
+        pluginConfig: { binary: "/opt/bin/crabbox" },
+        runCommand: adopted.runCommand,
+      })(createParams({ registeredRuntimeIds: [LEASE_ID] })),
+    ).rejects.toThrow(/ssh failed/u);
+    expect(adopted.calls.filter((argv) => argv[1] === "stop")).toHaveLength(0);
   });
 });
 
