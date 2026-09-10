@@ -407,7 +407,7 @@ describe("provider model route adapter", () => {
     });
   });
 
-  it("captures exact row overrides without borrowing an alias endpoint", () => {
+  it("captures separate override facts for canonical duplicate rows", () => {
     const firstHeaders: Record<string, string> = {};
     const resolveModelRoutes = vi.fn((_context: ProviderResolveModelRoutesContext) => ({
       kind: "indeterminate" as const,
@@ -454,8 +454,10 @@ describe("provider model route adapter", () => {
       ["second", "present"],
       ["missing", "none"],
     ]);
-    expect(resolveModelRoutes.mock.calls[0]?.[0].configuredModel?.api).toBe("openai-responses");
-    expect(resolveModelRoutes.mock.calls[0]?.[0].configuredModel).not.toHaveProperty("baseUrl");
+    expect(resolveModelRoutes.mock.calls[0]?.[0].configuredModel).toEqual({
+      api: "openai-responses",
+      baseUrl: "https://model.example.test/v1",
+    });
   });
 
   it("keeps case-distinct provider keys and unknown model ids separate", () => {

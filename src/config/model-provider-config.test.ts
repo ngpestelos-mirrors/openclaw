@@ -22,10 +22,10 @@ function model(id: string, fields: Partial<ModelDefinitionConfig> = {}): ModelDe
 afterEach(() => setCurrentManifestModelIdNormalizationPolicies(undefined));
 
 describe("resolveMergedModelProviderModels", () => {
-  it("keeps first-row fields and fills only omissions from exact duplicate rows", () => {
+  it("keeps first-row fields and fills only omissions from canonical duplicates", () => {
     const models = resolveMergedModelProviderModels({
       models: [
-        model("gpt-5.5", {
+        model("openai/gpt-5.5", {
           api: "openai-responses",
           headers: {},
         }),
@@ -40,7 +40,7 @@ describe("resolveMergedModelProviderModels", () => {
     });
 
     expect(models.get("gpt-5.5")).toEqual(
-      model("gpt-5.5", {
+      model("openai/gpt-5.5", {
         api: "openai-responses",
         baseUrl: "https://relay.example.test/v1",
         headers: {},
@@ -49,7 +49,7 @@ describe("resolveMergedModelProviderModels", () => {
     );
   });
 
-  it("keeps an exact row's omitted headers separate from normalized aliases", () => {
+  it("fills headers when the first canonical row omits them", () => {
     const models = resolveMergedModelProviderModels({
       models: [
         model("gpt-5.5", { api: "openai-responses" }),
@@ -58,22 +58,42 @@ describe("resolveMergedModelProviderModels", () => {
       normalizeModelId: (modelId) => modelId.replace(/^openai\//u, ""),
     });
 
-    expect(models.get("gpt-5.5")?.headers).toBeUndefined();
+    expect(models.get("gpt-5.5")?.headers).toEqual({ "x-route": "custom" });
   });
 
-  it("keeps the first equivalent row's omissions when there is no exact target", () => {
-    const first = model("alias-a");
-    const second = model("alias-b", { headers: { "x-route": "other-alias" } });
-    const rows = resolveMergedModelProviderModels({
-      models: [first, second],
-      normalizeModelId: () => "canonical",
-    });
-    expect(rows.get("canonical")).toEqual(first);
-    expect(rows.get("alias-b")).toEqual(second);
-  });
+  it.each([false, true])(
+    "publishes only normalized keys with first-row capabilities (reversed=%s)",
+    (reverse) => {
+      const models = [
+        model("Model", { input: ["text", "image"], contextTokens: 200_000 }),
+        model("model", { input: ["text"], contextTokens: 1_000_000 }),
+      ];
+      if (reverse) {
+        models.reverse();
+      }
+      const indexed = resolveMergedModelProviderModels({
+        models,
+        normalizeModelId: (id) => id.toLowerCase(),
+      });
+      expect([...indexed]).toEqual([["model", models[0]]]);
+    },
+  );
 });
 
 describe("configured model row precedence", () => {
+  it("keeps the first equivalent row's omissions when there is no exact target", () => {
+    const first = model("alias-a");
+    const second = model("alias-b", { headers: { "x-route": "other-alias" } });
+    expect(
+      findConfiguredProviderModel(
+        { models: [first, second] },
+        "custom",
+        "canonical",
+        () => "canonical",
+      ),
+    ).toEqual(first);
+  });
+
   it.each([false, true])("keeps exact rows ahead of legacy spellings (reversed=%s)", (reverse) => {
     for (const headers of [undefined, {}]) {
       const exact = model("Model", {
@@ -121,10 +141,6 @@ describe("configured model row precedence", () => {
     if (reverse) {
       models.reverse();
     }
-    const indexed = resolveMergedModelProviderModels({
-      models,
-      normalizeModelId: canonicalizeModelId,
-    });
     const resolve = createModelProviderRouteOverrideResolver({
       provider: "custom",
       canonicalizeModelId,
@@ -132,7 +148,6 @@ describe("configured model row precedence", () => {
     });
     for (const id of ["middle", "final", "latest", "middle"]) {
       const expected = models.find((row) => row.id === id);
-      expect(indexed.get(id)).toEqual(expected);
       expect(findConfiguredProviderModel({ models }, "custom", id, canonicalizeModelId)).toEqual(
         expected,
       );

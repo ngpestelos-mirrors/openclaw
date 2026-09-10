@@ -160,7 +160,7 @@ export function buildInlineProviderModels(
     // Provider defaults must not mask omissions before exact duplicate rows merge.
     const models = resolveMergedModelProviderModels({
       models: entry?.models,
-      normalizeModelId: (modelId) => modelId,
+      normalizeModelId: (modelId) => modelId.trim(),
     });
     return Array.from(models.values()).map((model) => {
       const transport = resolveInlineProviderTransport({

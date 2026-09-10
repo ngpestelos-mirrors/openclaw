@@ -138,28 +138,23 @@ export function isBuiltInModelProviderOverlayId(providerId: string): boolean {
   return BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS.has(normalizeProviderId(providerId));
 }
 
-/** Indexes exact configured rows ahead of caller-owned model-id equivalents. */
+/** Indexes configured model rows after caller-owned model-id normalization. */
 export function resolveMergedModelProviderModels<T extends { id: string }>(params: {
   models: readonly T[] | undefined;
   normalizeModelId: (modelId: string) => string | undefined;
 }): ReadonlyMap<string, T> {
-  const exactRows = new Map<string, T>();
-  for (const model of params.models ?? []) {
-    // Exact selections can inherit omissions only from same-spelling duplicates.
-    const id = model.id.trim();
-    const exact = exactRows.get(id);
-    exactRows.set(id, exact ? { ...model, ...exact } : model);
-  }
   const models = new Map<string, T>();
-  for (const [id, model] of exactRows) {
-    const modelId = params.normalizeModelId(id);
+  for (const model of params.models ?? []) {
+    const modelId = params.normalizeModelId(model.id);
     if (!modelId) {
-      exactRows.delete(id);
-    } else if (!models.has(modelId)) {
-      models.set(modelId, model);
+      continue;
     }
+    const existing = models.get(modelId);
+    // Earlier rows stay authoritative, including explicit empty objects;
+    // later duplicates only supply top-level fields the first row omitted.
+    models.set(modelId, existing ? { ...model, ...existing } : model);
   }
-  return new Map([...models, ...exactRows]);
+  return models;
 }
 
 function createConfiguredProviderModelResolver<T extends { id: string }>(
@@ -169,13 +164,27 @@ function createConfiguredProviderModelResolver<T extends { id: string }>(
 ): (modelId: string) => T | undefined {
   const canonicalize = (id: string) =>
     stripSelfProviderModelPrefix(provider, id) !== id ? id : canonicalizeModelId?.(id).trim() || id;
-  let configuredModels: ReadonlyMap<string, T> | undefined;
+  let configuredModels: Map<string, T> | undefined;
   return (modelId) => {
     const id = modelId.trim();
-    const rows = (configuredModels ??= resolveMergedModelProviderModels({
-      models: providerConfig?.models,
-      normalizeModelId: (candidate) => canonicalize(candidate.trim()),
-    }));
+    if (!configuredModels) {
+      const exactRows = resolveMergedModelProviderModels({
+        models: providerConfig?.models,
+        normalizeModelId: (candidate) => candidate.trim(),
+      });
+      configuredModels = new Map();
+      for (const [candidate, row] of exactRows) {
+        const canonical = canonicalize(candidate);
+        if (!configuredModels.has(canonical)) {
+          configuredModels.set(canonical, row);
+        }
+      }
+      // Literal selection owns its row; equivalents never donate omitted fields.
+      for (const [candidate, row] of exactRows) {
+        configuredModels.set(candidate, row);
+      }
+    }
+    const rows = configuredModels;
     const canonicalId = canonicalize(id);
     const exact = rows.get(id) ?? rows.get(canonicalId);
     if (exact) {
