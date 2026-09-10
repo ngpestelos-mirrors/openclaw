@@ -234,6 +234,59 @@ it.each([
 });
 
 describe("CI changed Node test plan", () => {
+  it.each(
+    [[], ["extensions/matrix/src/matrix/actions/verification.test.ts"]].map((companions) => ({
+      companions,
+    })),
+  )(
+    "credits max-lines baseline only with its dedicated guard beside $companions",
+    ({ companions }) => {
+      const baseline = "config/max-lines-baseline.txt";
+      const paths = [baseline, ...companions];
+      expect(createChangedNodeTestShards(paths)).toBeNull();
+      expect(createChangedNodeTestShards(paths, { dedicatedMaxLinesRatchet: false })).toBeNull();
+      const shards = createChangedNodeTestShards(paths, { dedicatedMaxLinesRatchet: true });
+      expect(shards).not.toBeNull();
+      if (companions.length) {
+        expect(shards).toEqual(createChangedNodeTestShards(companions));
+      } else {
+        expect(shards?.map((shard) => shard.configs)).toEqual([
+          ["test/vitest/vitest.boundary.config.ts"],
+        ]);
+      }
+    },
+  );
+
+  it.each([
+    "scripts/check-max-lines-ratchet.mts",
+    "scripts/lib/shrink-ratchet.mts",
+    "scripts/lib/ci-changed-node-test-plan.mts",
+    ".github/workflows/ci.yml",
+  ])("retains fallback for max-lines baseline mixed with %s", (owner) => {
+    expect(
+      createChangedNodeTestShards(["config/max-lines-baseline.txt", owner], {
+        dedicatedMaxLinesRatchet: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not credit other config data or a missing max-lines baseline", () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "openclaw-ratchet-routing-"));
+    try {
+      mkdirSync(path.join(cwd, "config"));
+      const baseline = "config/max-lines-baseline.txt";
+      const unknown = "config/max-lines-baseline-other.txt";
+      writeFileSync(path.join(cwd, baseline), "");
+      writeFileSync(path.join(cwd, unknown), "");
+      const options = { cwd, dedicatedMaxLinesRatchet: true };
+      expect(createChangedNodeTestShards([baseline, unknown], options)).toBeNull();
+      rmSync(path.join(cwd, baseline));
+      expect(createChangedNodeTestShards([baseline], options)).toBeNull();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("leaves dedicated UI tests to their owners while retaining changed Node-driven tests", () => {
     const browser = "ui/src/components/markdown-mermaid.runtime.browser.test.ts";
     const node = "ui/src/components/form-controls.browser.test.ts";

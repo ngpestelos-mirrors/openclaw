@@ -1554,6 +1554,7 @@ jobs:
             changedNodeTestShards = changedNodeTestPlan.createChangedNodeTestShards(changedPaths, {
               dedicatedContractShards: [...pluginContractShards, ...channelContractShards],
               dedicatedUiE2e: runUiE2e && !compatibilityTarget,
+              dedicatedMaxLinesRatchet: checksFastCoreTasks.some(({ task }) => task === "baseline-ratchets"),
             });
             if (changedNodeTestShards === null) {
               changedExtensionFallbackShards =
