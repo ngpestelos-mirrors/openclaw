@@ -109,6 +109,7 @@ type WorkerEnvironmentReconcileGuard = (
 export function createWorkerEnvironmentService(options: WorkerEnvironmentServiceOptions) {
   const { store } = options;
   const warn = (message: string) => options.logger?.warn(message);
+  const machineShapeListeners = new Set<(profileId: string) => void>();
   const operations = new KeyedAsyncQueue();
   const providerOperations = new KeyedAsyncQueue();
   const activeOperations = new Set<Promise<unknown>>();
@@ -284,6 +285,15 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     prepareInstallation,
     tunnelManager: tunnelLifecycle,
     credentialBroker,
+    onMachineShapeChanged: (profileId) => {
+      for (const listener of machineShapeListeners) {
+        try {
+          listener(profileId);
+        } catch {
+          warn("Worker machine metadata change reporting failed");
+        }
+      }
+    },
     callBootstrap,
     callProvider,
     inState,
@@ -295,6 +305,12 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     serviceError,
     withLock,
   });
+
+  const warmMachineShape = (profileId: string) => {
+    void providerLifecycle
+      .warmMachineShape(profileId)
+      .catch(() => warn(`Worker machine catalog warmup failed for profile ${profileId}`));
+  };
 
   const environmentAccess = createWorkerEnvironmentAccess({
     ...options,
@@ -480,6 +496,9 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
         inference.cancelSession(mutation.previous.sessionId);
       }
     });
+    for (const profileId of new Set(store.listForReconcile().map((record) => record.profileId))) {
+      warmMachineShape(profileId);
+    }
     options.liveEvents?.start();
     interval = setInterval(
       () => void reconcileOnce().catch(() => warn("Worker environment reconcile sweep failed")),
@@ -491,6 +510,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
 
   const stop = async () => {
     stopping = true;
+    machineShapeListeners.clear();
     maintenanceAbort.abort();
     options.stopNodeEnrollmentWaits?.();
     clearInterval(interval);
@@ -587,12 +607,26 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       return id ? options.resolveProvider(id)?.requiresNodeEnrollment === true : false;
     },
     get: environmentAccess.get,
-    prepareProjectIntent: providerLifecycle.prepareIntent,
+    prepareProjectIntent: (...args: Parameters<typeof providerLifecycle.prepareIntent>) => {
+      warmMachineShape(args[0]);
+      return providerLifecycle.prepareIntent(...args);
+    },
     assertPreparedIntentCurrent: providerLifecycle.assertPreparedIntentCurrent,
     getPreparedCandidates: (intent: WorkerProviderPreparedIntent) =>
       preparedPool.candidates(intent).map(environmentAccess.project),
     schedulePreparedRefill,
     inventoryVersion: store.inventoryVersion,
+    machineShapeVersion: providerLifecycle.machineShapeVersion,
+    subscribeMachineShapeChanged: (listener: (profileId: string) => void) => {
+      machineShapeListeners.add(listener);
+      return () => {
+        machineShapeListeners.delete(listener);
+      };
+    },
+    readMachineShape: (environmentId: string) => {
+      const record = store.get(environmentId);
+      return record ? providerLifecycle.readMachineShape(record) : undefined;
+    },
     supportsNodePortal: async (environmentId: string, ownerEpoch: number) =>
       (await options.nodePortalCarrier?.supports(environmentId, ownerEpoch)) === true,
     hasPendingNodeEnrollmentSetup: (setupId: string, deviceId: string) =>
@@ -613,6 +647,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       runSetupScript?: boolean,
       admittedIntent?: WorkerProviderPreparedIntent,
     ) => {
+      warmMachineShape(profileId);
       if (executionMode) {
         requireProviderExecutionMode(configuredProfileProviderId(profileId), executionMode);
       }
@@ -643,6 +678,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       runSetupScript?: boolean,
       admittedIntent?: WorkerProviderPreparedIntent,
     ) => {
+      warmMachineShape(profile.profileId);
       requireProviderExecutionMode(profile.providerId, executionMode);
       return environmentAccess.project(
         await providerLifecycle.createWithProfile(
