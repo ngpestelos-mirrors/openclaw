@@ -147,7 +147,7 @@ jobs:
           echo "output_dir=${root}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Git owner
-        uses: openclaw/openclaw/.github/actions/git-owner@dd4528b6393e7d00063067a080ca7241b48ce475
+        uses: openclaw/openclaw/.github/actions/git-owner@0670cd25c2687b0272c519c4da7d06337849357b
 
       - name: Setup Node environment
         uses: ./.github/actions/setup-node-env
