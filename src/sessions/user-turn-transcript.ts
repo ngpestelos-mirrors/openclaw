@@ -541,6 +541,7 @@ export function createUserTurnTranscriptRecorder(
         pendingInput = await stageSessionPendingInput(target, {
           ...options,
           requestFingerprint: params.pendingInputRequestFingerprint,
+          conversationHistory: options.conversationHistory ?? params.conversationHistory,
           message: candidate,
           config: target.config as SessionTranscriptTurnPersistOptions["config"],
           prepareMessageAfterIdempotencyCheck: (next) =>
@@ -559,6 +560,7 @@ export function createUserTurnTranscriptRecorder(
       return staging;
     },
     getPendingInputMessage: () => pendingInput?.message,
+    beginSubmission: () => pendingInput?.beginSubmission() ?? { rejectSubmission: () => {} },
     isPendingInputConsumed: () => pendingInput?.state === "consumed",
     withPendingInput: (run) => (pendingInput ? pendingInput.run(run) : run()),
     finishPendingInput: (disposition) => {
@@ -611,6 +613,10 @@ export function createUserTurnTranscriptRecorder(
     getAdmissionReceipt: () => admissionReceipt,
     setAdmissionHandler: (handler) => (admissionHandler = handler),
     markSentToProvider: () => {
+      // Worker handoff can precede local adoption; reserve uncertainty before it can send.
+      if (!sentToProvider && !persisted && !runtimePersisted) {
+        pendingInput?.beginSubmission();
+      }
       sentToProvider = true;
     },
     markRuntimePersistencePending: (pending) => {

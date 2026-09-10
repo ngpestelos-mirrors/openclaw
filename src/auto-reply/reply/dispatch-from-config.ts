@@ -15,6 +15,7 @@ import type {
   DispatchFromConfigParams,
   DispatchFromConfigResult,
 } from "./dispatch-from-config.types.js";
+import { withObservedReplyInputOwner } from "./observed-reply-input.js";
 import { REPLY_ADMISSION_TICKET, reserveReplyAdmissionTicket } from "./reply-admission-ticket.js";
 import "./dispatch-from-config.events.js";
 
@@ -35,6 +36,21 @@ export async function dispatchLowLevelChannelReplyFromConfig(
 }
 
 async function dispatchReplyFromConfigWithQueuePolicy(
+  params: DispatchFromConfigParams,
+  allowActiveQueueResolution: boolean,
+): Promise<DispatchFromConfigResult> {
+  return await withObservedReplyInputOwner(
+    params.ctx.ConversationHistory,
+    params.replyOptions,
+    (replyOptions) =>
+      dispatchReplyFromConfigWithOwnedInput(
+        { ...params, replyOptions },
+        allowActiveQueueResolution,
+      ),
+  );
+}
+
+async function dispatchReplyFromConfigWithOwnedInput(
   params: DispatchFromConfigParams,
   allowActiveQueueResolution: boolean,
 ): Promise<DispatchFromConfigResult> {

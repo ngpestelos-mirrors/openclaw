@@ -37,11 +37,14 @@ Forum parents do not accept Discord components. If you need components, send to 
 
 <AccordionGroup>
   <Accordion title="History, context, and thread behavior">
-    Guild history context:
+    Guild text history:
 
-    - `channels.discord.historyLimit` default `20`
-    - fallback: `messages.groupChat.historyLimit`
-    - `0` disables
+    - permitted unread text survives Gateway restarts
+    - a native mention or reply captures context through that request
+    - later arrivals remain available for the next addressed input
+    - legacy `historyLimit` no longer clips or disables unread group text
+    - existing input-size and model context limits still apply
+    - native reply and attachment handling is preserved; deferred photo/voice understanding is outside this text-history path
 
     DM history controls:
 
@@ -54,7 +57,7 @@ Forum parents do not accept Discord components. If you need components, send to 
     - Thread sessions inherit the parent channel's session-level `/model` selection as a model-only fallback; thread-local `/model` selections take precedence, and parent transcript history is not copied unless transcript inheritance is enabled.
     - `channels.discord.thread.inheritParent` (default `false`) opts new auto-threads into seeding from the parent transcript. Per-account override: `channels.discord.accounts.<id>.thread.inheritParent`.
     - Message-tool reactions can resolve `user:<id>` DM targets.
-    - `guilds.<guild>.channels.<channel>.requireMention: false` is preserved during reply-stage activation fallback.
+    - Bound threads still require a native bot mention or reply; a binding does not enable ambient turns.
 
     Channel topics are injected as **untrusted** context. Allowlists gate who can trigger the agent, not a full supplemental-context redaction boundary.
 

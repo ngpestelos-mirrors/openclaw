@@ -16,22 +16,16 @@ import {
   buildSyntheticTextMessage,
   createTelegramMessageContextRuntime,
   createTelegramMessageSessionRuntime,
-  formatTelegramAmbientTranscriptBody,
-  latestPromptContextAmbientWatermark,
   latestPromptContextMinTimestampMs,
   normalizePromptContextMinTimestampMs,
   promptContextBoundaryOptions,
-  type ResolvePromptContextAmbientWatermarkParams,
   type ResolveTelegramSessionStateParams,
   type TelegramPromptContextMessageSelection,
   type TelegramSessionState,
 } from "./bot-handlers.message-context.js";
 import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
 import type { TelegramMediaRef } from "./bot-message-context.js";
-import type {
-  TelegramAmbientTranscriptWatermark,
-  TelegramMessageContextOptions,
-} from "./bot-message-context.types.js";
+import type { TelegramMessageContextOptions } from "./bot-message-context.types.js";
 import {
   createTelegramSpooledReplayDeferredParticipant,
   createTelegramSpooledReplayParticipant,
@@ -82,7 +76,6 @@ export interface TelegramMessagePipeline {
   normalizePromptContextMinTimestampMs: typeof normalizePromptContextMinTimestampMs;
   promptContextBoundaryOptions: typeof promptContextBoundaryOptions;
   latestPromptContextMinTimestampMs: typeof latestPromptContextMinTimestampMs;
-  latestPromptContextAmbientWatermark: typeof latestPromptContextAmbientWatermark;
   mergeDispatchDedupeClaims: (
     ...groups: Array<readonly TelegramMessageDispatchReplayClaim[] | undefined>
   ) => TelegramMessageDispatchReplayClaim[];
@@ -109,11 +102,7 @@ export interface TelegramMessagePipeline {
   >;
   buildSyntheticTextMessage: typeof buildSyntheticTextMessage;
   buildSyntheticContext: typeof buildSyntheticContext;
-  formatTelegramAmbientTranscriptBody: typeof formatTelegramAmbientTranscriptBody;
   resolveTelegramSessionState: (params: ResolveTelegramSessionStateParams) => TelegramSessionState;
-  resolvePromptContextAmbientWatermark: (
-    params: ResolvePromptContextAmbientWatermarkParams,
-  ) => TelegramAmbientTranscriptWatermark | undefined;
   recordMessageForReplyChain: (
     msg: Message,
     providerObservedThread?: TelegramThreadSpec,
@@ -206,7 +195,7 @@ export function createTelegramMessagePipeline({
     resolveTelegramGroupConfig,
     telegramDeps,
   });
-  const { resolveTelegramSessionState, resolvePromptContextAmbientWatermark } = sessionRuntime;
+  const { resolveTelegramSessionState } = sessionRuntime;
   const {
     recordMessageForReplyChain,
     recordMessageResolvedMedia,
@@ -630,7 +619,6 @@ export function createTelegramMessagePipeline({
     normalizePromptContextMinTimestampMs,
     promptContextBoundaryOptions,
     latestPromptContextMinTimestampMs,
-    latestPromptContextAmbientWatermark,
     mergeDispatchDedupeClaims,
     releaseDispatchDedupeClaims,
     buildFailedProcessingResult,
@@ -640,9 +628,7 @@ export function createTelegramMessagePipeline({
     claimMessageDispatchDedupe,
     buildSyntheticTextMessage,
     buildSyntheticContext,
-    formatTelegramAmbientTranscriptBody,
     resolveTelegramSessionState,
-    resolvePromptContextAmbientWatermark,
     recordMessageForReplyChain,
     recordMessageResolvedMedia,
     resolveCachedMessageThreadSpec,

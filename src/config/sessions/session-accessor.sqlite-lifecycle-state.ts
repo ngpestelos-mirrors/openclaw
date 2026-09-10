@@ -13,6 +13,7 @@ import {
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import { pruneConsumedConversationHistory } from "./conversation-history.js";
 import { persistSessionTranscriptArchive } from "./session-accessor.sqlite-archive-store.js";
 import type {
   MaterializedSessionStateDeletePlan,
@@ -290,7 +291,16 @@ export function deleteMaterializedSessionStatePlans(
     if (plan.archive) {
       persistSessionTranscriptArchive(database, plan);
     }
-    if (deleteSqliteSessionStateRows(database, plan.sessionId)) {
+    // FTS is virtual, so remove its projection before the window's cascading delete.
+    deleteSessionTranscriptIndexInTransaction(database.db, plan.sessionId);
+    const deleted = executeSqliteQuerySync(
+      database.db,
+      getSessionKysely(database.db)
+        .deleteFrom("session_windows")
+        .where("session_id", "=", plan.sessionId),
+    );
+    pruneConsumedConversationHistory(database, plan.sessionId);
+    if (Number(deleted.numAffectedRows ?? 0n) > 0) {
       onDeleted?.();
     }
     if (plan.snapshot.lastSeq !== null && plan.archivedTranscript) {
@@ -525,18 +535,6 @@ export function collectProjectedReferencedSessionIds(params: {
 }
 
 export { collectSessionStateIdsForEntry };
-
-function deleteSqliteSessionStateRows(database: OpenClawAgentDatabase, sessionId: string): boolean {
-  const db = getSessionKysely(database.db);
-  // The window row cascades canonical transcript tables, but FTS is virtual;
-  // clear its projection before dropping the owner row.
-  deleteSessionTranscriptIndexInTransaction(database.db, sessionId);
-  const deleted = executeSqliteQuerySync(
-    database.db,
-    db.deleteFrom("session_windows").where("session_id", "=", sessionId),
-  );
-  return Number(deleted.numAffectedRows ?? 0n) > 0;
-}
 
 // Plans orphan cleanup without file writes or row deletion; finalization
 // handles archive durability before removing rows.

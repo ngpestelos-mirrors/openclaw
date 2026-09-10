@@ -764,8 +764,7 @@ async function dispatchDiscordCommandInteraction(params: {
     senderIsOwner: senderIsCommandOwner,
     isAuthorizedSender: commandAuthorized,
     isGroup: isGuild || isGroupDm,
-    defaultGroupActivation: () =>
-      !isGuild ? "always" : channelConfig?.requireMention === false ? "always" : "mention",
+    defaultGroupActivation: () => (isGuild || isGroupDm ? "mention" : "always"),
     interaction,
     mediaLocalRoots,
     preferFollowUp,

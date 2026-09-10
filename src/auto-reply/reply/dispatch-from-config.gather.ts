@@ -480,6 +480,15 @@ export async function gatherDispatchRequest(
     };
   };
   const hookState = buildHookState(hookCtx);
+  const replaceDispatchAgentText = (text: string) => {
+    ctx.agentText = text;
+    ctx.BodyForAgent = text;
+    hookCtx.agentText = text;
+    hookCtx.BodyForAgent = text;
+    Object.assign(hookState, buildHookState(hookCtx));
+    hookState.inboundClaimEvent.content = text;
+    bindReplyDispatcherConversationContext(dispatcher, text);
+  };
   const { isGroup, groupId } = hookState.hookContext;
   let hookMediaPrepared = false;
   let hookMediaMetadataStaged = false;
@@ -584,6 +593,7 @@ export async function gatherDispatchRequest(
     turnLedger,
     maybeApplyTtsWithFinalizationLease,
     hookRunner,
+    replaceDispatchAgentText,
     timestamp,
     messageIdForHook,
     isGroup,

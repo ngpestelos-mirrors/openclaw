@@ -39,6 +39,10 @@ import {
   updateRoomEventAmbientTranscriptWatermark,
 } from "./get-reply-run-helpers.js";
 import { hasInboundAudio } from "./inbound-media.js";
+import {
+  readObservedReplyInputOwner,
+  withObservedReplyInputOwner,
+} from "./observed-reply-input.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveReplyToMode } from "./reply-threading.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
@@ -55,6 +59,19 @@ import {
 } from "./source-turn-id.js";
 
 export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) {
+  const { ctx, sessionCtx, opts } = state.context.params;
+  return await withObservedReplyInputOwner(
+    ctx.ConversationHistory ?? sessionCtx.ConversationHistory,
+    opts,
+    (options) =>
+      executePreparedReplyRunWithOwnedInput({
+        ...state,
+        context: { ...state.context, params: { ...state.context.params, opts: options } },
+      }),
+  );
+}
+
+async function executePreparedReplyRunWithOwnedInput(state: PreparedReplyRunAdmission) {
   const {
     context,
     resolvedThinkLevel,
@@ -256,12 +273,14 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     imageSourceIndexes: promptMediaSourceIndexes,
   });
   const inputProvenance = ctx.InputProvenance ?? sessionCtx.InputProvenance;
+  const conversationHistory = ctx.ConversationHistory ?? sessionCtx.ConversationHistory;
   const userTurnTimestamp = normalizeMessageTimestampMs(ctx.Timestamp);
   // prompt-prelude substitutes MEDIA_ONLY_USER_TEXT as transcriptBody for
   // bodyless turns; storage stays bare (the LLM boundary re-injects it), while
   // room-event lines that merely contain the marker keep their real text.
-  const userTurnTranscriptText =
-    !hasUserBody && transcriptBody === MEDIA_ONLY_USER_TEXT
+  const userTurnTranscriptText = conversationHistory
+    ? prefixedCommandBody
+    : !hasUserBody && transcriptBody === MEDIA_ONLY_USER_TEXT
       ? ""
       : resolvePersistedUserTurnText(transcriptBody);
   const conversationIdentity = conversationIdentityFromMsgContext({ ctx: sessionCtx });
@@ -316,7 +335,9 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
           sender: persistChannelSender ? buildChannelUserTurnSender(sessionCtx) : undefined,
         }
       : undefined;
+  const observedInput = readObservedReplyInputOwner(opts);
   const userTurnTranscriptRecorder =
+    observedInput?.recorder ??
     opts?.userTurnTranscriptRecorder ??
     (userTurnInput
       ? createUserTurnTranscriptRecorder({
@@ -344,6 +365,21 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
             : undefined,
         })
       : undefined);
+  let capturedPrompt: string | undefined;
+  if (observedInput && userTurnTranscriptRecorder) {
+    const runId = sourceTurnId ?? opts?.runId;
+    if (!runId) {
+      throw new Error("Observed channel input requires durable source identity and admission");
+    }
+    capturedPrompt = await observedInput.prepare({
+      recorder: userTurnTranscriptRecorder,
+      runId,
+      assertCurrent: () => queuedFollowupAbortSignal?.throwIfAborted(),
+    });
+    if (capturedPrompt === undefined) {
+      return undefined;
+    }
+  }
   const replyPolicyChannel =
     (replyRoute.channel as OriginatingChannelType | undefined) ??
     (messageProvider as OriginatingChannelType | undefined);
@@ -356,8 +392,9 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   }
   const admittedSessionSettings = opts?.admittedSessionSettings;
   const followupRun = {
-    prompt: queuedBody,
-    transcriptPrompt: transcriptCommandBody,
+    prompt: capturedPrompt ?? queuedBody,
+    transcriptPrompt: capturedPrompt ?? transcriptCommandBody,
+    ...(observedInput ? { observedInput } : {}),
     ...(userTurnTranscriptRecorder ? { userTurnTranscriptRecorder } : {}),
     currentInboundEventKind: inboundEventKind,
     currentInboundAudio: hasInboundAudio(sessionCtx),
@@ -576,10 +613,10 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       : undefined;
   const cronCreatorAuthorityCapability =
     inheritedCronCreatorAuthorityCapability ?? createdCronCreatorAuthorityCapability;
-  const execute = () =>
+  const executeRun = () =>
     runReplyAgent({
-      commandBody: prefixedCommandBody,
-      transcriptCommandBody,
+      commandBody: capturedPrompt ?? prefixedCommandBody,
+      transcriptCommandBody: capturedPrompt ?? transcriptCommandBody,
       followupRun,
       queueKey,
       resolvedQueue,
@@ -622,6 +659,10 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       replyThreadingOverride,
       replyOperation: providedReplyOperation,
     });
+  const execute = () =>
+    userTurnTranscriptRecorder?.withPendingInput
+      ? userTurnTranscriptRecorder.withPendingInput(executeRun)
+      : executeRun();
   // The scope surrounds the whole immediate turn, including provider fallbacks.
   // If runReplyAgent queues this input, the scope settles before later drain/replay.
   return createdCronCreatorAuthorityCapability

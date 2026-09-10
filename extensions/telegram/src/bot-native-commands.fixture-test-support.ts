@@ -3,6 +3,7 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { vi } from "vitest";
 import type { OpenClawConfig, TelegramAccountConfig } from "../runtime-api.js";
 import type { registerTelegramNativeCommands } from "./bot-native-commands.js";
+import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
 
 type RegisterTelegramNativeCommandsParams = Parameters<typeof registerTelegramNativeCommands>[0];
 
@@ -90,8 +91,11 @@ export function createTelegramGroupCommandContext(params?: {
   username?: string;
 }) {
   return {
+    me: telegramBotInfoForTest,
     match: params?.match ?? "",
     message: {
+      text: "/status@openclaw_bot",
+      entities: [{ type: "bot_command" as const, offset: 0, length: 20 }],
       message_id: params?.messageId ?? 2,
       date: params?.date ?? Math.floor(Date.now() / 1000),
       chat: {
@@ -114,19 +118,16 @@ export function createTelegramTopicCommandContext(params?: {
   userId?: number;
   username?: string;
 }) {
+  const ctx = createTelegramGroupCommandContext(params);
   return {
-    match: params?.match ?? "",
+    ...ctx,
     message: {
-      message_id: params?.messageId ?? 2,
-      date: params?.date ?? Math.floor(Date.now() / 1000),
+      ...ctx.message,
       chat: {
-        id: params?.chatId ?? -1001234567890,
-        type: "supergroup" as const,
-        title: params?.title ?? "OpenClaw",
+        ...ctx.message.chat,
         is_forum: true,
       },
       message_thread_id: params?.threadId ?? 42,
-      from: { id: params?.userId ?? 200, username: params?.username ?? "bob" },
     },
   };
 }
