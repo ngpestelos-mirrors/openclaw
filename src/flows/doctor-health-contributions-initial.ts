@@ -287,6 +287,12 @@ export function resolveInitialDoctorHealthContributions(params: {
       run: async () => {},
     }),
     createDoctorHealthContribution({
+      id: "doctor:stale-runtime-build",
+      label: "Stale runtime build",
+      healthCheckIds: ["core/doctor/stale-runtime-build"],
+      run: async () => {},
+    }),
+    createDoctorHealthContribution({
       id: "doctor:disk-space",
       label: "Disk space",
       healthChecks: {
