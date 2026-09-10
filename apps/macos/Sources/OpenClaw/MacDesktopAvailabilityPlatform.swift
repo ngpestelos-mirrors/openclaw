@@ -21,7 +21,7 @@ final class LiveMacDesktopAvailabilityPlatform: MacDesktopAvailabilityPlatform {
     }
 
     func consoleState() -> MacDesktopAvailabilityCoordinator.State {
-        let root = IORegistryEntryFromPath(kIOMainPortDefault, "IOService:/")
+        let root = IORegistryGetRootEntry(kIOMainPortDefault)
         guard root != 0 else { return .unknown }
         defer { IOObjectRelease(root) }
         guard let users = IORegistryEntryCreateCFProperty(root, "IOConsoleUsers" as CFString, nil, 0)?
