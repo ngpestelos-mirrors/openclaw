@@ -272,7 +272,7 @@ actor MacNodeRuntime {
         do {
             envelope = try Self.decodeParams(DesktopExecutionEnvelope.self, from: req.paramsJSON ?? "{}")
         } catch {
-            return Self.errorResponse(req, code: .invalidRequest, message: "INVALID_REQUEST: invalid Computer params")
+            return Self.invalidDesktopParamsResponse(req)
         }
         do {
             if let id = envelope.executionId, UUID(uuidString: id) == nil {
@@ -709,10 +709,7 @@ extension MacNodeRuntime {
         do {
             params = try Self.decodeParams(OpenClawComputerActParams.self, from: req.paramsJSON)
         } catch {
-            return Self.errorResponse(
-                req,
-                code: .invalidRequest,
-                message: "INVALID_REQUEST: invalid computer.act params")
+            return Self.invalidDesktopParamsResponse(req)
         }
         let releaseGenerationAtStart = self.computerInputReleaseGeneration
         let services = await mainActorServices()
@@ -815,10 +812,7 @@ extension MacNodeRuntime {
             do {
                 params = try Self.decodeParams(MacNodeScreenSnapshotParams.self, from: paramsJSON)
             } catch {
-                return Self.errorResponse(
-                    req,
-                    code: .invalidRequest,
-                    message: "INVALID_REQUEST: invalid screen snapshot params")
+                return Self.invalidDesktopParamsResponse(req)
             }
         } else {
             params = MacNodeScreenSnapshotParams()
@@ -966,6 +960,11 @@ extension MacNodeRuntime {
 // MARK: - Shared command support
 
 extension MacNodeRuntime {
+    private static func invalidDesktopParamsResponse(_ req: BridgeInvokeRequest) -> BridgeInvokeResponse {
+        let command = req.command == MacNodeScreenCommand.snapshot.rawValue ? "screen snapshot" : "computer.act"
+        return Self.errorResponse(req, code: .invalidRequest, message: "INVALID_REQUEST: invalid \(command) params")
+    }
+
     private static func decodeParams<T: Decodable>(_ type: T.Type, from json: String?) throws -> T {
         guard let json, let data = json.data(using: .utf8) else {
             throw NSError(domain: "Gateway", code: 20, userInfo: [
