@@ -52,6 +52,7 @@ type GoogleThinkingOptions = {
 export type GoogleProviderOptions = StreamOptions & {
   toolChoice?: GoogleToolChoice;
   thinking?: GoogleThinkingOptions;
+  useInteractions?: boolean;
 };
 
 type GoogleGenerateContentClient = {
@@ -287,6 +288,15 @@ function isGemini3ProModel<T extends GoogleApiType>(model: Model<T>): boolean {
 
 function isGemini3FlashModel<T extends GoogleApiType>(model: Model<T>): boolean {
   return /gemini-(?:3(?:\.\d+)?-flash|flash(?:-lite)?-latest)/.test(model.id.toLowerCase());
+}
+
+export function isGemini3Model(modelOrId: string | { id: string }): boolean {
+  const modelId = (typeof modelOrId === "string" ? modelOrId : modelOrId.id).toLowerCase();
+  const majorVersion = getGeminiMajorVersion(modelId);
+  if (majorVersion !== undefined) {
+    return majorVersion >= 3;
+  }
+  return /gemini-(?:3(?:\.\d+)?-(?:pro|flash)|pro-latest|flash(?:-lite)?-latest)/.test(modelId);
 }
 
 function getGoogleThinkingLevel<T extends GoogleApiType>(
