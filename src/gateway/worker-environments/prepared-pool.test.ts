@@ -640,7 +640,7 @@ describe("prepared worker reserve lifecycle", () => {
         tarballPath: path.join(fixture.root, "unused.tgz"),
       });
       const lifecycle = createWorkerProviderLifecycle({
-        onMachineShapeChanged: () => {},
+        warn: () => {},
         ...lifecycleOptions,
         getConfig: () => fixture.config,
         resolveProvider: (providerId) =>

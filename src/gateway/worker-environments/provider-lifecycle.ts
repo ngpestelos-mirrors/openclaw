@@ -84,7 +84,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
   const machineCatalog = createWorkerMachineCatalog({
     getConfig: options.getConfig,
     resolveProvider: options.resolveProvider,
-    onMachineShapeChanged: options.onMachineShapeChanged,
+    warn: options.warn,
     requireWorkerProfile,
   });
 

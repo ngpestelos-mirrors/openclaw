@@ -13,10 +13,7 @@ import {
 import type { WorkerEnvironmentRecord } from "./store.js";
 
 export function createWorkerMachineCatalog(
-  options: Pick<
-    WorkerProviderLifecycleOptions,
-    "getConfig" | "resolveProvider" | "onMachineShapeChanged"
-  > & {
+  options: Pick<WorkerProviderLifecycleOptions, "getConfig" | "resolveProvider" | "warn"> & {
     requireWorkerProfile: (value: unknown) => WorkerProfile;
   },
 ) {
@@ -29,12 +26,19 @@ export function createWorkerMachineCatalog(
     warmup?: Promise<void>;
   };
   const machineCatalogs = new Map<string, MachineCatalog>();
+  const machineShapeListeners = new Set<(profileId: string) => void>();
   let machineShapeVersion = 0;
 
   const machineCatalogChanged = (profileId: string, catalog: MachineCatalog) => {
     if (machineCatalogs.get(profileId) === catalog) {
       machineShapeVersion += 1;
-      options.onMachineShapeChanged(profileId);
+      for (const listener of machineShapeListeners) {
+        try {
+          listener(profileId);
+        } catch {
+          options.warn("Worker machine metadata change reporting failed");
+        }
+      }
     }
   };
 
@@ -89,7 +93,7 @@ export function createWorkerMachineCatalog(
     return systems;
   };
 
-  const warmMachineShape = async (profileId: string): Promise<void> => {
+  const loadMachineShape = async (profileId: string): Promise<void> => {
     const catalog = machineCatalogFor(profileId);
     if (!catalog || catalog.warmup) {
       return catalog?.warmup;
@@ -153,7 +157,18 @@ export function createWorkerMachineCatalog(
     listMachineOptions,
     listOperatingSystems,
     readMachineShape,
-    warmMachineShape,
+    warmMachineShape: (profileId: string) => {
+      void loadMachineShape(profileId).catch(() =>
+        options.warn(`Worker machine catalog warmup failed for profile ${profileId}`),
+      );
+    },
+    subscribeMachineShapeChanged: (listener: (profileId: string) => void) => {
+      machineShapeListeners.add(listener);
+      return () => {
+        machineShapeListeners.delete(listener);
+      };
+    },
+    clearMachineShapeListeners: () => machineShapeListeners.clear(),
     machineShapeVersion: () => machineShapeVersion,
   };
 }

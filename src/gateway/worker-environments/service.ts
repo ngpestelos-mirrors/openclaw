@@ -109,7 +109,6 @@ type WorkerEnvironmentReconcileGuard = (
 export function createWorkerEnvironmentService(options: WorkerEnvironmentServiceOptions) {
   const { store } = options;
   const warn = (message: string) => options.logger?.warn(message);
-  const machineShapeListeners = new Set<(profileId: string) => void>();
   const operations = new KeyedAsyncQueue();
   const providerOperations = new KeyedAsyncQueue();
   const activeOperations = new Set<Promise<unknown>>();
@@ -285,15 +284,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     prepareInstallation,
     tunnelManager: tunnelLifecycle,
     credentialBroker,
-    onMachineShapeChanged: (profileId) => {
-      for (const listener of machineShapeListeners) {
-        try {
-          listener(profileId);
-        } catch {
-          warn("Worker machine metadata change reporting failed");
-        }
-      }
-    },
+    warn,
     callBootstrap,
     callProvider,
     inState,
@@ -305,12 +296,6 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     serviceError,
     withLock,
   });
-
-  const warmMachineShape = (profileId: string) => {
-    void providerLifecycle
-      .warmMachineShape(profileId)
-      .catch(() => warn(`Worker machine catalog warmup failed for profile ${profileId}`));
-  };
 
   const environmentAccess = createWorkerEnvironmentAccess({
     ...options,
@@ -497,7 +482,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       }
     });
     for (const profileId of new Set(store.listForReconcile().map((record) => record.profileId))) {
-      warmMachineShape(profileId);
+      providerLifecycle.warmMachineShape(profileId);
     }
     options.liveEvents?.start();
     interval = setInterval(
@@ -510,7 +495,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
 
   const stop = async () => {
     stopping = true;
-    machineShapeListeners.clear();
+    providerLifecycle.clearMachineShapeListeners();
     maintenanceAbort.abort();
     options.stopNodeEnrollmentWaits?.();
     clearInterval(interval);
@@ -608,7 +593,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     },
     get: environmentAccess.get,
     prepareProjectIntent: (...args: Parameters<typeof providerLifecycle.prepareIntent>) => {
-      warmMachineShape(args[0]);
+      providerLifecycle.warmMachineShape(args[0]);
       return providerLifecycle.prepareIntent(...args);
     },
     assertPreparedIntentCurrent: providerLifecycle.assertPreparedIntentCurrent,
@@ -617,12 +602,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     schedulePreparedRefill,
     inventoryVersion: store.inventoryVersion,
     machineShapeVersion: providerLifecycle.machineShapeVersion,
-    subscribeMachineShapeChanged: (listener: (profileId: string) => void) => {
-      machineShapeListeners.add(listener);
-      return () => {
-        machineShapeListeners.delete(listener);
-      };
-    },
+    subscribeMachineShapeChanged: providerLifecycle.subscribeMachineShapeChanged,
     readMachineShape: (environmentId: string) => {
       const record = store.get(environmentId);
       return record ? providerLifecycle.readMachineShape(record) : undefined;
@@ -631,10 +611,8 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       (await options.nodePortalCarrier?.supports(environmentId, ownerEpoch)) === true,
     hasPendingNodeEnrollmentSetup: (setupId: string, deviceId: string) =>
       store.hasPendingNodeEnrollmentSetup(setupId, deviceId),
-    listMachineOptions: async (profileId: string) =>
-      providerLifecycle.listMachineOptions(profileId),
-    listOperatingSystems: async (profileId: string) =>
-      providerLifecycle.listOperatingSystems(profileId),
+    listMachineOptions: providerLifecycle.listMachineOptions,
+    listOperatingSystems: providerLifecycle.listOperatingSystems,
     bindPreparedWorkspace: environmentAccess.bindPreparedWorkspace,
     create: async (
       profileId: string,
@@ -647,7 +625,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       runSetupScript?: boolean,
       admittedIntent?: WorkerProviderPreparedIntent,
     ) => {
-      warmMachineShape(profileId);
+      providerLifecycle.warmMachineShape(profileId);
       if (executionMode) {
         requireProviderExecutionMode(configuredProfileProviderId(profileId), executionMode);
       }
@@ -678,7 +656,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       runSetupScript?: boolean,
       admittedIntent?: WorkerProviderPreparedIntent,
     ) => {
-      warmMachineShape(profile.profileId);
+      providerLifecycle.warmMachineShape(profile.profileId);
       requireProviderExecutionMode(profile.providerId, executionMode);
       return environmentAccess.project(
         await providerLifecycle.createWithProfile(

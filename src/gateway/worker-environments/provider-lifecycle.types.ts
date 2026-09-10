@@ -113,7 +113,7 @@ export type WorkerProviderLifecycleOptions = Omit<
     ): Promise<void>;
   };
   credentialBroker: WorkerCredentialBroker;
-  onMachineShapeChanged: (profileId: string) => void;
+  warn: (message: string) => void;
   callBootstrap: <T>(
     installation: WorkerInstallationArtifact,
     run: (signal: AbortSignal) => Promise<T>,
