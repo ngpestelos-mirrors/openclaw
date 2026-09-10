@@ -318,7 +318,11 @@ export async function completePostCorePluginUpdate(params: {
     freshConfigValid = freshResult.configValid;
   }
 
-  const configSnapshot = await withNormalConfigValidation(() => readConfigFileSnapshot());
+  // Only the target runtime may write state after a version switch: observing
+  // config here could migrate its database back to the parent's newer schema.
+  const configSnapshot = await withNormalConfigValidation(() =>
+    readConfigFileSnapshot({ observe: false }),
+  );
   // Strict validity belongs to the target runtime even when no plugin changed.
   // The parent may retain the previous schema; its snapshot is best-effort context.
   pluginUpdate = applyPostPluginConfigValidation(
