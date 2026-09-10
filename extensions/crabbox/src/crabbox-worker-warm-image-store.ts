@@ -46,6 +46,7 @@ export type WarmProfileRecord = {
   machineClass?: string;
   os?: CrabboxOperatingSystem;
   projectLabel?: string;
+  projectRoot?: string;
   projectKey?: string;
   image?: WarmImageRecord;
   allocations: Record<string, WarmAllocationRecord>;
@@ -162,7 +163,7 @@ export const isCrabboxWarmImageHeld = (
 
 type WarmProfileDisplayFacts = Pick<
   WarmProfileRecord,
-  "profileId" | "backend" | "machineClass" | "os" | "projectLabel"
+  "profileId" | "backend" | "machineClass" | "os" | "projectLabel" | "projectRoot"
 >;
 
 export function withCrabboxWarmImageDisplayFacts(
@@ -171,7 +172,14 @@ export function withCrabboxWarmImageDisplayFacts(
 ): WarmProfileRecord {
   const next = { ...record, ...facts };
   // Unavailable facts clear stale labels; plugin state cannot persist undefined values.
-  for (const field of ["profileId", "backend", "machineClass", "os", "projectLabel"] as const) {
+  for (const field of [
+    "profileId",
+    "backend",
+    "machineClass",
+    "os",
+    "projectLabel",
+    "projectRoot",
+  ] as const) {
     if (next[field] === undefined) {
       delete next[field];
     }
@@ -410,6 +418,7 @@ export function listCrabboxWarmImages(env?: NodeJS.ProcessEnv) {
       machineClass: value.machineClass,
       os: value.os,
       projectLabel: value.projectLabel,
+      projectRoot: value.projectRoot,
       projectKey: value.projectKey,
       checkpointId: value.image?.checkpointId,
       state: value.image?.state ?? "no-image",

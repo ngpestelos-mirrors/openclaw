@@ -104,7 +104,9 @@ an older image's demand window.
 ### Inspect snapshots in the Control UI
 
 Open **Settings → Connections → Cloud workers → Snapshots** to inspect local
-warm-image ownership, grouped by configured profile. Refresh reloads the list.
+warm-image ownership, grouped by configured profile. **Refresh** reloads both
+snapshots and worker builds. While a build is in progress, both lists refresh
+every 10 seconds; polling stops when no active builds remain.
 The view shows available images, captures in progress, images held by outstanding
 allocations, and captures or checkpoint deletions that need attention. Pending
 deletions show the checkpoint and retry guidance; a retiring current image is
@@ -121,6 +123,25 @@ explains that the Crabbox worker provider must be enabled. Listing reads local
 state without contacting the provider and returns an allocation count plus at
 most 20 allocation entries per image.
 
+**Build snapshot** opens a profile and local repository picker when
+`environments.prepare` is available with `operator.admin`. The repository catalog
+is shared with New Session. Profiles with warm images off are disabled with their
+reason. Building prepares the selected checkout's committed `HEAD` and authorizes
+its committed setup recipe without starting a session. The notice distinguishes a
+new build from reuse of an existing build or reserve. A full pool requires raising
+the prepared pool cap or destroying an unused worker before retrying.
+
+**Rebuild** uses the project root recorded on a project image. Older images without
+a recorded root omit this action; use **Build snapshot** to select the repository.
+Rebuild uses the normal preparation and image refresh policy, including reuse of
+matching work already in progress; it does not force replacement of a current image.
+
+Active builds appear in their configured profile group with worker state and age.
+**Cancel** asks for confirmation, then calls `environments.destroy` and waits for
+provider work and cleanup to settle. Completed or attached workers no longer appear
+as active builds. The **Building** total also includes active image captures,
+counting a build and its capture once when they share a lease ID.
+
 **Recover** is available only for uncertain captures. Its required checkbox
 acknowledges that the owning capture and worker have stopped and provider
 artifacts have been reconciled, with the same meaning as the CLI's
@@ -128,11 +149,12 @@ artifacts have been reconciled, with the same meaning as the CLI's
 Recovery clears only the selected reservation; it does not stop a worker or
 delete provider artifacts. A stale capture alone does not permit recovery.
 
-New allocations record optional `profileId`, `backend`, `machineClass`, `os`, and
-`projectLabel` display facts, also included in `openclaw crabbox warm-images --json`.
+New allocations record optional `profileId`, `backend`, `machineClass`, `os`,
+`projectLabel`, and `projectRoot` display facts, also included in `openclaw crabbox warm-images --json`.
 `profileId` means the configured profile that most recently allocated from the
 image key; it is overwritten on each allocation and does not change image keys
-or reuse policy. Project labels use the normalized origin repository identity
+or reuse policy. `projectRoot` is the Gateway-local checkout root used for rebuilding.
+Project labels use the normalized origin repository identity
 `host/owner/repo`, or the project root's basename when origin cannot be resolved.
 
 ### Recover a paused capture

@@ -286,6 +286,7 @@ export function createWorkerProjectPreparation(params: {
     project: {
       key: params.project.key,
       baseCommit: params.project.baseCommit,
+      root: params.project.root,
       ...(params.project.label !== undefined ? { label: params.project.label } : {}),
       ...(preparation
         ? {

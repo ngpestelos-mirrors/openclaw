@@ -106,6 +106,7 @@ describe("Crabbox snapshots Gateway methods", () => {
       os: "linux",
       projectKey: "project-key",
       projectLabel: "git.example.test/team/project",
+      projectRoot: "/projects/example",
     });
     const allocation: WarmAllocationRecord = {
       choice: { kind: "cold" },
@@ -141,6 +142,7 @@ describe("Crabbox snapshots Gateway methods", () => {
           machineClass: "standard",
           os: "linux",
           projectLabel: "git.example.test/team/project",
+          projectRoot: "/projects/example",
           held: true,
           allocationCount: 21,
           capture: expect.objectContaining({ phase: "uncertain", stale: true }),
@@ -149,6 +151,7 @@ describe("Crabbox snapshots Gateway methods", () => {
           profileKey: "older",
           profileId: undefined,
           projectLabel: undefined,
+          projectRoot: undefined,
           state: "no-image",
           held: false,
           allocationCount: 0,
