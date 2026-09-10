@@ -2296,6 +2296,10 @@
     "target": "Task Flow"
   },
   {
+    "source": "Tasks",
+    "target": "任务"
+  },
+  {
     "source": "Telegram reaction notifications",
     "target": "Telegram 表情回应通知"
   },
