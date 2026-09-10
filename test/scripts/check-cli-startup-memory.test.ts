@@ -8,19 +8,26 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
-  realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { testing } from "../../scripts/check-cli-startup-memory.mjs";
 import { withEnv } from "../../src/test-utils/env.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempRoots = useAutoCleanupTempDirTracker(afterEach);
+const aliasError = "--json and --summary must refer to different files";
+const successSpawn = () => ({
+  signal: null,
+  status: 0,
+  stderr: "__OPENCLAW_MAX_RSS_KB__=1024\n",
+  stdout: "",
+});
 
 function expectNoNodeStack(stderr: string): void {
   expect(stderr).not.toContain("Node.js");
@@ -55,6 +62,50 @@ function runStartupMemoryCheckWithHelpSamples(
       },
     },
   );
+}
+
+function captureReportRun(
+  tempRoot: string,
+  jsonPath: string,
+  summaryPath: string,
+  onSpawn?: (probe: number) => ReturnType<typeof successSpawn>,
+) {
+  const homeRoot = path.join(tempRoot, "homes");
+  mkdirSync(homeRoot);
+  let failure: unknown;
+  let probes = 0;
+  withEnv({ TMPDIR: homeRoot, TEMP: homeRoot, TMP: homeRoot }, () => {
+    try {
+      testing.runStartupMemoryCheck(["--json", jsonPath, "--summary", summaryPath], {
+        platform: process.platform,
+        spawnSync: () => {
+          probes += 1;
+          return onSpawn?.(probes) ?? successSpawn();
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+  });
+  return { failure, homeRoot, probes };
+}
+
+function detectFilesystemAlias(
+  tempRoot: string,
+  firstSuffix: readonly string[],
+  secondSuffix: readonly string[],
+): boolean {
+  const sentinelRoot = path.join(tempRoot, "sentinel");
+  const firstPath = path.join(sentinelRoot, ...firstSuffix);
+  mkdirSync(path.dirname(firstPath), { recursive: true });
+  writeFileSync(firstPath, "sentinel\n", { flag: "wx" });
+  const first = lstatSync(firstPath, { bigint: true });
+  const second = lstatSync(path.join(sentinelRoot, ...secondSuffix), {
+    bigint: true,
+    throwIfNoEntry: false,
+  });
+  rmSync(sentinelRoot, { recursive: true });
+  return second !== undefined && first.dev === second.dev && first.ino === second.ino;
 }
 
 describe("check-cli-startup-memory", () => {
@@ -205,460 +256,272 @@ describe("check-cli-startup-memory", () => {
     }
   });
 
-  describe("report path admission", () => {
-    const aliasError = "--json and --summary must refer to different files";
+  describe.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "report reservations",
+    () => {
+      it.each(
+        (["exact", "hardlink", "symlink", "dangling-symlink"] as const).flatMap((kind) =>
+          kind === "exact"
+            ? [[kind, false] as const]
+            : [false, true].map((reversed) => [kind, reversed] as const),
+        ),
+      )("rejects %s aliases before benchmarks (reversed: %s)", (kind, reversed) => {
+        const tempRoot = tempRoots.make("openclaw-startup-memory-alias-");
+        const reportsDir = path.join(tempRoot, "reports");
+        const targetPath = path.join(reportsDir, "report");
+        const aliasPath = path.join(reportsDir, "alias");
+        const sentinel = "existing report must survive\n";
+        mkdirSync(reportsDir);
+        let firstPath = targetPath;
+        let secondPath = targetPath;
+        if (kind === "hardlink") {
+          writeFileSync(targetPath, sentinel);
+          linkSync(targetPath, aliasPath);
+          secondPath = aliasPath;
+        } else if (kind === "symlink") {
+          writeFileSync(targetPath, sentinel);
+          symlinkSync(path.basename(targetPath), aliasPath, "file");
+          secondPath = aliasPath;
+        } else if (kind === "dangling-symlink") {
+          symlinkSync(path.basename(targetPath), aliasPath, "file");
+          firstPath = aliasPath;
+        } else {
+          writeFileSync(targetPath, sentinel);
+        }
+        const [jsonPath, summaryPath] = reversed
+          ? [secondPath, firstPath]
+          : [firstPath, secondPath];
+        const run = captureReportRun(tempRoot, jsonPath, summaryPath);
 
-    it.each([
-      ["same", false],
-      ["lexical", false],
-      ["symlink-parent", false],
-      ["symlink-parent", true],
-      ["file-symlink", false],
-      ["file-symlink", true],
-      ["dangling-file-symlink", false],
-      ["dangling-file-symlink", true],
-      ["hardlink", false],
-      ["hardlink", true],
-    ] as const)("rejects %s aliases (reversed: %s) before probing", (kind, reversed) => {
-      if (process.platform !== "darwin" && process.platform !== "linux") {
-        return;
-      }
+        expect.soft(run.failure).toMatchObject({ message: aliasError });
+        expect.soft(run.probes).toBe(0);
+        expect.soft(readdirSync(run.homeRoot)).toEqual([]);
+        if (kind === "dangling-symlink") {
+          expect.soft(existsSync(targetPath)).toBe(false);
+        } else {
+          expect.soft(readFileSync(targetPath, "utf8")).toBe(sentinel);
+        }
+        if (kind === "symlink" || kind === "dangling-symlink") {
+          expect.soft(lstatSync(aliasPath).isSymbolicLink()).toBe(true);
+        }
+      });
 
-      const tempRoot = tempRoots.make("openclaw-startup-memory-alias-");
-      const reportsDir = path.join(tempRoot, "reports");
-      const homeRoot = path.join(tempRoot, "homes");
-      mkdirSync(reportsDir);
-      mkdirSync(homeRoot);
-      const reportPath = path.join(reportsDir, "report");
-      const sentinel = "existing report must survive admission\n";
-      let aliasPath = reportPath;
-      if (kind !== "symlink-parent" && kind !== "dangling-file-symlink") {
-        writeFileSync(reportPath, sentinel);
-      }
-      if (kind === "lexical") {
-        aliasPath = path.relative(process.cwd(), reportPath);
-      } else if (kind === "symlink-parent") {
-        const aliasDir = path.join(tempRoot, "reports-link");
-        symlinkSync(reportsDir, aliasDir, "dir");
-        aliasPath = path.join(aliasDir, "report");
-      } else if (kind === "file-symlink") {
-        aliasPath = path.join(reportsDir, "report-link");
-        symlinkSync(reportPath, aliasPath, "file");
-      } else if (kind === "dangling-file-symlink") {
-        aliasPath = path.join(reportsDir, "report-link");
-        symlinkSync(path.basename(reportPath), aliasPath, "file");
-      } else if (kind === "hardlink") {
-        aliasPath = path.join(reportsDir, "report-link");
-        linkSync(reportPath, aliasPath);
-      }
-      const [jsonPath, summaryPath] = reversed ? [aliasPath, reportPath] : [reportPath, aliasPath];
-      let probes = 0;
+      const nameCases = [
+        ["ASCII case", ["report"], ["REPORT"]],
+        ["NFC/NFD", ["report-\u00e9"], ["report-e\u0301"]],
+        ["sigma/final sigma", ["report-\u03c3"], ["report-\u03c2"]],
+        ["sharp s expansion", ["report-\u00df"], ["report-ss"]],
+        ["ff ligature expansion", ["report-\ufb00"], ["report-ff"]],
+        ["long s", ["report-\u017f"], ["report-s"]],
+        [
+          "nested mixed folds",
+          ["Directory-\u00c9", "Report-\u03a3"],
+          ["directory-e\u0301", "report-\u03c2"],
+        ],
+        ["dotless I control", ["report-\u0131"], ["report-I"]],
+        ["fullwidth A control", ["report-\uff21"], ["report-A"]],
+        ["circled a control", ["report-\u24d0"], ["report-a"]],
+        ["Roman I control", ["report-\u2160"], ["report-I"]],
+        ["o-stroke control", ["report-\u00f8"], ["report-o"]],
+        ["ae ligature control", ["report-\u00e6"], ["report-ae"]],
+      ] as const;
 
-      withEnv({ TMPDIR: homeRoot, TEMP: homeRoot, TMP: homeRoot }, () => {
-        expect
-          .soft(() =>
+      it.each(
+        nameCases.flatMap(([label, first, second]) =>
+          [false, true].map((reversed) => [label, reversed, first, second] as const),
+        ),
+      )(
+        "follows actual filesystem name identity for %s (reversed: %s)",
+        (label, reversed, first, second) => {
+          const tempRoot = tempRoots.make("openclaw-startup-memory-name-");
+          const reportsDir = path.join(tempRoot, "reports");
+          mkdirSync(reportsDir);
+          const [jsonSuffix, summarySuffix] = reversed ? [second, first] : [first, second];
+          const aliases = detectFilesystemAlias(tempRoot, jsonSuffix, summarySuffix);
+          const jsonPath = path.join(reportsDir, ...jsonSuffix);
+          const summaryPath = path.join(reportsDir, ...summarySuffix);
+          const run = captureReportRun(tempRoot, jsonPath, summaryPath);
+
+          expect.soft(readdirSync(run.homeRoot), label).toEqual([]);
+          if (aliases) {
+            expect.soft(run.failure, label).toMatchObject({ message: aliasError });
+            expect.soft(run.probes, label).toBe(0);
+            expect.soft(readdirSync(reportsDir), label).toEqual([]);
+          } else {
+            expect.soft(run.failure, label).toBeUndefined();
+            expect.soft(run.probes, label).toBe(testing.cases.length * testing.sampleCount);
+            expect.soft(JSON.parse(readFileSync(jsonPath, "utf8")), label).toMatchObject({
+              status: "pass",
+            });
+            expect.soft(readFileSync(summaryPath, "utf8"), label).toContain("Status: pass");
+          }
+        },
+      );
+
+      it("creates missing output parents and publishes both reports", () => {
+        const tempRoot = tempRoots.make("openclaw-startup-memory-parents-");
+        const jsonPath = path.join(tempRoot, "json", "nested", "startup-memory.json");
+        const summaryPath = path.join(tempRoot, "summary", "nested", "summary.md");
+        const run = captureReportRun(tempRoot, jsonPath, summaryPath);
+
+        expect(run.failure).toBeUndefined();
+        expect(run.probes).toBe(testing.cases.length * testing.sampleCount);
+        expect(JSON.parse(readFileSync(jsonPath, "utf8"))).toMatchObject({ status: "pass" });
+        expect(readFileSync(summaryPath, "utf8")).toContain("Status: pass");
+      });
+
+      it("removes reserved leaves and empty parents when admission fails", () => {
+        const tempRoot = tempRoots.make("openclaw-startup-memory-cleanup-");
+        const reportsRoot = path.join(tempRoot, "created");
+        const reportPath = path.join(reportsRoot, "nested", "report");
+        const run = captureReportRun(tempRoot, reportPath, reportPath);
+
+        expect(run.failure).toMatchObject({ message: aliasError });
+        expect(run.probes).toBe(0);
+        expect(existsSync(reportPath)).toBe(false);
+        expect(existsSync(reportsRoot)).toBe(false);
+        expect(readdirSync(run.homeRoot)).toEqual([]);
+      });
+
+      it("cleans unpublished reservations without masking an unexpected benchmark error", () => {
+        const tempRoot = tempRoots.make("openclaw-startup-memory-unpublished-");
+        const reportsRoot = path.join(tempRoot, "created");
+        const jsonPath = path.join(reportsRoot, "json", "report");
+        const summaryPath = path.join(reportsRoot, "summary", "report");
+        const primaryError = new Error("unexpected benchmark failure");
+        const run = captureReportRun(tempRoot, jsonPath, summaryPath, () => {
+          throw primaryError;
+        });
+
+        expect(run.failure).toBe(primaryError);
+        expect(run.probes).toBe(1);
+        expect(existsSync(reportsRoot)).toBe(false);
+        expect(readdirSync(run.homeRoot)).toEqual([]);
+      });
+
+      it("rejects a symlink cycle before benchmarks", () => {
+        const tempRoot = tempRoots.make("openclaw-startup-memory-cycle-");
+        const first = path.join(tempRoot, "first");
+        const second = path.join(tempRoot, "second");
+        const summaryPath = path.join(tempRoot, "summary.md");
+        const sentinel = "summary survives\n";
+        symlinkSync("second", first, "file");
+        symlinkSync("first", second, "file");
+        writeFileSync(summaryPath, sentinel);
+        const run = captureReportRun(tempRoot, first, summaryPath);
+
+        expect(run.failure).toMatchObject({ code: "ELOOP" });
+        expect(run.probes).toBe(0);
+        expect(readFileSync(summaryPath, "utf8")).toBe(sentinel);
+        expect(readlinkSync(first)).toBe("second");
+        expect(readlinkSync(second)).toBe("first");
+      });
+
+      it.each(
+        [
+          ["/", `missing${path.sep}`],
+          ["/.", `missing${path.sep}.`],
+          ["/..", `missing${path.sep}..`],
+        ].flatMap(([terminal, target]) =>
+          ["json", "summary"].map((output) => [terminal, output, target] as const),
+        ),
+      )("rejects dangling targets ending in %s for the %s output", (_terminal, output, target) => {
+        const tempRoot = tempRoots.make("openclaw-startup-memory-terminal-");
+        const jsonPath = path.join(tempRoot, "startup-memory.json");
+        const summaryPath = path.join(tempRoot, "summary.md");
+        const linkPath = output === "json" ? jsonPath : summaryPath;
+        const otherPath = output === "json" ? summaryPath : jsonPath;
+        const blockedHome = path.join(tempRoot, "blocked-home");
+        writeFileSync(blockedHome, "unchanged\n");
+        symlinkSync(target, linkPath, "file");
+        let probes = 0;
+
+        withEnv({ TMPDIR: blockedHome, TEMP: blockedHome, TMP: blockedHome }, () => {
+          expect(() =>
             testing.runStartupMemoryCheck(["--json", jsonPath, "--summary", summaryPath], {
               platform: process.platform,
               spawnSync: () => {
                 probes += 1;
-                return {
-                  status: 0,
-                  signal: null,
-                  stdout: "",
-                  stderr: "__OPENCLAW_MAX_RSS_KB__=1024\n",
-                };
+                return successSpawn();
               },
             }),
-          )
-          .toThrow(aliasError);
+          ).toThrow("--json and --summary must refer to files");
+        });
+
+        expect(probes).toBe(0);
+        expect(readlinkSync(linkPath)).toBe(target);
+        expect(existsSync(otherPath)).toBe(false);
+        expect(existsSync(path.join(tempRoot, "missing"))).toBe(false);
+        expect(readFileSync(blockedHome, "utf8")).toBe("unchanged\n");
       });
 
-      expect.soft(probes).toBe(0);
-      expect.soft(readdirSync(homeRoot)).toEqual([]);
-      if (kind === "symlink-parent" || kind === "dangling-file-symlink") {
-        expect.soft(existsSync(reportPath)).toBe(false);
-        expect.soft(existsSync(aliasPath)).toBe(false);
-        if (kind === "dangling-file-symlink") {
-          expect.soft(lstatSync(aliasPath).isSymbolicLink()).toBe(true);
-        }
-      } else {
-        expect.soft(readFileSync(reportPath, "utf8")).toBe(sentinel);
-        expect.soft(readFileSync(aliasPath, "utf8")).toBe(sentinel);
-      }
-    });
+      it("preserves raw traversal in dangling symlink targets", () => {
+        const tempRoot = tempRoots.make("openclaw-startup-memory-traversal-");
+        const jsonPath = path.join(tempRoot, "startup-memory.json");
+        const summaryPath = path.join(tempRoot, "summary.md");
+        const victimPath = path.join(tempRoot, "victim");
+        const target = `missing${path.sep}..${path.sep}victim`;
+        const sentinel = "victim survives\n";
+        symlinkSync(target, jsonPath, "file");
+        writeFileSync(victimPath, sentinel);
+        const run = captureReportRun(tempRoot, jsonPath, summaryPath);
 
-    describe("case-equivalent output paths", () => {
-      it.each([false, true])(
-        "preserves distinct artifacts on the actual filesystem (reversed: %s)",
-        (reversed) => {
-          if (process.platform !== "darwin" && process.platform !== "linux") {
-            return;
-          }
+        expect(run.failure).toMatchObject({ code: "ENOENT" });
+        expect(run.probes).toBe(0);
+        expect(readFileSync(victimPath, "utf8")).toBe(sentinel);
+        expect(readlinkSync(jsonPath)).toBe(target);
+        expect(existsSync(summaryPath)).toBe(false);
+      });
 
-          const tempRoot = tempRoots.make("openclaw-startup-memory-case-");
-          const reportsDir = path.join(tempRoot, "reports");
-          const homeRoot = path.join(tempRoot, "homes");
-          mkdirSync(reportsDir);
-          mkdirSync(homeRoot);
-          const sentinel = path.join(reportsDir, "case-sentinel");
-          const alternateSentinel = path.join(reportsDir, "CASE-SENTINEL");
-          writeFileSync(sentinel, "case sentinel\n");
-          writeFileSync(alternateSentinel, "case sentinel\n");
-          const first = lstatSync(sentinel, { bigint: true });
-          const second = lstatSync(alternateSentinel, { bigint: true });
-          const caseInsensitive = first.dev === second.dev && first.ino === second.ino;
-          rmSync(sentinel);
-          if (!caseInsensitive) {
-            rmSync(alternateSentinel);
-          }
-          console.info(
-            `[startup-memory-case] filesystem=${caseInsensitive ? "case-insensitive" : "case-sensitive"} reversed=${reversed}`,
-          );
-
-          const jsonPath = path.join(reportsDir, reversed ? "REPORT" : "report");
-          const summaryPath = path.join(reportsDir, reversed ? "report" : "REPORT");
-          expect(existsSync(jsonPath)).toBe(false);
-          expect(existsSync(summaryPath)).toBe(false);
-          let probes = 0;
-          let failure: unknown;
-          let result: ReturnType<typeof testing.runStartupMemoryCheck> | undefined;
-          withEnv({ TMPDIR: homeRoot, TEMP: homeRoot, TMP: homeRoot }, () => {
-            try {
-              result = testing.runStartupMemoryCheck(
-                ["--json", jsonPath, "--summary", summaryPath],
-                {
-                  platform: process.platform,
-                  spawnSync: () => {
-                    probes += 1;
-                    return {
-                      status: 0,
-                      signal: null,
-                      stdout: "",
-                      stderr: "__OPENCLAW_MAX_RSS_KB__=1024\n",
-                    };
-                  },
-                },
-              );
-            } catch (error) {
-              failure = error;
+      it.each(["json", "summary"] as const)(
+        "rejects a replaced %s path before truncating either held report",
+        (output) => {
+          const tempRoot = tempRoots.make("openclaw-startup-memory-replacement-");
+          const jsonPath = path.join(tempRoot, "startup-memory.json");
+          const summaryPath = path.join(tempRoot, "summary.md");
+          const changedPath = output === "json" ? jsonPath : summaryPath;
+          const otherPath = output === "json" ? summaryPath : jsonPath;
+          const displacedPath = path.join(tempRoot, `reserved-${output}`);
+          const sentinel = "replacement survives\n";
+          const run = captureReportRun(tempRoot, jsonPath, summaryPath, (probe) => {
+            if (probe === 1) {
+              renameSync(changedPath, displacedPath);
+              writeFileSync(changedPath, sentinel);
             }
+            return successSpawn();
           });
 
-          expect.soft(readdirSync(homeRoot)).toEqual([]);
-          if (caseInsensitive) {
-            expect.soft(failure).toMatchObject({ message: aliasError });
-            expect.soft(probes).toBe(0);
-            expect.soft(existsSync(jsonPath)).toBe(false);
-            expect.soft(existsSync(summaryPath)).toBe(false);
-            expect.soft(readdirSync(reportsDir)).toEqual([]);
-          } else {
-            expect(failure).toBeUndefined();
-            expect(result?.skipped).toBe(false);
-            expect(result?.results).toHaveLength(testing.cases.length);
-            expect(probes).toBe(testing.cases.length * testing.sampleCount);
-            expect(JSON.parse(readFileSync(jsonPath, "utf8"))).toMatchObject({ status: "pass" });
-            expect(readFileSync(summaryPath, "utf8")).toContain("Status: pass");
-            const jsonStat = lstatSync(jsonPath, { bigint: true });
-            const summaryStat = lstatSync(summaryPath, { bigint: true });
-            expect([jsonStat.dev, jsonStat.ino]).not.toEqual([summaryStat.dev, summaryStat.ino]);
-            expect(readdirSync(reportsDir).toSorted()).toEqual(["REPORT", "report"]);
-          }
+          expect(run.failure).toMatchObject({
+            message: "--json or --summary changed during startup benchmarks",
+          });
+          expect(run.probes).toBe(testing.cases.length * testing.sampleCount);
+          expect(readFileSync(changedPath, "utf8")).toBe(sentinel);
+          expect(readFileSync(displacedPath, "utf8")).toBe("");
+          expect(existsSync(otherPath)).toBe(false);
         },
       );
 
-      it.each([
-        [true, true, true],
-        [true, undefined, true],
-        [undefined, true, true],
-        [undefined, undefined, true],
-        [false, true, false],
-        [true, false, false],
-        [false, undefined, false],
-        [undefined, false, false],
-        [false, false, false],
-      ] as const)(
-        "admits JSON %s / summary %s case probes (reject: %s)",
-        async (jsonCase, summaryCase, reject) => {
-          if (process.platform !== "darwin" && process.platform !== "linux") {
-            return;
-          }
-
-          const tempRoot = tempRoots.make("openclaw-startup-memory-case-policy-");
-          const reportsDir = path.join(tempRoot, "reports");
-          mkdirSync(reportsDir);
-          const jsonPath = path.join(reportsDir, "report");
-          const summaryPath = path.join(reportsDir, "REPORT");
-          const physicalParent = realpathSync.native(reportsDir);
-          const jsonIdentity = path.join(physicalParent, "report");
-          const summaryIdentity = path.join(physicalParent, "REPORT");
-          const blockedTempRoot = path.join(tempRoot, "not-a-directory");
-          const sentinel = "temporary HOME must not be attempted\n";
-          writeFileSync(blockedTempRoot, sentinel);
-          let probes = 0;
-          let failure: unknown;
-
-          vi.resetModules();
-          vi.doMock("../../src/infra/path-case.ts", () => ({
-            tryResolvePathCaseInsensitive(value: string) {
-              if (value === jsonIdentity) {
-                return jsonCase;
-              }
-              if (value === summaryIdentity) {
-                return summaryCase;
-              }
-              throw new Error("unexpected case-probe identity");
-            },
-          }));
-          try {
-            const { testing: freshTesting } =
-              await import("../../scripts/check-cli-startup-memory.mjs");
-            withEnv(
-              { TMPDIR: blockedTempRoot, TEMP: blockedTempRoot, TMP: blockedTempRoot },
-              () => {
-                try {
-                  freshTesting.runStartupMemoryCheck(
-                    ["--json", jsonPath, "--summary", summaryPath],
-                    {
-                      platform: process.platform,
-                      spawnSync: () => {
-                        probes += 1;
-                        return {
-                          status: 0,
-                          signal: null,
-                          stdout: "",
-                          stderr: "__OPENCLAW_MAX_RSS_KB__=1024\n",
-                        };
-                      },
-                    },
-                  );
-                } catch (error) {
-                  failure = error;
-                }
-              },
-            );
-            expect
-              .soft(failure)
-              .toMatchObject(reject ? { message: aliasError } : { code: "ENOTDIR" });
-            expect.soft(probes).toBe(0);
-            expect.soft(readdirSync(reportsDir)).toEqual([]);
-            expect.soft(readFileSync(blockedTempRoot, "utf8")).toBe(sentinel);
-            expect.soft(readdirSync(tempRoot).toSorted()).toEqual(["not-a-directory", "reports"]);
-          } finally {
-            vi.doUnmock("../../src/infra/path-case.ts");
-            vi.resetModules();
-          }
-        },
-      );
-    });
-
-    it("rejects environment aliases before creating a temporary HOME", () => {
-      if (process.platform !== "darwin" && process.platform !== "linux") {
-        return;
-      }
-
-      const tempRoot = tempRoots.make("openclaw-startup-memory-admission-");
-      const reportPath = path.join(tempRoot, "report");
-      const blockedTempRoot = path.join(tempRoot, "not-a-directory");
-      const sentinel = "existing report must survive admission\n";
-      writeFileSync(reportPath, sentinel);
-      writeFileSync(blockedTempRoot, "temporary HOME must not be attempted\n");
-      let probes = 0;
-
-      // A real ENOTDIR would win if temporary HOME creation preceded admission.
-      withEnv(
-        {
-          OPENCLAW_STARTUP_MEMORY_JSON_PATH: reportPath,
-          OPENCLAW_STARTUP_MEMORY_SUMMARY_PATH: reportPath,
-          TMPDIR: blockedTempRoot,
-          TEMP: blockedTempRoot,
-          TMP: blockedTempRoot,
-        },
-        () => {
-          expect
-            .soft(() =>
-              testing.runStartupMemoryCheck([], {
-                platform: process.platform,
-                spawnSync: () => {
-                  probes += 1;
-                  return {
-                    status: 0,
-                    signal: null,
-                    stdout: "",
-                    stderr: "__OPENCLAW_MAX_RSS_KB__=1024\n",
-                  };
-                },
-              }),
-            )
-            .toThrow(aliasError);
-        },
-      );
-
-      expect.soft(probes).toBe(0);
-      expect.soft(readFileSync(reportPath, "utf8")).toBe(sentinel);
-      expect
-        .soft(readFileSync(blockedTempRoot, "utf8"))
-        .toBe("temporary HOME must not be attempted\n");
-      expect.soft(readdirSync(tempRoot).toSorted()).toEqual(["not-a-directory", "report"]);
-    });
-
-    it.each(["file", "file-symlink", "dangling-file-symlink"] as const)(
-      "allows distinct report targets (%s)",
-      (kind) => {
-        if (process.platform !== "darwin" && process.platform !== "linux") {
-          return;
-        }
-
-        const tempRoot = tempRoots.make("openclaw-startup-memory-distinct-");
+      it("publishes failure reports before surfacing a benchmark failure", () => {
+        const tempRoot = tempRoots.make("openclaw-startup-memory-failure-");
         const jsonPath = path.join(tempRoot, "startup-memory.json");
         const summaryPath = path.join(tempRoot, "summary.md");
-        const jsonTarget = kind === "file" ? jsonPath : path.join(tempRoot, "report-data");
-        const sentinel = "identical bytes do not imply one file\n";
-        if (kind !== "dangling-file-symlink") {
-          writeFileSync(jsonTarget, sentinel);
-        }
-        if (kind !== "file") {
-          symlinkSync(path.basename(jsonTarget), jsonPath, "file");
-        }
-        writeFileSync(summaryPath, sentinel);
+        const run = captureReportRun(tempRoot, jsonPath, summaryPath, () => ({
+          signal: null,
+          status: 1,
+          stderr: "benchmark failed\n",
+          stdout: "",
+        }));
 
-        const result = runStartupMemoryCheckWithHelpSamples([1, 1, 1], tempRoot);
-
-        expect(result.skipped).toBe(false);
-        expect(result.results).toHaveLength(testing.cases.length);
-        expect(JSON.parse(readFileSync(jsonTarget, "utf8"))).toMatchObject({
-          status: "pass",
+        expect(run.failure).toMatchObject({
+          message: expect.stringContaining("--help exited with 1"),
         });
-        expect(readFileSync(summaryPath, "utf8")).toContain("# OpenClaw Startup Memory");
-        expect(readFileSync(summaryPath, "utf8")).toContain("Status: pass");
-        if (kind !== "file") {
-          expect(lstatSync(jsonPath).isSymbolicLink()).toBe(true);
-        }
-      },
-    );
-
-    describe("physical symlink resolution", () => {
-      function captureAdmissionFailure(args: string[], homeRoot: string) {
-        let probes = 0;
-        let failure: unknown;
-        withEnv({ TMPDIR: homeRoot, TEMP: homeRoot, TMP: homeRoot }, () => {
-          try {
-            testing.runStartupMemoryCheck(args, {
-              platform: process.platform,
-              spawnSync: () => {
-                probes += 1;
-                return {
-                  status: 0,
-                  signal: null,
-                  stdout: "",
-                  stderr: "__OPENCLAW_MAX_RSS_KB__=1024\n",
-                };
-              },
-            });
-          } catch (error) {
-            failure = error;
-          }
-        });
-        return { probes, failure };
-      }
-
-      it.each([
-        ["relative", false],
-        ["relative", true],
-        ["absolute", false],
-        ["absolute", true],
-      ] as const)(
-        "rejects aliases through a %s raw target (reversed: %s)",
-        (targetKind, reversed) => {
-          if (process.platform !== "darwin" && process.platform !== "linux") {
-            return;
-          }
-
-          const tempRoot = tempRoots.make("openclaw-startup-memory-physical-");
-          const outside = path.join(tempRoot, "outside");
-          const subdir = path.join(outside, "subdir");
-          const homeRoot = path.join(tempRoot, "homes");
-          mkdirSync(subdir, { recursive: true });
-          mkdirSync(homeRoot);
-          symlinkSync(subdir, path.join(tempRoot, "dir-link"), "dir");
-          const leaf = path.join(tempRoot, "leaf");
-          const target = path.join(outside, "report");
-          // Keep ".." in the stored link: it applies after following dir-link.
-          const relativeTarget = `dir-link${path.sep}..${path.sep}report`;
-          const rawTarget =
-            targetKind === "absolute" ? `${tempRoot}${path.sep}${relativeTarget}` : relativeTarget;
-          symlinkSync(rawTarget, leaf, "file");
-          const [jsonPath, summaryPath] = reversed ? [target, leaf] : [leaf, target];
-
-          const result = captureAdmissionFailure(
-            ["--json", jsonPath, "--summary", summaryPath],
-            homeRoot,
-          );
-
-          expect.soft(result.failure).toMatchObject({ message: aliasError });
-          expect.soft(result.probes).toBe(0);
-          expect.soft(readdirSync(homeRoot)).toEqual([]);
-          expect.soft(existsSync(target)).toBe(false);
-          expect.soft(readlinkSync(leaf)).toBe(rawTarget);
-        },
-      );
-
-      it("allows a distinct link chain whose lexical cycle keys collide", () => {
-        if (process.platform !== "darwin" && process.platform !== "linux") {
-          return;
-        }
-
-        const tempRoot = tempRoots.make("openclaw-startup-memory-link-chain-");
-        const outside = path.join(tempRoot, "outside");
-        const subdir = path.join(outside, "subdir");
-        mkdirSync(subdir, { recursive: true });
-        symlinkSync(subdir, path.join(tempRoot, "dir-link"), "dir");
-        const jsonPath = path.join(tempRoot, "startup-memory.json");
-        const secondLink = path.join(outside, "startup-memory.json");
-        const target = path.join(outside, "report-data");
-        const rawTarget = `dir-link${path.sep}..${path.sep}startup-memory.json`;
-        symlinkSync(rawTarget, jsonPath, "file");
-        symlinkSync("report-data", secondLink, "file");
-
-        const result = runStartupMemoryCheckWithHelpSamples([1, 1, 1], tempRoot);
-
-        expect(result.skipped).toBe(false);
-        expect(result.results).toHaveLength(testing.cases.length);
-        expect(JSON.parse(readFileSync(target, "utf8"))).toMatchObject({ status: "pass" });
-        expect(readFileSync(path.join(tempRoot, "summary.md"), "utf8")).toContain("Status: pass");
-        expect(readlinkSync(jsonPath)).toBe(rawTarget);
-        expect(readlinkSync(secondLink)).toBe("report-data");
+        expect(run.probes).toBe(testing.cases.length);
+        expect(JSON.parse(readFileSync(jsonPath, "utf8"))).toMatchObject({ status: "fail" });
+        expect(readFileSync(summaryPath, "utf8")).toContain("Status: fail");
+        expect(readFileSync(summaryPath, "utf8")).toContain("--help: --help exited with 1");
       });
-
-      it("rejects a genuine symlink cycle before probing", () => {
-        if (process.platform !== "darwin" && process.platform !== "linux") {
-          return;
-        }
-
-        const tempRoot = tempRoots.make("openclaw-startup-memory-link-cycle-");
-        const homeRoot = path.join(tempRoot, "homes");
-        mkdirSync(homeRoot);
-        const jsonPath = path.join(tempRoot, "first-link");
-        const secondLink = path.join(tempRoot, "second-link");
-        const summaryPath = path.join(tempRoot, "summary.md");
-        const sentinel = "existing summary must survive admission\n";
-        symlinkSync("second-link", jsonPath, "file");
-        symlinkSync("first-link", secondLink, "file");
-        writeFileSync(summaryPath, sentinel);
-
-        const result = captureAdmissionFailure(
-          ["--json", jsonPath, "--summary", summaryPath],
-          homeRoot,
-        );
-
-        expect.soft(result.failure).toMatchObject({ code: "ELOOP" });
-        expect.soft(result.probes).toBe(0);
-        expect.soft(readdirSync(homeRoot)).toEqual([]);
-        expect.soft(readFileSync(summaryPath, "utf8")).toBe(sentinel);
-        expect.soft(readlinkSync(jsonPath)).toBe("second-link");
-        expect.soft(readlinkSync(secondLink)).toBe("first-link");
-      });
-    });
-  });
+    },
+  );
 
   it("does not create a temp home before argument validation succeeds", () => {
     if (process.platform !== "darwin" && process.platform !== "linux") {
