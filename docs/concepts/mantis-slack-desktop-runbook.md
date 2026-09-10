@@ -24,7 +24,7 @@ Mantis uses three storage layers:
   logged-in browser profile, `/var/cache/crabbox/pnpm`, and a prepared source
   checkout while the lease is alive.
 - **Mantis artifacts** - owned by the OpenClaw run. Live under
-  `.artifacts/qa-e2e/mantis/...`; GitHub Actions uploads them and the Mantis
+  `.artifacts/qa-e2e/mantis/...`. GitHub Actions uploads them and the Mantis
   GitHub App comments inline evidence on the PR.
 
 Never bake secrets, browser cookies, Slack login state, repository checkouts,
@@ -107,7 +107,7 @@ pnpm openclaw qa mantis slack-desktop-smoke \
 ```
 
 Use `--hydrate-mode prehydrated` only when the reused remote workspace already
-has `node_modules` and a built `dist/`; Mantis fails closed otherwise.
+has `node_modules` and a built `dist/`. Mantis fails closed otherwise.
 
 Prove native Slack approval UI:
 
@@ -123,7 +123,7 @@ pnpm openclaw qa mantis slack-desktop-smoke \
 
 `--approval-checkpoints` is mutually exclusive with `--gateway-setup`. It runs
 the opt-in `slack-approval-exec-native` and `slack-approval-plugin-native`
-scenarios unless you pass an explicit approval-checkpoint `--scenario`; other
+scenarios unless you pass an explicit approval-checkpoint `--scenario`. Other
 Slack scenarios are rejected before the VM starts. The Slack QA runner writes
 each checkpoint JSON file from the real Slack API message it observed, then
 the remote watcher renders that message into
