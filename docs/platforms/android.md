@@ -9,14 +9,14 @@ title: "Android app"
 ---
 
 <Note>
-The official Android app is available on [Google Play](https://play.google.com/store/apps/details?id=ai.openclaw.app&hl=en_IN) and as a signed standalone APK on supported [GitHub Releases](https://github.com/openclaw/openclaw/releases). It is a companion node and requires a running OpenClaw Gateway. Source: [apps/android](https://github.com/openclaw/openclaw/tree/main/apps/android) ([build instructions](https://github.com/openclaw/openclaw/blob/main/apps/android/README.md)).
+The official Android app is available on [Google Play](https://play.google.com/store/apps/details?id=ai.openclaw.app&hl=en_IN) and, for sideloading, as a signed standalone APK on selected [GitHub Releases](https://github.com/openclaw/openclaw/releases). Not every release includes the APK and checksum. See [Install outside Google Play](/platforms/android#install-outside-google-play) to find and verify both files. It is a companion node and requires a running OpenClaw Gateway. Source: [apps/android](https://github.com/openclaw/openclaw/tree/main/apps/android) ([build instructions](https://github.com/openclaw/openclaw/blob/main/apps/android/README.md)).
 </Note>
 
 ## Support snapshot
 
 - Role: companion node app (Android does not host the Gateway).
 - Gateway required: yes (run it on macOS, Linux, or Windows via WSL2).
-- Install: [Google Play](https://play.google.com/store/apps/details?id=ai.openclaw.app&hl=en_IN) or `OpenClaw-Android.apk` from a supported [GitHub Release](https://github.com/openclaw/openclaw/releases), [Getting Started](/start/getting-started) for the Gateway, then [Pairing](/channels/pairing).
+- Install: [Google Play](https://play.google.com/store/apps/details?id=ai.openclaw.app&hl=en_IN) or `OpenClaw-Android.apk` from a [GitHub Release](https://github.com/openclaw/openclaw/releases) that lists both required assets (see [Install outside Google Play](/platforms/android#install-outside-google-play)), [Getting Started](/start/getting-started) for the Gateway, then [Pairing](/channels/pairing).
 - Gateway: [Runbook](/gateway) + [Configuration](/gateway/configuration).
   - Protocols: [Gateway protocol](/gateway/protocol) (nodes + control plane).
 - Select an agent in the sidebar to view its credential status in **Settings → Providers & Models**. The page updates when the Gateway publishes model, credential, or config changes. Use **Refresh** to recheck model availability.
@@ -45,9 +45,20 @@ The Wear OS companion uses the paired Android phone's authenticated Gateway conn
 
 ## Install outside Google Play
 
-Regular final and correction GitHub Releases include a universal `OpenClaw-Android.apk` and `OpenClaw-Android-SHA256SUMS.txt`. The APK is built from the release tag, signed with the OpenClaw Android release key, and carries GitHub Actions provenance.
+Selected GitHub Releases include a universal `OpenClaw-Android.apk` and `OpenClaw-Android-SHA256SUMS.txt`. The APK is built from the release tag, signed with the OpenClaw Android release key, and carries GitHub Actions provenance. Android assets may be attached after a release becomes public. Select a release by its listed assets, not by the latest Gateway release tag.
 
-Choose a [release](https://github.com/openclaw/openclaw/releases) that lists both assets, then download and verify that exact tag before sideloading:
+List published releases that contain both required assets:
+
+```bash
+gh api --paginate "repos/openclaw/openclaw/releases?per_page=50" \
+  --jq '.[] | select(.draft | not) | {
+    tag: .tag_name,
+    apk: ([.assets[].name] | any(. == "OpenClaw-Android.apk")),
+    checksum: ([.assets[].name] | any(. == "OpenClaw-Android-SHA256SUMS.txt"))
+  } | select(.apk and .checksum)'
+```
+
+Pick a release that lists both assets, then download and verify that exact tag before sideloading:
 
 ```bash
 release_tag=vYYYY.M.PATCH
@@ -62,6 +73,8 @@ gh attestation verify OpenClaw-Android.apk \
   --source-ref "refs/tags/${release_tag}" \
   --deny-self-hosted-runners
 ```
+
+If no release lists both files, use Google Play or build from source with your own signing identity.
 
 <Warning>
 Google Play and standalone APK installs use different update channels and may have different signing identities. Android may require uninstalling the existing app before switching channels, which removes its local app data. Stay on one channel for normal updates.
@@ -294,7 +307,7 @@ The app keeps a registry of every Gateway it has paired with, so you can keep op
 
 Opening or replying to a conversation notification reconnects its saved Gateway when needed. An already connecting or connected target is retained. Replies wait for that target connection to become ready, including required TLS approval. If the target is no longer available, opening the notification shows **Gateway unavailable** and opens Gateway settings without disconnecting another Gateway. Disconnect is checked again before a notification reply enters the durable send queue; already queued input keeps its normal recovery behavior.
 
-For notifications created by the updated app, **Reply queued** confirms that the reply entered the durable send queue, not that it was delivered. The notification keeps a private preview of the submitted text and offers **Open conversation**. If the reply status is unknown, open the conversation to check before sending again; the notification does not offer another Reply action. Feedback updates only the latest notification for that conversation, so an older result cannot replace a newer notice. Notifications retained from an earlier app version can still send replies, but their result does not rewrite or dismiss a notification; open the conversation to check its status.
+**Reply queued** confirms that the reply entered the durable send queue, not that it was delivered. The notification keeps a private preview of the submitted text and offers **Open conversation**. If the reply status is unknown, open the conversation to check before sending again; the notification does not offer another Reply action. Feedback updates only the latest notification for that conversation, so an older result cannot replace a newer notice. A notification posted before an app update can still send replies. Its result does not rewrite or dismiss that notification, so open the conversation to check its status.
 
 The **Channels**, **Dreaming**, **Health** logs, **Skills**, and **Usage** pages keep their last loaded data while refreshing. A failed first load shows an error rather than empty counts or default health values. When refreshes overlap, only the latest request updates the page's data, error, and progress. Disconnecting clears the displayed summaries.
 
@@ -304,7 +317,7 @@ On **Health**, **Chat: Not ready** means chat health is unconfirmed or its check
 
 After the authenticated node session connects, and when the app moves to the background while the foreground service is still connected, Android calls `node.event` with `event: "node.presence.alive"`. The Gateway records this as `lastSeenAtMs`/`lastSeenReason` on the paired node/device metadata only after the authenticated node device identity is known.
 
-The app counts the beacon as successfully recorded only when the Gateway response includes `handled: true`. Older Gateways may acknowledge `node.event` with `{ "ok": true }`; that response is compatible but does not count as a durable last-seen update.
+The app counts the beacon as successfully recorded only when the Gateway response includes `handled: true`. A Gateway that acknowledges `node.event` with `{ "ok": true }` and no `handled` field is compatible, but that response does not count as a durable last-seen update.
 
 ### 4. Approve pairing (CLI)
 

@@ -52,8 +52,16 @@
     "target": "密钥管理"
   },
   {
+    "source": "Secrets CLI",
+    "target": "密钥 CLI"
+  },
+  {
     "source": "SecretRef credential surface",
     "target": "SecretRef 凭据覆盖面"
+  },
+  {
+    "source": "Auth credential semantics",
+    "target": "认证凭据语义"
   },
   {
     "source": "Secrets runtime model",
@@ -382,6 +390,10 @@
   {
     "source": "Diagnostics export",
     "target": "诊断导出"
+  },
+  {
+    "source": "Diagnostics flags",
+    "target": "诊断标志"
   },
   {
     "source": "Agent harness plugins",
@@ -1592,6 +1604,22 @@
     "target": "插件入口点"
   },
   {
+    "source": "Plugin runtime helpers",
+    "target": "插件运行时辅助函数"
+  },
+  {
+    "source": "Plugin setup and config",
+    "target": "插件设置与配置"
+  },
+  {
+    "source": "Building channel plugins",
+    "target": "构建渠道插件"
+  },
+  {
+    "source": "Building provider plugins",
+    "target": "构建提供商插件"
+  },
+  {
     "source": "Plugin SDK tool policy and sandbox helpers",
     "target": "插件 SDK 工具策略与沙箱辅助方法"
   },
@@ -2092,6 +2120,14 @@
     "target": "渠道路由"
   },
   {
+    "source": "Bot loop protection",
+    "target": "机器人循环保护"
+  },
+  {
+    "source": "Access groups",
+    "target": "访问组"
+  },
+  {
     "source": "Channels Overview",
     "target": "渠道概览"
   },
@@ -2240,6 +2276,14 @@
     "target": "网络代理"
   },
   {
+    "source": "Network",
+    "target": "网络"
+  },
+  {
+    "source": "Proxy",
+    "target": "代理"
+  },
+  {
     "source": "Node troubleshooting",
     "target": "节点故障排查"
   },
@@ -2296,12 +2340,24 @@
     "target": "Task Flow"
   },
   {
+    "source": "Tasks",
+    "target": "任务"
+  },
+  {
     "source": "Telegram reaction notifications",
     "target": "Telegram 表情回应通知"
   },
   {
     "source": "Threat model",
     "target": "威胁模型"
+  },
+  {
+    "source": "Contributing to the threat model",
+    "target": "参与威胁模型贡献"
+  },
+  {
+    "source": "Formal verification",
+    "target": "形式化验证"
   },
   {
     "source": "Reconnaissance (AML.TA0002)",
@@ -4046,6 +4102,14 @@
   {
     "source": "Node file transfers",
     "target": "节点文件传输"
+  },
+  {
+    "source": "File transfers",
+    "target": "文件传输"
+  },
+  {
+    "source": "File Transfer plugin reference",
+    "target": "文件传输插件参考"
   },
   {
     "source": "Node command policy",
