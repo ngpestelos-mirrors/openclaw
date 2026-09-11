@@ -61,7 +61,7 @@ export async function runUpdateCommandRepair(params: {
   let completedTurns = 0;
   let activeTurn = 0;
   let lastValidation: UpdateRepairValidation | undefined;
-  const targetClass = params.phase === "validating" ? "candidate rehearsal" : "live";
+  const targetClass = params.phase === "validating" ? "update preparation" : "installed update";
   if (runId) {
     recordUpdateRunPhase(
       runId,
@@ -89,7 +89,13 @@ export async function runUpdateCommandRepair(params: {
           nodeRunner: params.nodeRunner,
         });
       }
+      const authorityTarget = resolveInstallationTarget(options.env);
       return await prepareUnattendedUpdateRepair({
+        authorityTarget: {
+          stateDir: authorityTarget.stateDir,
+          configPath: authorityTarget.configPath,
+          workspaceDir: authorityTarget.defaultWorkspaceDir,
+        },
         runId,
         requester: requesterAuthority?.requester,
         nodeRunner: params.nodeRunner,

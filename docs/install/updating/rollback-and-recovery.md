@@ -253,19 +253,22 @@ The failed update retains its nonzero exit code even if the agent repairs it.
 
 ### Unattended repair on your own inference
 
-The updater enters the optional `repairing` phase when candidate Doctor lint,
-config validation, plugin resolution, or canary startup fails. It repairs the
-staged candidate and reruns the failed check while the old Gateway keeps serving.
+The updater enters the optional `repairing` phase when Doctor health checks,
+config validation, plugin resolution, or startup checks fail. It repairs the
+staged update and reruns the failed check while the old Gateway keeps serving.
 Only a passing validation allows activation; otherwise the update fails and
-discards the candidate without stopping the service.
-Before activation, repair shares one disposable rehearsal state/config snapshot
-across its turns and validation, then independently validates surviving candidate
-changes before activation; configuration changes are never promoted and
+discards the staged update without stopping the service.
+Before activation, repair runs from the staged update in a separate process so
+it can read any database changes made by the new version. Older versions that
+cannot keep repair separate from the live update's authorization are rejected
+before automatic repair starts. It shares one disposable
+copy of state and configuration across its turns and validation, then independently
+validates surviving changes before activation; configuration changes are never promoted and
 stop as `repair-requires-config-change`, naming the changed top-level keys for
 the operator to inspect with `openclaw triage` or apply with `openclaw doctor --fix`.
 
 Git source updates keep the selected source revision. Repair may restore
-dependencies, generated runtime files, or state, but a candidate with changed
+dependencies, generated runtime files, or state, but an update with changed
 tracked source fails before the Gateway stops; fix the source revision before retrying.
 
 After activation, the updater can also enter `repairing` when verification fails
@@ -273,7 +276,7 @@ and config edits after the activation Doctor pass or a schema migration prevent 
 when rollback itself fails. This repair targets the runtime that remains
 installed and preserves migrated state. After each turn, the updater starts or
 restarts a stopped or unhealthy service once, then reruns the service, version,
-and `/readyz` checks. A verified candidate repair allows the run to succeed. If
+and `/readyz` checks. A verified repair allows the run to succeed. If
 rollback already restored the previous release, successful repair finishes
 `rolled-back` and the command still exits nonzero. Otherwise the original failure
 and repair summary remain in the final report.
@@ -290,10 +293,12 @@ skipping models without tool support and routes without usable authentication.
 It reports unavailable inference instead of waiting for a login or approval
 prompt. Operator-owned updates and explicit repair requests
 replace interactive exec approval with a prompt-free run scoped to the installation
-or staged candidate root (`fs.workspaceOnly: true`), preserving safe-bin and tool
+or staged update root (`fs.workspaceOnly: true`), preserving safe-bin and tool
 allowlists and refusing explicit exec or repair-tool denies with `exec-denied-by-policy`
 and an `openclaw triage` external handoff.
 
+The original installation's live update record and requester policy remain the
+authority for repair; copied state never grants permission to continue.
 Chat-requested updates recheck the requester's command ownership before repair
 effects and service activation. If configuration or plugin loading fails, the
 update stops and records the load error. Fix that error before retrying; only a
@@ -306,8 +311,8 @@ budget is reached, or a turn fails to improve the result; a regression is
 reported as unrepaired. The model's `REPAIR_RESULT` summary does not replace
 these checks.
 
-The agent may diagnose and repair the target install or staged candidate and
-its OpenClaw state, including running Doctor lint, `doctor --fix`, and health
+The agent may diagnose and repair the installed or staged update and
+its OpenClaw state, including running Doctor health checks, `doctor --fix`, and health
 checks. Its repair contract forbids changing credentials or auth stores,
 deleting state or databases, package-manager writes outside the target root,
 and service or Gateway lifecycle commands. The orchestrator retains control of

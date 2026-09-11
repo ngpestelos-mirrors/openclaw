@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
 import { tryListenOnPort } from "../../infra/ports-probe.js";
-import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
+import { createUpdateRun, finishUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { withServer } from "../../plugin-sdk/test-helpers/http-test-server.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
@@ -14,15 +14,6 @@ import {
   writeRepairCandidate,
 } from "./update-command-repair-isolation.test-support.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
-
-// Native loading exercises actual agent exec; Vitest's transformed runtime
-// cannot complete that command's dynamically loaded provider graph.
-vi.mock("../../infra/update-repair-agent.runtime.js", async () => {
-  const { createRequire } = await import("node:module");
-  return createRequire(import.meta.url)(
-    "../../../dist/update-repair-agent.runtime.js",
-  ) as typeof import("../../infra/update-repair-agent.runtime.js");
-});
 
 // Keep source orchestration while using the built snapshot worker as packaged updates do.
 vi.mock("../../infra/runtime-worker-url.js", async (importOriginal) => {
@@ -58,10 +49,15 @@ describe("staged CLI repair isolation", () => {
       name: "discards config and doctor repairs without changing serving files",
       configChange: true,
     },
-    { name: "keeps candidate-root repairs eligible for activation", configChange: false },
+    { name: "keeps staged repairs eligible for activation", configChange: false },
+    {
+      name: "stops before tool execution when the original update is revoked",
+      configChange: false,
+      revoke: true,
+    },
   ])(
     "$name",
-    async ({ configChange }) => {
+    async ({ configChange, revoke = false }) => {
       await withOpenClawTestState(
         {
           prefix: "repair-isolation-",
@@ -73,7 +69,8 @@ describe("staged CLI repair isolation", () => {
           },
         },
         async (state) => {
-          const provider = repairIsolationProvider();
+          let revokeRun: (() => void) | undefined;
+          const provider = repairIsolationProvider(() => revokeRun?.());
           await withServer(provider.handle, async (baseUrl) => {
             const gatewayPort = await tryListenOnPort({ port: 0, host: "127.0.0.1" });
             await state.writeConfig(repairIsolationConfig(baseUrl, gatewayPort));
@@ -98,6 +95,15 @@ describe("staged CLI repair isolation", () => {
               ];
               const ledgerEnv = { ...state.env, OPENCLAW_STATE_DIR: state.path("ledger") };
               const run = createUpdateRun({ trigger: "cli" }, { env: ledgerEnv });
+              if (revoke) {
+                revokeRun = () => {
+                  finishUpdateRun(
+                    run.runId,
+                    { status: "failed", reason: "synthetic-revocation" },
+                    { env: ledgerEnv },
+                  );
+                };
+              }
               const before = await Promise.all(
                 liveFiles.map(async (file) => ({ file, identity: await fileIdentity(file) })),
               );
@@ -162,19 +168,28 @@ describe("staged CLI repair isolation", () => {
               });
 
               expect(provider.errors).toEqual([]);
-              expect(proof, JSON.stringify(result)).toMatchObject({
-                cwd: candidate,
-                before: "live-uncheckpointed",
-              });
-              if (configChange) {
-                expect(proof?.doctor, JSON.stringify(proof?.doctor)).toMatchObject({ status: 0 });
-              }
               for (const { file, identity: original } of before) {
                 const after = await fileIdentity(file);
                 const label = path.basename(file);
                 expect(after.bytes.equals(original.bytes), `${label} bytes`).toBe(true);
                 expect(after.inode, `${label} inode`).toBe(original.inode);
                 expect(after.modified, `${label} mtime`).toBe(original.modified);
+              }
+              if (revoke) {
+                expect(result.status).not.toBe("repaired");
+                expect(proof).toBeUndefined();
+                await expect(
+                  fs.access(path.join(candidate, "repair-proof.json")),
+                ).rejects.toMatchObject({ code: "ENOENT" });
+                expect(getUpdateRun(run.runId, { env: ledgerEnv })?.status).toBe("failed");
+                return;
+              }
+              expect(proof, JSON.stringify(result)).toMatchObject({
+                cwd: candidate,
+                before: "live-uncheckpointed",
+              });
+              if (configChange) {
+                expect(proof?.doctor, JSON.stringify(proof?.doctor)).toMatchObject({ status: 0 });
               }
               expect(oracleTargets).toHaveLength(2);
               const [oracleTarget, nextOracleTarget] = oracleTargets;
@@ -200,7 +215,7 @@ describe("staged CLI repair isolation", () => {
                 expect.arrayContaining([
                   expect.objectContaining({
                     step: "repairing",
-                    detail: expect.stringContaining("candidate rehearsal"),
+                    detail: expect.stringContaining("update preparation"),
                   }),
                 ]),
               );

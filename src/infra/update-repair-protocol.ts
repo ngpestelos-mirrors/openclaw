@@ -38,7 +38,7 @@ const event = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stopped"), status, reason: text.optional() }),
 ]);
 export const updateRepairWorkerMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("ready") }),
+  z.object({ type: z.literal("ready"), supportsIsolatedTarget: z.literal(true).optional() }),
   z.object({ type: z.literal("validate"), id: turn }),
   z.object({ type: z.literal("cancel-validation"), id: turn }),
   z.object({ type: z.literal("event"), event }),
@@ -52,6 +52,11 @@ export const updateRepairWorkerMessageSchema = z.discriminatedUnion("type", [
     }),
   }),
 ]);
+const installationTarget = z.object({
+  stateDir: z.string(),
+  configPath: z.string(),
+  workspaceDir: z.string(),
+});
 export const updateRepairParentMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("start"),
@@ -59,14 +64,11 @@ export const updateRepairParentMessageSchema = z.discriminatedUnion("type", [
     requester: z
       .object({ channel: text.optional(), accountId: text.optional(), senderId: text.optional() })
       .optional(),
-    target: z.object({
-      stateDir: z.string(),
-      configPath: z.string(),
-      workspaceDir: z.string(),
-      installRoot: z.string(),
-    }),
+    target: installationTarget.extend({ installRoot: z.string() }),
+    authorityTarget: installationTarget.optional(),
     failure: updateFailureSchema,
     context: z.object({
+      phase: z.enum(["validating", "verifying"]).default("verifying"),
       beforeVersion: text.optional(),
       targetVersion: text.optional(),
       symptoms: z.array(text).max(20).optional(),
@@ -95,6 +97,8 @@ export type UpdateRepairEvent = Extract<UpdateRepairWorkerMessage, { type: "even
 export type UpdateRepairParams = {
   target: UpdateRepairTarget;
   nodeRunner?: string;
+  /** Original installation whose live ledger and requester policy authorize repair. */
+  authorityTarget?: z.infer<typeof installationTarget>;
   runId?: string;
   requester?: { channel?: string; accountId?: string; senderId?: string };
   context: TriageUpdateFailure & {

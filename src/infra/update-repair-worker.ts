@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { createCommandTerminationController } from "../process/exec-termination.js";
-import { installationTargetEnv } from "./installation-target-context.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
+import { updateRepairEnvironment } from "./update-repair-environment.js";
 import {
   UPDATE_REPAIR_IPC_MAX_BYTES,
   updateRepairBudgetSchema,
@@ -23,7 +23,7 @@ export async function runUpdateRepairWorker(
   let finalValidation: UpdateRepairValidation = {
     ok: false,
     score: 0,
-    summary: "Candidate repair worker did not validate the installation.",
+    summary: "Automatic repair did not finish checking the installation.",
   };
   const clean = (value: unknown) =>
     redactSupportString(
@@ -38,7 +38,7 @@ export async function runUpdateRepairWorker(
   if (params.isCurrent && !params.runId) {
     return stopped(
       "unavailable",
-      "Candidate repair requires the admitting update run identity to preserve its execution guard.",
+      "Automatic repair could not confirm the active update. Run openclaw triage.",
     );
   }
   const parsedBudget = updateRepairBudgetSchema.safeParse(params.budget ?? {});
@@ -66,28 +66,15 @@ export async function runUpdateRepairWorker(
     () => controller.abort(new Error("wall-clock-budget")),
     budget.wallClockMs,
   );
-  const env = {
-    ...process.env,
-    NODE_DISABLE_COMPILE_CACHE: "1",
-    ...installationTargetEnv({
-      stateDir: params.target.stateDir,
-      configPath: params.target.configPath,
-      defaultWorkspaceDir: params.target.workspaceDir,
-    }),
-  };
+  const env = { ...updateRepairEnvironment(params.target), NODE_DISABLE_COMPILE_CACHE: "1" };
+  const installRoot = params.target.candidateRoot ?? params.target.installRoot;
   let child;
   try {
     child = spawn(
       params.nodeRunner ?? process.execPath,
-      [
-        path.join(
-          params.target.installRoot,
-          "dist",
-          runtimeProcessEntrypoints.updateRepair.distWorkerPath,
-        ),
-      ],
+      [path.join(installRoot, "dist", runtimeProcessEntrypoints.updateRepair.distWorkerPath)],
       {
-        cwd: params.target.installRoot,
+        cwd: installRoot,
         env,
         detached: process.platform !== "win32",
         windowsHide: true,
@@ -130,11 +117,11 @@ export async function runUpdateRepairWorker(
   };
   const send = (message: UpdateRepairParentMessage) => {
     if (!child.connected) {
-      stop(new Error("Candidate repair worker closed its control channel."));
+      stop(new Error("The repair process disconnected before finishing."));
       return;
     }
     if (Buffer.byteLength(JSON.stringify(message)) > UPDATE_REPAIR_IPC_MAX_BYTES) {
-      stop(new Error("Candidate repair message exceeded its bounded diagnostic budget."));
+      stop(new Error("The repair request was too large."));
       return;
     }
     child.send(message, (error) => {
@@ -160,34 +147,36 @@ export async function runUpdateRepairWorker(
     try {
       assertCurrent();
       if (Buffer.byteLength(JSON.stringify(raw)) > UPDATE_REPAIR_IPC_MAX_BYTES) {
-        throw new Error("Candidate repair response exceeded its bounded diagnostic budget.");
+        throw new Error("The repair process returned too much diagnostic output.");
       }
       const message = updateRepairWorkerMessageSchema.parse(raw);
       if (message.type === "ready") {
+        // Older shipped workers discard unknown start fields and would authorize
+        // repair against copied state. Refuse them before granting execution.
+        if (params.context.phase === "validating" && !message.supportsIsolatedTarget) {
+          throw new Error(
+            "This version does not support automatic repair before installation. Run openclaw triage to diagnose the failed update.",
+          );
+        }
         if (started) {
-          throw new Error("Candidate repair worker repeated startup.");
+          throw new Error("The repair process started more than once.");
         }
         started = true;
-        const {
-          phase: _phase,
-          beforeVersion,
-          targetVersion,
-          symptoms,
-          ...failureContext
-        } = params.context;
+        const { phase, beforeVersion, targetVersion, symptoms, ...failureContext } = params.context;
         const start = updateRepairParentMessageSchema.parse({
           type: "start",
           runId: params.runId,
           requester: params.requester,
-          target: params.target,
+          target: { ...params.target, installRoot },
+          authorityTarget: params.authorityTarget,
           failure: failureContext,
-          context: { beforeVersion, targetVersion, symptoms },
+          context: { phase, beforeVersion, targetVersion, symptoms },
           budget: { ...budget, wallClockMs: Math.max(1, deadline - Date.now()) },
         });
         send(start);
       } else if (message.type === "validate") {
         if (!started || pending || message.id !== ++requestId || requestId > budget.maxTurns + 1) {
-          throw new Error("Candidate repair validation request is outside its active turn.");
+          throw new Error("The repair process requested a health check at an unexpected time.");
         }
         const validationController = new AbortController();
         const validationSignal = AbortSignal.any([signal, validationController.signal]);
@@ -210,18 +199,18 @@ export async function runUpdateRepairWorker(
         pending = { id: message.id, controller: validationController, promise };
       } else if (message.type === "cancel-validation") {
         if (pending?.id === message.id) {
-          pending.controller.abort(new Error("Candidate repair validation was cancelled."));
+          pending.controller.abort(new Error("The repair health check was cancelled."));
         }
       } else if (message.type === "event") {
         if (
           (message.event.type === "turn-started" || message.event.type === "turn-finished") &&
           message.event.turn > budget.maxTurns
         ) {
-          throw new Error("Candidate repair exceeded its turn budget.");
+          throw new Error("Automatic repair exceeded its attempt limit.");
         }
         if (message.event.type === "turn-finished") {
           if (attempts.length >= budget.maxTurns || message.event.turn !== attempts.length + 1) {
-            throw new Error("Candidate repair repeated a completed turn.");
+            throw new Error("The repair process repeated a finished attempt.");
           }
           const { type: _type, ...attempt } = message.event;
           attempts.push(attempt);
@@ -229,7 +218,7 @@ export async function runUpdateRepairWorker(
         params.onEvent?.(message.event);
       } else {
         if (message.result.attempts.length > budget.maxTurns) {
-          throw new Error("Candidate repair exceeded its turn budget.");
+          throw new Error("Automatic repair exceeded its attempt limit.");
         }
         result = message.result;
       }
@@ -239,7 +228,7 @@ export async function runUpdateRepairWorker(
   });
   child.once("disconnect", () => {
     if (!result) {
-      stop(new Error("Candidate repair worker closed its control channel."));
+      stop(new Error("The repair process disconnected before finishing."));
     }
   });
   const closed = new Promise<number | null>((resolve) => {
@@ -256,7 +245,7 @@ export async function runUpdateRepairWorker(
   });
   try {
     const code = await closed;
-    pending?.controller.abort(new Error("Candidate repair worker exited."));
+    pending?.controller.abort(new Error("The repair process exited."));
     await pending?.promise;
     await termination.settle();
     assertCurrent();
@@ -265,7 +254,7 @@ export async function runUpdateRepairWorker(
       : stopped(
           "unavailable",
           failure ??
-            "Candidate repair worker exited without a result. Inspect the candidate installation with triage.",
+            "Automatic repair stopped without a result. Run openclaw triage to inspect the update.",
         );
   } catch (error) {
     return stopped("aborted", clean(error));

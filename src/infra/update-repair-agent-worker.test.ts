@@ -189,6 +189,79 @@ describe("fresh candidate repair process", () => {
     },
   );
 
+  it("uses the staged runtime and isolated environment before activation", async () => {
+    await withOpenClawTestState(
+      { prefix: "repair-staged-runtime-", layout: "home" },
+      async (state) => {
+        const staged = state.path("staged");
+        const isolated = state.path("isolated");
+        await fs.mkdir(isolated, { recursive: true });
+        await candidate(
+          staged,
+          `
+        import fs from "node:fs";
+        process.on("message", message => {
+          if (message.type !== "start") return;
+          const valid = message.context.phase === "validating"
+            && message.target.installRoot === process.cwd()
+            && process.env.HOME === ${JSON.stringify(isolated)}
+            && process.env.OPENCLAW_STATE_DIR === ${JSON.stringify(isolated)}
+            && message.authorityTarget.stateDir === ${JSON.stringify(state.stateDir)};
+          process.send({ type: "result", result: {
+            status: valid ? "repaired" : "unavailable", attempts: [],
+            finalValidation: { ok: valid, score: valid ? 1 : 0, summary: "Updated runtime verified" }
+          } }, () => process.disconnect());
+        });
+        process.send({ type: "ready", supportsIsolatedTarget: true });
+      `,
+        );
+        const result = await prepareUnattendedUpdateRepair({
+          ...repairParams(state),
+          target: {
+            ...state,
+            installRoot: state.workspaceDir,
+            candidateRoot: staged,
+            stateDir: isolated,
+            configPath: path.join(isolated, "openclaw.json"),
+            environment: { ...process.env, HOME: isolated },
+          },
+          authorityTarget: state,
+          context: { error: "Update health failed", phase: "validating" },
+        });
+        expect(result).toMatchObject({ status: "repaired", finalValidation: { ok: true } });
+      },
+    );
+  });
+
+  it("refuses a legacy worker before granting access to staged repair", async () => {
+    await withOpenClawTestState(
+      { prefix: "repair-legacy-worker-", layout: "home" },
+      async (state) => {
+        await candidate(
+          state.workspaceDir,
+          `
+        import fs from "node:fs";
+        process.on("message", message => {
+          if (message.type === "start") fs.writeFileSync("repair-started", "legacy worker");
+        });
+        process.send({ type: "ready" });
+      `,
+        );
+        const result = await prepareUnattendedUpdateRepair({
+          ...repairParams(state),
+          context: { error: "Update health failed", phase: "validating" },
+        });
+        expect(result).toMatchObject({
+          status: "unavailable",
+          reason: expect.stringContaining("does not support automatic repair before installation"),
+        });
+        await expect(
+          fs.access(path.join(state.workspaceDir, "repair-started")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      },
+    );
+  });
+
   it("cancels the child and drains the parent oracle before returning", async () => {
     await withOpenClawTestState(
       { prefix: "repair-child-cancel-", layout: "home" },

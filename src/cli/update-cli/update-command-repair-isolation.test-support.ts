@@ -94,7 +94,7 @@ function writeExecCall(response: ServerResponse): void {
   ]);
 }
 
-export function repairIsolationProvider() {
+export function repairIsolationProvider(beforeRepair?: () => void) {
   const errors: unknown[] = [];
   let issuedRepair = false;
   let requestCount = 0;
@@ -116,6 +116,7 @@ export function repairIsolationProvider() {
         };
         requestCount += 1;
         if (!issuedRepair && body.tools?.some((tool) => tool.name === "exec")) {
+          beforeRepair?.();
           issuedRepair = true;
           writeExecCall(response);
           return;

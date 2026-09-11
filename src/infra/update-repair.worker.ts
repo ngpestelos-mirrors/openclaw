@@ -71,12 +71,13 @@ process.on("message", (raw: unknown) => {
       started = true;
       // Agent execution temporarily projects isolated state into process.env.
       // Run liveness must always read the admitting installation's ledger.
+      const authorityTarget = message.authorityTarget ?? message.target;
       const ledgerEnv = {
         ...process.env,
         ...installationTargetEnv({
-          stateDir: message.target.stateDir,
-          configPath: message.target.configPath,
-          defaultWorkspaceDir: message.target.workspaceDir,
+          stateDir: authorityTarget.stateDir,
+          configPath: authorityTarget.configPath,
+          defaultWorkspaceDir: authorityTarget.workspaceDir,
         }),
       };
       void (async () => {
@@ -84,8 +85,11 @@ process.on("message", (raw: unknown) => {
           ? await createManagedUpdateRequesterAuthority(message.requester, ledgerEnv)
           : undefined;
         return runUpdateRepairLoop({
-          target: message.target,
-          context: { ...message.failure, ...message.context, phase: "verifying" },
+          target: {
+            ...message.target,
+            environment: message.context.phase === "validating" ? { ...process.env } : undefined,
+          },
+          context: { ...message.failure, ...message.context },
           budget: message.budget,
           signal: controller.signal,
           isCurrent: () => {
@@ -135,4 +139,4 @@ process.on("message", (raw: unknown) => {
     }
   }
 });
-send({ type: "ready" });
+send({ type: "ready", supportsIsolatedTarget: true });
