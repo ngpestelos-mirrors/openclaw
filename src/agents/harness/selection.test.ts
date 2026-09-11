@@ -4112,6 +4112,7 @@ describe("selectAgentHarness", () => {
   });
 
   it("passes runtime model and default credentials to compaction when auth profile id is absent", async () => {
+    const config = { models: { providers: { "local-proxy": {} } } };
     compactAuthMocks.resolveModelAsync.mockResolvedValue({
       model: {
         id: "proxy-model",
@@ -4147,6 +4148,7 @@ describe("selectAgentHarness", () => {
         provider: "local-proxy",
         model: "proxy-model",
         agentHarnessId: "copilot",
+        config,
       }),
     ).resolves.toEqual({ ok: true, compacted: false });
 
@@ -4154,7 +4156,7 @@ describe("selectAgentHarness", () => {
       "local-proxy",
       "proxy-model",
       expect.any(String),
-      undefined,
+      config,
       expect.objectContaining({
         authProfileId: undefined,
         workspaceDir: "/tmp/workspace",

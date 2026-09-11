@@ -60,6 +60,11 @@ describe("workspace plugin model auth evidence", () => {
     await writeWorkspaceAuthEvidencePlugin(workspaceDir);
 
     const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          "workspace-cloud": { baseUrl: "https://workspace-cloud.example.test", models: [] },
+        },
+      },
       plugins: {
         allow: ["workspace-cloud"],
       },

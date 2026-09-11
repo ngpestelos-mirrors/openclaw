@@ -1381,7 +1381,10 @@ vi.mock("./doctor-config-preflight.js", async () => {
   };
 });
 
-vi.mock("./doctor-config-analysis.js", () => {
+vi.mock("./doctor-config-analysis.js", async () => {
+  const { collectInvalidHookTransformsDirWarnings } = await vi.importActual<
+    typeof import("./doctor-config-analysis.js")
+  >("./doctor-config-analysis.js");
   function formatConfigKeyPath(parts: Array<string | number>): string {
     if (parts.length === 0) {
       return "<root>";
@@ -1417,6 +1420,7 @@ vi.mock("./doctor-config-analysis.js", () => {
 
   return {
     collectImplicitFallbackClobberWarnings: collectImplicitFallbackClobberWarningsMock,
+    collectInvalidHookTransformsDirWarnings,
     formatConfigKeyPath,
     noteImplicitFallbackClobberWarnings: noteImplicitFallbackClobberWarningsMock,
     noteIncludeConfinementWarning: vi.fn(),

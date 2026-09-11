@@ -82,7 +82,7 @@ describe("runEmbeddedAgent silent-error retry", () => {
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(successAttempt("ollama", "glm-5.1:cloud"));
 
     const result = await runEmbeddedAgent({
-      ...createOverflowRunParams(state),
+      ...createOverflowRunParams(state, "ollama"),
       provider: "ollama",
       model: "glm-5.1:cloud",
       runId: "run-empty-error-retry-basic",
@@ -145,7 +145,7 @@ describe("runEmbeddedAgent silent-error retry", () => {
     }
 
     const result = await runEmbeddedAgent({
-      ...createOverflowRunParams(state),
+      ...createOverflowRunParams(state, "ollama"),
       provider: "ollama",
       model: "glm-5.1:cloud",
       runId: "run-empty-error-retry-exhausted",

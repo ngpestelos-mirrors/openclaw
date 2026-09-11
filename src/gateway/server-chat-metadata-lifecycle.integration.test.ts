@@ -75,14 +75,21 @@ beforeEach(async () => {
   state = await createOpenClawTestState({ label: "prepared-model-runtime" });
   await resetPreparedModelRuntimeHarness(state);
   mocks.configuredAgentIds = ["main"];
+  const preparedOAuth = {
+    type: "oauth" as const,
+    access: "prepared-access",
+    refresh: "prepared-refresh",
+    expires: Date.now() + 30 * 60_000,
+  };
   mocks.authStorage.getAll.mockReturnValue({
-    openai: {
-      type: "oauth",
-      access: "prepared-access",
-      refresh: "prepared-refresh",
-      expires: Date.now() + 30 * 60_000,
-    },
+    openai: preparedOAuth,
   });
+  mocks.preparedAuthStore = {
+    version: 1,
+    profiles: {
+      "openai:default": { ...preparedOAuth, provider: "openai" },
+    },
+  };
   mocks.buildPreparedModelCatalogSnapshot.mockResolvedValue({
     entries: [model],
     routeVariants: [model],

@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 /** Main doctor config flow: preflight, migrations, previews, repairs, and final write decision. */
-import path from "node:path";
 import { note } from "../../packages/terminal-core/src/note.js";
 import {
   listAgentEntries,
@@ -19,11 +18,11 @@ import { CONFIG_PATH } from "../config/paths.js";
 import { inspectShippedPluginInstallConfigRecords } from "../config/plugin-install-config-migration.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway } from "../gateway/call.js";
-import { isPathInside } from "../infra/path-guards.js";
 import { withoutPluginInstallRecords } from "../plugins/installed-plugin-index-records.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createPluginCapabilityConsentPrompter } from "../wizard/plugin-capability-consent.js";
 import {
+  collectInvalidHookTransformsDirWarnings,
   noteImplicitFallbackClobberWarnings,
   noteMcpOriginWarning,
   noteOpencodeProviderOverrides,
@@ -51,27 +50,6 @@ import { listDoctorConfiguredChannelIds } from "./doctor/shared/configured-chann
 import { containsAuthoredInclude } from "./doctor/shared/include-migration-ownership.js";
 import { normalizeCompatibilityConfigValues } from "./doctor/shared/legacy-config-core-migrate.js";
 import type { DoctorPluginMetadataSnapshotState } from "./doctor/shared/plugin-metadata-snapshot-scope.js";
-
-function collectInvalidHookTransformsDirWarnings(
-  cfg: OpenClawConfig,
-  configPath: string,
-): string[] {
-  const transformsDir = cfg.hooks?.transformsDir?.trim();
-  if (!transformsDir) {
-    return [];
-  }
-  const configDir = path.dirname(configPath);
-  const transformsRoot = path.join(configDir, "hooks", "transforms");
-  const resolved = path.isAbsolute(transformsDir)
-    ? path.resolve(transformsDir)
-    : path.resolve(transformsRoot, transformsDir);
-  if (isPathInside(transformsRoot, resolved)) {
-    return [];
-  }
-  return [
-    `- hooks.transformsDir: ${transformsDir} is outside ${transformsRoot}. Hook transform modules must live under ${transformsRoot}; move custom transforms there or remove hooks.transformsDir.`,
-  ];
-}
 
 function collectUnsupportedInternalHookEntryWarnings(cfg: OpenClawConfig): string[] {
   const entries = cfg.hooks?.internal?.entries;
@@ -436,6 +414,20 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     emitWarnings: true,
   });
 
+  const { prepareProviderUseBindingMigration } =
+    await import("./doctor/shared/provider-use-binding-migration.js");
+  const providerUseBindingMigration = await runWithCurrentPluginMetadata(state.candidate, () =>
+    prepareProviderUseBindingMigration({
+      config: state.candidate,
+      configPath: snapshot.path,
+      env: process.env,
+    }),
+  );
+  applyConfigMutation(providerUseBindingMigration, {
+    fixHint: `Run "${doctorFixCommand}" to preserve selected shared-key providers.`,
+    emitWarnings: true,
+  });
+
   const { repairUnownedChannelAccountBindings } =
     await import("./doctor/shared/legacy-config-binding-repair.js");
   applyConfigMutation(
@@ -717,6 +709,11 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
 
   return {
     cfg,
+    ...(providerUseBindingMigration.pending &&
+    legacyStep.blocksWrite !== true &&
+    (shouldWriteConfig || (shouldRepair && providerUseBindingMigration.changes.length === 0))
+      ? { providerUseBindingMigrationPending: true }
+      : {}),
     ...(pluginInstallConfigImport ? { pluginInstallConfigImport } : {}),
     path: snapshot.path ?? CONFIG_PATH,
     shouldWriteConfig,

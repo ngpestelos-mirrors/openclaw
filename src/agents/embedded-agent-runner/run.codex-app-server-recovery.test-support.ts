@@ -105,6 +105,7 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
     resetSharedRunIntegrationHarnessMocks();
     const { createOpenClawTestState } = await import("../../test-utils/openclaw-test-state.js");
     state = await createOpenClawTestState({ label: "run.codex-app-server-recovery" });
+    useOpenAIPlatformAuthFixture();
     mockedClassifyFailoverReason.mockReturnValue(null);
   });
 

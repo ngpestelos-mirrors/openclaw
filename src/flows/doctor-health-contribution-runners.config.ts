@@ -195,6 +195,17 @@ export async function runWriteConfigHealth(
       );
     }
   }
+  if (ctx.configResult.providerUseBindingMigrationPending === true) {
+    const { completeProviderUseBindingMigration } =
+      await import("../commands/doctor/shared/provider-use-binding-migration.js");
+    const warnings = completeProviderUseBindingMigration(ctx.configPath, ctx.env ?? process.env);
+    if (warnings.length > 0) {
+      const { note } = await import("../../packages/terminal-core/src/note.js");
+      note(warnings.join("\n"), "Doctor warnings");
+    } else {
+      delete ctx.configResult.providerUseBindingMigrationPending;
+    }
+  }
   if (options.runPostWriteRepairs === false) {
     return;
   }

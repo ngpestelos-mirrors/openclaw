@@ -4,6 +4,7 @@
 import { matchesContextOverflowMessage } from "@openclaw/ai/internal/runtime";
 import { type Mock, vi } from "vitest";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngine, ContextEngineSessionTarget } from "../../context-engine/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type {
@@ -411,7 +412,7 @@ export const mockedEnsureAuthProfileStoreWithoutExternalProfiles = vi.fn<
 
 export function useOpenAIPlatformAuthFixture(): void {
   const profileId = "openai:test";
-  mockedEnsureAuthProfileStore.mockReturnValue({
+  const store: AuthProfileStore = {
     version: 1,
     profiles: {
       [profileId]: {
@@ -421,7 +422,9 @@ export function useOpenAIPlatformAuthFixture(): void {
       },
     },
     order: { openai: [profileId] },
-  });
+  };
+  mockedEnsureAuthProfileStore.mockReturnValue(store);
+  mockedEnsureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(store);
   mockedResolveAuthProfileOrder.mockReturnValue([profileId]);
 }
 export const mockedResolveAuthProfileOrder = vi.fn<(_params?: unknown) => string[]>(
@@ -447,8 +450,15 @@ const mockedShouldPreferExplicitConfigApiKeyAuth = vi.fn(() => false);
 // the mocked codex harness does not claim: such runs select the built-in openclaw
 // host harness and pay its one-time source-compile cost. Suites proving plugin
 // harness behavior must pin provider "openai" (see run.session-permissions.test.ts).
-export function createOverflowRunParams(state: Pick<OpenClawTestState, "workspaceDir">) {
+export function createOverflowRunParams(
+  state: Pick<OpenClawTestState, "workspaceDir">,
+  provider = "anthropic",
+) {
+  const config: OpenClawConfig = {
+    models: { providers: { [provider]: { baseUrl: "", models: [] } } },
+  };
   return {
+    config,
     agentId: "main",
     sessionId: "test-session",
     sessionKey: "agent:main:test-key",

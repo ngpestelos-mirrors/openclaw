@@ -49,7 +49,9 @@ async function listClaudeCliModel(
       (params.pluginDisabled
         ? { ...config, plugins: { entries: { anthropic: { enabled: false } } } }
         : config),
-    preparedAuthModes: params.authenticated ? { "claude-cli": "api_key" } : {},
+    preparedAuthModes: params.authenticated
+      ? { "claude-cli": { source: "native", mode: "oauth" } }
+      : {},
     catalogComplete: true,
     view: "configured",
   });
@@ -66,7 +68,9 @@ async function listDirectClaudeCliModel(params: {
     catalog: [providerCatalogEntry("claude-cli", "claude-opus-5")],
     cfg,
     preparedAuthModes:
-      params.authenticated && !params.pluginDisabled ? { "claude-cli": "oauth" } : {},
+      params.authenticated && !params.pluginDisabled
+        ? { "claude-cli": { source: "native", mode: "oauth" } }
+        : {},
     catalogComplete: true,
     view: "all",
   });
@@ -241,7 +245,7 @@ describe("models.list CLI runtime availability", () => {
             workspaceDir: state.workspaceDir,
             catalog: [providerCatalogEntry("anthropic", "claude-opus-5")],
             catalogComplete: true,
-            preparedAuthModes: expired ? { "claude-cli": "oauth" } : {},
+            preparedAuthModes: expired ? { "claude-cli": { source: "native", mode: "oauth" } } : {},
           });
           const snapshot = await loadDeferredCatalog(context, "main", { readOnly: true });
           const result = await buildModelsListResult({
@@ -297,8 +301,14 @@ describe("models.list CLI runtime availability", () => {
       scenario: "canonical pin",
       provider: "anthropic",
       pinProvider: "anthropic",
-      expired: true,
       available: true,
+    },
+    {
+      scenario: "canonical pin awaiting refresh",
+      provider: "anthropic",
+      pinProvider: "anthropic",
+      expired: true,
+      available: false,
     },
     {
       scenario: "CLI pin",
@@ -353,7 +363,7 @@ describe("models.list CLI runtime availability", () => {
           workspaceDir: state.workspaceDir,
           catalog: [providerCatalogEntry(provider, modelId)],
           catalogComplete: true,
-          preparedAuthModes: { "claude-cli": "oauth" },
+          preparedAuthModes: { "claude-cli": { source: "native", mode: "oauth" } },
         });
         const snapshot = await loadDeferredCatalog(context, "main", { readOnly: true });
         const result = await buildModelsListResult({

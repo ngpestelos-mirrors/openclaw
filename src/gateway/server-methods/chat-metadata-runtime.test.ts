@@ -546,7 +546,21 @@ describe("gateway chat metadata runtime", () => {
   test.each(["before", "after"] as const)(
     "converges to models.list availability when owner auth publishes %s attachment",
     async (publicationOrder) => {
-      const harness = createChatMetadataHarness(undefined, { useDefaultProjection: true });
+      const harness = createChatMetadataHarness(
+        {
+          agents: { list: [{ id: "main", default: true }] },
+          models: {
+            providers: {
+              openai: {
+                api: "openai-chatgpt-responses",
+                baseUrl: "https://chatgpt.com/backend-api/codex",
+                models: [],
+              },
+            },
+          },
+        },
+        { useDefaultProjection: true },
+      );
       harness.setAuthStore({ version: 1, profiles: {} });
       const preparedOwner = createChatMetadataOwner(
         harness.getPreparedOwner()!.config,
@@ -663,7 +677,19 @@ describe("gateway chat metadata runtime", () => {
   });
 
   test("keeps a locked session unavailable while the neutral prepared route is usable", async () => {
-    const harness = createChatMetadataHarness(createOpenAIChatMetadataConfig(), {
+    const config: OpenClawConfig = {
+      ...createOpenAIChatMetadataConfig(),
+      models: {
+        providers: {
+          openai: {
+            api: "openai-chatgpt-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            models: [],
+          },
+        },
+      },
+    };
+    const harness = createChatMetadataHarness(config, {
       useDefaultProjection: true,
     });
     harness.setOwner(

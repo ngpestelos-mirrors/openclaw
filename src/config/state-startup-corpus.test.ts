@@ -236,7 +236,11 @@ describe("prior-release state startup corpus", () => {
               { catalogMode: "static" },
             );
             try {
-              if (
+              if (configName === "provider-admission-selected-plan.json") {
+                expect(lease.snapshot.modelCatalog.entries).toEqual([
+                  expect.objectContaining({ provider: "byteplus-plan", id: "ark-code-latest" }),
+                ]);
+              } else if (
                 [
                   "generic-github-token.json",
                   "provider-admission-bedrock.json",

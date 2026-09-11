@@ -75,6 +75,15 @@ beyond the grace period.
 
     Active migrations:
 
+    - Shared model-provider credentials: Doctor preserves only providers selected
+      by a primary model, configured fallback, or persisted user session pin. It
+      writes an env SecretRef under `models.providers.<id>` when a shared-family
+      key previously supplied that unbound identity. Existing bound accounts take
+      precedence. Unselected siblings and generic credentials are excluded. A
+      receipt closes this one-time upgrade after a successful Doctor pass; later
+      model selections need an explicit binding. Unreadable upgrade state leaves
+      config unchanged and asks for another Doctor run.
+
     | Legacy key                                                                                    | Current key                                                                 |
     | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
     | `routing.allowFrom`                                                                              | `channels.whatsapp.allowFrom`                                                |

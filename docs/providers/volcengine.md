@@ -18,6 +18,9 @@ The Volcengine provider gives access to Doubao models and third-party models hos
 
 ## Getting started
 
+For an existing selected coding model, run `openclaw doctor --fix` once to
+preserve its shared-key binding. New setup uses onboarding below.
+
 <Steps>
   <Step title="Install the plugin">
     ```bash
@@ -32,7 +35,9 @@ The Volcengine provider gives access to Doubao models and third-party models hos
     openclaw onboard --auth-choice volcengine-api-key
     ```
 
-    This registers both the general (`volcengine`) and coding (`volcengine-plan`) providers from a single API key.
+    This stores the general provider credential and explicitly declares the selected
+    coding provider (`volcengine-plan`). Setting `VOLCANO_ENGINE_API_KEY` alone
+    enables only `volcengine`.
 
   </Step>
   <Step title="Set a default model">

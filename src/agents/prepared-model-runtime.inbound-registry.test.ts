@@ -141,7 +141,10 @@ describe("prepared reply dispatch runtime", () => {
       getOAuthProviders: () => [],
     }));
     mocks.configuredAgentIds = ["default"];
-    const config = { agents: { defaults: { model: "initial/model" } } };
+    const config = {
+      agents: { defaults: { model: "initial/model" } },
+      models: { providers: { selected: {} } },
+    };
     const selectedRegistry = createEmptyPluginRegistry();
     selectedRegistry.providers.push({
       pluginId: "selected-provider",

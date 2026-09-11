@@ -38,6 +38,7 @@ vi.mock("./agent-auth-discovery-core.js", () => ({
 }));
 
 let resolveAgentDiscoveryAuthFacts: typeof import("./agent-auth-discovery.js").resolveAgentDiscoveryAuthFacts;
+let resolveAmbientAgentCredentialsForDiscovery: typeof import("./agent-auth-discovery.js").resolveAmbientAgentCredentialsForDiscovery;
 
 async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
   const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-agent-synthetic-auth-"));
@@ -50,7 +51,8 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
 
 describe("agent model discovery synthetic auth", () => {
   beforeAll(async () => {
-    ({ resolveAgentDiscoveryAuthFacts } = await import("./agent-auth-discovery.js"));
+    ({ resolveAgentDiscoveryAuthFacts, resolveAmbientAgentCredentialsForDiscovery } =
+      await import("./agent-auth-discovery.js"));
   });
 
   beforeEach(() => {
@@ -66,7 +68,13 @@ describe("agent model discovery synthetic auth", () => {
 
   it("mirrors plugin-owned synthetic cli auth into credential discovery", async () => {
     await withAgentDir(async (agentDir) => {
-      const { credentials } = resolveAgentDiscoveryAuthFacts(agentDir, { readOnly: true });
+      const ambientCredentials = resolveAmbientAgentCredentialsForDiscovery({
+        authoritativeSyntheticAuthProviderRefs: ["claude-cli"],
+      });
+      const { credentials } = resolveAgentDiscoveryAuthFacts(agentDir, {
+        readOnly: true,
+        ambientCredentials,
+      });
 
       expect(resolveRuntimeSyntheticAuthProviderRefs).toHaveBeenCalledTimes(1);
       expect(resolveRuntimeSyntheticAuthProviderRefs).toHaveBeenCalledWith();
@@ -85,6 +93,7 @@ describe("agent model discovery synthetic auth", () => {
       expect(credentials["claude-cli"]).toEqual({
         type: "api_key",
         key: "claude-cli-access-token",
+        nativeAuth: { runtime: "claude-cli", mode: "oauth" },
       });
     });
   });

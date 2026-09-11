@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ModelProviderConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SecretRef } from "../config/types.secrets.js";
 import type { ProviderModelRouteCandidate } from "../plugin-sdk/provider-model-types.js";
-import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createModelAuthAvailabilityResolver } from "./model-auth-availability.js";
 import {
   authStore,
@@ -13,6 +14,13 @@ import {
   subscriptionRoute,
 } from "./model-auth-availability.test-support.js";
 import type { createOpenAIModelRoutesResolver } from "./openai-model-routes.js";
+
+function providerConnectionConfig(
+  provider: string,
+  connection: ModelProviderConfig,
+): OpenClawConfig {
+  return { models: { providers: { [provider]: connection } } };
+}
 
 describe("createModelAuthAvailabilityResolver", () => {
   it.each([
@@ -51,17 +59,11 @@ describe("createModelAuthAvailabilityResolver", () => {
   });
 
   it("canonicalizes prepared runtime auth through provider aliases", () => {
-    const metadataSnapshot = {
-      index: {
-        plugins: [
-          {
-            pluginId: "external-cloud",
-            origin: "global",
-            enabled: true,
-            enabledByDefault: true,
-          },
-        ],
-      },
+    const cfg = providerConnectionConfig("cloud-alias", {
+      baseUrl: "https://cloud.example.test",
+      models: [],
+    });
+    const metadataSnapshot = createPluginMetadataSnapshotFixture({
       plugins: [
         {
           id: "external-cloud",
@@ -69,9 +71,9 @@ describe("createModelAuthAvailabilityResolver", () => {
           providerAuthAliases: { "cloud-alias": "external-cloud" },
         },
       ],
-    } as unknown as PluginMetadataSnapshot;
+    });
     const resolver = createModelAuthAvailabilityResolver({
-      cfg: {},
+      cfg,
       authStore: authStore(),
       env: {},
       metadataSnapshot,
@@ -85,7 +87,7 @@ describe("createModelAuthAvailabilityResolver", () => {
       selectedAuthMode: "api_key",
     });
     const syntheticResolver = createModelAuthAvailabilityResolver({
-      cfg: {},
+      cfg,
       authStore: authStore(),
       env: {},
       metadataSnapshot,
@@ -102,8 +104,7 @@ describe("createModelAuthAvailabilityResolver", () => {
   });
 
   it("keeps prepared native-runtime authentication scoped to its exact owner", () => {
-    const metadataSnapshot = {
-      index: { plugins: [] },
+    const metadataSnapshot = createPluginMetadataSnapshotFixture({
       plugins: [
         {
           id: "anthropic",
@@ -111,36 +112,30 @@ describe("createModelAuthAvailabilityResolver", () => {
           providerAuthAliases: { "claude-cli": "anthropic" },
         },
       ],
-    } as unknown as PluginMetadataSnapshot;
+    });
     const resolver = createModelAuthAvailabilityResolver({
       cfg: {},
       authStore: authStore(),
       env: {},
       metadataSnapshot,
-      preparedRuntimeAuthModes: { "claude-cli": "api_key" },
+      preparedRuntimeAuthModes: { "claude-cli": { source: "native", mode: "oauth" } },
     });
 
     expect(resolver.evaluateModelAuth("claude-cli")).toMatchObject({
       availability: true,
       evidence: "runtime",
-      selectedAuthMode: "api_key",
+      selectedAuthMode: "oauth",
     });
     expect(resolver.evaluateModelAuth("anthropic").availability).not.toBe(true);
   });
 
   it("keeps configured local providers independent from native-auth probe completion", () => {
     const resolver = createModelAuthAvailabilityResolver({
-      cfg: {
-        models: {
-          providers: {
-            "local-openai": {
-              api: "openai-completions",
-              baseUrl: "http://127.0.0.1:8080/v1",
-              models: [],
-            },
-          },
-        },
-      },
+      cfg: providerConnectionConfig("local-openai", {
+        api: "openai-completions",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        models: [],
+      }),
       authStore: authStore(),
       env: {},
       preparedSyntheticAuthComplete: true,
@@ -156,7 +151,12 @@ describe("createModelAuthAvailabilityResolver", () => {
   ])(
     "uses prepared runtime $mode auth when the profile snapshot is empty",
     ({ mode, selectedRoute }) => {
-      expect(evaluate({ preparedRuntimeAuthModes: { openai: mode } })).toMatchObject({
+      expect(
+        evaluate({
+          cfg: providerConnectionConfig("openai", { baseUrl: platformRoute.baseUrl, models: [] }),
+          preparedRuntimeAuthModes: { openai: mode },
+        }),
+      ).toMatchObject({
         availability: true,
         evidence: "runtime",
         selectedAuthMode: mode,
@@ -209,18 +209,12 @@ describe("createModelAuthAvailabilityResolver", () => {
       ).not.toBe(true);
       expect(
         evaluate({
-          cfg: {
-            models: {
-              providers: {
-                openai: {
-                  auth: "api-key",
-                  apiKey: "configured-platform-key",
-                  baseUrl: "https://api.openai.com/v1",
-                  models: [],
-                },
-              },
-            },
-          },
+          cfg: providerConnectionConfig("openai", {
+            auth: "api-key",
+            apiKey: "configured-platform-key",
+            baseUrl: "https://api.openai.com/v1",
+            models: [],
+          }),
           store,
           ref: { modelId },
           preparedRuntimeAuthMaterializations: [materialization],
@@ -978,33 +972,32 @@ describe("createModelAuthAvailabilityResolver", () => {
   it.each([
     {
       label: "explicit",
-      cfg: {
-        models: {
-          providers: {
-            "amazon-bedrock": {
-              api: "bedrock-converse-stream",
-              auth: "aws-sdk",
-              baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
-              models: [],
-            },
-          },
-        },
-      } as OpenClawConfig,
+      cfg: providerConnectionConfig("amazon-bedrock", {
+        api: "bedrock-converse-stream",
+        auth: "aws-sdk",
+        baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        models: [],
+      }),
+      expected: {
+        availability: true,
+        evidence: "aws-sdk",
+        routeResolution: null,
+        selectedAuthMode: "aws-sdk",
+      },
     },
-    { label: "implicit", cfg: {} },
-  ])("keeps an $label Bedrock AWS SDK route ready", ({ cfg }) => {
+    {
+      label: "undeclared",
+      cfg: {},
+      expected: { availability: false, unavailableReason: "missing-auth", routeResolution: null },
+    },
+  ])("reports $label Bedrock admission", ({ cfg, expected }) => {
     const result = createModelAuthAvailabilityResolver({
       cfg,
       authStore: authStore(),
       env: {},
     }).evaluateModelAuth("amazon-bedrock", { api: "bedrock-converse-stream" });
 
-    expect(result).toMatchObject({
-      availability: true,
-      evidence: "aws-sdk",
-      routeResolution: null,
-      selectedAuthMode: "aws-sdk",
-    });
+    expect(result).toMatchObject(expected);
   });
 
   it.each<{

@@ -6,6 +6,7 @@ import {
   mockedClassifyFailoverReason,
   mockedGlobalHookRunner,
   mockedRunEmbeddedAttempt,
+  createOverflowRunParams,
   resetSharedRunIntegrationHarnessMocks,
 } from "./run.overflow-compaction.harness.js";
 import {
@@ -25,6 +26,7 @@ describe("direct embedded retry lifecycle", () => {
     mockedClassifyAssistantFailoverReason.mockReturnValue(null);
     mockedClassifyFailoverReason.mockReturnValue(null);
     session = await createSharedRunIntegrationSession();
+    session.runParams.config = createOverflowRunParams(session.runParams, "mock").config;
   });
   afterEach(async () => {
     await session?.cleanup();

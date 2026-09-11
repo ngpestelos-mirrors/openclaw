@@ -601,6 +601,7 @@ describe("recovery cancellation through the public run owner", () => {
     let manager: ReturnType<typeof PersistentSessionManager.open> | undefined;
     let firstKeptEntryId: string | undefined;
     const runParams = {
+      config: createOverflowRunParams(state).config,
       sessionId: "fresh-plugin-task",
       runId: "fresh-plugin-run",
       workspaceDir: state.workspaceDir,

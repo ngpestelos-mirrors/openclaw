@@ -1,6 +1,7 @@
 // Full-entry coverage for current-attempt error context across model fallback.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { makeAssistantMessageFixture } from "../test-helpers/assistant-message-fixtures.js";
 import { createModelFallbackConfig } from "../test-helpers/model-fallback-config-fixture.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
@@ -86,7 +87,7 @@ function makeCrossProviderFallbackConfig() {
 }
 
 function useCrossProviderAuthFixture() {
-  const store = {
+  const store: AuthProfileStore = {
     version: 1 as const,
     profiles: {
       "anthropic:test": {
@@ -107,6 +108,7 @@ function useCrossProviderAuthFixture() {
     const provider = (params as { provider?: string } | undefined)?.provider;
     return provider && `${provider}:test` in store.profiles ? [`${provider}:test`] : [];
   });
+  return store;
 }
 
 function setupCompactionRemovedFallbackAttempt() {
@@ -164,7 +166,10 @@ describe("runEmbeddedAgent cross-provider fallback error handling", () => {
     const { withOpenClawTestState } = await import("../../test-utils/openclaw-test-state.js");
     await withOpenClawTestState({ label: "cross-provider-warmup" }, async (warmupState) => {
       await warmRunOverflowCompactionHarness(runEmbeddedAgent, warmupState, {
-        config: makeCrossProviderFallbackConfig(),
+        config: {
+          ...makeCrossProviderFallbackConfig(),
+          models: createOverflowRunParams(warmupState, "deepseek").config.models,
+        },
         agentHarnessRuntimeOverride: "openclaw",
         provider: "deepseek",
         model: "deepseek-chat",
@@ -224,6 +229,13 @@ describe("runEmbeddedAgent cross-provider fallback error handling", () => {
   });
 
   it("uses the completed assistant when compaction removes the current attempt slice", async () => {
+    const store = useCrossProviderAuthFixture();
+    store.profiles["anthropic:backup"] = {
+      type: "api_key",
+      provider: "anthropic",
+      key: "backup-fixture",
+    };
+    mockedResolveAuthProfileOrder.mockReturnValue(["anthropic:test", "anthropic:backup"]);
     const getLastFormattedAssistant = captureFormattedAssistant();
     setupCompactionRemovedFallbackAttempt();
     const promise = runCompactionRemovedFallbackAttempt(state);

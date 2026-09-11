@@ -19,32 +19,36 @@ const emptyAuthStore = { version: 1, profiles: {} } as const;
 describe("models.list provider catalog outcomes", () => {
   it.each([
     {
-      name: "implicit provider",
-      providers: undefined,
+      name: "declared local connection",
+      providers: { ollama: { baseUrl: "http://127.0.0.1:11434", models: [] } },
       baseUrl: "http://127.0.0.1:11434",
       available: true,
+      authStore: emptyAuthStore,
     },
     {
       name: "empty provider config",
       providers: { ollama: {} },
       baseUrl: "http://127.0.0.1:11434",
       available: true,
+      authStore: emptyAuthStore,
     },
     {
       name: "remote route without credentials",
       providers: undefined,
       baseUrl: "https://ollama.example.com",
       available: false,
+      authStore: emptyAuthStore,
     },
     {
       name: "explicit auth ownership without credentials",
       providers: { ollama: { auth: "token" as const } },
       baseUrl: "http://127.0.0.1:11434",
       available: false,
+      authStore: emptyAuthStore,
     },
   ])(
     "projects a discovered Ollama model with $name as available=$available",
-    async ({ providers, baseUrl, available }) => {
+    async ({ providers, baseUrl, available, authStore }) => {
       const config = {
         ...(providers ? { models: { providers } } : {}),
         agents: { defaults: { models: { "ollama/qwen3.5": {} } } },
@@ -64,7 +68,7 @@ describe("models.list provider catalog outcomes", () => {
         metadataSnapshot: createPluginMetadataSnapshotFixture({
           plugins: [{ id: "ollama", providers: ["ollama"], syntheticAuthRefs: ["ollama"] }],
         }),
-        preparedAuthStore: emptyAuthStore,
+        preparedAuthStore: authStore,
       });
       const context = {
         getRuntimeConfig: () => config,

@@ -401,6 +401,13 @@ describe("discoverAuthStorage", () => {
     const credentials = addEnvBackedAgentCredentials(
       {},
       {
+        config: {
+          models: {
+            providers: {
+              "workspace-cloud": { baseUrl: "https://workspace-cloud.example.test", models: [] },
+            },
+          },
+        },
         env: {},
         workspaceDir: "/tmp/workspace",
       },

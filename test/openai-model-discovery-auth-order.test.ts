@@ -280,6 +280,7 @@ describe("Provider model discovery auth preparation", () => {
           },
         };
       } else {
+        config.models = { providers: { [providerId]: {} } };
         vi.stubEnv("XAI_API_KEY", keyB);
       }
       await state.writeAuthProfiles(store);
@@ -713,6 +714,7 @@ describe("Provider model discovery auth preparation", () => {
     "preserves a plugin-owned %s after probing exhausted OAuth",
     async (resultKind) => {
       const { config, store } = await createChutesCatalogFixture();
+      config.models = { providers: { chutes: {} } };
       const otherProfileId = "openai:other-source";
       store.profiles[otherProfileId] = {
         type: "api_key",
@@ -865,6 +867,7 @@ describe("provider catalog late-result finalization", () => {
         {
           id: providerId,
           label: "Catalog Fixture",
+          ...(shape === "providers" ? { hookAliases: [peerId] } : {}),
           auth: [
             {
               id: "oauth",
@@ -912,7 +915,10 @@ describe("provider catalog late-result finalization", () => {
       const discover = (timeoutMs?: number) =>
         withCatalogProviders(() =>
           resolveImplicitProviders({
-            config: { auth: { order: { [providerId]: [profileId] } } },
+            config: {
+              auth: { order: { [providerId]: [profileId] } },
+              ...(shape === "providers" ? { models: { providers: { [peerId]: {} } } } : {}),
+            },
             agentDir: state.agentDir(),
             authStore: store,
             env: {},
@@ -936,7 +942,14 @@ describe("provider catalog late-result finalization", () => {
       let accepted = first;
       const lateReads = reads;
       if (timedOut) {
-        expect(outcomes).toEqual([{ provider: providerId, status: "unavailable" }]);
+        expect(outcomes).toEqual(
+          shape === "providers"
+            ? [
+                { provider: providerId, status: "unavailable" },
+                { provider: peerId, status: "unavailable" },
+              ]
+            : [{ provider: providerId, status: "unavailable" }],
+        );
         outcomes.length = 0;
         accepted = await discover();
       }

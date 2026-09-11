@@ -7,9 +7,13 @@ import { createModelFallbackConfig } from "../test-helpers/model-fallback-config
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
   mockedAcquireAgentRunPreparedModelRuntime,
+  mockedEnsureAuthProfileStore,
+  mockedEnsureAuthProfileStoreWithoutExternalProfiles,
+  mockedResolveAuthProfileOrder,
   mockedResolveModelAsync,
   mockedRunEmbeddedAttempt,
   resetSharedRunIntegrationHarnessMocks,
+  useOpenAIPlatformAuthFixture,
 } from "./run.overflow-compaction.harness.js";
 import { loadSharedRunIntegrationHarness } from "./run.shared-integration-harness.test-support.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
@@ -54,6 +58,15 @@ describe("runEmbeddedAgent usage reporting", () => {
     resetSharedRunIntegrationHarnessMocks();
     const { createOpenClawTestState } = await import("../../test-utils/openclaw-test-state.js");
     state = await createOpenClawTestState({ label: "usage-reporting" });
+    const store = {
+      version: 1 as const,
+      profiles: {
+        "anthropic:usage": { type: "api_key" as const, provider: "anthropic", key: "test-key" },
+      },
+    };
+    mockedEnsureAuthProfileStore.mockReturnValue(store);
+    mockedEnsureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(store);
+    mockedResolveAuthProfileOrder.mockReturnValue(["anthropic:usage"]);
   });
 
   afterEach(async () => {
@@ -131,6 +144,7 @@ describe("runEmbeddedAgent usage reporting", () => {
   });
 
   it("preserves an explicitly pinned harness across fallback plugin planning", async () => {
+    useOpenAIPlatformAuthFixture();
     const config = createModelFallbackConfig("codex/test-model", ["openai/gpt-5.5"]);
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({ assistantTexts: ["Response 1"] }),
@@ -319,6 +333,15 @@ describe("runEmbeddedAgent usage reporting", () => {
   });
 
   it("reports the resolved model provider when OpenClaw marks the assistant message as the native runtime", async () => {
+    const store = {
+      version: 1 as const,
+      profiles: {
+        "openrouter:usage": { type: "api_key" as const, provider: "openrouter", key: "test-key" },
+      },
+    };
+    mockedEnsureAuthProfileStore.mockReturnValue(store);
+    mockedEnsureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(store);
+    mockedResolveAuthProfileOrder.mockReturnValue(["openrouter:usage"]);
     mockedResolveModelAsync.mockResolvedValueOnce({
       logicalRef: { provider: "openrouter", model: "openai/gpt-5.4" },
       model: {

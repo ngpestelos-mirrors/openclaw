@@ -546,6 +546,7 @@ describe("post-compaction loop guard wired into runEmbeddedAgent", () => {
     const result = await runEmbeddedAgent({
       ...session.runParams,
       config: {
+        ...session.runParams.config,
         tools: {
           loopDetection: {
             enabled: false,

@@ -924,6 +924,7 @@ describe("modelsStatusCommand auth overview", () => {
       // staying invisible to `models status`.
       mocks.loadConfig.mockReturnValue({
         ...baseConfig,
+        models: { providers: { mistral: {} } },
         agents: {
           defaults: { ...baseConfig.agents.defaults, utilityModel: "mistral/mistral-small" },
         },
@@ -1915,7 +1916,7 @@ describe("modelsStatusCommand auth overview", () => {
           models: { "codex/gpt-5.5": {} },
         },
       },
-      models: { providers: {} },
+      models: { providers: { codex: {} } },
       env: { shellEnv: { enabled: false } },
     });
     mocks.store.profiles = {};

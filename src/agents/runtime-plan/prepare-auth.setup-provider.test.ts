@@ -39,6 +39,7 @@ describe("prepared setup-provider auth fallback", () => {
     const profileId = "anthropic-vertex:missing";
     const config = {
       auth: { order: { "anthropic-vertex": [profileId] } },
+      models: { providers: { "anthropic-vertex": {} } },
     } as OpenClawConfig;
     const store = {
       version: 1,

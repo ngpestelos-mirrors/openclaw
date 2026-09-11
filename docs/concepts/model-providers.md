@@ -45,6 +45,12 @@ Unique provider keys such as `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and
 or setting `discovery.enabled: true` does not grant credential use. Discovery
 settings only control catalog discovery; public catalogs remain browsable.
 
+When upgrading, run `openclaw doctor --fix` once to preserve existing shared-key
+selections. Doctor adds an env SecretRef for a provider selected as a primary,
+fallback, or user-pinned session model. It names the variable and provider in its
+notice, never the key value. It does not enroll unselected siblings or use generic
+credentials. Later selections need their own explicit binding.
+
 ## Where each section moved
 
 Every section heading from the previous single-page version keeps its anchor

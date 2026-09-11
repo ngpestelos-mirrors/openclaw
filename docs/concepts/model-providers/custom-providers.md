@@ -110,6 +110,10 @@ Volcano Engine (火山引擎) provides access to Doubao and other models in Chin
 
 Onboarding defaults to the coding surface, but the general `volcengine/*` catalog is registered at the same time.
 
+`VOLCANO_ENGINE_API_KEY` alone binds only `volcengine`. Onboarding explicitly
+declares `volcengine-plan`. To retain an existing selected coding model during
+upgrade, run `openclaw doctor --fix` once.
+
 In onboarding/configure model pickers, the Volcengine auth choice prefers both `volcengine/*` and `volcengine-plan/*` rows. If those models are not loaded yet, OpenClaw falls back to the unfiltered catalog instead of showing an empty provider-scoped picker.
 
 <Tabs>
@@ -154,6 +158,10 @@ openclaw gateway restart
 ```
 
 Onboarding defaults to the coding surface, but the general `byteplus/*` catalog is registered at the same time.
+
+`BYTEPLUS_API_KEY` alone binds only `byteplus`. Onboarding explicitly declares
+`byteplus-plan`. To retain an existing selected coding model during upgrade, run
+`openclaw doctor --fix` once.
 
 In onboarding/configure model pickers, the BytePlus auth choice prefers both `byteplus/*` and `byteplus-plan/*` rows. If those models are not loaded yet, OpenClaw falls back to the unfiltered catalog instead of showing an empty provider-scoped picker.
 

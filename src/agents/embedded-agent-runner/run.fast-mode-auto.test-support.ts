@@ -80,10 +80,11 @@ describe("runEmbeddedAgent fast auto progress", () => {
     });
 
     await runEmbeddedAgent({
-      ...createOverflowRunParams(state),
+      ...createOverflowRunParams(state, "ollama"),
       provider: "ollama",
       model: "glm-5.1:cloud",
       config: {
+        ...createOverflowRunParams(state, "ollama").config,
         agents: {
           defaults: {
             models: {
@@ -134,7 +135,7 @@ describe("runEmbeddedAgent fast auto progress", () => {
     });
 
     const resultPromise = runEmbeddedAgent({
-      ...createOverflowRunParams(state),
+      ...createOverflowRunParams(state, "ollama"),
       provider: "ollama",
       model: "glm-5.1:cloud",
       runId: "run-fast-auto-retry",
@@ -241,7 +242,7 @@ describe("runEmbeddedAgent fast auto progress", () => {
     });
 
     const resultPromise = runEmbeddedAgent({
-      ...createOverflowRunParams(state),
+      ...createOverflowRunParams(state, "ollama"),
       provider: "ollama",
       model: "glm-5.1:cloud",
       runId: "run-fast-auto-single-off",
@@ -323,7 +324,7 @@ describe("runEmbeddedAgent fast auto progress", () => {
       });
 
       const resultPromise = runEmbeddedAgent({
-        ...createOverflowRunParams(state),
+        ...createOverflowRunParams(state, "ollama"),
         provider: "ollama",
         model: "glm-5.1:cloud",
         runId: `run-fast-auto-off-${failureTarget}`,
@@ -404,7 +405,7 @@ describe("runEmbeddedAgent fast auto progress", () => {
       });
 
       const resultPromise = runEmbeddedAgent({
-        ...createOverflowRunParams(state),
+        ...createOverflowRunParams(state, "ollama"),
         provider: "ollama",
         model: "glm-5.1:cloud",
         runId: `run-fast-auto-reset-${failureTarget}`,

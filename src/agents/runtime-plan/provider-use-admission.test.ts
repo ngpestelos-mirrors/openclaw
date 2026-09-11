@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
-import { createModelAuthAvailabilityResolver } from "./model-auth-availability.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { createModelAuthAvailabilityResolver } from "../model-auth-availability.js";
 import {
   createProviderApiKeyResolver,
   createProviderAuthResolver,
-} from "./models-config.providers.secrets.js";
-import { resolveProviderUseAdmission } from "./provider-model-auth-source-plan.js";
+} from "../models-config.providers.secrets.js";
+import { resolveProviderUseAdmission } from "../provider-model-auth-source-plan.js";
 
 const sharedProviderEnvVars = {
   opencode: ["OPENCODE_API_KEY"],

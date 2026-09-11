@@ -163,6 +163,7 @@ describe("/models browse catalog recovery", () => {
       });
       catalogMocks.authModes = nativeAuth ? { "claude-cli": "api_key" } : {};
       const cfg: OpenClawConfig = {
+        models: { providers: { anthropic: {} } },
         agents: {
           defaults: {
             model: { primary: "anthropic/claude-opus-4-5" },

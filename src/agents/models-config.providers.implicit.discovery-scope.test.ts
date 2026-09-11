@@ -156,6 +156,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mocks.runProviderCatalog.mockReset();
     state = await createOpenClawTestState({
       label: "provider-discovery-scope",
       env: Object.fromEntries(
@@ -262,6 +263,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       const config = {
         models: {
           providers: {
+            [provider.id]: { baseUrl: "https://native.example.test", models: [] },
             "custom-native": {
               api,
               baseUrl: "https://native.example.test",
@@ -373,7 +375,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
   it("passes startup provider scopes as plugin owner filters", async () => {
     await resolveImplicitProviders({
       agentDir: state.agentDir(),
-      config: {},
+      config: { models: { providers: { openai: {} } } },
       env: state.env,
       explicitProviders: {},
       pluginMetadataSnapshot: {
@@ -431,7 +433,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
 
     const providers = await resolveImplicitProviders({
       agentDir: state.agentDir(),
-      config: {},
+      config: { models: { providers: { alpha: {}, beta: {} } } },
       env: state.env,
       explicitProviders: {},
       pluginMetadataSnapshot: {
@@ -478,7 +480,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
 
     const providers = await resolveImplicitProviders({
       agentDir: state.agentDir(),
-      config: {},
+      config: { models: { providers: { family: {}, "family-plan": {} } } },
       env: state.env,
       explicitProviders: {},
       pluginMetadataSnapshot: {
@@ -514,7 +516,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
 
     const providers = await resolveImplicitProviders({
       agentDir: state.agentDir(),
-      config: {},
+      config: { models: { providers: { alias: {} } } },
       env: state.env,
       explicitProviders: {},
       pluginMetadataSnapshot: {
@@ -607,7 +609,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
 
     await resolveImplicitProviders({
       agentDir: state.agentDir(),
-      config: {},
+      config: { models: { providers: { openai: {} } } },
       env: state.env,
       explicitProviders: {},
       providerDiscoveryProviderIds: ["openai"],
@@ -655,7 +657,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
       });
       const providers = await resolveImplicitProviders({
         agentDir: state.agentDir(),
-        config: {},
+        config: { models: { providers: { family: {}, "family-plan": {}, healthy: {} } } },
         env: state.env,
         explicitProviders: {},
         providerDiscoveryProviderIds: ["family", "family-plan", "healthy"],
@@ -695,7 +697,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
     await expect(
       resolveImplicitProviders({
         agentDir: state.agentDir(),
-        config: {},
+        config: { models: { providers: { openai: {} } } },
         env: state.env,
         explicitProviders: {},
         providerDiscoveryProviderIds: ["openai"],
@@ -927,7 +929,7 @@ describe("resolveImplicitProviders startup discovery scope", () => {
 
     const providers = await resolveImplicitProviders({
       agentDir: state.agentDir(),
-      config: {},
+      config: { models: { providers: { minimax: {} } } },
       env: state.env,
       explicitProviders: {},
       providerDiscoveryProviderIds: ["minimax"],
