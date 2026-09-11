@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { escapeRegExp, formatEnvelopeTimestamp } from "openclaw/plugin-sdk/channel-test-helpers";
-import type { TelegramGroupConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { OpenClawConfig, TelegramGroupConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   buildPluginBindingApprovalCustomId,
   resolvePluginConversationBindingApproval,
@@ -19,6 +19,10 @@ import type {
   PluginStateSyncKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import type { GetReplyOptions, MsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { withEnvAsync } from "openclaw/plugin-sdk/test-env";
 import { createRequireRecord, sanitizeTerminalText } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1194,6 +1198,147 @@ describe("createTelegramBot", () => {
       expect(sentBodies[1]).toContain("second");
     } finally {
       setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it.each([0, 500, 1000, 3000])(
+    "preserves ordinary short-pair behavior with Telegram debounce %i ms",
+    async (debounceMs) => {
+      loadConfig.mockReturnValue({
+        messages: { inbound: { debounceMs: 9999, byChannel: { telegram: debounceMs } } },
+        channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
+      });
+      installPerKeySequentializer();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      replySpy.mockResolvedValue(undefined);
+      const sourceWork: Promise<unknown>[] = [];
+
+      try {
+        createTelegramBot({ token: "tok" });
+        const messageHandler = getMessageHandler();
+        const first = await dispatchSpooledPrivateText(messageHandler, {
+          updateId: 501,
+          messageId: 501,
+          text: "first short message",
+          replayUpdate: "full",
+        });
+        if (first.deferredWork) {
+          sourceWork.push(first.deferredWork.task);
+        }
+        expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual(
+          debounceMs === 0 ? ["first short message"] : [],
+        );
+        await vi.advanceTimersByTimeAsync(100);
+        const second = await dispatchSpooledPrivateText(messageHandler, {
+          updateId: 502,
+          messageId: 502,
+          text: "second short message",
+          replayUpdate: "full",
+        });
+        if (second.deferredWork) {
+          sourceWork.push(second.deferredWork.task);
+        }
+
+        if (debounceMs > 0) {
+          expect(first.deferredWork).toBeDefined();
+          expect(second.deferredWork).toBeDefined();
+          await vi.advanceTimersByTimeAsync(debounceMs - 1);
+          expect(replySpy).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+        }
+        expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual(
+          debounceMs === 0
+            ? ["first short message", "second short message"]
+            : ["first short message\nsecond short message"],
+        );
+        expect(replySpy.mock.calls.map(([ctx]) => ctx.MessageSid)).toEqual(
+          debounceMs === 0 ? ["501", "502"] : ["502"],
+        );
+        await Promise.all(sourceWork);
+      } finally {
+        await vi.advanceTimersByTimeAsync(10_000);
+        await Promise.all(sourceWork);
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("applies committed Telegram debounce changes only when new input arrives", async () => {
+    const initialConfig: OpenClawConfig = {
+      messages: { inbound: { byChannel: { telegram: 1000 } } },
+      channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
+    };
+    loadConfig.mockReturnValue(initialConfig);
+    setRuntimeConfigSnapshot(initialConfig, initialConfig);
+    installPerKeySequentializer();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    replySpy.mockResolvedValue(undefined);
+    const sourceWork: Promise<unknown>[] = [];
+
+    try {
+      createTelegramBot({ token: "tok" });
+      const messageHandler = getMessageHandler();
+      const first = await dispatchSpooledPrivateText(messageHandler, {
+        updateId: 511,
+        messageId: 511,
+        text: "before delay change",
+        replayUpdate: "full",
+      });
+      const firstParticipant = requireValue(first.deferredWork, "first source participant");
+      sourceWork.push(firstParticipant.task);
+      await vi.advanceTimersByTimeAsync(100);
+      const shorterConfig: OpenClawConfig = {
+        ...initialConfig,
+        messages: { inbound: { byChannel: { telegram: 500 } } },
+      };
+      loadConfig.mockReturnValue(shorterConfig);
+      setRuntimeConfigSnapshot(shorterConfig, shorterConfig);
+      await vi.advanceTimersByTimeAsync(899);
+      expect(replySpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual(["before delay change"]);
+      expect(replySpy.mock.calls.map(([ctx]) => ctx.MessageSid)).toEqual(["511"]);
+      await expect(firstParticipant.task).resolves.toEqual({ kind: "completed" });
+
+      const second = await dispatchSpooledPrivateText(messageHandler, {
+        updateId: 512,
+        messageId: 512,
+        text: "new batch",
+        replayUpdate: "full",
+      });
+      sourceWork.push(requireValue(second.deferredWork, "second source participant").task);
+      await vi.advanceTimersByTimeAsync(100);
+      const longerConfig: OpenClawConfig = {
+        ...initialConfig,
+        messages: { inbound: { byChannel: { telegram: 1500 } } },
+      };
+      loadConfig.mockReturnValue(longerConfig);
+      setRuntimeConfigSnapshot(longerConfig, longerConfig);
+      const third = await dispatchSpooledPrivateText(messageHandler, {
+        updateId: 513,
+        messageId: 513,
+        text: "extends batch",
+        replayUpdate: "full",
+      });
+      sourceWork.push(requireValue(third.deferredWork, "third source participant").task);
+      await vi.advanceTimersByTimeAsync(1499);
+      expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual(["before delay change"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual([
+        "before delay change",
+        "new batch\nextends batch",
+      ]);
+      expect(replySpy.mock.calls.map(([ctx]) => ctx.MessageSid)).toEqual(["511", "513"]);
+      await expect(Promise.all(sourceWork)).resolves.toEqual([
+        { kind: "completed" },
+        { kind: "completed" },
+        { kind: "completed" },
+      ]);
+    } finally {
+      await vi.advanceTimersByTimeAsync(3000);
+      await Promise.all(sourceWork);
+      vi.useRealTimers();
+      clearRuntimeConfigSnapshot();
     }
   });
 
