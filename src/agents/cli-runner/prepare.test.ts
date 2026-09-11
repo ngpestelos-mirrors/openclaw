@@ -193,7 +193,6 @@ vi.mock("../media-generation-task-status.js", () => ({
   buildActiveImageGenerationTaskPromptContextForSession: vi.fn(() => undefined),
   buildImageGenerationTaskStatusDetails: vi.fn(() => ({})),
   buildImageGenerationTaskStatusText: vi.fn(() => ""),
-  findActiveImageGenerationTaskForSession: vi.fn(() => undefined),
   MUSIC_GENERATION_TASK_KIND: "music_generation",
   buildActiveMusicGenerationTaskPromptContextForSession: vi.fn(() => undefined),
   buildMusicGenerationTaskStatusDetails: vi.fn(() => ({})),
@@ -672,9 +671,9 @@ describe("prepareCliRunContext", () => {
     });
     mockGetGlobalHookRunner.mockReturnValue(null);
     getRuntimeConfigMock.mockReturnValue({});
-    mockBuildActiveImageGenerationTaskPromptContextForSession.mockReturnValue(undefined);
-    mockBuildActiveVideoGenerationTaskPromptContextForSession.mockReturnValue(undefined);
-    mockBuildActiveMusicGenerationTaskPromptContextForSession.mockReturnValue(undefined);
+    mockBuildActiveImageGenerationTaskPromptContextForSession.mockResolvedValue(undefined);
+    mockBuildActiveVideoGenerationTaskPromptContextForSession.mockResolvedValue(undefined);
+    mockBuildActiveMusicGenerationTaskPromptContextForSession.mockResolvedValue(undefined);
     ensureSandboxWorkspaceForSessionMock.mockReset();
     ensureSandboxWorkspaceForSessionMock.mockResolvedValue(null);
     fixture = createCliRunnerPrepareFixture(prepareCliRunContext);
@@ -3520,7 +3519,7 @@ describe("prepareCliRunContext", () => {
           }),
         });
       }
-      mockBuildActiveVideoGenerationTaskPromptContextForSession.mockReturnValue(
+      mockBuildActiveVideoGenerationTaskPromptContextForSession.mockResolvedValue(
         "active video task",
       );
       const hookRunner = {
@@ -3540,11 +3539,11 @@ describe("prepareCliRunContext", () => {
           prompt: "latest ask",
           transcriptPrompt: "latest ask",
         });
-      mockBuildActiveImageGenerationTaskPromptContextForSession.mockReturnValue(
+      mockBuildActiveImageGenerationTaskPromptContextForSession.mockResolvedValue(
         "image task queued",
       );
       const first = await prepareTurn();
-      mockBuildActiveImageGenerationTaskPromptContextForSession.mockReturnValue(
+      mockBuildActiveImageGenerationTaskPromptContextForSession.mockResolvedValue(
         "image task running",
       );
       const second = await prepareTurn();
