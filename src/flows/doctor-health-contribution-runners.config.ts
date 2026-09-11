@@ -190,7 +190,6 @@ export async function runWriteConfigHealth(
     // The final writer runs again after health repairs. Advance its baseline only
     // after the atomic write succeeds so later failures cannot mark volatile state durable.
     ctx.cfgForPersistence = structuredClone(ctx.cfg);
-    delete ctx.configResult.unsetPaths;
     if (ctx.configResult.shouldWriteConfig === true) {
       ctx.configResultWriteCommitted = true;
     }

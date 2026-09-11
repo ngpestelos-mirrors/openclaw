@@ -464,6 +464,13 @@ describe("Doctor provider-binding write composition", () => {
 
       const persisted: OpenClawConfig = JSON.parse(await fs.readFile(state.configPath, "utf8"));
       expect(persisted.models?.providers?.["byteplus-plan"]).toEqual(expected);
+      context.cfg.gateway = { ...context.cfg.gateway, port: 19491 };
+      await runWriteConfigHealth(context, { runPostWriteRepairs: false });
+      const afterHealthRepair: OpenClawConfig = JSON.parse(
+        await fs.readFile(state.configPath, "utf8"),
+      );
+      expect(afterHealthRepair.models?.providers?.["byteplus-plan"]).toEqual(expected);
+      expect(afterHealthRepair.gateway?.port).toBe(19491);
       expect(context.configWriteRefusal).toBeUndefined();
       expect(await prepare(selectedPlan)).toEqual({
         config: selectedPlan,
