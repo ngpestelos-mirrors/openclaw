@@ -10,9 +10,10 @@ sidebarTitle: "Model discovery"
 
 ## Model discovery (implicit provider)
 
-When `OLLAMA_API_KEY` (or an auth profile) is set and neither
-`models.providers.ollama` nor another custom provider with `api: "ollama"` is
-defined, OpenClaw discovers models from `http://127.0.0.1:11434`:
+Declare `models.providers.ollama` or use an Ollama-bound auth profile before
+discovery. `OLLAMA_API_KEY` alone does not select between Ollama and Ollama Cloud.
+The default local endpoint is `http://127.0.0.1:11434`; an explicit self-hosted
+`baseUrl` selects that host instead:
 
 | Behavior             | Detail                                                                                                                                                                                                                                                                                        |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -19,13 +19,12 @@ Replace model IDs with exact names from `ollama list` or
     ```bash
     ollama serve
     ollama pull gemma4
-    export OLLAMA_API_KEY="ollama-local"
+    openclaw config set models.providers.ollama.baseUrl "http://127.0.0.1:11434"
     openclaw models list --provider ollama
     openclaw models set ollama/gemma4
     ```
 
-    Leave `models.providers.ollama` unset to use the default local endpoint, or
-    configure a self-hosted endpoint with `models: []` to keep discovery eligible.
+    Leave the provider's `models` list unset or empty to keep automatic discovery.
 
   </Accordion>
 

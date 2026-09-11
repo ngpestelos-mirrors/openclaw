@@ -12,11 +12,13 @@ sidebarTitle: "Configuration"
 <Tabs>
   <Tab title="Basic (implicit discovery)">
     ```bash
-    export OLLAMA_API_KEY="ollama-local"
+    openclaw config set models.providers.ollama.baseUrl "http://127.0.0.1:11434"
     ```
 
     <Tip>
-    If `OLLAMA_API_KEY` is set, you can omit `apiKey` in the provider entry; OpenClaw fills it in for availability checks.
+    Local connections do not need a key. `OLLAMA_API_KEY` is shared with Ollama Cloud,
+    so the environment variable alone does not select a provider. For an existing
+    selected model, `openclaw doctor --fix` can preserve its shared-key binding once.
     </Tip>
 
   </Tab>

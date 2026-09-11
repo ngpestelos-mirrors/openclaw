@@ -98,17 +98,18 @@ sidebarTitle: "Setup"
 
         For hybrid cloud access, run `ollama signin` on the same host.
       </Step>
-      <Step title="Set a credential">
-        For a local or LAN host, any value works:
+      <Step title="Declare the connection">
+        For a local or LAN host, configure its endpoint:
 
         ```bash
-        export OLLAMA_API_KEY="ollama-local"
+        openclaw config set models.providers.ollama.baseUrl "http://127.0.0.1:11434"
         ```
 
-        For `https://ollama.com`, use the real key instead:
+        For `https://ollama.com`, configure the hosted endpoint and a real key:
 
         ```bash
         export OLLAMA_API_KEY="your-real-key"
+        openclaw config set models.providers.ollama.baseUrl "https://ollama.com"
         ```
 
         Or in config: `openclaw config set models.providers.ollama.apiKey "OLLAMA_API_KEY"`.
