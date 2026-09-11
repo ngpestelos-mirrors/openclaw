@@ -117,14 +117,18 @@ when `readyWorkers` is zero, but admission still requires room under
 it as surplus on the next pool pass. Its demand starts the normal refill and
 provider idle-timeout window. Track its `preparation: { purpose, key }` in
 `environments.list` or `environments.status`; `environments.destroy` cancels it
-and waits for provider work to settle and cleanup to finish.
+and waits for provider work to settle and cleanup to finish. The same command
+cancels an unused automatic reserve, including one whose expiry has passed.
 
 Set `cloudWorkers.profiles.<id>.readyWorkers` to change the per-project target and
 `cloudWorkers.preparedPool.maxTotal` to change the shared cap. Zero disables the
 corresponding reserves and drains unused capacity while preserving active
 sessions and image reuse. Preparing workers and workers awaiting confirmed
 cleanup count against the limits. Ready workers incur running-machine charges
-until the provider confirms deletion.
+until the provider confirms deletion. After confirmed allocation cleanup, a
+failed preparation records its original error and ends that preparation. Any
+later eligible refill starts a new allocation. Uncertain cleanup keeps the
+worker counted until the provider confirms release.
 
 Each reserve expires from the successful activation or explicit build that
 created its demand, using the provider's existing idle timeout. Refill and Gateway restart do not
