@@ -9,7 +9,6 @@ import type {
 } from "openclaw/plugin-sdk/config-contracts";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { TelegramBotDeps } from "./bot-deps.js";
-import type { TelegramPendingInboundTarget } from "./bot-handlers.inbound-buffer.js";
 import type {
   TelegramMediaRef,
   TelegramMessageContextOptions,
@@ -24,6 +23,13 @@ import type { TelegramBotOptions } from "./bot.types.js";
 import type { TelegramContext } from "./bot/types.js";
 import type { TelegramTransport } from "./fetch.js";
 import type { TelegramReplyChainEntry } from "./message-cache.js";
+import type { TelegramThreadSpec } from "./thread-spec.js";
+
+export type TelegramPendingInboundTarget = {
+  chatId: number;
+  threadSpec: TelegramThreadSpec;
+  senderId: string;
+};
 
 export type TelegramMessageProcessorTurnContext = {
   cfg: OpenClawConfig;

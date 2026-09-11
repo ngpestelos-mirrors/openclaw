@@ -14,9 +14,9 @@ import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { createPluginCommandRuntime } from "openclaw/plugin-sdk/plugin-command-runtime";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { danger, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
-import type { TelegramPendingInboundTarget } from "./bot-handlers.inbound-buffer.js";
 import type {
   TelegramNativeCommandCallbackDispatcher,
+  TelegramPendingInboundTarget,
   TelegramResolvedGroupConfig,
 } from "./bot-handlers.types.js";
 import {

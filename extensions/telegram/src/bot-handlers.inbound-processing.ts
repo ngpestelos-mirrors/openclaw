@@ -15,7 +15,6 @@ import {
 import {
   createTelegramInboundBuffers,
   type TelegramDebounceEntry,
-  type TelegramPendingInboundTarget,
 } from "./bot-handlers.inbound-buffer.js";
 import { createTelegramInboundMedia } from "./bot-handlers.inbound-media.js";
 import {
@@ -27,6 +26,7 @@ import type { TelegramMessagePipeline } from "./bot-handlers.message-pipeline.js
 import type {
   RegisterTelegramHandlerParams,
   TelegramInboundDisposition,
+  TelegramPendingInboundTarget,
 } from "./bot-handlers.types.js";
 import type {
   TelegramAmbientTranscriptWatermark,

@@ -12,7 +12,10 @@ import {
   buildTelegramInboundDebounceKey,
 } from "./bot-handlers.debounce-key.js";
 import type { TelegramMessagePipeline } from "./bot-handlers.message-pipeline.js";
-import type { RegisterTelegramHandlerParams } from "./bot-handlers.types.js";
+import type {
+  RegisterTelegramHandlerParams,
+  TelegramPendingInboundTarget,
+} from "./bot-handlers.types.js";
 import type { TelegramMediaRef } from "./bot-message-context.js";
 import type {
   TelegramAmbientTranscriptWatermark,
@@ -76,12 +79,6 @@ type TelegramTextFragmentInput = {
   promptContextAmbientWatermark?: TelegramAmbientTranscriptWatermark;
   dispatchDedupeClaims: TelegramMessageDispatchReplayClaim[];
   channelIngressResolver: TelegramChannelIngressResolver;
-};
-
-export type TelegramPendingInboundTarget = {
-  chatId: number;
-  threadSpec: TelegramThreadSpec;
-  senderId: string;
 };
 
 interface TelegramInboundBuffers {

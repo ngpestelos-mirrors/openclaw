@@ -28,7 +28,7 @@ import {
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
-import type { TelegramPendingInboundTarget } from "./bot-handlers.inbound-buffer.js";
+import type { TelegramPendingInboundTarget } from "./bot-handlers.types.js";
 import {
   dispatchTelegramBuiltinTurn,
   prepareTelegramCommandDispatch,
