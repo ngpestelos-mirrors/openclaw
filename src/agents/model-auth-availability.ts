@@ -672,7 +672,7 @@ export function createModelAuthAvailabilityResolver(
   const unprofiledEvaluation = (provider: string, target: AuthTarget): AuthSourceEvaluation => {
     const admissionBinding = admitted.get(normalizeProviderId(provider));
     if (!admissionBinding || admissionBinding.kind === "profile") {
-      return { availability: false, evidence: "none", unavailableReason: "missing-auth" };
+      return { availability: false, unavailableReason: "missing-auth" };
     }
     const { providerConfig: configured, ref: apiKeyRef } = providerInput(provider);
     const configuredAuth = target.pinnedProfileId ? undefined : configured?.auth;
@@ -1058,7 +1058,7 @@ export function createModelAuthAvailabilityResolver(
   ): AuthSourceEvaluation => {
     const provider = normalizeProviderIdForAuth(rawProvider);
     if (!admitted.has(provider)) {
-      return { availability: false, evidence: "none", unavailableReason: "missing-auth" };
+      return { availability: false, unavailableReason: "missing-auth" };
     }
     const target = preparedTarget ?? prepareAuthTarget(provider, ref);
     const profileLock = ref.requiredProfileId?.trim();

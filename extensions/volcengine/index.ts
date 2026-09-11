@@ -2,9 +2,13 @@
 import { buildOpenAICompatibleProviderFamilyCatalog } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { readManifestProviderDefaultModelRef } from "openclaw/plugin-sdk/provider-catalog-shared";
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
-import { ensureModelAllowlistEntry } from "openclaw/plugin-sdk/provider-onboard";
+import { applyProviderConnectionConfig } from "openclaw/plugin-sdk/provider-onboard";
 import { applyVolcengineToolSchemaCompat } from "./api.js";
-import { VOLCENGINE_PROVIDER_CATALOG } from "./models.js";
+import {
+  VOLCENGINE_PROVIDER_CATALOG,
+  DOUBAO_CODING_BASE_URL,
+  DOUBAO_CODING_MODEL_CATALOG,
+} from "./models.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { buildVolcengineSpeechProvider } from "./speech-provider.js";
 
@@ -26,7 +30,13 @@ export default defineSingleProviderPluginEntry({
     manifestAuth: {
       defaultModel: VOLCENGINE_DEFAULT_MODEL_REF,
       applyConfig: (cfg) =>
-        ensureModelAllowlistEntry({ cfg, modelRef: VOLCENGINE_DEFAULT_MODEL_REF }),
+        applyProviderConnectionConfig(cfg, {
+          providerId: "volcengine-plan",
+          api: "openai-completions",
+          baseUrl: DOUBAO_CODING_BASE_URL,
+          catalogModels: DOUBAO_CODING_MODEL_CATALOG,
+          aliases: [VOLCENGINE_DEFAULT_MODEL_REF],
+        }),
     },
     ...buildOpenAICompatibleProviderFamilyCatalog({
       discoveryMode: "strict",

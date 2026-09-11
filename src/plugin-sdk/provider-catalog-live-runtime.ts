@@ -318,7 +318,7 @@ export async function buildOpenAICompatibleLiveProviderCatalog(
 
 /** Builds the shared authenticated live/static hooks for an ordered provider family. */
 export function buildOpenAICompatibleProviderFamilyCatalog(params: {
-  /** @deprecated Since v2026.9.4 callers may pass this field; credentials now resolve per entry. */
+  /** Shipped shared-source contract; the host separately enforces target admission. */
   credentialProviderId?: string;
   entries: readonly ManifestProviderCatalogEntry[];
   staticCatalog: () => Promise<{ providers: Record<string, ModelProviderConfig> }>;
@@ -335,7 +335,7 @@ export function buildOpenAICompatibleProviderFamilyCatalog(params: {
         }
         const results = await Promise.all(
           entries.map(async ({ id, buildProvider }) => {
-            const auth = ctx.resolveProviderApiKey(id);
+            const auth = ctx.resolveProviderApiKey(params.credentialProviderId ?? id);
             return {
               id,
               result: auth.apiKey

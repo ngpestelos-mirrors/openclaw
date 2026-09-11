@@ -4,8 +4,12 @@
 import { buildOpenAICompatibleProviderFamilyCatalog } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { readManifestProviderDefaultModelRef } from "openclaw/plugin-sdk/provider-catalog-shared";
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
-import { ensureModelAllowlistEntry } from "openclaw/plugin-sdk/provider-onboard";
-import { BYTEPLUS_PROVIDER_CATALOG } from "./models.js";
+import { applyProviderConnectionConfig } from "openclaw/plugin-sdk/provider-onboard";
+import {
+  BYTEPLUS_PROVIDER_CATALOG,
+  BYTEPLUS_CODING_BASE_URL,
+  BYTEPLUS_CODING_MODEL_CATALOG,
+} from "./models.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { buildBytePlusVideoGenerationProvider } from "./video-generation-provider.js";
 
@@ -23,7 +27,13 @@ export default defineSingleProviderPluginEntry({
     manifestAuth: {
       defaultModel: BYTEPLUS_DEFAULT_MODEL_REF,
       applyConfig: (cfg) =>
-        ensureModelAllowlistEntry({ cfg, modelRef: BYTEPLUS_DEFAULT_MODEL_REF }),
+        applyProviderConnectionConfig(cfg, {
+          providerId: "byteplus-plan",
+          api: "openai-completions",
+          baseUrl: BYTEPLUS_CODING_BASE_URL,
+          catalogModels: BYTEPLUS_CODING_MODEL_CATALOG,
+          aliases: [BYTEPLUS_DEFAULT_MODEL_REF],
+        }),
     },
     ...buildOpenAICompatibleProviderFamilyCatalog({
       discoveryMode: "strict",
