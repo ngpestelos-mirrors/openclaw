@@ -238,7 +238,7 @@ export async function swapStagedPackageInstall(params: {
     } else {
       for (const [root, label] of [
         [shimBackupDir, "shim backup"],
-        [displacedCandidateRoot, "rejected candidate"],
+        [displacedCandidateRoot, "rejected update"],
       ] as const) {
         if (root) {
           const cleanup = await discardPackageUpdateBackup(
@@ -563,7 +563,7 @@ export async function swapStagedPackageInstall(params: {
             activePackageRoot = (await pathEntryExists(targetSwapRoot)) ? targetPackageRoot : null;
             if (displacedCandidateRoot) {
               throw new Error(
-                `${formatErrorMessage(error)}; candidate retained at ${displacedCandidateRoot}`,
+                `${formatErrorMessage(error)}; update retained at ${displacedCandidateRoot}`,
                 { cause: error },
               );
             }
@@ -635,7 +635,7 @@ export async function swapStagedPackageInstall(params: {
               0,
               [
                 `restored previous ${params.packageName} package and affected launchers after verification failed`,
-                "candidate Doctor may have changed persistent state; managed Gateway remains stopped",
+                "Update Doctor may have changed persistent state; managed Gateway remains stopped",
                 ...rollbackMessages,
               ]
                 .filter(Boolean)
