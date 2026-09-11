@@ -194,8 +194,8 @@ export function renderUpdateRunReport(
         : "Repair stopped because the chat requester is no longer a command owner. A current command owner must start a new update, or the operator can run openclaw triage locally."
       : run.status === "failed" && repairStopReason === "repair-requires-config-change"
         ? nextAction
-          ? "Rehearsal config changes were not promoted. Review the named top-level keys before continuing recovery."
-          : "Rehearsal config changes were not promoted. Review the named top-level keys, then run openclaw doctor --fix under your own authority, or openclaw triage."
+          ? "Changes to the temporary configuration were not applied. Review the named top-level keys before continuing recovery."
+          : "Changes to the temporary configuration were not applied. Review the named top-level keys, then run openclaw doctor --fix under your own authority, or openclaw triage."
         : undefined;
   const hints =
     run.status === "running"

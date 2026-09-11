@@ -50,11 +50,11 @@ An interrupted update is not a successful update or a verified rollback.
 Unresolved effects remain visible in the update report. Unsupported pending
 checkpoint records block further mutable update work and remain unchanged.
 
-For targets that support candidate validation, the old Gateway keeps serving through `staging` and
-`validating`. The updater uses the candidate entrypoint for Doctor lint
+For versions that support checks before installation, the old Gateway keeps serving through `staging` and
+`validating`. The updater uses the new version to run health checks
 (`doctor --lint --json --severity-min error`), config validation, and read-only
 plugin resolution and compatibility planning. It also rehearses migrations and
-boots a canary with copied configuration and verified SQLite snapshots in an
+boots a test Gateway with copied configuration and verified SQLite snapshots in an
 isolated temporary state directory. The copied database registry points to the
 copied agent databases. Installed plugin payloads and their dependencies are also
 copied; the rehearsal install records point to those copies, and their OpenClaw
@@ -68,11 +68,15 @@ Schema checks also use private SQLite copies so inspection does not create or
 modify WAL sidecars beside live databases. Each schema inspection has a
 30-second deadline; if compatibility cannot be verified, rollback is refused.
 
-The canary binds a free loopback port and must report `/startupz` as `started`,
+The test Gateway binds a free loopback port and must report `/startupz` as `started`,
 then `/readyz` as ready within a five-minute total budget. Failure records the
-phase, elapsed time, and bounded diagnostics; the canary process group and
-temporary state are cleaned up. This proves candidate startup on copied state;
+failed check, its elapsed time, and bounded diagnostics. Progress shows the actual
+health finding or command error; unchanged failures during repair do not replay
+the same diagnostic block. The test Gateway process group and
+temporary state are cleaned up. This proves the new version can start on copied state;
 live channel and provider behavior are checked after activation.
+These health checks are not source-code linting. Source lint runs only for
+development updates with `OPENCLAW_UPDATE_PREFLIGHT_LINT=1`.
 Targets that predate migration continuation record runtime validation as
 unavailable and use the current updater's existing finalization path. A present
 continuation entry with an invalid schema contract still refuses activation.

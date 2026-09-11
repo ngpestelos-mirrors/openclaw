@@ -459,7 +459,7 @@ async function testPreflightCandidate(params: {
         cwd: params.worktreeDir,
         durationMs: 0,
         exitCode: 1,
-        stderrTail: "Candidate Control UI startup assets are missing or incomplete",
+        stderrTail: "Update Control UI startup assets are missing or incomplete",
       });
       return { status: "failed" };
     }
@@ -487,7 +487,7 @@ async function testPreflightCandidate(params: {
     // Activation checks out candidateSha and promotes only generated runtime paths.
     // Check after repair so validated source edits cannot disappear at activation.
     const cleanCheck = await runCandidateCheck(
-      "candidate clean check",
+      "update clean check",
       gitCleanCheckArgs(params.worktreeDir),
     );
     const status = params.steps.at(-1);
@@ -497,7 +497,7 @@ async function testPreflightCandidate(params: {
       }
       return { status: "failed" };
     }
-    const sourceCheck = await runCandidateCheck("candidate source check", [
+    const sourceCheck = await runCandidateCheck("update source check", [
       "git",
       "-C",
       params.worktreeDir,
@@ -508,7 +508,7 @@ async function testPreflightCandidate(params: {
     ]);
     if (sourceCheck) {
       sourceCheck.stderrTail =
-        "Candidate source differs from the selected commit. Repair the source revision before retrying the update.";
+        "Update source differs from the selected commit. Repair the source revision before retrying the update.";
       return { status: "failed" };
     }
     await params.prepareCandidate?.(params.worktreeDir, params.preflightRoot);

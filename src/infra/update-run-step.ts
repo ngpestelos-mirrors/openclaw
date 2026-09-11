@@ -3,7 +3,14 @@ import type { UpdateStepResult } from "./update-runner-types.js";
 
 type ResultStep = Pick<
   UpdateStepResult,
-  "name" | "exitCode" | "advisory" | "warnings" | "termination" | "stdoutTail" | "stderrTail"
+  | "name"
+  | "exitCode"
+  | "advisory"
+  | "warnings"
+  | "termination"
+  | "stdoutTail"
+  | "stderrTail"
+  | "failureSummary"
 >;
 
 /** Warning rows preserve producer-classified advisories in the existing diagnostic ledger. */

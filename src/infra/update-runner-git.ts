@@ -429,7 +429,7 @@ export async function updateGitCheckout(params: {
             timeoutMs,
           });
           if (candidate.code !== 0 || !candidate.stdout.trim()) {
-            throw new Error("Cannot inspect the validated Git candidate");
+            throw new Error("Cannot inspect the validated Git update");
           }
           if (opts.inspectGitTarget) {
             await inspectTarget(candidate.stdout.trim(), root);
@@ -439,7 +439,7 @@ export async function updateGitCheckout(params: {
             // records absolute paths. Candidate build/validation has already finished.
             const sourceChanged = await checkSourceUnchanged();
             if (sourceChanged) {
-              throw new Error(`Cannot publish Git candidate: ${sourceChanged.reason}`);
+              throw new Error(`Cannot publish Git update: ${sourceChanged.reason}`);
             }
             await prepareMutation(candidate.stdout.trim(), root, runInspectionCommand);
             const imported = await runStep(
@@ -458,7 +458,7 @@ export async function updateGitCheckout(params: {
               ),
             );
             if (imported.exitCode !== 0) {
-              throw new Error("Cannot import the admitted Git candidate");
+              throw new Error("Cannot import the admitted Git update");
             }
             gitRoot = await opts.publishGitCheckout();
             publishedCandidate = true;

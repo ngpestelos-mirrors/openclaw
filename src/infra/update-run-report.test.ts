@@ -198,7 +198,7 @@ describe("update run report", () => {
     if (reason === "requester-revoked") {
       expect(report.markdown).toContain("Further recovery requires a current command owner.");
     } else if (reason === "repair-requires-config-change") {
-      expect(report.markdown).toContain("Rehearsal config changes were not promoted.");
+      expect(report.markdown).toContain("Changes to the temporary configuration were not applied.");
     }
   });
 
@@ -221,6 +221,16 @@ describe("update run report", () => {
             },
           },
           {
+            name: "Checking update health",
+            command: "doctor --lint --json",
+            cwd: "/tmp",
+            durationMs: 1,
+            exitCode: 1,
+            failureSummary:
+              "Configured plugin is unavailable. Run openclaw plugins install example-plugin.",
+            stderrTail: "CLI help footer that must not replace the diagnosis",
+          },
+          {
             name: "build",
             command: "pnpm build",
             cwd: "/tmp",
@@ -234,6 +244,7 @@ describe("update run report", () => {
       }),
     );
     expect(report.lines.filter((line) => line.startsWith("Failed:"))).toEqual([
+      "Failed: Checking update health — Configured plugin is unavailable. Run openclaw plugins install example-plugin.",
       "Failed: build — timeout; last build diagnostic; last error diagnostic",
     ]);
   });

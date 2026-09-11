@@ -107,7 +107,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
     !isDeepStrictEqual(child.lease.helper, parent.lease.executor)
   ) {
     throw new UpdateCommandRecoveryPendingError(
-      "Candidate executor binding does not match its parent.",
+      "Update executor binding does not match its parent.",
     );
   }
   let active = true;
@@ -124,7 +124,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         !store.owns(child.lease, "executor")
       ) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate executor ownership is no longer current.",
+          "Update executor ownership is no longer current.",
         );
       }
     },
@@ -183,9 +183,7 @@ export async function withUpdateCommandExecutor<T>(
       throw new UpdateCommandRecoveryPendingError("Parent executor has unresolved native custody.");
     }
     if (delegating) {
-      throw new UpdateCommandRecoveryPendingError(
-        "Parent executor is suspended for its candidate.",
-      );
+      throw new UpdateCommandRecoveryPendingError("Parent executor is suspended for its update.");
     }
   };
   const fence = { assertCurrent };
@@ -214,7 +212,7 @@ export async function withUpdateCommandExecutor<T>(
           !control.owns(candidateParent, "executor") ||
           resolveUpdateInstallRoot(root) !== candidateParent.key
         ) {
-          throw new UpdateCommandRecoveryPendingError("Candidate installation ownership changed.");
+          throw new UpdateCommandRecoveryPendingError("Update installation ownership changed.");
         }
       };
       const running = async () => {
@@ -225,7 +223,7 @@ export async function withUpdateCommandExecutor<T>(
             const acquired = control.acquire(candidateRoot, randomUUID(), { kind: "update" });
             if (acquired.kind !== "acquired") {
               throw new UpdateCommandRecoveryPendingError(
-                "Another update executor owns the candidate installation.",
+                "Another update executor owns the update installation.",
               );
             }
             candidateParent = acquired.lease;
@@ -241,9 +239,7 @@ export async function withUpdateCommandExecutor<T>(
               { kind: "update" },
             );
             if (acquired.kind !== "acquired") {
-              throw new UpdateCommandRecoveryPendingError(
-                "Candidate lifetime could not be acquired.",
-              );
+              throw new UpdateCommandRecoveryPendingError("Update lifetime could not be acquired.");
             }
             children.push(acquired.lease);
           }
@@ -258,14 +254,12 @@ export async function withUpdateCommandExecutor<T>(
           const result = await childOperation(grant, (pid) => {
             assertOwners();
             if (bound || pid === process.pid) {
-              throw new UpdateCommandRecoveryPendingError(
-                "Candidate process can be bound only once.",
-              );
+              throw new UpdateCommandRecoveryPendingError("Update process can be bound only once.");
             }
             for (let index = 0; index < children.length; index++) {
               const assigned = control.bind(children[index]!, pid);
               if (!assigned) {
-                throw new UpdateCommandRecoveryPendingError("Candidate process binding failed.");
+                throw new UpdateCommandRecoveryPendingError("Update process binding failed.");
               }
               children[index] = assigned;
             }
@@ -273,14 +267,14 @@ export async function withUpdateCommandExecutor<T>(
           });
           if (!bound) {
             throw new UpdateCommandRecoveryPendingError(
-              "Candidate continuation did not bind a process.",
+              "Update continuation did not bind a process.",
             );
           }
           assertOwners();
           outcome = { result };
         } catch (cause) {
           outcome = {
-            error: cause instanceof Error ? cause : new Error("Candidate failed", { cause }),
+            error: cause instanceof Error ? cause : new Error("Update failed", { cause }),
           };
         }
         try {
@@ -288,20 +282,20 @@ export async function withUpdateCommandExecutor<T>(
           // until the process owner has actually joined the candidate. Keep the
           // original child until active-generation cleanup is also confirmed.
           if (children.length > 1 && !control.release(children[1]!)) {
-            throw new UpdateCommandRecoveryPendingError("Candidate executor has not settled.");
+            throw new UpdateCommandRecoveryPendingError("Update executor has not settled.");
           }
           if (candidateParent !== original && !control.release(candidateParent)) {
-            throw new UpdateCommandRecoveryPendingError("Candidate installation release failed.");
+            throw new UpdateCommandRecoveryPendingError("Update installation release failed.");
           }
           if (children.length > 0 && !control.release(children[0]!)) {
-            throw new UpdateCommandRecoveryPendingError("Candidate executor has not settled.");
+            throw new UpdateCommandRecoveryPendingError("Update executor has not settled.");
           }
           delegating = false;
         } catch (cause) {
           if ("error" in outcome) {
             throw new AggregateError(
               [outcome.error, cause],
-              "Candidate and its executor cleanup failed",
+              "Update and its executor cleanup failed",
               { cause },
             );
           }
@@ -316,7 +310,7 @@ export async function withUpdateCommandExecutor<T>(
       childWork = pending;
       void pending
         .catch((cause: unknown) => {
-          childFailure = cause instanceof Error ? cause : new Error("Candidate failed", { cause });
+          childFailure = cause instanceof Error ? cause : new Error("Update failed", { cause });
         })
         .finally(() => {
           if (childWork === pending) {
@@ -452,12 +446,12 @@ export async function withUpdateCommandExecutor<T>(
     outcome = {
       error:
         "error" in outcome && outcome.error !== cause
-          ? new AggregateError([outcome.error, cause], "Update and candidate settlement failed", {
+          ? new AggregateError([outcome.error, cause], "Update cleanup failed", {
               cause,
             })
           : cause instanceof Error
             ? cause
-            : new Error("Candidate settlement failed", { cause }),
+            : new Error("Update settlement failed", { cause }),
     };
   }
   active = false;
