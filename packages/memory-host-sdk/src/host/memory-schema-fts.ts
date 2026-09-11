@@ -21,7 +21,7 @@ function ftsTableMatchesSchema(params: {
     )
     .get(params.tableName) as { type?: unknown; sql?: unknown } | undefined;
   if (table?.type === "view") {
-    throw new Error(`Memory FTS table "${params.tableName}" collides with a view`);
+    throw new Error(`cannot modify ${params.tableName} because it is a view`);
   }
   if (typeof table?.sql !== "string") {
     return "missing";
