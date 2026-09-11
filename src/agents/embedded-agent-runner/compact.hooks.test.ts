@@ -1696,7 +1696,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     } as never;
     acquireAgentRunPreparedModelRuntimeMock.mockResolvedValueOnce({
       snapshot: preparedModelRuntime,
-      release: vi.fn(),
+      [Symbol.asyncDispose]: vi.fn(async () => {}),
     });
     createOpenClawCodingToolsMock.mockReturnValueOnce([
       {
@@ -3810,7 +3810,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     const parent = new AsyncWorkScope();
     const admissionStarted = createDeferred();
     const releaseAdmission = createDeferred();
-    const releaseLease = vi.fn();
+    const releaseLease = vi.fn(async () => {});
     const defaultAcquire = expectDefined(
       acquireAgentRunPreparedModelRuntimeMock.getMockImplementation(),
       "default prepared runtime acquisition mock",
@@ -3822,7 +3822,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       admissionStarted.resolve(undefined);
       await releaseAdmission.promise;
       const lease = await defaultAcquire(input);
-      return { ...lease, release: releaseLease };
+      return { ...lease, [Symbol.asyncDispose]: releaseLease };
     }) as never);
 
     const pending = parent.run(() =>

@@ -21,6 +21,7 @@ import { resetRecentMediaGenerationDuplicateGuardsForTests } from "../media-gene
 import { prepareConfiguredRuntimeFacts } from "../prepared-model-runtime.configured-catalog.js";
 import { prepareWorkspaceBuildGroup } from "../prepared-model-runtime.facts.js";
 import { createPreparedModelRuntimeSnapshot } from "../prepared-model-runtime.full-catalog.js";
+import { discardPreparedPluginGeneration } from "../prepared-model-runtime.plugin-lifetime.js";
 import { ModelRegistry } from "../sessions/model-registry.js";
 import { createImageGenerateTool } from "./image-generate-tool.js";
 import {
@@ -262,15 +263,22 @@ async function prepareSnapshot(
     templateModelRegistry: ModelRegistry.inMemory(facts.templateAuthStorage),
     configuredRuntimeModels: facts.configuredRuntimeModels,
   });
-  return createPreparedModelRuntimeSnapshot(undefined, facts, prepared.pluginGeneration, catalog, {
-    isCurrent: () => true,
-    withRefreshStatus: (value) => value,
-    readFullModelCatalog: () => catalog.modelCatalog,
-    loadFullModelCatalog: async () => catalog.modelCatalog,
-    loadAuth: async () => {
-      throw new Error("The synthetic media provider does not request model credentials");
+  const snapshot = createPreparedModelRuntimeSnapshot(
+    undefined,
+    facts,
+    prepared.pluginGeneration,
+    catalog,
+    {
+      isCurrent: () => true,
+      withRefreshStatus: (value) => value,
+      readFullModelCatalog: () => catalog.modelCatalog,
+      loadFullModelCatalog: async () => catalog.modelCatalog,
+      loadAuth: async () => {
+        throw new Error("The synthetic media provider does not request model credentials");
+      },
     },
-  });
+  );
+  return { snapshot, release: () => discardPreparedPluginGeneration(prepared.pluginGeneration) };
 }
 
 afterEach(() => {
@@ -304,7 +312,8 @@ describe.each(["image", "music", "video"] as const)(
           const first = await acquirePluginRegistryForInspection({ config: fixture.config });
           const referencePath = path.join(fixture.dir, "reference.png");
           fs.writeFileSync(referencePath, png);
-          const snapshot = await prepareSnapshot(fixture, first.registry);
+          const prepared = await prepareSnapshot(fixture, first.registry);
+          const { snapshot } = prepared;
           const createTask = vi.spyOn(lifecycle, "createTaskRun").mockReturnValue({
             taskId: "preflight-image-task",
             runId: "preflight-image-run",
@@ -343,6 +352,7 @@ describe.each(["image", "music", "video"] as const)(
               }),
             ]);
             await first.release();
+            await prepared.release();
             resumeReference.resolve();
             const result = await outcome;
             expect(result.error).toBeInstanceOf(Error);
@@ -356,6 +366,7 @@ describe.each(["image", "music", "video"] as const)(
             resumeReference.resolve();
             await outcome;
             await first.release();
+            await prepared.release();
           }
         });
       } finally {
@@ -384,9 +395,11 @@ describe.each(["image", "music", "video"] as const)(
         await fixture.withEnvironment(async () => {
           useNoBundledPlugins();
           const first = await acquirePluginRegistryForInspection({ config: fixture.config });
+          let prepared: Awaited<ReturnType<typeof prepareSnapshot>> | undefined;
           let successor: Awaited<ReturnType<typeof acquirePluginRegistryForInspection>> | undefined;
           try {
-            const snapshot = await prepareSnapshot(fixture, first.registry);
+            prepared = await prepareSnapshot(fixture, first.registry);
+            const { snapshot } = prepared;
             expect(snapshot.mediaCapabilityProviders?.[`${kind}GenerationProviders`]).toHaveLength(
               1,
             );
@@ -443,6 +456,7 @@ describe.each(["image", "music", "video"] as const)(
             expect(connection.generated).toBe(0);
             if (phase === "queued") {
               await first.release();
+              await prepared.release();
             }
             successor = await acquirePluginRegistryForInspection({ config: fixture.config });
             setActivePluginRegistry(successor.registry);
@@ -459,6 +473,7 @@ describe.each(["image", "music", "video"] as const)(
                 }),
               ]);
               await first.release();
+              await prepared.release();
               expect(connection.database.isOpen).toBe(true);
               expect(connection.generated).toBe(0);
               fixture.resumeLookup.resolve();
@@ -478,6 +493,7 @@ describe.each(["image", "music", "video"] as const)(
             ]);
             if (kind !== "video" || phase !== "rollback") {
               await first.release();
+              await prepared.release();
             }
             expect(connection.database.isOpen).toBe(true);
             expect(connection.disposals).toBe(0);
@@ -487,6 +503,7 @@ describe.each(["image", "music", "video"] as const)(
               await rollbackStarted.promise;
               if (kind === "video") {
                 await first.release();
+                await prepared.release();
               }
               expect(connection.database.isOpen).toBe(true);
               expect(savedPath && fs.existsSync(savedPath)).toBe(true);
@@ -519,6 +536,7 @@ describe.each(["image", "music", "video"] as const)(
             resumeRollback.resolve();
             await completion;
             await first.release();
+            await prepared?.release();
             await successor?.release();
           }
         });

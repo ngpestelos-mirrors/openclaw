@@ -222,7 +222,7 @@ describe("operator config startup corpus", () => {
             expect(login.providers.length).toBeGreaterThan(0);
           }
         } finally {
-          lease.release();
+          await lease[Symbol.asyncDispose]();
         }
       }
     },

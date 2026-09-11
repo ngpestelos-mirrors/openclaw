@@ -1,5 +1,6 @@
 // Daemon install tests cover service install command behavior and plan handling.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SecretInput } from "../../config/types.secrets.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
 import { mockSystemAccountHome } from "../../daemon/service.test-helpers.js";
 import type { ResolvedGatewayAuth } from "../../gateway/auth.js";
@@ -14,21 +15,9 @@ type DaemonActionResponse = Parameters<
 
 const resolveNodeStartupTlsEnvironmentMock = vi.hoisted(() => vi.fn());
 const runExecMock = vi.hoisted(() => vi.fn());
-const loadConfigMock = vi.hoisted(() => vi.fn());
 const readConfigFileSnapshotMock = vi.hoisted(() => vi.fn());
 const resolveGatewayPortMock = vi.hoisted(() => vi.fn(() => 18789));
 const replaceConfigFileMock = vi.hoisted(() => vi.fn());
-const resolveSecretInputRefMock = vi.hoisted(() =>
-  vi.fn((_value?: unknown): { ref: unknown } => ({ ref: undefined })),
-);
-const hasConfiguredSecretInputMock = vi.hoisted(() =>
-  vi.fn((value: unknown): boolean => {
-    if (typeof value === "string" && value.trim()) {
-      return true;
-    }
-    return resolveSecretInputRefMock(value)?.ref != null;
-  }),
-);
 const resolveGatewayAuthMock = vi.hoisted(() =>
   vi.fn<() => ResolvedGatewayAuth>(() => ({
     mode: "token",
@@ -76,7 +65,6 @@ vi.mock("../../process/exec.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../config/io.js", () => ({
-  loadConfig: loadConfigMock,
   readConfigFileSnapshotForWrite: vi.fn(async () => ({
     snapshot: await readConfigFileSnapshotMock(),
     writeOptions: { expectedConfigPath: "/tmp/openclaw.json" },
@@ -91,17 +79,6 @@ vi.mock("../../config/paths.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../config/paths.js")>()),
   resolveGatewayPort: resolveGatewayPortMock,
 }));
-
-vi.mock("../../config/types.secrets.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../config/types.secrets.js")>();
-  return {
-    ...actual,
-    coerceSecretRef: (value: unknown, defaults?: unknown) =>
-      resolveSecretInputRefMock({ value, defaults })?.ref ?? null,
-    hasConfiguredSecretInput: hasConfiguredSecretInputMock,
-    resolveSecretInputRef: resolveSecretInputRefMock,
-  };
-});
 
 vi.mock("../../gateway/auth.js", () => ({
   resolveGatewayAuth: resolveGatewayAuthMock,
@@ -214,9 +191,15 @@ function expectLastEmittedResult(result: string): void {
   expectFields(actionState.emitted.at(-1), { result });
 }
 
-function mockResolvedGatewayTokenSecretRef() {
-  resolveSecretInputRefMock.mockReturnValue({
-    ref: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_TOKEN" },
+function mockResolvedGatewayTokenSecretRef(
+  token: SecretInput = { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_TOKEN" },
+) {
+  const config = { gateway: { mode: "local" as const, auth: { mode: "token" as const, token } } };
+  readConfigFileSnapshotMock.mockResolvedValue({
+    exists: true,
+    valid: true,
+    config,
+    sourceConfig: config,
   });
   resolveSecretRefValuesMock.mockResolvedValue(
     new Map([["env:default:OPENCLAW_GATEWAY_TOKEN", "resolved-from-secretref"]]),
@@ -228,7 +211,6 @@ const envSnapshot = captureFullEnv();
 
 describe("runDaemonInstall", () => {
   beforeEach(() => {
-    loadConfigMock.mockReset();
     runExecMock.mockReset();
     runExecMock.mockResolvedValue(nodeProbeOutput("26.8.1"));
     resolveNodeStartupTlsEnvironmentMock.mockReset();
@@ -236,7 +218,6 @@ describe("runDaemonInstall", () => {
     resolveGatewayPortMock.mockClear();
     mockSystemAccountHome();
     replaceConfigFileMock.mockReset();
-    resolveSecretInputRefMock.mockReset();
     resolveGatewayAuthMock.mockReset();
     resolveGatewayBindHostMock.mockReset();
     resolveSecretRefValuesMock.mockReset();
@@ -255,7 +236,6 @@ describe("runDaemonInstall", () => {
     actionState.emitted.length = 0;
     actionState.failed.length = 0;
 
-    loadConfigMock.mockReturnValue({ gateway: { mode: "local", auth: { mode: "token" } } });
     readConfigFileSnapshotMock.mockResolvedValue({
       exists: false,
       valid: true,
@@ -264,7 +244,6 @@ describe("runDaemonInstall", () => {
     });
     resolveGatewayPortMock.mockReturnValue(18789);
     delete process.env.OPENCLAW_NIX_MODE;
-    resolveSecretInputRefMock.mockReturnValue({ ref: undefined });
     resolveGatewayAuthMock.mockReturnValue({
       mode: "token",
       token: undefined,
@@ -296,9 +275,7 @@ describe("runDaemonInstall", () => {
   });
 
   it("fails install when token auth requires an unresolved token SecretRef", async () => {
-    resolveSecretInputRefMock.mockReturnValue({
-      ref: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_TOKEN" },
-    });
+    mockResolvedGatewayTokenSecretRef();
     resolveSecretRefValuesMock.mockRejectedValue(new Error("secret unavailable"));
 
     await runDaemonInstall({ json: true });
@@ -461,10 +438,7 @@ describe("runDaemonInstall", () => {
   });
 
   it("does not treat env-template gateway.auth.token as plaintext during install", async () => {
-    loadConfigMock.mockReturnValue({
-      gateway: { auth: { mode: "token", token: "${OPENCLAW_GATEWAY_TOKEN}" } },
-    });
-    mockResolvedGatewayTokenSecretRef();
+    mockResolvedGatewayTokenSecretRef("${OPENCLAW_GATEWAY_TOKEN}");
 
     await runDaemonInstall({ json: true });
 

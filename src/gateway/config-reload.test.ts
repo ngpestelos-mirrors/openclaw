@@ -36,6 +36,7 @@ import {
   getCurrentPluginMetadataSnapshotState,
   setCurrentPluginMetadataSnapshotState,
 } from "../plugins/current-plugin-metadata-state.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import {
   captureGatewayRootWorkAdmissionContinuationScope,
@@ -5590,7 +5591,7 @@ describe("startGatewayConfigReloader", () => {
         initialPluginInstallRecords: installRecords,
         readPluginInstallRecords,
       });
-      const startupMetadata = { plugins: [] };
+      const startupMetadata = createPluginMetadataSnapshotFixture();
       setCurrentPluginMetadataSnapshotState(startupMetadata, "startup-metadata");
 
       harness.reloader.notifyPluginMetadataChanged();
