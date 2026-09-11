@@ -2078,8 +2078,6 @@ async function prepareCliRunContextWithinReadFence(
           sessionKey: params.sessionKey,
           agentId: sessionAgentId,
         });
-        params.assertCurrent?.();
-        params.abortSignal?.throwIfAborted();
         const appendContext = [
           hookResult?.appendContext,
           authorizedPromptBuildResult?.appendContext,
@@ -2114,6 +2112,8 @@ async function prepareCliRunContextWithinReadFence(
       } catch (error) {
         cliBackendLog.warn(`cli prompt-build hook preparation failed: ${String(error)}`);
       }
+      params.assertCurrent?.();
+      params.abortSignal?.throwIfAborted();
     }
     let historyPromptCurrentTurn = preparedPrompt;
     if (!skipsTurnPreparation) {
