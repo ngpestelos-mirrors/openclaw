@@ -238,7 +238,7 @@ describe("prior-release state startup corpus", () => {
             try {
               expect(lease.snapshot.modelCatalog.entries.length).toBeGreaterThan(0);
             } finally {
-              lease.release();
+              await lease[Symbol.asyncDispose]();
             }
           }
           await closeOpenClawAgentDatabasesAsync(stateDir);
