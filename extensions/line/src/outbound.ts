@@ -49,7 +49,8 @@ export const lineOutboundAdapter: NonNullable<ChannelPlugin<ResolvedLineAccount>
   textChunkLimit: 5000,
   sanitizeText: ({ text }) => sanitizeAssistantVisibleText(text),
   presentationCapabilities: LINE_PRESENTATION_CAPABILITIES,
-  renderPresentation: ({ payload, presentation }) => renderLinePresentation(payload, presentation),
+  renderPresentation: ({ payload, presentation, sourcePresentation, ctx }) =>
+    renderLinePresentation(payload, presentation, ctx.to, sourcePresentation),
   sendPayload: async ({ to, payload, accountId, cfg, replyToId, onDeliveryResult }) => {
     const runtime = getLineRuntime();
     const outboundRuntime = await loadLineOutboundRuntime();
@@ -134,7 +135,7 @@ export const lineOutboundAdapter: NonNullable<ChannelPlugin<ResolvedLineAccount>
 
     // LINE renders a quote on one bubble, so a reply spends its token on the first
     // text it sends and every later part of the same reply goes out unquoted.
-    const replyQuoteToken = resolveLineQuoteToken({
+    let replyQuoteToken = resolveLineQuoteToken({
       cfg,
       accountId,
       chatId: to,
@@ -205,8 +206,13 @@ export const lineOutboundAdapter: NonNullable<ChannelPlugin<ResolvedLineAccount>
 
       if (lineData.templateMessage) {
         const template = buildTemplate(lineData.templateMessage);
-        if (template) {
+        if (template?.type === "template") {
           await recordResult(sendTemplate(to, template, sendOptions));
+        } else if (template) {
+          await recordResult(
+            sendText(to, template.text, { ...sendOptions, ...quotedOption(replyQuoteToken) }),
+          );
+          replyQuoteToken = undefined;
         }
       }
 
@@ -273,7 +279,9 @@ export const lineOutboundAdapter: NonNullable<ChannelPlugin<ResolvedLineAccount>
       if (lineData.templateMessage) {
         const template = buildTemplate(lineData.templateMessage);
         if (template) {
-          quickReplyMessages.push(template);
+          quickReplyMessages.push(
+            template.type === "text" ? { ...template, ...quotedOption(replyQuoteToken) } : template,
+          );
         }
       }
       if (locationMessage) {

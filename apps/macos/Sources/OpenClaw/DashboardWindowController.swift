@@ -29,6 +29,7 @@ private final class DashboardWindowContentView: NSView {
 /// Toolbar` (and ⌥⌘T) would collapse the titlebar while the web inset stays
 /// pinned at `--openclaw-native-titlebar-height`, resurrecting the traffic-light
 /// misalignment. Refusing the toggle keeps the two heights in lockstep.
+/// Full screen hides this sizing toolbar so it cannot cover the web controls.
 private final class DashboardWindow: NSWindow {
     /// User intent belongs to the native window, not the privileged document it hosts.
     var userIntentGeneration: UInt64 = 0
@@ -261,6 +262,7 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
             self.requestBrowserProfileImportOfferIfNeeded()
         }
         self.window?.delegate = self
+        self.updateToolbarVisibility(isFullScreen: window.styleMask.contains(.fullScreen))
         self.installHistoryStateBridge()
         if restoreKeyboardFocus {
             window.makeFirstResponder(self.webView)
@@ -1100,6 +1102,20 @@ extension DashboardWindowController {
         self.currentURL
     }
 
+    func windowDidEnterFullScreen(_: Notification) {
+        self.updateToolbarVisibility(isFullScreen: true)
+    }
+
+    func windowDidExitFullScreen(_: Notification) {
+        self.updateToolbarVisibility(isFullScreen: false)
+    }
+
+    private func updateToolbarVisibility(isFullScreen: Bool) {
+        // Apply completed transitions; failed transitions keep their previous chrome.
+        // Reused windows also pass through this owner during initialization.
+        self.window?.toolbar?.isVisible = !isFullScreen
+    }
+
     func windowWillClose(_: Notification) {
         self.retirePendingLoad()
         (self.window as? DashboardWindow)?.lifetimeRevision &+= 1
@@ -1306,8 +1322,8 @@ extension DashboardWindowController {
                     navigationType: navigationAction.navigationType,
                     buttonNumber: navigationAction.buttonNumber)
             }
-            // Mac tabs have no download destination UI. Preserve
-            // direct pointer-activated downloads by handing them to the default browser.
+            // Page-initiated downloads keep their external-browser behavior.
+            // The explicit toolbar action owns the native Save dialog.
             if navigationAction.shouldPerformDownload {
                 if Self.shouldOpenExternalDashboardNavigation(
                     url,

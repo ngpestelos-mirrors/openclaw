@@ -286,6 +286,21 @@ as untrusted.
 - LINE describes inline emoji with metadata and alternative text. Empty `()`
   alternatives reach the agent as `[emoji]`. Meaningful alternatives such as
   `(hello)` and parentheses typed by the sender are preserved.
+- LINE sends several images picked in one action as one webhook event per image,
+  out of order. They are held briefly and answered as a single turn carrying
+  every image, ordered by the index LINE reports; a sender whose client omits
+  that index - LINE 11.15 and earlier for Android - keeps the order the images
+  were delivered in. A set that never completes is delivered with whatever
+  arrived rather than being held indefinitely, a few seconds after its most
+  recent part - or after the chat's queue reaches it, if it is still waiting its
+  turn. Anything else arriving meanwhile - a message, or another set of
+  images - waits behind it, so replies keep the order the chat was sent in; in a
+  group that queue is the whole room, because LINE conversations are ordered per
+  chat rather than per member. A model without native vision reads only the
+  first image unless `tools.media.image.attachments` sets both `mode: "all"` and
+  `maxAttachments`; either key alone leaves the limit at one. A set whose parts do
+  not announce a total is delivered with whatever arrived and says nothing
+  about the rest, because nothing states how many there were.
 
 ## Reply quoting
 
@@ -388,6 +403,31 @@ message, counted across every `select` block in the reply rather than per block.
 Each select keeps its prompt and any overflow options together in that text.
 Prompts and overflow option names remain complete. Only native quick-reply button
 labels are shortened to LINE's 20-character limit.
+
+In direct chats, the options an `ask_user` question offers become tappable controls
+on the same Flex card, and a tap answers the question directly. LINE carries the option
+index the Gateway assigned rather than the label, so a reply whose choices the Gateway no longer
+lists falls back to readable text instead of drawing a tap that answers the wrong
+option. The eligible shape is one single-select, non-secret question offering two to
+four distinct options — the same bound Telegram, Discord and Slack use; anything else
+stays readable text that a typed reply still answers. Groups, multi-person chats, and
+unrecognized destinations also use this readable fallback. LINE's group and room
+postbacks do not include the sender identity needed to admit a question answer;
+reply with the option text instead.
+
+The **Other…** free-text control is not drawn. Tapping it resolves nothing by itself, and LINE
+cannot take a control back off a card it already delivered, so the button would add a tap that
+changes nothing the question's own text does not already offer. Discord and Slack leave that
+route in text for the same reason. In eligible direct chats, each declared option keeps
+a native control, and **Other…** stays named in the card's text under `Actions:` whatever the option count.
+
+LINE cannot edit a message it already delivered, so the controls stay on screen after
+the question ends. A tap that arrives then is answered with `That question is no longer
+waiting for an answer.` Initial taps follow the channel's normal admission and
+pairing rules. If pairing is revoked while the question is being read, the answer
+is ignored without an answer notice or a new pairing challenge. The Gateway reports one
+terminal state for answered, cancelled and expired questions alike, so the notice does
+not claim which one it was.
 
 ```json5
 {
