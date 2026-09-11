@@ -444,7 +444,7 @@ internal class WearViewModel(
           // Explicit navigation finishes the original Talk IO before selecting its
           // destination. Cancellation of an in-progress start owns remote cleanup.
           startingTalk?.join()
-          realtimeTalkClient.stop()
+          realtimeTalkClient.stop(mutableState.value.phoneNodeId)
           // Only the actual Stop owner releases navigation; UI state can be reset
           // while routing is uncertain. Rediscovery must then validate the target.
           notificationOpenJob = null
@@ -461,7 +461,7 @@ internal class WearViewModel(
           throw err
         } catch (err: Throwable) {
           if (notificationTarget == null) return@launch
-          if (phoneRouteGeneration != notificationRouteGeneration && err is WearProxyException && err.code == "phone_changed") {
+          if (err is WearProxyException && err.code == "phone_changed") {
             notificationOpenJob = null
             loadSessions()
             return@launch
@@ -673,7 +673,7 @@ internal class WearViewModel(
         )
       }
       try {
-        val snapshot = realtimeTalkClient.stop()
+        val snapshot = realtimeTalkClient.stop(mutableState.value.phoneNodeId)
         if (talkAttemptId != attemptId) return@launch
         if (talkAttemptId == snapshot.attemptId) talkAttemptId = null
         mutableState.update { it.copy(realtimeTalk = snapshot, talkBusy = false, talkStopping = false) }

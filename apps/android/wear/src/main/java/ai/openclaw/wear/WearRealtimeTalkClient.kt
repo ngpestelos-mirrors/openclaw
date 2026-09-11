@@ -169,7 +169,7 @@ internal class WearRealtimeTalkClient(
       }
     }
 
-  suspend fun stop(): WearRealtimeTalkSnapshot {
+  suspend fun stop(currentPhoneNodeId: String? = null): WearRealtimeTalkSnapshot {
     var ownsStop = false
     val completion =
       synchronized(audioLock) {
@@ -186,7 +186,11 @@ internal class WearRealtimeTalkClient(
       lifecycleLock.lock()
       locked = true
       val attempt = activeAttempt
-      val target = attempt?.let { StopTarget(it.nodeId, it.attemptId) } ?: unsettledStopTarget
+      // A confirmed replacement phone cannot inherit an old phone's cleanup.
+      // Unknown routing keeps same-owner recovery available until rediscovery.
+      val target =
+        (attempt?.let { StopTarget(it.nodeId, it.attemptId) } ?: unsettledStopTarget)
+          ?.takeIf { currentPhoneNodeId == null || it.nodeId == currentPhoneNodeId }
       unsettledStopTarget = target
       // Stop Watch-owned audio before waiting for the phone. A slow or lost
       // Stop response must never keep the microphone or speaker alive.

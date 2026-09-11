@@ -101,6 +101,56 @@ class WearConversationContextTest {
     }
 
   @Test
+  fun failedOldPhoneStopCannotRejectAValidNewPhoneNotification() =
+    withFlow { flow ->
+      flow.installControlledTalkChannel()
+      flow.rejectStop = true
+      flow.vm.stopRealtimeTalk()
+      flow.idle()
+      flow.changePhone("phone-b")
+      flow.vm.openNotification(WearConversationTarget("agent:alpha:shared", "phone-b"))
+      flow.idle()
+      assertEquals("phone-b", flow.state.phoneNodeId)
+      assertEquals("agent:alpha:shared", flow.state.selectedSession?.key)
+      assertNull(flow.state.failure)
+      assertEquals("No old-phone Stop is rerouted to the new owner", listOf("talk-beta"), flow.stoppedAttempts)
+    }
+
+  @Test
+  fun samePhoneNotificationStillObservesAnUnsettledFailedStop() =
+    withFlow { flow ->
+      flow.installControlledTalkChannel()
+      flow.rejectStop = true
+      flow.vm.stopRealtimeTalk()
+      flow.idle()
+      flow.vm.openNotification(WearConversationTarget("agent:alpha:shared", "phone-a"))
+      flow.idle()
+      assertNull(flow.state.selectedSession)
+      assertEquals(WearConversationFailure.ACTION_REJECTED, flow.state.failure)
+      assertEquals(listOf("talk-beta", "talk-beta"), flow.stoppedAttempts)
+    }
+
+  @Test
+  fun newPhoneNotificationRecoversAfterJoiningAnOldPhonePendingStop() =
+    withFlow { flow ->
+      flow.installControlledTalkChannel()
+      val gate = CompletableDeferred<Unit>()
+      flow.stopGate = gate
+      flow.vm.stopRealtimeTalk()
+      flow.idle()
+      flow.changePhone("phone-b")
+      flow.vm.openNotification(WearConversationTarget("agent:alpha:shared", "phone-b"))
+      flow.idle()
+      gate.complete(Unit)
+      flow.idle()
+      assertEquals("phone-b", flow.state.phoneNodeId)
+      assertEquals("agent:alpha:shared", flow.state.selectedSession?.key)
+      assertFalse(flow.state.loading)
+      assertNull(flow.state.failure)
+      assertEquals(listOf("talk-beta"), flow.stoppedAttempts)
+    }
+
+  @Test
   fun notificationCannotTreatFailedStartupCleanupAsAnEmptySuccessfulStop() =
     withFlow { flow ->
       val app = RuntimeEnvironment.getApplication() as WearApplication
