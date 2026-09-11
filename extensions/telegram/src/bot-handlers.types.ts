@@ -9,6 +9,7 @@ import type {
 } from "openclaw/plugin-sdk/config-contracts";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { TelegramBotDeps } from "./bot-deps.js";
+import type { TelegramPendingInboundTarget } from "./bot-handlers.inbound-buffer.js";
 import type {
   TelegramMediaRef,
   TelegramMessageContextOptions,
@@ -106,6 +107,7 @@ export type TelegramInboundDisposition =
   | { kind: "processed" };
 
 export interface TelegramInboundPipeline {
+  cancelPending: (target: TelegramPendingInboundTarget) => void;
   handle: (ctx: Context) => Promise<TelegramInboundDisposition>;
 }
 

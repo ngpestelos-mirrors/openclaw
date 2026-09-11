@@ -15,6 +15,7 @@ import {
 import {
   createTelegramInboundBuffers,
   type TelegramDebounceEntry,
+  type TelegramPendingInboundTarget,
 } from "./bot-handlers.inbound-buffer.js";
 import { createTelegramInboundMedia } from "./bot-handlers.inbound-media.js";
 import {
@@ -48,6 +49,7 @@ import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
 import type { TelegramMessageDispatchReplayClaim } from "./message-dispatch-dedupe.js";
 
 export interface TelegramInboundProcessing {
+  cancelPending: (target: TelegramPendingInboundTarget) => void;
   processInboundMessage: (params: TelegramInboundMessage) => Promise<TelegramInboundDisposition>;
 }
 
@@ -99,6 +101,7 @@ export function createTelegramInboundProcessing({
     createSpooledReplayParticipantForBufferedWork,
   } = message;
   const {
+    cancelPending,
     inboundDebouncer,
     resolveTelegramDebounceEntryMs,
     shouldDebounceTelegramEntry,
@@ -177,6 +180,10 @@ export function createTelegramInboundProcessing({
       return abortControlAuthorized;
     };
 
+    if (await isAuthorizedAbortControlMessage()) {
+      cancelPending({ chatId, threadSpec, senderId });
+    }
+
     if (
       await handleTextFragment({
         ctx,
@@ -185,7 +192,6 @@ export function createTelegramInboundProcessing({
         threadSpec,
         storeAllowFrom,
         isAbortControlMessage,
-        isAuthorizedAbortControlMessage,
         promptContextMinTimestampMs,
         promptContextAmbientWatermark,
         dispatchDedupeClaims,
@@ -342,18 +348,6 @@ export function createTelegramInboundProcessing({
           debounceLane,
         })
       : null;
-    if (senderId && (await isAuthorizedAbortControlMessage())) {
-      for (const lane of ["default", "forward"] as const) {
-        inboundDebouncer.cancelKey(
-          buildTelegramInboundDebounceKey({
-            accountId,
-            conversationKey,
-            senderId,
-            debounceLane: lane,
-          }),
-        );
-      }
-    }
     const debounceEntry: TelegramDebounceEntry = {
       ctx,
       msg,
@@ -382,5 +376,5 @@ export function createTelegramInboundProcessing({
     return shouldBufferDebounce ? { kind: "buffered", buffer: "debounce" } : { kind: "processed" };
   };
 
-  return { processInboundMessage };
+  return { processInboundMessage, cancelPending };
 }

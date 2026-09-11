@@ -72,14 +72,20 @@ type TelegramTextFragmentInput = {
   threadSpec: TelegramThreadSpec;
   storeAllowFrom: string[];
   isAbortControlMessage: boolean;
-  isAuthorizedAbortControlMessage: () => Promise<boolean>;
   promptContextMinTimestampMs?: number;
   promptContextAmbientWatermark?: TelegramAmbientTranscriptWatermark;
   dispatchDedupeClaims: TelegramMessageDispatchReplayClaim[];
   channelIngressResolver: TelegramChannelIngressResolver;
 };
 
+export type TelegramPendingInboundTarget = {
+  chatId: number;
+  threadSpec: TelegramThreadSpec;
+  senderId: string;
+};
+
 interface TelegramInboundBuffers {
+  cancelPending: (target: TelegramPendingInboundTarget) => void;
   inboundDebouncer: {
     enqueue: (entry: TelegramDebounceEntry) => Promise<void>;
     flushKey: (key: string) => Promise<void>;
@@ -423,6 +429,21 @@ export function createTelegramInboundBuffers({
     }
     entry.timer = setTimeout(() => releaseTextFragments(entry), maxGapMs);
   };
+  const cancelPending = ({ chatId, threadSpec, senderId }: TelegramPendingInboundTarget) => {
+    if (!senderId) {
+      return;
+    }
+    const key = `text:${chatId}:${threadSpec.scope}:${threadSpec.id ?? "main"}:${senderId}`;
+    for (const entry of pendingTextFragments.get(key) ?? []) {
+      cancelTextFragments(entry);
+    }
+    const conversationKey = buildTelegramInboundDebounceConversationKey({ chatId, threadSpec });
+    for (const debounceLane of ["default", "forward"] as const) {
+      inboundDebouncer.cancelKey(
+        buildTelegramInboundDebounceKey({ accountId, conversationKey, senderId, debounceLane }),
+      );
+    }
+  };
   const handleTextFragment = async (params: TelegramTextFragmentInput): Promise<boolean> => {
     const text = typeof params.msg.text === "string" ? params.msg.text : undefined;
     const isCommand = getTelegramTextParts(params.msg).entities.some(
@@ -533,19 +554,12 @@ export function createTelegramInboundBuffers({
           });
         return true;
       }
-    } else if (
-      text &&
-      params.isAbortControlMessage &&
-      (await params.isAuthorizedAbortControlMessage())
-    ) {
-      for (const entry of pendingTextFragments.get(key) ?? []) {
-        cancelTextFragments(entry);
-      }
     }
     return false;
   };
 
   return {
+    cancelPending,
     inboundDebouncer,
     resolveTelegramDebounceEntryMs,
     shouldDebounceTelegramEntry,

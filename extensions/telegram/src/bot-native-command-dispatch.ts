@@ -21,6 +21,7 @@ import { resolveTelegramAccount } from "./accounts.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { normalizeDmAllowFromWithStore, resolveTelegramEffectiveDmPolicy } from "./bot-access.js";
 import type { TelegramBotDeps } from "./bot-deps.js";
+import type { TelegramPendingInboundTarget } from "./bot-handlers.inbound-buffer.js";
 import type { TelegramResolvedGroupConfig } from "./bot-handlers.types.js";
 import { resolveTelegramMessageTurnSettings } from "./bot-message.js";
 import {
@@ -362,6 +363,7 @@ async function resolveTelegramCommandAuth(params: {
 
 export async function prepareTelegramCommandDispatch(
   params: TelegramCommandExecutorParams & { requireAuth: boolean },
+  onAuthorized?: (target: TelegramPendingInboundTarget) => void,
 ): Promise<TelegramCommandDispatch | null> {
   const telegramDeps = params.telegramDeps ?? defaultTelegramNativeCommandDeps;
   const runtimeCfg = telegramDeps.getRuntimeConfig();
@@ -391,6 +393,7 @@ export async function prepareTelegramCommandDispatch(
   if (!auth) {
     return null;
   }
+  onAuthorized?.(auth);
   const { route, bindingMode } = resolveTelegramConversationRoute({
     cfg: runtimeCfg,
     accountId: params.accountId,
