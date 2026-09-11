@@ -41,9 +41,11 @@ describe("provider catalog live-runtime scope", () => {
         augmentModelCatalog: vi.fn(),
       });
 
-      const resolveProviderApiKey = vi.fn((provider: string) => ({
-        apiKey: provider === source ? "plan-key" : undefined,
-      }));
+      const resolveProviderApiKey = vi.fn<ProviderCatalogContext["resolveProviderApiKey"]>(
+        (provider) => ({
+          apiKey: provider === source ? "plan-key" : undefined,
+        }),
+      );
       const context: ProviderCatalogContext = {
         providerIds: ["family-plan"],
         config: {},
@@ -58,7 +60,7 @@ describe("provider catalog live-runtime scope", () => {
       ]);
       expect(buildPrimary).not.toHaveBeenCalled();
       expect(buildPlan).toHaveBeenCalledOnce();
-      expect(result && "providers" in result && result.providers["family-plan"].apiKey).toBe(
+      expect(result && "providers" in result && result.providers["family-plan"]?.apiKey).toBe(
         "plan-key",
       );
       resolveProviderApiKey.mockReturnValueOnce({ apiKey: undefined });
