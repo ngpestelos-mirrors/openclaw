@@ -278,7 +278,7 @@ describe("OpenClaw performance Crabbox boundary", () => {
           ["--max-time", "2"],
           ["--output", "/dev/null"],
           ["--write-out", "%{http_code}"],
-        ]) {
+        ] as const) {
           expect(
             probe.args.slice(probe.args.indexOf(pair[0]), probe.args.indexOf(pair[0]) + 2),
           ).toEqual(pair);
