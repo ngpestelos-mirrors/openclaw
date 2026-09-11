@@ -37,6 +37,18 @@ function allowsMatrixQaTopLevelFinalAfterProgress(params: {
   return params.allowTopLevelFinalWithProgress === true || params.allowFinalBeforeProgress === true;
 }
 
+function createCurrentScenarioEventPredicate(
+  observedEvents: readonly MatrixQaObservedEvent[],
+  startObservedIndex: number,
+) {
+  const preexistingEventIds = new Set(
+    observedEvents.slice(0, startObservedIndex).map((event) => event.eventId),
+  );
+  return (event: MatrixQaObservedEvent) => !preexistingEventIds.has(event.eventId);
+}
+
+export const testing = { createCurrentScenarioEventPredicate };
+
 async function runMatrixToolProgressScenario(
   context: MatrixQaScenarioContext,
   params: {
@@ -58,6 +70,10 @@ async function runMatrixToolProgressScenario(
   const allowTopLevelFinalWithProgress = allowsMatrixQaTopLevelFinalAfterProgress(params);
   const { client, startSince } = await primeMatrixQaDriverScenarioClient(context);
   const startObservedIndex = context.observedEvents.length;
+  const isCurrentScenarioEvent = createCurrentScenarioEventPredicate(
+    context.observedEvents,
+    startObservedIndex,
+  );
   await writeMatrixToolProgressTaskFile(context, params.finalText);
   await using mentionProgressGate = params.mentionSafety
     ? await prepareMatrixMentionProgressGate(context)
@@ -74,6 +90,7 @@ async function runMatrixToolProgressScenario(
   const getPreviewRootEventId = (event: MatrixQaObservedEvent) =>
     event.replacesEventId ?? event.eventId;
   const isFinalReply = (event: MatrixQaObservedEvent) =>
+    isCurrentScenarioEvent(event) &&
     event.roomId === context.roomId &&
     event.sender === context.sutUserId &&
     event.type === "m.room.message" &&
@@ -87,12 +104,14 @@ async function runMatrixToolProgressScenario(
       isMatrixQaMessageLikeKind(event.kind) &&
       matchesExpectedProgress(event.body));
   const isProgressEvent = (event: MatrixQaObservedEvent) =>
+    isCurrentScenarioEvent(event) &&
     event.roomId === context.roomId &&
     event.sender === context.sutUserId &&
     isExpectedProgressKind(event) &&
     (matchesExpectedProgress(event.body) ||
       (event.replacesEventId === undefined && event.relatesTo === undefined));
   const isProgressProofEvent = (event: MatrixQaObservedEvent) =>
+    isCurrentScenarioEvent(event) &&
     event.roomId === context.roomId &&
     event.sender === context.sutUserId &&
     isExpectedProgressKind(event) &&
