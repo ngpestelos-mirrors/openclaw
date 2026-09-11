@@ -5,7 +5,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveGatewayInstallEntrypoint } from "../daemon/gateway-entrypoint.js";
-import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
+import {
+  redactSupportDiagnosticLine,
+  redactSupportString,
+} from "../logging/diagnostic-support-redaction.js";
 import { signalProcessTree } from "../process/kill-tree.js";
 import {
   parseOpenClawSchemaVersions,
@@ -18,6 +21,8 @@ import {
   prepareUpdateCandidateRehearsal,
   type UpdateCandidateRehearsal,
 } from "./update-candidate-rehearsal.js";
+import { parseUpdateDoctorFailureFacts } from "./update-doctor-result.js";
+import { createUpdateFailureFact } from "./update-failure-facts.js";
 import { cleanupUpdateTemporaryDirectory } from "./update-maintenance.js";
 import { resolveUpdateDoctorExecutionPolicy } from "./update-runner-doctor.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
@@ -159,6 +164,7 @@ export async function validateUpdateCandidateCanary(params: {
       windowsHide: true,
     });
     let stdout = "";
+    let firstStderrLine: string | undefined;
     let stdoutBytes = 0;
     let outputExceeded = false;
     const flushers = [child.stdout, child.stderr].map((stream) => {
@@ -180,17 +186,32 @@ export async function validateUpdateCandidateCanary(params: {
         const lines = pending.split(/\r?\n/u);
         pending = lines.pop() ?? "";
         for (const line of lines) {
+          if (stream === child.stderr && line.trim()) {
+            firstStderrLine ??= redactSupportDiagnosticLine(line, {
+              env,
+              stateDir: params.stateDir,
+            });
+          }
           capture(line);
         }
         if (pending.length > 64 * 1024) {
           // Discard an oversized unterminated line whole, never through a secret.
           pending = "";
           droppingLine = true;
+          if (stream === child.stderr) {
+            firstStderrLine ??= "[oversized log line omitted]";
+          }
           capture("[oversized log line omitted]");
         }
       });
       return () => {
         if (pending) {
+          if (stream === child.stderr && pending.trim()) {
+            firstStderrLine ??= redactSupportDiagnosticLine(pending, {
+              env,
+              stateDir: params.stateDir,
+            });
+          }
           capture(pending);
           pending = "";
         }
@@ -207,6 +228,10 @@ export async function validateUpdateCandidateCanary(params: {
     let exited = false;
     const closed = new Promise<number | null>((resolve) => {
       child.once("error", (error) => {
+        firstStderrLine ??= redactSupportDiagnosticLine(error.message, {
+          env,
+          stateDir: params.stateDir,
+        });
         capture(error.message);
         exited = true;
         resolve(null);
@@ -224,6 +249,7 @@ export async function validateUpdateCandidateCanary(params: {
       closed,
       hasExited: () => exited,
       stdout: () => stdout,
+      firstStderrLine: () => firstStderrLine,
       outputExceeded: () => outputExceeded,
     };
   };
@@ -377,6 +403,27 @@ export async function validateUpdateCandidateCanary(params: {
         durationMs: Date.now() - commandStart,
         exitCode: code,
       };
+      if (code !== 0) {
+        const findings =
+          phase === "lint" && !running.outputExceeded()
+            ? parseUpdateDoctorFailureFacts(running.stdout(), env)
+            : undefined;
+        step.failureFacts = findings?.length
+          ? findings
+          : [
+              createUpdateFailureFact(
+                {
+                  check: phase === "lint" ? "doctor" : phase,
+                  code:
+                    phase === "doctor" || phase === "lint"
+                      ? "doctor-failed"
+                      : `candidate-${phase}-failed`,
+                  message: running.firstStderrLine() ?? `Candidate ${phase} failed`,
+                },
+                env,
+              ),
+            ];
+      }
       steps.push(step);
       if (code !== 0) {
         throw new Error(
@@ -471,6 +518,17 @@ export async function validateUpdateCandidateCanary(params: {
       steps.push(failed);
     }
     failed.stderrTail = logTail.join("\n");
+    failed.failureFacts ??= [
+      createUpdateFailureFact(
+        {
+          check: phase === "readiness" ? "readyz" : phase === "startup" ? "startupz" : phase,
+          code:
+            phase === "doctor" || phase === "lint" ? "doctor-failed" : `candidate-${phase}-failed`,
+          message: error instanceof Error ? error.message : String(error),
+        },
+        env,
+      ),
+    ];
     params.onStep?.(failed);
     return {
       status: "error",

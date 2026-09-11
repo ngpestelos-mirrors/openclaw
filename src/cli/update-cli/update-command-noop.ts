@@ -1,5 +1,6 @@
 import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config-repair.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
+import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
@@ -52,7 +53,11 @@ export async function finishAlreadyCurrentUpdate(
     legacyConfigPlan?: LegacyConfigUpdatePlan;
     runtimeTarget?: { version: string; nodeEngine: string | null };
     stop: () => void;
-    refuseUpdate: (reason: string, message?: string) => Promise<void>;
+    refuseUpdate: (
+      reason: string,
+      message?: string,
+      failureFacts?: readonly UpdateFailureFact[],
+    ) => Promise<void>;
   },
 ): Promise<void> {
   await withOwnedManagedUpdateEnv(params.ownedManagedUpdateEnv, async () => {
@@ -145,6 +150,19 @@ export async function finishAlreadyCurrentUpdate(
           stopState.blockMessage ??
             "Run openclaw update from a terminal outside the Gateway service before changing installed plugins.",
         ),
+        stopState.serviceUpdateVerdict?.kind === "unavailable"
+          ? {
+              failureFacts: [
+                {
+                  check: "managed-service",
+                  code:
+                    stopState.serviceUpdateVerdict.inspectionReason ??
+                    "service-inspection-unavailable",
+                  message: stopState.serviceUpdateVerdict.message,
+                },
+              ],
+            }
+          : undefined,
       );
     }
     await assertOpenClawStateWriteAllowedAtPath({
@@ -209,6 +227,7 @@ export async function finishAlreadyCurrentUpdate(
       await params.refuseUpdate(
         error instanceof UpdatePreMutationError ? error.reason : "managed-service-preflight",
         error.message,
+        error.failureFacts,
       );
       return;
     }

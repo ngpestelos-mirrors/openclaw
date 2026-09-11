@@ -5,6 +5,7 @@ import type { LocalPackageOverridesResult } from "./package-local-overrides.js";
 import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
 import type { PackageUpdateStepAdvisory } from "./update-doctor-result.js";
+import type { UpdateFailureFact } from "./update-failure-facts.js";
 import type { GlobalInstallManager } from "./update-global.js";
 import type { UpdateRecovery } from "./update-recovery.js";
 
@@ -26,6 +27,7 @@ export type UpdateStepResult = {
   advisory?: UpdateStepAdvisory;
   /** Complete owner-classified warnings when one step reports several outcomes. */
   warnings?: string[];
+  failureFacts?: UpdateFailureFact[];
 };
 
 export type UpdateRunResult = {
@@ -47,6 +49,7 @@ export type UpdateRunResult = {
   recovery?: UpdateRecovery;
   postUpdate?: {
     plugins?: {
+      failureFacts?: UpdateFailureFact[];
       status: "ok" | "warning" | "skipped" | "error";
       reason?: string;
       changed: boolean;

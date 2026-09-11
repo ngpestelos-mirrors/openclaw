@@ -1,9 +1,13 @@
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveGatewayRestartLogPath } from "../../daemon/restart-logs.js";
 import { resolveGatewayService } from "../../daemon/service.js";
+import {
+  normalizeUpdateFailureFacts,
+  type UpdateFailureFact,
+} from "../../infra/update-failure-facts.js";
 import type { UpdateRepairValidation } from "../../infra/update-repair-protocol.js";
 import { recordUpdateRunStep, recordUpdateRunVerification } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
 import { resolveGatewayRestartProbeContext } from "../daemon-cli/restart-health-probe.js";
@@ -78,6 +82,7 @@ export async function verifyUpdatedGateway(params: {
     launchAgentRecovery: PostUpdateLaunchAgentRecoveryResult | null;
   }>;
 }): Promise<UpdateRepairValidation> {
+  const startedAtMs = Date.now();
   // Readiness belongs to the original live executor through every awaited probe.
   const originalRun = params.opts.run;
   const originalExecutor = originalRun?.executorFence;
@@ -177,19 +182,48 @@ export async function verifyUpdatedGateway(params: {
     );
   }
   const serviceRunning = !params.requireRunningService || health.runtime.status === "running";
+  const recordVerificationStep = (failureFacts?: UpdateFailureFact[], detail?: string) => {
+    const endedAtMs = Date.now();
+    const step: UpdateStepResult = {
+      name: params.result.recovery?.packageRollbackVerified
+        ? "rollback gateway verification"
+        : "gateway verification",
+      command: "gateway verification",
+      cwd: params.result.root ?? process.cwd(),
+      durationMs: endedAtMs - startedAtMs,
+      exitCode: failureFacts ? 1 : 0,
+      ...(failureFacts ? { failureFacts } : {}),
+    };
+    // Repair reuses the result: the last observation replaces its earlier failure.
+    const index = params.result.steps.findIndex((entry) => entry.name === step.name);
+    if (index === -1) {
+      if (failureFacts) {
+        params.result.steps.push(step);
+      }
+    } else {
+      params.result.steps[index] = step;
+    }
+    if (proofOptions.run) {
+      recordUpdateRunStep(
+        proofOptions.run.runId,
+        {
+          step: step.name,
+          status: failureFacts ? "failed" : "completed",
+          endedAtMs,
+          detail,
+          failureFacts,
+        },
+        { env: proofOptions.run.env },
+      );
+    }
+  };
   if (health.healthy && serviceRunning && readyz) {
     assertCurrent();
     const verifiedAtMs = Date.now();
     recordUpdateGatewayHealth(proofOptions.run, health, params.gatewayPort, readyz);
     params.onVerified?.(verifiedAtMs);
     assertCurrent();
-    if (params.opts.run) {
-      recordUpdateRunStep(
-        params.opts.run.runId,
-        { step: "gateway verification", status: "completed", endedAtMs: Date.now() },
-        { env: params.opts.run.env },
-      );
-    }
+    recordVerificationStep();
 
     if (!params.opts.json) {
       defaultRuntime.log(theme.success("Gateway: restarted and verified."));
@@ -232,18 +266,64 @@ export async function verifyUpdatedGateway(params: {
             : !serviceRunning
               ? "service-not-running"
               : (health.waitOutcome ?? "restart-unhealthy");
-  if (params.opts.run) {
-    recordUpdateRunStep(
-      params.opts.run.runId,
-      {
-        step: "gateway verification",
-        status: "failed",
-        endedAtMs: Date.now(),
-        detail: !readyz ? "Gateway /readyz did not return HTTP 200." : reason,
-      },
-      { env: params.opts.run.env },
-    );
+  const facts: UpdateFailureFact[] = [];
+  if (health.versionMismatch) {
+    facts.push({
+      check: "versionMatch",
+      code: "version-mismatch",
+      message: `Expected Gateway version ${health.versionMismatch.expected}; observed ${health.versionMismatch.actual ?? "unavailable"}.`,
+    });
   }
+  if (health.buildIdMismatch) {
+    facts.push({
+      check: "versionMatch",
+      code: "build-id-mismatch",
+      message: `Expected Gateway build ${health.buildIdMismatch.expected}; observed ${health.buildIdMismatch.actual ?? "unavailable"}.`,
+    });
+  }
+  if (!readyz) {
+    facts.push({
+      check: "readyz",
+      code: "readyz-unhealthy",
+      message: `Gateway readiness endpoint returned HTTP ${http.readyz ?? "unavailable"}; expected HTTP 200.`,
+    });
+  }
+  if (!serviceRunning) {
+    facts.push({
+      check: "service",
+      code: "service-not-running",
+      message: `Managed Gateway service status: ${health.runtime.status ?? "unknown"}.`,
+    });
+  }
+  for (const error of health.activatedPluginErrors ?? []) {
+    facts.push({
+      check: "pluginErrors",
+      code: "plugin-errors",
+      pluginId: error.id,
+      message: error.error,
+    });
+  }
+  for (const error of health.channelProbeErrors ?? []) {
+    facts.push({
+      check: "channelsReady",
+      code: "channel-errors",
+      affectedKey: error.id,
+      message: error.error,
+    });
+  }
+  if (!facts.length) {
+    facts.push({
+      check: "settled",
+      code: health.waitOutcome ?? "restart-unhealthy",
+      message:
+        health.probeError ??
+        `Gateway did not settle${health.startupPhase ? `; startup phase: ${health.startupPhase}` : "."}`,
+    });
+  }
+  recordVerificationStep(
+    normalizeUpdateFailureFacts(facts, params.serviceEnv),
+    !readyz ? "Gateway /readyz did not return HTTP 200." : reason,
+  );
   if (params.opts.json) {
     defaultRuntime.error(diagnosticLines.join("\n"));
   } else {

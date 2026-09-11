@@ -4,6 +4,7 @@ import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { disableCurrentOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
+import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { cleanupStaleManagedServiceUpdateHandoffs } from "../../infra/update-managed-service-handoff-cleanup.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
@@ -431,12 +432,17 @@ async function updateCommandInternal(
     devTarget,
   } = target;
   let { packageUpdateNodeRunner } = target;
-  const refuseUpdate = (reason: string, message?: string) =>
+  const refuseUpdate = (
+    reason: string,
+    message?: string,
+    failureFacts?: readonly UpdateFailureFact[],
+  ) =>
     reportPreMutationUpdateResult({
       root,
       installKind: updateInstallKind,
       reason,
       message,
+      failureFacts,
       opts,
       controlPlaneUpdateSentinelMeta,
     });

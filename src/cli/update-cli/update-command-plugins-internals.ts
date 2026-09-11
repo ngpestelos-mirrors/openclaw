@@ -1,8 +1,49 @@
+import {
+  normalizeUpdateFailureFacts,
+  type UpdateFailureFact,
+} from "../../infra/update-failure-facts.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 
 export type PostCorePluginUpdateResult = NonNullable<
   NonNullable<UpdateRunResult["postUpdate"]>["plugins"]
 >;
+
+export function collectPostCorePluginFailureFacts(
+  result: PostCorePluginUpdateResult,
+  env: NodeJS.ProcessEnv = process.env,
+): UpdateFailureFact[] {
+  if (result.status !== "error") {
+    return [];
+  }
+  if (result.failureFacts?.length) {
+    return normalizeUpdateFailureFacts(result.failureFacts, env);
+  }
+  const failures: UpdateFailureFact[] = result.npm.outcomes
+    .filter((outcome) => outcome.status === "error")
+    .map((outcome) => ({
+      check: "plugin-update",
+      code: outcome.code ?? "plugin-update-failed",
+      pluginId: outcome.pluginId,
+      message: outcome.message,
+    }));
+  if (!failures.length) {
+    failures.push(
+      ...result.sync.errors.map((message) => ({
+        check: "plugin-sync",
+        code: "plugin-sync-failed",
+        message,
+      })),
+    );
+  }
+  if (!failures.length) {
+    failures.push({
+      check: "plugin-convergence",
+      code: result.reason ?? "post-update-plugins",
+      message: result.warnings?.[0]?.message,
+    });
+  }
+  return normalizeUpdateFailureFacts(failures, env);
+}
 
 /**
  * Build the post-core-update result we return when the active config cannot

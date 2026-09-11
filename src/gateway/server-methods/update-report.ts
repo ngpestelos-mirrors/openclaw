@@ -62,6 +62,7 @@ function projectReportInput(payload: RestartSentinelPayload): UpdateFailureRepor
           cwd: "",
           durationMs: step.durationMs ?? 0,
           exitCode: step.log?.exitCode ?? null,
+          failureFacts: step.failureFacts,
         };
         if (step.advisory) {
           projected.advisory = PACKAGE_POST_INSTALL_DOCTOR_ADVISORY;
@@ -115,6 +116,7 @@ async function readCurrentReportInput(hasCurrentAuthority: () => boolean) {
           command: "",
           cwd: "",
           durationMs: Math.max(0, (step.endedAtMs ?? 0) - (step.startedAtMs ?? 0)),
+          failureFacts: step.failureFacts,
           exitCode:
             matching?.result.steps.find((entry) => !entry.advisory && entry.name === step.step)
               ?.exitCode ?? null,

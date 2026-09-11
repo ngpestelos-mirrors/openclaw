@@ -148,6 +148,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
     termination: completedDoctorStep.termination,
     advisory: completedDoctorStep.advisory,
     warnings: completedDoctorStep.warnings,
+    failureFacts: completedDoctorStep.failureFacts,
   });
   return completedDoctorStep;
 }
@@ -177,6 +178,7 @@ export async function prepareGitPackageExposure(
           ? normalizeFallbackFailureReason(failure.name)
           : "source-exposure-preparation-failed"),
       failure?.stderrTail ?? "Global source exposure did not reach the activation gate",
+      { failureFacts: failure?.failureFacts },
     );
   }
   return {

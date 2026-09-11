@@ -14,6 +14,57 @@ function prepareDiagnosticReport(reason: string) {
 }
 
 describe("update report diagnostic command boundary", () => {
+  it.each([
+    'Permission denied at "/Users/Example Person/private documents/secret.json"',
+    "Permission denied at /home/example/private file.json",
+    'Permission denied at "C:\\Users\\Example Person\\private\\secret.json"',
+    "Permission denied at ~/private/secret.json",
+    "Permission denied at \u001b[31m/Users/example/private/secret.json\u001b[0m",
+    "Permission denied at file:///Users/example/private/secret.json",
+  ])("keeps a failing check while removing private paths: %s", async (message) => {
+    const report = await prepareUpdateFailureReport(
+      {
+        attemptId: "failure-fact-redaction",
+        result: {
+          mode: "npm",
+          status: "error",
+          reason: "doctor-failed",
+          durationMs: 1,
+          steps: [
+            {
+              name: "doctor",
+              command: "",
+              cwd: "",
+              durationMs: 1,
+              exitCode: 1,
+              failureFacts: [
+                {
+                  check: "config-readable",
+                  code: "EACCES",
+                  affectedKey: "mcp.servers",
+                  message: `token=synthetic-token-value ${message}\nprivate second line`,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      context,
+    );
+    expect(report.body).toContain("Failing check config-readable (EACCES)");
+    expect(report.body).toContain("Permission denied");
+    expect(report.body).toContain("mcp.servers");
+    for (const secret of [
+      "synthetic-token-value",
+      "Example Person",
+      "example/",
+      "secret.json",
+      "private second line",
+      "private file",
+    ]) {
+      expect(report.body).not.toContain(secret);
+    }
+  });
   it("does not imply rollback when candidate repair stops before activation", async () => {
     const report = await prepareUpdateFailureReport(
       {

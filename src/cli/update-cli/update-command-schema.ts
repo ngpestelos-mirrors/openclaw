@@ -1,6 +1,7 @@
 import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config-repair.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
 import type { DevUpdateTarget } from "../../infra/update-dev-target.js";
+import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { OpenClawDatabaseSchemaPreflight } from "../../state/openclaw-database-preflight.js";
@@ -77,7 +78,11 @@ export async function preflightUpdateCommandSchemas(params: {
   packageTargetVersion?: string;
   packageInstallSpec?: string | null;
   opts: Pick<UpdateCommandOptions, "dryRun" | "json" | "run">;
-  refuseUpdate: (reason: string, message?: string) => Promise<void>;
+  refuseUpdate: (
+    reason: string,
+    message?: string,
+    failureFacts?: readonly UpdateFailureFact[],
+  ) => Promise<void>;
 }): Promise<
   { packageSchemaPreflight: OpenClawDatabaseSchemaPreflight; preflightNotes: string[] } | undefined
 > {
@@ -162,7 +167,7 @@ export async function preflightUpdateCommandSchemas(params: {
     } catch (error) {
       if (!opts.dryRun) {
         if (error instanceof UpdatePreMutationError) {
-          await refuseUpdate(error.reason, error.message);
+          await refuseUpdate(error.reason, error.message, error.failureFacts);
           return undefined;
         }
         throw error;

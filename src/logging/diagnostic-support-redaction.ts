@@ -3,6 +3,7 @@ import path from "node:path";
 import { isSensitiveUrlQueryParamName } from "@openclaw/net-policy/redact-sensitive-url";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { sanitizeForLog, stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import { REDACTED_SENTINEL } from "../config/redact-snapshot.js";
 import { isSecretRefShape } from "../config/redact-snapshot.secret-ref.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
@@ -349,6 +350,36 @@ export function redactSupportString(
     return pathRedacted;
   }
   return `${truncateUtf16Safe(pathRedacted, maxLength)}${truncationSuffix}`;
+}
+
+/** One diagnostic line; paths never expose private suffixes in public reports. */
+export function redactSupportDiagnosticLine(
+  value: string,
+  context: SupportRedactionContext,
+  maxLength = 200,
+): string {
+  const first = sanitizeForLog(
+    stripAnsi(value)
+      .split(/[\r\n\u2028\u2029]/u)
+      .find((line) => line.trim()) ?? "",
+  );
+  const redacted = redactSupportString(first, context, { maxLength: Number.MAX_SAFE_INTEGER });
+  // Quoted paths have a known end. An unquoted path may contain spaces, so
+  // retain the diagnostic prefix and redact the rest rather than guess.
+  const paths = redacted
+    .replace(
+      /(["'`])(?:\$OPENCLAW_STATE_DIR|~[\\/]|[A-Za-z]:[\\/]|\/+|\\+)[^"'`]*\1/gu,
+      "[redacted-path]",
+    )
+    .replace(
+      /(?:file:\/\/|\$OPENCLAW_STATE_DIR|(?:^|(?<=[\s=(:[]))(?:~[\\/]|[A-Za-z]:[\\/]|\/+|\\+)).*/gu,
+      "[redacted-path]",
+    );
+  const commandRedacted = paths.replace(
+    /\b(?:Command failed:|command (?:sh|cmd|powershell|bash)\b).*/giu,
+    "[redacted-command]",
+  );
+  return truncateUtf16Safe(commandRedacted.trim(), maxLength);
 }
 
 function sanitizeCommandArguments(args: unknown[], redaction: SupportRedactionContext): unknown[] {

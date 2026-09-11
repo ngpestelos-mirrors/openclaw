@@ -2,7 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolvePreferredOpenClawTmpDir } from "./tmp-openclaw-dir.js";
+import {
+  normalizeUpdateFailureFacts,
+  UpdateFailureFactSchema,
+  type UpdateFailureFact,
+} from "./update-failure-facts.js";
 
 // IPC contract between package update parents and the post-install doctor child.
 export const UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV =
@@ -31,7 +37,57 @@ export type UpdatePostInstallDoctorResult = (
         details: string[];
       };
     }
-) & { configHash?: string; configInputHash?: string; warnings?: string[] };
+) & {
+  configHash?: string;
+  configInputHash?: string;
+  warnings?: string[];
+  failureFacts?: UpdateFailureFact[];
+};
+
+export class UpdateDoctorError extends Error {
+  constructor(
+    message: string,
+    readonly failureFacts: UpdateFailureFact[],
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "UpdateDoctorError";
+  }
+}
+
+/** Read the candidate's structured lint result before any diagnostic tail truncation. */
+export function parseUpdateDoctorFailureFacts(
+  stdout: string,
+  env: NodeJS.ProcessEnv = process.env,
+): UpdateFailureFact[] {
+  let report: unknown;
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!isRecord(report) || !Array.isArray(report.findings)) {
+    return [];
+  }
+  return normalizeUpdateFailureFacts(
+    report.findings.flatMap((finding): UpdateFailureFact[] =>
+      isRecord(finding) &&
+      finding.severity === "error" &&
+      typeof finding.checkId === "string" &&
+      typeof finding.message === "string"
+        ? [
+            {
+              check: finding.checkId,
+              code: "doctor-failed",
+              message: finding.message,
+              ...(typeof finding.path === "string" ? { affectedKey: finding.path } : {}),
+            },
+          ]
+        : [],
+    ),
+    env,
+  );
+}
 
 /** Keep optional health diagnostics bounded across Doctor and its update parent. */
 export function normalizeUpdatePostInstallDoctorWarnings(warnings: readonly string[]): string[] {
@@ -114,14 +170,16 @@ export async function writeUpdatePostInstallDoctorResult(params: {
   result: UpdatePostInstallDoctorResult;
 }): Promise<void> {
   const resultPath = resolveSafeUpdatePostInstallDoctorResultPath(params.resultPath);
-  const { warnings, ...result } = params.result;
+  const { warnings, failureFacts, ...result } = params.result;
   const normalizedWarnings = normalizeUpdatePostInstallDoctorWarnings(warnings ?? []);
+  const facts = normalizeUpdateFailureFacts(failureFacts ?? []);
   // Advisory details can contain config-derived IDs; pre-existing paths must fail closed.
   await fs.writeFile(
     resultPath,
     `${JSON.stringify({
       ...result,
       ...(normalizedWarnings.length ? { warnings: normalizedWarnings } : {}),
+      ...(facts.length ? { failureFacts: facts } : {}),
     })}\n`,
     {
       encoding: "utf8",
@@ -164,6 +222,8 @@ function parseUpdatePostInstallDoctorResult(value: unknown): UpdatePostInstallDo
     return null;
   }
   const normalizedWarnings = normalizeUpdatePostInstallDoctorWarnings(warnings ?? []);
+  const failureFacts = UpdateFailureFactSchema.array().safeParse(record.failureFacts ?? []);
+  const facts = failureFacts.success ? normalizeUpdateFailureFacts(failureFacts.data) : [];
   const configHash = record.configHash;
   if (
     configHash !== undefined &&
@@ -183,6 +243,7 @@ function parseUpdatePostInstallDoctorResult(value: unknown): UpdatePostInstallDo
     ...(configHash === undefined ? {} : { configHash }),
     ...(configInputHash === undefined ? {} : { configInputHash }),
     ...(normalizedWarnings.length ? { warnings: normalizedWarnings } : {}),
+    ...(facts.length ? { failureFacts: facts } : {}),
   };
   if (record.status === "ok" || record.status === "error") {
     return { status: record.status, ...configWrite };

@@ -408,6 +408,63 @@ describe("update candidate canary", () => {
     await expect(fs.access(rehearsal.stateDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("preserves bounded Doctor findings before the diagnostic log tail", async () => {
+    const spawnNormally = mocks.spawn.getMockImplementation()!;
+    mocks.spawn.mockImplementation((command, args: string[], options) => {
+      if (!args.includes("--lint")) {
+        return spawnNormally(command, args, options);
+      }
+      const child = new FakeChild(nextPid++);
+      queueMicrotask(() => {
+        child.stdout.write(
+          `${JSON.stringify({
+            ok: false,
+            checksRun: 1,
+            findings: [
+              ...Array.from({ length: 8 }, (_, index) => ({
+                checkId: `optional.warning.${index}`,
+                severity: "warning",
+                message: "Optional check was skipped.",
+              })),
+              ...Array.from({ length: 8 }, (_, index) => ({
+                checkId: `config.invalid.${index}`,
+                severity: "error",
+                path: "mcp.servers.example",
+                message:
+                  "Invalid server at /Users/synthetic/private/config.json token=synthetic-canary-secret",
+              })),
+            ],
+          })}\n`,
+        );
+        child.stderr.write(Array.from({ length: 60 }, (_, index) => `cleanup ${index}\n`).join(""));
+        child.emit("close", 1);
+      });
+      return child;
+    });
+    const onStep = vi.fn();
+    const result = await validateUpdateCandidateCanary({
+      root,
+      stateDir: root,
+      config: {},
+      env: { API_TOKEN: "synthetic-canary-secret" },
+      timeoutMs: 3_000,
+      onStep,
+    });
+    expect(result).toMatchObject({ status: "error", phase: "lint" });
+    expect(result.steps.at(-1)).toMatchObject({
+      failureFacts: Array.from({ length: 5 }, (_, index) => ({
+        check: `config.invalid.${index}`,
+        code: "doctor-failed",
+        affectedKey: "mcp.servers.example",
+        message: expect.stringContaining("Invalid server"),
+      })),
+    });
+    expect(onStep).toHaveBeenLastCalledWith(result.steps.at(-1));
+    expect(JSON.stringify(result)).not.toContain("synthetic-canary-secret");
+    expect(JSON.stringify(result)).not.toContain("/Users/synthetic");
+    expect(result.logTail.join("\n")).not.toContain("config.invalid.0");
+  });
+
   it.each(["snapshot", "doctor", "plugins", "runtime", "readiness"] as const)(
     "records a failed %s step and cleans private state",
     async (failure) => {

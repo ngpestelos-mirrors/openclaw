@@ -1,6 +1,7 @@
 import { runCommandWithTimeout } from "../process/exec.js";
 import { formatErrorMessage } from "./errors.js";
 import { trimLogTail } from "./restart-sentinel.js";
+import { createUpdateFailureFact } from "./update-failure-facts.js";
 import { createGlobalInstallEnv } from "./update-global.js";
 import { UPDATE_RUN_HEARTBEAT_MS } from "./update-run-timeouts.js";
 import type {
@@ -66,6 +67,23 @@ export async function runStep(opts: RunStepOptions): Promise<UpdateStepResult> {
   const durationMs = Date.now() - started;
   const stdoutTail = trimLogTail(result.stdout, MAX_LOG_CHARS);
   const stderrTail = trimLogTail(result.stderr, MAX_LOG_CHARS);
+  const failureFacts =
+    result.code !== 0 || result.killed || result.termination === "timeout"
+      ? [
+          createUpdateFailureFact(
+            {
+              check: name.startsWith("global ") ? "package-install" : name,
+              code:
+                result.stderr.match(/\bnpm (?:ERR!|error) code ([A-Z][A-Z0-9_]+)/u)?.[1] ??
+                (result.termination && result.termination !== "exit"
+                  ? result.termination
+                  : "command-failed"),
+              message: result.stderr,
+            },
+            env,
+          ),
+        ]
+      : undefined;
 
   progress?.onStepComplete?.({
     ...stepInfo,
@@ -76,6 +94,7 @@ export async function runStep(opts: RunStepOptions): Promise<UpdateStepResult> {
     signal: result.signal,
     killed: result.killed,
     termination: result.termination,
+    ...(failureFacts ? { failureFacts } : {}),
   });
 
   const stepResult: UpdateStepResult = {
@@ -89,6 +108,7 @@ export async function runStep(opts: RunStepOptions): Promise<UpdateStepResult> {
     signal: result.signal,
     killed: result.killed,
     termination: result.termination,
+    ...(failureFacts ? { failureFacts } : {}),
   };
   opts.results?.push(stepResult);
   return stepResult;

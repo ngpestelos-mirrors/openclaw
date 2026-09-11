@@ -36,18 +36,31 @@ export async function inspectUpdateDatabaseContexts(params: {
       expectedService: params.expectedServices?.get(root),
     }).catch((error: unknown) => {
       if (error instanceof GatewayServiceUpdateOwnershipError) {
-        throw new UpdatePreMutationError("managed-service-preflight", error.message);
+        throw new UpdatePreMutationError("managed-service-preflight", error.message, {
+          failureFacts: error.failureFacts,
+        });
       }
       throw error;
     });
     const unavailable =
       inspected.serviceUpdateVerdict?.kind === "unavailable"
-        ? inspected.serviceUpdateVerdict.message
+        ? inspected.serviceUpdateVerdict
         : undefined;
     if (inspected.blockMessage || unavailable) {
       throw new UpdatePreMutationError(
         "managed-service-preflight",
-        formatUpdateAncestryBlockMessage(inspected.blockMessage ?? unavailable!),
+        formatUpdateAncestryBlockMessage(inspected.blockMessage ?? unavailable!.message),
+        unavailable
+          ? {
+              failureFacts: [
+                {
+                  check: "managed-service",
+                  code: unavailable.inspectionReason ?? "service-inspection-unavailable",
+                  message: unavailable.message,
+                },
+              ],
+            }
+          : undefined,
       );
     }
     if (inspected.serviceUpdateVerdict?.kind === "unresolved") {

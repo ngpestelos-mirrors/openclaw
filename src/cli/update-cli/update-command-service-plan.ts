@@ -9,6 +9,7 @@ import { createConfigIO } from "../../config/io.js";
 import { resolveGatewayPort } from "../../config/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveNodeRuntimeInfo } from "../../daemon/runtime-paths.js";
+import type { ServiceInspectionReason } from "../../daemon/service-inspection-error.js";
 import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
 import { resolveGatewayService } from "../../daemon/service.js";
@@ -16,6 +17,10 @@ import { assertGatewayServiceMutationAllowed } from "../../infra/gateway-supervi
 import { tryReadJson } from "../../infra/json-files.js";
 import { nodeVersionSatisfiesEngine } from "../../infra/runtime-guard.js";
 import { parseTcpPortFromArgs } from "../../infra/tcp-port.js";
+import {
+  createUpdateFailureFact,
+  type UpdateFailureFact,
+} from "../../infra/update-failure-facts.js";
 import { CLI_NAME } from "../cli-name.js";
 import { resolveNodeRunner } from "./shared.js";
 
@@ -34,12 +39,21 @@ export type ManagedGatewayUpdateVerdict =
       requiresInstallRootRefresh?: boolean;
     }
   | { kind: "unresolved"; root: string; fingerprint: string }
-  | { kind: "unavailable"; message: string };
+  | { kind: "unavailable"; message: string; inspectionReason?: ServiceInspectionReason };
 
 export class GatewayServiceUpdateOwnershipError extends Error {
-  constructor(message: string, cause: unknown) {
+  readonly failureFacts: UpdateFailureFact[];
+
+  constructor(message: string, cause: unknown, inspectionReason?: ServiceInspectionReason) {
     super(message, { cause });
     this.name = "GatewayServiceUpdateOwnershipError";
+    this.failureFacts = [
+      createUpdateFailureFact({
+        check: "managed-service",
+        code: inspectionReason ?? "service-ownership-unverified",
+        message,
+      }),
+    ];
   }
 }
 
@@ -52,6 +66,9 @@ export function assertGatewayServiceAdmissionUnchanged(
     throw new GatewayServiceUpdateOwnershipError(
       "Gateway service ownership changed after database admission; run `openclaw gateway status --deep` and retry.",
       undefined,
+      serviceUpdateVerdict.kind === "unavailable"
+        ? serviceUpdateVerdict.inspectionReason
+        : undefined,
     );
   }
   if (

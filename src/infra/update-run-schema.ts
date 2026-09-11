@@ -6,6 +6,7 @@ import {
   UPDATE_RUN_STEP_STATUSES,
   UPDATE_RUN_TRIGGERS,
 } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
+import { UpdateFailureFactSchema } from "./update-failure-facts.js";
 
 const text = z.string().max(1024);
 const timestamp = z.number().int().nonnegative();
@@ -21,6 +22,7 @@ const UpdateRunStepSchema = z.object({
   startedAtMs: timestamp.optional(),
   endedAtMs: timestamp.optional(),
   detail: text.optional(),
+  failureFacts: z.array(UpdateFailureFactSchema).max(5).optional(),
 });
 
 const driver = z.object({

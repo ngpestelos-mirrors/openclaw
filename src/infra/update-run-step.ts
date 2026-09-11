@@ -1,9 +1,17 @@
+import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
 import { summarizeUpdateStepFailure, type UpdateRunStep } from "./update-run-record.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
 type ResultStep = Pick<
   UpdateStepResult,
-  "name" | "exitCode" | "advisory" | "warnings" | "termination" | "stdoutTail" | "stderrTail"
+  | "name"
+  | "exitCode"
+  | "advisory"
+  | "warnings"
+  | "termination"
+  | "stdoutTail"
+  | "stderrTail"
+  | "failureFacts"
 >;
 
 /** Warning rows preserve producer-classified advisories in the existing diagnostic ledger. */
@@ -17,6 +25,9 @@ export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] 
     {
       step: step.name,
       status: step.exitCode === 0 || step.advisory ? "completed" : "failed",
+      ...(step.failureFacts?.length && !step.advisory
+        ? { failureFacts: normalizeUpdateFailureFacts(step.failureFacts) }
+        : {}),
       ...(step.exitCode !== 0
         ? { detail: step.advisory?.message ?? summarizeUpdateStepFailure(step) }
         : {}),

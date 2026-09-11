@@ -4,7 +4,6 @@ import { resolveStateDir } from "../../config/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
 import { resolveGatewayService } from "../../daemon/service.js";
-import { isAbortError } from "../../infra/abort-signal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { tryReadJson } from "../../infra/json-files.js";
 import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
@@ -59,7 +58,10 @@ import {
 } from "./update-command-package.js";
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
-import type { MutableUpdateExecutionResult } from "./update-command-result.js";
+import {
+  createUpdateCommandFailureResult,
+  type MutableUpdateExecutionResult,
+} from "./update-command-result.js";
 import { isUpdatedInstallGatewayExecutorSupported } from "./update-command-service-command.js";
 import {
   resolveUpdatedInstallCommandEnv,
@@ -231,7 +233,9 @@ export async function executeMutableUpdate(
         throw err;
       }
       if (err instanceof GatewayServiceUpdateOwnershipError) {
-        throw new UpdatePreMutationError("managed-service-preflight", err.message);
+        throw new UpdatePreMutationError("managed-service-preflight", err.message, {
+          failureFacts: err.failureFacts,
+        });
       }
       params.stop();
       throw new UpdatePreMutationError(
@@ -270,6 +274,19 @@ export async function executeMutableUpdate(
       });
     }
 
+    const inspection = preManagedServiceStop?.serviceUpdateVerdict;
+    const inspectionFailure =
+      inspection?.kind === "unavailable"
+        ? {
+            failureFacts: [
+              {
+                check: "managed-service",
+                code: inspection.inspectionReason ?? "service-inspection-unavailable",
+                message: inspection.message,
+              },
+            ],
+          }
+        : undefined;
     if (shouldBlockMutableUpdateFromGatewayServiceEnv({ preManagedServiceStop })) {
       params.stop();
       throw new UpdatePreMutationError(
@@ -279,6 +296,7 @@ export async function executeMutableUpdate(
           "That path replaces the active OpenClaw dist tree while the live gateway may still lazy-load old chunks.",
           `Run \`${formatCliCommand("openclaw update")}\` from a terminal outside the gateway service.`,
         ].join("\n"),
+        inspectionFailure,
       );
     }
 
@@ -287,6 +305,7 @@ export async function executeMutableUpdate(
       throw new UpdatePreMutationError(
         "managed-service-preflight",
         formatUpdateAncestryBlockMessage(preManagedServiceStop.blockMessage),
+        inspectionFailure,
       );
     }
   };
@@ -666,36 +685,22 @@ export async function executeMutableUpdate(
       return null;
     }
     const preMutationFailure = err instanceof UpdatePreMutationError;
-    const message = formatErrorMessage(err);
-    failure = { cause: err, detail: message };
-    defaultRuntime.error(message);
-    const durationMs = Date.now() - params.startedAt;
+    failure = { cause: err, detail: formatErrorMessage(err) };
+    defaultRuntime.error(failure.detail);
     // Only explicit pre-mutation refusal permits original-runtime recovery.
     // Mutable exceptions retain an unsafe outcome through cleanup/reporting.
-    result = {
-      status: "error",
+    result = createUpdateCommandFailureResult({
+      durationMs: Date.now() - params.startedAt,
       mode:
         params.updateInstallKind === "git"
           ? "git"
           : (params.packageInstallTarget?.manager ?? "unknown"),
       root: params.root,
-      reason: preMutationFailure ? err.reason : "update-failed",
       recovery: preMutationFailure
         ? await originalRecovery()
         : { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-      steps: [
-        {
-          name: preMutationFailure ? err.reason : "update",
-          command: "openclaw update",
-          cwd: params.root,
-          durationMs,
-          exitCode: 1,
-          ...(isAbortError(err) ? { termination: "signal" as const } : {}),
-          stderrTail: message,
-        },
-      ],
-      durationMs,
-    };
+      failure,
+    });
   }
 
   if (candidateFailureReason && result.status === "error") {

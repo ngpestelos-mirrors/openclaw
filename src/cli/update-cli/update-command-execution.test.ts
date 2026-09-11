@@ -389,6 +389,48 @@ describe("mutable update execution", () => {
     expect(mocks.serviceStopped).toBe(false);
   });
 
+  it.each(["admission", "execution"] as const)(
+    "preserves native inspection reasons through %s refusal",
+    async (phase) => {
+      mocks.maybeStopService.mockImplementation(async ({ handoffFromGateway }) => {
+        if (phase === "admission" || handoffFromGateway) {
+          return {
+            stopped: false,
+            inspected: false,
+            runtimeInspected: false,
+            running: false,
+            serviceMutationAllowed: false,
+            serviceUpdateVerdict: {
+              kind: "unavailable",
+              message: "The systemd user session bus is unavailable.",
+              inspectionReason: "systemd-user-bus-unavailable",
+            },
+            blockMessage: "The systemd user session bus is unavailable.",
+          };
+        }
+        return inspectOrStopService("inspect");
+      });
+      const execution = await executeMutableUpdate(executionParams("package"));
+      expect(execution?.result).toMatchObject({
+        status: "error",
+        reason: "managed-service-preflight",
+        steps: [
+          {
+            failureFacts: [
+              {
+                check: "managed-service",
+                code: "systemd-user-bus-unavailable",
+                message: "The systemd user session bus is unavailable.",
+              },
+            ],
+          },
+        ],
+      });
+      expect(mocks.serviceStopped).toBe(false);
+      expect(mocks.runPackageUpdate).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["available", "incompatible", "changed-owner"] as const)(
     "admits local artifacts from the staged version before rehearsal: %s",
     async (outcome) => {

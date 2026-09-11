@@ -177,6 +177,30 @@ afterEach(async () => {
 });
 
 describe("Report action from the authoritative update ledger", () => {
+  it("keeps the recorded failing check through the public preview adapter", async () => {
+    createUpdateRun({ runId, trigger: "control-ui" });
+    recordUpdateRunPhase(runId, "validating", {
+      step: {
+        step: "candidate doctor lint",
+        status: "failed",
+        detail: "private-raw-log",
+        failureFacts: [
+          {
+            check: "core/doctor/runtime-tool-schemas",
+            code: "doctor-failed",
+            affectedKey: "mcp.servers",
+            message: "Configured MCP server could not expose runtime tools.",
+          },
+        ],
+      },
+    });
+    finishUpdateRun(runId, { status: "failed", reason: "doctor-failed" });
+    const result = await preview();
+    expect(result.body).toContain("Failing check core/doctor/runtime-tool-schemas (doctor-failed)");
+    expect(result.body).toContain("mcp.servers");
+    expect(result.body).toContain("could not expose runtime tools");
+    expect(result.body).not.toContain("private-raw-log");
+  });
   it.each([
     { reason: "dirty", reportable: true },
     { reason: "not-git-install", reportable: true },

@@ -76,6 +76,18 @@ export const UpdateRunRecordSchema = closedObject({
       startedAtMs: Type.Optional(timestamp),
       endedAtMs: Type.Optional(timestamp),
       detail: Type.Optional(text),
+      failureFacts: Type.Optional(
+        Type.Array(
+          closedObject({
+            check: Type.String({ maxLength: 128 }),
+            code: Type.String({ maxLength: 80 }),
+            message: Type.Optional(Type.String({ maxLength: 200 })),
+            affectedKey: Type.Optional(Type.String({ maxLength: 128 })),
+            pluginId: Type.Optional(Type.String({ maxLength: 80 })),
+          }),
+          { maxItems: 5 },
+        ),
+      ),
     }),
     { maxItems: 128 },
   ),

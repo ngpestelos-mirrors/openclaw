@@ -9,6 +9,7 @@ import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
 import { VERSION } from "../version.js";
 import { prepareGithubIssue, type PreparedGithubIssue } from "./github-issue.js";
 import { normalizeUpdateChannel } from "./update-channels.js";
+import { formatUpdateFailureFact, normalizeUpdateFailureFacts } from "./update-failure-facts.js";
 import {
   LEGACY_UPDATE_RUN_ADVISORY,
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
@@ -175,6 +176,11 @@ function renderBoundedDiagnostics(
     const phase = sanitizeReportField(step.name, context);
     const termination = step.termination ? `, termination ${step.termination}` : "";
     diagnostics.push(`Failed phase ${phase}: exit ${step.exitCode ?? "unknown"}${termination}`);
+    diagnostics.push(
+      ...normalizeUpdateFailureFacts(step.failureFacts ?? [], context.env).map(
+        formatUpdateFailureFact,
+      ),
+    );
   }
   return diagnostics;
 }

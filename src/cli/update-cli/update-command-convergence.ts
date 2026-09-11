@@ -16,6 +16,7 @@ import { VERSION } from "../../version.js";
 import { readPackageVersion, type UpdateCommandOptions } from "./shared.js";
 import { preparePostCorePluginConfig } from "./update-command-config.js";
 import { completePostCorePluginUpdate } from "./update-command-fresh-doctor.js";
+import { collectPostCorePluginFailureFacts } from "./update-command-plugins-internals.js";
 import { updatePluginsAfterCoreUpdate } from "./update-command-plugins.js";
 import {
   continuePostCoreUpdateInFreshProcess,
@@ -218,6 +219,25 @@ export async function convergeUpdatePlugins(params: {
             },
           }
         : params.result;
+      const failureFacts = postCorePluginUpdate
+        ? collectPostCorePluginFailureFacts(postCorePluginUpdate)
+        : [];
+      if (failureFacts.length) {
+        resultWithPostUpdate = {
+          ...resultWithPostUpdate,
+          steps: [
+            ...resultWithPostUpdate.steps,
+            {
+              name: "post-update verification",
+              command: "openclaw plugins update",
+              cwd: postUpdateRoot,
+              durationMs: 0,
+              exitCode: 1,
+              failureFacts,
+            },
+          ],
+        };
+      }
       if (doctorWarnings.length) {
         resultWithPostUpdate = {
           ...resultWithPostUpdate,
@@ -272,6 +292,7 @@ export async function convergeUpdatePlugins(params: {
             step: "post-update verification",
             status: postCorePluginUpdate?.status === "error" ? "failed" : "completed",
             endedAtMs: Date.now(),
+            ...(failureFacts.length ? { failureFacts } : {}),
           },
           { env: params.opts.run.env },
         );

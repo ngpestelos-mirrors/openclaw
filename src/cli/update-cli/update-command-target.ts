@@ -13,6 +13,7 @@ import {
   resolveExtendedStablePackage,
   resolveNpmChannelTag,
 } from "../../infra/update-check.js";
+import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   createGlobalInstallEnv,
@@ -74,12 +75,17 @@ export async function resolveUpdateCommandTarget(
   let { devTarget } = prepared;
   let root = discoveredRoot;
   let updateInstallKind = installKind;
-  const refuseUpdate = async (reason: string, message?: string) => {
+  const refuseUpdate = async (
+    reason: string,
+    message?: string,
+    failureFacts?: readonly UpdateFailureFact[],
+  ) => {
     const report = {
       root,
       installKind: updateInstallKind,
       reason,
       message,
+      failureFacts,
       opts,
       controlPlaneUpdateSentinelMeta,
     };
