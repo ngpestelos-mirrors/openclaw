@@ -37,7 +37,7 @@ import {
 } from "./google-messages.js";
 import { consumeGoogleGenerateContentStream } from "./google-stream.js";
 
-type GoogleApiType = "google-generative-ai" | "google-vertex";
+export type GoogleApiType = "google-generative-ai" | "google-vertex" | "google-interactions";
 
 type GoogleThinkingLevel = `${ThinkingLevel}`;
 

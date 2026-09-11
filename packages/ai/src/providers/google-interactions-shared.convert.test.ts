@@ -110,7 +110,6 @@ describe("buildGoogleInteractionsParams", () => {
         id: "call_123",
         name: "getWeather",
         arguments: { city: "Tokyo" },
-        signature: "skip_thought_signature_validator",
       },
       {
         type: "function_result",
@@ -163,7 +162,7 @@ describe("buildGoogleInteractionsParams", () => {
     ]);
   });
 
-  it("attaches explicit thought signatures to function_call steps", () => {
+  it("emits thought signatures in separate thought steps and not on function_call steps", () => {
     const context: Context = {
       messages: [
         { role: "user", content: "Weather in Tokyo?" },
@@ -190,11 +189,92 @@ describe("buildGoogleInteractionsParams", () => {
         content: [{ type: "text", text: "Weather in Tokyo?" }],
       },
       {
+        type: "thought",
+        signature: "sig_tool_call_token==",
+      },
+      {
         type: "function_call",
         id: "call_123",
         name: "getWeather",
         arguments: { city: "Tokyo" },
-        signature: "sig_tool_call_token==",
+      },
+    ]);
+  });
+
+  it("converts assistant message with both thinking and toolCall into separate thought and function_call steps", () => {
+    const context: Context = {
+      messages: [
+        { role: "user", content: "Weather in Tokyo?" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "Looking up weather in Tokyo...",
+              thinkingSignature: "sig_reasoning_token==",
+            },
+            {
+              type: "toolCall",
+              id: "call_123",
+              name: "getWeather",
+              arguments: { city: "Tokyo" },
+            },
+          ],
+        },
+      ],
+    };
+
+    const params = buildGoogleInteractionsParams(model, context, {});
+
+    expect(params.input).toEqual([
+      {
+        type: "user_input",
+        content: [{ type: "text", text: "Weather in Tokyo?" }],
+      },
+      {
+        type: "thought",
+        signature: "sig_reasoning_token==",
+        summary: [{ type: "text", text: "Looking up weather in Tokyo..." }],
+      },
+      {
+        type: "function_call",
+        id: "call_123",
+        name: "getWeather",
+        arguments: { city: "Tokyo" },
+      },
+    ]);
+  });
+
+  it("does not attach dummy skip_thought_signature_validator to function_call steps for Gemini 3 models", () => {
+    const context: Context = {
+      messages: [
+        { role: "user", content: "Calculate 2+2" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call_calc",
+              name: "calculator",
+              arguments: { expr: "2+2" },
+            },
+          ],
+        },
+      ],
+    };
+
+    const params = buildGoogleInteractionsParams(model, context, {});
+
+    expect(params.input).toEqual([
+      {
+        type: "user_input",
+        content: [{ type: "text", text: "Calculate 2+2" }],
+      },
+      {
+        type: "function_call",
+        id: "call_calc",
+        name: "calculator",
+        arguments: { expr: "2+2" },
       },
     ]);
   });
