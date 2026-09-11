@@ -1,9 +1,10 @@
 // Discord plugin module implements model picker.view behavior.
 import type { APISelectMenuOption } from "discord-api-types/v10";
 import { ButtonStyle } from "discord-api-types/v10";
-import type {
-  ModelsProviderData,
-  ModelsRuntimeChoice,
+import {
+  formatModelsAllowListNotice,
+  type ModelsProviderData,
+  type ModelsRuntimeChoice,
 } from "openclaw/plugin-sdk/models-provider-runtime";
 import { normalizeProviderId } from "openclaw/plugin-sdk/provider-model-shared";
 import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
@@ -269,7 +270,7 @@ function buildRenderedShell(
   if (params.detailLines.length > 0) {
     containerComponents.push(new TextDisplay(params.detailLines.join("\n")));
   }
-  const notice = params.data.allowList?.message;
+  const notice = formatModelsAllowListNotice(params.data);
   if (notice) {
     containerComponents.push(new TextDisplay(notice));
   }

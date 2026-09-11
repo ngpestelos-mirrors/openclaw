@@ -76,6 +76,23 @@ export type ModelsProviderData = {
   isCurrent?: () => boolean;
 };
 
+export function formatModelsAllowListNotice(
+  data: Pick<ModelsProviderData, "allowList" | "providers">,
+): string {
+  const facts = data.allowList;
+  if (!facts) {
+    return "";
+  }
+  const lines = [
+    ...(facts.hiddenCount > 0
+      ? [`${facts.hiddenCount} newer models hidden by your allow list`]
+      : []),
+    ...(data.providers.length === 0 ? ["No models match your allow list."] : []),
+    ...(facts.selectedModelBlocked ? ["The current model is not allowed by your allow list."] : []),
+  ];
+  return lines.length ? [...lines, `Settings: ${facts.settingsPath}`].join("\n") : "";
+}
+
 type PreparedModelsProviderData = ModelsProviderData & {
   modelCatalog: ModelCatalogEntry[];
 };
@@ -530,7 +547,7 @@ export async function resolveModelsCommandReply(params: {
     throw error;
   }
   const { byProvider, providers, modelNames } = data;
-  const notice = data.allowList?.message;
+  const notice = formatModelsAllowListNotice(data);
   const withNotice = (text: string) => (notice ? `${text}\n\n${notice}` : text);
   if (providers.length === 0 && data.allowList) {
     return { text: notice };

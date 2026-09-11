@@ -362,7 +362,6 @@ export const ModelCatalogProviderOutcomeSchema = closedObject({
 export const ModelAllowListSchema = closedObject({
   hiddenCount: Type.Integer({ minimum: 0 }),
   settingsPath: NonEmptyString,
-  message: Type.String(),
   selectedModelBlocked: Type.Optional(Type.Boolean()),
 });
 

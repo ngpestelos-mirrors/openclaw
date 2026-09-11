@@ -26,25 +26,8 @@ import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 type ModelCatalogVisibilityView = "default" | "configured" | "all";
 export type VisibleModelCatalog = { entries: ModelCatalogEntry[]; allowList?: ModelAllowList };
 
-export function createModelAllowListNotice(
-  facts: Omit<ModelAllowList, "message">,
-  hasModels: boolean,
-): ModelAllowList {
-  const lines = [
-    ...(facts.hiddenCount > 0
-      ? [`${facts.hiddenCount} newer models hidden by your allow list`]
-      : []),
-    ...(!hasModels ? ["No models match your allow list."] : []),
-    ...(facts.selectedModelBlocked ? ["The current model is not allowed by your allow list."] : []),
-  ];
-  return {
-    ...facts,
-    message: lines.length ? [...lines, `Settings: ${facts.settingsPath}`].join("\n") : "",
-  };
-}
-
 /** Apply selection policy after provider eligibility and route projection, never before counting. */
-export function applyModelCatalogAllowList(params: {
+function applyModelCatalogAllowList(params: {
   policy: ModelVisibilityPolicy;
   catalog: ModelCatalogEntry[];
   agentId?: string;
@@ -58,19 +41,16 @@ export function applyModelCatalogAllowList(params: {
   );
   return {
     entries,
-    allowList: createModelAllowListNotice(
-      {
-        hiddenCount: params.catalog.length - entries.length,
-        settingsPath: params.policy.allowRepairConfigPath.replace(
-          "entries.*",
-          `entries.${params.agentId}`,
-        ),
-        ...(params.selectedModel
-          ? { selectedModelBlocked: !params.policy.allows(params.selectedModel) }
-          : {}),
-      },
-      entries.length > 0,
-    ),
+    allowList: {
+      hiddenCount: params.catalog.length - entries.length,
+      settingsPath: params.policy.allowRepairConfigPath.replace(
+        "entries.*",
+        `entries.${params.agentId}`,
+      ),
+      ...(params.selectedModel
+        ? { selectedModelBlocked: !params.policy.allows(params.selectedModel) }
+        : {}),
+    },
   };
 }
 

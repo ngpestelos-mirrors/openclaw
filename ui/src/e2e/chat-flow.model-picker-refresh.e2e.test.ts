@@ -31,7 +31,7 @@ suite.define(() => {
     { name: "no matching models", empty: true, blocked: false },
     { name: "a blocked session pin", empty: false, blocked: true },
   ])(
-    "shows the allow list notice for $name without changing the session",
+    "localizes allow list facts for $name without changing the session",
     async ({ empty, blocked }) => {
       const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
       const page = await context.newPage();
@@ -56,8 +56,6 @@ suite.define(() => {
             allowList: {
               hiddenCount: 2,
               settingsPath: "agents.defaults.modelPolicy.allow",
-              message:
-                "2 newer models hidden by your allow list\nSettings: agents.defaults.modelPolicy.allow",
               selectedModelBlocked: blocked,
             },
           },

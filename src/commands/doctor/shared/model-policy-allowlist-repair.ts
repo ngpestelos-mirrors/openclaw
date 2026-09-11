@@ -138,7 +138,7 @@ export async function prepareDoctorModelPolicyAllowlist(params: {
 }
 
 /** Doctor-only offer: startup must never broaden an upgrade-generated restriction. */
-export function repairUpgradeGeneratedModelAllowlist(
+function repairUpgradeGeneratedModelAllowlist(
   config: OpenClawConfig,
   sourceConfig: unknown = config,
 ): DoctorConfigMutationResult {
@@ -185,7 +185,7 @@ export function repairUpgradeGeneratedModelAllowlist(
     : { config, changes: [] };
 }
 
-export function inspectModelPolicyAllowlist(params: {
+function inspectModelPolicyAllowlist(params: {
   config: OpenClawConfig;
   catalog: ModelCatalogEntry[];
   enabledProviders: ReadonlySet<string>;

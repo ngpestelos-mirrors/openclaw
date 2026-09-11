@@ -4,7 +4,10 @@ import { parseExecApprovalCommandText } from "openclaw/plugin-sdk/approval-reply
 import { buildCommandsMessagePaginated } from "openclaw/plugin-sdk/command-status";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { applySessionModelSelection } from "openclaw/plugin-sdk/model-session-runtime";
-import { formatModelsAvailableHeader } from "openclaw/plugin-sdk/models-provider-runtime";
+import {
+  formatModelsAvailableHeader,
+  formatModelsAllowListNotice,
+} from "openclaw/plugin-sdk/models-provider-runtime";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
@@ -530,7 +533,7 @@ async function handleTelegramModelCallback(params: {
     return { sessionState: session, modelData: providerData };
   });
   const { byProvider, providers, modelNames, resolvedDefault: activeResolvedDefault } = modelData;
-  const notice = modelData.allowList?.message;
+  const notice = formatModelsAllowListNotice(modelData);
   const withNotice = (text: string) => (notice ? `${text}\n\n${notice}` : text);
   const providerInfos: ProviderInfo[] = providers.map((provider) => ({
     id: provider,

@@ -3804,6 +3804,7 @@ private fun ChatModelPickerSheet(
   onSignIn: (() -> Unit)?,
   onToggleFavorite: (String) -> Unit,
 ) {
+  val visibleModelsEmpty = sections.pinned.isEmpty() && sections.recent.isEmpty() && sections.remaining.isEmpty()
   var showPermissionPicker by rememberSaveable { mutableStateOf(false) }
   var showUsageDetails by rememberSaveable { mutableStateOf(false) }
   LaunchedEffect(permissionPickerEnabled) {
@@ -3850,8 +3851,17 @@ private fun ChatModelPickerSheet(
             item {
               Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(text = selectedModelLabel, style = ClawTheme.type.label, color = ClawTheme.colors.text)
-                allowList?.message?.takeIf { it.isNotEmpty() }?.let { message ->
-                  Text(message, style = ClawTheme.type.caption)
+                allowList?.takeIf { it.hiddenCount > 0 || it.selectedModelBlocked == true || visibleModelsEmpty }?.let { policy ->
+                  if (policy.hiddenCount > 0) {
+                    Text(nativeString("\$count newer models hidden by your allow list", policy.hiddenCount), style = ClawTheme.type.caption)
+                  }
+                  if (visibleModelsEmpty) {
+                    Text(nativeString("No models match your allow list."), style = ClawTheme.type.caption)
+                  }
+                  if (policy.selectedModelBlocked == true) {
+                    Text(nativeString("The current model is not allowed by your allow list."), style = ClawTheme.type.caption)
+                  }
+                  Text(nativeString("Review \$path in Settings.", policy.settingsPath), style = ClawTheme.type.caption)
                 }
                 if (modelSelectionLocked) {
                   Text(text = nativeString("Model selection is locked for this session."), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
@@ -3959,7 +3969,6 @@ private fun ChatModelPickerSheet(
               HorizontalDivider(color = ClawTheme.colors.border)
             }
             item {
-              if (allowList != null) return@item
               Surface(
                 onClick = { onSelect(null) },
                 modifier = Modifier.fillMaxWidth().heightIn(min = ClawTheme.spacing.touchTarget),
@@ -3967,7 +3976,7 @@ private fun ChatModelPickerSheet(
                 contentColor = ClawTheme.colors.text,
               ) {
                 Text(
-                  text = nativeString("Default model"),
+                  text = nativeString("Reset session model"),
                   modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
                   style = ClawTheme.type.body,
                 )

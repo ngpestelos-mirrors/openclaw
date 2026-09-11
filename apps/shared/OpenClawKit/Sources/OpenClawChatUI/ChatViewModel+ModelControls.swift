@@ -81,6 +81,25 @@ extension OpenClawChatViewModel {
         self.modelAvailabilityIsSessionScoped && model.available == false
     }
 
+    public var modelAllowListNotice: String? {
+        guard let allowList = self.modelAllowList else { return nil }
+        var lines: [String] = []
+        if allowList.hiddenCount > 0 {
+            lines.append(String(
+                format: String(localized: "%lld newer models hidden by your allow list"),
+                allowList.hiddenCount))
+        }
+        if self.modelChoices.isEmpty {
+            lines.append(String(localized: "No models match your allow list."))
+        }
+        if allowList.selectedModelBlocked == true {
+            lines.append(String(localized: "The current model is not allowed by your allow list."))
+        }
+        guard !lines.isEmpty else { return nil }
+        lines.append(String(format: String(localized: "Review %@ in Settings."), allowList.settingsPath))
+        return lines.joined(separator: "\n")
+    }
+
     public func canSelectModel(_ selectionID: String) -> Bool {
         guard selectionID != Self.defaultModelSelectionID,
               let model = self.modelChoices.first(where: { $0.selectionID == selectionID })

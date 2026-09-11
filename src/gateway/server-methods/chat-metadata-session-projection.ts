@@ -5,7 +5,6 @@ import type {
 import type { PreparedAgentCredentialModes } from "../../agents/agent-auth-credential-modes.js";
 import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
 import { readSessionRuntimeOwnership } from "../../agents/harness/session-runtime-ownership.js";
-import { createModelAllowListNotice } from "../../agents/model-catalog-visibility.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import { createModelVisibilityPolicy } from "../../agents/model-visibility-policy.js";
 import { getPreparedModelRuntimeAuthMaterializations } from "../../agents/prepared-model-runtime-auth.js";
@@ -185,10 +184,7 @@ export function projectChatSessionMetadata(
     models: projectSessionModelCatalog(readParams, metadata.models, config),
     ...(metadata.allowList && policy
       ? {
-          allowList: createModelAllowListNotice(
-            { ...metadata.allowList, selectedModelBlocked: !policy.allows(selected) },
-            metadata.models.length > 0,
-          ),
+          allowList: { ...metadata.allowList, selectedModelBlocked: !policy.allows(selected) },
         }
       : {}),
   };

@@ -8252,25 +8252,21 @@ public struct MissingScopeErrorDetails: Codable, Sendable {
 public struct ModelAllowList: Codable, Sendable {
     public let hiddencount: Int
     public let settingspath: String
-    public let message: String
     public let selectedmodelblocked: Bool?
 
     public init(
         hiddencount: Int,
         settingspath: String,
-        message: String,
         selectedmodelblocked: Bool? = nil)
     {
         self.hiddencount = hiddencount
         self.settingspath = settingspath
-        self.message = message
         self.selectedmodelblocked = selectedmodelblocked
     }
 
     private enum CodingKeys: String, CodingKey {
         case hiddencount = "hiddenCount"
         case settingspath = "settingsPath"
-        case message
         case selectedmodelblocked = "selectedModelBlocked"
     }
 }

@@ -21,10 +21,7 @@ import {
   runDoctorConfigWithInput,
 } from "./doctor-config-flow.test-utils.js";
 import { createDoctorPrompter } from "./doctor-prompter.js";
-import {
-  inspectModelPolicyAllowlist,
-  repairUpgradeGeneratedModelAllowlist,
-} from "./doctor/shared/model-policy-allowlist-repair.js";
+import { prepareDoctorModelPolicyAllowlist } from "./doctor/shared/model-policy-allowlist-repair.js";
 
 type TerminalNote = (message: string, title?: string) => void;
 
@@ -3963,23 +3960,40 @@ describe("doctor config flow", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
-const catalog = ["existing", "newer"].map((id) => ({ provider: "openai", id, name: id }));
-const enabledProviders = new Set(["openai"]);
+const allowListModels = {
+  providers: {
+    fixture: {
+      baseUrl: "https://example.invalid/v1",
+      api: "openai-completions",
+      apiKey: "test-fixture-key",
+      models: ["existing", "newer", "future"].map((id) => ({ id, name: id })),
+    },
+    other: {
+      baseUrl: "https://example.invalid/v1",
+      api: "openai-completions",
+      apiKey: "test-fixture-key",
+      models: [{ id: "model", name: "Other" }],
+    },
+  },
+} satisfies NonNullable<OpenClawConfig["models"]>;
 
 describe("Doctor model allow list offer", () => {
+  beforeEach(() => {
+    extraModelCatalogRows.entries = [];
+  });
   it.each([
     {
-      config: { agents: { defaults: { modelPolicy: { allow: ["openai/existing"] } } } },
+      config: { agents: { defaults: { modelPolicy: { allow: ["fixture/existing"] } } } },
       marked: false,
     },
     {
       config: {
         meta: { migrations: { modelPolicyAllowlist: true as const } },
-        agents: { defaults: { modelPolicy: { allow: ["openai/existing"] } } },
+        agents: { defaults: { modelPolicy: { allow: ["fixture/existing"] } } },
       },
       marked: true,
     },
-    { config: { agents: { defaults: { models: { "openai/existing": {} } } } }, marked: true },
+    { config: { agents: { defaults: { models: { "fixture/existing": {} } } } }, marked: true },
   ])(
     "preserves upgrade provenance across repeated config writes: $marked",
     ({ config, marked }) => {
@@ -3987,7 +4001,7 @@ describe("Doctor model allow list offer", () => {
       const second = materializeModelPolicyAllowlist(first).config;
       expect(first.meta?.migrations?.modelPolicyAllowlist === true).toBe(marked);
       expect(second.meta?.migrations?.modelPolicyAllowlist === true).toBe(marked);
-      expect(second.agents?.defaults?.modelPolicy?.allow).toEqual(["openai/existing"]);
+      expect(second.agents?.defaults?.modelPolicy?.allow).toEqual(["fixture/existing"]);
     },
   );
 
@@ -3995,74 +4009,72 @@ describe("Doctor model allow list offer", () => {
     {
       name: "defaults",
       agentId: undefined,
-      allow: ["openai/existing"],
+      allow: ["fixture/existing"],
       expectedPath: "agents.defaults.modelPolicy.allow",
       warned: true,
     },
     {
       name: "agent policy",
       agentId: "worker",
-      allow: ["openai/existing"],
+      allow: ["fixture/existing"],
       expectedPath: "agents.entries.worker.modelPolicy.allow",
       warned: true,
     },
     {
       name: "provider wildcard",
       agentId: "worker",
-      allow: ["openai/*"],
+      allow: ["fixture/*"],
       expectedPath: "agents.entries.worker.modelPolicy.allow",
       warned: false,
     },
   ])(
     "reports the primary omitted from $name without rewriting hand-written config",
-    ({ agentId, allow, expectedPath, warned }) => {
-      const primary = { primary: "openai/newer", fallbacks: ["openai/existing"] };
+    async ({ agentId, allow, expectedPath, warned }) => {
+      const primary = { primary: "fixture/newer", fallbacks: ["fixture/existing"] };
       const config: OpenClawConfig = {
+        models: allowListModels,
         agents: agentId
           ? { entries: { [agentId]: { model: primary, modelPolicy: { allow } } } }
           : { defaults: { model: primary, modelPolicy: { allow } } },
       };
       const original = structuredClone(config);
-      const result = inspectModelPolicyAllowlist({
+      const result = await prepareDoctorModelPolicyAllowlist({
         config,
         sourceConfig: config,
-        catalog,
-        enabledProviders,
-        hiddenCount: 1,
+        repair: true,
       });
       expect(result.config).toEqual(original);
       expect(config).toEqual(original);
       expect(result.changes).toEqual([]);
       expect(result.warnings).toEqual(
         warned
-          ? [expect.stringContaining("Your primary model openai/newer is not in your allow list")]
+          ? [expect.stringContaining("Your primary model fixture/newer is not in your allow list")]
           : [],
       );
       if (warned) {
-        expect(result.warnings[0]).toContain('Add "openai/newer" or "openai/*"');
+        expect(result.warnings[0]).toContain('Add "fixture/newer" or "fixture/*"');
         expect(result.warnings[0]).toContain(expectedPath);
       }
     },
   );
 
-  it("checks an agent primary against its inherited allow list", () => {
+  it("checks an agent primary against its inherited allow list", async () => {
     const config: OpenClawConfig = {
+      models: allowListModels,
       agents: {
-        defaults: { model: "openai/existing", modelPolicy: { allow: ["openai/existing"] } },
-        entries: { worker: { model: "openai/newer" } },
+        defaults: { model: "fixture/existing", modelPolicy: { allow: ["fixture/existing"] } },
+        entries: { worker: { model: "fixture/newer" } },
       },
     };
-    const result = inspectModelPolicyAllowlist({
+    const result = await prepareDoctorModelPolicyAllowlist({
       config,
       sourceConfig: config,
-      catalog,
-      enabledProviders,
-      hiddenCount: 1,
+      repair: true,
     });
     expect(result.changes).toEqual([]);
     expect(result.warnings).toEqual([
       expect.stringContaining(
-        "Your primary model openai/newer is not in your allow list for agent worker",
+        "Your primary model fixture/newer is not in your allow list for agent worker",
       ),
     ]);
     expect(result.warnings[0]).toContain("agents.defaults.modelPolicy.allow");
@@ -4071,106 +4083,125 @@ describe("Doctor model allow list offer", () => {
 
   it.each([
     {
-      allow: ["openai/existing", "openai/newer", "other/model"],
-      expected: ["openai/*", "other/*"],
+      allow: ["fixture/existing", "fixture/newer", "other/model"],
+      expected: ["fixture/*", "other/*"],
     },
-    { allow: ["openai/*", "openai/existing"], expected: ["openai/*"] },
+    { allow: ["fixture/*", "fixture/existing"], expected: ["fixture/*"] },
     {
-      allow: ["openai/existing", "odd", null, "bad/**"],
-      expected: ["openai/*", "odd", null, "bad/**"],
+      allow: ["fixture/existing", "odd", null, "bad/**"],
+      expected: ["fixture/*", "odd", null, "bad/**"],
     },
-  ])("widens valid provider refs and preserves odd entries: $allow", ({ allow, expected }) => {
-    const config: Record<string, unknown> = {
-      meta: { migrations: { modelPolicyAllowlist: true } },
-      agents: { defaults: { modelPolicy: { allow } } },
-    };
-    const original = structuredClone(config);
-    const result = repairUpgradeGeneratedModelAllowlist(config);
-    expect(result.config.agents?.defaults?.modelPolicy?.allow).toEqual(expected);
-    expect(config).toEqual(original);
-    expect(repairUpgradeGeneratedModelAllowlist(result.config).changes).toEqual([]);
-  });
-
-  it.each([undefined, { migrations: { modelPolicyAllowlist: true as const } }])(
-    "offers only migration-marked restrictions when newer models exist: %j",
-    (meta) => {
-      const config: OpenClawConfig = {
-        ...(meta ? { meta } : {}),
-        agents: { defaults: { modelPolicy: { allow: ["openai/existing"] } } },
+  ])(
+    "widens valid provider refs and preserves odd entries: $allow",
+    async ({ allow, expected }) => {
+      const config: Record<string, unknown> = {
+        models: allowListModels,
+        meta: { migrations: { modelPolicyAllowlist: true } },
+        agents: { defaults: { modelPolicy: { allow } } },
       };
-      const result = inspectModelPolicyAllowlist({
+      const original = structuredClone(config);
+      const result = await prepareDoctorModelPolicyAllowlist({
         config,
         sourceConfig: config,
-        catalog,
-        enabledProviders,
-        hiddenCount: 1,
+        repair: true,
       });
-      expect(result.changes.length).toBe(meta ? 1 : 0);
-      expect(result.warnings.length).toBe(meta ? 1 : 0);
+      expect(result.config.agents?.defaults?.modelPolicy?.allow).toEqual(expected);
+      expect(config).toEqual(original);
       expect(
-        inspectModelPolicyAllowlist({
-          config,
-          sourceConfig: {},
-          catalog,
-          enabledProviders,
-          hiddenCount: 1,
-        }).changes,
+        (
+          await prepareDoctorModelPolicyAllowlist({
+            config: result.config,
+            sourceConfig: result.config,
+            repair: true,
+          })
+        ).changes,
       ).toEqual([]);
     },
   );
 
-  it("keeps exact pins when no catalog row is hidden", () => {
-    const config: OpenClawConfig = {
-      meta: { migrations: { modelPolicyAllowlist: true } },
-      agents: { defaults: { modelPolicy: { allow: ["openai/existing"] } } },
-    };
-    expect(
-      inspectModelPolicyAllowlist({
+  it.each([undefined, { migrations: { modelPolicyAllowlist: true as const } }])(
+    "offers only migration-marked restrictions when newer models exist: %j",
+    async (meta) => {
+      const config: OpenClawConfig = {
+        models: allowListModels,
+        ...(meta ? { meta } : {}),
+        agents: { defaults: { modelPolicy: { allow: ["fixture/existing"] } } },
+      };
+      const result = await prepareDoctorModelPolicyAllowlist({
         config,
         sourceConfig: config,
-        catalog: catalog.slice(0, 1),
-        enabledProviders,
-        hiddenCount: 0,
+        repair: true,
+      });
+      expect(result.changes.length).toBe(meta ? 1 : 0);
+      expect(result.warnings.length).toBe(meta ? 1 : 0);
+      expect(
+        (
+          await prepareDoctorModelPolicyAllowlist({
+            config,
+            sourceConfig: {},
+            repair: true,
+          })
+        ).changes,
+      ).toEqual([]);
+    },
+  );
+
+  it("keeps exact pins when no catalog row is hidden", async () => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          fixture: {
+            ...allowListModels.providers.fixture,
+            models: [{ id: "existing", name: "Existing" }],
+          },
+        },
+      },
+      meta: { migrations: { modelPolicyAllowlist: true } },
+      agents: { defaults: { modelPolicy: { allow: ["fixture/existing"] } } },
+    };
+    expect(
+      await prepareDoctorModelPolicyAllowlist({
+        config,
+        sourceConfig: config,
+        repair: true,
       }),
     ).toMatchObject({ changes: [], warnings: [] });
   });
 
-  it("inspects mixed entries and per-agent policies without discarding odd values", () => {
+  it("inspects mixed entries and per-agent policies without discarding odd values", async () => {
     const config: Record<string, unknown> = {
+      models: allowListModels,
       meta: { migrations: { modelPolicyAllowlist: true } },
       agents: {
-        defaults: { modelPolicy: { allow: [null, "openai/existing"] } },
+        defaults: { modelPolicy: { allow: [null, "fixture/existing"] } },
         entries: { worker: { modelPolicy: { allow: ["disabled/*"] } } },
       },
     };
-    const result = inspectModelPolicyAllowlist({
+    const result = await prepareDoctorModelPolicyAllowlist({
       config,
       sourceConfig: config,
-      catalog,
-      enabledProviders,
-      hiddenCount: 1,
+      repair: true,
     });
-    expect(result.config.agents?.defaults?.modelPolicy?.allow).toEqual([null, "openai/*"]);
+    expect(result.config.agents?.defaults?.modelPolicy?.allow).toEqual([null, "fixture/*"]);
     expect(result.warnings).toContainEqual(
       expect.stringContaining("agents.entries.worker.modelPolicy.allow: disabled/*"),
     );
     expect(result.warnings).toContainEqual(expect.stringContaining("generated by an upgrade"));
   });
 
-  it("reports dead refs and disabled providers without changing a hand-written list", () => {
+  it("reports dead refs and disabled providers without changing a hand-written list", async () => {
     const config: OpenClawConfig = {
-      agents: { defaults: { modelPolicy: { allow: ["openai/retired", "disabled/*"] } } },
+      models: allowListModels,
+      agents: { defaults: { modelPolicy: { allow: ["fixture/retired", "disabled/*"] } } },
     };
-    const result = inspectModelPolicyAllowlist({
+    const result = await prepareDoctorModelPolicyAllowlist({
       config,
       sourceConfig: config,
-      catalog,
-      enabledProviders,
-      hiddenCount: 1,
+      repair: true,
     });
     expect(result.changes).toEqual([]);
     expect(result.warnings).toEqual([
-      expect.stringContaining("openai/retired is absent from the model catalog"),
+      expect.stringContaining("fixture/retired is absent from the model catalog"),
       expect.stringContaining("disabled/* uses a provider that is not enabled"),
     ]);
     expect(result.warnings.every((warning) => warning.includes("remove this entry"))).toBe(true);

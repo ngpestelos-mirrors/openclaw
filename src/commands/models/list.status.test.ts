@@ -864,7 +864,7 @@ describe("modelsStatusCommand auth overview", () => {
     );
   });
 
-  it("preserves a restrictive wildcard when the current catalog has no match", async () => {
+  it("preserves a restrictive wildcard and the configured primary when the catalog has no match", async () => {
     await withOpenAIStatusFixture(
       {
         primary: "openai/gpt-5.6-sol",
@@ -876,7 +876,10 @@ describe("modelsStatusCommand auth overview", () => {
         const localRuntime = createRuntime();
         await modelsStatusCommand({ json: true }, localRuntime as never);
 
-        expect(parseFirstJsonLog(localRuntime).allowed).toEqual(["clawrouter/anthropic/*"]);
+        expect(parseFirstJsonLog(localRuntime).allowed).toEqual([
+          "clawrouter/anthropic/*",
+          "openai/gpt-5.6-sol",
+        ]);
       },
     );
   });

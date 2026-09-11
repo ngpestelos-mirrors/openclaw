@@ -5,6 +5,7 @@ import ai.openclaw.app.chat.ChatThinkingLevelOption
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -52,7 +53,9 @@ enum class GatewayModelUnavailableReason {
 }
 
 data class GatewayModelAllowList(
-  val message: String,
+  val hiddenCount: Int,
+  val settingsPath: String,
+  val selectedModelBlocked: Boolean?,
 )
 
 internal data class GatewayModelCatalogResult(
@@ -67,7 +70,9 @@ internal fun parseGatewayModelCatalog(root: JsonObject?): GatewayModelCatalogRes
     refreshFailed = root?.get("refreshFailed")?.jsonPrimitive?.booleanOrNull == true,
     allowList = root?.get("allowList")?.jsonObject?.let { notice ->
       GatewayModelAllowList(
-        message = notice.getValue("message").jsonPrimitive.content,
+        hiddenCount = notice.getValue("hiddenCount").jsonPrimitive.int,
+        settingsPath = notice.getValue("settingsPath").jsonPrimitive.content,
+        selectedModelBlocked = notice["selectedModelBlocked"]?.jsonPrimitive?.booleanOrNull,
       )
     },
   )

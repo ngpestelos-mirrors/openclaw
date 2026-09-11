@@ -165,7 +165,7 @@ Add "provider/model", "provider/*", or a narrower "provider/namespace/*" prefix 
 
 Fix it by adding the model or a provider wildcard to the named `modelPolicy.allow` key, removing/emptying that list, or picking a model from `/model list`. If the rejected command included a runtime override such as `/model openai/gpt-5.5 --runtime codex`, fix the allowlist first, then retry the same command.
 
-Pickers share the Gateway's allowed catalog and show “N newer models hidden by your allow list” with the settings path when policy hides rows. The configured primary remains in the view as **Default**, even when the list omits it. If no selectable row remains, the picker shows the notice and repair path. Existing sessions keep their model pin; a pin outside the list that is not the configured primary shows “not allowed by your allow list” with the repair path.
+Pickers share the Gateway's allowed catalog. The Gateway publishes only the hidden count, blocked-selection flag, and stable config-key path; clients localize their notices and navigation. Pickers show “N newer models hidden by your allow list” with the settings path when policy hides rows. The configured primary remains in the view as **Default**, even when the list omits it. If no selectable row remains, the picker shows the notice and repair path. Existing sessions keep their model pin; a pin outside the list that is not the configured primary shows “not allowed by your allow list” with the repair path.
 
 For local/GGUF models, the allowlist needs the full provider-prefixed ref, for example `ollama/gemma4:26b` or `lmstudio/Gemma4-26b-a4-it-gguf` — check `openclaw models list --provider <provider>` for the exact string. Bare filenames or display names are not enough once the allowlist is active.
 
