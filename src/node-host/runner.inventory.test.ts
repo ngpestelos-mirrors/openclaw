@@ -307,6 +307,54 @@ describe("runNodeHost", () => {
     });
   });
 
+  it("republishes current worker facts after this node's surface approval without cancelling invokes", async () => {
+    mocks.useFakeRuntime = true;
+    mocks.fakeRuntimeWorkerHosting = true;
+    await withRunningNodeHost(async () => {
+      const options = mocks.capturedGatewayClientOptions[0]!;
+      const client = mocks.capturedGatewayClients[0]!;
+      mocks.runnerCapacityChanged?.({ total: 2, available: 1 });
+      options.onHelloOk?.({
+        protocol: 4,
+        features: { methods: [], events: [] },
+      } as unknown as Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0]);
+      await vi.waitFor(() =>
+        expect(client.request).toHaveBeenCalledWith(
+          NODE_RUNNER_INVENTORY_UPDATE_METHOD,
+          expect.objectContaining({
+            workerHost: expect.objectContaining({ capacity: { total: 2, available: 1 } }),
+          }),
+        ),
+      );
+      const publications = () =>
+        client.request.mock.calls.filter(
+          ([method]) => method === NODE_RUNNER_INVENTORY_UPDATE_METHOD,
+        );
+      const before = publications().length;
+      const cancelsBefore = mocks.activeRuntime.cancelAll.mock.calls.length;
+      for (const payload of [
+        { nodeId: "another-node", decision: "approved" },
+        { nodeId: "device-test", decision: "rejected" },
+        { nodeId: "node-test", decision: "approved" },
+      ]) {
+        options.onEvent?.({ type: "event", event: "node.pair.resolved", payload });
+      }
+      await Promise.resolve();
+      expect(publications()).toHaveLength(before);
+      options.onEvent?.({
+        type: "event",
+        event: "node.pair.resolved",
+        payload: { nodeId: "device-test", decision: "approved", requestId: "approval-1", ts: 1 },
+      });
+      await vi.waitFor(() => expect(publications()).toHaveLength(before + 1));
+      expect(publications().at(-1)?.[1]).toMatchObject({
+        workerHost: { enabled: true, capacity: { total: 2, available: 1 } },
+      });
+      expect(mocks.activeRuntime.cancelAll).toHaveBeenCalledTimes(cancelsBefore);
+      expect(client.updateNodeManifest).not.toHaveBeenCalled();
+    });
+  });
+
   it("clears gateway plugin tools when the final node-hosted tool disappears", async () => {
     mocks.startGatewayClientWhenEventLoopReady.mockResolvedValueOnce({
       ready: true,

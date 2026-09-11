@@ -124,6 +124,10 @@ export async function runNodeHostWorker(): Promise<void> {
     if (!connected || message.generation !== generation) {
       return;
     }
+    if (message.type === "runner-inventory-refresh") {
+      runtime.refreshRunnerInventory();
+      return;
+    }
     if (message.type === "invoke-input") {
       runtime.handleInput(message.invokeId, message.seq, message.payloadJSON);
       return;

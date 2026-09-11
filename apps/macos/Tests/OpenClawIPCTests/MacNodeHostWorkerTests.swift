@@ -162,6 +162,124 @@ struct MacNodeHostWorkerTests {
         #expect(changes.withLock { $0 } == 2)
     }
 
+    @Test(arguments: [false, true])
+    func `node reapproval refreshes the current worker without interrupting its invoke`(
+        retireRouteBeforeApproval: Bool) async throws
+    {
+        let directory = try makeTempDirForTests()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let framesFile = directory.appendingPathComponent("frames.jsonl")
+        let invokeReceived = directory.appendingPathComponent("invoke.pid")
+        let gateway = GatewayNodeSession()
+        let socketSession = GatewayTestWebSocketSession()
+        let worker = MacNodeHostWorker(session: gateway)
+        let script = #"""
+        printf '%s\n' '{"type":"ready","version":"test","workerHostingEnabled":true,"manifest":{"caps":["system"],"commands":["system.run"],"pathEnv":"/bin"}}'
+        refreshes=0
+        invoked=false
+        while IFS= read -r line; do
+          printf '%s\n' "$line" >> "$1"
+          generation=$(printf '%s' "$line" | sed -n 's/.*"generation":\([0-9][0-9]*\).*/\1/p')
+          case "$line" in
+            *'"type":"invoke"'*)
+              invoked=true
+              printf '%s\n' "$$" > "$2"
+              ;;
+            *'"type":"runner-inventory-refresh"'*)
+              refreshes=$((refreshes + 1))
+              if "$invoked"; then
+                printf '{"type":"invoke-result","generation":%s,"result":{"id":"held","ok":true,"payload":{"refreshes":%s}}}\n' "$generation" "$refreshes"
+              fi
+              ;;
+          esac
+        done
+        """#
+        _ = try await worker.start(launch: MacNodeHostWorkerLaunch(
+            command: ["/bin/sh", "-c", script, "worker", framesFile.path, invokeReceived.path]))
+        var invoking: Task<BridgeInvokeResponse, Never>?
+        do {
+            try await gateway.connect(
+                url: #require(URL(string: "ws://worker.example.invalid")),
+                credentials: GatewayNodeSessionCredentials(),
+                connectOptions: GatewayConnectOptions(
+                    role: "node",
+                    scopes: [],
+                    caps: ["system"],
+                    commands: ["system.run"],
+                    permissions: [:],
+                    clientId: "openclaw-macos",
+                    clientMode: "node",
+                    clientDisplayName: "Worker Test",
+                    includeDeviceIdentity: false),
+                sessionBox: WebSocketSessionBox(session: socketSession),
+                onConnected: {},
+                onDisconnected: { _ in },
+                onInvoke: { await worker.invoke($0) })
+            let socket = try #require(socketSession.latestTask())
+            let route = try #require(await gateway.currentRoute())
+            #expect(await worker.setRoute(route, authorityGeneration: 1))
+            await worker.gatewayConnected(ifCurrentRoute: route)
+            let approval = try URLSessionWebSocketTask.Message.data(JSONSerialization.data(withJSONObject: [
+                "type": "event",
+                "event": "node.pair.resolved",
+                "payload": [
+                    "nodeId": "device-identity",
+                    "requestId": "reapproval",
+                    "decision": "approved",
+                    "ts": 1,
+                ],
+            ]))
+            if retireRouteBeforeApproval {
+                #expect(await worker.setRoute(nil, authorityGeneration: 2))
+                let receives = socket.snapshotCallbackReceiveCount()
+                socket.emitReceiveSuccess(approval)
+                try await AsyncTimeout.withTimeout(seconds: 5, onTimeout: { WorkerBackpressureTimeout() }) {
+                    while socket.snapshotCallbackReceiveCount() <= receives {
+                        try Task.checkCancellation()
+                        await Task.yield()
+                    }
+                }
+                #expect(await worker.setRoute(route, authorityGeneration: 3))
+                await worker.gatewayConnected(ifCurrentRoute: route)
+            }
+            let activeInvoke = Task {
+                await worker.invoke(BridgeInvokeRequest(id: "held", command: "system.run"))
+            }
+            invoking = activeInvoke
+            let workerPID = try await TestProcessSupport.waitForPID(in: invokeReceived)
+            socket.emitReceiveSuccess(approval)
+            let response = try await AsyncTimeout.withTimeout(
+                seconds: 5,
+                onTimeout: { WorkerBackpressureTimeout() },
+                operation: { await activeInvoke.value })
+            #expect(response.ok)
+            #expect(response.payload?.dictionaryValue?["refreshes"]?.intValue == 1)
+            #expect(await worker.isWorkerHostingEnabled())
+            #expect(await gateway.currentRoute() == route)
+            #expect(socketSession.snapshotMakeCount() == 1)
+            #expect(socket.snapshotCancelCount() == 0)
+            #expect(!TestProcessSupport.processIsGone(workerPID))
+
+            let frames = try String(contentsOf: framesFile, encoding: .utf8).split(separator: "\n").map {
+                try #require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+            }
+            let invoke = try #require(frames.first { $0["type"] as? String == "invoke" })
+            let refreshes = frames.filter { $0["type"] as? String == "runner-inventory-refresh" }
+            #expect(refreshes.count == 1)
+            #expect(refreshes.first?["generation"] as? UInt64 == invoke["generation"] as? UInt64)
+            #expect(frames.filter { $0["type"] as? String == "gateway-connection" }.count ==
+                (retireRouteBeforeApproval ? 5 : 2))
+            #expect(!frames.contains { $0["type"] as? String == "invoke-cancel" })
+            await gateway.disconnect()
+            await worker.stop()
+        } catch {
+            await gateway.disconnect()
+            await worker.stop()
+            _ = await invoking?.value
+            throw error
+        }
+    }
+
     @Test(arguments: [
         OpenClawSystemCommand.run.rawValue,
         "mcp.tools.call.v1",

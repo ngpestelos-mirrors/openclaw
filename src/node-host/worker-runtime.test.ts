@@ -147,6 +147,46 @@ function startWorkerFixture(
   };
 }
 
+it("refreshes runner facts only for the current private bridge generation", async () => {
+  const { input, messages, stop } = startWorkerFixture();
+  try {
+    await vi.waitFor(() => expect(messages.some((message) => message.type === "ready")).toBe(true));
+    input.emit(
+      "line",
+      JSON.stringify({
+        type: "gateway-connection",
+        generation: 2,
+        connection: { url: "wss://gateway.example.test", protocol: 4, capabilities: [] },
+      }),
+    );
+    await setImmediate();
+    const publications = () =>
+      messages.filter((message) => message.method === "node.runnerInventory.update");
+    expect(publications()).toHaveLength(1);
+    const cancelsBefore = fixture.runtime.cancelAll.mock.calls.length;
+    input.emit("line", JSON.stringify({ type: "runner-inventory-refresh", generation: 1 }));
+    await setImmediate();
+    expect(publications()).toHaveLength(1);
+    input.emit("line", JSON.stringify({ type: "runner-inventory-refresh", generation: 2 }));
+    await setImmediate();
+    expect(publications()).toHaveLength(2);
+    expect(publications().at(-1)).toMatchObject({
+      generation: 2,
+      params: { workerHost: { enabled: true, capacity: { total: 2, available: 2 } } },
+    });
+    expect(fixture.runtime.cancelAll).toHaveBeenCalledTimes(cancelsBefore);
+    input.emit(
+      "line",
+      JSON.stringify({ type: "gateway-connection", generation: 3, connection: null }),
+    );
+    input.emit("line", JSON.stringify({ type: "runner-inventory-refresh", generation: 3 }));
+    await setImmediate();
+    expect(publications()).toHaveLength(2);
+  } finally {
+    await stop();
+  }
+});
+
 it("publishes hosting through the app route and retires it on disconnect", async () => {
   const { input, messages, stderr, stop } = startWorkerFixture();
   try {

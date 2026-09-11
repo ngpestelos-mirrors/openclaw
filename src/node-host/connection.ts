@@ -179,7 +179,6 @@ export function startNodeHostConnection({
     const connectionGeneration = gatewayConnectionGeneration;
     const gatewayProtocol = connectedGatewayProtocol;
     const connectionClient = publicationClient;
-    const connectionIsCurrent = () => connectionGeneration === gatewayConnectionGeneration;
     let state = optionalPublicationStates.get(method);
     if (!state) {
       state = {
@@ -193,6 +192,9 @@ export function startNodeHostConnection({
       };
       optionalPublicationStates.set(method, state);
     }
+    const connectionIsCurrent = () =>
+      connectionGeneration === gatewayConnectionGeneration &&
+      optionalPublicationStates.get(method) === state;
     if (state.hasInFlightParams && isDeepStrictEqual(state.inFlightParams, params)) {
       // The latest desired value remains authoritative even when it matches the
       // active request. Replace a newer pending value so A -> B -> A cannot publish B.
@@ -423,6 +425,19 @@ export function startNodeHostConnection({
   });
   return {
     ...runtime,
+    refreshRunnerInventory() {
+      if (!gatewayHelloReceived) {
+        return;
+      }
+      const previous = optionalPublicationStates.get(NODE_RUNNER_INVENTORY_UPDATE_METHOD);
+      if (previous?.retryTimer) {
+        clearTimeout(previous.retryTimer);
+      }
+      // Approval retires the Gateway's declaration without replacing this transport.
+      // Retire its acknowledgment too, including requests still settling in flight.
+      optionalPublicationStates.delete(NODE_RUNNER_INVENTORY_UPDATE_METHOD);
+      publishRunnerInventory();
+    },
     connect(connection: NodeHostGatewayConnection, connectionClient: NodeHostClient = client) {
       retireGatewayConnection();
       publicationClient = connectionClient;

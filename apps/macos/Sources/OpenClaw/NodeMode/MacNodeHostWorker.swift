@@ -140,6 +140,7 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
     private var pendingInvokeControlOrder: [String] = []
     private var startTimer: DispatchSourceTimer?
     private var eventDeliveryTask: Task<Void, Never>?
+    private var runnerInventoryRefreshTask: Task<Void, Never>?
     private var gatewayGeneration: UInt64 = 0
 
     init(
@@ -150,6 +151,10 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         self.session = session
         self.startupTimeout = startupTimeout
         self.onUnexpectedExit = onUnexpectedExit
+    }
+
+    deinit {
+        self.runnerInventoryRefreshTask?.cancel()
     }
 
     func start(launch: MacNodeHostWorkerLaunch) async throws -> MacNodeHostManifest {
@@ -362,6 +367,8 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
                     return
                 }
                 self.routeAuthorityGeneration = authorityGeneration
+                self.runnerInventoryRefreshTask?.cancel()
+                self.runnerInventoryRefreshTask = nil
                 self.route = route
                 self.gatewayGeneration &+= 1
                 try? self.enqueueWriteLocked([
@@ -391,15 +398,72 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
     }
 
     func gatewayConnected(ifCurrentRoute route: GatewayNodeSessionRoute) async {
-        guard let data = await self.session.workerConnectionData(ifCurrentRoute: route) else { return }
+        let context: (UUID, UInt64)? = await withCheckedContinuation { continuation in
+            self.queue.async {
+                guard self.route == route, let processGeneration = self.processGeneration else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: (processGeneration, self.gatewayGeneration))
+            }
+        }
+        guard let (processGeneration, previousGatewayGeneration) = context else { return }
+        // Buffer approvals before publishing the connection: a same-socket approval
+        // can retire inventory while the worker is handling its initial publication.
+        let subscription = await self.session.makeServerEventSubscription(bufferingNewest: 1) { event in
+            event.event == "node.pair.resolved" &&
+                event.payload?.dictionaryValue?["decision"]?.stringValue == "approved"
+        }
+        guard let data = await self.session.workerConnectionData(ifCurrentRoute: route) else {
+            subscription.cancel()
+            return
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             self.queue.async {
                 defer { continuation.resume() }
                 guard self.route == route,
-                      let connection = try? JSONSerialization.jsonObject(with: data) else { return }
+                      self.processGeneration == processGeneration,
+                      self.gatewayGeneration == previousGatewayGeneration,
+                      let connection = try? JSONSerialization.jsonObject(with: data)
+                else {
+                    subscription.cancel()
+                    return
+                }
                 self.gatewayGeneration &+= 1
                 try? self.enqueueWriteLocked([
                     "type": "gateway-connection", "generation": self.gatewayGeneration, "connection": connection,
+                ])
+                let gatewayGeneration = self.gatewayGeneration
+                let session = self.session
+                self.runnerInventoryRefreshTask?.cancel()
+                self.runnerInventoryRefreshTask = Task { [weak self] in
+                    defer { subscription.cancel() }
+                    for await _ in subscription.events {
+                        guard !Task.isCancelled, await session.currentRoute() == route else { break }
+                        await self?.refreshRunnerInventory(
+                            ifCurrentRoute: route,
+                            processGeneration: processGeneration,
+                            gatewayGeneration: gatewayGeneration)
+                    }
+                }
+            }
+        }
+    }
+
+    private func refreshRunnerInventory(
+        ifCurrentRoute route: GatewayNodeSessionRoute,
+        processGeneration: UUID,
+        gatewayGeneration: UInt64) async
+    {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.queue.async {
+                defer { continuation.resume() }
+                guard self.route == route,
+                      self.processGeneration == processGeneration,
+                      self.gatewayGeneration == gatewayGeneration
+                else { return }
+                try? self.enqueueWriteLocked([
+                    "type": "runner-inventory-refresh", "generation": gatewayGeneration,
                 ])
             }
         }
@@ -788,6 +852,8 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         self.stdoutBuffer.removeAll(keepingCapacity: false)
         self.manifest = nil
         self.updateWorkerHostingLocked(false)
+        self.runnerInventoryRefreshTask?.cancel()
+        self.runnerInventoryRefreshTask = nil
         self.route = nil
         if !preserveStart {
             self.finishStartLocked(.failure(WorkerError.unavailable(reason: reason, diagnostic: diagnostic)))
