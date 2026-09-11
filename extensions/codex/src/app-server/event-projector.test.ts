@@ -834,6 +834,20 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.toolMediaUrls).toStrictEqual([]);
   });
 
+  it("projects host-owned dynamic tool media into the terminal result", async () => {
+    const projector = await createProjector();
+    const mediaUrl = "/tmp/generated-image.png";
+
+    const result = projector.buildResult({
+      ...buildEmptyToolTelemetry(),
+      toolMediaUrls: [mediaUrl],
+      hostOwnedToolMediaUrls: [mediaUrl],
+    });
+
+    expect(result.toolMediaUrls).toEqual([mediaUrl]);
+    expect(result.hostOwnedToolMediaUrls).toEqual([mediaUrl]);
+  });
+
   it("propagates message-tool-only source reply delivery telemetry", async () => {
     const projector = await createProjector();
 

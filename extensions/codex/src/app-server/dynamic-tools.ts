@@ -351,6 +351,7 @@ export type CodexDynamicToolBridge = {
     messagingToolSourceReplyPayloads: MessagingToolSourceReplyPayload[];
     heartbeatToolResponse?: HeartbeatToolResponse;
     toolMediaUrls: string[];
+    hostOwnedToolMediaUrls: string[];
     toolAudioAsVoice: boolean;
     successfulCronAdds?: number;
     quarantinedTools: CodexDynamicToolSchemaQuarantine[];
@@ -422,6 +423,7 @@ export function createCodexDynamicToolBridge(params: {
     messagingToolSentTargets: [],
     messagingToolSourceReplyPayloads: [],
     toolMediaUrls: [],
+    hostOwnedToolMediaUrls: [],
     toolAudioAsVoice: false,
     quarantinedTools,
   };
@@ -602,6 +604,11 @@ export function createCodexDynamicToolBridge(params: {
           telemetry,
           isError: resultIsError,
           messagingTarget: confirmedMessagingTarget,
+          hostOwnsToolMedia: shouldTreatDynamicToolMediaAsHostOwned({
+            toolName,
+            pluginOwned: getPluginToolMeta(toolEntry.tool) !== undefined,
+            channelOwned: getChannelAgentToolMeta(toolEntry.tool as never) !== undefined,
+          }),
         });
         const terminalType =
           resultFailureKind === "blocked" ? "blocked" : resultIsError ? "error" : "completed";
@@ -1078,6 +1085,7 @@ function collectToolTelemetry(params: {
   telemetry: CodexDynamicToolBridge["telemetry"];
   isError: boolean;
   messagingTarget?: MessagingToolSend;
+  hostOwnsToolMedia?: boolean;
 }): void {
   if (params.isError) {
     return;
@@ -1104,6 +1112,12 @@ function collectToolTelemetry(params: {
         if (!seen.has(mediaUrl)) {
           seen.add(mediaUrl);
           params.telemetry.toolMediaUrls.push(mediaUrl);
+        }
+        if (
+          params.hostOwnsToolMedia === true &&
+          !params.telemetry.hostOwnedToolMediaUrls.includes(mediaUrl)
+        ) {
+          params.telemetry.hostOwnedToolMediaUrls.push(mediaUrl);
         }
       }
       if (media.audioAsVoice) {
@@ -1153,6 +1167,14 @@ function collectToolTelemetry(params: {
     ...(text ? { text } : {}),
     ...(mediaUrls.length > 0 ? { mediaUrls } : {}),
   });
+}
+
+export function shouldTreatDynamicToolMediaAsHostOwned(params: {
+  toolName: string;
+  pluginOwned: boolean;
+  channelOwned: boolean;
+}): boolean {
+  return params.toolName === "image_generate" && !params.pluginOwned && !params.channelOwned;
 }
 
 function extractInternalSourceReplyPayload(

@@ -26,6 +26,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
   createCodexDynamicToolBridge,
+  shouldTreatDynamicToolMediaAsHostOwned,
 } from "./dynamic-tools.js";
 import type { CodexDynamicToolFunctionSpec, CodexDynamicToolSpec, JsonValue } from "./protocol.js";
 
@@ -178,6 +179,56 @@ afterEach(() => {
 });
 
 describe("createCodexDynamicToolBridge", () => {
+  it("limits host-owned dynamic media to the concrete core image tool", () => {
+    expect(
+      shouldTreatDynamicToolMediaAsHostOwned({
+        toolName: "image_generate",
+        pluginOwned: false,
+        channelOwned: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldTreatDynamicToolMediaAsHostOwned({
+        toolName: "image_generate",
+        pluginOwned: true,
+        channelOwned: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldTreatDynamicToolMediaAsHostOwned({
+        toolName: "image_generate",
+        pluginOwned: false,
+        channelOwned: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldTreatDynamicToolMediaAsHostOwned({
+        toolName: "video_generate",
+        pluginOwned: false,
+        channelOwned: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("records core image generation media as host-owned", async () => {
+    const bridge = createBridgeWithToolResult(
+      "image_generate",
+      mediaResult("/tmp/generated-image.png"),
+    );
+
+    await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-1",
+      namespace: null,
+      tool: "image_generate",
+      arguments: { prompt: "lighthouse" },
+    });
+
+    expect(bridge.telemetry.toolMediaUrls).toEqual(["/tmp/generated-image.png"]);
+    expect(bridge.telemetry.hostOwnedToolMediaUrls).toEqual(["/tmp/generated-image.png"]);
+  });
+
   it("keeps OpenClaw control-path tools direct while deferring broad tools", () => {
     const bridge = createCodexDynamicToolBridge({
       tools: [

@@ -65,6 +65,7 @@ export type CodexAppServerToolTelemetry = {
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
   heartbeatToolResponse?: HeartbeatToolResponse;
   toolMediaUrls?: string[];
+  hostOwnedToolMediaUrls?: string[];
   toolAudioAsVoice?: boolean;
   successfulCronAdds?: number;
 };
@@ -1620,7 +1621,13 @@ export class CodexAppServerEventProjector {
       return undefined;
     }
     const mediaUrls = [...this.nativeGeneratedMediaUrlsByItemId.values()];
-    return mediaUrls.length > 0 ? mediaUrls : undefined;
+    for (const mediaUrl of toolTelemetry.hostOwnedToolMediaUrls ?? []) {
+      const normalized = mediaUrl.trim();
+      if (normalized) {
+        mediaUrls.push(normalized);
+      }
+    }
+    return mediaUrls.length > 0 ? [...new Set(mediaUrls)] : undefined;
   }
 
   private async maybeEndReasoning(): Promise<void> {
