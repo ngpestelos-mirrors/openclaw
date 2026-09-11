@@ -34,6 +34,7 @@ import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.ty
 import { hasAuthoredProviderRequestParams } from "./model-extra-params.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
 import { resolveDefaultModelForAgent } from "./model-selection-config.js";
+import { resolveConfiguredModelPrimaryValue } from "./model-selection-shared.js";
 import {
   createModelVisibilityPolicy,
   RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
@@ -107,7 +108,8 @@ export type ModelCatalogViewFacts = {
 
 /** Projects captured catalog facts while keeping native observations revocable. */
 export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
-  const scopedDefault = params.sessionKey
+  const configuredPrimary = resolveConfiguredModelPrimaryValue(params);
+  const primary = configuredPrimary
     ? resolveDefaultModelForAgent({
         cfg: params.cfg,
         agentId: params.agentId,
@@ -116,9 +118,7 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
         manifestPlugins: params.metadataSnapshot,
       })
     : undefined;
-  const defaultModel = scopedDefault
-    ? pickerModelKey(scopedDefault.provider, scopedDefault.model)
-    : resolveAgentEffectiveModelPrimary(params.cfg, params.agentId);
+  const defaultModel = primary ? pickerModelKey(primary.provider, primary.model) : undefined;
   const agentDir = params.agentDir ?? resolveAgentDir(params.cfg, params.agentId);
   const catalog = [...params.snapshot.entries];
   if (params.view === "configured" && params.snapshot.staticEntries?.length) {

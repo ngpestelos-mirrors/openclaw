@@ -56,15 +56,21 @@ export async function settleModelPolicyNoticePublication(
   }
 }
 
-/** The delivery receipt belongs to the stored pin, not automatic model fallback state. */
-export function attachModelPolicyNotice(params: {
+type ModelPolicyNoticeParams = {
   payloads: ReplyPayload[];
   pinnedModel: string;
   primaryModel: string;
   sessionEntry?: SessionEntry;
   sessionKey?: string;
   storePath?: string;
-}): ReplyPayload[] {
+};
+
+/** The notice preserves the input payload count, including silent payloads. */
+export function attachModelPolicyNotice(
+  params: ModelPolicyNoticeParams & { payloads: [ReplyPayload, ...ReplyPayload[]] },
+): [ReplyPayload, ...ReplyPayload[]];
+export function attachModelPolicyNotice(params: ModelPolicyNoticeParams): ReplyPayload[];
+export function attachModelPolicyNotice(params: ModelPolicyNoticeParams): ReplyPayload[] {
   const { sessionEntry, pinnedModel, primaryModel, sessionKey, storePath } = params;
   const sessionId = sessionEntry?.sessionId;
   const candidates = params.payloads.flatMap((original, index) => {

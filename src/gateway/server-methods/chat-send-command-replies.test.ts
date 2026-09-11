@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import {
   getReplyPayloadMetadata,
@@ -46,7 +47,10 @@ describe("selectChatSendFinalReplyPayloads", () => {
         foldCommandBlocks: true,
         suppressReplies: false,
       });
-      const reply = result.find((payload) => payload.text === final.text)!;
+      const reply = expectDefined(
+        result.find((payload) => payload.text === final.text),
+        "final policy reply",
+      );
       expect(result).toHaveLength(shape === "shared-media" ? 2 : 1);
       expect(getReplyPayloadMetadata(reply)).toMatchObject({
         assistantTranscriptOwned: true,
@@ -63,8 +67,9 @@ describe("selectChatSendFinalReplyPayloads", () => {
         expect(getReplyPayloadMetadata(reply)?.blockSourceText).toBe("original block");
       }
       if (shape === "shared-media") {
-        expect(getReplyPayloadMetadata(result[0])?.blockSourceText).toBe("original block");
-        expect(getReplyPayloadMetadata(result[0])?.onFinalDeliverySuccess).toBeUndefined();
+        const blockReply = expectDefined(result[0], "shared-media block");
+        expect(getReplyPayloadMetadata(blockReply)?.blockSourceText).toBe("original block");
+        expect(getReplyPayloadMetadata(blockReply)?.onFinalDeliverySuccess).toBeUndefined();
       }
       expect(delivered).not.toHaveBeenCalled();
       await getReplyPayloadMetadata(reply)?.onFinalDeliverySuccess?.();

@@ -32,7 +32,10 @@ function session(): SessionEntry {
   };
 }
 
-function reply(entry: SessionEntry, payloads: ReplyPayload[] = [{ text: "Answer" }]) {
+function reply(
+  entry: SessionEntry,
+  payloads: [ReplyPayload, ...ReplyPayload[]] = [{ text: "Answer" }],
+) {
   return attachModelPolicyNotice({
     payloads,
     pinnedModel: `${entry.providerOverride}/${entry.modelOverride}`,

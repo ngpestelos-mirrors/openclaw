@@ -228,8 +228,8 @@ export async function compactEmbeddedAgentSession(
         : storedEntry;
     const expectedEntry = {
       sessionId: runtimeTarget.sessionId,
-      lifecycleRevision: entry?.lifecycleRevision,
-      activeWriterRunId: entry?.activeWriterRunId,
+      lifecycleRevision: storedEntry?.lifecycleRevision,
+      activeWriterRunId: storedEntry?.activeWriterRunId,
     };
     const resolvedParams = {
       ...params,

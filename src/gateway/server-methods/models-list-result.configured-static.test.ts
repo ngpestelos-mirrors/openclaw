@@ -111,6 +111,7 @@ describe("models.list configured static entries", () => {
       publishedCatalog: catalog.slice(0, 1),
       cfg: config,
       refresh: true,
+      preparedAuthModes: { openai: "api_key" },
       view: "configured",
     });
 
@@ -148,6 +149,7 @@ describe("models.list configured static entries", () => {
       catalogLoadDelayMs: 800,
       publishedCatalog,
       cfg: config,
+      preparedAuthModes: { openai: "api_key" },
       view: "configured",
     });
 

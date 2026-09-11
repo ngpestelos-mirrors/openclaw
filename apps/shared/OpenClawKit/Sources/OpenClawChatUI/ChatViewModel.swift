@@ -1560,30 +1560,6 @@ extension OpenClawChatViewModel {
         return trimmed
     }
 
-    private func normalizedModelSelectionID(_ modelID: String?, provider: String? = nil) -> String? {
-        guard let modelID else { return nil }
-        let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if let provider = Self.normalizedProvider(provider) {
-            let providerQualified = Self.providerQualifiedModelSelectionID(modelID: trimmed, provider: provider)
-            if let match = modelChoices.first(where: {
-                $0.selectionID == providerQualified ||
-                    ($0.modelID == trimmed && Self.normalizedProvider($0.provider) == provider)
-            }) {
-                return match.selectionID
-            }
-            return providerQualified
-        }
-        if self.modelChoices.contains(where: { $0.selectionID == trimmed }) {
-            return trimmed
-        }
-        let matches = self.modelChoices.filter { $0.modelID == trimmed || $0.selectionID == trimmed }
-        if matches.count == 1 {
-            return matches[0].selectionID
-        }
-        return trimmed
-    }
-
     private func modelRef(forSelectionID selectionID: String) -> String? {
         let normalized = self.normalizedSelectionID(selectionID)
         if normalized == Self.defaultModelSelectionID {

@@ -2266,62 +2266,78 @@ describe("agentCommand", () => {
     });
   });
 
-  it("clears disallowed stored override fields", async () => {
+  it("preserves a blocked user pin and delivers primary replies with one policy notice", async () => {
     await withTempHome(async (home) => {
-      const clearStore = path.join(home, "sessions-clear-overrides.json");
-      await writeSessionStoreSeed(clearStore, {
-        "agent:main:subagent:clear-overrides": {
-          sessionId: "session-clear-overrides",
-          updatedAt: Date.now(),
-          providerOverride: "anthropic",
-          modelOverride: "claude-opus-4-6",
-          authProfileOverride: "profile-legacy",
-          authProfileOverrideSource: "user",
-          authProfileOverrideCompactionCount: 2,
-          fallbackNotice: {
-            kind: "active",
-            selectedModel: "anthropic/claude-opus-4-6",
-            activeModel: "openai/gpt-4.1-mini",
-            reason: "fallback",
-          },
+      const store = path.join(home, "sessions-preserved-pin.json");
+      const sessionKey = "agent:main:subagent:preserved-pin";
+      const sessionId = "session-preserved-pin";
+      const pinnedState = {
+        providerOverride: "anthropic",
+        modelOverride: "claude-opus-4-6",
+        modelOverrideSource: "user",
+        authProfileOverride: "profile-legacy",
+        authProfileOverrideSource: "user",
+        authProfileOverrideCompactionCount: 2,
+        fallbackNotice: {
+          kind: "active",
+          selectedModel: "anthropic/claude-opus-4-6",
+          activeModel: "openai/gpt-4.1-mini",
+          reason: "fallback",
         },
+      } satisfies Partial<SessionEntry>;
+      await writeSessionStoreSeed(store, {
+        [sessionKey]: { sessionId, updatedAt: Date.now(), ...pinnedState },
       });
 
-      mockConfig(home, clearStore, {
+      mockConfig(home, store, {
         model: {
           primary: "openai/gpt-4.1-mini",
-          fallbacks: ["anthropic/claude-opus-4-6"],
+          fallbacks: ["openai/gpt-5.4"],
         },
-        models: {
-          "openai/gpt-4.1-mini": {},
-        },
+        models: { "openai/gpt-4.1-mini": {} },
         modelPolicy: { allow: ["openai/gpt-4.1-mini"] },
       });
-
-      mockModelCatalogOnce([
+      const catalog = [
         { id: "claude-opus-4-6", name: "Opus", provider: "anthropic" },
         { id: "gpt-4.1-mini", name: "GPT-4.1 Mini", provider: "openai" },
-      ]);
+        { id: "gpt-5.4", name: "Configured fallback", provider: "openai" },
+      ];
+      mockModelCatalogOnce(catalog);
+      const actualDelivery = await vi.importActual<typeof import("../agents/command/delivery.js")>(
+        "../agents/command/delivery.js",
+      );
+      vi.mocked(deliverAgentCommandResult)
+        .mockImplementationOnce(actualDelivery.deliverAgentCommandResult)
+        .mockImplementationOnce(actualDelivery.deliverAgentCommandResult);
 
-      await runAgentWithSessionKey("agent:main:subagent:clear-overrides");
-
+      await runAgentWithSessionKey(sessionKey);
       expectLastRunProviderModel("openai", "gpt-4.1-mini");
+      expect(getLastEmbeddedCall()?.authProfileId).toBeUndefined();
+      expect(runtime.log).toHaveBeenCalledWith(
+        "Pinned model anthropic/claude-opus-4-6 is not in your allow list. This reply used the default (openai/gpt-4.1-mini). Use /model to change it.\n\nok",
+      );
+      expect(readSessionStore<SessionEntry>(store)[sessionKey]).toMatchObject({
+        ...pinnedState,
+        modelPolicyNotice: { sessionId, pinnedModel: "anthropic/claude-opus-4-6" },
+      });
 
-      const cleared = readSessionStore<{
-        providerOverride?: string;
-        modelOverride?: string;
-        authProfileOverride?: string;
-        authProfileOverrideSource?: string;
-        authProfileOverrideCompactionCount?: number;
-        fallbackNotice?: unknown;
-      }>(clearStore);
-      const entry = cleared["agent:main:subagent:clear-overrides"];
-      expect(entry?.providerOverride).toBeUndefined();
-      expect(entry?.modelOverride).toBeUndefined();
-      expect(entry?.authProfileOverride).toBeUndefined();
-      expect(entry?.authProfileOverrideSource).toBeUndefined();
-      expect(entry?.authProfileOverrideCompactionCount).toBeUndefined();
-      expect(entry?.fallbackNotice).toBeUndefined();
+      vi.mocked(runtime.log).mockClear();
+      mockModelCatalogOnce(catalog);
+      await runAgentWithSessionKey(sessionKey);
+      expect(runtime.log).toHaveBeenCalledWith("ok");
+      expect(
+        vi.mocked(runtime.log).mock.calls.some(([value]) => String(value).includes("allow list")),
+      ).toBe(false);
+      expect(
+        vi.mocked(runEmbeddedAgent).mock.calls.map(([params]) => ({
+          provider: params.provider,
+          model: params.model,
+        })),
+      ).toEqual([
+        { provider: "openai", model: "gpt-4.1-mini" },
+        { provider: "openai", model: "gpt-4.1-mini" },
+      ]);
+      expect(readSessionStore<SessionEntry>(store)[sessionKey]).toMatchObject(pinnedState);
     });
   });
 

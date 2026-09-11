@@ -1177,6 +1177,7 @@ describe("CLI attempt execution", () => {
           storedModelOverrideSource: undefined,
           hasStoredAutoFallbackProvenance: false,
           autoFallbackPrimaryProbe: undefined,
+          allowListPolicyFallback: undefined,
           sessionEntryForAttempt: params.sessionEntry,
           thinkingCatalog: [],
           immutableThinkLevel: "off",

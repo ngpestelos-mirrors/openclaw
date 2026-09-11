@@ -900,7 +900,7 @@ export async function deliverAgentCommandResult(
   const outboundPayloadPlan = createOutboundPayloadPlan(policyPayloads);
   const deliveryAcknowledgments = outboundPayloadPlan.flatMap((entry) =>
     projectOutboundPayloadPlanForOutbound([entry]).map(
-      () => getReplyPayloadMetadata(policyPayloads[entry.sourceIndex])?.onFinalDeliverySuccess,
+      () => getReplyPayloadMetadata(entry.payload)?.onFinalDeliverySuccess,
     ),
   );
   const acknowledgePolicyNotice = async (send?: DurableSendResult) => {

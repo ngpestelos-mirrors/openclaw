@@ -1697,11 +1697,16 @@ export function createModelVisibilityPolicyWithFallbacks(
   }
   addConfiguredRef(params.defaultModel, true, selectionAliasIndex);
   if (params.agentId && params.sessionKey && isSubagentSessionKey(params.sessionKey)) {
-    addConfiguredRef(
-      resolveSubagentConfiguredModelSelection({ cfg: params.cfg, agentId: params.agentId }),
-      true,
-      selectionAliasIndex,
-    );
+    const scopedPrimary = resolveConfiguredModelPrimaryValue(params);
+    if (scopedPrimary) {
+      const ref = resolveConfiguredModelRef({
+        ...params,
+        defaultModel: params.defaultModel ?? DEFAULT_MODEL,
+      });
+      const key = resolveModelCatalogIdentityKey({ provider: ref.provider, id: ref.model });
+      configuredKeys.add(key);
+      retainedKeys.add(key);
+    }
   }
   for (const fallback of params.fallbackModels) {
     // Configured fallbacks remain available for automatic failover and catalog

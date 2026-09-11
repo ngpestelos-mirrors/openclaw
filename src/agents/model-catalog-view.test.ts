@@ -11,6 +11,7 @@ import {
 import type { ModelAuthAvailabilityEvaluation } from "./model-auth-availability.js";
 import { loadPreparedModelCatalogView, prepareModelCatalogView } from "./model-catalog-view.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
+import { createModelVisibilityPolicy } from "./model-visibility-policy.js";
 import {
   setPreparedModelRuntimeAuthLabels,
   setPreparedModelRuntimeAuthStore,
@@ -55,6 +56,59 @@ describe("prepared model catalog view", () => {
       throw new Error("Scoped browsing acquired the full catalog");
     });
   });
+
+  it.each([
+    { sessionKey: "agent:main:main", configured: true, bare: false, expected: "parent" },
+    { sessionKey: "agent:main:subagent:child", configured: true, bare: false, expected: "child" },
+    { sessionKey: "agent:main:main", configured: true, bare: true, expected: "parent" },
+    { sessionKey: "agent:main:subagent:child", configured: true, bare: true, expected: "child" },
+    {
+      sessionKey: "agent:main:subagent:child",
+      configured: false,
+      bare: false,
+      expected: undefined,
+    },
+  ])(
+    "retains only the authored primary for $sessionKey (configured=$configured, bare=$bare)",
+    ({ sessionKey, configured, bare, expected }) => {
+      const cfg: OpenClawConfig = configured
+        ? {
+            agents: {
+              defaults: {
+                model: bare ? "parent" : "fixture/parent",
+                subagents: { model: bare ? "child" : "worker@work-profile" },
+                models: { "fixture/parent": {}, "fixture/child": { alias: "worker" } },
+                modelPolicy: { allow: ["fixture/listed"] },
+              },
+              entries: { main: {} },
+            },
+          }
+        : {};
+      const view = prepareModelCatalogView({ ...facts(cfg), sessionKey });
+      const policy = createModelVisibilityPolicy({
+        cfg,
+        agentId: "main",
+        sessionKey,
+        catalog: [row("fixture", "parent"), row("fixture", "child"), row("fixture", "listed")],
+        defaultProvider: "anthropic",
+        defaultModel: view.defaultModel,
+        allowManifestNormalization: false,
+        allowPluginNormalization: false,
+      });
+      expect([...policy.retainedKeys]).toEqual(
+        expected ? [JSON.stringify(["fixture", expected])] : [],
+      );
+      expect(view.defaultModel).toBe(expected ? `fixture/${expected}` : undefined);
+      if (configured) {
+        expect(policy.selectionAliasIndex.byAlias.get("worker")?.ref).toEqual({
+          provider: "fixture",
+          model: "child",
+        });
+      } else {
+        expect(view.defaultModel).toBeUndefined();
+      }
+    },
+  );
 
   it("keeps missing runtime credentials labeled missing", async () => {
     const prepared = facts();
