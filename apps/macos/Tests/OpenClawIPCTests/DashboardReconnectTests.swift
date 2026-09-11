@@ -20,6 +20,7 @@ private actor DashboardReconnectAuthGate {
 @MainActor
 struct DashboardReconnectTests {
     @Test func `primary discovery failure preserves commands owned by a pending picker`() async throws {
+        let responseGate = DashboardWindowOwnershipPresentationGate()
         let discoveryGate = DashboardWindowOwnershipPresentationGate()
         let profileGate = DashboardWindowOwnershipPresentationGate()
         let failDiscovery = LockIsolated(false)
@@ -35,7 +36,8 @@ struct DashboardReconnectTests {
             window.dispatchEvent(new Event('openclaw:native-commands-state'));
             </script></body></html>
             """,
-            contentSecurityPolicy: "default-src 'none'; script-src 'unsafe-inline'")
+            contentSecurityPolicy: "default-src 'none'; script-src 'unsafe-inline'",
+            beforeResponse: { await responseGate.waitForRelease() })
         defer { server.stop() }
         let target = DashboardGatewayTarget.profile("secondary")
         let manager = DashboardManager._testMake(
@@ -98,11 +100,28 @@ struct DashboardReconnectTests {
             let replacement = try #require(window.windowController as? DashboardWindowController)
             let expected = ["new-session", "palette", "palette"]
             var events: [String] = []
+            var samples = 0
             let deadline = ContinuousClock.now + .seconds(5)
             repeat {
+                samples += 1
                 events = await (try? replacement.webView.evaluateJavaScript("window.commandEvents") as? [String]) ?? []
                 if !replacement.webView.isLoading, events == expected { break }
-                try await Task.sleep(for: .milliseconds(10))
+                if samples == 1 {
+                    try #require(events.isEmpty, "The held response must make the first sample empty")
+                    await responseGate.release()
+                    // Proof-only delayed consumer: the original five-second deadline is unchanged.
+                    try await Task.sleep(for: .seconds(6))
+                    let delivered = try await replacement.webView
+                        .evaluateJavaScript("window.commandEvents") as? [String]
+                    try #require(delivered == expected, "The page must already have received all three commands")
+                    try #require(ContinuousClock.now >= deadline, "The consumer must resume after its deadline")
+                    print("""
+                    Dashboard reconnect scheduling proof (original): fresh WebKit read delivered all three commands;
+                    consumer resumed after unchanged deadline; stored sample=\(events), samples=\(samples)
+                    """)
+                } else {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
             } while ContinuousClock.now < deadline
             #expect(manager._testAuxiliaryWindows().first?.target == target)
             #expect(replacement !== original)
@@ -112,6 +131,7 @@ struct DashboardReconnectTests {
         } catch {
             result = .failure(error)
         }
+        await responseGate.release()
         await discoveryGate.release()
         await profileGate.release()
         await discovery?.value
