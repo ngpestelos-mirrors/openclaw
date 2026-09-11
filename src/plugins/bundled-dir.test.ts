@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as openClawRoot from "../infra/openclaw-root.js";
 import {
+  isForeignBundledPluginRoot,
   resolveBundledPluginsDir,
   resolveSourceCheckoutDependencyDiagnostic,
 } from "./bundled-dir.js";
@@ -673,5 +674,51 @@ describe("resolveBundledPluginsDir", () => {
     },
   ] as const)("$name", ({ createScenario }) => {
     expectInstalledBundledDirScenarioCase(createScenario);
+  });
+});
+
+describe("isForeignBundledPluginRoot", () => {
+  function seedInstall(prefix: string, pluginId = "codex"): { root: string; pluginDir: string } {
+    const root = makeRepoRoot(prefix);
+    seedBundledPluginTree(root, path.join("dist", "extensions"), pluginId);
+    return { root, pluginDir: path.join(root, "dist", "extensions", pluginId) };
+  }
+
+  function withCurrentInstall<T>(currentRoot: string, run: () => T): T {
+    const spy = vi
+      .spyOn(openClawRoot, "resolveOpenClawPackageRootSync")
+      .mockReturnValue(currentRoot);
+    try {
+      return withPluginCache(createPluginCache(), run);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("reports a bundled plugin directory owned by a different installation", () => {
+    const current = seedInstall("openclaw-foreign-current-");
+    const previous = seedInstall("openclaw-foreign-previous-");
+    // A path install record left behind by a relocated installation still points at
+    // the old install's dist/extensions tree; it must not pass as a local bundle.
+    expect(
+      withCurrentInstall(current.root, () => isForeignBundledPluginRoot(previous.pluginDir)),
+    ).toBe(true);
+  });
+
+  it("does not report the running installation's own bundled plugin directory", () => {
+    const current = seedInstall("openclaw-foreign-self-");
+    expect(
+      withCurrentInstall(current.root, () => isForeignBundledPluginRoot(current.pluginDir)),
+    ).toBe(false);
+  });
+
+  it("does not report an ordinary external plugin directory", () => {
+    const current = seedInstall("openclaw-foreign-external-");
+    const externalRoot = makeRepoRoot("openclaw-foreign-external-plugin-");
+    const externalPluginDir = path.join(externalRoot, "my-plugin");
+    fs.mkdirSync(externalPluginDir, { recursive: true });
+    expect(
+      withCurrentInstall(current.root, () => isForeignBundledPluginRoot(externalPluginDir)),
+    ).toBe(false);
   });
 });

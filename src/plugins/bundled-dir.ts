@@ -168,6 +168,42 @@ export function isPluginInPackageBundledRoots(params: {
     );
 }
 
+/**
+ * Resolves the package root that would own `rootDir` as a bundled plugin, when the
+ * directory sits directly inside one of that package's bundled plugin trees.
+ * Returns undefined for directories that are not shaped like a bundled plugin.
+ */
+function resolveOwningBundledPackageRoot(rootDir: string): string | undefined {
+  const extensionsDir = path.dirname(rootDir);
+  if (path.basename(extensionsDir) !== "extensions") {
+    return undefined;
+  }
+  const parent = path.dirname(extensionsDir);
+  const parentName = path.basename(parent);
+  // Bundled trees are <root>/dist/extensions, <root>/dist-runtime/extensions, and
+  // <root>/extensions for source checkouts; the first two nest one level deeper.
+  const packageRoot =
+    parentName === "dist" || parentName === "dist-runtime" ? path.dirname(parent) : parent;
+  return isPluginInPackageBundledRoots({ rootDir, packageRoot }) ? packageRoot : undefined;
+}
+
+/**
+ * Reports a plugin directory that belongs to a *different* OpenClaw installation's
+ * bundled plugin tree. An install record pointing at one is stale by construction:
+ * it was recorded while that tree was the running install, and the directory is now
+ * owned by an installation this process does not run from. Such a record must not
+ * shadow the bundled plugin of the current installation, which would silently
+ * downgrade the plugin to an untrusted `origin-path` install.
+ */
+export function isForeignBundledPluginRoot(rootDir: string): boolean {
+  if (!resolveOwningBundledPackageRoot(rootDir)) {
+    return false;
+  }
+  return !resolvePackageRootsForBundledPlugins().some((packageRoot) =>
+    isPluginInPackageBundledRoots({ rootDir, packageRoot }),
+  );
+}
+
 export function resolveBundledDirFromPackageRoot(packageRoot: string): string | undefined {
   const builtExtensionsDir = path.join(packageRoot, "dist", "extensions");
   // In pnpm source checkouts, prefer the built bundled plugin runtime when it
