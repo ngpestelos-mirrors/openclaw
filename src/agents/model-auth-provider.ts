@@ -182,6 +182,8 @@ export async function resolveApiKeyForProviderCore(input: {
   allowAuthProfileFallback?: boolean;
   /** Skip plugin setup fallback when the prepared route already excludes it. */
   skipSetupProviderFallback?: boolean;
+  /** Exact environment binding selected by the text admission owner. */
+  boundEnvVar?: string;
   modelId?: string;
   modelApi?: string;
   modelBaseUrl?: string;
@@ -340,6 +342,7 @@ export async function resolveApiKeyForProviderCore(input: {
       provider,
       params.workspaceDir,
       params.skipSetupProviderFallback,
+      params.boundEnvVar,
     );
     if (envResolved) {
       const resolvedMode = resolveDirectProviderCredentialMode({
@@ -442,6 +445,7 @@ export async function resolveApiKeyForProviderCore(input: {
     provider,
     params.workspaceDir,
     params.skipSetupProviderFallback,
+    params.boundEnvVar,
   );
   if (localMarkerEnv && isNonSecretApiKeyMarker(localMarkerEnv.apiKey)) {
     return {
@@ -567,6 +571,7 @@ export async function resolveApiKeyForProviderCore(input: {
     provider,
     params.workspaceDir,
     params.skipSetupProviderFallback,
+    params.boundEnvVar,
   );
   if (envResolved) {
     const resolvedMode = resolveDirectProviderCredentialMode({

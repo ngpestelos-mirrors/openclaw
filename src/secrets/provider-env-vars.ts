@@ -186,7 +186,7 @@ function resolveManifestProviderUsageAuthEnvVarNames(
 
 function resolveManifestProviderAuthEnvVarCandidates(
   params: ProviderEnvVarLookupParams | undefined,
-  snapshot: PluginMetadataSnapshot,
+  snapshot: Pick<PluginMetadataSnapshot, "plugins">,
   sortedAliases: readonly (readonly [string, string])[],
 ): Record<string, string[]> {
   const candidates: Record<string, string[]> = {};
@@ -205,6 +205,19 @@ function resolveManifestProviderAuthEnvVarCandidates(
     }
   }
   return candidates;
+}
+
+/** Direct manifest bindings exclude auth aliases and legacy lookup fallbacks. */
+export function resolveProviderBindingEnvVarCandidates(
+  params: ProviderEnvVarLookupParams & { manifestPlugins?: readonly PluginManifestRecord[] } = {},
+): Record<string, readonly string[]> {
+  return resolveManifestProviderAuthEnvVarCandidates(
+    { ...params, includeUntrustedWorkspacePlugins: false },
+    params.manifestPlugins
+      ? { plugins: params.manifestPlugins }
+      : resolveProviderMetadataSnapshot(params),
+    [],
+  );
 }
 
 function resolveManifestRuntimeAuthFacts(

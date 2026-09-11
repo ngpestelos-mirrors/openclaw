@@ -25,7 +25,7 @@ describe("prepared auth metadata ownership", () => {
           },
         ],
       });
-    const config = {};
+    const config = { models: { providers: { "fixture-provider": { baseUrl: "", models: [] } } } };
     const prepared = withPluginMetadataSnapshotScope(
       snapshot("AMBIENT_PROVIDER_KEY"),
       () =>
@@ -64,7 +64,7 @@ describe("prepared auth metadata ownership", () => {
                 },
               },
             }
-          : {};
+          : { models: { providers: { "fixture-alias": { baseUrl: "", models: [] } } } };
       const prepare = () =>
         prepareAgentRuntimeAuth({
           provider: "fixture-alias",

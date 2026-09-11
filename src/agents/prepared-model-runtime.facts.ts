@@ -19,6 +19,7 @@ import { getPluginRegistryInspectionResources } from "../plugins/registry-inspec
 import { capturePluginLifecycleAuthority } from "../plugins/registry-lifecycle.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { resolveRuntimeSyntheticAuthProviderRefs } from "../plugins/synthetic-auth.runtime.js";
+import { resolveProviderBindingEnvVarCandidates } from "../secrets/provider-env-vars.js";
 import type { AgentCredentialMap } from "./agent-auth-credentials.js";
 import { prepareAmbientAgentCredentialsForDiscovery } from "./agent-auth-discovery.js";
 import {
@@ -80,6 +81,7 @@ import type {
   PreparedModelRuntimeInput,
   PreparedModelRuntimePluginGeneration,
 } from "./prepared-model-runtime.types.js";
+import { resolveProviderUseAdmission } from "./provider-model-auth-source-plan.js";
 import { AuthStorage } from "./sessions/auth-storage.js";
 
 type PreparedConfiguredRegistryGroup = {
@@ -111,6 +113,17 @@ function prepareAgentFacts(
     ...(input.env ? { env } : {}),
   });
   const credentials = authFacts.credentials;
+  const admitted = includeCredentialProviders
+    ? resolveProviderUseAdmission({
+        config: input.config,
+        env,
+        profiles: authFacts.store.profiles,
+        nativeProviders: Object.entries(credentials).flatMap(([provider, credential]) =>
+          credential.type === "api_key" && credential.nativeAuth ? [provider] : [],
+        ),
+        providerEnvVars: resolveProviderBindingEnvVarCandidates({ ...input, env }),
+      }).keys()
+    : [];
   const templateAuthStorage = authFacts.authStorage;
   const rawConfiguredModelRefs = collectPreparedModelRuntimeConfiguredRefs(
     input.config,
@@ -134,7 +147,7 @@ function prepareAgentFacts(
       ...new Set([
         ...collectPreparedModelRuntimeProviderIds(
           input.config,
-          credentials,
+          admitted,
           includeCredentialProviders,
           rawConfiguredModelRefs,
           input.agentId,
@@ -268,7 +281,7 @@ export async function prepareWorkspaceBuildGroup(
           withAgentRosterFactsBatch(config, () => [
             ...collectPreparedModelRuntimeProviderIds(
               config,
-              {},
+              [],
               false,
               collectPreparedModelRuntimeConfiguredRefs(config, agentId),
               agentId,

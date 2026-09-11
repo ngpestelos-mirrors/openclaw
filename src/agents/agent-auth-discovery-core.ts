@@ -1,11 +1,10 @@
 /** Env/config-backed credential discovery shared by agent auth discovery modes. */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveProviderBindingEnvVarCandidates } from "../secrets/provider-env-vars.js";
 import type { AgentCredentialMap } from "./agent-auth-credentials.js";
-import {
-  listProviderEnvAuthLookupKeys,
-  resolveProviderEnvAuthLookupMaps,
-} from "./model-auth-env-vars.js";
+import { resolveProviderEnvAuthLookupMaps } from "./model-auth-env-vars.js";
 import { resolveEnvApiKey } from "./model-auth-env.js";
+import { resolveProviderUseAdmission } from "./provider-model-auth-source-plan.js";
 
 /** Options for discovering env-backed credentials during agent auth discovery. */
 export type AgentDiscoveryAuthLookupOptions = {
@@ -28,22 +27,22 @@ export function addEnvBackedAgentCredentials(
   const lookupMaps = resolveProviderEnvAuthLookupMaps(lookupParams);
   const { aliasMap, envCandidateMap: candidateMap, authEvidenceMap } = lookupMaps;
   const next = { ...credentials };
-  // session runtime hides providers from its registry when auth storage lacks
-  // a matching credential entry. Mirror env-backed provider auth here so
-  // live/model discovery sees the same providers runtime auth can use.
-  for (const provider of listProviderEnvAuthLookupKeys({
-    envCandidateMap: candidateMap,
-    authEvidenceMap,
-  })) {
+  const admitted = resolveProviderUseAdmission({
+    config: options.config,
+    env,
+    providerEnvVars: resolveProviderBindingEnvVarCandidates(lookupParams),
+  });
+  for (const [provider, binding] of admitted) {
     if (next[provider]) {
       continue;
     }
     const resolved = resolveEnvApiKey(provider, env, {
       config: options.config,
       workspaceDir: options.workspaceDir,
-      aliasMap,
-      candidateMap,
-      authEvidenceMap,
+      aliasMap: binding.kind === "environment" ? {} : aliasMap,
+      candidateMap:
+        binding.kind === "environment" ? { [provider]: [binding.envVar] } : candidateMap,
+      authEvidenceMap: binding.kind === "environment" ? {} : authEvidenceMap,
     });
     if (!resolved?.apiKey) {
       continue;

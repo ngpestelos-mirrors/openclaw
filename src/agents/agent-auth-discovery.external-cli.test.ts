@@ -45,6 +45,20 @@ import {
 import { externalCliDiscoveryForProviders } from "./auth-profiles/external-cli-discovery.js";
 
 describe("resolveAgentDiscoveryAuthFacts external CLI scoping", () => {
+  it("retains a native CLI account through its declared runtime owner", () => {
+    const credentials = resolveAmbientAgentCredentialsForDiscovery({
+      config: {},
+      env: {},
+      authoritativeSyntheticAuthProviderRefs: ["claude-cli"],
+      syntheticAuthProviderRefs: ["claude-cli"],
+      resolveSyntheticAuth: () => ({ apiKey: "native-account-marker", mode: "oauth" }),
+    });
+    expect(credentials["claude-cli"]).toEqual({
+      type: "api_key",
+      key: "native-account-marker",
+      nativeAuth: { runtime: "claude-cli", mode: "oauth" },
+    });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     credentialMocks.resolveAgentCredentialMapFromStore.mockReturnValue({});

@@ -30,7 +30,6 @@ export default defineSingleProviderPluginEntry({
     },
     ...buildOpenAICompatibleProviderFamilyCatalog({
       discoveryMode: "strict",
-      credentialProviderId: PROVIDER_ID,
       entries: VOLCENGINE_PROVIDER_CATALOG.entries,
       staticCatalog: VOLCENGINE_PROVIDER_CATALOG.staticCatalog,
       augmentModelCatalog: VOLCENGINE_PROVIDER_CATALOG.augmentModelCatalog,

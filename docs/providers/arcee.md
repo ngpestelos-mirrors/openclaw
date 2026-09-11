@@ -10,6 +10,11 @@ read_when:
 
 Access Arcee models directly through the Arcee platform or through [OpenRouter](/providers/openrouter).
 
+`ARCEEAI_API_KEY` can enable direct Arcee use without a provider entry.
+To use `OPENROUTER_API_KEY` through the `arcee` provider, first run the OpenRouter
+onboarding path below or configure `models.providers.arcee` with the OpenRouter
+base URL. An OpenRouter environment key alone does not enable Arcee.
+
 | Property | Value                                                                                 |
 | -------- | ------------------------------------------------------------------------------------- |
 | Provider | `arcee`                                                                               |

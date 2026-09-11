@@ -74,6 +74,9 @@ Kimi Coding uses Moonshot AI's Anthropic-compatible endpoint:
 ```json5
 {
   env: { vars: { KIMI_API_KEY: "sk-..." } },
+  models: {
+    providers: { kimi: { baseUrl: "https://api.kimi.com/coding/", models: [] } },
+  },
   agents: {
     defaults: { model: { primary: "kimi/kimi-for-coding" } },
   },

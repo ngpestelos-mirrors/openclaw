@@ -18,6 +18,11 @@ alias `OPENCODE_ZEN_API_KEY`). Go still requires its own paid subscription;
 having a Zen key does not by itself grant Go access. OpenClaw keeps the runtime
 provider ids split so upstream per-model routing stays correct.
 
+Both provider manifests declare these environment keys, so an environment key
+alone does not enable either catalog for model requests. Use onboarding to save
+provider-bound credentials, or declare each intended provider under
+`models.providers`. Selecting a Zen or Go model alone is not sufficient.
+
 OpenClaw sends a stable `x-opencode-session` conversation header on requests to
 `https://opencode.ai` across the Anthropic, Gemini, OpenAI Chat Completions, and
 OpenAI Responses transports. This header remains enabled when prompt caching is
@@ -104,6 +109,11 @@ or caller routing headers are preserved regardless of header name casing.
 ```json5
 {
   env: { vars: { OPENCODE_API_KEY: "sk-..." } },
+  models: {
+    providers: {
+      opencode: { baseUrl: "https://opencode.ai/zen/v1", models: [] },
+    },
+  },
   agents: { defaults: { model: { primary: "opencode/gpt-5.6-sol" } } },
 }
 ```

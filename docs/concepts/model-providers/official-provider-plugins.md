@@ -183,6 +183,10 @@ messages and normalizes `stats.cached` into `cacheRead`; legacy
 
 ### Other bundled provider plugins
 
+The auth variables below are credential sources. Shared keys and generic
+credentials still require provider setup or an explicit provider entry; see
+[When credentials enable a provider](/concepts/model-providers#when-credentials-enable-a-provider).
+
 | Provider                                | Id                               | Auth env                                       | Example model                                          |
 | --------------------------------------- | -------------------------------- | ---------------------------------------------- | ------------------------------------------------------ |
 | [Arcee](/providers/arcee)               | `arcee`                          | `ARCEEAI_API_KEY` or `OPENROUTER_API_KEY`      | `arcee/trinity-large-thinking`                         |

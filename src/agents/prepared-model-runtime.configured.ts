@@ -27,7 +27,6 @@ import {
 import type { StaticModelIdMatcher } from "./embedded-agent-runner/model.static-id.js";
 import { resolveConfiguredModelHarnessRuntime } from "./harness-runtimes.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
-import type { AuthStorageData } from "./sessions/auth-storage.js";
 import { resolveEffectiveAgentRuntime } from "./thinking-runtime.js";
 
 export type PreparedConfiguredRuntimeModel = Readonly<{
@@ -63,7 +62,7 @@ export function collectPreparedModelRuntimeConfiguredRefs(
 
 export function collectPreparedModelRuntimeProviderIds(
   config: OpenClawConfig,
-  credentials: Readonly<AuthStorageData>,
+  admittedProviderIds: Iterable<string>,
   includeCredentialProviders: boolean,
   configuredModelRefs: readonly ConfiguredModelRef[] = collectConfiguredModelRefs(config),
   agentId?: string,
@@ -76,7 +75,7 @@ export function collectPreparedModelRuntimeProviderIds(
     }
   };
   if (includeCredentialProviders) {
-    for (const providerId of Object.keys(credentials)) {
+    for (const providerId of admittedProviderIds) {
       addProviderId(providerId);
     }
   }

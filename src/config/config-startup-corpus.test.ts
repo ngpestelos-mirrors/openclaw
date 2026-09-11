@@ -21,6 +21,10 @@ const expectations: Record<
   string,
   { providers: string[]; model?: string; sourceConfig?: OpenClawConfig }
 > = {
+  "provider-admission-generic.json": { providers: [] },
+  "provider-admission-openai.json": { providers: [] },
+  "provider-admission-family.json": { providers: [] },
+  "provider-admission-bedrock.json": { providers: [] },
   "agent-override.json": { providers: ["openai", "fixture-provider"] },
   "api-key-no-models.json": { providers: ["openai"] },
   "coach-lassi.json": {

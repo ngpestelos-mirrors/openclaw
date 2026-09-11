@@ -27,7 +27,6 @@ export default defineSingleProviderPluginEntry({
     },
     ...buildOpenAICompatibleProviderFamilyCatalog({
       discoveryMode: "strict",
-      credentialProviderId: PROVIDER_ID,
       entries: BYTEPLUS_PROVIDER_CATALOG.entries,
       staticCatalog: BYTEPLUS_PROVIDER_CATALOG.staticCatalog,
       augmentModelCatalog: BYTEPLUS_PROVIDER_CATALOG.augmentModelCatalog,

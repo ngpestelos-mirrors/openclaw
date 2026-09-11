@@ -169,6 +169,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     const plan = prepareAgentRuntimeAuthPlan({
       provider: "legacy-provider",
       modelId: "model",
+      config: providerConfig("legacy-provider", {}),
       env: {},
       authProfileStore: authStore({}),
       metadataSnapshot: createPluginMetadataSnapshotFixture({
@@ -190,6 +191,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
       provider: "openai",
       modelId: "gpt-5.4-nano",
       env: {},
+      harnessAuthBootstrap: "harness",
       harnessId: "codex",
       harnessRuntime: "codex",
       authProfileStore: authStore({}),
@@ -1468,25 +1470,68 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     ).toBe(true);
   });
 
-  // Zero-config still works: when a provider has no usable auth profile at all,
-  // a bare `PROVIDER_API_KEY` remains the credential for the route. Refusing an
-  // undeclared credential is about not letting it silently *succeed a declared
-  // profile*, not about banning the documented zero-config path.
-  it("still uses an undeclared env key when the provider has no usable profile", () => {
+  it("uses the uniquely bound env key before shared credential candidates", () => {
     const prepared = prepareAgentRuntimeAuth({
       provider: "openai",
       modelId: "gpt-5.5",
-      env: { OPENAI_API_KEY: "ambient-platform-key" },
+      env: { OPENAI_API_KEY: "ambient-platform-key", SHARED_OAUTH_TOKEN: "shared-token" },
+      metadataSnapshot: createPluginMetadataSnapshotFixture({
+        plugins: [
+          {
+            id: "fixture",
+            setup: {
+              providers: [
+                { id: "openai", envVars: ["SHARED_OAUTH_TOKEN", "OPENAI_API_KEY"] },
+                { id: "other", envVars: ["SHARED_OAUTH_TOKEN"] },
+              ],
+            },
+          },
+        ],
+      }),
       authProfileStore: authStore({}),
     });
 
     expect(prepared.attempts).toMatchObject([{ kind: "direct" }]);
+    expect(prepared.plan.selectedAuthMode).toBe("api-key");
     expect(prepared.attempts.some((attempt) => attempt.kind === "profile")).toBe(false);
     expect(prepared.plan.credentialSource).toEqual({
       kind: "direct",
       evidence: "environment",
       authorization: "ambient",
     });
+  });
+
+  it.each([
+    ["github-copilot", "GH_TOKEN", []],
+    ["meta", "MODEL_API_KEY", []],
+    ["google-vertex", "GOOGLE_APPLICATION_CREDENTIALS", []],
+    ["opencode-go", "OPENCODE_API_KEY", ["OPENCODE_API_KEY"]],
+  ] as const)("rejects unconfigured %s despite %s", (provider, envVar, sharedEnvVars) => {
+    expect(() =>
+      prepareAgentRuntimeAuth({
+        provider,
+        modelId: "fixture-model",
+        modelBaseUrl: "https://models.example/v1",
+        env: { [envVar]: "synthetic-key" },
+        authProfileStore: authStore({ "other:account": apiKeyProfile("other", "stored-key") }),
+        metadataSnapshot: createPluginMetadataSnapshotFixture({
+          plugins: [
+            {
+              id: "fixture",
+              providerAuthAliases: {
+                [provider]: { provider: "other", baseUrls: ["https://models.example/v1"] },
+              },
+              setup: {
+                providers: [
+                  { id: provider, envVars: [envVar] },
+                  { id: "other", envVars: [...sharedEnvVars] },
+                ],
+              },
+            },
+          ],
+        }),
+      }),
+    ).toThrow(/not configured for model use/u);
   });
 
   // Declared apiKey material keeps normal direct-source standing, so the
@@ -2075,6 +2120,7 @@ describe("prepareAgentRuntimeAuthPlan", () => {
     const plan = prepareAgentRuntimeAuthPlan({
       provider: "anthropic",
       modelId: "claude-sonnet-4-6",
+      config: providerConfig("anthropic", {}),
       env: {},
       authProfileStore: authStore({}),
     });

@@ -84,9 +84,17 @@ completion so browsers outside the tailnet can still finish setup.
 
 ## Config example
 
+`OPENROUTER_API_KEY` is also declared by the Perplexity plugin. For model
+requests, save an OpenRouter auth profile or explicitly configure
+`models.providers.openrouter` as below. Selecting a model alone does not enable
+credential use.
+
 ```json5
 {
   env: { vars: { OPENROUTER_API_KEY: "sk-or-..." } },
+  models: {
+    providers: { openrouter: { baseUrl: "https://openrouter.ai/api/v1", models: [] } },
+  },
   agents: {
     defaults: {
       model: { primary: "openrouter/auto" },
@@ -282,6 +290,9 @@ omit the `env.vars.OPENROUTER_API_KEY` line below.
 ```json5
 {
   env: { vars: { OPENROUTER_API_KEY: "sk-or-..." } },
+  models: {
+    providers: { openrouter: { baseUrl: "https://openrouter.ai/api/v1", models: [] } },
+  },
   agents: {
     defaults: {
       model: { primary: "openrouter/openrouter/fusion" },

@@ -5,6 +5,7 @@ import {
   resolveProviderSyntheticAuthWithPlugin,
 } from "../plugins/provider-runtime.js";
 import { resolveRuntimeSyntheticAuthProviderRefs } from "../plugins/synthetic-auth.runtime.js";
+import { resolveProviderBindingEnvVarCandidates } from "../secrets/provider-env-vars.js";
 import {
   resolveAgentCredentialMapFromStore,
   type AgentCredentialMap,
@@ -20,6 +21,10 @@ import {
   ensureAuthProfileStoreWithoutExternalProfiles,
 } from "./auth-profiles/store-runtime.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
+import {
+  resolveProviderUseAdmission,
+  type ProviderUseBinding,
+} from "./provider-model-auth-source-plan.js";
 
 /** Options for discovering credentials without prompting for secret material. */
 export type DiscoverAuthStorageOptions = {
@@ -36,6 +41,7 @@ export type DiscoverAuthStorageOptions = {
 type SyntheticAuth =
   | {
       apiKey?: string;
+      mode?: "api-key" | "oauth" | "token";
       nativeAuth?: { runtime: string; mode: "api-key" | "oauth" | "token" };
     }
   | undefined;
@@ -82,7 +88,17 @@ function resolveAmbientCredentialInputs(
     }
     providers.push(provider);
   }
-  return { credentials, providers };
+  const admitted = resolveProviderUseAdmission({
+    config: options.config,
+    env: options.env,
+    providerEnvVars: resolveProviderBindingEnvVarCandidates(options),
+  });
+  return {
+    credentials,
+    providers,
+    admitted,
+    nativeProviders: authoritativeSyntheticAuthProviderRefs,
+  };
 }
 
 function syntheticAuthParams(options: AgentDiscoveryAuthLookupOptions, provider: string) {
@@ -103,13 +119,23 @@ function addSyntheticCredential(
   credentials: AgentCredentialMap,
   provider: string,
   resolved: SyntheticAuth,
+  admitted: ReadonlyMap<string, ProviderUseBinding>,
+  nativeProviders: ReadonlySet<string>,
 ) {
+  const nativeAuth =
+    resolved?.nativeAuth ??
+    (nativeProviders.has(normalizeProviderId(provider)) && resolved?.mode
+      ? { runtime: provider, mode: resolved.mode }
+      : undefined);
+  if (!nativeAuth && !admitted.has(normalizeProviderId(provider))) {
+    return;
+  }
   const apiKey = resolved?.apiKey?.trim();
   if (apiKey) {
     credentials[normalizeProviderId(provider) || provider] = {
       type: "api_key",
       key: apiKey,
-      ...(resolved?.nativeAuth ? { nativeAuth: resolved.nativeAuth } : {}),
+      ...(nativeAuth ? { nativeAuth } : {}),
     };
   }
 }
@@ -118,7 +144,8 @@ function addSyntheticCredential(
 export function resolveAmbientAgentCredentialsForDiscovery(
   options: AmbientAgentCredentialOptions = {},
 ): AgentCredentialMap {
-  const { credentials, providers } = resolveAmbientCredentialInputs(options);
+  const { credentials, providers, admitted, nativeProviders } =
+    resolveAmbientCredentialInputs(options);
   for (const provider of providers) {
     addSyntheticCredential(
       credentials,
@@ -126,6 +153,8 @@ export function resolveAmbientAgentCredentialsForDiscovery(
       options.resolveSyntheticAuth
         ? options.resolveSyntheticAuth(provider)
         : resolveProviderSyntheticAuthWithPlugin(syntheticAuthParams(options, provider)),
+      admitted,
+      nativeProviders,
     );
   }
   return credentials;
@@ -138,7 +167,8 @@ export async function prepareAmbientAgentCredentialsForDiscovery(
     signal?: AbortSignal;
   } = {},
 ): Promise<AgentCredentialMap> {
-  const { credentials, providers } = resolveAmbientCredentialInputs(options);
+  const { credentials, providers, admitted, nativeProviders } =
+    resolveAmbientCredentialInputs(options);
   for (const provider of providers) {
     options.signal?.throwIfAborted();
     const resolved = options.resolveSyntheticAuth
@@ -148,7 +178,7 @@ export async function prepareAmbientAgentCredentialsForDiscovery(
           signal: options.signal,
         });
     options.signal?.throwIfAborted();
-    addSyntheticCredential(credentials, provider, resolved);
+    addSyntheticCredential(credentials, provider, resolved, admitted, nativeProviders);
   }
   return credentials;
 }

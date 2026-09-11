@@ -18,6 +18,7 @@ import type {
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { passesManifestOwnerBasePolicy } from "../plugins/manifest-owner-policy.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { resolveProviderBindingEnvVarCandidates } from "../secrets/provider-env-vars.js";
 import { isValidSecretRef } from "../secrets/ref-contract.js";
 import type { PreparedAgentCredentialModes } from "./agent-auth-credential-modes.js";
 import { hasUsableOAuthCredential } from "./auth-profiles/credential-state.js";
@@ -57,10 +58,7 @@ import {
 } from "./cli-backends.js";
 import { resolveBundledCliBackendAuthPolicy } from "./cli-runner/cli-backend-auth-policy.js";
 import { resolveAgentHarnessPolicy } from "./harness/policy.js";
-import {
-  listProviderEnvAuthLookupKeys,
-  resolveProviderEnvAuthLookupMaps,
-} from "./model-auth-env-vars.js";
+import { resolveProviderEnvAuthLookupMaps } from "./model-auth-env-vars.js";
 import { resolveProviderEnvAuthEvidence } from "./model-auth-env.js";
 import { isSecretRefHeaderValueMarker } from "./model-auth-markers.js";
 import {
@@ -84,6 +82,7 @@ import {
   buildProviderModelAuthSourcePlan,
   fromProviderModelAuthReadiness,
   toProviderModelAuthReadiness,
+  resolveProviderUseAdmission,
   type ProviderModelAuthEvidence,
   type ProviderModelAuthProfileSource,
   type ProviderModelAuthSourcePlan,
@@ -230,13 +229,14 @@ function evaluateCliRuntimeModelAuthAvailability(
   }
   const runtimeAuthMode =
     params.preparedRuntimeAuthModes?.[normalizeProviderIdForAuth(runtimeProvider)];
+  const mode = typeof runtimeAuthMode === "object" ? runtimeAuthMode.mode : runtimeAuthMode;
   // The prepared native-runtime result is authoritative for this route. Provider
   // credentials cannot prove that the separately authenticated CLI is usable.
-  return typeof runtimeAuthMode === "string"
+  return typeof mode === "string"
     ? {
         availability: true,
         routeResolution: null,
-        selectedAuthMode: runtimeAuthMode,
+        selectedAuthMode: mode,
         evidence: "runtime",
       }
     : params.preparedSyntheticAuthComplete
@@ -410,6 +410,21 @@ export function createModelAuthAvailabilityResolver(
     env,
     metadataSnapshot: params.metadataSnapshot,
   });
+  const admitted = resolveProviderUseAdmission({
+    config: params.cfg,
+    env,
+    profiles: store.profiles,
+    nativeProviders: Object.entries(params.preparedRuntimeAuthModes ?? {}).flatMap(
+      ([provider, mode]) =>
+        typeof mode === "object" && mode.source === "native" ? [provider] : [],
+    ),
+    providerEnvVars: resolveProviderBindingEnvVarCandidates({
+      config: params.cfg,
+      env,
+      workspaceDir: params.workspaceDir,
+      metadataSnapshot: params.metadataSnapshot,
+    }),
+  });
   const synthetic = new Set(
     (params.syntheticAuthProviderRefs ?? []).map(normalizeProviderIdForAuth),
   );
@@ -460,14 +475,19 @@ export function createModelAuthAvailabilityResolver(
       store,
     });
   const envAuth = (provider: string) => {
+    const binding = admitted.get(normalizeProviderId(provider));
+    if (!binding || binding.kind === "profile") {
+      return null;
+    }
     const normalized = normalizeProvider(provider);
     if (!envCache.has(normalized)) {
       envCache.set(
         normalized,
         resolveProviderEnvAuthEvidence(normalized, env, {
-          aliasMap,
-          candidateMap: envCandidateMap,
-          authEvidenceMap,
+          aliasMap: binding.kind === "environment" ? {} : aliasMap,
+          candidateMap:
+            binding.kind === "environment" ? { [normalized]: [binding.envVar] } : envCandidateMap,
+          authEvidenceMap: binding.kind === "environment" ? {} : authEvidenceMap,
           config: params.cfg,
           workspaceDir: params.workspaceDir,
         }),
@@ -481,21 +501,30 @@ export function createModelAuthAvailabilityResolver(
     preferredProfileId?: string,
     pinnedProfileId?: string,
   ) => {
-    const normalized = normalizeProvider(provider);
+    const normalized = normalizeProviderIdForAuth(provider);
     const cacheKey = `${normalized}\u0000${forModel ?? ""}\u0000${preferredProfileId ?? ""}\u0000${pinnedProfileId ?? ""}`;
     const cached = orderCache.get(cacheKey);
     if (cached) {
       return cached;
     }
+    const ordered = resolveAuthProfileOrderWithMetadata({
+      cfg: readOnlyAuthConfig,
+      store: orderStore,
+      provider: normalized,
+      preferredProfile: preferredProfileId,
+      forModel,
+      readinessMode: "read-only",
+    });
     const resolution = prependAuthProfilePin(
-      resolveAuthProfileOrderWithMetadata({
-        cfg: readOnlyAuthConfig,
-        store: orderStore,
-        provider: normalized,
-        preferredProfile: preferredProfileId,
-        forModel,
-        readinessMode: "read-only",
-      }),
+      admitted.get(normalized)?.kind === "profile"
+        ? {
+            ...ordered,
+            profileIds: ordered.profileIds.filter((id) => {
+              const credential = orderStore.profiles[id];
+              return credential && normalizeProviderId(credential.provider) === normalized;
+            }),
+          }
+        : ordered,
       pinnedProfileId,
     );
     orderCache.set(cacheKey, resolution);
@@ -641,6 +670,10 @@ export function createModelAuthAvailabilityResolver(
     });
   };
   const unprofiledEvaluation = (provider: string, target: AuthTarget): AuthSourceEvaluation => {
+    const admissionBinding = admitted.get(normalizeProviderId(provider));
+    if (!admissionBinding || admissionBinding.kind === "profile") {
+      return { availability: false, evidence: "none", unavailableReason: "missing-auth" };
+    }
     const { providerConfig: configured, ref: apiKeyRef } = providerInput(provider);
     const configuredAuth = target.pinnedProfileId ? undefined : configured?.auth;
     if (configuredAuth === "aws-sdk") {
@@ -772,9 +805,11 @@ export function createModelAuthAvailabilityResolver(
         evidence: "aws-sdk",
       };
     }
-    const preparedRuntimeAuthMode =
+    const preparedRuntimeAuth =
       params.preparedRuntimeAuthModes?.[normalizeProviderIdForAuth(provider)] ??
       params.preparedRuntimeAuthModes?.[normalizeProvider(provider)];
+    const preparedRuntimeAuthMode =
+      typeof preparedRuntimeAuth === "object" ? preparedRuntimeAuth.mode : preparedRuntimeAuth;
     if (typeof preparedRuntimeAuthMode === "string") {
       return {
         availability: modeAllowed(provider, target, preparedRuntimeAuthMode),
@@ -1022,6 +1057,9 @@ export function createModelAuthAvailabilityResolver(
     preparedTarget?: AuthTarget,
   ): AuthSourceEvaluation => {
     const provider = normalizeProviderIdForAuth(rawProvider);
+    if (!admitted.has(provider)) {
+      return { availability: false, evidence: "none", unavailableReason: "missing-auth" };
+    }
     const target = preparedTarget ?? prepareAuthTarget(provider, ref);
     const profileLock = ref.requiredProfileId?.trim();
     if (invalidProfilePin(provider, ref)) {
@@ -1421,16 +1459,8 @@ export function createModelAuthAvailabilityResolver(
       providerDiscoveryProviderIds.add(normalized);
     }
   };
-  for (const credential of Object.values(store.profiles)) {
-    addProviderDiscoveryProviderId(credential.provider);
-  }
-  for (const profile of Object.values(params.cfg.auth?.profiles ?? {})) {
-    addProviderDiscoveryProviderId(profile.provider);
-  }
-  for (const provider of listProviderEnvAuthLookupKeys({ envCandidateMap, authEvidenceMap })) {
-    if (envAuth(provider)) {
-      addProviderDiscoveryProviderId(provider);
-    }
+  for (const provider of admitted.keys()) {
+    addProviderDiscoveryProviderId(provider);
   }
   for (const plugin of params.metadataSnapshot?.index?.plugins ?? []) {
     if (

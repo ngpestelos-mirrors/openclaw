@@ -20,6 +20,8 @@ not an API key.
 ## Getting started
 
 Choose your preferred auth method and follow the setup steps.
+Both methods require an explicit `models.providers["amazon-bedrock"]` entry.
+AWS credentials and discovery settings alone do not enable Bedrock use.
 
 <Tabs>
   <Tab title="Access keys / env vars">
@@ -79,7 +81,8 @@ Choose your preferred auth method and follow the setup steps.
     </Steps>
 
     <Tip>
-    With env-marker auth (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, or `AWS_BEARER_TOKEN_BEDROCK`), OpenClaw auto-enables the implicit Bedrock provider for model discovery without extra config.
+    After you configure the provider, OpenClaw can use AWS credentials for
+    model requests and discovery. You do not need to copy them into `apiKey`.
     </Tip>
 
   </Tab>
@@ -88,23 +91,17 @@ Choose your preferred auth method and follow the setup steps.
     **Best for:** EC2 instances with an IAM role attached, using the instance metadata service for authentication.
 
     <Steps>
-      <Step title="Enable discovery explicitly">
-        When using IMDS, OpenClaw cannot detect AWS auth from env markers alone, so you must opt in:
+      <Step title="Configure the Bedrock provider">
+        Add the `models.providers["amazon-bedrock"]` entry shown in the access-key
+        example, including `auth: "aws-sdk"`. The AWS credential chain uses the
+        instance role without access-key environment variables.
+      </Step>
+      <Step title="Choose the discovery region">
+        Discovery runs by default after provider setup. Choose its region:
 
         ```bash
-        openclaw config set plugins.entries.amazon-bedrock.config.discovery.enabled true
         openclaw config set plugins.entries.amazon-bedrock.config.discovery.region us-east-1
         ```
-      </Step>
-      <Step title="Optionally add an env marker for auto mode">
-        If you also want the env-marker auto-detection path to work (for example, for `openclaw status` surfaces):
-
-        ```bash
-        export AWS_PROFILE=default
-        export AWS_REGION=us-east-1
-        ```
-
-        You do **not** need a fake API key.
       </Step>
       <Step title="Verify models are discovered">
         ```bash
@@ -125,7 +122,8 @@ Choose your preferred auth method and follow the setup steps.
     </Warning>
 
     <Note>
-    You only need `AWS_PROFILE=default` if you specifically want an env marker for auto mode or status surfaces. The actual Bedrock runtime auth path uses the AWS SDK default chain, so IMDS instance-role auth works even without env markers.
+    `AWS_PROFILE` is optional when you use an instance role. Setting it does not
+    replace the explicit Bedrock provider entry.
     </Note>
 
   </Tab>
@@ -151,18 +149,14 @@ defaults from v2026.9.2. Pass `discoveryMode: "strict"` to propagate acquisition
 failures and retain successful empty provider results, as the bundled catalog
 hooks do. Advisory partial results are not cached as complete inventory.
 
-How the implicit provider is enabled:
+Discovery requires the configured Bedrock provider:
 
-- If `plugins.entries.amazon-bedrock.config.discovery.enabled` is `true`,
-  OpenClaw will try discovery even when no AWS env marker is present.
-- If `plugins.entries.amazon-bedrock.config.discovery.enabled` is unset,
-  OpenClaw only auto-adds the
-  implicit Bedrock provider when it sees one of these AWS auth markers:
-  `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID` +
-  `AWS_SECRET_ACCESS_KEY`, or `AWS_PROFILE`.
-- The actual Bedrock runtime auth path still uses the AWS SDK default chain, so
-  shared config, SSO, and IMDS instance-role auth can work even when discovery
-  needed `enabled: true` to opt in.
+- Discovery runs by default for the configured provider, including with
+  instance-role credentials and no AWS environment markers.
+- `discovery.enabled: false` disables discovery while keeping explicitly
+  configured models usable.
+- The AWS credential chain supplies credentials after provider setup. Neither
+  AWS environment variables nor `discovery.enabled: true` replace that setup.
 
 <Note>
 For explicit `models.providers["amazon-bedrock"]` entries, OpenClaw can still resolve Bedrock env-marker auth early from AWS env markers such as `AWS_BEARER_TOKEN_BEDROCK` without forcing full runtime auth loading. The actual model-call auth path still uses the AWS SDK default chain.
@@ -195,7 +189,7 @@ For explicit `models.providers["amazon-bedrock"]` entries, OpenClaw can still re
 
     | Option | Default | Description |
     | ------ | ------- | ----------- |
-    | `enabled` | auto | In auto mode, OpenClaw only enables the implicit Bedrock provider when it sees a supported AWS env marker. Set `true` to force discovery. |
+    | `enabled` | enabled after provider setup | Set `false` to skip discovery. Default credential-chain auth needs no environment markers. |
     | `region` | `AWS_REGION` / `AWS_DEFAULT_REGION` / `us-east-1` | AWS region used for discovery API calls. |
     | `providerFilter` | (all) | Matches Bedrock provider names (for example `anthropic`, `amazon`). |
     | `refreshInterval` | `3600` | Cache duration in seconds. Set to `0` to disable caching. |
@@ -250,16 +244,11 @@ aws ec2 associate-iam-instance-profile \
   --instance-id i-xxxxx \
   --iam-instance-profile Name=EC2-Bedrock-Access
 
-# 3. On the EC2 instance, enable discovery explicitly
-openclaw config set plugins.entries.amazon-bedrock.config.discovery.enabled true
+# 3. On the EC2 instance, configure the provider and discovery
+openclaw config set models.providers.amazon-bedrock '{"baseUrl":"https://bedrock-runtime.us-east-1.amazonaws.com","api":"bedrock-converse-stream","auth":"aws-sdk","models":[]}'
 openclaw config set plugins.entries.amazon-bedrock.config.discovery.region us-east-1
 
-# 4. Optional: add an env marker if you want auto mode without explicit enable
-echo 'export AWS_PROFILE=default' >> ~/.bashrc
-echo 'export AWS_REGION=us-east-1' >> ~/.bashrc
-source ~/.bashrc
-
-# 5. Verify models are discovered
+# 4. Verify models are discovered
 openclaw models list
 ```
 
@@ -477,9 +466,8 @@ openclaw models list
     - Bedrock requires **model access** enabled in your AWS account/region.
     - Automatic discovery needs the `bedrock:ListFoundationModels` and
       `bedrock:ListInferenceProfiles` permissions.
-    - If you rely on auto mode, set one of the supported AWS auth env markers on the
-      gateway host. If you prefer IMDS/shared-config auth without env markers, set
-      `plugins.entries.amazon-bedrock.config.discovery.enabled: true`.
+    - Configure `models.providers["amazon-bedrock"]` first. Discovery then uses
+      the default credential chain unless `discovery.enabled` is `false`.
     - OpenClaw surfaces the credential source in this order: `AWS_BEARER_TOKEN_BEDROCK`,
       then `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, then `AWS_PROFILE`, then the
       default AWS SDK chain.

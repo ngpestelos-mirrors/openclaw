@@ -67,6 +67,11 @@ interactive onboarding or pass the shared OpenCode API key directly.
 ```json5
 {
   env: { vars: { OPENCODE_API_KEY: "YOUR_API_KEY_HERE" } }, // pragma: allowlist secret
+  models: {
+    providers: {
+      "opencode-go": { baseUrl: "https://opencode.ai/zen/go/v1", models: [] },
+    },
+  },
   agents: { defaults: { model: { primary: "opencode-go/kimi-k3" } } },
 }
 ```
@@ -103,8 +108,9 @@ model, because provider policy can change independently of OpenClaw.
 
 <AccordionGroup>
   <Accordion title="Routing behavior">
-    OpenClaw routes any `opencode-go/...` model ref automatically. No extra
-    provider config is required.
+    OpenClaw routes `opencode-go/...` model refs after Go has a stored auth
+    profile or an explicit `models.providers["opencode-go"]` entry. The shared
+    OpenCode environment key alone does not enable Go.
   </Accordion>
 
   <Accordion title="Runtime ref convention">

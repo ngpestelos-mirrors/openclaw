@@ -19,6 +19,10 @@ The Google plugin provides access to Gemini models through Google AI Studio, plu
 For most installations, use a Google AI Studio API key. Use `google-vertex` when
 the Gateway already runs inside a managed Google Cloud environment.
 
+For Vertex with Application Default Credentials, explicitly configure
+`models.providers["google-vertex"]`. Cloud credentials alone do not enable model
+requests. The provider-specific `GOOGLE_CLOUD_API_KEY` can enable Vertex directly.
+
 <Tabs>
   <Tab title="AI Studio API key">
     **Recommended for:** standard Gemini API access.

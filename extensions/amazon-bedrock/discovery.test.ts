@@ -671,19 +671,29 @@ describe("bedrock discovery", () => {
     expect(destroyMock).toHaveBeenCalledTimes(3);
   });
 
-  it.each([false, undefined])(
-    "keeps non-attempt discovery null when enabled is %s",
-    async (enabled) => {
-      await expect(
-        resolveImplicitBedrockProvider({
-          pluginConfig: { discovery: { enabled } },
-          env: {},
-          clientFactory,
-        }),
-      ).resolves.toBeNull();
-      expect(sendMock).not.toHaveBeenCalled();
-    },
-  );
+  it("skips explicitly disabled discovery", async () => {
+    await expect(
+      resolveImplicitBedrockProvider({
+        pluginConfig: { discovery: { enabled: false } },
+        env: {},
+        clientFactory,
+      }),
+    ).resolves.toBeNull();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("discovers an admitted provider through the default AWS chain without env markers", async () => {
+    mockBedrockDiscovery([baseActiveAnthropicSummary]);
+    const provider = await resolveImplicitBedrockProvider({
+      env: {},
+      pluginConfig: { discovery: { refreshInterval: 0 } },
+      clientFactory,
+    });
+    expect(provider?.models).toContainEqual(
+      expect.objectContaining({ id: baseActiveAnthropicSummary.modelId }),
+    );
+    expect(provider?.auth).toBe("aws-sdk");
+  });
 
   it("keeps matching inference profiles when provider filters are enabled", async () => {
     mockBedrockDiscovery(

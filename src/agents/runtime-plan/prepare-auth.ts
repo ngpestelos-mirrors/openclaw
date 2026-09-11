@@ -1,12 +1,14 @@
 /**
- * Prepares route-aware auth forwarding for auxiliary agent-runtime calls.
+ * Prepares route-aware auth forwarding for agent-runtime calls.
  * Callers supply an already loaded credential snapshot; this module never
  * resolves secrets or loads a provider runtime.
  */
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { resolveMergedModelProviderConfig } from "../../config/model-provider-config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderRouteOverridePresence } from "../../plugin-sdk/provider-model-types.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
+import { resolveProviderBindingEnvVarCandidates } from "../../secrets/provider-env-vars.js";
 import { isPendingOAuthRefreshFence } from "../auth-profiles/oauth-refresh-marker.js";
 import {
   prependAuthProfilePin,
@@ -20,6 +22,7 @@ import { isProfileInCooldown } from "../auth-profiles/usage-state.js";
 import { resolveProviderDirectAuthPlanningEvidence } from "../model-auth-env.js";
 import { resolveProviderConfigSecretInput } from "../model-auth-provider-config.js";
 import { resolveModelProviderAuthConfig } from "../model-auth-provider-route.js";
+import { ProviderAuthError } from "../model-auth-runtime-shared.js";
 import {
   hasUsableCustomProviderApiKey,
   resolveProviderEntryApiKeyProfileReference,
@@ -30,6 +33,7 @@ import {
   buildProviderModelAuthDirectSource,
   buildProviderModelAuthSourcePlan,
   classifyProviderModelAuthSource,
+  resolveProviderUseAdmission,
   type ProviderModelAuthDirectSource,
   type ProviderModelAuthProfileSource,
 } from "../provider-model-auth-source-plan.js";
@@ -214,6 +218,13 @@ function resolvePreparedProviderEntryApiKeyProfileReference(
 export function prepareAgentRuntimeAuth(
   input: PrepareAgentRuntimeAuthPlanParams,
 ): PreparedAgentRuntimeAuth {
+  // Route projection may add a provider entry; only authored config grants use.
+  const providerUseAdmission = resolveProviderUseAdmission({
+    config: input.config,
+    env: input.env,
+    providerEnvVars: resolveProviderBindingEnvVarCandidates(input),
+    profiles: input.authProfileStore?.profiles,
+  });
   const params = { ...input, config: resolveModelProviderAuthConfig(input) };
   const requestedProfileId = params.sessionAuthProfileId?.trim() || undefined;
   const userPinnedProfileId =
@@ -236,6 +247,9 @@ export function prepareAgentRuntimeAuth(
   }
   const store = params.authProfileStore;
   const authProfileSelectionProvider = harnessOwnsOpenAIAuth ? "openai" : params.provider;
+  const providerUseBinding =
+    providerUseAdmission.get(normalizeProviderId(input.provider)) ??
+    (harnessOwnsOpenAIAuth ? providerUseAdmission.get("openai") : undefined);
   if (userPinnedProfileId) {
     const eligibility = store
       ? resolveAuthProfileEligibility({
@@ -262,6 +276,14 @@ export function prepareAgentRuntimeAuth(
         `Auth profile "${userPinnedProfileId}" is not configured for ${authProfileSelectionProvider}.`,
       );
     }
+  }
+
+  if (!providerUseBinding && !runtimeAuthOwner) {
+    throw new ProviderAuthError(
+      "missing-provider-auth",
+      params.provider,
+      `Provider "${params.provider}" is not configured for model use. Add a provider entry or authenticate this provider.`,
+    );
   }
 
   const configuredProvider = resolveMergedModelProviderConfig(params.config, params.provider);
@@ -329,7 +351,16 @@ export function prepareAgentRuntimeAuth(
           includePendingOAuthRefresh: true,
         });
   const automaticOrderResolution = prependAuthProfilePin(
-    resolvedAutomaticOrder,
+    providerUseBinding?.kind === "profile"
+      ? {
+          ...resolvedAutomaticOrder,
+          profileIds: resolvedAutomaticOrder.profileIds.filter(
+            (id) =>
+              normalizeProviderId(store?.profiles[id]?.provider ?? "") ===
+              normalizeProviderId(authProfileSelectionProvider),
+          ),
+        }
+      : resolvedAutomaticOrder,
     userPinnedProfileId,
   );
   const providerPreferredProfileId =
@@ -372,17 +403,32 @@ export function prepareAgentRuntimeAuth(
     availability?: boolean,
     authorization: ProviderModelAuthDirectSource["authorization"] = "declared",
   ) => buildProviderModelAuthDirectSource({ mode, evidence, availability, authorization });
-  const directPlanningCandidate = harnessAllowsAuthProfileForwarding
-    ? resolveProviderDirectAuthPlanningEvidence(
-        authProfileSelectionProvider,
-        params.env ?? process.env,
-        {
-          config: params.config,
-          workspaceDir: params.workspaceDir,
-          metadataSnapshot: params.metadataSnapshot,
-        },
-      )
-    : null;
+  const directPlanningCandidate =
+    harnessAllowsAuthProfileForwarding &&
+    providerUseBinding &&
+    providerUseBinding.kind !== "profile"
+      ? resolveProviderDirectAuthPlanningEvidence(
+          authProfileSelectionProvider,
+          params.env ?? process.env,
+          {
+            config: params.config,
+            workspaceDir: params.workspaceDir,
+            metadataSnapshot: params.metadataSnapshot,
+            ...(providerUseBinding.kind === "environment"
+              ? {
+                  aliasMap: {},
+                  candidateMap: {
+                    [normalizeProviderId(authProfileSelectionProvider)]: [
+                      providerUseBinding.envVar,
+                    ],
+                  },
+                  authEvidenceMap: {},
+                  setupProviderFallbackRefs: [],
+                }
+              : {}),
+          },
+        )
+      : null;
   // OpenAI native account discovery is harness-owned synthetic auth, not a
   // bearer credential for an OpenClaw request route.
   const directPlanningEvidence =
@@ -443,6 +489,18 @@ export function prepareAgentRuntimeAuth(
     ...(fallbackDirectSource ? { fallback: fallbackDirectSource } : {}),
     allowCooldown: params.allowTransientCooldownProbe,
   });
+  if (
+    providerUseBinding?.kind === "profile" &&
+    sourcePlan.kind === "automatic" &&
+    !sourcePlan.profiles.explicitOrder &&
+    (sourcePlan.profiles.kind === "empty" || sourcePlan.profiles.kind === "all-unavailable")
+  ) {
+    throw new ProviderAuthError(
+      "missing-provider-auth",
+      params.provider,
+      `No usable bound auth profile for ${params.provider}. Authenticate this provider again.`,
+    );
+  }
   const resolution = resolveOpenAIModelRoutes({
     provider: params.provider,
     modelId: params.modelId,

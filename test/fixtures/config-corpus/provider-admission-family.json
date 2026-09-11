@@ -1,0 +1,7 @@
+{
+  "env": {
+    "vars": {
+      "BYTEPLUS_API_KEY": "FAKE_CONFIG_CORPUS_CREDENTIAL"
+    }
+  }
+}

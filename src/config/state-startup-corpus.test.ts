@@ -236,7 +236,15 @@ describe("prior-release state startup corpus", () => {
               { catalogMode: "static" },
             );
             try {
-              if (configName === "generic-github-token.json") {
+              if (
+                [
+                  "generic-github-token.json",
+                  "provider-admission-bedrock.json",
+                  "provider-admission-family.json",
+                  "provider-admission-generic.json",
+                  "provider-admission-openai.json",
+                ].includes(configName)
+              ) {
                 expect(lease.snapshot.modelCatalog.entries).toEqual([]);
               } else {
                 expect(lease.snapshot.modelCatalog.entries.length).toBeGreaterThan(0);

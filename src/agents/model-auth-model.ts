@@ -249,6 +249,7 @@ export async function getApiKeyForModelCore(params: {
   credentialPrecedence?: ProviderCredentialPrecedence;
   allowAuthProfileFallback?: boolean;
   skipSetupProviderFallback?: boolean;
+  boundEnvVar?: string;
   secretSentinels?: boolean;
 }): Promise<ResolvedProviderAuth> {
   return resolveApiKeyForProviderCore({
@@ -263,6 +264,7 @@ export async function getApiKeyForModelCore(params: {
     credentialPrecedence: params.credentialPrecedence,
     allowAuthProfileFallback: params.allowAuthProfileFallback,
     skipSetupProviderFallback: params.skipSetupProviderFallback,
+    boundEnvVar: params.boundEnvVar,
     modelId: params.model.id,
     modelApi: params.model.api,
     modelBaseUrl: params.model.baseUrl,

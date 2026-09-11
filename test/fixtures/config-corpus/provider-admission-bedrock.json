@@ -1,0 +1,13 @@
+{
+  "env": {
+    "vars": {
+      "AWS_PROFILE": "default",
+      "AWS_SHARED_CREDENTIALS_FILE": "/home/fixture/.aws/credentials"
+    }
+  },
+  "models": {
+    "providers": {
+      "amazon-bedrock": { "auth": "aws-sdk" }
+    }
+  }
+}

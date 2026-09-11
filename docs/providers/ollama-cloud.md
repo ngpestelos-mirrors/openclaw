@@ -24,10 +24,11 @@ Follow [Ollama's API key instructions](https://docs.ollama.com/api/authenticatio
 openclaw onboard --auth-choice ollama-cloud
 ```
 
-Or set:
+Or set the key and explicitly declare the cloud provider:
 
 ```bash
 export OLLAMA_API_KEY="<your-ollama-cloud-api-key>" # pragma: allowlist secret
+openclaw config set models.providers.ollama-cloud '{"baseUrl":"https://ollama.com","api":"ollama","models":[]}'
 ```
 
 Non-interactive onboarding accepts the key directly:
@@ -37,6 +38,10 @@ openclaw onboard --auth-choice ollama-cloud --ollama-cloud-api-key "<key>"
 ```
 
 Onboarding sets the default model to `ollama-cloud/minimax-m2.7`.
+
+`OLLAMA_API_KEY` is shared with the local `ollama` provider. The environment key
+alone does not enable cloud model requests; use onboarding or the provider
+entry above.
 
 ## Defaults
 
@@ -62,8 +67,8 @@ semantics or provider-specific OpenAI-style features.
 
 ## Models
 
-The provider requires an API key; without one it stays inactive. With a key,
-OpenClaw discovers Ollama Cloud models live from the hosted catalog:
+After provider setup, OpenClaw uses the API key to discover Ollama Cloud models
+live from the hosted catalog:
 
 ```bash
 openclaw models list --provider ollama-cloud

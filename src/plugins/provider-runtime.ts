@@ -1106,10 +1106,17 @@ export async function augmentModelCatalogWithProviderPlugins(params: {
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   metadataSnapshot?: PluginMetadataSnapshot;
+  providerIds?: readonly string[];
   context: ProviderAugmentModelCatalogContext;
 }) {
   const supplemental = [] as ProviderAugmentModelCatalogContext["entries"];
   for (const plugin of resolveProviderPluginsForCatalogHooks(params)) {
+    if (
+      params.providerIds &&
+      !params.providerIds.some((id) => matchesProviderPluginRef(plugin, id))
+    ) {
+      continue;
+    }
     const next = await plugin.augmentModelCatalog?.(params.context);
     if (!next || next.length === 0) {
       continue;

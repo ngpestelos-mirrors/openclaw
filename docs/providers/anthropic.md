@@ -11,6 +11,11 @@ Anthropic builds the **Claude** model family. OpenClaw supports two auth routes:
 - **API key** - direct Anthropic API access with usage-based billing (`anthropic/*` models)
 - **Claude CLI** - reuse an existing Claude Code login through the installed executable on the same host
 
+For Claude on Google Vertex AI, explicitly declare
+`models.providers["anthropic-vertex"]`. Google Application Default Credentials
+alone do not enable that provider for model requests or authenticated discovery.
+See the [Anthropic Vertex plugin reference](/plugins/reference/anthropic-vertex).
+
 ## Usage and cost tracking
 
 OpenClaw detects the available Anthropic credential and selects the matching usage surface:

@@ -24,6 +24,15 @@ exposes Anthropic Claude models through an Anthropic Messages route.
 
 Choose your preferred auth method and follow the setup steps.
 
+First declare the Mantle provider:
+
+```bash
+openclaw config set models.providers.amazon-bedrock-mantle '{}'
+```
+
+AWS credentials, including `AWS_BEARER_TOKEN_BEDROCK`, do not enable Mantle by
+themselves. A standard Bedrock provider entry does not enable Mantle either.
+
 <Tabs>
   <Tab title="Explicit bearer token">
     **Best for:** environments where you already have a Mantle bearer token.
@@ -45,8 +54,7 @@ Choose your preferred auth method and follow the setup steps.
         openclaw models list
         ```
 
-        Discovered models appear under the `amazon-bedrock-mantle` provider. No
-        additional config is required unless you want to override defaults.
+        Discovered models appear under the configured `amazon-bedrock-mantle` provider.
       </Step>
     </Steps>
 
@@ -82,7 +90,7 @@ Choose your preferred auth method and follow the setup steps.
 
 ## Automatic model discovery
 
-When `AWS_BEARER_TOKEN_BEDROCK` is set, OpenClaw uses it directly. Otherwise,
+After provider setup, OpenClaw uses `AWS_BEARER_TOKEN_BEDROCK` when set. Otherwise,
 OpenClaw attempts to generate a Mantle bearer token from the AWS default
 credential chain. It then discovers available Mantle models by querying the
 region's `/v1/models` endpoint.
@@ -122,7 +130,7 @@ The bearer token is the same `AWS_BEARER_TOKEN_BEDROCK` used by the standard [Am
 
 ## Manual configuration
 
-If you prefer explicit config instead of auto-discovery:
+To override the configured provider's automatic catalog:
 
 ```json5
 {

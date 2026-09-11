@@ -29,6 +29,7 @@ import {
   type ProviderApiKeyResolver,
   type ProviderAuthResolver,
 } from "./models-config.providers.secret-helpers.js";
+import type { ProviderUseBinding } from "./provider-model-auth-source-plan.js";
 import type { AuthStorageData } from "./sessions/index.js";
 
 export type {
@@ -142,7 +143,13 @@ export function createProviderApiKeyResolverFromPreparedCredentials(
 function createProviderAuthLookupCaches(
   env: NodeJS.ProcessEnv,
   config?: OpenClawConfig,
+  admission?: ReadonlyMap<string, ProviderUseBinding>,
 ): () => ProviderAuthLookupCaches {
+  const boundEnvVars = new Map(
+    [...(admission ?? [])].flatMap(([provider, binding]) =>
+      binding.kind === "environment" ? [[provider, binding.envVar] as const] : [],
+    ),
+  );
   let caches: ProviderAuthLookupCaches | undefined;
   return () => {
     if (!caches) {
@@ -150,8 +157,15 @@ function createProviderAuthLookupCaches(
       // cached normalization pass avoids repeating alias/candidate expansion.
       const lookupMaps = resolveProviderEnvAuthLookupMaps({ config, env });
       caches = {
-        aliasMap: lookupMaps.aliasMap,
-        candidateMap: lookupMaps.envCandidateMap,
+        aliasMap: Object.fromEntries(
+          Object.entries(lookupMaps.aliasMap).filter(([provider]) => !boundEnvVars.has(provider)),
+        ),
+        candidateMap: {
+          ...lookupMaps.envCandidateMap,
+          ...Object.fromEntries(
+            [...boundEnvVars].map(([provider, envVar]) => [provider, [envVar]]),
+          ),
+        },
         authEvidenceMap: lookupMaps.authEvidenceMap,
       };
     }
@@ -178,16 +192,20 @@ export function createProviderApiKeyResolver(
   sourceConfigForSecrets?: OpenClawConfig,
   workspaceDir?: string,
   syntheticAuthEnv = env,
+  admission?: ReadonlyMap<string, ProviderUseBinding>,
 ): ProviderApiKeyResolver {
-  const getLookupCaches = createProviderAuthLookupCaches(env, config);
+  const getLookupCaches = createProviderAuthLookupCaches(env, config, admission);
   return (provider: string) => {
+    const profileBound = admission?.get(normalizeProviderId(provider))?.kind === "profile";
     const lookupCaches = getLookupCaches();
     const authProvider = resolveProviderIdForAuthFromCaches(provider, lookupCaches);
-    const envVar = resolveEnvApiKeyVarName(authProvider, env, {
-      aliasMap: lookupCaches.aliasMap,
-      candidateMap: lookupCaches.candidateMap,
-      authEvidenceMap: lookupCaches.authEvidenceMap,
-    });
+    const envVar = profileBound
+      ? undefined
+      : resolveEnvApiKeyVarName(authProvider, env, {
+          aliasMap: lookupCaches.aliasMap,
+          candidateMap: lookupCaches.candidateMap,
+          authEvidenceMap: lookupCaches.authEvidenceMap,
+        });
     if (envVar) {
       // Public return value carries the env var name, while discovery receives
       // only the redacted/hashable value form.
@@ -197,14 +215,16 @@ export function createProviderApiKeyResolver(
         mode: resolveCatalogDirectAuthMode(config, authProvider),
       };
     }
-    const fromConfig = resolveConfigBackedProviderAuth({
-      provider: authProvider,
-      config,
-      env,
-      sourceConfigForSecrets,
-      workspaceDir,
-      syntheticAuthEnv,
-    });
+    const fromConfig = profileBound
+      ? undefined
+      : resolveConfigBackedProviderAuth({
+          provider: authProvider,
+          config,
+          env,
+          sourceConfigForSecrets,
+          workspaceDir,
+          syntheticAuthEnv,
+        });
     if (fromConfig?.apiKey) {
       return {
         apiKey: fromConfig.apiKey,
@@ -222,6 +242,12 @@ export function createProviderApiKeyResolver(
         env,
         provider,
         store: authStore,
+      }).filter((id) => {
+        const credential = authStore.profiles[id];
+        return (
+          !profileBound ||
+          (credential && normalizeProviderId(credential.provider) === normalizeProviderId(provider))
+        );
       }),
     });
     return fromProfiles?.apiKey
@@ -243,9 +269,11 @@ export function createProviderAuthResolver(
   sourceConfigForSecrets?: OpenClawConfig,
   workspaceDir?: string,
   syntheticAuthEnv = env,
+  admission?: ReadonlyMap<string, ProviderUseBinding>,
 ): ProviderAuthResolver {
-  const getLookupCaches = createProviderAuthLookupCaches(env, config);
+  const getLookupCaches = createProviderAuthLookupCaches(env, config, admission);
   return (provider, options) => {
+    const profileBound = admission?.get(normalizeProviderId(provider))?.kind === "profile";
     const lookupCaches = getLookupCaches();
     const authProvider = resolveProviderIdForAuthFromCaches(provider, lookupCaches);
     const authStore = resolveAuthProfileStoreInput(authStoreInput);
@@ -261,6 +289,12 @@ export function createProviderAuthResolver(
         continue;
       }
       const cred = authStore.profiles[id];
+      if (
+        profileBound &&
+        (!cred || normalizeProviderId(cred.provider) !== normalizeProviderId(provider))
+      ) {
+        continue;
+      }
       if (!cred) {
         continue;
       }
@@ -289,6 +323,9 @@ export function createProviderAuthResolver(
       };
     }
 
+    if (profileBound) {
+      return { apiKey: undefined, mode: "none", source: "none" };
+    }
     const envVar = resolveEnvApiKeyVarName(authProvider, env, {
       aliasMap: lookupCaches.aliasMap,
       candidateMap: lookupCaches.candidateMap,

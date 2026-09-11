@@ -19,6 +19,32 @@ per reader job. Open the page that matches your task.
 | [Official provider plugins](/concepts/model-providers/official-provider-plugins)  | You are setting up a bundled provider, or need its id, auth env, example model, and quirks.                         |
 | [Custom providers and local runtimes](/concepts/model-providers/custom-providers) | You are configuring a provider through `models.providers`, a custom base URL, a proxy, or a local inference server. |
 
+## When credentials enable a provider
+
+OpenClaw checks whether a provider is enabled for use before resolving credentials
+for model requests or authenticated model discovery:
+
+- An explicit `models.providers.<id>` entry permits that provider to use its
+  supported credentials.
+- Stored auth profiles and native CLI accounts remain bound to their provider.
+- An environment variable alone enables a provider only when exactly one distinct
+  provider ID directly declares it in the plugin manifest's
+  `setup.providers[].envVars`. IDs are compared after trimming and lowercasing;
+  auth aliases do not transfer this permission to another provider.
+- A key shared by multiple declared providers requires an explicit provider entry
+  or a stored profile for the intended provider. This includes OpenCode Zen/Go
+  keys, `MINIMAX_API_KEY`, `KIMI_API_KEY`, `KIMICODE_API_KEY`, `OLLAMA_API_KEY`,
+  `OPENROUTER_API_KEY`, `STEPFUN_API_KEY`, and Qwen's `QWEN_API_KEY`,
+  `DASHSCOPE_API_KEY`, and `MODELSTUDIO_API_KEY`.
+- Generic credentials such as `GH_TOKEN`, `GITHUB_TOKEN`, `MODEL_API_KEY`, the AWS
+  credential chain, and Google Application Default Credentials do not enable a
+  provider by themselves.
+
+Unique provider keys such as `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and
+`OPENAI_API_KEY` still work without a `models.providers` entry. Selecting a model
+or setting `discovery.enabled: true` does not grant credential use. Discovery
+settings only control catalog discovery; public catalogs remain browsable.
+
 ## Where each section moved
 
 Every section heading from the previous single-page version keeps its anchor

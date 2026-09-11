@@ -318,7 +318,8 @@ export async function buildOpenAICompatibleLiveProviderCatalog(
 
 /** Builds the shared authenticated live/static hooks for an ordered provider family. */
 export function buildOpenAICompatibleProviderFamilyCatalog(params: {
-  credentialProviderId: string;
+  /** @deprecated Since v2026.9.4 callers may pass this field; credentials now resolve per entry. */
+  credentialProviderId?: string;
   entries: readonly ManifestProviderCatalogEntry[];
   staticCatalog: () => Promise<{ providers: Record<string, ModelProviderConfig> }>;
   augmentModelCatalog: NonNullable<ProviderPlugin["augmentModelCatalog"]>;
@@ -332,23 +333,27 @@ export function buildOpenAICompatibleProviderFamilyCatalog(params: {
         if (entries.length === 0) {
           return null;
         }
-        const auth = ctx.resolveProviderApiKey(params.credentialProviderId);
-        if (!auth.apiKey) {
+        const results = await Promise.all(
+          entries.map(async ({ id, buildProvider }) => {
+            const auth = ctx.resolveProviderApiKey(id);
+            return {
+              id,
+              result: auth.apiKey
+                ? await buildOpenAICompatibleLiveProviderCatalog({
+                    providerId: id,
+                    providerConfig: buildProvider(),
+                    apiKey: auth.apiKey,
+                    discoveryApiKey: auth.discoveryApiKey,
+                    profileId: auth.profileId,
+                    discoveryMode: params.discoveryMode,
+                  })
+                : null,
+            };
+          }),
+        );
+        if (results.every(({ result }) => !result)) {
           return null;
         }
-        const results = await Promise.all(
-          entries.map(async ({ id, buildProvider }) => ({
-            id,
-            result: await buildOpenAICompatibleLiveProviderCatalog({
-              providerId: id,
-              providerConfig: buildProvider(),
-              apiKey: auth.apiKey,
-              discoveryApiKey: auth.discoveryApiKey,
-              profileId: auth.profileId,
-              discoveryMode: params.discoveryMode,
-            }),
-          })),
-        );
         return {
           providers: Object.fromEntries(
             results.flatMap(({ id, result }) =>

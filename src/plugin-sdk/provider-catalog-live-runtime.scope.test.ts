@@ -15,7 +15,6 @@ describe("provider catalog live-runtime scope", () => {
       models: [],
     }));
     const family = buildOpenAICompatibleProviderFamilyCatalog({
-      credentialProviderId: "family",
       entries: [
         {
           id: "family",
@@ -36,7 +35,9 @@ describe("provider catalog live-runtime scope", () => {
       augmentModelCatalog: vi.fn(),
     });
 
-    const resolveProviderApiKey = vi.fn(() => ({ apiKey: "family-key" }));
+    const resolveProviderApiKey = vi.fn((provider: string) => ({
+      apiKey: provider === "family-plan" ? "plan-key" : undefined,
+    }));
     const context: ProviderCatalogContext = {
       providerIds: ["family-plan"],
       config: {},
@@ -51,6 +52,11 @@ describe("provider catalog live-runtime scope", () => {
     ]);
     expect(buildPrimary).not.toHaveBeenCalled();
     expect(buildPlan).toHaveBeenCalledOnce();
+    expect(result && "providers" in result && result.providers["family-plan"].apiKey).toBe(
+      "plan-key",
+    );
+    resolveProviderApiKey.mockReturnValueOnce({ apiKey: undefined });
+    await expect(family.catalog.run(context)).resolves.toBeNull();
 
     resolveProviderApiKey.mockClear();
     await expect(family.catalog.run({ ...context, providerIds: ["other"] })).resolves.toBeNull();

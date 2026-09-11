@@ -1,3 +1,67 @@
+import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+
+export type ProviderUseBinding =
+  | { kind: "provider-config" }
+  | { kind: "profile"; profileId: string }
+  | { kind: "native-account" }
+  | { kind: "environment"; envVar: string };
+
+const GENERIC_CREDENTIAL_ENV_VARS = new Set([
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "MODEL_API_KEY",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_PROFILE",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+]);
+
+/** Provider intent is independent of credential readiness and catalog visibility. */
+export function resolveProviderUseAdmission(params: {
+  config?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  providerEnvVars?: Readonly<Record<string, readonly string[]>>;
+  profiles?: Readonly<Record<string, { provider: string }>>;
+  nativeProviders?: Iterable<string>;
+}): ReadonlyMap<string, ProviderUseBinding> {
+  const admitted = new Map<string, ProviderUseBinding>();
+  const add = (provider: string, binding: ProviderUseBinding) => {
+    const id = normalizeProviderId(provider);
+    if (id && !admitted.has(id)) {
+      admitted.set(id, binding);
+    }
+  };
+  for (const provider of Object.keys(params.config?.models?.providers ?? {})) {
+    add(provider, { kind: "provider-config" });
+  }
+  for (const [profileId, profile] of Object.entries(params.profiles ?? {})) {
+    add(profile.provider, { kind: "profile", profileId });
+  }
+  for (const provider of params.nativeProviders ?? []) {
+    add(provider, { kind: "native-account" });
+  }
+  const envOwners = new Map<string, Set<string>>();
+  for (const [provider, envVars] of Object.entries(params.providerEnvVars ?? {})) {
+    for (const envVar of envVars) {
+      const owners = envOwners.get(envVar) ?? new Set<string>();
+      owners.add(normalizeProviderId(provider));
+      envOwners.set(envVar, owners);
+    }
+  }
+  const env = params.env ?? process.env;
+  for (const [envVar, owners] of envOwners) {
+    if (owners.size !== 1 || GENERIC_CREDENTIAL_ENV_VARS.has(envVar) || !env[envVar]?.trim()) {
+      continue;
+    }
+    for (const provider of owners) {
+      add(provider, { kind: "environment", envVar });
+    }
+  }
+  return admitted;
+}
+
 type ProviderModelAuthReadiness = "ready" | "unknown" | "unavailable";
 
 export type ProviderModelAuthEvidence =

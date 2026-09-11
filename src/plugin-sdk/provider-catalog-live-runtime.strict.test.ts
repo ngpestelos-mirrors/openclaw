@@ -94,7 +94,6 @@ describe("strict catalog acquisition", () => {
       });
       const family = buildOpenAICompatibleProviderFamilyCatalog({
         discoveryMode: "strict",
-        credentialProviderId: "family",
         entries: ["unavailable", "healthy"].map((id) => ({
           id,
           label: id,
@@ -127,7 +126,7 @@ describe("strict catalog acquisition", () => {
           { provider: "healthy", profileId: "family:profile", status: "ready" },
         ],
       });
-      expect(resolveProviderApiKey).toHaveBeenCalledOnce();
+      expect(resolveProviderApiKey).toHaveBeenCalledTimes(2);
       expect(resolveProviderAuth).not.toHaveBeenCalled();
       expect(release).toHaveBeenCalledTimes(2);
     },

@@ -385,6 +385,14 @@ export async function buildPreparedModelCatalogSnapshot(
           ? resolveProviderApiKeyForProvider(providerId)
           : { apiKey: undefined, discoveryApiKey: undefined };
       const supplemental = await augmentModelCatalogWithProviderPlugins({
+        providerIds: [
+          ...new Set(
+            [
+              ...Object.keys(cfg.models?.providers ?? {}),
+              ...Object.keys(params.authCredentials),
+            ].map(normalizeProviderId),
+          ),
+        ],
         config: cfg,
         workspaceDir,
         env,

@@ -6,6 +6,7 @@ import { formatErrorMessage } from "../../../infra/errors.js";
 import type { Model } from "../../../llm/types.js";
 import type { ProviderModelRouteAuthRequirement } from "../../../plugin-sdk/provider-model-types.js";
 import { prepareProviderRuntimeAuth } from "../../../plugins/provider-runtime.js";
+import { resolveProviderBindingEnvVarCandidates } from "../../../secrets/provider-env-vars.js";
 import { SecretSurfaceUnavailableError } from "../../../secrets/runtime-degraded-state.js";
 import {
   type AuthProfileStore,
@@ -30,6 +31,7 @@ import {
   type ResolvedProviderAuth,
 } from "../../model-auth.js";
 import { buildProviderAuthRecoveryHint } from "../../provider-auth-recovery-hint.js";
+import { resolveProviderUseAdmission } from "../../provider-model-auth-source-plan.js";
 import { providerModelRouteAcceptsAuthMode } from "../../provider-model-route-auth.js";
 import {
   applyPreparedRuntimeAuthToModel,
@@ -150,6 +152,11 @@ export function createEmbeddedRunAuthController(params: {
   log: LogLike;
 }) {
   const { state } = params;
+  const admission = resolveProviderUseAdmission({
+    config: params.config,
+    profiles: params.authStore.profiles,
+    providerEnvVars: resolveProviderBindingEnvVarCandidates(params),
+  });
   // Runtime auth overlays are profile-scoped. Keep the pre-auth model so a
   // later profile cannot inherit an earlier profile's endpoint or headers.
   const baseRuntimeModel = state.models.runtime;
@@ -512,6 +519,7 @@ export function createEmbeddedRunAuthController(params: {
     model = state.models.runtime,
     allowAuthProfileFallback?: boolean,
   ) => {
+    const binding = admission.get(model.provider.trim().toLowerCase());
     return getApiKeyForModelCore({
       model,
       cfg: params.config,
@@ -522,6 +530,7 @@ export function createEmbeddedRunAuthController(params: {
       lockedProfile: candidate != null && candidate === params.lockedProfileId,
       allowAuthProfileFallback,
       secretSentinels: true,
+      boundEnvVar: binding?.kind === "environment" ? binding.envVar : undefined,
     });
   };
 

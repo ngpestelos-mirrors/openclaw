@@ -37,7 +37,6 @@ import {
   runBedrockControlPlaneRequest,
   type BedrockControlPlaneSdk,
 } from "./control-plane.js";
-import { resolveBedrockConfigApiKey } from "./discovery-shared.js";
 import { resolveBedrockNativeThinkingLevelMap } from "./thinking-policy.js";
 
 const DEFAULT_REFRESH_INTERVAL_SECONDS = 3600;
@@ -634,11 +633,7 @@ export async function resolveImplicitBedrockProvider(params: {
   const env = params.env ?? process.env;
   const discoveryConfig = params.pluginConfig?.discovery;
   const enabled = discoveryConfig?.enabled;
-  const hasAwsCreds = resolveBedrockConfigApiKey(env) !== undefined;
   if (enabled === false) {
-    return null;
-  }
-  if (enabled !== true && !hasAwsCreds) {
     return null;
   }
 

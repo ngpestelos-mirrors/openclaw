@@ -71,10 +71,19 @@ export function resolveConfigAwareEnvApiKey(
   provider: string,
   workspaceDir?: string,
   skipSetupProviderFallback?: boolean,
+  boundEnvVar?: string,
 ): EnvApiKeyResult | null {
   return resolveEnvApiKey(provider, process.env, {
     config: cfg,
     workspaceDir,
+    ...(boundEnvVar
+      ? {
+          aliasMap: {},
+          candidateMap: { [normalizeProviderId(provider)]: [boundEnvVar] },
+          authEvidenceMap: {},
+          skipSetupProviderFallback: true,
+        }
+      : {}),
     ...(skipSetupProviderFallback ? { skipSetupProviderFallback: true } : {}),
   });
 }

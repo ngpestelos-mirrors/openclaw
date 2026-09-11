@@ -31,6 +31,10 @@ Referral link for MiniMax Coding Plan (10% off): [MiniMax Coding Plan](https://p
 
 Model refs follow the auth path: `minimax/<model>` for API-key setups, `minimax-portal/<model>` for OAuth setups.
 
+`MINIMAX_API_KEY` is declared for both providers. To use it for model requests,
+run onboarding or explicitly configure the intended `models.providers` entry.
+The environment key alone does not select a provider.
+
 ## Getting started
 
 <Tabs>
