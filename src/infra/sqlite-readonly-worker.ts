@@ -14,7 +14,8 @@ import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-wor
 
 const SQLITE_READONLY_STDERR_TAIL_CHARS = 4_000;
 const SQLITE_INSPECTION_TIMEOUT_MS = 30_000;
-const SQLITE_INSPECTION_TIMEOUT_MAX_MS = 30 * 60_000;
+export const SQLITE_INSPECTION_TIMEOUT_MAX_MS = 30 * 60_000;
+const MAX_NODE_TIMER_MS = 2_147_483_647;
 const log = createSubsystemLogger("state/sqlite");
 
 export function resolveSqliteInspectionBudget(
@@ -44,14 +45,50 @@ export function resolveSqliteInspectionBudget(
   return { timeoutMs, size };
 }
 
-function readSqliteSnapshotBudget(pathname: string): { timeoutMs: number; size: string } {
-  let sizeBytes: bigint | undefined;
+/** Sum serial SQLite inspection budgets without overflowing Node timers. */
+export function resolveAggregateSqliteInspectionTimeoutMs(
+  operation: string,
+  databases: readonly { path: string; sizeBytes: bigint | undefined }[],
+  reserveMs = 0,
+): number {
+  let timeoutMs = Math.max(0, reserveMs);
+  for (const database of databases) {
+    const budget = resolveSqliteInspectionBudget(
+      operation,
+      database.path,
+      database.sizeBytes,
+    ).timeoutMs;
+    timeoutMs = Math.min(MAX_NODE_TIMER_MS, timeoutMs + budget);
+  }
+  return Math.max(SQLITE_INSPECTION_TIMEOUT_MS, timeoutMs);
+}
+
+export function readSqliteInspectionSizeBytes(pathname: string): bigint | undefined {
+  let sizeBytes: bigint;
   try {
     sizeBytes = fs.statSync(pathname, { bigint: true }).size;
   } catch {
     // Let the child report the source error with its normal diagnostics.
+    return undefined;
   }
-  return resolveSqliteInspectionBudget("read-only snapshot", pathname, sizeBytes);
+  for (const suffix of ["-wal", "-journal"]) {
+    try {
+      sizeBytes += fs.statSync(`${pathname}${suffix}`, { bigint: true }).size;
+    } catch (error) {
+      if (!hasErrnoCode(error, "ENOENT")) {
+        return undefined;
+      }
+    }
+  }
+  return sizeBytes;
+}
+
+function readSqliteSnapshotBudget(pathname: string): { timeoutMs: number; size: string } {
+  return resolveSqliteInspectionBudget(
+    "read-only snapshot",
+    pathname,
+    readSqliteInspectionSizeBytes(pathname),
+  );
 }
 
 export function sqliteInspectionTimeoutError(
