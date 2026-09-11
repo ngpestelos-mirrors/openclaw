@@ -37,6 +37,11 @@ export async function prepareProviderUseBindingMigration(params: {
 }): Promise<{ config: OpenClawConfig; changes: string[]; pending: boolean; warnings?: string[] }> {
   const { config, configPath, env } = params;
   const unchanged = { config, changes: [], pending: false };
+  // Doctor retains invalid source values until its config validation step.
+  const envProvider: unknown = config.secrets?.defaults?.env;
+  if (envProvider !== undefined && typeof envProvider !== "string") {
+    return unchanged;
+  }
   const sourceKey = resolveLegacyMigrationSourceKey(MIGRATION, configPath);
   const selections: unknown[] = [config.agents?.defaults?.model];
   let direct: Record<string, readonly string[]>;
@@ -144,9 +149,7 @@ export async function prepareProviderUseBindingMigration(params: {
           ([sibling, names]) => normalizeProviderId(sibling) !== provider && names.includes(name),
         ),
     );
-    const apiKey = variable
-      ? parseEnvTemplateSecretRef(`\${${variable}}`, config.secrets?.defaults?.env)
-      : null;
+    const apiKey = variable ? parseEnvTemplateSecretRef(`\${${variable}}`, envProvider) : null;
     if (!apiKey) {
       continue;
     }

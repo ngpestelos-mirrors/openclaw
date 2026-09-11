@@ -287,6 +287,13 @@ describe("selected shared-provider upgrade", () => {
     }
   });
 
+  it.each(["17", "null", "{}"])("defers an invalid env SecretRef alias %s", async (alias) => {
+    const config: OpenClawConfig = JSON.parse(
+      `{"agents":{"defaults":{"model":"byteplus-plan/ark-code-latest"}},"secrets":{"defaults":{"env":${alias}}}}`,
+    );
+    expect(await prepare(config)).toEqual({ config, changes: [], pending: false });
+  });
+
   it("closes an empty successful upgrade before a new shared-key selection appears", async () => {
     const empty = await prepare({ agents: { entries: { main: {} } } });
     expect(empty.changes).toEqual([]);
