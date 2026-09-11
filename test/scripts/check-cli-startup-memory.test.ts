@@ -159,7 +159,7 @@ describe("check-cli-startup-memory", () => {
     const helpSamplesMb = [helpLimitMb + 20, helpLimitMb + 0.5, helpLimitMb - 20];
     const result = runStartupMemoryCheckWithHelpSamples(helpSamplesMb, tempRoot);
 
-    expect(result.results[0]).toMatchObject({
+    expect(result!.results[0]).toMatchObject({
       limitMb: helpLimitMb,
       rssToleranceMb: 1,
       effectiveLimitMb: helpLimitMb + 1,
@@ -259,11 +259,14 @@ describe("check-cli-startup-memory", () => {
   describe.runIf(process.platform === "darwin" || process.platform === "linux")(
     "report reservations",
     () => {
+      type AliasCase = readonly [
+        kind: "exact" | "hardlink" | "symlink" | "dangling-symlink",
+        reversed: boolean,
+      ];
       it.each(
-        (["exact", "hardlink", "symlink", "dangling-symlink"] as const).flatMap((kind) =>
-          kind === "exact"
-            ? [[kind, false] as const]
-            : [false, true].map((reversed) => [kind, reversed] as const),
+        (["exact", "hardlink", "symlink", "dangling-symlink"] as const).flatMap<AliasCase>(
+          (kind) =>
+            kind === "exact" ? [[kind, false]] : [false, true].map((reversed) => [kind, reversed]),
         ),
       )("rejects %s aliases before benchmarks (reversed: %s)", (kind, reversed) => {
         const tempRoot = tempRoots.make("openclaw-startup-memory-alias-");
@@ -418,11 +421,13 @@ describe("check-cli-startup-memory", () => {
       });
 
       it.each(
-        [
-          ["/", `missing${path.sep}`],
-          ["/.", `missing${path.sep}.`],
-          ["/..", `missing${path.sep}..`],
-        ].flatMap(([terminal, target]) =>
+        (
+          [
+            ["/", `missing${path.sep}`],
+            ["/.", `missing${path.sep}.`],
+            ["/..", `missing${path.sep}..`],
+          ] as const
+        ).flatMap(([terminal, target]) =>
           ["json", "summary"].map((output) => [terminal, output, target] as const),
         ),
       )("rejects dangling targets ending in %s for the %s output", (_terminal, output, target) => {
@@ -662,7 +667,7 @@ describe("check-cli-startup-memory", () => {
       },
     );
 
-    expect(result.skipped).toBe(false);
+    expect(result!.skipped).toBe(false);
     expect(seenArgs).toHaveLength(testing.cases.length * testing.sampleCount);
     expect(new Set(seenHomes).size).toBe(seenArgs.length);
     for (const args of seenArgs) {
