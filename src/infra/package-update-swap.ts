@@ -32,6 +32,8 @@ import {
   type StagedPackageSwapResult,
 } from "./package-update-swap-contract.js";
 import { movePathWithCopyFallback } from "./replace-file.js";
+import { matchesStandaloneGitWrapper } from "./update-git-launcher.js";
+import { verifyGitUpdateRecovery, type GitRuntimeIdentity } from "./update-git-runtime.js";
 import {
   resolveNpmGlobalPrefixLayoutFromGlobalRoot,
   verifyPackageUpdateRecovery,
@@ -63,6 +65,7 @@ export async function swapStagedPackageInstall(params: {
   beforeActivate?: () => Promise<void>;
   onLiveMutation?: () => void;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
+  previousGitCheckout?: GitRuntimeIdentity;
   timeoutMs?: number;
 }): Promise<StagedPackageSwapResult> {
   const startedAt = Date.now();
@@ -127,6 +130,7 @@ export async function swapStagedPackageInstall(params: {
   }> = [];
   const rollback: Array<(assertCurrent: () => void) => Promise<void>> = [];
   let packageRollbackVerified = false;
+  let previousGitVerified = false;
   let retained = false;
   let projectActivated = false;
   let activationCompleted = false;
@@ -192,7 +196,19 @@ export async function swapStagedPackageInstall(params: {
         // Returning to absence cannot establish a verified previous runtime.
         packageRollbackVerified =
           hadPackage && previousRoot?.kind === "directory" && messages.length === 0;
-        if (previousRoot?.kind === "link" && messages.length === 0) {
+        if (
+          !packageRollbackVerified &&
+          previousGitVerified &&
+          params.previousGitCheckout &&
+          messages.length === 0
+        ) {
+          packageRollbackVerified = (await verifyGitUpdateRecovery(params.previousGitCheckout))
+            .serviceRestartSafe;
+          if (packageRollbackVerified) {
+            activePackageRoot = params.previousGitCheckout.root;
+          }
+        }
+        if (!packageRollbackVerified && previousRoot?.kind === "link" && messages.length === 0) {
           messages.push(
             `${rollback.length > 0 ? "Restored" : "Verified"} the npm package link and affected launchers; external checkout runtime integrity is unverified.`,
           );
@@ -333,6 +349,38 @@ export async function swapStagedPackageInstall(params: {
   };
   try {
     await (native ? readBaseline() : baseline.observe("baseline", readBaseline));
+    if (params.previousGitCheckout) {
+      const previous = params.previousGitCheckout;
+      const sourceLink =
+        previousRoot?.kind === "link" &&
+        path.resolve(path.dirname(targetSwapRoot), previousRoot.target) === previous.root;
+      const sourceWrappers = await Promise.all(
+        shims.map(async (shim) => {
+          if (!shim.backup) {
+            return false;
+          }
+          const stat = await fs.lstat(shim.backup);
+          return (
+            stat.isFile() &&
+            stat.size <= 4096 &&
+            (await matchesStandaloneGitWrapper(
+              await fs.readFile(shim.backup, "utf8"),
+              previous.root,
+              process.platform,
+              process.execPath,
+            ))
+          );
+        }),
+      );
+      if (
+        native ||
+        (!sourceLink && !sourceWrappers.some(Boolean)) ||
+        !(await verifyGitUpdateRecovery(previous)).serviceRestartSafe
+      ) {
+        throw new Error("Previous Git runtime does not own the retained CLI launcher.");
+      }
+      previousGitVerified = true;
+    }
     // Validation and launcher backup finish while the old Gateway is serving.
     // Only this boundary authorizes the orchestrator to suspend the service.
     const assertProjectUnchanged = native

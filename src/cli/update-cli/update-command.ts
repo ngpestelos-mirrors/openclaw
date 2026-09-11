@@ -43,6 +43,7 @@ import {
   resolveNodeRunner,
   resolveTargetVersion,
   tryResolveInvocationCwd,
+  UpdatePreMutationError,
   type UpdateCommandOptions,
 } from "./shared.js";
 import { readUpdateChannelConfig } from "./update-command-config.js";
@@ -52,6 +53,7 @@ import {
   captureUpdateCommandExecutorAuthority,
   withUpdateCommandExecutor,
 } from "./update-command-executor.js";
+import { prepareDirtyGitUpdateRelocation } from "./update-command-git-relocation.js";
 import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
 import {
   admitUpdateCommandRun,
@@ -191,8 +193,7 @@ async function updateCommandInternal(
     });
 
   if (requestedChannel === "extended-stable" && installKind === "git") {
-    await refuseUpdate("unsupported_git_channel");
-    return;
+    return await refuseUpdate("unsupported_git_channel");
   }
 
   const { configSnapshot, legacyConfigPlan, storedChannel } = await readUpdateChannelConfig(
@@ -201,11 +202,10 @@ async function updateCommandInternal(
 
   if (opts.channel && !configSnapshot.valid && !legacyConfigPlan) {
     const issues = formatConfigIssueLines(configSnapshot.issues, "-");
-    await refuseUpdate(
+    return await refuseUpdate(
       "invalid-config",
       ["Config is invalid; cannot set update channel.", ...issues].join("\n"),
     );
-    return;
   }
 
   const channel =
@@ -218,17 +218,36 @@ async function updateCommandInternal(
           installKind,
         }).channel);
   if (channel === "extended-stable" && installKind === "git") {
-    await refuseUpdate("unsupported_git_channel");
-    return;
+    return await refuseUpdate("unsupported_git_channel");
   }
   // An effective dev channel (stored or explicit) selects the git flow — the
   // documented dev contract is a git checkout. Exception: --tag is a one-run
   // package-target override, so it keeps a stored-dev package install on the
   // package path; only an explicitly requested dev channel outranks it.
   const explicitTag = normalizeTag(opts.tag);
+  let gitRelocation: Awaited<ReturnType<typeof prepareDirtyGitUpdateRelocation>>;
+  if (installKind === "git" && requestedChannel === "dev") {
+    try {
+      gitRelocation = await prepareDirtyGitUpdateRelocation({
+        root,
+        timeoutMs: updateStepTimeoutMs,
+      });
+    } catch (error) {
+      if (!(error instanceof UpdatePreMutationError)) {
+        throw error;
+      }
+      return await refuseUpdate(error.reason, error.message);
+    }
+  }
+  if (gitRelocation && !opts.json && !opts.dryRun) {
+    defaultRuntime.log(
+      `Preserving local edits in ${root}; installing dev in ${gitRelocation.directory}.`,
+    );
+  }
   const switchToGit =
-    installKind !== "git" &&
-    (requestedChannel === "dev" || (channel === "dev" && explicitTag === null));
+    Boolean(gitRelocation) ||
+    (installKind !== "git" &&
+      (requestedChannel === "dev" || (channel === "dev" && explicitTag === null)));
   const switchToPackage =
     requestedChannel !== null && requestedChannel !== "dev" && installKind === "git";
   updateInstallKind = switchToGit ? "git" : switchToPackage ? "package" : installKind;
@@ -245,13 +264,12 @@ async function updateCommandInternal(
 
   const unsupportedMainTag = updateInstallKind === "package" && explicitTag === "main";
   if ((channel === "extended-stable" && explicitTag) || unsupportedMainTag) {
-    await refuseUpdate(
+    return await refuseUpdate(
       unsupportedMainTag ? "unsupported-package-target" : EXTENDED_STABLE_TAG_UNSUPPORTED_REASON,
       unsupportedMainTag
         ? "`--tag main` cannot update a package install. Run `openclaw update --channel dev` to switch to the supported Git checkout and build flow."
         : undefined,
     );
-    return;
   }
   let tag = explicitTag ?? channelToNpmTag(channel);
   let currentVersion: string | null = null;
@@ -319,8 +337,7 @@ async function updateCommandInternal(
       });
       const npmLifecycleGate = resolveNpmLifecyclePolicyGate(packageInstallTarget);
       if (npmLifecycleGate.error) {
-        await refuseUpdate("npm lifecycle policy preflight", npmLifecycleGate.error);
-        return;
+        return await refuseUpdate("npm lifecycle policy preflight", npmLifecycleGate.error);
       }
     }
     const npmMetadataCommand =
@@ -333,8 +350,7 @@ async function updateCommandInternal(
         packageName: installedPackageName,
       });
       if (extendedStable.status === "failed") {
-        await refuseUpdate(extendedStable.reason);
-        return;
+        return await refuseUpdate(extendedStable.reason);
       }
       targetVersion = extendedStable.version;
       tag = extendedStable.version;
@@ -395,11 +411,10 @@ async function updateCommandInternal(
         env: packageInstallEnv,
       });
       if (targetMetadata.error || targetMetadata.version !== targetVersion) {
-        await refuseUpdate(
+        return await refuseUpdate(
           "target-metadata-preflight",
           `Update refused: could not inspect exact package target openclaw@${targetVersion}: ${targetMetadata.error ?? `registry returned version ${targetMetadata.version ?? "unknown"}`}.`,
         );
-        return;
       }
       packageTargetSchemaVersions = targetMetadata.schemaVersions;
       // Runtime and schema checks must use the same exact package that will be
@@ -438,6 +453,7 @@ async function updateCommandInternal(
     root,
     updateInstallKind,
     switchToGit,
+    gitRelocation,
     shouldRestart,
     updateStepTimeoutMs,
     invocationCwd,
@@ -464,6 +480,7 @@ async function updateCommandInternal(
       updateInstallKind,
       mode: updateInstallKind === "git" ? "git" : (packageInstallTarget?.manager ?? "unknown"),
       switchToGit,
+      gitRelocation,
       switchToPackage,
       shouldRestart,
       requestedChannel,
@@ -549,8 +566,7 @@ async function updateCommandInternal(
       fallbackNodeRunner: canRefreshManagedServiceNode ? resolveNodeRunner() : undefined,
     });
     if (!runtimePreflight.ok) {
-      await refuseUpdate("node-runtime-preflight", runtimePreflight.error);
-      return;
+      return await refuseUpdate("node-runtime-preflight", runtimePreflight.error);
     }
     const runtimeSelection = runtimePreflight.value;
     packageUpdateNodeRunner = runtimeSelection.nodeRunner;
@@ -617,6 +633,7 @@ async function updateCommandInternal(
     installKind,
     updateInstallKind,
     switchToGit,
+    gitRelocation,
     timeoutMs,
     updateStepTimeoutMs,
     startedAt,

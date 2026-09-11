@@ -16,6 +16,7 @@ import {
   type UpdateCommandOptions,
 } from "./shared.js";
 import { handleDryRunPreflightError } from "./update-command-dry-run.js";
+import type { GitUpdateRelocation } from "./update-command-git-relocation.js";
 import type { ManagedServiceRootRedirect } from "./update-command-service-plan.js";
 
 /** Record validation, then inspect package admission or Git previews before mutation. */
@@ -23,6 +24,7 @@ export async function preflightUpdateCommandSchemas(params: {
   root: string;
   updateInstallKind: "git" | "package" | "unknown";
   switchToGit: boolean;
+  gitRelocation?: GitUpdateRelocation;
   shouldRestart: boolean;
   updateStepTimeoutMs: number;
   invocationCwd?: string;
@@ -65,7 +67,9 @@ export async function preflightUpdateCommandSchemas(params: {
         await import("./update-command-database-context.js");
       const { inspectGitDryRunTargetSchemaVersions } = await import("./update-command-git.js");
       const admission = await inspectUpdateDatabaseContexts({
-        roots: switchToGit ? [root, resolveGitInstallDir()] : [root],
+        roots: switchToGit
+          ? [root, params.gitRelocation?.directory ?? resolveGitInstallDir()]
+          : [root],
         updateInstallKind,
         shouldRestart,
         jsonMode: Boolean(opts.json),
@@ -77,7 +81,9 @@ export async function preflightUpdateCommandSchemas(params: {
       const target =
         updateInstallKind === "git"
           ? await inspectGitDryRunTargetSchemaVersions({
-              root: switchToGit ? resolveGitInstallDir() : root,
+              root: switchToGit
+                ? (params.gitRelocation?.directory ?? resolveGitInstallDir())
+                : root,
               timeoutMs: updateStepTimeoutMs,
               channel,
               devTarget,

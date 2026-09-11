@@ -699,6 +699,7 @@ export async function runGlobalPackageUpdateSteps(params: {
   beforeActivate?: () => Promise<void>;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
   expectedGitCheckout?: GitRuntimeIdentity;
+  previousGitCheckout?: GitRuntimeIdentity;
   activateGitRoot?: string;
 }): Promise<PackageUpdateStepsResult> {
   // Transaction callbacks must never silently become an in-place manager install.
@@ -1206,6 +1207,7 @@ export async function runGlobalPackageUpdateSteps(params: {
             liveTreeMutated = true;
           },
           onTransaction: params.onTransaction,
+          previousGitCheckout: params.previousGitCheckout,
         });
         steps.push(swap.step);
         if (swap.postVerifyStep) {

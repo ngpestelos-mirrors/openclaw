@@ -4,6 +4,7 @@ import type { ResolvedGlobalInstallTarget } from "../../infra/update-global.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import type { createUpdateProgress } from "./progress.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import type { GitUpdateRelocation } from "./update-command-git-relocation.js";
 import type { ManagedServiceRootRedirect } from "./update-command-service-plan.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 
@@ -12,6 +13,7 @@ export type MutableUpdateExecutionParams = {
   installKind: "git" | "package" | "unknown";
   updateInstallKind: "git" | "package" | "unknown";
   switchToGit: boolean;
+  gitRelocation?: GitUpdateRelocation;
   timeoutMs: number | undefined;
   updateStepTimeoutMs: number;
   startedAt: number;

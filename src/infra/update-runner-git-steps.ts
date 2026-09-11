@@ -8,6 +8,25 @@ import {
 import { runStep } from "./update-runner-command.js";
 import type { RunStepOptions } from "./update-runner-types.js";
 
+// Git status succeeding means the checkout was inspected, not that it is clean.
+export async function runGitCleanCheckStep(options: RunStepOptions) {
+  const result = await runStep({
+    ...options,
+    progress: { ...options.progress, onStepComplete: undefined },
+  });
+  const dirty = result.exitCode === 0 && Boolean(result.stdoutTail?.trim());
+  if (dirty) {
+    result.exitCode = 1;
+    result.stderrTail = "This checkout has local changes. Installation has not started.";
+  }
+  options.progress?.onStepComplete?.({
+    ...result,
+    index: options.stepIndex,
+    total: options.totalSteps,
+  });
+  return { result, dirty };
+}
+
 // Publish completion only after the owner classifies its recoverable result.
 export async function runGitUpstreamStep(options: RunStepOptions) {
   const upstreamStep = await runStep({
