@@ -35,6 +35,7 @@ import {
   chatSubmitKey,
   clearOwnedCommandComposerFallback,
   clearSubmittedComposerState,
+  prependReplyQuote,
   commandComposerFallbackRetainsAttachments,
   restoreFailedCommandComposer,
   snapshotChatAttachments,
@@ -86,6 +87,9 @@ export type ChatSendSubmitOptions = {
   intent?: ChatSendIntent;
   attachmentsOverride?: readonly ChatAttachment[];
   mentionsOverride?: readonly HumanMention[];
+  replyTargetOverride?: ChatHost["chatReplyTarget"];
+  /** Ordinary message admission transfers retry custody, including volatile sends. */
+  onOutboxAdmitted?: () => void;
   followUpMode?: ControlUiFollowUpMode;
   /** Only the inline queued-row submit may resume and replace an edited row. */
   resumeQueuedMessageEditId?: string;
@@ -489,7 +493,11 @@ export async function handleSendChat(
     }
   }
 
-  const replyTarget = isInlineEditSubmission ? null : host.chatReplyTarget;
+  const replyTarget = isInlineEditSubmission
+    ? null
+    : opts?.replyTargetOverride === undefined
+      ? host.chatReplyTarget
+      : opts.replyTargetOverride;
   // Persisted ids use replyToId; synthetic replies fall back to a quote.
   const replyToId = isInlineEditSubmission
     ? inlineEdit.replyToId
@@ -678,6 +686,7 @@ export async function handleSendChat(
       setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
       return;
     }
+    opts?.onOutboxAdmitted?.();
     let deliveryItem: typeof queued | null = queued;
     if (admittedDurably && submissionAction && typeof MessageChannel !== "undefined") {
       // The outbox now owns the prompt across reloads. Return control before
@@ -735,20 +744,4 @@ export async function handleSendChat(
   };
   await withChatSubmitGuard(host, submitKey, submitMessage, submissionAction);
   return accepted;
-}
-
-function prependReplyQuote(
-  message: string,
-  replyTarget: NonNullable<ChatHost["chatReplyTarget"]>,
-): string {
-  const label = (replyTarget.senderLabel ?? "User").replace(/([\\`*_{}[\]()#+\-.!|>])/g, "\\$1");
-  const text = replyTarget.text.trim();
-  if (!text.includes("\n")) {
-    return `> **${label}:** ${text}\n\n${message}`;
-  }
-  const quoted = text
-    .split("\n")
-    .map((line) => `> ${line}`)
-    .join("\n");
-  return `> **${label}:**\n${quoted}\n\n${message}`;
 }
