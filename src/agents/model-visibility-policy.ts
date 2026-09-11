@@ -48,6 +48,7 @@ export function createModelVisibilityPolicy(
     defaultProvider: string;
     defaultModel?: string;
     agentId?: string;
+    sessionKey?: string;
     allowManifestNormalization?: boolean;
     allowPluginNormalization?: boolean;
   } & ModelManifestNormalizationContext,
@@ -58,6 +59,7 @@ export function createModelVisibilityPolicy(
     defaultProvider: params.defaultProvider,
     defaultModel: params.defaultModel,
     agentId: params.agentId,
+    sessionKey: params.sessionKey,
     fallbackModels: resolveConfiguredModelFallbacks({
       cfg: params.cfg,
       agentId: params.agentId,

@@ -11,6 +11,8 @@ import { resolveModelProviderAuthConfig } from "../../agents/model-auth-provider
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import type { ModelFallbackRouteResolution } from "../../agents/model-fallback.types.js";
+import { resolveDefaultModelForAgent } from "../../agents/model-selection-config.js";
+import { resolveConfiguredModelPrimaryValue } from "../../agents/model-selection-shared.js";
 import {
   type ModelAliasIndex,
   legacyModelKey,
@@ -76,6 +78,7 @@ type ModelSelectionState = {
   policyAliasIndex: ModelAliasIndex;
   resetModelOverride: boolean;
   blockedModelOverrideRef?: string;
+  blockedModelOverrideUsesPrimary?: boolean;
   resetModelOverrideRef?: string;
   resetModelOverrideReason?: "disallowed" | "stale" | "temporarily-unavailable";
   modelPolicyConfigPath?: string;
@@ -184,6 +187,7 @@ export async function createModelSelectionState(params: {
 
   let visibilityPolicy: ModelVisibilityPolicy = createModelVisibilityPolicy({
     cfg,
+    sessionKey,
     catalog: [],
     defaultProvider,
     defaultModel,
@@ -214,6 +218,7 @@ export async function createModelSelectionState(params: {
   let catalogAuthoritative = true;
   let resetModelOverride = false;
   let blockedModelOverrideRef: string | undefined;
+  let blockedModelOverrideUsesPrimary = false;
   let resetModelOverrideRef: string | undefined;
   let resetModelOverrideReason: "disallowed" | "stale" | "temporarily-unavailable" | undefined;
   const directStoredModelOverride = storedModelOverrides.resolveDirectStoredModelOverride({
@@ -285,6 +290,7 @@ export async function createModelSelectionState(params: {
     );
     visibilityPolicy = createModelVisibilityPolicy({
       cfg,
+      sessionKey,
       catalog: modelCatalog,
       defaultProvider,
       defaultModel,
@@ -300,6 +306,7 @@ export async function createModelSelectionState(params: {
   } else if (hasAllowlist || hasConfiguredModels) {
     visibilityPolicy = createModelVisibilityPolicy({
       cfg,
+      sessionKey,
       catalog: configuredModelCatalog,
       defaultProvider,
       defaultModel,
@@ -450,10 +457,7 @@ export async function createModelSelectionState(params: {
     const userPin =
       storedOverride.source !== "session" || sessionEntry?.modelOverrideSource !== "auto";
     if (!modelSelectionLocked && !allowed && userPin) {
-      blockedModelOverrideRef = modelKey(
-        normalizedStoredOverride.provider,
-        normalizedStoredOverride.model,
-      );
+      blockedModelOverrideRef = `${normalizedStoredOverride.provider}/${normalizedStoredOverride.model}`;
     }
     if (modelSelectionLocked || allowed || blockedModelOverrideRef) {
       provider = normalizedStoredOverride.provider;
@@ -461,6 +465,24 @@ export async function createModelSelectionState(params: {
       requestedRouteResolution =
         storedAlias || storedRouteCataloged ? "resolved" : storedOverride.routeResolution;
       resolvedStoredOverrideSelected = storedOverride.routeResolution === "resolved";
+    }
+  }
+
+  if (
+    blockedModelOverrideRef &&
+    resolveConfiguredModelPrimaryValue({ cfg, agentId: params.agentId, sessionKey })
+  ) {
+    const configuredPrimary = resolveDefaultModelForAgent({
+      cfg,
+      agentId: params.agentId,
+      sessionKey,
+      ...runtimeModelNormalization,
+    });
+    if (visibilityPolicy.allows(configuredPrimary)) {
+      provider = configuredPrimary.provider;
+      model = configuredPrimary.model;
+      requestedRouteResolution = "resolved";
+      blockedModelOverrideUsesPrimary = true;
     }
   }
 
@@ -546,6 +568,7 @@ export async function createModelSelectionState(params: {
   const buildThinkingCatalog = (catalog: ModelCatalog): ModelCatalog =>
     createModelVisibilityPolicy({
       cfg,
+      sessionKey,
       catalog,
       defaultProvider,
       defaultModel,
@@ -662,6 +685,7 @@ export async function createModelSelectionState(params: {
     policyAliasIndex: visibilityPolicy.policyAliasIndex,
     resetModelOverride,
     blockedModelOverrideRef,
+    blockedModelOverrideUsesPrimary: blockedModelOverrideUsesPrimary || undefined,
     resetModelOverrideRef,
     resetModelOverrideReason,
     modelPolicyConfigPath: visibilityPolicy.allowConfigPath ?? undefined,

@@ -86,6 +86,7 @@ export type HandleCommandsParams = {
   resolveDefaultThinkingLevel: () => Promise<ThinkLevel | undefined>;
   provider: string;
   model: string;
+  blockedModelOverrideUsesPrimary?: boolean;
   contextTokens: number;
   isGroup: boolean;
   skillCommands?: SkillCommandSpec[];

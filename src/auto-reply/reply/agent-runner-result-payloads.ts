@@ -52,6 +52,7 @@ import { resolveResponseUsageLine } from "./agent-runner-usage-line.js";
 import type { PendingContinuationSettlement } from "./get-reply.types.js";
 import { attachMcpAppChannelAction } from "./mcp-app-channel-action.js";
 import { attachMcpConnectChannelAction } from "./mcp-connect-channel-action.js";
+import { attachModelPolicyNotice } from "./model-policy-notice.js";
 import { normalizeReplyPayload } from "./normalize-reply.js";
 import { createReplyToModeFilterForChannel } from "./reply-threading.js";
 import { buildSessionsYieldAcknowledgmentPayload } from "./sessions-yield-acknowledgment.js";
@@ -519,6 +520,17 @@ export async function prepareReplyAgentPayloads(state: {
       };
     }
     return { kind: "return" as const, value: returnWithQueuedFollowupDrain(undefined) };
+  }
+
+  if (followupRun.run.blockedModelOverrideUsesPrimary && followupRun.run.blockedModelOverrideRef) {
+    replyPayloads = attachModelPolicyNotice({
+      payloads: replyPayloads,
+      pinnedModel: followupRun.run.blockedModelOverrideRef,
+      primaryModel: `${providerUsed}/${modelUsed}`,
+      sessionEntry: activeSessionEntry,
+      sessionKey,
+      storePath,
+    });
   }
 
   const successfulCronAdds = runResult.successfulCronAdds ?? 0;

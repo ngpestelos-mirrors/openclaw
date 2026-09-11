@@ -43,6 +43,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveAgentRuntimeLabel } from "../../status/agent-runtime-label.js";
 import type { ReplyPayload } from "../types.js";
 import { rejectUnauthorizedCommand } from "./command-gates.js";
+import { formatModelsAllowListNotice } from "./commands-models-notice.js";
 import type { CommandHandler } from "./commands-types.js";
 import { resolveRuntimeNormalization } from "./model-runtime-normalization.js";
 
@@ -76,28 +77,12 @@ export type ModelsProviderData = {
   isCurrent?: () => boolean;
 };
 
-export function formatModelsAllowListNotice(
-  data: Pick<ModelsProviderData, "allowList" | "providers">,
-): string {
-  const facts = data.allowList;
-  if (!facts) {
-    return "";
-  }
-  const lines = [
-    ...(facts.hiddenCount > 0
-      ? [`${facts.hiddenCount} newer models hidden by your allow list`]
-      : []),
-    ...(data.providers.length === 0 ? ["No models match your allow list."] : []),
-    ...(facts.selectedModelBlocked ? ["The current model is not allowed by your allow list."] : []),
-  ];
-  return lines.length ? [...lines, `Settings: ${facts.settingsPath}`].join("\n") : "";
-}
-
 type PreparedModelsProviderData = ModelsProviderData & {
   modelCatalog: ModelCatalogEntry[];
 };
 
 type ModelsBrowseOptions = {
+  sessionKey?: string;
   view?: "default" | "all";
   workspaceDir?: string;
   sessionEntry?: ModelsCommandSessionEntry;
@@ -211,6 +196,7 @@ async function projectPreparedModelsProviderData(
   const resolvedDefault = resolveDefaultModelForAgent({
     cfg,
     agentId,
+    sessionKey: options.sessionKey,
     ...runtimeNormalization,
   });
   const workspaceDir =
@@ -225,6 +211,7 @@ async function projectPreparedModelsProviderData(
   const catalog = snapshot.entries;
   const visibilityPolicy = createModelVisibilityPolicy({
     cfg,
+    sessionKey: options.sessionKey,
     catalog,
     defaultProvider: resolvedDefault.provider,
     defaultModel: resolvedDefault.model,
@@ -265,6 +252,7 @@ async function projectPreparedModelsProviderData(
     selectedModel: options.sessionEntry
       ? resolveSessionModelRef(cfg, options.sessionEntry, agentId, {
           allowPluginNormalization: false,
+          sessionKey: options.sessionKey,
         })
       : undefined,
     policy: visibilityPolicy,
@@ -515,6 +503,7 @@ export async function resolveModelsCommandReply(params: {
   agentDir?: string;
   workspaceDir?: string;
   sessionEntry?: ModelsCommandSessionEntry;
+  sessionKey?: string;
 }): Promise<ReplyPayload | null> {
   const body = params.commandBodyNormalized.trim();
   if (!body.startsWith("/models")) {
@@ -532,6 +521,7 @@ export async function resolveModelsCommandReply(params: {
       {
         workspaceDir: params.workspaceDir,
         sessionEntry: params.sessionEntry,
+        sessionKey: params.sessionKey,
       },
       params.agentDir,
     );
@@ -547,7 +537,7 @@ export async function resolveModelsCommandReply(params: {
     throw error;
   }
   const { byProvider, providers, modelNames } = data;
-  const notice = formatModelsAllowListNotice(data);
+  const notice = formatModelsAllowListNotice(data.allowList, data.providers.length > 0);
   const withNotice = (text: string) => (notice ? `${text}\n\n${notice}` : text);
   if (providers.length === 0 && data.allowList) {
     return { text: notice };
@@ -744,6 +734,7 @@ export const handleModelsCommand: CommandHandler = async (params, allowTextComma
       targetSessionEntry?.spawnedWorkspaceDir ??
       (modelsAgentId === currentAgentId ? params.workspaceDir : undefined),
     sessionEntry: targetSessionEntry,
+    sessionKey: params.sessionKey,
   });
   if (!reply) {
     return null;

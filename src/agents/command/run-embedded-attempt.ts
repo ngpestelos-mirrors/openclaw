@@ -3,6 +3,7 @@ import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/a
 import { clearAgentRunTerminalWriteContext } from "../../infra/agent-run-terminal-writes.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
+  createConfiguredPrimarySessionEntry,
   MODEL_SELECTION_LOCKED_MESSAGE,
   ModelSelectionLockedError,
   isModelSelectionLocked,
@@ -103,6 +104,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
     storedModelOverride,
     storedModelOverrideSource,
     effectiveTurnThinkLevel,
+    allowListPolicyFallback,
   } = params.modelSelection;
   const thinkingCatalog = params.modelSelection.thinkingCatalog;
   let sessionEntry = params.sessionEntry;
@@ -211,6 +213,12 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
     refreshSessionEntry: (key) => {
       sessionEntry = sessionStore?.[key] ?? sessionEntry;
       sessionEntryForAttempt = sessionEntry;
+      if (allowListPolicyFallback && sessionEntry) {
+        sessionEntryForAttempt = createConfiguredPrimarySessionEntry(sessionEntry, {
+          provider: defaultProvider,
+          model: defaultModel,
+        });
+      }
     },
   });
   let maintenanceAuthProfile:
@@ -249,20 +257,21 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
         ? getGeneratedMediaTaskIdsForSessionKey(sessionKey)
         : new Set<string>();
       const spawnedBy = normalizedSpawned.spawnedBy ?? sessionEntry?.spawnedBy;
-      const effectiveFallbacksOverride = isModelSelectionLocked(sessionEntry)
-        ? []
-        : (params.opts.modelFallbacksOverride ??
-          resolveEffectiveModelFallbacks({
-            cfg,
-            agentId: sessionAgentId,
-            sessionKey,
-            hasSessionModelOverride:
-              hasExplicitRunOverride || Boolean(storedProviderOverride || storedModelOverride),
-            modelOverrideSource: hasExplicitRunOverride ? "user" : storedModelOverrideSource,
-            hasAutoFallbackProvenance: hasExplicitRunOverride
-              ? false
-              : hasStoredAutoFallbackProvenance,
-          }));
+      const effectiveFallbacksOverride =
+        allowListPolicyFallback || isModelSelectionLocked(sessionEntry)
+          ? []
+          : (params.opts.modelFallbacksOverride ??
+            resolveEffectiveModelFallbacks({
+              cfg,
+              agentId: sessionAgentId,
+              sessionKey,
+              hasSessionModelOverride:
+                hasExplicitRunOverride || Boolean(storedProviderOverride || storedModelOverride),
+              modelOverrideSource: hasExplicitRunOverride ? "user" : storedModelOverrideSource,
+              hasAutoFallbackProvenance: hasExplicitRunOverride
+                ? false
+                : hasStoredAutoFallbackProvenance,
+            }));
 
       const fallbackRuntimeState: { originRuntime?: "cli" | "embedded" } = {};
       attemptLifecycleState.currentTurnUserMessagePersisted = false;
@@ -422,6 +431,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
             );
             const allowedRuntimeCatalog = createModelVisibilityPolicy({
               cfg,
+              sessionKey,
               catalog: runtimeCatalog,
               defaultProvider,
               defaultModel,
@@ -626,6 +636,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
         }
         provider = err.provider;
         model = err.model;
+        allowListPolicyFallback = undefined;
         providerForAuthProfileValidation = err.provider;
         if (sessionEntry) {
           sessionEntry = { ...sessionEntry };
@@ -657,6 +668,12 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
       );
       await fallbackTrajectoryRecorder?.flush();
       await deferredLifecycle.complete();
+      if (allowListPolicyFallback && !errorLifecycleFields.aborted) {
+        throw new Error(
+          `Pinned model ${sanitizeForLog(allowListPolicyFallback.pinnedModel)} is not in your allow list, and the configured default could not answer. Use /model to change it. ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      }
       throw err;
     }
   }
@@ -667,6 +684,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
     fallbackProvider,
     fallbackModel,
     fallbackExhausted,
+    allowListPolicyFallback,
     provider,
     model,
     sessionEntry,

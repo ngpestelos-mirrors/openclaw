@@ -221,11 +221,7 @@ function findAssistantTranscriptMessageByTurnIndexAndMediaInEvents(
       .map((value) => normalizeMediaReferenceForComparison(value))
       .filter((value) => value.length > 0),
   );
-  if (
-    expectedMedia.size === 0 ||
-    !Number.isSafeInteger(params.assistantMessageIndex) ||
-    params.assistantMessageIndex < 1
-  ) {
+  if (!Number.isSafeInteger(params.assistantMessageIndex) || params.assistantMessageIndex < 1) {
     return null;
   }
   const target = events.filter((event) => transcriptEventMessage(event)?.role === "assistant")[
@@ -611,7 +607,7 @@ export async function rewriteAssistantTranscriptMessageByTurnIndexAndMedia(param
   mediaUrls: readonly string[];
   scope: ResolvedAssistantTranscriptScope;
 }): Promise<{ generation: string; messageId: string } | null> {
-  if (params.content.length === 0 || params.mediaUrls.length === 0) {
+  if (params.content.length === 0) {
     return null;
   }
   const currentWatermark = readSessionTranscriptWatermark(params.scope);
@@ -640,7 +636,7 @@ export async function rewriteAssistantTranscriptMessageByTurnIndexAndMedia(param
     displayContent: params.content,
     managedMediaUrls: params.mediaUrls,
     // Indexed replies can contain earlier chunks; exact final/mirror replacements cannot.
-    retainOriginalText: true,
+    ...(params.mediaUrls.length > 0 ? { retainOriginalText: true as const } : {}),
   });
   const rewrittenEvent = Object.assign({}, targetRow.event as Record<string, unknown>, {
     message: rewrittenMessage,

@@ -231,6 +231,8 @@ export type FollowupRun = {
     /** Prevents the queued run from selecting configured fallback models. */
     modelSelectionLocked?: boolean;
     hasSessionModelOverride?: boolean;
+    blockedModelOverrideRef?: string;
+    blockedModelOverrideUsesPrimary?: boolean;
     modelOverrideSource?: "auto" | "user";
     hasAutoFallbackProvenance?: boolean;
     autoFallbackPrimaryProbe?: AutoFallbackPrimaryProbe;

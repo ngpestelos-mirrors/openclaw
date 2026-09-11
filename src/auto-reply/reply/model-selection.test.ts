@@ -1338,50 +1338,56 @@ describe("createModelSelectionState respects session model override", () => {
     expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
   });
 
-  it("preserves a disallowed user pin and marks the turn blocked", async () => {
-    const cfg = {
-      agents: {
-        defaults: {
-          model: {
-            primary: "openai/gpt-4o",
-            fallbacks: ["openai/gpt-4o-mini"],
+  it.each([false, true])(
+    "preserves a disallowed user pin and uses the configured primary (agent: %s)",
+    async (perAgent) => {
+      const cfg = {
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/gpt-4o",
+              fallbacks: ["openai/gpt-4.1"],
+            },
+            models: {
+              "openai/gpt-4o": {},
+            },
+            modelPolicy: { allow: ["openai/gpt-4o"] },
           },
-          models: {
-            "openai/gpt-4o": {},
-          },
-          modelPolicy: { allow: ["openai/gpt-4o"] },
+          ...(perAgent ? { entries: { main: { model: "openai/gpt-4.1-mini" } } } : {}),
         },
-      },
-    } as OpenClawConfig;
-    const sessionKey = "agent:main:telegram:direct:1";
-    const sessionEntry = makeEntry({
-      providerOverride: "openai",
-      modelOverride: "gpt-4o-mini",
-    });
-    const sessionStore = { [sessionKey]: sessionEntry };
+      } satisfies OpenClawConfig;
+      const sessionKey = "agent:main:telegram:direct:1";
+      const sessionEntry = makeEntry({
+        providerOverride: "openai",
+        modelOverride: "gpt-4o-mini",
+      });
+      const sessionStore = { [sessionKey]: sessionEntry };
 
-    const state = await createModelSelectionState({
-      cfg,
-      agentCfg: cfg.agents?.defaults,
-      sessionEntry,
-      sessionStore,
-      sessionKey,
-      defaultProvider: "openai",
-      defaultModel: "gpt-4o",
-      provider: "openai",
-      model: "gpt-4o",
-      hasModelDirective: false,
-    });
+      const state = await createModelSelectionState({
+        cfg,
+        agentId: "main",
+        agentCfg: cfg.agents?.defaults,
+        sessionEntry,
+        sessionStore,
+        sessionKey,
+        defaultProvider: "openai",
+        defaultModel: "gpt-4o",
+        provider: "openai",
+        model: "gpt-4o",
+        hasModelDirective: false,
+      });
 
-    expect(state).toMatchObject({
-      resetModelOverride: false,
-      blockedModelOverrideRef: "openai/gpt-4o-mini",
-      provider: "openai",
-      model: "gpt-4o-mini",
-    });
-    expect(sessionStore[sessionKey]?.modelOverride).toBe("gpt-4o-mini");
-    expect(sessionStore[sessionKey]?.providerOverride).toBe("openai");
-  });
+      expect(state).toMatchObject({
+        resetModelOverride: false,
+        blockedModelOverrideRef: "openai/gpt-4o-mini",
+        blockedModelOverrideUsesPrimary: true,
+        provider: "openai",
+        model: perAgent ? "gpt-4.1-mini" : "gpt-4o",
+      });
+      expect(sessionStore[sessionKey]?.modelOverride).toBe("gpt-4o-mini");
+      expect(sessionStore[sessionKey]?.providerOverride).toBe("openai");
+    },
+  );
 
   it("preserves a locked disallowed override without resetting it", async () => {
     const cfg = {

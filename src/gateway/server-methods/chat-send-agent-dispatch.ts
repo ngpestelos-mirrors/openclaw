@@ -282,7 +282,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
       ),
   };
   const dispatch = replyDispatch
-    .runAgentMediaTranscript(dispatchAdmission, () =>
+    .runAgentTranscript(dispatchAdmission, () =>
       measureDiagnosticsTimelineSpan(
         "gateway.chat_send.dispatch_inbound",
         async () => {
@@ -665,6 +665,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     try {
       await dispatch;
     } finally {
+      await replyDispatch.releasePendingPolicyNoticePublications();
       await dispatchErrorLifecycle.finalize();
       // Terminal lifecycle can precede owner release; publish exact liveness after cleanup.
       emitSessionsChanged(context, { sessionKey, agentId, reason: "chat.run.settled" });

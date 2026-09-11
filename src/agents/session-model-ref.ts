@@ -30,7 +30,7 @@ export function resolveSessionModelRef(
   cfg: OpenClawConfig,
   entry?: SessionModelEntry,
   agentId?: string,
-  options?: { allowPluginNormalization?: boolean },
+  options?: { allowPluginNormalization?: boolean; sessionKey?: string },
 ): { provider: string; model: string } {
   const overrideRouteResolution = resolveSessionModelOverrideRouteResolution(entry);
   const normalizedOverride = normalizeStoredOverrideModel({
@@ -54,6 +54,7 @@ export function resolveSessionModelRef(
     ? resolveDefaultModelForAgent({
         cfg,
         agentId,
+        sessionKey: options?.sessionKey,
         allowPluginNormalization: options?.allowPluginNormalization,
       })
     : resolveConfiguredModelRef({
@@ -83,7 +84,7 @@ export function resolveSessionModelIdentityRef(
   entry?: SessionModelEntry,
   agentId?: string,
   fallbackModelRef?: string,
-  options?: { allowPluginNormalization?: boolean },
+  options?: { allowPluginNormalization?: boolean; sessionKey?: string },
 ): { provider?: string; model: string } {
   const runtimeModel = entry?.model?.trim();
   const runtimeProvider = entry?.modelProvider?.trim();
@@ -130,6 +131,7 @@ export function resolveSessionModelIdentityRef(
   }
   const resolved = resolveSessionModelRef(cfg, entry, agentId, {
     allowPluginNormalization: options?.allowPluginNormalization,
+    sessionKey: options?.sessionKey,
   });
   return { provider: resolved.provider, model: resolved.model };
 }

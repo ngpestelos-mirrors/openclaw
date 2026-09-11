@@ -479,6 +479,8 @@ async function agentCommandInternal(
         { config: cfg },
       );
       sessionEntry = modelSelection.sessionEntry;
+      const preserveTurnModelState =
+        preserveUserFacingSessionModelState || Boolean(modelSelection.allowListPolicyFallback);
       const foreground = await prepareCommandForegroundRun({
         prepared,
         opts,
@@ -488,7 +490,7 @@ async function agentCommandInternal(
         lifecycleGeneration,
         ingress: admissionIngress,
         suppressVisibleSessionEffects,
-        preserveUserFacingSessionModelState,
+        preserveUserFacingSessionModelState: preserveTurnModelState,
         onCommittedSessionId: (committedSessionId) => {
           runOwnedSessionId = committedSessionId;
           compactionSessionIdReporter.onCompactionCommitted(committedSessionId);
@@ -518,7 +520,7 @@ async function agentCommandInternal(
           }
         },
         suppressVisibleSessionEffects,
-        preserveUserFacingSessionModelState,
+        preserveUserFacingSessionModelState: preserveTurnModelState,
         modelSelection,
         embeddedSessionState,
         trackInternalModelRunTarget,
@@ -538,7 +540,8 @@ async function agentCommandInternal(
         attempt: embeddedAttempt,
         embeddedSessionState,
         suppressVisibleSessionEffects,
-        preserveUserFacingSessionModelState,
+        preserveUserFacingSessionModelState: preserveTurnModelState,
+        allowListPolicyFallback: embeddedAttempt.allowListPolicyFallback,
         currentRunDeliveryContext,
         sessionOwnership: { runOwnedSessionId, sessionReboundDuringRun },
         trackInternalModelRunTarget,

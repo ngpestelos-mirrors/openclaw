@@ -20,6 +20,7 @@ vi.mock("../agent-scope.js", () => ({
   resolveAutoFallbackPrimaryProbe: () => undefined,
   resolveAgentConfig: () => undefined,
   resolveAgentEffectiveModelPrimary: () => undefined,
+  resolveAgentModelFallbacksOverride: () => undefined,
 }));
 vi.mock("../../auto-reply/thinking.js", () => ({
   formatThinkingLevels: () => "",
@@ -119,7 +120,12 @@ vi.mock("../../plugins/runtime.js", () => ({ requireActivePluginRegistry: () => 
 vi.mock("../../sessions/agent-harness-session-key.js", () => ({
   isValidAgentHarnessSessionStoreEntry: () => false,
 }));
-vi.mock("../../sessions/model-overrides.js", () => ({
+vi.mock("../../sessions/model-overrides.js", async () => ({
+  createConfiguredPrimarySessionEntry: (
+    await vi.importActual<typeof import("../../sessions/model-overrides.js")>(
+      "../../sessions/model-overrides.js",
+    )
+  ).createConfiguredPrimarySessionEntry,
   applyModelOverrideToSessionEntry: () => ({ updated: false }),
   isModelSelectionLocked: (entry?: SessionEntry) => entry?.modelSelectionLocked === true,
   ModelSelectionLockedError: class ModelSelectionLockedError extends Error {},
@@ -230,6 +236,146 @@ async function observeCommandSelection(fixture: TurnModelDifferentialFixture) {
 }
 
 describe("turn model selection command-path differential", () => {
+  it.each([
+    { sessionKey: "agent:main:main", mode: "inherit", model: "parent" },
+    { sessionKey: "agent:main:subagent:child", mode: "inherit", model: "child" },
+    { sessionKey: "agent:main:subagent:child", mode: "stored", model: "child" },
+    { sessionKey: "agent:main:main", mode: "request", model: "child" },
+    { sessionKey: "agent:main:main", mode: "denied", model: "parent" },
+    { sessionKey: "agent:main:main", mode: "denied-durable", model: "parent" },
+    { sessionKey: "agent:main:main", mode: "inherited-denied", model: "parent" },
+    { sessionKey: "agent:main:main", mode: "no-primary", model: "child" },
+    { sessionKey: "agent:main:main", mode: "one-turn", model: "parent" },
+    { sessionKey: "agent:main:main", mode: "locked", model: "child" },
+  ])(
+    "uses only the configured primary for $sessionKey ($mode)",
+    async ({ sessionKey, mode, model }) => {
+      const defaults = await import("../model-selection-config.js");
+      const policy = await vi.importActual<typeof import("../model-visibility-policy.js")>(
+        "../model-visibility-policy.js",
+      );
+      const defaultSpy = vi
+        .spyOn(await import("../model-selection.js"), "resolveDefaultModelForAgent")
+        .mockImplementation(defaults.resolveDefaultModelForAgent);
+      const policySpy = vi
+        .spyOn(await import("../model-visibility-policy.js"), "createModelVisibilityPolicy")
+        .mockImplementation(policy.createModelVisibilityPolicy);
+      const overrides = await vi.importActual<typeof import("../../sessions/model-overrides.js")>(
+        "../../sessions/model-overrides.js",
+      );
+      const overrideSpy = vi
+        .spyOn(
+          await import("../../sessions/model-overrides.js"),
+          "applyModelOverrideToSessionEntry",
+        )
+        .mockImplementation(overrides.applyModelOverrideToSessionEntry);
+      const persistSpy = vi.spyOn(
+        await import("./attempt-execution.shared.js"),
+        "persistAgentSession",
+      );
+      const cfg: OpenClawConfig = {
+        agents: {
+          entries: { main: {} },
+          defaults: {
+            ...(mode !== "no-primary" ? { model: "fixture/parent@parent-profile" } : {}),
+            subagents: { model: "fixture/child@child-profile" },
+            modelPolicy: { allow: ["fixture/parent"] },
+          },
+        },
+      };
+      const entry: SessionEntry = {
+        sessionId: "scoped-primary",
+        updatedAt: 1,
+        ...(["stored", "denied", "denied-durable", "no-primary", "one-turn", "locked"].includes(
+          mode,
+        )
+          ? {
+              providerOverride: "fixture",
+              modelOverride: "child",
+              modelOverrideSource: "user" as const,
+            }
+          : {}),
+        ...(["denied", "denied-durable"].includes(mode)
+          ? {
+              agentRuntimeOverride: "fixture-runtime",
+              authProfileOverride: "child-profile",
+              authProfileOverrideSource: "user" as const,
+              modelProvider: "fixture",
+              model: "child",
+            }
+          : {}),
+        ...(mode === "locked"
+          ? { modelSelectionLocked: true, agentHarnessId: "turn-model-recorder" }
+          : {}),
+        ...(mode === "inherited-denied" ? { parentSessionKey: "agent:main:parent" } : {}),
+      };
+      const sessionStore: Record<string, SessionEntry> = { [sessionKey]: entry };
+      if (mode === "inherited-denied") {
+        sessionStore["agent:main:parent"] = {
+          sessionId: "parent",
+          updatedAt: 1,
+          providerOverride: "fixture",
+          modelOverride: "child",
+        };
+      }
+      const original = structuredClone(sessionStore);
+      try {
+        const selection = resolveEmbeddedModelSelection({
+          cfg,
+          opts: {
+            message: "hello",
+            ...(mode === "request" || mode === "one-turn"
+              ? { model: `fixture/${model}`, allowModelOverride: true }
+              : {}),
+          },
+          sessionEntry: entry,
+          sessionStore,
+          sessionKey,
+          sessionId: entry.sessionId,
+          storePath: path.join(suiteTempRoot, "scoped-primary.json"),
+          sessionAgentId: "main",
+          workspaceDir: suiteTempRoot,
+          pluginsEnabled: false,
+          modelManifestContext: { manifestPlugins: [] },
+          configuredThinkingCatalog: [],
+          isSubagentLane: sessionKey !== "agent:main:main",
+          suppressVisibleSessionEffects: mode !== "denied-durable",
+          runContext: { currentChannelId: "target" },
+        });
+        if (mode === "request") {
+          await expect(selection).rejects.toThrow("not allowed");
+        } else if (mode === "no-primary") {
+          await expect(selection).rejects.toThrow("no configured primary is usable");
+        } else {
+          await expect(selection).resolves.toMatchObject({
+            provider: "fixture",
+            model,
+            configuredDefaultAuthProfileId: `${sessionKey === "agent:main:main" ? "parent" : "child"}-profile`,
+          });
+          const resolved = await selection;
+          if (["denied", "denied-durable", "inherited-denied"].includes(mode)) {
+            expect(resolved.allowListPolicyFallback).toEqual({
+              pinnedModel: "fixture/child",
+              primaryModel: "fixture/parent",
+            });
+            expect(resolved.sessionEntryForAttempt?.modelOverride).toBeUndefined();
+            expect(resolved.sessionEntryForAttempt?.authProfileOverride).toBeUndefined();
+            expect(resolved.sessionEntryForAttempt?.agentRuntimeOverride).toBeUndefined();
+          } else {
+            expect(resolved.allowListPolicyFallback).toBeUndefined();
+          }
+        }
+        expect(sessionStore).toEqual(original);
+        expect(persistSpy).not.toHaveBeenCalled();
+      } finally {
+        defaultSpy.mockRestore();
+        policySpy.mockRestore();
+        overrideSpy.mockRestore();
+        persistSpy.mockRestore();
+      }
+    },
+  );
+
   it.each(TURN_MODEL_DIFFERENTIAL_FIXTURES)("pins observed $name behavior", async (fixture) => {
     await expect(observeCommandSelection(fixture)).resolves.toEqual(fixture.expected.command);
   });

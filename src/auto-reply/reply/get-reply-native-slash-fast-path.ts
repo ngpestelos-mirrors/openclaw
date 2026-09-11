@@ -500,6 +500,9 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     blockReplyChunking: directiveResult.result.blockReplyChunking,
     resolvedBlockStreamingBreak: directiveResult.result.resolvedBlockStreamingBreak,
     resolveDefaultThinkingLevel: directiveResult.result.modelState.resolveDefaultThinkingLevel,
+    blockedModelOverrideRef: directiveResult.result.modelState.blockedModelOverrideRef,
+    blockedModelOverrideUsesPrimary:
+      directiveResult.result.modelState.blockedModelOverrideUsesPrimary,
     provider: directiveResult.result.provider,
     model: directiveResult.result.model,
     contextTokens: directiveResult.result.contextTokens,

@@ -3060,7 +3060,7 @@ class ChatComposerLayoutTest {
     val sheet = composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsProperties.PaneTitle)).getUnclippedBoundsInRoot()
     assertTrue("Model sheet must leave chat visible: sheet=$sheet window=$window", sheet.bottom - sheet.top <= (window.bottom - window.top) * 0.6f)
     composeRule.onNodeWithText(nativeString("Latest model call")).assertDoesNotExist()
-    composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed().assertHasClickAction()
+    composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed().assertHasClickAction()
   }
 
   @Test
@@ -3106,9 +3106,9 @@ class ChatComposerLayoutTest {
     composeRule.onNode(hasText(nativeString("Full access")) and hasClickAction()).assertIsDisplayed()
     sheetList.performScrollToNode(hasText(nativeString("Back")) and hasClickAction())
     composeRule.onNodeWithText(nativeString("Back")).performClick()
-    sheetList.performScrollToNode(hasText(nativeString("Default model")))
+    sheetList.performScrollToNode(hasText(nativeString("Reset session model")))
     composeRule
-      .onNodeWithText(nativeString("Default model"))
+      .onNodeWithText(nativeString("Reset session model"))
       .assertIsDisplayed()
       .assertHasClickAction()
       .performClick()
@@ -3198,7 +3198,7 @@ class ChatComposerLayoutTest {
     details.performScrollTo().performClick()
     details.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, nativeString("Collapsed")))
     composeRule.onNodeWithText(nativeString("Latest model call")).assertDoesNotExist()
-    composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed().assertHasClickAction()
+    composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed().assertHasClickAction()
     composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { dismiss -> assertTrue(dismiss()) }
     composeRule.onNode(isDialog()).assertDoesNotExist()
     assertEquals("Dismissing model selection must preserve the draft", editorBounds, editor.getUnclippedBoundsInRoot())
@@ -3425,7 +3425,7 @@ class ChatComposerLayoutTest {
       .assertTextEquals(nativeString("Policy default"))
       .assert(hasClickAction().not())
       .assert(hasAnyAncestor(hasClickAction()).not())
-    composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed().assertHasClickAction()
+    composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed().assertHasClickAction()
 
     composeRule.onNode(hasText(nativeString("Permissions")) and hasClickAction()).performClick()
     composeRule.onNode(isPopup()).assertDoesNotExist()
@@ -3442,7 +3442,7 @@ class ChatComposerLayoutTest {
       recreatedOwner.onBackPressedDispatcher.onBackPressed()
     }
     composeRule.onNodeWithText(nativeString("Back")).assertDoesNotExist()
-    composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed()
+    composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed()
     composeRule.runOnIdle { sheetBackOwner().onBackPressedDispatcher.onBackPressed() }
     composeRule.onNode(isDialog()).assertDoesNotExist()
 
@@ -3450,7 +3450,7 @@ class ChatComposerLayoutTest {
     composeRule.onNode(hasText(nativeString("Permissions")) and hasClickAction()).performClick()
     composeRule.onNode(hasText(nativeString("Policy default")) and hasClickAction()).performClick()
 
-    composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed().performClick()
+    composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed().performClick()
     composeRule.onNode(isDialog()).assertDoesNotExist()
   }
 
@@ -3560,7 +3560,7 @@ class ChatComposerLayoutTest {
     val select =
       checkNotNull(
         composeRule
-          .onNodeWithText(nativeString("Default model"))
+          .onNodeWithText(nativeString("Reset session model"))
           .fetchSemanticsNode()
           .config[SemanticsActions.OnClick]
           .action,
@@ -3586,7 +3586,7 @@ class ChatComposerLayoutTest {
     assertNotSame(old.window, fresh.window)
     assertTrue(fresh.isShowing)
     assertFalse(old.isShowing)
-    composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed()
+    composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed()
     composeRule.onNodeWithText(nativeString("Non-cached input excludes cache reads.")).assertDoesNotExist()
     composeRule.onNodeWithText(nativeString("Back")).assertDoesNotExist()
     composeRule.onNode(hasText(nativeString("Permissions")) and hasClickAction()).performClick()
@@ -3690,12 +3690,12 @@ class ChatComposerLayoutTest {
     try {
       requestField.set(controller, request)
       composeRule.onNodeWithContentDescription(nativeString("Model")).performClick()
-      composeRule.onNodeWithText(nativeString("Default model")).performClick()
+      composeRule.onNodeWithText(nativeString("Reset session model")).performClick()
       composeRule.waitUntil { admitted.size == 1 }
       composeRule.onNode(isDialog()).assertDoesNotExist()
       assertFalse(release.isCompleted)
       composeRule.onNodeWithContentDescription(nativeString("Model")).performClick()
-      composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed()
+      composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed()
       composeRule.runOnUiThread {
         runBlocking {
           sheetFeatures.publish(listOf(testFold(Rect(0, 0, 800, 800))))
@@ -3705,7 +3705,7 @@ class ChatComposerLayoutTest {
       composeRule.waitForIdle()
       composeRule.onNode(isDialog()).assertDoesNotExist()
       composeRule.onNodeWithContentDescription(nativeString("Model")).performClick()
-      composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed()
+      composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed()
       val fresh = checkNotNull(ShadowDialog.getLatestDialog())
       composeRule.runOnIdle { release.complete(Unit) }
       composeRule.waitUntil { composeRule.runOnIdle { originalSession !in model.chatPendingSessionSettingsKeys.value } }
@@ -3726,7 +3726,7 @@ class ChatComposerLayoutTest {
   fun modelBackDuringUnplacedPaneChangeRetiresOpeningAndAllowsReopen() {
     showChat(viewportWidth = 720.dp, viewportHeight = { 720.dp })
     composeRule.onNodeWithContentDescription(nativeString("Model")).performClick()
-    composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed()
+    composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed()
     val old = checkNotNull(ShadowDialog.getLatestDialog()) as ComponentDialog
     composeRule.mainClock.autoAdvance = false
     composeRule.runOnUiThread {
@@ -3738,7 +3738,7 @@ class ChatComposerLayoutTest {
     composeRule.waitForIdle()
     composeRule.onNode(isDialog()).assertDoesNotExist()
     composeRule.onNodeWithContentDescription(nativeString("Model")).performClick()
-    composeRule.onNodeWithText(nativeString("Default model")).assertIsDisplayed()
+    composeRule.onNodeWithText(nativeString("Reset session model")).assertIsDisplayed()
     val fresh = checkNotNull(ShadowDialog.getLatestDialog()) as ComponentDialog
     assertNotSame(old.window, fresh.window)
     composeRule.runOnIdle { fresh.onBackPressedDispatcher.onBackPressed() }
@@ -3755,7 +3755,7 @@ class ChatComposerLayoutTest {
     val editorId = editor.fetchSemanticsNode().id
     applyChatImeInsets()
     composeRule.onNodeWithContentDescription(nativeString("Model")).performClick()
-    composeRule.onNodeWithText(nativeString("Default model")).performScrollTo().assertIsDisplayed()
+    composeRule.onNodeWithText(nativeString("Reset session model")).performScrollTo().assertIsDisplayed()
     val dialog = checkNotNull(ShadowDialog.getLatestDialog()) as ComponentDialog
     composeRule.runOnIdle {
       ViewCompat.dispatchApplyWindowInsets(
@@ -3811,7 +3811,7 @@ class ChatComposerLayoutTest {
     showChat(viewportWidth = 320.dp, viewportHeight = { 640.dp })
     val sessionKey = controller.sessionKey.value
     val model = composeRule.onNodeWithContentDescription(nativeString("Model"))
-    val defaultModel = hasText(nativeString("Default model")) and hasClickAction()
+    val defaultModel = hasText(nativeString("Reset session model")) and hasClickAction()
 
     for ((runtimeId, label) in listOf("codex" to nativeString("Native Codex model"), "other" to nativeString("Locked session model"))) {
       composeRule.runOnIdle {
@@ -4269,7 +4269,7 @@ class ChatComposerLayoutTest {
     composeRule.onNodeWithContentDescription(nativeString("Model")).assertIsEnabled().performClick()
     composeRule.onNode(hasText(nativeString("Permissions")) and hasClickAction()).assertIsNotEnabled()
     composeRule.onNodeWithText(nativeString("Update the Gateway to change session permissions.")).assertIsDisplayed()
-    composeRule.onNode(hasText(nativeString("Default model")) and hasClickAction()).assertIsEnabled()
+    composeRule.onNode(hasText(nativeString("Reset session model")) and hasClickAction()).assertIsEnabled()
   }
 
   private fun updatePermissions(

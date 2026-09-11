@@ -553,7 +553,12 @@ vi.mock("../sessions/level-overrides.js", () => ({
   applyVerboseOverride: vi.fn(),
 }));
 
-vi.mock("../sessions/model-overrides.js", () => ({
+vi.mock("../sessions/model-overrides.js", async () => ({
+  createConfiguredPrimarySessionEntry: (
+    await vi.importActual<typeof import("../sessions/model-overrides.js")>(
+      "../sessions/model-overrides.js",
+    )
+  ).createConfiguredPrimarySessionEntry,
   applyModelOverrideToSessionEntry: (params: unknown) =>
     state.applyModelOverrideToSessionEntryMock(params),
   isModelSelectionLocked: (entry: unknown) => state.isModelSelectionLockedMock(entry),
@@ -1610,6 +1615,53 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     expect(fallbackParams.fallbacksOverride).toEqual(fallbacks);
     expect(state.resolveEffectiveModelFallbacksMock).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])(
+    "keeps a blocked pin while attempting only the primary (fails: %s)",
+    async (fails) => {
+      setupSingleAttemptFallback();
+      state.runtimeConfigMock = {
+        agents: {
+          defaults: {
+            model: { primary: "anthropic/claude", fallbacks: ["openai/gpt-5.4"] },
+            models: { "openai/gpt-5.4": {} },
+            modelPolicy: { allow: ["openai/gpt-5.4"] },
+          },
+        },
+      };
+      state.sessionEntryMock = createCommandSessionEntry({
+        providerOverride: "fixture",
+        modelOverride: "blocked",
+        modelOverrideSource: "user",
+        skillsSnapshot: { prompt: "", skills: [], version: 0 },
+      });
+      if (fails) {
+        state.runAgentAttemptMock.mockRejectedValue(new Error("primary unavailable"));
+        await expect(runBasicAgentCommand()).rejects.toThrow("configured default could not answer");
+      } else {
+        state.runAgentAttemptMock.mockResolvedValue(makeSuccessResult("anthropic", "claude"));
+        await runBasicAgentCommand();
+        expectRecordFields(mockCallArg(state.deliverAgentCommandResultMock), {
+          allowListPolicyFallback: {
+            pinnedModel: "fixture/blocked",
+            primaryModel: "anthropic/claude",
+          },
+          payloads: [expect.objectContaining({ text: "ok" })],
+        });
+      }
+      expectRecordFields(mockCallArg(state.runWithModelFallbackMock), {
+        provider: "anthropic",
+        model: "claude",
+        fallbacksOverride: [],
+      });
+      expect(state.runAgentAttemptMock).toHaveBeenCalledTimes(1);
+      expect(state.sessionEntryMock).toMatchObject({
+        providerOverride: "fixture",
+        modelOverride: "blocked",
+        modelOverrideSource: "user",
+      });
+    },
+  );
 
   it("skips legacy override repair when continuing an ordinary locked harness session", async () => {
     setupSingleAttemptFallback();

@@ -23,6 +23,7 @@ import { buildThreadingToolContext } from "./agent-runner-utils.js";
 import type { BlockReplyPipeline } from "./block-reply-pipeline.js";
 import type { CompactionNoticePhase } from "./compaction-notice.js";
 import { createFollowupRunner } from "./followup-runner.js";
+import { attachModelPolicyFailureNotice } from "./model-policy-notice.js";
 import {
   buildRecoverablePendingFinalDeliveryText,
   normalizePendingFinalDeliveryPayloads,
@@ -393,7 +394,7 @@ export async function executePreparedReplyAgentRun(
       runOutcome.outcome.kind === "rejected"
         ? markPostCompactionModelFailurePayload(
             runOutcome.outcome.postCompactionModelFailure,
-            runOutcome.outcome.payload,
+            attachModelPolicyFailureNotice(runOutcome.outcome.payload, followupRun.run),
           )
         : { text: SILENT_REPLY_TOKEN },
     );

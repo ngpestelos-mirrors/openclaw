@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveConfiguredModelEntries } from "./configured-model-entries.js";
 import {
   resolveLogicalModelCatalogEntryState,
   resolveLogicalVisibleModelCatalog,
@@ -99,6 +100,8 @@ describe("resolveLogicalVisibleModelCatalog", () => {
     [["openai/atlas"], ["openai/atlas", "other/primary"], 2, true],
     [["openai/missing"], ["other/primary"], 3, true],
     [["openai/missing"], [], 4, false],
+    [["openai/atlas"], ["openai/atlas", "other/fallback"], 2, true, "agent:main:subagent:worker"],
+    [["openai/atlas"], ["openai/atlas", "other/primary"], 2, true, "agent:main:main"],
     [
       ["openai/*", "other/fallback"],
       ["openai/atlas", "openai/beta", "other/fallback", "other/primary"],
@@ -107,7 +110,7 @@ describe("resolveLogicalVisibleModelCatalog", () => {
     ],
   ] as const)(
     "publishes listed models and the configured primary for %j",
-    async (allow, expected, hiddenCount, configuredPrimary) => {
+    async (allow, expected, hiddenCount, configuredPrimary, sessionKey?: string) => {
       const catalog: ModelCatalogEntry[] = [
         { provider: "openai", id: "atlas", name: "Atlas" },
         { provider: "openai", id: "beta", name: "Beta" },
@@ -117,6 +120,7 @@ describe("resolveLogicalVisibleModelCatalog", () => {
       const cfg: OpenClawConfig = {
         agents: {
           defaults: {
+            subagents: { model: "other/fallback" },
             model: {
               ...(configuredPrimary ? { primary: "other/primary" } : {}),
               fallbacks: ["other/fallback"],
@@ -130,6 +134,9 @@ describe("resolveLogicalVisibleModelCatalog", () => {
         catalog,
         defaultProvider: "other",
         defaultModel: "primary",
+        agentId: "main",
+        sessionKey,
+        selectedModel: { provider: "other", model: "fallback" },
         view: "configured",
         routePolicy: openAIModelCatalogRoutePolicy,
         evaluateEntry: evaluateAvailableEntry,
@@ -139,6 +146,15 @@ describe("resolveLogicalVisibleModelCatalog", () => {
         hiddenCount,
         settingsPath: "agents.defaults.modelPolicy.allow",
       });
+      if (sessionKey) {
+        const subagent = sessionKey === "agent:main:subagent:worker";
+        expect(allowList?.selectedModelBlocked).toBe(!subagent);
+        expect(
+          resolveConfiguredModelEntries({ cfg, agentId: "main", sessionKey })
+            .byKey.get("other/fallback")
+            ?.tags.has("default"),
+        ).toBe(subagent);
+      }
     },
   );
 

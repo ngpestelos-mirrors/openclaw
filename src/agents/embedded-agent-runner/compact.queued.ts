@@ -24,6 +24,7 @@ import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.
 import { requireActivePluginRegistry } from "../../plugins/runtime.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
+import { createConfiguredPrimarySessionEntry } from "../../sessions/model-overrides.js";
 import { resolveUserPath } from "../../utils.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import { isRecoverableNativeHarnessBindingFailure } from "../harness/compaction-recovery.js";
@@ -213,7 +214,18 @@ export async function compactEmbeddedAgentSession(
       : undefined;
   try {
     // Resolve the storage address first, then freeze its owner before runtime/plugin awaits.
-    const entry = loadSessionEntryReadOnly({ ...runtimeTarget, readConsistency: "latest" });
+    const storedEntry = loadSessionEntryReadOnly({ ...runtimeTarget, readConsistency: "latest" });
+    const entry =
+      params.useSelectedModel &&
+      storedEntry &&
+      !storedEntry.modelSelectionLocked &&
+      params.provider &&
+      params.model
+        ? createConfiguredPrimarySessionEntry(storedEntry, {
+            provider: params.provider,
+            model: params.model,
+          })
+        : storedEntry;
     const expectedEntry = {
       sessionId: runtimeTarget.sessionId,
       lifecycleRevision: entry?.lifecycleRevision,

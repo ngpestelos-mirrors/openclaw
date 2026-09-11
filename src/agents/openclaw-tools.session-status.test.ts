@@ -1920,6 +1920,49 @@ describe("session_status tool", () => {
     });
   });
 
+  it.each(["agent:main:main", "agent:main:subagent:child"])(
+    "limits the configured subagent primary to its admitted session scope: %s",
+    async (sessionKey) => {
+      resetSessionStore({
+        [sessionKey]: {
+          sessionId: "scoped-primary",
+          updatedAt: 1,
+          providerOverride: "anthropic",
+          modelOverride: "claude-sonnet-4-6",
+        },
+      });
+      mockConfig = {
+        ...createMockConfig(),
+        agents: {
+          defaults: {
+            model: "openai/gpt-5.4",
+            subagents: { model: "anthropic/claude-sonnet-4-6" },
+            modelPolicy: { allow: ["openai/gpt-5.4"] },
+          },
+        },
+      };
+      const tool = getSessionStatusTool(sessionKey);
+      const selected = tool.execute("scoped-primary", {
+        sessionKey: "current",
+        model: "anthropic/claude-sonnet-4-6",
+      });
+      if (sessionKey === "agent:main:main") {
+        await expect(selected).rejects.toThrow("not allowed");
+        expect(updateSessionStoreMock).not.toHaveBeenCalled();
+      } else {
+        expect((await selected).details).toMatchObject({ ok: true });
+        expect(
+          (await tool.execute("scoped-reset", { sessionKey: "current", model: "default" })).details,
+        ).toMatchObject({ ok: true });
+        expect(buildStatusMessageMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            agent: expect.objectContaining({ model: { primary: "anthropic/claude-sonnet-4-6" } }),
+          }),
+        );
+      }
+    },
+  );
+
   it("uses the runtime session model as the selected card model when no override is set", async () => {
     resetSessionStore({
       main: {

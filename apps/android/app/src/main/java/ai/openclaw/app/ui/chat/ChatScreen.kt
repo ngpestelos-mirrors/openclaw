@@ -3859,7 +3859,7 @@ private fun ChatModelPickerSheet(
                     Text(nativeString("No models match your allow list."), style = ClawTheme.type.caption)
                   }
                   if (policy.selectedModelBlocked == true) {
-                    Text(nativeString("The current model is not allowed by your allow list."), style = ClawTheme.type.caption)
+                    Text(nativeString("The pinned model is not in your allow list."), style = ClawTheme.type.caption)
                   }
                   Text(nativeString("Review \$path in Settings.", policy.settingsPath), style = ClawTheme.type.caption)
                 }
@@ -4073,9 +4073,13 @@ private fun ChatModelPickerRow(
           overflow = TextOverflow.Ellipsis,
         )
         Text(
-          text = listOfNotNull(providerDisplayName(model.provider),
-            nativeString("Default").takeIf { "default" in model.tags },
-            model.runtimeName, availabilityLabel).joinToString(" · "),
+          text =
+            listOfNotNull(
+              providerDisplayName(model.provider),
+              nativeString("Default").takeIf { "default" in model.tags },
+              model.runtimeName,
+              availabilityLabel,
+            ).joinToString(" · "),
           style = ClawTheme.type.caption.copy(fontWeight = FontWeight.Normal),
           color = if (unavailable) ClawTheme.colors.warning else ClawTheme.colors.textMuted,
           maxLines = 1,

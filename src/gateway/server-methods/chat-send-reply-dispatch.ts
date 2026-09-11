@@ -3,10 +3,15 @@ import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-pay
 import type { ReplyDispatchRun } from "../../auto-reply/get-reply-options.types.js";
 import {
   getReplyPayloadMetadata,
+  setReplyPayloadMetadata,
   isReplyPayloadStatusNotice,
   stripReplyMediaFailureFallback,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
+import {
+  deferModelPolicyNoticeAcknowledgment,
+  settleModelPolicyNoticePublication,
+} from "../../auto-reply/reply/model-policy-notice.js";
 import type { ReplyDispatcherOptions } from "../../auto-reply/reply/reply-dispatcher.js";
 import { readSessionTranscriptWatermark } from "../../config/sessions/session-accessor.js";
 import {
@@ -170,9 +175,25 @@ export function createChatSendReplyDispatch(params: {
     );
     return params.prepareAssistantTranscriptMessage?.(prepared, sourceText) ?? prepared;
   };
-  const needsAgentMediaTranscriptFinalization = (payload: ReplyPayload): boolean =>
-    isMediaBearingPayload(payload) ||
-    Boolean(getReplyPayloadMetadata(payload)?.assistantMediaFailures?.length);
+  const ownsDispatchedRuntimeText = (payload: ReplyPayload): boolean => {
+    const run = params.getReplyDispatchRun?.();
+    return Boolean(
+      run &&
+      !run.getResult().assistantTranscript &&
+      !payload.isError &&
+      !payload.isReasoning &&
+      !isReplyPayloadStatusNotice(payload) &&
+      payload.text?.trim(),
+    );
+  };
+  const needsAgentTranscriptFinalization = (payload: ReplyPayload): boolean => {
+    const metadata = getReplyPayloadMetadata(payload);
+    return (
+      isMediaBearingPayload(payload) ||
+      Boolean(metadata?.assistantMediaFailures?.length) ||
+      ownsDispatchedRuntimeText(payload)
+    );
+  };
   const agentMediaTranscriptKey = (payload: ReplyPayload): string => {
     const metadata = getReplyPayloadMetadata(payload);
     const ownedIdempotencyKey =
@@ -187,8 +208,8 @@ export function createChatSendReplyDispatch(params: {
     }
     return "unkeyed";
   };
-  const appendWebchatAgentMediaTranscriptIfNeeded = async (payload: ReplyPayload) => {
-    if (!isAgentRunStarted() || !needsAgentMediaTranscriptFinalization(payload)) {
+  const finalizeWebchatAgentTranscriptIfNeeded = async (payload: ReplyPayload) => {
+    if (!isAgentRunStarted() || !needsAgentTranscriptFinalization(payload)) {
       return;
     }
     const finalizationKey = agentMediaTranscriptKey(payload);
@@ -200,7 +221,8 @@ export function createChatSendReplyDispatch(params: {
     }
     const replyDispatchRun = params.getReplyDispatchRun?.();
     const transcript = replyDispatchRun?.getResult().assistantTranscript;
-    if (replyDispatchRun && !transcript) {
+    const dispatchOwnsRuntimeText = ownsDispatchedRuntimeText(payload);
+    if (replyDispatchRun && !transcript && !dispatchOwnsRuntimeText) {
       logGateway.warn(
         "webchat runtime-owned media skipped: assistant transcript was not persisted",
       );
@@ -249,7 +271,9 @@ export function createChatSendReplyDispatch(params: {
     const mediaFailures = transcriptPayloadMetadata?.assistantMediaFailures ?? [];
     const mediaNormalizationFailed = mediaFailures.length > 0;
     const persistedContentForAppend =
-      hasAssistantDisplayMediaContent(persistedAssistantContent) || mediaNormalizationFailed
+      dispatchOwnsRuntimeText ||
+      hasAssistantDisplayMediaContent(persistedAssistantContent) ||
+      mediaNormalizationFailed
         ? persistedAssistantContent
         : undefined;
     if (!persistedContentForAppend?.length) {
@@ -281,6 +305,16 @@ export function createChatSendReplyDispatch(params: {
       storePath: latestStorePath,
       agentId,
     });
+    if (
+      dispatchOwnsRuntimeText &&
+      (assistantTranscriptRewriteState.sessionId !== sessionId ||
+        loadSessionEntry(sessionKey, { ...sessionLoadOptions, agentId }).entry?.sessionId !==
+          sessionId)
+    ) {
+      throw new Error(
+        "Reply could not be published: its session transcript changed. Please send your message again.",
+      );
+    }
     if (ownedTranscriptIdempotencyKey && transcriptScope) {
       // Receipt identity is not authority after asynchronous media preparation.
       if (
@@ -301,6 +335,9 @@ export function createChatSendReplyDispatch(params: {
       });
       if (rewritten) {
         appendedWebchatAgentMedia = true;
+        if (dispatchOwnsRuntimeText) {
+          setReplyPayloadMetadata(payload, { assistantTranscriptOwned: true });
+        }
         finalizedAgentMediaTranscriptKeys.add(finalizationKey);
         await publishAssistantTranscriptRewrite({
           scope: transcriptScope,
@@ -313,6 +350,11 @@ export function createChatSendReplyDispatch(params: {
           });
         }
         return;
+      }
+      if (dispatchOwnsRuntimeText) {
+        throw new Error(
+          "Reply could not be published: its session transcript changed. Please send your message again.",
+        );
       }
       logGateway.warn(
         "webchat runtime-owned assistant media rewrite skipped: transcript identity not found",
@@ -341,6 +383,9 @@ export function createChatSendReplyDispatch(params: {
       if (rewritten) {
         assistantTranscriptRewriteState.generation = rewritten.generation;
         appendedWebchatAgentMedia = true;
+        if (dispatchOwnsRuntimeText) {
+          setReplyPayloadMetadata(payload, { assistantTranscriptOwned: true });
+        }
         finalizedAgentMediaTranscriptKeys.add(finalizationKey);
         await publishAssistantTranscriptRewrite({
           scope: transcriptScope,
@@ -354,6 +399,11 @@ export function createChatSendReplyDispatch(params: {
         }
         return;
       }
+    }
+    if (dispatchOwnsRuntimeText) {
+      throw new Error(
+        "Reply could not be published: its session transcript changed. Please send your message again.",
+      );
     }
     const hasOnlyFailureDisplay =
       persistedContentForAppend.some((block) => block.type === "attachment_error") &&
@@ -437,6 +487,7 @@ export function createChatSendReplyDispatch(params: {
       switch (info.kind) {
         case "block":
         case "final":
+          deferModelPolicyNoticeAcknowledgment(payload);
           deliveredReplies.push({ payload, kind: info.kind });
           if (
             info.kind === "block" &&
@@ -468,23 +519,26 @@ export function createChatSendReplyDispatch(params: {
       }
     },
   };
-  const finalizeAgentMediaTranscript = async () => {
+  const finalizeAgentTranscript = async () => {
     const latestPayloadByKey = new Map<string, ReplyPayload>();
     for (const { payload } of deliveredReplies) {
-      if (!needsAgentMediaTranscriptFinalization(payload)) {
+      if (!needsAgentTranscriptFinalization(payload)) {
         continue;
       }
       latestPayloadByKey.set(agentMediaTranscriptKey(payload), payload);
     }
     for (const payload of latestPayloadByKey.values()) {
       try {
-        await appendWebchatAgentMediaTranscriptIfNeeded(payload);
+        await finalizeWebchatAgentTranscriptIfNeeded(payload);
       } catch (error) {
+        if (ownsDispatchedRuntimeText(payload)) {
+          throw error;
+        }
         logGateway.warn(`webchat media finalization failed: ${formatForLog(error)}`);
       }
     }
   };
-  const runAgentMediaTranscript = async <T>(
+  const runAgentTranscript = async <T>(
     admission: { run: (operation: () => Promise<T>) => Promise<T> },
     operation: () => Promise<T>,
   ): Promise<T> => {
@@ -496,7 +550,7 @@ export function createChatSendReplyDispatch(params: {
         preparingTranscript = false;
         // Stay inside the session admission after the runtime owner unwinds; callers chain
         // post-dispatch persistence from this Promise, and finalizer errors stay best-effort.
-        await finalizeAgentMediaTranscript();
+        await finalizeAgentTranscript();
       }
     });
   };
@@ -507,6 +561,11 @@ export function createChatSendReplyDispatch(params: {
     hasAppendedWebchatAgentMedia: () => appendedWebchatAgentMedia,
     onModelSelected,
     prepareAssistantTranscriptMessage,
-    runAgentMediaTranscript,
+    runAgentTranscript,
+    releasePendingPolicyNoticePublications: async () => {
+      for (const { payload } of deliveredReplies) {
+        await settleModelPolicyNoticePublication(payload, false);
+      }
+    },
   };
 }

@@ -463,6 +463,8 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       requestedRouteResolution,
       modelSelectionLocked: preparedSessionState.sessionEntry?.modelSelectionLocked === true,
       hasSessionModelOverride: runHasSessionModelOverride,
+      blockedModelOverrideRef: params.modelState.blockedModelOverrideRef,
+      blockedModelOverrideUsesPrimary: params.modelState.blockedModelOverrideUsesPrimary,
       modelOverrideSource: runModelOverrideSource,
       hasAutoFallbackProvenance: runHasAutoFallbackProvenance || undefined,
       autoFallbackPrimaryProbe: params.autoFallbackPrimaryProbe,

@@ -82,6 +82,7 @@ describe("models.list provider catalog outcomes", () => {
           catalogProjector: projector,
         }),
       ).resolves.toEqual({
+        allowList: { hiddenCount: 0, settingsPath: "agents.defaults.modelPolicy.allow" },
         models: [expect.objectContaining({ provider: "ollama", id: "qwen3.5", available })],
       });
     },
@@ -213,6 +214,7 @@ describe("models.list provider catalog outcomes", () => {
         catalogProjector: projector,
       }),
     ).resolves.toEqual({
+      allowList: { hiddenCount: 0, settingsPath: "agents.defaults.modelPolicy.allow" },
       models: [
         expect.objectContaining({
           id: "gpt-5.6-sol",

@@ -11,6 +11,8 @@ import {
   isBenignCompactionSkipResult,
 } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
+import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
+import { resolveConfiguredModelPrimaryValue } from "../../agents/model-selection-shared.js";
 import {
   OPENAI_CODEX_PROVIDER_ID,
   OPENAI_PROVIDER_ID,
@@ -296,11 +298,22 @@ export const handleCompactCommand: CommandHandler = async (params) => {
   if (params.sessionStore) {
     params.sessionStore[params.sessionKey] = refreshedEntry;
   }
-  const compactionCliTarget = resolveManualCompactionCliTarget({
-    provider: params.provider,
-    entry: refreshedEntry,
-    cfg: params.cfg,
-  });
+  const compactionCliTarget = params.blockedModelOverrideUsesPrimary
+    ? undefined
+    : resolveManualCompactionCliTarget({
+        provider: params.provider,
+        entry: refreshedEntry,
+        cfg: params.cfg,
+      });
+  const configuredProfile = params.blockedModelOverrideUsesPrimary
+    ? splitTrailingAuthProfile(
+        resolveConfiguredModelPrimaryValue({
+          cfg: params.cfg,
+          agentId: sessionAgentId,
+          sessionKey: params.sessionKey,
+        }) ?? "",
+      ).profile
+    : undefined;
   const replyOperation = params.opts?.replyOperation;
   replyOperation?.setPhase("preflight_compacting");
   const compaction = runtime.compactEmbeddedAgentSession(
@@ -341,13 +354,23 @@ export const handleCompactCommand: CommandHandler = async (params) => {
       skillsSnapshot: expectedSession.skillsSnapshot,
       provider: params.provider,
       model: params.model,
+      ...(params.blockedModelOverrideUsesPrimary
+        ? { useSelectedModel: true, modelFallbacksOverride: [] }
+        : {}),
       authProfileId:
-        compactionCliTarget.cliSessionBinding?.authProfileId ?? expectedSession.authProfileOverride,
-      authProfileIdSource: resolveCollapsedSessionAuthPinSource(expectedSession),
+        compactionCliTarget?.cliSessionBinding?.authProfileId ??
+        (params.blockedModelOverrideUsesPrimary
+          ? configuredProfile
+          : expectedSession.authProfileOverride),
+      authProfileIdSource: params.blockedModelOverrideUsesPrimary
+        ? configuredProfile
+          ? "user"
+          : undefined
+        : resolveCollapsedSessionAuthPinSource(expectedSession),
       contextTokenBudget,
-      agentHarnessId: compactionCliTarget.agentHarnessId,
-      cliSessionId: compactionCliTarget.cliSessionId,
-      cliSessionBinding: compactionCliTarget.cliSessionBinding,
+      agentHarnessId: compactionCliTarget?.agentHarnessId,
+      cliSessionId: compactionCliTarget?.cliSessionId,
+      cliSessionBinding: compactionCliTarget?.cliSessionBinding,
       sessionEntry: expectedSession,
       modelSelectionLocked: expectedSession.modelSelectionLocked === true,
       thinkLevel,
@@ -448,6 +471,7 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     reply: {
       text: `⚙️ ${line}`,
       isStatusNotice: true,
+      ...(!result.ok && !isBenignCompactionSkipResult(result) ? { isError: true } : {}),
     },
   };
 };

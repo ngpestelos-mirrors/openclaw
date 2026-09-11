@@ -9,6 +9,8 @@ import {
   isSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
 } from "../../sessions/session-lifecycle-admission.js";
+import { settleReplyDispatcher } from "../dispatch-dispatcher.js";
+import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { RuntimeMsgContext as MsgContext } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import {
@@ -31,6 +33,11 @@ import {
   requireBlockReplyHandler,
   setNoAbort,
 } from "./dispatch-from-config.test-harness.js";
+import {
+  attachModelPolicyNotice,
+  deferModelPolicyNoticeAcknowledgment,
+  settleModelPolicyNoticePublication,
+} from "./model-policy-notice.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
 import { buildTestCtx } from "./test-ctx.js";
 
@@ -56,6 +63,108 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     resetInboundDedupe();
     vi.useRealTimers();
     clearAgentHarnesses();
+  });
+
+  it.each([true, false])(
+    "holds followups through deferred Gateway publication (%s)",
+    async (delivered) => {
+      setNoAbort();
+      const sessionEntry = { sessionId: "policy-session", updatedAt: 1 };
+      const payload = attachModelPolicyNotice({
+        payloads: [{ text: "Answer" }],
+        pinnedModel: "openai/blocked",
+        primaryModel: "openai/primary",
+        sessionEntry,
+      })[0];
+      const afterClear = vi.fn();
+      const dispatcher = createReplyDispatcher({
+        deliver: async (reply) => {
+          deferModelPolicyNoticeAcknowledgment(reply);
+        },
+      });
+      await dispatchReplyFromConfig({
+        ctx: buildTestCtx({
+          Provider: "discord",
+          Surface: "discord",
+          SessionKey: "agent:main:deferred-policy-notice",
+        }),
+        cfg: emptyConfig,
+        dispatcher,
+        replyResolver: async (_ctx, opts) => {
+          if (!opts?.replyOperation) {
+            throw new Error("reply operation missing");
+          }
+          runAfterReplyOperationClear(opts.replyOperation, afterClear);
+          return payload;
+        },
+      });
+      try {
+        await settleReplyDispatcher({ dispatcher });
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(afterClear).not.toHaveBeenCalled();
+        expect(sessionEntry).not.toHaveProperty("modelPolicyNotice");
+        await settleModelPolicyNoticePublication(payload, delivered);
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(afterClear).toHaveBeenCalledOnce();
+        expect(Object.hasOwn(sessionEntry, "modelPolicyNotice")).toBe(delivered);
+      } finally {
+        await settleModelPolicyNoticePublication(payload, false);
+      }
+    },
+  );
+
+  it("holds followup admission until a delivered final receipt commits", async () => {
+    setNoAbort();
+    const acknowledgment = createDeferred();
+    const acknowledgmentStarted = createDeferred();
+    const afterClear = vi.fn();
+    const dispatcher = createReplyDispatcher({ deliver: async () => {} });
+    const dispatch = dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "discord",
+        Surface: "discord",
+        SessionKey: "agent:main:policy-notice-receipt",
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async (_ctx, opts) => {
+        if (!opts?.replyOperation) {
+          throw new Error("reply operation missing");
+        }
+        runAfterReplyOperationClear(opts.replyOperation, afterClear);
+        return setReplyPayloadMetadata(
+          { text: "Answer with policy notice" },
+          {
+            onFinalDeliverySuccess: async () => {
+              acknowledgmentStarted.resolve();
+              await acknowledgment.promise;
+            },
+          },
+        );
+      },
+    });
+    await dispatch;
+    const settlement = settleReplyDispatcher({ dispatcher });
+    try {
+      await acknowledgmentStarted.promise;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(afterClear).not.toHaveBeenCalled();
+      acknowledgment.resolve();
+      await settlement;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(afterClear).toHaveBeenCalledOnce();
+    } finally {
+      acknowledgment.resolve();
+      await settlement;
+    }
   });
 
   it("waits for late resolver cleanup and real delivery after finalization expiry", async () => {

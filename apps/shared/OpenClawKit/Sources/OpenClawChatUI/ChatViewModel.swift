@@ -771,7 +771,10 @@ public final class OpenClawChatViewModel {
     }
 
     public var defaultModelLabel: String {
-        guard let defaultModelID = normalizedModelSelectionID(sessionDefaults?.model) else {
+        guard let defaultModelID = normalizedModelSelectionID(
+            self.modelCatalogDefault.model,
+            provider: self.modelCatalogDefault.provider)
+        else {
             return "Default"
         }
         return "Default: \(modelLabel(for: defaultModelID))"
@@ -1534,8 +1537,8 @@ extension OpenClawChatViewModel {
             currentSession?.model,
             provider: currentSession?.modelProvider)
         let defaultModelID = self.normalizedModelSelectionID(
-            self.sessionDefaults?.model,
-            provider: self.sessionDefaults?.modelProvider)
+            self.modelCatalogDefault.model,
+            provider: self.modelCatalogDefault.provider)
         if self.lastSuccessfulModelSelectionIDsByTarget[target] == Self.defaultModelSelectionID,
            explicitModelID == defaultModelID
         {

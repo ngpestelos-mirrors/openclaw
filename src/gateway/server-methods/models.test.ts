@@ -263,6 +263,24 @@ function createDemoOAuthStore(params: { access: string; expires: number }) {
   };
 }
 
+async function withClaudeCliBackend(run: () => Promise<void>): Promise<void> {
+  cliBackendsTesting.setDepsForTest({
+    resolveRuntimeCliBackends: () => [
+      {
+        id: "claude-cli",
+        modelProvider: "anthropic",
+        pluginId: "anthropic",
+        config: { command: "claude" },
+      },
+    ],
+  });
+  try {
+    await run();
+  } finally {
+    cliBackendsTesting.resetDepsForTest();
+  }
+}
+
 function requestModelsList(params: {
   view: "default" | "configured" | "provider-config" | "all";
   agentId?: string;
@@ -580,120 +598,124 @@ describe("models.list", () => {
     });
   });
 
-  it("preserves mandatory Claude CLI thinking despite a configured reasoning opt-out", async () => {
-    const modelId = "claude-fable-5";
-    const runtimeConfig = {
-      agents: {
-        defaults: {
-          models: {
-            [`anthropic/${modelId}`]: { agentRuntime: { id: "claude-cli" } },
+  it("preserves mandatory Claude CLI thinking despite a configured reasoning opt-out", () =>
+    withClaudeCliBackend(async () => {
+      const modelId = "claude-fable-5";
+      const runtimeConfig = {
+        agents: {
+          defaults: {
+            models: {
+              [`anthropic/${modelId}`]: { agentRuntime: { id: "claude-cli" } },
+            },
           },
         },
-      },
-      models: {
-        providers: {
-          anthropic: {
-            models: [{ id: modelId, name: modelId, reasoning: false }],
+        models: {
+          providers: {
+            anthropic: {
+              models: [{ id: modelId, name: modelId, reasoning: false }],
+            },
           },
         },
-      },
-    } as unknown as OpenClawConfig;
-    const materializedCatalog = materializePreparedModelCatalog(
-      {
-        entries: [{ id: modelId, name: modelId, provider: "anthropic", reasoning: false }],
-        routeVariants: [],
-      },
-      [
+      } as unknown as OpenClawConfig;
+      const materializedCatalog = materializePreparedModelCatalog(
         {
-          provider: "anthropic",
-          modelId,
-          model: {
-            id: modelId,
-            name: `${modelId} (Claude CLI)`,
-            provider: "claude-cli",
-            reasoning: true,
-          } as never,
+          entries: [{ id: modelId, name: modelId, provider: "anthropic", reasoning: false }],
+          routeVariants: [],
         },
-      ],
-    ).entries;
-    const { request, respond } = requestModelsList({
-      view: "configured",
-      runtimeConfig,
-      loadGatewayModelCatalog: vi.fn(async () => materializedCatalog),
-    });
+        [
+          {
+            provider: "anthropic",
+            modelId,
+            model: {
+              id: modelId,
+              name: `${modelId} (Claude CLI)`,
+              provider: "claude-cli",
+              reasoning: true,
+            } as never,
+          },
+        ],
+      ).entries;
+      const { request, respond } = requestModelsList({
+        view: "configured",
+        preparedAuthModes: { "claude-cli": "api_key" },
+        runtimeConfig,
+        loadGatewayModelCatalog: vi.fn(async () => materializedCatalog),
+      });
 
-    await request;
+      await request;
 
-    const payload = respond.mock.calls[0]?.[1] as
-      | { models: Array<Record<string, unknown>> }
-      | undefined;
-    expect(
-      payload?.models.find((entry) => entry.provider === "anthropic" && entry.id === modelId),
-    ).toMatchObject({
-      reasoning: false,
-      agentRuntime: { id: "claude-cli" },
-      thinkingLevels: [
-        { id: "minimal", label: "minimal" },
-        { id: "low", label: "low" },
-        { id: "medium", label: "medium" },
-        { id: "adaptive", label: "adaptive" },
-        { id: "high", label: "high" },
-        { id: "xhigh", label: "xhigh" },
-        { id: "max", label: "max" },
-      ],
-      thinkingDefault: "high",
-    });
-  });
-
-  it("publishes a materialized Claude CLI logical row with its configured thinking default", async () => {
-    const modelIds = ["claude-opus-5", "claude-sonnet-5"];
-    const runtimeConfig = {
-      agents: {
-        defaults: {
-          model: { primary: `anthropic/${modelIds[0]}` },
-          models: Object.fromEntries(
-            modelIds.map((modelId) => [
-              `anthropic/${modelId}`,
-              { agentRuntime: { id: "claude-cli" }, params: { thinking: "medium" } },
-            ]),
-          ),
-        },
-      },
-      models: {
-        providers: {
-          anthropic: { models: modelIds.map((id) => ({ id, name: id })) },
-        },
-      },
-    } as unknown as OpenClawConfig;
-    const { request, respond } = requestModelsList({
-      view: "configured",
-      runtimeConfig,
-      // Prepared catalog shape: runtime-only rows are deliberately absent.
-      loadGatewayModelCatalog: vi.fn(async () =>
-        modelIds.map((id) => ({ id, name: id, provider: "anthropic", reasoning: true })),
-      ),
-    });
-
-    await request;
-
-    const payload = respond.mock.calls[0]?.[1] as
-      | { models: Array<Record<string, unknown>> }
-      | undefined;
-    for (const modelId of modelIds) {
+      const payload = respond.mock.calls[0]?.[1] as
+        | { models: Array<Record<string, unknown>> }
+        | undefined;
       expect(
         payload?.models.find((entry) => entry.provider === "anthropic" && entry.id === modelId),
       ).toMatchObject({
-        reasoning: true,
+        reasoning: false,
         agentRuntime: { id: "claude-cli" },
-        thinkingDefault: "medium",
-        thinkingLevels: expect.arrayContaining([
-          { id: "off", label: "off" },
+        thinkingLevels: [
+          { id: "minimal", label: "minimal" },
+          { id: "low", label: "low" },
           { id: "medium", label: "medium" },
+          { id: "adaptive", label: "adaptive" },
           { id: "high", label: "high" },
-        ]),
+          { id: "xhigh", label: "xhigh" },
+          { id: "max", label: "max" },
+        ],
+        thinkingDefault: "high",
       });
-    }
-  });
+    }));
+
+  it("publishes a materialized Claude CLI logical row with its configured thinking default", () =>
+    withClaudeCliBackend(async () => {
+      const modelIds = ["claude-opus-5", "claude-sonnet-5"];
+      const runtimeConfig = {
+        agents: {
+          defaults: {
+            model: { primary: `anthropic/${modelIds[0]}` },
+            models: Object.fromEntries(
+              modelIds.map((modelId) => [
+                `anthropic/${modelId}`,
+                { agentRuntime: { id: "claude-cli" }, params: { thinking: "medium" } },
+              ]),
+            ),
+          },
+        },
+        models: {
+          providers: {
+            anthropic: { models: modelIds.map((id) => ({ id, name: id })) },
+          },
+        },
+      } as unknown as OpenClawConfig;
+      const { request, respond } = requestModelsList({
+        view: "configured",
+        preparedAuthModes: { "claude-cli": "api_key" },
+        runtimeConfig,
+        // Prepared catalog shape: runtime-only rows are deliberately absent.
+        loadGatewayModelCatalog: vi.fn(async () =>
+          modelIds.map((id) => ({ id, name: id, provider: "anthropic", reasoning: true })),
+        ),
+      });
+
+      await request;
+
+      const payload = respond.mock.calls[0]?.[1] as
+        | { models: Array<Record<string, unknown>> }
+        | undefined;
+      for (const modelId of modelIds) {
+        expect(
+          payload?.models.find((entry) => entry.provider === "anthropic" && entry.id === modelId),
+        ).toMatchObject({
+          reasoning: true,
+          agentRuntime: { id: "claude-cli" },
+          thinkingDefault: "medium",
+          thinkingLevels: expect.arrayContaining([
+            { id: "off", label: "off" },
+            { id: "medium", label: "medium" },
+            { id: "high", label: "high" },
+          ]),
+        });
+      }
+    }));
 
   it("publishes the concrete Claude CLI thinking policy for a configured logical model", async () => {
     const modelId = "claude-mythos-5";

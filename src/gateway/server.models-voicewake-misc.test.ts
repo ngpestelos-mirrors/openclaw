@@ -793,7 +793,7 @@ describe("gateway server models + voicewake", () => {
     );
   });
 
-  test("models.list configured view prefers the explicit model policy", async () => {
+  test("models.list configured view narrows enabled providers by the explicit model policy", async () => {
     await withModelsConfig(
       {
         agents: {
@@ -807,6 +807,7 @@ describe("gateway server models + voicewake", () => {
         },
         models: {
           providers: {
+            ...fullCatalogProviderConfig().models.providers,
             minimax: minimaxProviderConfig(),
           },
         },
@@ -894,29 +895,13 @@ describe("gateway server models + voicewake", () => {
     });
   });
 
-  test("models.list includes synthetic entries for allowlist models absent from catalog", async () => {
+  test("models.list hides allowlist entries absent from the catalog", async () => {
     await expectAllowlistedModels({
       primary: "openai/not-in-catalog",
       models: {
         "openai/not-in-catalog": {},
       },
-      expected: [
-        {
-          id: "not-in-catalog",
-          name: "not-in-catalog",
-          provider: "openai",
-          agentRuntime: {
-            id: "openclaw",
-            cloudPlacementSupported: true,
-            cloudPlacementExecutionMode: "worker-turn",
-            devicePlacement: OPENCLAW_DEVICE_PLACEMENT,
-            devicePlacementSupported: true,
-            source: "implicit",
-          },
-          available: false,
-          tags: ["default", "configured"],
-        },
-      ],
+      expected: [],
     });
   });
 

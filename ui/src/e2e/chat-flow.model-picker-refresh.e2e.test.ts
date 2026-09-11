@@ -86,7 +86,7 @@ suite.define(() => {
           expect(await notice.textContent()).toContain("No models match your allow list");
         }
         if (blocked) {
-          expect(await notice.textContent()).toContain("not allowed by your allow list");
+          expect(await notice.textContent()).toContain("Pinned model is not in your allow list");
         }
         expect(
           await picker

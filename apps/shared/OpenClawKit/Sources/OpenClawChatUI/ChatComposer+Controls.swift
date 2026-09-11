@@ -135,7 +135,6 @@ extension OpenClawChatComposer {
     private func modelOptions(_ models: [OpenClawChatModelChoice]) -> some View {
         ForEach(models) { model in
             let unavailable = self.viewModel.modelUnavailableDescription(model)
-            let defaultLabel = self.viewModel.isDefaultModel(model) ? String(localized: "Default") : nil
             let defaultBadge = self.viewModel.isDefaultModel(model) ? String(localized: "Default") : nil
             self.modelMenuOption(
                 [model.displayLabel, model.capabilityDescription, unavailable, defaultBadge].compactMap(\.self)

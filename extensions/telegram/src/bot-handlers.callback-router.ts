@@ -4,10 +4,7 @@ import { parseExecApprovalCommandText } from "openclaw/plugin-sdk/approval-reply
 import { buildCommandsMessagePaginated } from "openclaw/plugin-sdk/command-status";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { applySessionModelSelection } from "openclaw/plugin-sdk/model-session-runtime";
-import {
-  formatModelsAvailableHeader,
-  formatModelsAllowListNotice,
-} from "openclaw/plugin-sdk/models-provider-runtime";
+import { formatModelsAvailableHeader } from "openclaw/plugin-sdk/models-provider-runtime";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { danger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
@@ -56,6 +53,7 @@ import {
 import { buildCommandsPaginationKeyboard, buildTelegramModelsMenuButtons } from "./command-ui.js";
 import { resolveTelegramInlineButtonsScope } from "./inline-buttons.js";
 import {
+  appendModelAllowListNotice,
   buildModelsKeyboard,
   calculateTotalPages,
   parseModelCallbackData,
@@ -529,12 +527,13 @@ async function handleTelegramModelCallback(params: {
     });
     const providerData = await telegramDeps.buildModelsProviderData(runtimeCfg, session.agentId, {
       sessionEntry: session.sessionEntry,
+      sessionKey: session.sessionKey,
     });
     return { sessionState: session, modelData: providerData };
   });
   const { byProvider, providers, modelNames, resolvedDefault: activeResolvedDefault } = modelData;
-  const notice = formatModelsAllowListNotice(modelData);
-  const withNotice = (text: string) => (notice ? `${text}\n\n${notice}` : text);
+  const withNotice = (text: string) =>
+    appendModelAllowListNotice(text, modelData.allowList, providers.length > 0);
   const providerInfos: ProviderInfo[] = providers.map((provider) => ({
     id: provider,
     count: byProvider.get(provider)?.size ?? 0,

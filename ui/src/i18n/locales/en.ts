@@ -5466,7 +5466,7 @@ export const en: TranslationMap & {
       noModelsAvailable: "No models available",
       allowListHidden: "{count} newer models hidden by your allow list",
       allowListEmpty: "No models match your allow list",
-      allowListBlocked: "Current model is not allowed by your allow list",
+      allowListBlocked: "Pinned model is not in your allow list",
       allowListFix: "Update {path}",
       emptyModelsAction: "Manage models",
       providerModels: "{provider} models",

@@ -292,12 +292,13 @@ async function handleDiscordModelPickerInteraction(params: {
     accountId: ctx.accountId,
     threadBindings: ctx.threadBindings,
   });
+  const { agentId, sessionKey } = route;
   const sessionEntry = getSessionEntry({
-    storePath: resolveStorePath(cfg.session?.store, { agentId: route.agentId }),
-    sessionKey: route.sessionKey,
+    storePath: resolveStorePath(cfg.session?.store, { agentId }),
+    sessionKey,
     readConsistency: "latest",
   });
-  const pickerData = await loadDiscordModelPickerData(cfg, route.agentId, { sessionEntry });
+  const pickerData = await loadDiscordModelPickerData(cfg, agentId, { sessionEntry, sessionKey });
   const tokenModel = parsed.modelToken
     ? resolveDiscordModelPickerModelRefByToken(pickerData, parsed.modelToken)
     : null;

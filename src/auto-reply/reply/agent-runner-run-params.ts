@@ -37,6 +37,7 @@ export function resolveModelFallbackOptions(
     modelOverrideSource: run.modelOverrideSource,
     hasAutoFallbackProvenance: run.hasAutoFallbackProvenance === true,
     modelSelectionLocked: run.modelSelectionLocked,
+    ...(run.blockedModelOverrideUsesPrimary ? { modelFallbacksOverride: [] } : {}),
   });
   return {
     cfg: config,
@@ -129,6 +130,7 @@ export async function buildEmbeddedRunBaseParams(params: {
     modelOverrideSource: params.run.modelOverrideSource,
     hasAutoFallbackProvenance: params.run.hasAutoFallbackProvenance === true,
     modelSelectionLocked: params.run.modelSelectionLocked,
+    ...(params.run.blockedModelOverrideUsesPrimary ? { modelFallbacksOverride: [] } : {}),
   });
   const modelFallbacksOverride = modelFallbackOverrideFromAvailability(modelFallbackAvailability);
   const enforceFinalTag = resolveEnforceFinalTagWithResolver(

@@ -1,10 +1,9 @@
 // Discord plugin module implements model picker.view behavior.
 import type { APISelectMenuOption } from "discord-api-types/v10";
 import { ButtonStyle } from "discord-api-types/v10";
-import {
-  formatModelsAllowListNotice,
-  type ModelsProviderData,
-  type ModelsRuntimeChoice,
+import type {
+  ModelsProviderData,
+  ModelsRuntimeChoice,
 } from "openclaw/plugin-sdk/models-provider-runtime";
 import { normalizeProviderId } from "openclaw/plugin-sdk/provider-model-shared";
 import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
@@ -270,9 +269,20 @@ function buildRenderedShell(
   if (params.detailLines.length > 0) {
     containerComponents.push(new TextDisplay(params.detailLines.join("\n")));
   }
-  const notice = formatModelsAllowListNotice(params.data);
-  if (notice) {
-    containerComponents.push(new TextDisplay(notice));
+  const facts = params.data.allowList;
+  if (facts) {
+    const lines = [
+      ...(facts.hiddenCount > 0
+        ? [`${facts.hiddenCount} newer models hidden by your allow list`]
+        : []),
+      ...(params.data.providers.length === 0 ? ["No models match your allow list."] : []),
+      ...(facts.selectedModelBlocked ? ["The pinned model is not in your allow list."] : []),
+    ];
+    if (lines.length) {
+      containerComponents.push(
+        new TextDisplay([...lines, `Settings: ${facts.settingsPath}`].join("\n")),
+      );
+    }
   }
   containerComponents.push(new Separator({ divider: true, spacing: "small" }));
   if (params.preRowText) {

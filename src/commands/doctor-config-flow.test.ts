@@ -9,6 +9,7 @@ import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runt
 import { createModelsTestOwner } from "../auto-reply/reply/commands-models.test-support.js";
 import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
 import { materializeModelPolicyAllowlist } from "../config/model-policy-allowlist-migration.js";
+import type { ModelDefinitionConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { writeChannelPairingStateSnapshot } from "../pairing/pairing-store-sqlite.test-helpers.js";
 import type { PluginCapabilityConsentHandler } from "../plugins/capability-consent.js";
@@ -3960,89 +3961,76 @@ describe("doctor config flow", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+const createAllowListModel = (id: string): ModelDefinitionConfig => ({
+  id,
+  name: id,
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  maxTokens: 4096,
+});
 const allowListModels = {
   providers: {
     fixture: {
       baseUrl: "https://example.invalid/v1",
       api: "openai-completions",
       apiKey: "test-fixture-key",
-      models: ["existing", "newer", "future"].map((id) => ({ id, name: id })),
+      models: ["existing", "newer", "future"].map(createAllowListModel),
     },
     other: {
       baseUrl: "https://example.invalid/v1",
       api: "openai-completions",
       apiKey: "test-fixture-key",
-      models: [{ id: "model", name: "Other" }],
+      models: [{ ...createAllowListModel("model"), name: "Other" }],
     },
   },
 } satisfies NonNullable<OpenClawConfig["models"]>;
+
+const repairAllowList = (config: OpenClawConfig) =>
+  prepareDoctorModelPolicyAllowlist({ config, sourceConfig: config, repair: true });
 
 describe("Doctor model allow list offer", () => {
   beforeEach(() => {
     extraModelCatalogRows.entries = [];
   });
   it.each([
-    {
-      config: { agents: { defaults: { modelPolicy: { allow: ["fixture/existing"] } } } },
-      marked: false,
-    },
-    {
-      config: {
-        meta: { migrations: { modelPolicyAllowlist: true as const } },
-        agents: { defaults: { modelPolicy: { allow: ["fixture/existing"] } } },
+    ["handwritten", false],
+    ["marked", true],
+    ["legacy", true],
+  ] as const)("preserves %s provenance across repeated config writes", (source, marked) => {
+    const config: OpenClawConfig = {
+      ...(source === "marked" ? { meta: { migrations: { modelPolicyAllowlist: true } } } : {}),
+      agents: {
+        defaults:
+          source === "legacy"
+            ? { models: { "fixture/existing": {} } }
+            : { modelPolicy: { allow: ["fixture/existing"] } },
       },
-      marked: true,
-    },
-    { config: { agents: { defaults: { models: { "fixture/existing": {} } } } }, marked: true },
-  ])(
-    "preserves upgrade provenance across repeated config writes: $marked",
-    ({ config, marked }) => {
-      const first = materializeModelPolicyAllowlist(config).config;
-      const second = materializeModelPolicyAllowlist(first).config;
-      expect(first.meta?.migrations?.modelPolicyAllowlist === true).toBe(marked);
-      expect(second.meta?.migrations?.modelPolicyAllowlist === true).toBe(marked);
-      expect(second.agents?.defaults?.modelPolicy?.allow).toEqual(["fixture/existing"]);
-    },
-  );
+    };
+    const first = materializeModelPolicyAllowlist(config).config;
+    const second = materializeModelPolicyAllowlist(first).config;
+    expect(first.meta?.migrations?.modelPolicyAllowlist === true).toBe(marked);
+    expect(second.meta?.migrations?.modelPolicyAllowlist === true).toBe(marked);
+    expect(second.agents?.defaults?.modelPolicy?.allow).toEqual(["fixture/existing"]);
+  });
 
   it.each([
-    {
-      name: "defaults",
-      agentId: undefined,
-      allow: ["fixture/existing"],
-      expectedPath: "agents.defaults.modelPolicy.allow",
-      warned: true,
-    },
-    {
-      name: "agent policy",
-      agentId: "worker",
-      allow: ["fixture/existing"],
-      expectedPath: "agents.entries.worker.modelPolicy.allow",
-      warned: true,
-    },
-    {
-      name: "provider wildcard",
-      agentId: "worker",
-      allow: ["fixture/*"],
-      expectedPath: "agents.entries.worker.modelPolicy.allow",
-      warned: false,
-    },
-  ])(
-    "reports the primary omitted from $name without rewriting hand-written config",
-    async ({ agentId, allow, expectedPath, warned }) => {
+    [undefined, ["fixture/existing"], "agents.defaults.modelPolicy.allow", true],
+    ["worker", ["fixture/existing"], "agents.entries.worker.modelPolicy.allow", true],
+    ["worker", ["fixture/*"], "agents.entries.worker.modelPolicy.allow", false],
+  ] as const)(
+    "reports omitted primary for %s with %j without rewriting config",
+    async (agentId, allow, expectedPath, warned) => {
+      const modelPolicy = { allow: [...allow] };
       const primary = { primary: "fixture/newer", fallbacks: ["fixture/existing"] };
       const config: OpenClawConfig = {
         models: allowListModels,
         agents: agentId
-          ? { entries: { [agentId]: { model: primary, modelPolicy: { allow } } } }
-          : { defaults: { model: primary, modelPolicy: { allow } } },
+          ? { entries: { [agentId]: { model: primary, modelPolicy } } }
+          : { defaults: { model: primary, modelPolicy } },
       };
       const original = structuredClone(config);
-      const result = await prepareDoctorModelPolicyAllowlist({
-        config,
-        sourceConfig: config,
-        repair: true,
-      });
+      const result = await repairAllowList(config);
       expect(result.config).toEqual(original);
       expect(config).toEqual(original);
       expect(result.changes).toEqual([]);
@@ -4066,11 +4054,7 @@ describe("Doctor model allow list offer", () => {
         entries: { worker: { model: "fixture/newer" } },
       },
     };
-    const result = await prepareDoctorModelPolicyAllowlist({
-      config,
-      sourceConfig: config,
-      repair: true,
-    });
+    const result = await repairAllowList(config);
     expect(result.changes).toEqual([]);
     expect(result.warnings).toEqual([
       expect.stringContaining(
@@ -4100,22 +4084,10 @@ describe("Doctor model allow list offer", () => {
         agents: { defaults: { modelPolicy: { allow } } },
       };
       const original = structuredClone(config);
-      const result = await prepareDoctorModelPolicyAllowlist({
-        config,
-        sourceConfig: config,
-        repair: true,
-      });
+      const result = await repairAllowList(config);
       expect(result.config.agents?.defaults?.modelPolicy?.allow).toEqual(expected);
       expect(config).toEqual(original);
-      expect(
-        (
-          await prepareDoctorModelPolicyAllowlist({
-            config: result.config,
-            sourceConfig: result.config,
-            repair: true,
-          })
-        ).changes,
-      ).toEqual([]);
+      expect((await repairAllowList(result.config)).changes).toEqual([]);
     },
   );
 
@@ -4127,11 +4099,7 @@ describe("Doctor model allow list offer", () => {
         ...(meta ? { meta } : {}),
         agents: { defaults: { modelPolicy: { allow: ["fixture/existing"] } } },
       };
-      const result = await prepareDoctorModelPolicyAllowlist({
-        config,
-        sourceConfig: config,
-        repair: true,
-      });
+      const result = await repairAllowList(config);
       expect(result.changes.length).toBe(meta ? 1 : 0);
       expect(result.warnings.length).toBe(meta ? 1 : 0);
       expect(
@@ -4152,20 +4120,14 @@ describe("Doctor model allow list offer", () => {
         providers: {
           fixture: {
             ...allowListModels.providers.fixture,
-            models: [{ id: "existing", name: "Existing" }],
+            models: [{ ...createAllowListModel("existing"), name: "Existing" }],
           },
         },
       },
       meta: { migrations: { modelPolicyAllowlist: true } },
       agents: { defaults: { modelPolicy: { allow: ["fixture/existing"] } } },
     };
-    expect(
-      await prepareDoctorModelPolicyAllowlist({
-        config,
-        sourceConfig: config,
-        repair: true,
-      }),
-    ).toMatchObject({ changes: [], warnings: [] });
+    expect(await repairAllowList(config)).toMatchObject({ changes: [], warnings: [] });
   });
 
   it("inspects mixed entries and per-agent policies without discarding odd values", async () => {
@@ -4177,11 +4139,7 @@ describe("Doctor model allow list offer", () => {
         entries: { worker: { modelPolicy: { allow: ["disabled/*"] } } },
       },
     };
-    const result = await prepareDoctorModelPolicyAllowlist({
-      config,
-      sourceConfig: config,
-      repair: true,
-    });
+    const result = await repairAllowList(config);
     expect(result.config.agents?.defaults?.modelPolicy?.allow).toEqual([null, "fixture/*"]);
     expect(result.warnings).toContainEqual(
       expect.stringContaining("agents.entries.worker.modelPolicy.allow: disabled/*"),
@@ -4194,11 +4152,7 @@ describe("Doctor model allow list offer", () => {
       models: allowListModels,
       agents: { defaults: { modelPolicy: { allow: ["fixture/retired", "disabled/*"] } } },
     };
-    const result = await prepareDoctorModelPolicyAllowlist({
-      config,
-      sourceConfig: config,
-      repair: true,
-    });
+    const result = await repairAllowList(config);
     expect(result.changes).toEqual([]);
     expect(result.warnings).toEqual([
       expect.stringContaining("fixture/retired is absent from the model catalog"),

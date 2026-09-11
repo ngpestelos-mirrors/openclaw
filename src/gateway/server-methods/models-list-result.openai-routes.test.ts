@@ -683,6 +683,7 @@ describe("models.list OpenAI routes", () => {
           catalog: [catalogEntry("chat-latest", "openai-chatgpt-responses")],
         }),
       ).resolves.toEqual({
+        allowList: { hiddenCount: 0, settingsPath: "agents.defaults.modelPolicy.allow" },
         models: [
           {
             id: "chat-latest",

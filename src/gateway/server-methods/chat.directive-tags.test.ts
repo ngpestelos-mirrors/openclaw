@@ -1,5 +1,3 @@
-// Chat directive tag tests cover reply directive metadata, transcript mirrors,
-// current-message reply routing, and dispatched payload ordering.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,9 +21,16 @@ import {
 } from "../../agents/cron-creator-authority-context.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { onTrustedMessageAuditEvent } from "../../audit/message-audit-events.js";
-import { setReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
+import {
+  getReplyPayloadMetadata,
+  setReplyPayloadMetadata,
+  type ReplyPayload,
+} from "../../auto-reply/reply-payload.js";
 import { getTotalPendingReplies } from "../../auto-reply/reply/dispatcher-registry.js";
 import { markInboundContextLabel } from "../../auto-reply/reply/inbound-context-marker.js";
+// Chat directive tag tests cover reply directive metadata, transcript mirrors,
+// current-message reply routing, and dispatched payload ordering.
+import { attachModelPolicyNotice } from "../../auto-reply/reply/model-policy-notice.js";
 import {
   replyRunRegistry,
   type ReplyBackendQueueMessageOptions,
@@ -3813,6 +3818,92 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       payload: { text: "It's 11:52 AM EDT." },
     });
   });
+
+  it.each([
+    "key",
+    "index",
+    "missing-index",
+    "absent-identity",
+    "rotated-key",
+    "rotated-index",
+  ] as const)(
+    "publishes native policy replies only after exact transcript reconciliation (%s)",
+    async (target) => {
+      await createTranscriptFixture("openclaw-chat-policy-primary-");
+      const idempotencyKey = "policy-primary-runtime-answer";
+      await upsertSessionEntryCore(sessionEntryScope(), {
+        providerOverride: "anthropic",
+        modelOverride: "blocked-model",
+      });
+      const entry = expectDefined(loadSqliteSessionEntry(sessionEntryScope()), "session");
+      const original = setReplyPayloadMetadata(
+        { text: "Answer from the primary." },
+        target === "key" || target === "rotated-key"
+          ? {
+              assistantTranscriptOwned: true,
+              assistantTranscriptIdempotencyKey: idempotencyKey,
+            }
+          : target === "absent-identity"
+            ? {}
+            : {
+                assistantMessageIndex: target === "missing-index" ? 2 : 1,
+              },
+      );
+      const payload = attachModelPolicyNotice({
+        payloads: [original],
+        pinnedModel: "anthropic/blocked-model",
+        primaryModel: "anthropic/primary-model",
+        sessionEntry: entry,
+        sessionKey: "main",
+        storePath: mockState.storePath,
+      })[0];
+      dispatchInboundMessageMock.mockImplementationOnce(async (params: TestDispatchParams) => {
+        expect(
+          params.replyOptions?.onAgentRunStart?.("policy-run", undefined, {
+            completionSource: "reply-dispatch",
+            getResult: () => ({}),
+          }),
+        ).toBe("reply-dispatch");
+        await appendSourceReplyMirrorEntry({ idempotencyKey, text: "Answer from the primary." });
+        if (target === "rotated-key" || target === "rotated-index") {
+          await createTranscriptFixture("openclaw-chat-policy-replacement-");
+          await appendSourceReplyMirrorEntry({
+            idempotencyKey,
+            text: "Replacement session answer.",
+          });
+        }
+        params.dispatcher.sendFinalReply(payload);
+        params.dispatcher.markComplete();
+        await params.dispatcher.waitForIdle();
+        await getReplyPayloadMetadata(payload)?.onFinalDeliverySuccess?.();
+        expect(loadSqliteSessionEntry(sessionEntryScope())?.modelPolicyNotice).toBeUndefined();
+        return { ok: true, queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+      });
+      const { context, send } = createChatRequestFixture();
+      await send({ idempotencyKey: "policy-primary-visible", waitFor: "dedupe" });
+      if (target !== "key" && target !== "index") {
+        expect(lastBroadcastPayload(context)).toMatchObject({ state: "error" });
+        expect(loadSqliteSessionEntry(sessionEntryScope())?.modelPolicyNotice).toBeUndefined();
+        const messages = await readActiveAssistantTranscriptMessages();
+        expect(messages).toHaveLength(1);
+        expect(JSON.stringify(messages)).not.toContain("Use /model");
+        if (target === "rotated-key" || target === "rotated-index") {
+          expect(JSON.stringify(messages)).toContain("Replacement session answer.");
+        }
+        return;
+      }
+      expect(extractFirstTextBlock(lastBroadcastPayload(context))).toContain(
+        "Use /model to change it.\n\nAnswer from the primary.",
+      );
+      expect(loadSqliteSessionEntry(sessionEntryScope())).toMatchObject({
+        modelOverride: "blocked-model",
+        modelPolicyNotice: { sessionId: entry.sessionId, pinnedModel: "anthropic/blocked-model" },
+      });
+      const messages = await readActiveAssistantTranscriptMessages();
+      expect(messages).toHaveLength(1);
+      expect(JSON.stringify(messages[0])).toContain("Use /model to change it.");
+    },
+  );
 
   it("broadcasts agent-run internal-ui source replies without duplicating transcript", async () => {
     await createTranscriptFixture("openclaw-chat-send-agent-source-reply-");

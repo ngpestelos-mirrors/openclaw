@@ -59,8 +59,8 @@ extension OpenClawChatViewModel {
 
     public var modelPickerSections: ChatModelPickerSections {
         let defaultProvider = ChatModelPickerStore.resolvedDefaultProvider(
-            provider: self.sessionDefaults?.modelProvider,
-            model: self.sessionDefaults?.model)
+            provider: self.modelCatalogDefault.provider,
+            model: self.modelCatalogDefault.model)
         return ChatModelPickerStore.sections(
             choices: self.modelChoices,
             favorites: self.modelPickerFavorites,
@@ -93,7 +93,7 @@ extension OpenClawChatViewModel {
             lines.append(String(localized: "No models match your allow list."))
         }
         if allowList.selectedModelBlocked == true {
-            lines.append(String(localized: "The current model is not allowed by your allow list."))
+            lines.append(String(localized: "The pinned model is not in your allow list."))
         }
         guard !lines.isEmpty else { return nil }
         lines.append(String(format: String(localized: "Review %@ in Settings."), allowList.settingsPath))
@@ -200,8 +200,19 @@ extension OpenClawChatViewModel {
     public func isDefaultModel(_ model: OpenClawChatModelChoice) -> Bool {
         ChatModelPickerStore.isDefaultModel(
             model,
-            defaultProvider: self.sessionDefaults?.modelProvider,
-            defaultModel: self.sessionDefaults?.model)
+            defaultProvider: self.modelCatalogDefault.provider,
+            defaultModel: self.modelCatalogDefault.model)
+    }
+
+    var modelCatalogDefault: (provider: String?, model: String?) {
+        if let model = self.modelChoices.first(where: { $0.tags?.contains("default") == true }) {
+            return (model.provider, model.modelID)
+        }
+        // Row tags are optional on the wire; tagless catalogs retain legacy session defaults.
+        if self.modelChoices.contains(where: { $0.tags != nil }) {
+            return (nil, nil)
+        }
+        return (self.sessionDefaults?.modelProvider, self.sessionDefaults?.model)
     }
 
     public var isSelectedModelPinned: Bool {

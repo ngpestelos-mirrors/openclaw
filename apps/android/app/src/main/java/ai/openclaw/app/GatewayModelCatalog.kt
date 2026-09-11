@@ -68,13 +68,14 @@ internal fun parseGatewayModelCatalog(root: JsonObject?): GatewayModelCatalogRes
   GatewayModelCatalogResult(
     models = parseGatewayModels(root?.get("models") as? JsonArray),
     refreshFailed = root?.get("refreshFailed")?.jsonPrimitive?.booleanOrNull == true,
-    allowList = root?.get("allowList")?.jsonObject?.let { notice ->
-      GatewayModelAllowList(
-        hiddenCount = notice.getValue("hiddenCount").jsonPrimitive.int,
-        settingsPath = notice.getValue("settingsPath").jsonPrimitive.content,
-        selectedModelBlocked = notice["selectedModelBlocked"]?.jsonPrimitive?.booleanOrNull,
-      )
-    },
+    allowList =
+      root?.get("allowList")?.jsonObject?.let { notice ->
+        GatewayModelAllowList(
+          hiddenCount = notice.getValue("hiddenCount").jsonPrimitive.int,
+          settingsPath = notice.getValue("settingsPath").jsonPrimitive.content,
+          selectedModelBlocked = notice["selectedModelBlocked"]?.jsonPrimitive?.booleanOrNull,
+        )
+      },
   )
 
 internal fun parseGatewayModels(models: JsonArray?): List<GatewayModelSummary> =

@@ -102,6 +102,15 @@ export function resolveChatModelOverrideValue(state: ChatModelSelectStateInput):
 }
 
 function resolveDefaultModelValue(state: ChatModelSelectStateInput): string {
+  const catalog = state.chatModelCatalog;
+  const publishedDefault = catalog.find((entry) => entry.tags?.includes("default"));
+  if (publishedDefault) {
+    return buildQualifiedChatModelValue(publishedDefault.id, publishedDefault.provider);
+  }
+  // Tags are optional on the wire; only tagless catalogs use legacy agent/session defaults.
+  if (catalog.some((entry) => entry.tags !== undefined)) {
+    return "";
+  }
   const agentDefault = resolvePreferredServerChatModelValue(
     state.agentDefaultModel,
     undefined,

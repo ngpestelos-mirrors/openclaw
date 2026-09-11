@@ -306,7 +306,10 @@ export async function replyWithDiscordModelPickerProviders(params: {
     sessionKey: route.sessionKey,
     readConsistency: "latest",
   });
-  const data = await loadDiscordModelPickerData(params.cfg, route.agentId, { sessionEntry });
+  const data = await loadDiscordModelPickerData(params.cfg, route.agentId, {
+    sessionEntry,
+    sessionKey: route.sessionKey,
+  });
   const currentModel = resolveDiscordModelPickerCurrentModel({
     cfg: params.cfg,
     route,

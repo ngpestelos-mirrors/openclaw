@@ -4,6 +4,7 @@
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
+  resolvePrimaryStringValue,
 } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog, stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import { resolveAgentModelPrimaryValue } from "../config/model-input.js";
@@ -17,6 +18,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { loadManifestMetadataSnapshot } from "../plugins/manifest-contract-eligibility.js";
 import { getActivePluginRegistryWorkspaceDirFromState } from "../plugins/runtime-state.js";
+import { isSubagentSessionKey } from "../routing/session-key.js";
 import { dedupeByKey, indexFirstByKey } from "../shared/dedupe-by-key.js";
 import { resolveAgentConfig } from "./agent-scope-config.js";
 import { resolveConfiguredProviderFallback } from "./configured-provider-fallback.js";
@@ -38,6 +40,37 @@ import { findNormalizedProviderValue, parseModelRef } from "./model-selection-no
 import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
 
 export { resolvePrimaryStringValue as normalizeModelSelection } from "@openclaw/normalization-core/string-coerce";
+
+export function resolveSubagentConfiguredModelSelection(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  includeAgentPrimary?: boolean;
+}): string | undefined {
+  const agentConfig = resolveAgentConfig(params.cfg, params.agentId);
+  return (
+    resolvePrimaryStringValue(agentConfig?.subagents?.model) ??
+    resolvePrimaryStringValue(params.cfg.agents?.defaults?.subagents?.model) ??
+    (params.includeAgentPrimary === false
+      ? undefined
+      : resolvePrimaryStringValue(agentConfig?.model))
+  );
+}
+
+export function resolveConfiguredModelPrimaryValue(params: {
+  cfg: OpenClawConfig;
+  agentId?: string;
+  sessionKey?: string;
+}): string | undefined {
+  return (
+    (params.agentId && params.sessionKey && isSubagentSessionKey(params.sessionKey)
+      ? resolveSubagentConfiguredModelSelection({ cfg: params.cfg, agentId: params.agentId })
+      : undefined) ??
+    (params.agentId
+      ? resolveAgentModelPrimaryValue(resolveAgentConfig(params.cfg, params.agentId)?.model)
+      : undefined) ??
+    resolveAgentModelPrimaryValue(params.cfg.agents?.defaults?.model)
+  );
+}
 
 // Shared model-selection helpers for config aliases, allowlists, provider
 // inference, and configured catalog rows used by CLI and runtime selectors.
@@ -746,18 +779,14 @@ export function resolveConfiguredModelRef(
   params: {
     cfg: OpenClawConfig;
     agentId?: string;
+    sessionKey?: string;
     defaultProvider: string;
     defaultModel: string;
     allowManifestNormalization?: boolean;
     allowPluginNormalization?: boolean;
   } & ModelManifestNormalizationContext,
 ): ModelRef {
-  const rawModel =
-    (params.agentId
-      ? resolveAgentModelPrimaryValue(resolveAgentConfig(params.cfg, params.agentId)?.model)
-      : undefined) ??
-    resolveAgentModelPrimaryValue(params.cfg.agents?.defaults?.model) ??
-    "";
+  const rawModel = resolveConfiguredModelPrimaryValue(params) ?? "";
   if (rawModel) {
     const trimmed = rawModel.trim();
     const { model: modelWithoutProfile } = splitTrailingAuthProfile(trimmed);
@@ -927,6 +956,7 @@ export function resolveConfiguredModelRef(
 type ModelPolicyPreparationParams = BuildModelAliasIndexParams & {
   catalog: ModelCatalogEntry[];
   defaultModel?: string;
+  sessionKey?: string;
 };
 
 type AllowedModelSet = {
@@ -945,6 +975,7 @@ export function buildAllowedModelSet(
     defaultProvider: string;
     defaultModel?: string;
     agentId?: string;
+    sessionKey?: string;
   } & ModelManifestNormalizationContext,
 ): AllowedModelSet {
   return buildAllowedModelSetFromPrepared(params, prepareModelPolicy(params));
@@ -1109,14 +1140,12 @@ function buildAllowedModelSetFromPrepared(
 
   // The operator's primary is usable independently of session-switch restrictions.
   // Read authored config, not the caller's current session selection.
-  const configuredPrimary =
-    resolveAgentModelPrimaryValue(
-      params.agentId ? resolveAgentConfig(params.cfg, params.agentId)?.model : undefined,
-    ) ?? resolveAgentModelPrimaryValue(params.cfg.agents?.defaults?.model);
+  const configuredPrimary = resolveConfiguredModelPrimaryValue(params);
   const primaryRef = configuredPrimary
     ? resolveConfiguredModelRef({
         cfg: params.cfg,
         agentId: params.agentId,
+        sessionKey: params.sessionKey,
         defaultProvider: DEFAULT_PROVIDER,
         defaultModel: DEFAULT_MODEL,
         allowManifestNormalization: params.allowManifestNormalization,
@@ -1181,6 +1210,7 @@ export function getModelRefStatus(
     defaultProvider: string;
     defaultModel?: string;
     agentId?: string;
+    sessionKey?: string;
   } & ModelManifestNormalizationContext,
 ): ModelRefStatus {
   const allowed = buildAllowedModelSet(params);
@@ -1617,6 +1647,7 @@ export function createModelVisibilityPolicyWithFallbacks(
     fallbackModels: readonly string[];
     additionalConfiguredModelRefs?: readonly string[];
     agentId?: string;
+    sessionKey?: string;
     allowManifestNormalization?: boolean;
     allowPluginNormalization?: boolean;
   } & ModelManifestNormalizationContext,
@@ -1665,6 +1696,13 @@ export function createModelVisibilityPolicyWithFallbacks(
     addConfiguredRef(raw, false, selectionAliasIndex);
   }
   addConfiguredRef(params.defaultModel, true, selectionAliasIndex);
+  if (params.agentId && params.sessionKey && isSubagentSessionKey(params.sessionKey)) {
+    addConfiguredRef(
+      resolveSubagentConfiguredModelSelection({ cfg: params.cfg, agentId: params.agentId }),
+      true,
+      selectionAliasIndex,
+    );
+  }
   for (const fallback of params.fallbackModels) {
     // Configured fallbacks remain available for automatic failover and catalog
     // retention, but are not user-selectable overrides unless policy also allows them.

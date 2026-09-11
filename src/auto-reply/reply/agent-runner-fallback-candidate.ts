@@ -92,10 +92,12 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
     const activeEntry = params.liveModelSwitchRuntimeEntry ?? turn.getActiveSessionEntry();
     const sessionRuntimeOverride = resolveSessionRuntimeOverrideForProvider({
       provider,
-      entry: activeEntry,
+      entry: params.effectiveRun.blockedModelOverrideUsesPrimary ? undefined : activeEntry,
       cfg: params.runtimeConfig,
     });
-    const pinnedHarnessId = resolveSessionPinnedHarnessId(activeEntry);
+    const pinnedHarnessId = params.effectiveRun.blockedModelOverrideUsesPrimary
+      ? undefined
+      : resolveSessionPinnedHarnessId(activeEntry);
     const locksPersistedHarness =
       pinnedHarnessId !== undefined && pinnedHarnessId === sessionRuntimeOverride;
     const selectedAuthProfile = resolveRunAuthProfile(candidateRun, provider, {
@@ -159,7 +161,9 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
         resolveRuntimeOverride: (provider) =>
           resolveSessionRuntimeOverrideForProvider({
             provider,
-            entry: params.liveModelSwitchRuntimeEntry ?? turn.getActiveSessionEntry(),
+            entry: params.effectiveRun.blockedModelOverrideUsesPrimary
+              ? undefined
+              : (params.liveModelSwitchRuntimeEntry ?? turn.getActiveSessionEntry()),
             cfg: params.runtimeConfig,
           }),
         resolveContextEngineHost: (provider, model) => {

@@ -6,7 +6,12 @@ import {
   resolveDefaultAgentId,
 } from "../../agents/agent-scope-config.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { copyReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
+import {
+  copyReplyPayloadMetadata,
+  getReplyPayloadMetadata,
+  type ReplyPayload,
+} from "../../auto-reply/reply-payload.js";
+import { attachModelPolicyNotice } from "../../auto-reply/reply/model-policy-notice.js";
 import {
   normalizeReplyPayloadOutcome,
   type NormalizeReplyOutcome,
@@ -142,6 +147,8 @@ type DeliverAgentCommandResultParams = {
   sessionEntry: SessionEntry | undefined;
   result: RunResult;
   payloads: ReplyPayload[] | undefined;
+  allowListPolicyFallback?: { pinnedModel: string; primaryModel: string };
+  storePath?: string;
   /** Channel plugin already selected and bootstrapped by the caller. */
   preparedPlugin?: ChannelPlugin;
   assertDeliveryCurrent?: () => void;
@@ -881,7 +888,35 @@ export async function deliverAgentCommandResult(
     mediaNormalization.normalizeMediaPaths,
   );
   params.assertDeliveryCurrent?.();
-  const outboundPayloadPlan = createOutboundPayloadPlan(mediaNormalizedReplyPayloads);
+  const policyPayloads = params.allowListPolicyFallback
+    ? attachModelPolicyNotice({
+        payloads: mediaNormalizedReplyPayloads,
+        ...params.allowListPolicyFallback,
+        sessionEntry,
+        sessionKey: effectiveSessionKey,
+        storePath: params.storePath,
+      })
+    : mediaNormalizedReplyPayloads;
+  const outboundPayloadPlan = createOutboundPayloadPlan(policyPayloads);
+  const deliveryAcknowledgments = outboundPayloadPlan.flatMap((entry) =>
+    projectOutboundPayloadPlanForOutbound([entry]).map(
+      () => getReplyPayloadMetadata(policyPayloads[entry.sourceIndex])?.onFinalDeliverySuccess,
+    ),
+  );
+  const acknowledgePolicyNotice = async (send?: DurableSendResult) => {
+    for (const [index, acknowledge] of deliveryAcknowledgments.entries()) {
+      const delivered =
+        !send ||
+        (send.payloadOutcomes
+          ? send.payloadOutcomes.some(
+              (outcome) => outcome.index === index && outcome.status === "sent",
+            )
+          : send.status === "sent");
+      if (delivered) {
+        await acknowledge?.();
+      }
+    }
+  };
   const normalizedPayloads = projectOutboundPayloadPlanForJson(outboundPayloadPlan);
   const captureDeliveryResult = (
     deliveryResult: AgentCommandDeliveryResult,
@@ -954,6 +989,7 @@ export async function deliverAgentCommandResult(
       logPayload(payload);
     }
     emitJsonEnvelope();
+    await acknowledgePolicyNotice();
     return captureDeliveryResult(
       buildDeliveryResult({ payloads: normalizedPayloads, meta: result.meta, result }),
     );
@@ -1002,6 +1038,7 @@ export async function deliverAgentCommandResult(
         throw restartAbort.signal.reason;
       }
       deliveryStatus = deliveryStatusFromDurableSend(send);
+      await acknowledgePolicyNotice(send);
       if (!bestEffortDeliver && (send.status === "failed" || send.status === "partial_failed")) {
         emitJsonEnvelope(deliveryStatus);
         captureDeliveryResult(

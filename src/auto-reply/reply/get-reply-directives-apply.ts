@@ -574,13 +574,21 @@ export async function applyInlineDirectiveOverrides(params: {
     }
     ({ provider, model } = persistenceState.outcome);
     selectionCatalog = persistenceState.outcome.modelCatalog ?? selectionCatalog;
+    if (
+      persistenceState.outcome.kind === "applied" &&
+      directives.hasModelDirective &&
+      effectiveModelDirective
+    ) {
+      modelState.blockedModelOverrideRef = undefined;
+      modelState.blockedModelOverrideUsesPrimary = undefined;
+    }
   }
 
   if (modelState.blockedModelOverrideRef && !modelState.modelPolicy.allows({ provider, model })) {
     typing.cleanup();
     return directiveRejection(
       "model-selection-rejected",
-      `Your pinned model ${modelState.blockedModelOverrideRef} is not allowed by your allow list. Add it to ${modelState.modelPolicy.allowRepairConfigPath.replace("entries.*", `entries.${agentId}`)} or choose an allowed model with /model list. Your session pin is unchanged.`,
+      `Your pinned model ${modelState.blockedModelOverrideRef} is not in your allow list, and no usable configured default is available. Add it to ${modelState.modelPolicy.allowRepairConfigPath.replace("entries.*", `entries.${agentId}`)} or choose an allowed model with /model list. Your session pin is unchanged.`,
     );
   }
 

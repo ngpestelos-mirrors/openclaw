@@ -7,6 +7,8 @@ import type {
 } from "../../channels/plugins/types.public.js";
 import type { CliDeps } from "../../cli/outbound-send-deps.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
+import type { OutboundPayloadDeliveryOutcome } from "../../infra/outbound/deliver-types.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
@@ -282,6 +284,30 @@ describe("deliverAgentCommandResult payload normalization", () => {
 
   afterEach(() => {
     setActivePluginRegistry(emptyRegistry);
+  });
+
+  it("shows the blocked-pin notice once after CLI output without changing the pin", async () => {
+    const entry: SessionEntry = {
+      sessionId: "policy-notice-session",
+      updatedAt: 1,
+      providerOverride: "openai",
+      modelOverride: "old-model",
+    };
+    const fixture: DeliveryFixture = {
+      payloads: [{ text: "Answer" }],
+      opts: { deliver: false },
+      omitReplyTarget: true,
+      sessionEntry: entry,
+      allowListPolicyFallback: {
+        pinnedModel: "openai/old-model",
+        primaryModel: "openai/default-model",
+      },
+    };
+    const first = await deliverAgentCommandResultForTest(fixture);
+    expect(first.payloads?.[0]?.text).toContain("Use /model to change it.\n\nAnswer");
+    const second = await deliverAgentCommandResultForTest(fixture);
+    expect(second.payloads?.[0]?.text).toBe("Answer");
+    expect(entry).toMatchObject({ providerOverride: "openai", modelOverride: "old-model" });
   });
 
   it.each([
@@ -1468,6 +1494,50 @@ describe("deliverAgentCommandResult payload normalization", () => {
       },
     ]);
   });
+
+  it.each([true, false])(
+    "acknowledges only the policy payload that actually sent (%s)",
+    async (noticeSent) => {
+      const entry: SessionEntry = {
+        sessionId: "policy-partial-session",
+        updatedAt: 1,
+        providerOverride: "openai",
+        modelOverride: "old-model",
+      };
+      deliverOutboundPayloadsMock.mockImplementationOnce(async (value: unknown) => {
+        const params = value as {
+          onPayloadDeliveryOutcome?: (outcome: OutboundPayloadDeliveryOutcome) => void;
+        };
+        if (noticeSent) {
+          params.onPayloadDeliveryOutcome?.({
+            index: 0,
+            status: "sent",
+            results: [{ channel: "slack", messageId: "notice-1" }],
+          });
+        }
+        params.onPayloadDeliveryOutcome?.({
+          index: noticeSent ? 1 : 0,
+          status: "failed",
+          error: new Error("delivery failed"),
+          sentBeforeError: false,
+          stage: "platform_send",
+        });
+        return noticeSent ? [{ channel: "slack", messageId: "notice-1" }] : [];
+      });
+      await expect(
+        deliverAgentCommandResultForTest({
+          payloads: [{ text: "Answer" }, { text: "More" }],
+          sessionEntry: entry,
+          allowListPolicyFallback: {
+            pinnedModel: "openai/old-model",
+            primaryModel: "openai/default-model",
+          },
+        }),
+      ).rejects.toThrow("delivery failed");
+      expect(entry.modelPolicyNotice !== undefined).toBe(noticeSent);
+      expect(entry.modelOverride).toBe("old-model");
+    },
+  );
 
   it("surfaces durable partial failures without clearing delivery retry state", async () => {
     deliverOutboundPayloadsMock.mockImplementationOnce(async (params: unknown) => {

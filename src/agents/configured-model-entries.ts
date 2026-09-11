@@ -28,6 +28,7 @@ export function resolveConfiguredModelEntries(
   params: {
     cfg: OpenClawConfig;
     agentId?: string;
+    sessionKey?: string;
     defaultProvider?: string;
     defaultModel?: string;
     allowManifestNormalization?: boolean;

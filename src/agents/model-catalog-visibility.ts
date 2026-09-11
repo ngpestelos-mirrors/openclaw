@@ -56,6 +56,7 @@ function applyModelCatalogAllowList(params: {
 
 type LogicalModelCatalogEntryState = {
   authBacked: boolean;
+  authAuthoritative: boolean;
   compatible: boolean;
   routeProjection: ModelCatalogRouteProjection;
 };
@@ -75,10 +76,12 @@ export function resolveLogicalModelCatalogEntryState(params: {
       ? { kind: "selected", route: selectedRoute, policy: params.routePolicy }
       : { kind: "unresolved", policy: params.routePolicy };
   return {
+    authAuthoritative: params.evaluation.availabilityAuthoritative === true,
     authBacked:
       params.authBacked ??
       (params.evaluation.availability === true ||
         (!routeManaged &&
+          params.evaluation.availabilityAuthoritative !== true &&
           params.provider !== undefined &&
           normalizeProviderId(params.provider) !== "openai" &&
           params.evaluation.availability === undefined &&
@@ -111,6 +114,7 @@ type LogicalModelCatalogParams = {
   defaultModel?: string;
   agentId?: string;
   workspaceDir?: string;
+  sessionKey?: string;
   view?: ModelCatalogVisibilityView;
   policy?: ModelVisibilityPolicy;
   routePolicy: ModelCatalogRoutePolicy;
@@ -154,6 +158,7 @@ export async function prepareLogicalVisibleModelCatalog(
       defaultProvider: params.defaultProvider,
       defaultModel: params.defaultModel,
       agentId: params.agentId,
+      sessionKey: params.sessionKey,
       ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
     });
   const keyOf = resolveModelCatalogIdentityKey;
@@ -235,7 +240,8 @@ export async function prepareLogicalVisibleModelCatalog(
     for (const entry of catalog) {
       const key = keyOf(entry);
       const state = getEntryState(entry);
-      const configured = configuredKeys.has(key) || retainedKeys.has(key);
+      const configured =
+        retainedKeys.has(key) || (configuredKeys.has(key) && !state.authAuthoritative);
       if ((!state.compatible && !configured) || (!state.authBacked && !configured)) {
         continue;
       }

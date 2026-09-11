@@ -143,6 +143,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
   embeddedSessionState: EmbeddedSessionState;
   suppressVisibleSessionEffects: boolean;
   preserveUserFacingSessionModelState: boolean;
+  allowListPolicyFallback?: { pinnedModel: string; primaryModel: string };
   currentRunDeliveryContext?: DeliveryContext;
   sessionOwnership: {
     runOwnedSessionId: string;
@@ -522,6 +523,8 @@ export async function finalizeEmbeddedAgentCommand(params: {
       sessionEntry,
       result,
       payloads,
+      allowListPolicyFallback: params.allowListPolicyFallback,
+      storePath,
       assertDeliveryCurrent: () => {
         params.opts.abortSignal?.throwIfAborted();
         assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
