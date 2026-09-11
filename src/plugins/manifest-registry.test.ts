@@ -3584,7 +3584,13 @@ describe("stale foreign bundled install records", () => {
       // must not shadow this installation's bundled copy and downgrade it to origin-path.
       expect(codex?.rootDir).toBe(current.pluginDir);
       expect(codex?.origin).toBe("bundled");
-      expect(countDuplicateWarnings(registry)).toBeGreaterThan(0);
+      expect(countDuplicateWarnings(registry)).toBe(0);
+      const staleWarning = registry.diagnostics.find((diagnostic) =>
+        diagnostic.message.includes("stale plugin install record"),
+      );
+      expect(staleWarning?.level).toBe("warn");
+      expect(staleWarning?.message).toContain(previous.pluginDir);
+      expect(staleWarning?.message).toContain("openclaw plugins uninstall codex");
     } finally {
       spy.mockRestore();
     }

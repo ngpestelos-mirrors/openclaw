@@ -1193,12 +1193,19 @@ export function loadPluginManifestRegistryCore(
       if (isSameGlobalPackageDuplicate(candidate, existing.candidate)) {
         continue;
       }
+      // A pin into another installation's bundled tree is a stale record, not a
+      // deliberate override, so it needs its own remedy instead of the generic
+      // duplicate-id wording an operator cannot act on.
+      const staleForeignPin =
+        winnerCandidate.origin === "bundled" &&
+        isForeignBundledPluginRoot(overriddenCandidate.rootDir);
       diagnostics.push({
         level: "warn",
         pluginId: effectivePluginId,
         source: overriddenCandidate.source,
-        message:
-          winnerCandidate.origin === "config"
+        message: staleForeignPin
+          ? `stale plugin install record: "${effectivePluginId}" is pinned to ${overriddenCandidate.rootDir}, which belongs to a different OpenClaw installation. This installation's bundled plugin is being used instead. Remove the stale record with \`openclaw plugins uninstall ${effectivePluginId}\`, then re-enable the plugin.`
+          : winnerCandidate.origin === "config"
             ? `duplicate plugin id resolved by explicit config-selected plugin; ${overriddenCandidate.origin} plugin will be overridden by config plugin (${winnerCandidate.source})`
             : `duplicate plugin id detected; ${overriddenCandidate.origin} plugin will be overridden by ${winnerCandidate.origin} plugin (${winnerCandidate.source})`,
       });
