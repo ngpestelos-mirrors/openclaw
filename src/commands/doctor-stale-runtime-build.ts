@@ -28,7 +28,12 @@ export async function collectStaleRuntimeBuildFindings(
   if (!builtCommit) {
     return [];
   }
-  const checkoutCommit = resolveCommitHash({ cwd: root, env });
+  // resolveCommitHash prefers GIT_COMMIT/GIT_SHA, which declare the *built*
+  // identity for packaged installs. Honouring them here would compare the build
+  // against itself (hiding real drift) or against an unrelated commit (inventing
+  // it), so the checkout identity must come from the checkout alone.
+  const { GIT_COMMIT: _gitCommit, GIT_SHA: _gitSha, ...checkoutEnv } = env;
+  const checkoutCommit = resolveCommitHash({ cwd: root, env: checkoutEnv });
   if (!checkoutCommit || gitCommitPrefixesMatch(builtCommit, checkoutCommit)) {
     return [];
   }
