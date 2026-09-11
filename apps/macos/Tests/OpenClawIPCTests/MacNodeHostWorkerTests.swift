@@ -527,7 +527,8 @@ struct MacNodeHostWorkerTests {
         }
     }
 
-    @Test func `worker cancellation settles when the child suppresses its result`() async throws {
+    @Test(arguments: [false, true])
+    func `worker cancellation settles when the child suppresses its result`(cancelThroughTask: Bool) async throws {
         let worker = MacNodeHostWorker(session: GatewayNodeSession())
         let marker = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclaw-worker-cancel-\(UUID().uuidString)")
@@ -556,6 +557,7 @@ struct MacNodeHostWorkerTests {
             command: ["/bin/sh", "-c", script, "worker", marker.path]))
         await worker.handleInput(invokeId: "terminal-1", seq: 7, payloadJSON: #"{"data":"x"}"#)
         await worker.cancel(invokeId: "terminal-1")
+        var invoking: Task<BridgeInvokeResponse, Never>?
         do {
             let buffered = try await AsyncTimeout.withTimeout(
                 seconds: 1,
@@ -568,22 +570,86 @@ struct MacNodeHostWorkerTests {
             #expect(!buffered.ok)
             #expect(buffered.error?.message == "UNAVAILABLE: node-host worker invocation cancelled")
 
-            let invoking = Task {
+            let activeInvoke = Task {
                 await worker.invoke(BridgeInvokeRequest(
                     id: "terminal-2",
                     command: "codex.terminal.resume.v1"))
             }
+            invoking = activeInvoke
             _ = try await TestProcessSupport.waitForPID(in: marker)
-            await worker.cancel(invokeId: "terminal-2")
+            if cancelThroughTask {
+                activeInvoke.cancel()
+            } else {
+                await worker.cancel(invokeId: "terminal-2")
+            }
             let active = try await AsyncTimeout.withTimeout(
                 seconds: 1,
                 onTimeout: { WorkerBackpressureTimeout() },
-                operation: { await invoking.value })
+                operation: { await activeInvoke.value })
             await worker.stop()
             #expect(!active.ok)
             #expect(active.error?.message == "UNAVAILABLE: node-host worker invocation cancelled")
         } catch {
             await worker.stop()
+            _ = await invoking?.value
+            throw error
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `pre cancelled worker caller does not dispatch or poison a reused invoke id`(
+        bufferedControls: Bool) async throws
+    {
+        let worker = MacNodeHostWorker(session: GatewayNodeSession())
+        let script = """
+        printf '%s\\n' '{"type":"ready","version":"test",\
+        "manifest":{"caps":["system"],"commands":["system.run"],"pathEnv":"/usr/bin:/bin"}}'
+        for expected in shared barrier; do
+          IFS= read -r invoke
+          printf '%s' "$invoke" | grep -q '"type":"invoke"' || exit 40
+          printf '%s' "$invoke" | grep -q "\\\"id\\\":\\\"$expected\\\"" || exit 41
+          printf '{"type":"invoke-result","generation":0,"result":{"id":"%s","ok":true}}\\n' "$expected"
+        done
+        while IFS= read -r line; do :; done
+        """
+        _ = try await worker.start(launch: MacNodeHostWorkerLaunch(command: ["/bin/sh", "-c", script]))
+        if bufferedControls {
+            await worker.handleInput(invokeId: "shared", seq: 7, payloadJSON: #"{"data":"x"}"#)
+            await worker.cancel(invokeId: "shared")
+            await worker.cancel(invokeId: "other")
+        }
+        let entry = AsyncTestGate()
+        let cancelled = Task {
+            await entry.wait()
+            return await worker.invoke(BridgeInvokeRequest(id: "shared", command: "system.run"))
+        }
+        cancelled.cancel()
+        do {
+            let response = try await AsyncTimeout.withTimeout(
+                seconds: 1,
+                onTimeout: { WorkerBackpressureTimeout() },
+                operation: { await cancelled.value })
+            #expect(!response.ok)
+            #expect(response.error?.message == "UNAVAILABLE: node-host worker invocation cancelled")
+            let reused = await worker.invoke(BridgeInvokeRequest(id: "shared", command: "system.run"))
+            #expect(reused.ok)
+            let barrier = await worker.invoke(BridgeInvokeRequest(id: "barrier", command: "system.run"))
+            #expect(barrier.ok)
+            if bufferedControls {
+                let other = try await AsyncTimeout.withTimeout(
+                    seconds: 1,
+                    onTimeout: { WorkerBackpressureTimeout() },
+                    operation: {
+                        await worker.invoke(BridgeInvokeRequest(id: "other", command: "system.run"))
+                    })
+                #expect(other.error?.message == "UNAVAILABLE: node-host worker invocation cancelled")
+            }
+            await worker.stop()
+        } catch {
+            entry.open()
+            cancelled.cancel()
+            await worker.stop()
+            _ = await cancelled.value
             throw error
         }
     }

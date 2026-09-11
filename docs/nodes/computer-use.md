@@ -286,6 +286,9 @@ reporting does not change how macOS captures that secure screen.
 For a dedicated Mac that should stay awake between jobs, explicitly enable
 **Unattended desktop hosting** in **Dashboard → Settings → This Mac**. It remains
 subject to the current connection, hosting, and unlocked-session requirements.
+Screen Sharing may request an immediate lock when its last viewer disconnects;
+OpenClaw honors that lock even when unattended desktop hosting is enabled. The
+web Desktop viewer does not create an OpenClaw keep-awake execution.
 See [Desktop availability and keeping awake](/platforms/mac/permissions#desktop-availability-and-keeping-awake).
 
 <a id="macos-permission-troubleshooting" />

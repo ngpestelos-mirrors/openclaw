@@ -80,6 +80,26 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         case cancel
     }
 
+    private final class InvokeReservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+
+        func cancel() {
+            self.lock.withLock { self.cancelled = true }
+        }
+
+        var isCancelled: Bool {
+            self.lock.withLock { self.cancelled }
+        }
+    }
+
+    private struct PendingInvoke {
+        let reservation: InvokeReservation
+        let processGeneration: UUID
+        let gatewayGeneration: UInt64
+        let continuation: CheckedContinuation<BridgeInvokeResponse, Never>
+    }
+
     enum WorkerError: LocalizedError {
         case unavailable(reason: String, diagnostic: String? = nil)
 
@@ -115,7 +135,7 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
     private var route: GatewayNodeSessionRoute?
     private var routeAuthorityGeneration: UInt64 = 0
     private var startContinuation: CheckedContinuation<MacNodeHostManifest, Error>?
-    private var invokeContinuations: [String: CheckedContinuation<BridgeInvokeResponse, Never>] = [:]
+    private var pendingInvokes: [String: PendingInvoke] = [:]
     private var pendingInvokeControls: [String: [PendingInvokeControl]] = [:]
     private var pendingInvokeControlOrder: [String] = []
     private var startTimer: DispatchSourceTimer?
@@ -170,55 +190,87 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
     }
 
     func invoke(_ request: BridgeInvokeRequest) async -> BridgeInvokeResponse {
-        await withCheckedContinuation { continuation in
-            self.queue.async {
-                guard self.process?.isRunning == true, self.manifest != nil else {
-                    continuation.resume(returning: Self.unavailableResponse(
-                        request.id,
-                        "UNAVAILABLE: node-host worker is not running"))
-                    return
-                }
-                guard self.invokeContinuations[request.id] == nil else {
-                    continuation.resume(returning: Self.unavailableResponse(
-                        request.id,
-                        "UNAVAILABLE: duplicate node-host worker request"))
-                    return
-                }
-                self.invokeContinuations[request.id] = continuation
-                do {
-                    let workerRequest: [String: Any] = [
-                        "id": request.id,
-                        "nodeId": request.nodeId ?? "",
-                        "command": request.command,
-                        "paramsJSON": request.paramsJSON ?? NSNull(),
-                        "sessionKey": request.sessionKey ?? NSNull(),
-                        "timeoutMs": request.timeoutMs ?? NSNull(),
-                        "idempotencyKey": request.idempotencyKey ?? NSNull(),
-                    ]
-                    try self.enqueueWriteLocked([
-                        "type": "invoke",
-                        "generation": self.gatewayGeneration,
-                        "request": workerRequest,
-                    ])
-                    for control in self.takePendingInvokeControlsLocked(invokeId: request.id) {
-                        try self.enqueueInvokeControlLocked(control, invokeId: request.id)
-                        if case .cancel = control {
-                            self.finishCancelledInvokeLocked(invokeId: request.id)
-                        }
+        let reservation = InvokeReservation()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                self.queue.async {
+                    guard !reservation.isCancelled else {
+                        _ = self.takePendingInvokeControlsLocked(invokeId: request.id)
+                        continuation.resume(returning: Self.unavailableResponse(
+                            request.id,
+                            "UNAVAILABLE: node-host worker invocation cancelled"))
+                        return
                     }
-                } catch {
-                    self.invokeContinuations.removeValue(forKey: request.id)?.resume(returning:
-                        Self.unavailableResponse(request.id, "UNAVAILABLE: node-host worker write failed"))
+                    guard self.process?.isRunning == true, self.manifest != nil,
+                          let processGeneration = self.processGeneration
+                    else {
+                        continuation.resume(returning: Self.unavailableResponse(
+                            request.id,
+                            "UNAVAILABLE: node-host worker is not running"))
+                        return
+                    }
+                    guard self.pendingInvokes[request.id] == nil else {
+                        continuation.resume(returning: Self.unavailableResponse(
+                            request.id,
+                            "UNAVAILABLE: duplicate node-host worker request"))
+                        return
+                    }
+                    self.pendingInvokes[request.id] = PendingInvoke(
+                        reservation: reservation,
+                        processGeneration: processGeneration,
+                        gatewayGeneration: self.gatewayGeneration,
+                        continuation: continuation)
+                    do {
+                        let workerRequest: [String: Any] = [
+                            "id": request.id,
+                            "nodeId": request.nodeId ?? "",
+                            "command": request.command,
+                            "paramsJSON": request.paramsJSON ?? NSNull(),
+                            "sessionKey": request.sessionKey ?? NSNull(),
+                            "timeoutMs": request.timeoutMs ?? NSNull(),
+                            "idempotencyKey": request.idempotencyKey ?? NSNull(),
+                        ]
+                        try self.enqueueWriteLocked([
+                            "type": "invoke",
+                            "generation": self.gatewayGeneration,
+                            "request": workerRequest,
+                        ])
+                        for control in self.takePendingInvokeControlsLocked(invokeId: request.id) {
+                            try self.enqueueInvokeControlLocked(control, invokeId: request.id)
+                            if case .cancel = control {
+                                self.finishCancelledInvokeLocked(invokeId: request.id)
+                            }
+                        }
+                    } catch {
+                        self.pendingInvokes.removeValue(forKey: request.id)?.continuation.resume(returning:
+                            Self.unavailableResponse(request.id, "UNAVAILABLE: node-host worker write failed"))
+                    }
                 }
             }
+        } onCancel: {
+            reservation.cancel()
+            self.queue.async {
+                self.cancelInvokeLocked(invokeId: request.id, reservation: reservation)
+            }
         }
+    }
+
+    private func cancelInvokeLocked(invokeId: String, reservation: InvokeReservation) {
+        // The queued handler must not cancel a later reuse of this ID or a replacement worker.
+        guard let pending = self.pendingInvokes[invokeId], pending.reservation === reservation else { return }
+        if pending.processGeneration == self.processGeneration,
+           pending.gatewayGeneration == self.gatewayGeneration
+        {
+            try? self.enqueueInvokeControlLocked(.cancel, invokeId: invokeId)
+        }
+        self.finishCancelledInvokeLocked(invokeId: invokeId)
     }
 
     func handleInput(invokeId: String, seq: Int, payloadJSON: String) async {
         await withCheckedContinuation { continuation in
             self.queue.async {
                 let control = PendingInvokeControl.input(seq: seq, payloadJSON: payloadJSON)
-                if self.invokeContinuations[invokeId] != nil {
+                if self.pendingInvokes[invokeId] != nil {
                     try? self.enqueueInvokeControlLocked(control, invokeId: invokeId)
                 } else if self.process?.isRunning == true, self.manifest != nil {
                     self.bufferInvokeControlLocked(control, invokeId: invokeId)
@@ -232,7 +284,7 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         await withCheckedContinuation { continuation in
             self.queue.async {
                 let control = PendingInvokeControl.cancel
-                if self.invokeContinuations[invokeId] != nil {
+                if self.pendingInvokes[invokeId] != nil {
                     try? self.enqueueInvokeControlLocked(control, invokeId: invokeId)
                     self.finishCancelledInvokeLocked(invokeId: invokeId)
                 } else if self.process?.isRunning == true, self.manifest != nil {
@@ -295,7 +347,7 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
     }
 
     private func finishCancelledInvokeLocked(invokeId: String) {
-        self.invokeContinuations.removeValue(forKey: invokeId)?.resume(returning:
+        self.pendingInvokes.removeValue(forKey: invokeId)?.continuation.resume(returning:
             Self.unavailableResponse(invokeId, "UNAVAILABLE: node-host worker invocation cancelled"))
     }
 
@@ -315,12 +367,14 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
                 try? self.enqueueWriteLocked([
                     "type": "gateway-connection", "generation": self.gatewayGeneration, "connection": NSNull(),
                 ])
-                let pending = self.invokeContinuations
-                self.invokeContinuations.removeAll()
+                let pending = self.pendingInvokes
+                self.pendingInvokes.removeAll()
                 self.pendingInvokeControls.removeAll()
                 self.pendingInvokeControlOrder.removeAll()
                 for (id, waiter) in pending {
-                    waiter.resume(returning: Self.unavailableResponse(id, "UNAVAILABLE: Gateway route changed"))
+                    waiter.continuation.resume(returning: Self.unavailableResponse(
+                        id,
+                        "UNAVAILABLE: Gateway route changed"))
                 }
                 self.eventDeliveryTask?.cancel()
                 self.eventDeliveryTask = nil
@@ -557,9 +611,9 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         case "invoke-result":
             guard let result = message["result"] as? [String: Any],
                   let id = result["id"] as? String,
-                  let continuation = self.invokeContinuations.removeValue(forKey: id)
+                  let pending = self.pendingInvokes.removeValue(forKey: id)
             else { return }
-            continuation.resume(returning: Self.decodeInvokeResponse(result, id: id))
+            pending.continuation.resume(returning: Self.decodeInvokeResponse(result, id: id))
         case "node-event":
             guard let event = message["event"] as? [String: Any],
                   let name = event["event"] as? String,
@@ -741,12 +795,14 @@ final class MacNodeHostWorker: MacNodeHostWorking, @unchecked Sendable {
         if let processCleanupTask = self.processCleanupTask { return processCleanupTask }
         let readers = self.readers
         self.readers.removeAll()
-        let pending = self.invokeContinuations
-        self.invokeContinuations.removeAll()
+        let pending = self.pendingInvokes
+        self.pendingInvokes.removeAll()
         self.pendingInvokeControls.removeAll()
         self.pendingInvokeControlOrder.removeAll()
-        for (id, continuation) in pending {
-            continuation.resume(returning: Self.unavailableResponse(id, "UNAVAILABLE: node-host worker stopped"))
+        for (id, invocation) in pending {
+            invocation.continuation.resume(returning: Self.unavailableResponse(
+                id,
+                "UNAVAILABLE: node-host worker stopped"))
         }
         // Startup-time exits count too: without this, a worker that dies before
         // its ready manifest never consumes retry budget and the coordinator

@@ -86,13 +86,16 @@ does not prove that the desktop is unlocked.
 During a Computer execution, OpenClaw uses temporary keep-awake assertions for
 up to one hour from that execution's first action. This includes background
 window and browser actions. Completion, cancellation, disconnect, provider
-replacement, or local Stop releases the execution's keep-awake request. Opening
-a web Desktop viewer alone does not keep the Mac awake.
+replacement, or local Stop releases the execution's keep-awake request. The web
+Desktop viewer does not create an OpenClaw keep-awake execution.
 
 To keep a dedicated Mac awake between jobs, enable **Unattended desktop hosting**
 on the same settings page and accept the native confirmation. It is off by
 default and takes effect only while this Mac is connected and actually hosting.
 It does not change macOS power or lock settings.
+
+Screen Sharing may request an immediate lock when its last viewer disconnects.
+OpenClaw honors that lock even when unattended desktop hosting is enabled.
 
 Manual lock, logout, or an unknown desktop state releases keep-awake assertions
 and retires active Computer executions. OpenClaw does not unlock the Mac or
