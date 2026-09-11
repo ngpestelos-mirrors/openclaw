@@ -82,7 +82,20 @@ beyond the grace period.
       precedence. Unselected siblings and generic credentials are excluded. A
       receipt closes this one-time upgrade after a successful Doctor pass; later
       model selections need an explicit binding. Unreadable upgrade state leaves
-      config unchanged and asks for another Doctor run.
+      config unchanged and asks for another Doctor run. The provider overlay contains
+      only the credential reference; bundled catalog defaults stay with the provider:
+
+      ```json5
+      {
+        models: {
+          providers: {
+            "byteplus-plan": {
+              apiKey: { source: "env", provider: "default", id: "BYTEPLUS_API_KEY" },
+            },
+          },
+        },
+      }
+      ```
 
     | Legacy key                                                                                    | Current key                                                                 |
     | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |

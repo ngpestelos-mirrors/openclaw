@@ -338,7 +338,7 @@ describe("prepared model runtime snapshots", () => {
     ]);
   });
 
-  it("limits live discovery to the selected agent's models and authenticated providers", async () => {
+  it("limits live discovery to the selected agent's models and admitted providers", async () => {
     const config = {
       agents: {
         defaults: { model: { primary: "openai/gpt-5.6" } },
@@ -378,7 +378,14 @@ describe("prepared model runtime snapshots", () => {
       config,
       state.agentDir("selected-provider-scope"),
       expect.objectContaining({
-        providerDiscoveryProviderIds: ["anthropic", "custom", "openai", "selected-runtime", "vllm"],
+        providerDiscoveryProviderIds: [
+          "anthropic",
+          "custom",
+          "openai",
+          "selected-runtime",
+          "unrelated",
+          "vllm",
+        ],
       }),
     );
     expect(mocks.resolveAmbientCredentials).toHaveBeenCalledWith(

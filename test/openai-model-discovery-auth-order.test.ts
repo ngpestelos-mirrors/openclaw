@@ -280,7 +280,7 @@ describe("Provider model discovery auth preparation", () => {
           },
         };
       } else {
-        config.models = { providers: { [providerId]: {} } };
+        config.models = { providers: { [providerId]: { baseUrl: "", models: [] } } };
         vi.stubEnv("XAI_API_KEY", keyB);
       }
       await state.writeAuthProfiles(store);
@@ -714,7 +714,7 @@ describe("Provider model discovery auth preparation", () => {
     "preserves a plugin-owned %s after probing exhausted OAuth",
     async (resultKind) => {
       const { config, store } = await createChutesCatalogFixture();
-      config.models = { providers: { chutes: {} } };
+      config.models = { providers: { chutes: { baseUrl: "", models: [] } } };
       const otherProfileId = "openai:other-source";
       store.profiles[otherProfileId] = {
         type: "api_key",
@@ -917,7 +917,9 @@ describe("provider catalog late-result finalization", () => {
           resolveImplicitProviders({
             config: {
               auth: { order: { [providerId]: [profileId] } },
-              ...(shape === "providers" ? { models: { providers: { [peerId]: {} } } } : {}),
+              ...(shape === "providers"
+                ? { models: { providers: { [peerId]: { baseUrl: "", models: [] } } } }
+                : {}),
             },
             agentDir: state.agentDir(),
             authStore: store,

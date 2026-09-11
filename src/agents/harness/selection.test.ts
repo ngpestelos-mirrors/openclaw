@@ -4112,7 +4112,7 @@ describe("selectAgentHarness", () => {
   });
 
   it("passes runtime model and default credentials to compaction when auth profile id is absent", async () => {
-    const config = { models: { providers: { "local-proxy": {} } } };
+    const config = { models: { providers: { "local-proxy": { baseUrl: "", models: [] } } } };
     compactAuthMocks.resolveModelAsync.mockResolvedValue({
       model: {
         id: "proxy-model",

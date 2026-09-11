@@ -516,7 +516,7 @@ function createSideQuestionParams(
   return {
     cfg: {
       agents: { entries: { main: { default: true } } },
-      models: { providers: { anthropic: {} } },
+      models: { providers: { anthropic: { baseUrl: "", models: [] } } },
     } as never,
     agentId: "main",
     agentDir: DEFAULT_AGENT_DIR,
@@ -902,7 +902,7 @@ describe("runBtwSideQuestion", () => {
     const result = await runBtwSideQuestion({
       cfg: {
         agents: { entries: { main: { default: true } } },
-        models: { providers: { anthropic: {} } },
+        models: { providers: { anthropic: { baseUrl: "", models: [] } } },
       } as never,
       agentId: "main",
       agentDir: DEFAULT_AGENT_DIR,
@@ -1020,7 +1020,7 @@ describe("runBtwSideQuestion", () => {
         agentId: "work",
         cfg: {
           agents: { ownership: "explicit", entries: { main: {}, work: {} } },
-          models: { providers: { anthropic: {} } },
+          models: { providers: { anthropic: { baseUrl: "", models: [] } } },
           session: { scope: "global" },
         },
         sessionKey: "global",
@@ -1172,7 +1172,7 @@ describe("runBtwSideQuestion", () => {
   it("keeps model, runtime auth, and stream selection on prepared A after current advances to B", async () => {
     const cfg = {
       agents: { entries: { main: { default: true } } },
-      models: { providers: { "local-proxy": {} } },
+      models: { providers: { "local-proxy": { baseUrl: "", models: [] } } },
     } as never;
     const generationA = createModelGenerationFixture({
       agentDir: state.agentDir(),
@@ -1448,7 +1448,7 @@ describe("runBtwSideQuestion", () => {
           runSideQuestion({
             cfg: {
               diagnostics: { enabled },
-              models: { providers: { anthropic: {} } },
+              models: { providers: { anthropic: { baseUrl: "", models: [] } } },
             },
             sessionEntry,
             authorityRunId,
@@ -1988,7 +1988,7 @@ describe("runBtwSideQuestion", () => {
 
     const result = await runSideQuestion({
       cfg: {
-        models: { providers: { "github-copilot": {} } },
+        models: { providers: { "github-copilot": { baseUrl: "", models: [] } } },
         agents: {
           defaults: {
             models: {
@@ -2691,7 +2691,7 @@ describe("runBtwSideQuestion", () => {
     mockDoneAnswer("Copilot answer.");
 
     const result = await runSideQuestion({
-      cfg: { models: { providers: { "github-copilot": {} } } },
+      cfg: { models: { providers: { "github-copilot": { baseUrl: "", models: [] } } } },
       provider: "github-copilot",
       model: "gpt-5.4",
     });
@@ -2738,7 +2738,7 @@ describe("runBtwSideQuestion", () => {
     registerProviderStreamForModelMock.mockReturnValue(providerStreamFn);
 
     const result = await runSideQuestion({
-      cfg: { models: { providers: { ollama: {} } } },
+      cfg: { models: { providers: { ollama: { baseUrl: "", models: [] } } } },
       provider: "ollama",
       model: "glm-5.1",
     });
@@ -2775,7 +2775,7 @@ describe("runBtwSideQuestion", () => {
     });
 
     const result = await runSideQuestion({
-      cfg: { models: { providers: { "minimax-portal": {} } } },
+      cfg: { models: { providers: { "minimax-portal": { baseUrl: "", models: [] } } } },
       provider: "minimax-portal",
       model: "MiniMax-M2.7",
     });
@@ -2845,7 +2845,7 @@ describe("runBtwSideQuestion", () => {
     streamSimpleMock.mockReturnValue(makeAsyncEvents([createDoneEvent("Bedrock answer.")]));
 
     const result = await runBtwSideQuestion({
-      cfg: { models: { providers: { "amazon-bedrock": {} } } },
+      cfg: { models: { providers: { "amazon-bedrock": { baseUrl: "", models: [] } } } },
       agentId: "main",
       agentDir: DEFAULT_AGENT_DIR,
       provider: "amazon-bedrock",

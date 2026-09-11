@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveProviderUseAdmission } from "../../../agents/provider-model-auth-source-plan.js";
 import {
   loadSessionEntry,
@@ -121,6 +121,86 @@ describe("selected shared-provider upgrade", () => {
       const second = await prepare(result.config);
       expect(second.config).toBe(result.config);
       expect(second.changes).toEqual([]);
+    },
+  );
+
+  it.each(["primary", "fallback"] as const)(
+    "preserves a selected %s alias without enrolling unselected siblings",
+    async (position) => {
+      const config: OpenClawConfig = {
+        agents: {
+          defaults: {
+            model:
+              position === "primary"
+                ? { primary: "plan" }
+                : { primary: "openai/gpt-5.4", fallbacks: ["plan"] },
+            models: {
+              "byteplus-plan/ark-code-latest": { alias: "plan" },
+              "minimax-portal/MiniMax-M2.7": { alias: "unused" },
+            },
+          },
+          entries: { main: {} },
+        },
+      };
+      const original = structuredClone(config);
+
+      const result = await prepare(config);
+
+      expect(Object.keys(result.config.models?.providers ?? {})).toEqual(["byteplus-plan"]);
+      expect(result.config.models?.providers?.["byteplus-plan"]?.apiKey).toEqual(byteplusRef);
+      expect(config).toEqual(original);
+    },
+  );
+
+  it.each(["entries", "list"] as const)(
+    "resolves selected aliases in each agent's scope from the %s roster",
+    async (roster) => {
+      const worker = {
+        model: "plan",
+        models: { "volcengine-plan/ark-code-latest": { alias: "plan" } },
+      };
+      const inherited = { models: { "minimax/MiniMax-M2.7": { alias: "plan" } } };
+      const config: OpenClawConfig = {
+        agents: {
+          defaults: {
+            model: "plan",
+            models: {
+              "byteplus-plan/ark-code-latest": { alias: "plan" },
+              "minimax-portal/MiniMax-M2.7": { alias: "unused" },
+            },
+          },
+          ...(roster === "entries"
+            ? { entries: { main: {}, worker, inherited } }
+            : {
+                list: [
+                  { id: "main" },
+                  { id: "worker", ...worker },
+                  { id: "inherited", ...inherited },
+                ],
+              }),
+        },
+      };
+      const original = structuredClone(config);
+
+      const result = await prepare(config);
+
+      expect(Object.keys(result.config.models?.providers ?? {}).toSorted()).toEqual([
+        "byteplus-plan",
+        "minimax",
+        "volcengine-plan",
+      ]);
+      expect(result.config.models?.providers?.["byteplus-plan"]?.apiKey).toEqual(byteplusRef);
+      expect(result.config.models?.providers?.["volcengine-plan"]?.apiKey).toEqual({
+        source: "env",
+        provider: "default",
+        id: "VOLCANO_ENGINE_API_KEY",
+      });
+      expect(result.config.models?.providers?.minimax?.apiKey).toEqual({
+        source: "env",
+        provider: "default",
+        id: "MINIMAX_API_KEY",
+      });
+      expect(config).toEqual(original);
     },
   );
 
@@ -349,29 +429,49 @@ describe("selected shared-provider upgrade", () => {
 });
 
 describe("Doctor provider-binding write composition", () => {
-  it("persists a primary Plan env SecretRef and closes the upgrade after the actual write", async () => {
-    const { prepareDoctorContext } = await import("../../doctor-config-flow.test-support.js");
-    const { runWriteConfigHealth } =
-      await import("../../../flows/doctor-health-contribution-runners.config.js");
-    await state.writeConfig({
-      ...selectedPlan,
-      gateway: { mode: "local", auth: { mode: "token", token: "fixture-gateway-token" } },
-      env: { vars: { BYTEPLUS_API_KEY: "fixture-byteplus-key" } },
-    });
+  it.each([false, true])(
+    "persists a primary Plan binding and later repair fields: %s",
+    async (laterRepair) => {
+      const { prepareDoctorContext } = await import("../../doctor-config-flow.test-support.js");
+      const { runWriteConfigHealth } =
+        await import("../../../flows/doctor-health-contribution-runners.config.js");
+      await state.writeConfig({
+        ...selectedPlan,
+        gateway: { mode: "local", auth: { mode: "token", token: "fixture-gateway-token" } },
+        env: { vars: { BYTEPLUS_API_KEY: "fixture-byteplus-key" } },
+      });
 
-    const context = await prepareDoctorContext(state.configPath);
-    expect(context.configResult.shouldWriteConfig).toBe(true);
-    await runWriteConfigHealth(context, { runPostWriteRepairs: false });
+      const context = await prepareDoctorContext(state.configPath);
+      expect(context.configResult.shouldWriteConfig).toBe(true);
+      const provider = context.cfg.models?.providers?.["byteplus-plan"];
+      assert(provider);
+      if (laterRepair) {
+        provider.baseUrl = "https://provider.example/v1";
+        provider.models = [
+          {
+            id: "fixture",
+            name: "Fixture",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 8192,
+            maxTokens: 1024,
+          },
+        ];
+      }
+      const expected = laterRepair ? structuredClone(provider) : { apiKey: byteplusRef };
+      await runWriteConfigHealth(context, { runPostWriteRepairs: false });
 
-    const persisted: OpenClawConfig = JSON.parse(await fs.readFile(state.configPath, "utf8"));
-    expect(persisted.models?.providers?.["byteplus-plan"]?.apiKey).toEqual(byteplusRef);
-    expect(context.configWriteRefusal).toBeUndefined();
-    expect(await prepare(selectedPlan)).toEqual({
-      config: selectedPlan,
-      changes: [],
-      pending: false,
-    });
-  });
+      const persisted: OpenClawConfig = JSON.parse(await fs.readFile(state.configPath, "utf8"));
+      expect(persisted.models?.providers?.["byteplus-plan"]).toEqual(expected);
+      expect(context.configWriteRefusal).toBeUndefined();
+      expect(await prepare(selectedPlan)).toEqual({
+        config: selectedPlan,
+        changes: [],
+        pending: false,
+      });
+    },
+  );
 
   it("does not complete the upgrade when ambiguous include ownership blocks the config write", async () => {
     const { prepareDoctorContext } = await import("../../doctor-config-flow.test-support.js");
@@ -446,7 +546,7 @@ describe("Doctor provider-binding write composition", () => {
     await runWriteConfigHealth(context, { runPostWriteRepairs: false });
 
     const persisted: OpenClawConfig = JSON.parse(await fs.readFile(state.configPath, "utf8"));
-    expect(persisted.models?.providers?.["byteplus-plan"]?.apiKey).toEqual(byteplusRef);
+    expect(persisted.models?.providers?.["byteplus-plan"]).toEqual({ apiKey: byteplusRef });
     expect(await prepare(selectedPlan)).toEqual({
       config: selectedPlan,
       changes: [],

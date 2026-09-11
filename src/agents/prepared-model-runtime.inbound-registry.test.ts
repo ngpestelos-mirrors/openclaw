@@ -143,7 +143,7 @@ describe("prepared reply dispatch runtime", () => {
     mocks.configuredAgentIds = ["default"];
     const config = {
       agents: { defaults: { model: "initial/model" } },
-      models: { providers: { selected: {} } },
+      models: { providers: { selected: { baseUrl: "", models: [] } } },
     };
     const selectedRegistry = createEmptyPluginRegistry();
     selectedRegistry.providers.push({

@@ -1,16 +1,27 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { listAgentIds } from "../../../agents/agent-scope-config.js";
+import { resolveAgentEffectiveModelPrimary } from "../../../agents/agent-scope.js";
 import { ensureAuthProfileStore } from "../../../agents/auth-profiles.js";
 import {
   listCandidateAuthProfileStores,
   loadCandidateAuthProfileStore,
 } from "../../../agents/auth-profiles/candidate-stores.js";
 import { loadPersistedSharedAuthProfileStore } from "../../../agents/auth-profiles/persisted.js";
+import { resolveDefaultModelForAgent } from "../../../agents/model-selection-config.js";
+import { resolveConfiguredModelFallbacks } from "../../../agents/model-selection-resolve.js";
+import {
+  buildModelAliasIndex,
+  resolveModelRefFromString,
+} from "../../../agents/model-selection-shared.js";
 import { resolveProviderUseAdmission } from "../../../agents/provider-model-auth-source-plan.js";
+import { resolveAgentModelPrimaryValue } from "../../../config/model-input.js";
 import { resolveResetPreservedSelection } from "../../../config/sessions/reset-preserved-selection.js";
 import { scanDoctorSessionEntriesTolerant } from "../../../config/sessions/session-accessor.js";
+import type { ModelProviderConfigInput } from "../../../config/types.models.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { parseEnvTemplateSecretRef } from "../../../config/types.secrets.js";
+import { validateConfigObjectRaw } from "../../../config/validation-core.js";
 import {
   readLegacyMigrationReceiptFromDatabase,
   recordLegacyMigrationReceipt,
@@ -34,7 +45,13 @@ export async function prepareProviderUseBindingMigration(params: {
   config: OpenClawConfig;
   configPath: string;
   env: NodeJS.ProcessEnv;
-}): Promise<{ config: OpenClawConfig; changes: string[]; pending: boolean; warnings?: string[] }> {
+}): Promise<{
+  config: OpenClawConfig;
+  changes: string[];
+  pending: boolean;
+  warnings?: string[];
+  unsetPaths?: string[][];
+}> {
   const { config, configPath, env } = params;
   const unchanged = { config, changes: [], pending: false };
   // Doctor retains invalid source values until its config validation step.
@@ -43,7 +60,7 @@ export async function prepareProviderUseBindingMigration(params: {
     return unchanged;
   }
   const sourceKey = resolveLegacyMigrationSourceKey(MIGRATION, configPath);
-  const selections: unknown[] = [config.agents?.defaults?.model];
+  const sessionSelections: unknown[] = [];
   let direct: Record<string, readonly string[]>;
   let envCandidateMap: Readonly<Record<string, readonly string[]>>;
   let aliasMap: Readonly<Record<string, string>>;
@@ -85,7 +102,7 @@ export async function prepareProviderUseBindingMigration(params: {
           }
           const pin = resolveResetPreservedSelection({ entry });
           if (typeof pin.modelOverride === "string") {
-            selections.push(
+            sessionSelections.push(
               pin.providerOverride && !pin.modelOverride.startsWith(`${pin.providerOverride}/`)
                 ? `${pin.providerOverride}/${pin.modelOverride}`
                 : pin.modelOverride,
@@ -106,35 +123,59 @@ export async function prepareProviderUseBindingMigration(params: {
   } catch {
     return { ...unchanged, warnings: [DEFERRED] };
   }
-  const agents = config.agents;
-  const roster = isRecord(agents?.entries)
-    ? Object.values(agents.entries)
-    : Array.isArray(agents?.list)
-      ? agents.list
-      : [];
-  for (const agent of roster) {
-    if (isRecord(agent)) {
-      selections.push(agent.model);
-    }
-  }
   if (config.models !== undefined && !isRecord(config.models)) {
     return unchanged;
   }
   if (config.models?.providers !== undefined && !isRecord(config.models.providers)) {
     return unchanged;
   }
+  const selectedProviders = new Set<string>();
+  for (const agentId of [undefined, ...listAgentIds(config)]) {
+    const selection = {
+      cfg: config,
+      agentId,
+      allowManifestNormalization: false,
+      allowPluginNormalization: false,
+    };
+    const primary = resolveDefaultModelForAgent(selection);
+    const rawPrimary = agentId
+      ? resolveAgentEffectiveModelPrimary(config, agentId)
+      : resolveAgentModelPrimaryValue(config.agents?.defaults?.model);
+    if (rawPrimary) {
+      selectedProviders.add(normalizeProviderId(primary.provider));
+    }
+    const aliasIndex = buildModelAliasIndex({
+      ...selection,
+      defaultProvider: primary.provider,
+    });
+    for (const raw of resolveConfiguredModelFallbacks(selection)) {
+      if (typeof raw !== "string") {
+        continue;
+      }
+      const resolved = resolveModelRefFromString({
+        ...selection,
+        raw,
+        defaultProvider: primary.provider,
+        aliasIndex,
+      });
+      if (resolved) {
+        selectedProviders.add(normalizeProviderId(resolved.ref.provider));
+      }
+    }
+  }
   const manifestVariables = new Set(Object.values(direct).flat());
   const admitted = resolveProviderUseAdmission({ config, env, providerEnvVars: direct, profiles });
-  const providers = { ...config.models?.providers };
+  const providers: Record<string, ModelProviderConfigInput> = {};
   const changes: string[] = [];
   for (const [identity, candidates] of Object.entries(envCandidateMap)) {
     const provider = normalizeProviderId(identity);
     if (
       (!Object.hasOwn(direct, identity) && !Object.hasOwn(aliasMap, identity)) ||
       admitted.has(provider) ||
-      !selections.some(
-        (model) => selectedCanonicalModelRefsForRuntimePolicy(model, provider).length > 0,
-      )
+      (!selectedProviders.has(provider) &&
+        !sessionSelections.some(
+          (model) => selectedCanonicalModelRefsForRuntimePolicy(model, provider).length > 0,
+        ))
     ) {
       continue;
     }
@@ -153,13 +194,33 @@ export async function prepareProviderUseBindingMigration(params: {
     if (!apiKey) {
       continue;
     }
-    providers[provider] = { apiKey, baseUrl: "", models: [] };
+    providers[provider] = { apiKey };
     changes.push(`Bound selected provider ${provider} to ${variable} with an env SecretRef.`);
   }
+  if (changes.length === 0) {
+    return { ...unchanged, pending: true };
+  }
+  const validated = validateConfigObjectRaw({ models: { providers } }, { env });
+  if (!validated.ok) {
+    return {
+      ...unchanged,
+      warnings: ["Could not validate shared-key provider bindings; config was left unchanged."],
+    };
+  }
   return {
-    config: changes.length ? { ...config, models: { ...config.models, providers } } : config,
+    config: {
+      ...config,
+      models: {
+        ...config.models,
+        providers: { ...config.models?.providers, ...validated.config.models?.providers },
+      },
+    },
     changes,
     pending: true,
+    // Doctor consumes materialized config; its writer preserves the sparse source overlay.
+    unsetPaths: Object.keys(providers).flatMap((provider) =>
+      ["baseUrl", "models"].map((field) => ["models", "providers", provider, field]),
+    ),
   };
 }
 

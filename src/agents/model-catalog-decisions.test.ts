@@ -77,7 +77,7 @@ describe("captured model decisions", () => {
       const owner = createModelCatalogDecisions({
         cfg: {
           plugins: { entries: { copilot: { enabled: true } } },
-          models: { providers: { "github-copilot": {} } },
+          models: { providers: { "github-copilot": { baseUrl: "", models: [] } } },
         },
         agentId: "main",
         agentDir: "/tmp/copilot-agent",

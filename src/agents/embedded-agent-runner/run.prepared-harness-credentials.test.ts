@@ -105,7 +105,7 @@ describe("prepared plugin harness credentials", () => {
 
   it("does not discover a credential for an implicit harness auth attempt", async () => {
     await runEmbeddedAgent({
-      ...createOverflowRunParams(state),
+      ...createOverflowRunParams(state, "custom-proof"),
       provider: "custom-proof",
       model: "gpt-5.6-luna",
     });

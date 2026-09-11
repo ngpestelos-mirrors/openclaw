@@ -307,6 +307,7 @@ describe("native harness auth failover", () => {
       await expect(
         runEmbeddedAgent({
           ...createOverflowRunParams(state),
+          config: undefined,
           ...nativePin,
           provider: "openai",
           model: "gpt-5.6-luna",

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import nodePath from "node:path";
 import { UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE_ENV } from "../commands/doctor/shared/update-phase.js";
+import { getConfigValueAtPath } from "../config/config-paths.js";
 import { resolveIsConfigReadOnly, resolveIsNixMode } from "../config/paths.js";
 import type { DoctorHealthFlowContext } from "./doctor-health-contribution-types.js";
 import {
@@ -97,6 +98,12 @@ export async function runWriteConfigHealth(
           ...(ctx.configResult.explicitSetPaths
             ? { explicitSetPaths: ctx.configResult.explicitSetPaths }
             : {}),
+          unsetPaths: ctx.configResult.unsetPaths?.filter((path) => {
+            const value = getConfigValueAtPath(ctx.cfg, path);
+            return path.at(-1) === "baseUrl"
+              ? value === ""
+              : Array.isArray(value) && value.length === 0;
+          }),
           persistCanonicalAgentRoster: configResultWritePending
             ? ctx.configResult.persistCanonicalAgentRoster
             : undefined,
@@ -183,6 +190,7 @@ export async function runWriteConfigHealth(
     // The final writer runs again after health repairs. Advance its baseline only
     // after the atomic write succeeds so later failures cannot mark volatile state durable.
     ctx.cfgForPersistence = structuredClone(ctx.cfg);
+    delete ctx.configResult.unsetPaths;
     if (ctx.configResult.shouldWriteConfig === true) {
       ctx.configResultWriteCommitted = true;
     }

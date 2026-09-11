@@ -1112,7 +1112,7 @@ describe("/model chat UX", () => {
           workspaceDir,
           cfg: {
             ...baseConfig(),
-            models: { providers: { anthropic: {} } },
+            models: { providers: { anthropic: { baseUrl: "", models: [] } } },
             plugins: { allow: ["workspace-model-list"] },
           } as unknown as OpenClawConfig,
         });
