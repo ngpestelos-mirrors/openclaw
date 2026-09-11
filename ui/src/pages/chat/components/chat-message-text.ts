@@ -195,7 +195,7 @@ export function renderMessageMarkdown(
         aria-expanded=${String(expanded)}
         @click=${() => opts.onToggleUserMessageExpanded?.(disclosureId)}
       >
-        ${expanded ? icons.chevronUp : icons.chevronDown}
+        ${expanded ? icons.chevronDown : icons.chevronRight}
       </button>
     </div>
   `;
