@@ -359,8 +359,18 @@ export const ModelCatalogProviderOutcomeSchema = closedObject({
   ]),
 });
 
+export const ModelAllowListSchema = closedObject({
+  hiddenCount: Type.Integer({ minimum: 0 }),
+  settingsPath: NonEmptyString,
+  message: Type.String(),
+  selectedModelBlocked: Type.Optional(Type.Boolean()),
+});
+
+export type ModelAllowList = Static<typeof ModelAllowListSchema>;
+
 export const ModelsListResultSchema = closedObject({
   models: Type.Array(ModelChoiceSchema),
+  allowList: Type.Optional(ModelAllowListSchema),
   refreshFailed: Type.Optional(Type.Boolean()),
   accountSelection: Type.Optional(ChatAccountSelectionSchema),
   providerOutcomes: Type.Optional(Type.Array(ModelCatalogProviderOutcomeSchema)),

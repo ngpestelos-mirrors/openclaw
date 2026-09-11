@@ -3,6 +3,7 @@ package ai.openclaw.app.ui.chat
 import ai.openclaw.app.ChatDraft
 import ai.openclaw.app.ChatDraftPlacement
 import ai.openclaw.app.GatewayAgentSummary
+import ai.openclaw.app.GatewayModelAllowList
 import ai.openclaw.app.GatewayModelSummary
 import ai.openclaw.app.GatewayModelUnavailableReason
 import ai.openclaw.app.MainViewModel
@@ -394,6 +395,7 @@ internal fun ChatScreen(
   val manualPort by viewModel.manualPort.collectAsState()
   val manualTls by viewModel.manualTls.collectAsState()
   val modelCatalog by viewModel.chatModelCatalog.collectAsState()
+  val modelAllowList by viewModel.chatModelAllowList.collectAsState()
   val modelFavorites by viewModel.modelFavorites.collectAsState()
   val modelRecents by viewModel.modelRecents.collectAsState()
   val selectedModelRef by viewModel.chatSelectedModelRef.collectAsState()
@@ -1257,6 +1259,7 @@ internal fun ChatScreen(
         admit = { modelPicker.admit(opening) },
         admitPermissions = ::admitPermissions,
         sections = modelSections,
+        allowList = modelAllowList,
         favorites = modelFavorites.toSet(),
         selectedModelLabel = selectedModelLabel,
         modelSelectionLocked = modelSelectionLocked,
@@ -3783,6 +3786,7 @@ private fun ChatModelPickerSheet(
   admit: () -> Boolean,
   admitPermissions: () -> Boolean,
   sections: ChatModelPickerSections,
+  allowList: GatewayModelAllowList?,
   favorites: Set<String>,
   selectedModelLabel: String,
   modelSelectionLocked: Boolean,
@@ -3846,6 +3850,9 @@ private fun ChatModelPickerSheet(
             item {
               Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(text = selectedModelLabel, style = ClawTheme.type.label, color = ClawTheme.colors.text)
+                allowList?.message?.takeIf { it.isNotEmpty() }?.let { message ->
+                  Text(message, style = ClawTheme.type.caption)
+                }
                 if (modelSelectionLocked) {
                   Text(text = nativeString("Model selection is locked for this session."), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
                 }
@@ -3952,6 +3959,7 @@ private fun ChatModelPickerSheet(
               HorizontalDivider(color = ClawTheme.colors.border)
             }
             item {
+              if (allowList != null) return@item
               Surface(
                 onClick = { onSelect(null) },
                 modifier = Modifier.fillMaxWidth().heightIn(min = ClawTheme.spacing.touchTarget),
@@ -4056,7 +4064,9 @@ private fun ChatModelPickerRow(
           overflow = TextOverflow.Ellipsis,
         )
         Text(
-          text = listOfNotNull(providerDisplayName(model.provider), model.runtimeName, availabilityLabel).joinToString(" · "),
+          text = listOfNotNull(providerDisplayName(model.provider),
+            nativeString("Default").takeIf { "default" in model.tags },
+            model.runtimeName, availabilityLabel).joinToString(" · "),
           style = ClawTheme.type.caption.copy(fontWeight = FontWeight.Normal),
           color = if (unavailable) ClawTheme.colors.warning else ClawTheme.colors.textMuted,
           maxLines = 1,

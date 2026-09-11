@@ -28,6 +28,7 @@ data class GatewayModelSummary(
   val supportsTools: Boolean? = null,
   val agentRuntime: JsonObject? = null,
   val unavailableUntil: Long? = null,
+  val tags: List<String> = emptyList(),
 ) {
   val runtimeName: String?
     get() =
@@ -50,15 +51,25 @@ enum class GatewayModelUnavailableReason {
   Cooldown,
 }
 
+data class GatewayModelAllowList(
+  val message: String,
+)
+
 internal data class GatewayModelCatalogResult(
   val models: List<GatewayModelSummary>,
   val refreshFailed: Boolean,
+  val allowList: GatewayModelAllowList?,
 )
 
 internal fun parseGatewayModelCatalog(root: JsonObject?): GatewayModelCatalogResult =
   GatewayModelCatalogResult(
     models = parseGatewayModels(root?.get("models") as? JsonArray),
     refreshFailed = root?.get("refreshFailed")?.jsonPrimitive?.booleanOrNull == true,
+    allowList = root?.get("allowList")?.jsonObject?.let { notice ->
+      GatewayModelAllowList(
+        message = notice.getValue("message").jsonPrimitive.content,
+      )
+    },
   )
 
 internal fun parseGatewayModels(models: JsonArray?): List<GatewayModelSummary> =
@@ -70,6 +81,7 @@ internal fun parseGatewayModels(models: JsonArray?): List<GatewayModelSummary> =
       name = row.getValue("name").jsonPrimitive.content,
       provider = row.getValue("provider").jsonPrimitive.content,
       available = row["available"]?.jsonPrimitive?.booleanOrNull,
+      tags = (row["tags"] as? JsonArray).orEmpty().map { it.jsonPrimitive.content },
       unavailableReason =
         when (row["unavailableReason"]?.jsonPrimitive?.content) {
           "missing-auth" -> GatewayModelUnavailableReason.MissingAuth

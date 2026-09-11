@@ -524,10 +524,14 @@ async function handleTelegramModelCallback(params: {
       senderId,
       runtimeCfg,
     });
-    const providerData = await telegramDeps.buildModelsProviderData(runtimeCfg, session.agentId);
+    const providerData = await telegramDeps.buildModelsProviderData(runtimeCfg, session.agentId, {
+      sessionEntry: session.sessionEntry,
+    });
     return { sessionState: session, modelData: providerData };
   });
   const { byProvider, providers, modelNames, resolvedDefault: activeResolvedDefault } = modelData;
+  const notice = modelData.allowList?.message;
+  const withNotice = (text: string) => (notice ? `${text}\n\n${notice}` : text);
   const providerInfos: ProviderInfo[] = providers.map((provider) => ({
     id: provider,
     count: byProvider.get(provider)?.size ?? 0,
@@ -535,12 +539,14 @@ async function handleTelegramModelCallback(params: {
 
   if (modelCallback.type === "providers" || modelCallback.type === "back") {
     if (providers.length === 0) {
-      await retryModelAction(() => editMessageWithButtons("No providers available.", []));
+      await retryModelAction(() =>
+        editMessageWithButtons(withNotice("No providers available."), []),
+      );
       return true;
     }
     await retryModelAction(() =>
       editMessageWithButtons(
-        "Select a provider:",
+        withNotice("Select a provider:"),
         buildTelegramModelsMenuButtons({ providers: providerInfos }),
       ),
     );
@@ -589,7 +595,7 @@ async function handleTelegramModelCallback(params: {
       agentDir: resolveAgentDir(runtimeCfg, sessionState.agentId),
       sessionEntry: sessionState.sessionEntry,
     })}\nSelecting a model also applies its configured runtime.`;
-    await retryModelAction(() => editMessageWithButtons(text, buttons));
+    await retryModelAction(() => editMessageWithButtons(withNotice(text), buttons));
     return true;
   }
 

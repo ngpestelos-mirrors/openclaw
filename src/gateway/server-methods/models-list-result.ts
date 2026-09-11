@@ -1,5 +1,4 @@
 // Resolves public model catalogs without exposing runtime-only provider params.
-import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type {
   ModelChoice,
   ModelsListParams,
@@ -47,6 +46,7 @@ import {
 } from "../../agents/prepared-model-runtime.errors.js";
 import { isPreparedModelCatalogFull } from "../../agents/prepared-model-runtime.full-catalog.js";
 import { preparedModelRuntimeConfigsMatch } from "../../agents/prepared-model-runtime.js";
+import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace.js";
 import { getRuntimeConfig, getRuntimeConfigSourceSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -532,6 +532,9 @@ export async function prepareModelsListResult(
     defaultProvider: DEFAULT_PROVIDER,
     defaultModel,
     agentId,
+    selectedModel: scope
+      ? resolveSessionModelRef(cfg, sessionEntry, agentId, { allowPluginNormalization: false })
+      : undefined,
     workspaceDir,
     view,
     policy: visibilityPolicy,
@@ -542,15 +545,9 @@ export async function prepareModelsListResult(
       return () => {
         const evaluation = evaluateNative(entry, host);
         evaluations.set(resolveModelCatalogIdentityKey(entry), evaluation);
-        const routeManaged = evaluation.routeResolution !== null;
-        const syntheticLocal =
-          !routeManaged &&
-          normalizeProviderId(entry.provider) !== "openai" &&
-          evaluation.availability === undefined &&
-          evaluation.evidence === "synthetic";
         return resolveLogicalModelCatalogEntryState({
           evaluation,
-          authBacked: evaluation.availability === true || syntheticLocal,
+          provider: entry.provider,
           routePolicy: openAIModelCatalogRoutePolicy,
         });
       };
@@ -575,17 +572,19 @@ export async function prepareModelsListResult(
   });
   return {
     isCurrent: () => isCurrent() && projector.isCurrent(),
-    read: () => ({
-      models: readCatalog()
-        .filter(matchesProvider)
-        .map((entry) => {
+    read: () => {
+      const { entries, allowList } = readCatalog();
+      return {
+        models: entries.filter(matchesProvider).map((entry) => {
           const evaluation = evaluations.get(resolveModelCatalogIdentityKey(entry));
           if (!evaluation) {
             throw new Error("Model catalog publication omitted prepared auth evaluation");
           }
           return projectPublic(entry, evaluation);
         }),
-      ...outcomeProjection,
-    }),
+        ...outcomeProjection,
+        ...(allowList ? { allowList } : {}),
+      };
+    },
   };
 }

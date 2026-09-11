@@ -57,7 +57,7 @@ Related model-config surfaces:
 
 - `agents.defaults.models` stores aliases and per-model settings. After legacy-policy migration, adding an entry does not restrict model overrides.
 - `agents.defaults.modelSelectionScope` chooses the scope of chat commands and Gateway session model updates without an explicit scope. The default is the current session. See [Model selection scope](/gateway/config-agents/models#agentsdefaultsmodelselectionscope).
-- `agents.defaults.modelPolicy.allow` is the optional override allowlist. Use exact refs or trailing prefix wildcards such as `provider/*` and `provider/namespace/*`. Omit it or set `[]` to allow any model. Per-agent `agents.entries.*.modelPolicy.allow` replaces the default policy for that agent.
+- `agents.defaults.modelPolicy.allow` controls model overrides and picker choices. Omit it or set `[]` to show every model from enabled providers. `provider/*` includes that provider's current and future models; `provider/model` admits one exact model. The configured primary remains usable even when omitted from the list. Narrower `provider/namespace/*` prefixes are also supported. Per-agent `agents.entries.*.modelPolicy.allow` replaces the default policy for that agent.
 - `agents.defaults.utilityModel` is an optional lower-cost model for short internal tasks. Those tasks include generated dashboard session titles, supported channel thread or topic titles, and progress narration. Per-agent `agents.entries.*.utilityModel` overrides it. When unset, OpenClaw uses the primary provider's declared small-model default when one exists (OpenAI → `gpt-5.6-luna`, Anthropic → `claude-haiku-4-5`), otherwise the agent's primary model. Set it to an empty string to disable utility routing. Generated titles retry once with the primary model when a distinct utility model fails. For dashboard titles, automatic utility derivation and the regular fallback follow the effective session provider and auth profile. An explicit utility model keeps its configured provider and auth. An empty utility model skips only the alternate small-model route, not dashboard title generation. Utility tasks are separate model calls and may send bounded task content to the selected model provider.
 - `agents.defaults.imageModel` is used only when the primary model cannot accept images.
 - `agents.defaults.pdfModel` is used by the `pdf` tool. If unset, the tool falls back to `imageModel`, then the resolved session/default model.
@@ -68,6 +68,10 @@ Full key reference, defaults, and JSON5 examples: [Configuration reference](/gat
 
 Explicit `modelPolicy.allow` restrictions were introduced in v2026.8.1. For directly authored legacy model maps, `openclaw doctor --fix` copies the complete restriction into `modelPolicy.allow` when every ref is valid. If any ref needs provider qualification, Doctor preserves the entire legacy restriction and reports how to set an explicit policy. Until then, model-map edits still change the legacy restriction. No keys are silently dropped, and no empty policy is substituted. Include-owned migrations retain the existing edit-owning-file requirement.
 
+When `meta.migrations.modelPolicyAllowlist` is `true`, Doctor offers to replace upgrade-generated exact entries with `provider/*` if they hide newer catalog models. Only `openclaw doctor --fix` accepts this offer. Ordinary Doctor leaves the list unchanged, and lists without the marker receive no upgrade offer. Doctor also identifies entries for missing models or disabled providers and explains how to repair them.
+
+Doctor reports when the configured primary is omitted from its effective allow list, including an agent primary with an inherited list. It offers the exact `provider/model` entry or `provider/*` as a remedy. This finding does not rewrite the primary or a hand-written list. The primary remains usable and appears as **Default** in model pickers.
+
 <a id="selection-source-and-fallback-behavior" />
 
 ## Selection source and fallback strictness
@@ -76,7 +80,7 @@ The same `provider/model` behaves differently depending on where it came from:
 
 | Source                                                                  | Behavior                                                                                                                                                                                                                                                       |
 | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Configured default (`agents.defaults.model.primary`, per-agent primary) | Normal starting point; uses `agents.defaults.model.fallbacks`.                                                                                                                                                                                                 |
+| Configured default (`agents.defaults.model.primary`, per-agent primary) | Normal starting point; remains usable outside the allow list and uses configured fallbacks.                                                                                                                                                                    |
 | Auto fallback                                                           | Temporary recovery state, stored as `modelOverrideSource: "auto"`. OpenClaw periodically reprobes the original primary, clears the auto selection on recovery, and announces fallback/recovery transitions once per state change.                              |
 | User session selection                                                  | Exact and strict. `/model`, the model picker, `session_status(model=...)`, and `sessions.patch` store `modelOverrideSource: "user"`. If that provider/model becomes unreachable, the run fails visibly instead of falling through to another configured model. |
 | Cron `--model` / payload `model`                                        | Per-job primary. Still uses configured fallbacks unless the job supplies its own payload `fallbacks` (`fallbacks: []` forces a strict run).                                                                                                                    |
@@ -85,7 +89,7 @@ Other selection rules:
 
 - Changing `agents.defaults.model.primary` does not rewrite existing session pins. If status reports `This session is pinned to X; config primary Y will apply to new/unpinned sessions.`, run `/model default` to clear the pin.
 - CLI default-model and allowlist pickers respect `models.mode: "replace"` by listing only `models.providers.*.models` instead of the full built-in catalog.
-- The Control UI starts from the Gateway's prepared configured model view, so opening chat does not start provider discovery. Opening the chat model picker reads published rows, including rows matched by a trailing `provider/*` policy entry. Use its explicit Refresh action to discover provider models. Default and configured picker views hide catalog rows marked `deprecated` or `disabled`. There is one exception: a row stays visible when that exact model is configured as a primary, fallback, utility or tool model, alias or settings key, or exact policy entry. Hidden rows remain selectable by exact `provider/model` ref. The full built-in catalog, including hidden rows, is reserved for explicit browse views (`models.list` with `view: "all"`, or `openclaw models list --all`).
+- The Control UI starts from the Gateway's prepared configured model view, so opening chat does not start provider discovery. Opening the chat model picker reads published rows narrowed by the allow list, plus the configured primary labeled **Default**. Use its explicit Refresh action to discover provider models. Default and configured picker views hide catalog rows marked `deprecated` or `disabled`, unless that exact model is configured as a primary, fallback, utility or tool model, alias or settings key, or exact policy entry. Retained rows other than the primary still need to pass the allow list for manual selection. Configured fallback chains remain usable for automatic recovery without adding their models to the list. Status-hidden rows remain selectable by exact `provider/model` ref when policy permits them. The full built-in catalog is reserved for explicit browse views (`models.list` with `view: "all"`, or `openclaw models list --all`).
 - Provider inventory UIs use `models.list` with `view: "provider-config"` to show source-authored `models.providers.*.models` rows without applying picker allowlists.
 
 The Gateway prepares one model catalog for the CLI, `/models`, the Control UI,
@@ -161,6 +165,8 @@ Add "provider/model", "provider/*", or a narrower "provider/namespace/*" prefix 
 
 Fix it by adding the model or a provider wildcard to the named `modelPolicy.allow` key, removing/emptying that list, or picking a model from `/model list`. If the rejected command included a runtime override such as `/model openai/gpt-5.5 --runtime codex`, fix the allowlist first, then retry the same command.
 
+Pickers share the Gateway's allowed catalog and show “N newer models hidden by your allow list” with the settings path when policy hides rows. The configured primary remains in the view as **Default**, even when the list omits it. If no selectable row remains, the picker shows the notice and repair path. Existing sessions keep their model pin; a pin outside the list that is not the configured primary shows “not allowed by your allow list” with the repair path.
+
 For local/GGUF models, the allowlist needs the full provider-prefixed ref, for example `ollama/gemma4:26b` or `lmstudio/Gemma4-26b-a4-it-gguf` — check `openclaw models list --provider <provider>` for the exact string. Bare filenames or display names are not enough once the allowlist is active.
 
 To limit providers without listing every model, use trailing prefix wildcard entries. A provider-wide `provider/*` matches every model under that provider. A narrower prefix such as `clawrouter/anthropic/*` matches only that namespace:
@@ -177,7 +183,7 @@ To limit providers without listing every model, use trailing prefix wildcard ent
 }
 ```
 
-`/model`, `/models`, and model pickers then show the discovered catalog for those providers only, and new models can appear without editing the allowlist. Mix exact `provider/model` entries with `provider/*` entries to pull in one specific model from another provider.
+`/model`, `/models`, and model pickers then show the discovered catalog for those providers plus the configured primary. New provider models can appear without editing the allowlist. Mix exact `provider/model` entries with `provider/*` entries to pull in one specific model from another provider.
 
 Example allowlist with aliases and per-model settings:
 

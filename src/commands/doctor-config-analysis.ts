@@ -9,6 +9,7 @@ import { INCLUDE_KEY } from "../config/includes.js";
 import { resolveAgentModelFallbackValues } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { OpenClawSchema } from "../config/zod-schema.js";
+import { isPathInside } from "../infra/path-guards.js";
 import { isRecord } from "../utils.js";
 
 type UnrecognizedKeysIssue = ZodIssue & {
@@ -287,4 +288,24 @@ export function noteMcpOriginWarning(cfg: OpenClawConfig): void {
     ].join("\n"),
     "Doctor warnings",
   );
+}
+export function collectInvalidHookTransformsDirWarnings(
+  cfg: OpenClawConfig,
+  configPath: string,
+): string[] {
+  const transformsDir = cfg.hooks?.transformsDir?.trim();
+  if (!transformsDir) {
+    return [];
+  }
+  const configDir = path.dirname(configPath);
+  const transformsRoot = path.join(configDir, "hooks", "transforms");
+  const resolved = path.isAbsolute(transformsDir)
+    ? path.resolve(transformsDir)
+    : path.resolve(transformsRoot, transformsDir);
+  if (isPathInside(transformsRoot, resolved)) {
+    return [];
+  }
+  return [
+    `- hooks.transformsDir: ${transformsDir} is outside ${transformsRoot}. Hook transform modules must live under ${transformsRoot}; move custom transforms there or remove hooks.transformsDir.`,
+  ];
 }

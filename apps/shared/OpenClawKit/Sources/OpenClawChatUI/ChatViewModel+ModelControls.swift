@@ -15,6 +15,7 @@ extension OpenClawChatViewModel {
                 return
             }
             self.modelChoices = catalog.choices
+            self.modelAllowList = catalog.allowList
             self.modelAvailabilityIsSessionScoped = catalog.availabilityIsSessionScoped
             self.modelCatalogMessage = catalog.message
             if target == self.currentModelPatchTarget(),

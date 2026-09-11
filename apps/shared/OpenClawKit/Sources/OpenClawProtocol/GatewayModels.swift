@@ -8249,6 +8249,32 @@ public struct MissingScopeErrorDetails: Codable, Sendable {
     }
 }
 
+public struct ModelAllowList: Codable, Sendable {
+    public let hiddencount: Int
+    public let settingspath: String
+    public let message: String
+    public let selectedmodelblocked: Bool?
+
+    public init(
+        hiddencount: Int,
+        settingspath: String,
+        message: String,
+        selectedmodelblocked: Bool? = nil)
+    {
+        self.hiddencount = hiddencount
+        self.settingspath = settingspath
+        self.message = message
+        self.selectedmodelblocked = selectedmodelblocked
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hiddencount = "hiddenCount"
+        case settingspath = "settingsPath"
+        case message
+        case selectedmodelblocked = "selectedModelBlocked"
+    }
+}
+
 public struct ModelChoice: Codable, Sendable {
     public let id: String
     public let name: String
@@ -8479,17 +8505,20 @@ public struct ModelsListParams: Codable, Sendable {
 
 public struct ModelsListResult: Codable, Sendable {
     public let models: [ModelChoice]
+    public let allowlist: ModelAllowList?
     public let refreshfailed: Bool?
     public let accountselection: ChatAccountSelection?
     public let provideroutcomes: [[String: AnyCodable]]?
 
     public init(
         models: [ModelChoice],
+        allowlist: ModelAllowList? = nil,
         refreshfailed: Bool? = nil,
         accountselection: ChatAccountSelection? = nil,
         provideroutcomes: [[String: AnyCodable]]? = nil)
     {
         self.models = models
+        self.allowlist = allowlist
         self.refreshfailed = refreshfailed
         self.accountselection = accountselection
         self.provideroutcomes = provideroutcomes
@@ -8497,6 +8526,7 @@ public struct ModelsListResult: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case models
+        case allowlist = "allowList"
         case refreshfailed = "refreshFailed"
         case accountselection = "accountSelection"
         case provideroutcomes = "providerOutcomes"

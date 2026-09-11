@@ -1,8 +1,13 @@
-import type { ModelChoice } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
+import type {
+  ModelChoice,
+  ModelAllowList,
+} from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import type { PreparedAgentCredentialModes } from "../../agents/agent-auth-credential-modes.js";
 import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
 import { readSessionRuntimeOwnership } from "../../agents/harness/session-runtime-ownership.js";
+import { createModelAllowListNotice } from "../../agents/model-catalog-visibility.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
+import { createModelVisibilityPolicy } from "../../agents/model-visibility-policy.js";
 import { getPreparedModelRuntimeAuthMaterializations } from "../../agents/prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.js";
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
@@ -38,7 +43,7 @@ export async function prepareChatMetadataModelProjection(params: {
   profileProvider?: string;
   runtimeOverride?: string;
   assertCurrent?: () => void;
-}): Promise<PreparedAgentProjection<{ models?: ModelChoice[] }>> {
+}): Promise<PreparedAgentProjection<{ models?: ModelChoice[]; allowList?: ModelAllowList }>> {
   const { prepareModelsListResult, createGatewayAgentModelCatalogProjector } =
     await import("./models-list-result.js");
   // A draft has no persisted session grant: recheck its live human before hydrating private auth.
@@ -83,7 +88,10 @@ export async function prepareChatMetadataModelProjection(params: {
   ]);
   return {
     modelCatalog,
-    read: () => ({ models: readModels.read().models }),
+    read: () => {
+      const { models, allowList } = readModels.read();
+      return { models, ...(allowList ? { allowList } : {}) };
+    },
     isCurrent: readModels.isCurrent,
   };
 }
@@ -157,7 +165,31 @@ export function projectChatSessionMetadata(
   metadata: ChatMetadataResult,
   config: OpenClawConfig,
 ): ChatMetadataResult {
-  return metadata.models
-    ? { ...metadata, models: projectSessionModelCatalog(readParams, metadata.models, config) }
-    : metadata;
+  if (!metadata.models) {
+    return metadata;
+  }
+  const selected = resolveSessionModelRef(config, readParams.sessionEntry, readParams.agentId, {
+    allowPluginNormalization: false,
+  });
+  const policy =
+    metadata.allowList &&
+    createModelVisibilityPolicy({
+      cfg: config,
+      agentId: readParams.agentId,
+      catalog: metadata.models,
+      defaultProvider: selected.provider,
+      defaultModel: selected.model,
+    });
+  return {
+    ...metadata,
+    models: projectSessionModelCatalog(readParams, metadata.models, config),
+    ...(metadata.allowList && policy
+      ? {
+          allowList: createModelAllowListNotice(
+            { ...metadata.allowList, selectedModelBlocked: !policy.allows(selected) },
+            metadata.models.length > 0,
+          ),
+        }
+      : {}),
+  };
 }

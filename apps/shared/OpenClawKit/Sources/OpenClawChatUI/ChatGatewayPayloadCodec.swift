@@ -88,7 +88,13 @@ public enum OpenClawChatGatewayPayloadCodec {
         return try OpenClawChatModelCatalogSnapshot(
             choices: decoded.models.map(self.modelChoice),
             availabilityIsSessionScoped: true,
-            refreshFailed: decoded.refreshfailed == true)
+            refreshFailed: decoded.refreshfailed == true,
+            allowList: decoded.allowlist.map {
+                OpenClawChatModelAllowList(
+                    hiddenCount: $0.hiddencount,
+                    settingsPath: $0.settingspath,
+                    selectedModelBlocked: $0.selectedmodelblocked)
+            })
     }
 
     public static func decodeSessionRoutingIdentity(_ data: Data) throws -> OpenClawChatSessionRoutingIdentity {

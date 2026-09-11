@@ -331,7 +331,12 @@ export async function applyInlineDirectiveOverrides(params: {
     directives.hasQueueDirective ||
     directives.hasStatusDirective;
 
-  if (!hasAnyDirective && !modelState.resetModelOverride && !modelState.resetModelOverrideReason) {
+  if (
+    !hasAnyDirective &&
+    !modelState.resetModelOverride &&
+    !modelState.resetModelOverrideReason &&
+    !modelState.blockedModelOverrideRef
+  ) {
     return {
       kind: "continue",
       directives,
@@ -569,6 +574,14 @@ export async function applyInlineDirectiveOverrides(params: {
     }
     ({ provider, model } = persistenceState.outcome);
     selectionCatalog = persistenceState.outcome.modelCatalog ?? selectionCatalog;
+  }
+
+  if (modelState.blockedModelOverrideRef && !modelState.modelPolicy.allows({ provider, model })) {
+    typing.cleanup();
+    return directiveRejection(
+      "model-selection-rejected",
+      `Your pinned model ${modelState.blockedModelOverrideRef} is not allowed by your allow list. Add it to ${modelState.modelPolicy.allowRepairConfigPath.replace("entries.*", `entries.${agentId}`)} or choose an allowed model with /model list. Your session pin is unchanged.`,
+    );
   }
 
   const selectedCatalogEntry = selectionCatalog.find(

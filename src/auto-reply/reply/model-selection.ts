@@ -75,6 +75,7 @@ type ModelSelectionState = {
   allowedModelCatalog: ModelCatalog;
   policyAliasIndex: ModelAliasIndex;
   resetModelOverride: boolean;
+  blockedModelOverrideRef?: string;
   resetModelOverrideRef?: string;
   resetModelOverrideReason?: "disallowed" | "stale" | "temporarily-unavailable";
   modelPolicyConfigPath?: string;
@@ -212,6 +213,7 @@ export async function createModelSelectionState(params: {
   // (discovery threw, static/empty fallback) must not destroy a pinned override.
   let catalogAuthoritative = true;
   let resetModelOverride = false;
+  let blockedModelOverrideRef: string | undefined;
   let resetModelOverrideRef: string | undefined;
   let resetModelOverrideReason: "disallowed" | "stale" | "temporarily-unavailable" | undefined;
   const directStoredModelOverride = storedModelOverrides.resolveDirectStoredModelOverride({
@@ -332,10 +334,11 @@ export async function createModelSelectionState(params: {
     );
     const key = modelKey(normalizedOverride.provider, normalizedOverride.model);
     const overrideAllowed = visibilityPolicy.allows(normalizedOverride);
-    // A degraded catalog cannot prove a pin is disallowed. Preserve it while the turn falls back
-    // to primary, then re-evaluate after discovery recovers; config-proven stale pins still reset.
+    // A degraded catalog cannot retire an automatic fallback; stale config evidence still can.
     const shouldResetOverride =
-      (staleDirectStoredOverride || !overrideAllowed) && !modelSelectionLocked;
+      (staleDirectStoredOverride ||
+        (!overrideAllowed && sessionEntry.modelOverrideSource === "auto")) &&
+      !modelSelectionLocked;
     const overrideTemporarilyUnavailable =
       shouldResetOverride && !staleDirectStoredOverride && !catalogAuthoritative;
     if (overrideTemporarilyUnavailable) {
@@ -443,7 +446,16 @@ export async function createModelSelectionState(params: {
       sessionEntry,
       runtimeModelNormalization,
     );
-    if (modelSelectionLocked || visibilityPolicy.allows(normalizedStoredOverride)) {
+    const allowed = visibilityPolicy.allows(normalizedStoredOverride);
+    const userPin =
+      storedOverride.source !== "session" || sessionEntry?.modelOverrideSource !== "auto";
+    if (!modelSelectionLocked && !allowed && userPin) {
+      blockedModelOverrideRef = modelKey(
+        normalizedStoredOverride.provider,
+        normalizedStoredOverride.model,
+      );
+    }
+    if (modelSelectionLocked || allowed || blockedModelOverrideRef) {
       provider = normalizedStoredOverride.provider;
       model = normalizedStoredOverride.model;
       requestedRouteResolution =
@@ -455,6 +467,7 @@ export async function createModelSelectionState(params: {
   const skipResolveSelection =
     params.hasModelDirective ||
     hasOneTurnModelOverride ||
+    blockedModelOverrideRef !== undefined ||
     modelSelectionLocked ||
     resolvedStoredOverrideSelected;
   if (!skipResolveSelection) {
@@ -477,6 +490,7 @@ export async function createModelSelectionState(params: {
   }
 
   if (
+    !blockedModelOverrideRef &&
     !params.skipStoredModelOverride &&
     sessionEntry &&
     sessionStore &&
@@ -647,6 +661,7 @@ export async function createModelSelectionState(params: {
     allowedModelCatalog,
     policyAliasIndex: visibilityPolicy.policyAliasIndex,
     resetModelOverride,
+    blockedModelOverrideRef,
     resetModelOverrideRef,
     resetModelOverrideReason,
     modelPolicyConfigPath: visibilityPolicy.allowConfigPath ?? undefined,

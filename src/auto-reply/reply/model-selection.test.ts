@@ -762,13 +762,29 @@ describe("createModelSelectionState catalog loading", () => {
   });
 
   it.each([
-    ["anthropic", "claude-opus-4-5", "openai/*", "gpt-5.5-codex", 1],
-    ["openai/team", "claude-opus-4-5", "openai/*", "gpt-5.5-codex", 1],
-    ["openai", "openai/team/Reader", "openai/team/*", "team/Reader", 1],
-    ["openai", "team/Reader", "openai/team/*", "team/Reader", 0],
+    [
+      "anthropic",
+      "claude-opus-4-5",
+      "openai/*",
+      "gpt-5.5-codex",
+      1,
+      "anthropic",
+      "claude-opus-4-5",
+    ],
+    ["openai/team", "claude-opus-4-5", "openai/*", "gpt-5.5-codex", 1, "openai", "gpt-5.5-codex"],
+    ["openai", "openai/team/Reader", "openai/team/*", "team/Reader", 1, "openai", "team/Reader"],
+    ["openai", "team/Reader", "openai/team/*", "team/Reader", 0, "openai", "team/Reader"],
   ] as const)(
     "selects %s/%s with wildcard %s",
-    async (defaultProvider, defaultModel, allow, selectedModel, catalogLoads) => {
+    async (
+      defaultProvider,
+      defaultModel,
+      allow,
+      selectedModel,
+      catalogLoads,
+      expectedProvider,
+      expectedModel,
+    ) => {
       vi.mocked(loadModelCatalogLocal).mockClear();
       if (catalogLoads) {
         vi.mocked(loadModelCatalogLocal).mockResolvedValueOnce([
@@ -796,8 +812,8 @@ describe("createModelSelectionState catalog loading", () => {
         hasModelDirective: false,
       });
 
-      expect(state.provider).toBe("openai");
-      expect(state.model).toBe(selectedModel);
+      expect(state.provider).toBe(expectedProvider);
+      expect(state.model).toBe(expectedModel);
       expect(loadModelCatalogLocal).toHaveBeenCalledTimes(catalogLoads);
     },
   );
@@ -1077,7 +1093,7 @@ describe("createModelSelectionState parent inheritance", () => {
     expect(state.model).toBe("claude-opus-4-6");
   });
 
-  it("ignores parent override when disallowed", async () => {
+  it("blocks a disallowed inherited parent pin without switching models", async () => {
     const cfg = {
       agents: {
         defaults: {
@@ -1100,8 +1116,9 @@ describe("createModelSelectionState parent inheritance", () => {
       parentEntry,
     });
 
-    expect(state.provider).toBe(defaultProvider);
-    expect(state.model).toBe(defaultModel);
+    expect(state.provider).toBe("anthropic");
+    expect(state.model).toBe("claude-opus-4-6");
+    expect(state.blockedModelOverrideRef).toBe("anthropic/claude-opus-4-6");
   });
 
   it("applies stored override when heartbeat override was not resolved", async () => {
@@ -1321,7 +1338,7 @@ describe("createModelSelectionState respects session model override", () => {
     expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
   });
 
-  it("clears disallowed model overrides and falls back to the default", async () => {
+  it("preserves a disallowed user pin and marks the turn blocked", async () => {
     const cfg = {
       agents: {
         defaults: {
@@ -1356,10 +1373,14 @@ describe("createModelSelectionState respects session model override", () => {
       hasModelDirective: false,
     });
 
-    expect(state.resetModelOverride).toBe(true);
-    expect(state.resetModelOverrideRef).toBe("openai/gpt-4o-mini");
-    expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.providerOverride).toBeUndefined();
+    expect(state).toMatchObject({
+      resetModelOverride: false,
+      blockedModelOverrideRef: "openai/gpt-4o-mini",
+      provider: "openai",
+      model: "gpt-4o-mini",
+    });
+    expect(sessionStore[sessionKey]?.modelOverride).toBe("gpt-4o-mini");
+    expect(sessionStore[sessionKey]?.providerOverride).toBe("openai");
   });
 
   it("preserves a locked disallowed override without resetting it", async () => {
@@ -1502,7 +1523,7 @@ describe("createModelSelectionState respects session model override", () => {
     expect(cliBackendsMocks.resolveCliRuntimeCanonicalProvider).not.toHaveBeenCalled();
   });
 
-  it("adopts a concurrent valid model while repairing a stale override", async () => {
+  it("adopts a concurrent valid model while repairing an automatic override", async () => {
     const storePath = "sessions.json";
     const cfg = {
       agents: {
@@ -1519,6 +1540,7 @@ describe("createModelSelectionState respects session model override", () => {
     const sessionEntry = makeEntry({
       providerOverride: "openai",
       modelOverride: "gpt-4o-mini",
+      modelOverrideSource: "auto",
     });
     const concurrentEntry = makeEntry({
       updatedAt: sessionEntry.updatedAt + 1,
@@ -1571,7 +1593,7 @@ describe("createModelSelectionState respects session model override", () => {
     expect(sessionStore[sessionKey]).toEqual(sessionEntry);
   });
 
-  it("rejects stale-model repair when the session rotates during persistence", async () => {
+  it("rejects automatic-model repair when the session rotates during persistence", async () => {
     const storePath = "sessions.json";
     const cfg = {
       agents: {
@@ -1588,6 +1610,7 @@ describe("createModelSelectionState respects session model override", () => {
       sessionId: "s1",
       providerOverride: "openai",
       modelOverride: "gpt-4o-mini",
+      modelOverrideSource: "auto",
     });
     const rotatedEntry = makeEntry({
       sessionId: "s2",
@@ -2453,9 +2476,7 @@ describe("createModelSelectionState degraded-catalog override preservation", () 
   // catalog can transiently drop a pin. Every test must load the snapshot so its
   // one-time mock is consumed and cannot leak into a sibling test.
   //
-  // Allow-list without gpt-4o, so the pinned override reads as "not allowed"
-  // whenever the catalog cannot vouch for it. The authoritative flag then
-  // decides whether that reads as a genuine disallow or a transient outage.
+  // Policy rejects the pin independently of catalog availability.
   const restrictiveCfg = {
     agents: { defaults: { models: { "openai/gpt-4o-mini": {}, "anthropic/*": {} } } },
   } as unknown as OpenClawConfig;
@@ -2510,19 +2531,16 @@ describe("createModelSelectionState degraded-catalog override preservation", () 
     return { state, sessionEntry };
   }
 
-  it("preserves a pin the degraded catalog cannot vouch for", async () => {
-    // Degraded snapshot: we cannot prove the pin is really disallowed, so keep it.
+  it("preserves a disallowed pin while a degraded catalog cannot widen policy", async () => {
     const { state, sessionEntry } = await run({
       cfg: restrictiveCfg,
       snapshotEntries: [],
       authoritative: false,
     });
     expect(state.resetModelOverride).toBe(false);
-    expect(state.resetModelOverrideReason).toBe("temporarily-unavailable");
-    expect(state.resetModelOverrideRef).toBe("openai/gpt-4o");
-    // The pin is untouched and the turn falls back to primary.
+    expect(state.blockedModelOverrideRef).toBe("openai/gpt-4o");
     expect(sessionEntry.modelOverride).toBe("gpt-4o");
-    expect(state.model).toBe("gpt-4o-mini");
+    expect(state.model).toBe("gpt-4o");
   });
 
   it("keeps a locked pin active without a degraded-catalog fallback notice", async () => {
@@ -2539,15 +2557,15 @@ describe("createModelSelectionState degraded-catalog override preservation", () 
     expect(state.model).toBe("gpt-4o");
   });
 
-  it("destroys a genuinely-disallowed pin on an authoritative catalog", async () => {
-    // Same disallowed pin, but an authoritative catalog proves it is gone.
-    const { state } = await run({
+  it("preserves a disallowed pin on an authoritative catalog", async () => {
+    const { state, sessionEntry } = await run({
       cfg: restrictiveCfg,
       snapshotEntries: [{ provider: "openai", id: "gpt-4o-mini", name: "GPT-4o mini" }],
       authoritative: true,
     });
-    expect(state.resetModelOverrideReason).toBe("disallowed");
-    expect(state.resetModelOverride).toBe(true);
+    expect(state.blockedModelOverrideRef).toBe("openai/gpt-4o");
+    expect(state.resetModelOverride).toBe(false);
+    expect(sessionEntry.modelOverride).toBe("gpt-4o");
   });
 
   it("keeps a configured pin that is present on an authoritative catalog", async () => {

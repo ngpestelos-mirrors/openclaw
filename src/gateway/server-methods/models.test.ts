@@ -1313,6 +1313,49 @@ describe("models.list", () => {
     );
   });
 
+  it("publishes the same allowed rows and hidden count for picker views", async () => {
+    const catalog = [
+      { id: "atlas", name: "Atlas", provider: "vllm" },
+      { id: "beta", name: "Beta", provider: "vllm" },
+      { id: "primary", name: "Primary", provider: "other" },
+      { id: "hidden", name: "Hidden", provider: "third" },
+    ];
+    const cfg: OpenClawConfig = {
+      agents: { defaults: { model: "other/primary", modelPolicy: { allow: ["vllm/*"] } } },
+      models: {
+        providers: {
+          vllm: { apiKey: "test-key", baseUrl: "http://localhost:8000/v1", models: [] },
+          third: { apiKey: "test-key", baseUrl: "http://localhost:8001/v1", models: [] },
+        },
+      },
+    };
+    for (const view of ["default", "configured"] as const) {
+      const { request, respond } = requestModelsList({
+        view,
+        runtimeConfig: cfg,
+        loadGatewayModelCatalog: async () => catalog,
+      });
+      await request;
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({
+          models: [
+            expect.objectContaining({ provider: "other", id: "primary", tags: ["default"] }),
+            expect.objectContaining({ provider: "vllm", id: "atlas" }),
+            expect.objectContaining({ provider: "vllm", id: "beta" }),
+          ],
+          allowList: {
+            hiddenCount: 1,
+            settingsPath: "agents.defaults.modelPolicy.allow",
+            message:
+              "1 newer models hidden by your allow list\nSettings: agents.defaults.modelPolicy.allow",
+          },
+        }),
+        undefined,
+      );
+    }
+  });
+
   it("filters provider-scoped configured views from the published catalog", async () => {
     await withoutOpenAIEnvAuth(async () => {
       const catalog = [
@@ -1355,6 +1398,11 @@ describe("models.list", () => {
       expect(configuredRespond).toHaveBeenCalledWith(
         true,
         {
+          allowList: {
+            hiddenCount: 0,
+            settingsPath: "agents.defaults.modelPolicy.allow",
+            message: "",
+          },
           models: [
             {
               id: "gpt-5.4",
@@ -1506,7 +1554,18 @@ describe("models.list", () => {
               reqId: `req-models-list-local-wildcard-${view}`,
             });
             await request;
-            expect(respond).toHaveBeenCalledWith(true, expected, undefined);
+            expect(respond).toHaveBeenCalledWith(
+              true,
+              {
+                ...expected,
+                allowList: {
+                  hiddenCount: 0,
+                  settingsPath: "agents.defaults.modelPolicy.allow",
+                  message: "",
+                },
+              },
+              undefined,
+            );
           }
         },
       );

@@ -49,6 +49,7 @@ public final class OpenClawChatViewModel {
     var prefersExplicitVerboseLevel: Bool
     public private(set) var modelSelectionID: String = "__default__"
     public internal(set) var modelChoices: [OpenClawChatModelChoice] = []
+    public internal(set) var modelAllowList: OpenClawChatModelAllowList?
     var modelAvailabilityIsSessionScoped = false
     public internal(set) var modelCatalogMessage: String?
     @ObservationIgnored
@@ -766,7 +767,7 @@ public final class OpenClawChatViewModel {
     }
 
     public var showsModelPicker: Bool {
-        !self.modelChoices.isEmpty
+        !self.modelChoices.isEmpty || self.modelAllowList != nil
     }
 
     public var defaultModelLabel: String {
@@ -1257,6 +1258,7 @@ extension OpenClawChatViewModel {
     /// Clears state owned by the current session/agent before a new identity can consume events.
     private func clearSessionOwnedState() {
         self.invalidateComposerCapabilities()
+        self.modelAllowList = nil
         self.modelSelectionID = Self.defaultModelSelectionID
         self.modelAvailabilityIsSessionScoped = false
         self.modelChoices = []

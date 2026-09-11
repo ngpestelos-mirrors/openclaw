@@ -310,7 +310,7 @@ describe("handleModelsCommand", () => {
     );
   });
 
-  it("hides unauthenticated providers by default and keeps all as explicit browse", async () => {
+  it("keeps unauthenticated providers hidden when all disables pagination", async () => {
     modelProviderAuthMocks.authenticatedProviders = new Set(["anthropic"]);
 
     const providersResult = await handleModelsCommand(buildParams("/models"), true);
@@ -322,9 +322,9 @@ describe("handleModelsCommand", () => {
     expect(defaultListResult?.reply?.text).toContain("Unknown provider: openai");
 
     const allListResult = await handleModelsCommand(buildParams("/models openai all"), true);
-    expect(allListResult?.reply?.text).toContain("Models (openai) — showing 1-2 of 2 (page 1/1)");
-    expect(allListResult?.reply?.text).toContain("- openai/gpt-4.1");
-    expect(allListResult?.reply?.text).toContain("- openai/gpt-4.1-mini");
+    expect(allListResult?.reply?.text).toContain("Unknown provider: openai");
+    expect(allListResult?.reply?.text).not.toContain("- openai/gpt-4.1");
+    expect(allListResult?.reply?.text).not.toContain("- openai/gpt-4.1-mini");
   });
 
   it("does not offer an OpenAI row with a conflicting API and endpoint", async () => {
@@ -434,9 +434,10 @@ describe("handleModelsCommand", () => {
     expect(pluginMetadataMocks.getCurrent).toHaveBeenCalledTimes(1);
   });
 
-  it("does not re-add the default provider when provider visibility is restricted", async () => {
+  it("retains only the configured primary outside the provider restriction", async () => {
     modelCatalogMocks.loadModelCatalog.mockReturnValue([
       { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" },
+      { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet" },
       { provider: "openai", id: "gpt-5.4-codex", name: "GPT-5.4 Codex" },
       { provider: "openai", id: "gpt-5.5-codex", name: "GPT-5.5 Codex" },
       { provider: "vllm", id: "llama-local", name: "Llama Local" },
@@ -464,7 +465,7 @@ describe("handleModelsCommand", () => {
     );
     expect(result?.reply?.text).toContain("- openai (2)");
     expect(result?.reply?.text).toContain("- vllm (2)");
-    expect(result?.reply?.text).not.toContain("- anthropic");
+    expect(result?.reply?.text).toContain("- anthropic (1)");
   });
 
   it("hides bare backwards-compat aliases but surfaces supported CLI runtime providers in /models lists", async () => {
@@ -500,7 +501,7 @@ describe("handleModelsCommand", () => {
     expect(result?.reply?.text).not.toMatch(/^- codex-cli \(/m);
   });
 
-  it("sources CLI runtime provider model lists from the catalog", async () => {
+  it("applies legacy exact restrictions to CLI runtime catalog rows", async () => {
     modelCatalogMocks.loadModelCatalog.mockReturnValue([
       { provider: "claude-cli", id: "claude-opus-4-7", name: "Claude Opus 4.7" },
       { provider: "claude-cli", id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
@@ -515,8 +516,6 @@ describe("handleModelsCommand", () => {
       agents: {
         defaults: {
           model: { primary: "anthropic/claude-opus-4-7" },
-          // User only declared 2 of claude-cli's 6 supported models.
-          // For claude-cli this narrowing must be ignored.
           models: {
             "claude-cli/claude-opus-4-6": {},
             "claude-cli/claude-sonnet-4-6": {},
@@ -526,11 +525,7 @@ describe("handleModelsCommand", () => {
     } as OpenClawConfig);
 
     expect([...(data.byProvider.get("claude-cli") ?? [])].toSorted()).toEqual([
-      "claude-haiku-4-5",
-      "claude-opus-4-5",
       "claude-opus-4-6",
-      "claude-opus-4-7",
-      "claude-sonnet-4-5",
       "claude-sonnet-4-6",
     ]);
   });
@@ -563,10 +558,10 @@ describe("handleModelsCommand", () => {
       expected: ["claude-opus-4-6"],
     },
     {
-      name: "an excluded CLI primary",
+      name: "a configured CLI primary outside the list",
       allow: ["anthropic/*"],
       primary: "claude-cli/claude-sonnet-4-6",
-      expected: [],
+      expected: ["claude-sonnet-4-6"],
     },
     {
       name: "an excluded CLI fallback under provider wildcards",
@@ -575,27 +570,27 @@ describe("handleModelsCommand", () => {
       expected: [],
     },
     {
-      name: "configured CLI fallback retention under exact refs",
+      name: "no CLI fallback switch row under exact refs",
       allow: ["anthropic/claude-sonnet-4-6"],
       fallbacks: ["claude-cli/claude-sonnet-4-6"],
-      expected: ["claude-sonnet-4-6"],
+      expected: [],
     },
     { name: "an agent restriction", allow: [], agentAllow: ["anthropic/*"], expected: [] },
     {
-      name: "an unrestricted agent override",
+      name: "an unrestricted agent override without deprecated rows",
       allow: ["anthropic/*"],
       agentAllow: [],
-      expected: ["claude-opus-4-6", "claude-sonnet-4-6"],
+      expected: ["claude-sonnet-4-6"],
     },
     {
-      name: "an empty explicit allowlist",
+      name: "an empty explicit allowlist without deprecated rows",
       allow: [],
-      expected: ["claude-opus-4-6", "claude-sonnet-4-6"],
+      expected: ["claude-sonnet-4-6"],
     },
     {
       name: "legacy provider wildcards",
       legacyAllow: ["anthropic/*"],
-      expected: ["claude-opus-4-6", "claude-sonnet-4-6"],
+      expected: [],
     },
     {
       name: "explicit all browse",
@@ -639,6 +634,9 @@ describe("handleModelsCommand", () => {
       const data = await buildPreparedModelsProviderData(config, "main", { view });
 
       expect([...(data.byProvider.get("claude-cli") ?? [])].toSorted()).toEqual(expected);
+      if (primary) {
+        expect(data.modelNames.get(primary)).toContain("(Default)");
+      }
       expect(config).toEqual(originalConfig);
     },
   );
@@ -875,7 +873,7 @@ describe("handleModelsCommand", () => {
     expect(result?.reply?.text).toContain("Models (openai) — showing 1-2 of 2 (page 1/1)");
   });
 
-  it("does not list bare fallback models under the default provider when catalog ownership is unique", async () => {
+  it("does not synthesize bare fallback refs into restricted picker rows", async () => {
     modelCatalogMocks.loadModelCatalog.mockReturnValue([
       { provider: "openai", id: "gpt-5.4", name: "GPT-5.4" },
       { provider: "deepseek", id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
@@ -898,10 +896,7 @@ describe("handleModelsCommand", () => {
     const data = await buildPreparedModelsProviderData(cfg as OpenClawConfig);
 
     expect([...(data.byProvider.get("openai") ?? [])]).toEqual(["gpt-5.4"]);
-    expect([...(data.byProvider.get("deepseek") ?? [])].toSorted()).toEqual([
-      "deepseek-v4-flash",
-      "deepseek-v4-pro",
-    ]);
+    expect([...(data.byProvider.get("deepseek") ?? [])]).toEqual([]);
   });
 
   it("keeps /models list <provider> as an alias", async () => {
