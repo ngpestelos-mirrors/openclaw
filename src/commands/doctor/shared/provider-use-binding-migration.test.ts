@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadAuthProfileStoreForRuntime } from "../../../agents/auth-profiles.js";
+import type { AuthProfileStore } from "../../../agents/auth-profiles/types.js";
 import { resolveProviderUseAdmission } from "../../../agents/provider-model-auth-source-plan.js";
 import {
   loadSessionEntry,
@@ -9,6 +11,7 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import type { SecretRef } from "../../../config/types.secrets.js";
 import { resolveProviderBindingEnvVarCandidates } from "../../../secrets/provider-env-vars.js";
 import { runOpenClawAgentWriteTransaction } from "../../../state/openclaw-agent-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
@@ -32,7 +35,11 @@ const selectedPlan: OpenClawConfig = {
     entries: { main: {} },
   },
 };
-const byteplusRef = { source: "env", provider: "default", id: "BYTEPLUS_API_KEY" };
+const byteplusRef = {
+  source: "env",
+  provider: "default",
+  id: "BYTEPLUS_API_KEY",
+} satisfies SecretRef;
 let state: OpenClawTestState;
 
 beforeEach(async () => {
@@ -80,6 +87,177 @@ function admitted(config: OpenClawConfig) {
 }
 
 describe("selected shared-provider upgrade", () => {
+  it.each([true, false])(
+    "defers a conflicting local account without losing safe bindings (owner selects it: %s)",
+    async (ownerSelectsProvider) => {
+      const config: OpenClawConfig = {
+        agents: {
+          entries: {
+            alpha: {
+              model: ownerSelectsProvider ? "byteplus-plan/ark-code-latest" : "openai/fixture",
+            },
+            beta: {
+              model: {
+                primary: "byteplus-plan/ark-code-latest",
+                fallbacks: ["volcengine-plan/ark-code-latest"],
+              },
+            },
+          },
+        },
+      };
+      const alphaAccount: AuthProfileStore = {
+        version: 1,
+        profiles: {
+          "byteplus-plan:alpha": {
+            type: "api_key",
+            provider: "byteplus-plan",
+            key: "private-alpha-key",
+          },
+        },
+      };
+      await state.writeAuthProfiles(alphaAccount, "alpha");
+      const readProfiles = (agentId: string) =>
+        loadAuthProfileStoreForRuntime(
+          state.agentDir(agentId),
+          { config, readOnly: true, allowKeychainPrompt: false },
+          state.env,
+        ).profiles;
+      expect(readProfiles("alpha")).toEqual(alphaAccount.profiles);
+      expect(readProfiles("beta")).toEqual({});
+      const before = structuredClone(config);
+
+      const result = await prepare(config);
+
+      expect(result.pending).toBe(false);
+      expect(result.config.models?.providers?.["byteplus-plan"]).toBeUndefined();
+      expect(result.config.models?.providers?.["volcengine-plan"]?.apiKey).toEqual({
+        source: "env",
+        provider: "default",
+        id: "VOLCANO_ENGINE_API_KEY",
+      });
+      expect(result.changes).toHaveLength(1);
+      expect(result.warnings).toEqual([
+        expect.stringContaining("Provider byteplus-plan was not migrated for agents beta"),
+      ]);
+      expect(result.warnings?.[0]).toContain("existing account for agents alpha");
+      expect(result.warnings?.join("\n")).not.toContain("private-alpha-key");
+      expect(config).toEqual(before);
+      expect(readProfiles("alpha")).toEqual(alphaAccount.profiles);
+      expect(readProfiles("beta")).toEqual({});
+      const repeated = await prepare(result.config);
+      expect(repeated.pending).toBe(false);
+      expect(repeated.changes).toEqual([]);
+
+      // The operator repairs only beta through the existing account owner.
+      await state.writeAuthProfiles(
+        {
+          version: 1,
+          profiles: {
+            "byteplus-plan:beta": {
+              type: "api_key",
+              provider: "byteplus-plan",
+              keyRef: byteplusRef,
+            },
+          },
+        },
+        "beta",
+      );
+      const repaired = await prepare(result.config);
+      expect(repaired.pending).toBe(true);
+      expect(repaired.changes).toEqual([]);
+      expect(repaired.warnings).toBeUndefined();
+      expect(readProfiles("alpha")).toEqual(alphaAccount.profiles);
+      expect(completeProviderUseBindingMigration(state.configPath, state.env)).toEqual([]);
+      expect((await prepare(result.config)).pending).toBe(false);
+    },
+  );
+
+  it("keeps the agent owner of a persisted pin when deciding migration conflicts", async () => {
+    const config: OpenClawConfig = {
+      agents: {
+        entries: { alpha: { model: "openai/fixture" }, beta: { model: "openai/fixture" } },
+      },
+    };
+    await state.writeAuthProfiles(
+      {
+        version: 1,
+        profiles: {
+          "byteplus-plan:alpha": {
+            type: "api_key",
+            provider: "byteplus-plan",
+            key: "private-alpha-key",
+          },
+        },
+      },
+      "alpha",
+    );
+    const scope = {
+      agentId: "beta",
+      env: state.env,
+      storePath: path.join(state.sessionsDir("beta"), "sessions.json"),
+      sessionKey: "agent:beta:pinned",
+    };
+    await replaceSessionEntry(scope, {
+      sessionId: "beta-pin",
+      updatedAt: 1,
+      providerOverride: "byteplus-plan",
+      modelOverride: "ark-code-latest",
+      modelOverrideSource: "user",
+    });
+    const before = loadSessionEntry(scope);
+
+    const result = await prepare(config);
+
+    expect(result.config).toBe(config);
+    expect(result.changes).toEqual([]);
+    expect(result.pending).toBe(false);
+    expect(result.warnings).toEqual([
+      expect.stringContaining("Provider byteplus-plan was not migrated for agents beta"),
+    ]);
+    expect(result.warnings?.[0]).toContain("existing account for agents alpha");
+    expect(loadSessionEntry(scope)).toEqual(before);
+  });
+
+  it("does not treat another agent's inactive setup replacement as an account conflict", async () => {
+    const config: OpenClawConfig = {
+      agents: {
+        entries: {
+          alpha: { model: "openai/fixture" },
+          beta: { model: "byteplus-plan/ark-code-latest" },
+        },
+      },
+    };
+    const inactive: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        "byteplus-plan:replacement": {
+          type: "api_key",
+          provider: "byteplus-plan",
+          key: "inactive-alpha-key",
+          setup: { replacement: true, modelRef: "byteplus-plan/ark-code-latest", configJson: "{}" },
+        },
+      },
+    };
+    await state.writeAuthProfiles(inactive, "alpha");
+
+    const result = await prepare(config);
+
+    expect(result.pending).toBe(true);
+    expect(result.warnings).toBeUndefined();
+    expect(result.config.models?.providers?.["byteplus-plan"]?.apiKey).toEqual(byteplusRef);
+    expect(
+      loadAuthProfileStoreForRuntime(
+        state.agentDir("alpha"),
+        {
+          config,
+          readOnly: true,
+          allowKeychainPrompt: false,
+        },
+        state.env,
+      ).profiles,
+    ).toEqual(inactive.profiles);
+  });
+
   it.each(["entries", "list"] as const)(
     "preserves default, fallback and per-agent selections from the %s roster",
     async (roster) => {

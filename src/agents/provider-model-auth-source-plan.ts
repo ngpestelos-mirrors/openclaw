@@ -1,5 +1,7 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isSetupCredentialAccessible } from "./auth-profiles/setup-access.js";
+import type { AuthProfileCredential } from "./auth-profiles/types.js";
 
 export type ProviderUseBinding =
   | { kind: "provider-config" }
@@ -23,7 +25,7 @@ export function resolveProviderUseAdmission(params: {
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   providerEnvVars?: Readonly<Record<string, readonly string[]>>;
-  profiles?: Readonly<Record<string, { provider: string }>>;
+  profiles?: Readonly<Record<string, Pick<AuthProfileCredential, "provider" | "setup">>>;
   nativeProviders?: Iterable<string>;
 }): ReadonlyMap<string, ProviderUseBinding> {
   const admitted = new Map<string, ProviderUseBinding>();
@@ -37,6 +39,9 @@ export function resolveProviderUseAdmission(params: {
     add(provider, { kind: "provider-config" });
   }
   for (const [profileId, profile] of Object.entries(params.profiles ?? {})) {
+    if (!isSetupCredentialAccessible({ profileId, credential: profile })) {
+      continue;
+    }
     add(profile.provider, { kind: "profile", profileId });
   }
   for (const provider of params.nativeProviders ?? []) {

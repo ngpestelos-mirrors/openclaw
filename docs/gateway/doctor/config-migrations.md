@@ -82,7 +82,10 @@ beyond the grace period.
       precedence. Unselected siblings and generic credentials are excluded. A
       receipt closes this one-time upgrade after a successful Doctor pass; later
       model selections need an explicit binding. Unreadable upgrade state leaves
-      config unchanged and asks for another Doctor run. The provider overlay contains
+      config unchanged and asks for another Doctor run. If a global binding would
+      replace another agent's account, Doctor preserves that account, warns which
+      agent still needs authentication, and leaves the upgrade open. Independent
+      safe bindings still proceed. The provider overlay contains
       only the credential reference; bundled catalog defaults stay with the provider:
 
       ```json5

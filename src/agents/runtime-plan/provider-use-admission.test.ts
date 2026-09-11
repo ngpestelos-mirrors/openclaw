@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { withSetupCredentialAccess } from "../auth-profiles/setup-access.js";
+import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { createModelAuthAvailabilityResolver } from "../model-auth-availability.js";
 import {
   createProviderApiKeyResolver,
   createProviderAuthResolver,
 } from "../models-config.providers.secrets.js";
 import { resolveProviderUseAdmission } from "../provider-model-auth-source-plan.js";
+import { prepareAgentRuntimeAuth } from "./prepare-auth.js";
 
 const sharedProviderEnvVars = {
   opencode: ["OPENCODE_API_KEY"],
@@ -14,6 +17,58 @@ const sharedProviderEnvVars = {
 };
 
 describe("resolveProviderUseAdmission", () => {
+  it("keeps the environment account until a saved replacement is activated", async () => {
+    const profileId = "anthropic:replacement";
+    const env = { ANTHROPIC_API_KEY: "current-environment-key" };
+    const store: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        [profileId]: {
+          type: "api_key",
+          provider: "anthropic",
+          key: "replacement-key",
+          setup: {
+            replacement: true,
+            modelRef: "anthropic/claude-sonnet-4-6",
+            configJson: "{}",
+          },
+        },
+      },
+    };
+    const metadataSnapshot = createPluginMetadataSnapshotFixture({
+      plugins: [
+        {
+          id: "anthropic",
+          providers: ["anthropic"],
+          setup: { providers: [{ id: "anthropic", envVars: ["ANTHROPIC_API_KEY"] }] },
+        },
+      ],
+    });
+    const prepare = () =>
+      prepareAgentRuntimeAuth({
+        provider: "anthropic",
+        modelId: "claude-sonnet-4-6",
+        config: {},
+        env,
+        authProfileStore: store,
+        metadataSnapshot,
+      });
+
+    expect(prepare().attempts).toMatchObject([{ kind: "direct" }]);
+    const availability = createModelAuthAvailabilityResolver({
+      cfg: {},
+      env,
+      authStore: store,
+      metadataSnapshot,
+    });
+    expect(availability.resolveProviderAuthAvailability("anthropic")).toBe(true);
+
+    await withSetupCredentialAccess({ profileId }, async () => {
+      expect(prepare().attempts).toMatchObject([{ kind: "profile", profileId }]);
+    });
+    expect(prepare().attempts).toMatchObject([{ kind: "direct" }]);
+  });
+
   it("does not replace an expired bound profile with shared environment auth", () => {
     const env = { OPENCODE_API_KEY: "unbound-key" };
     const store = {

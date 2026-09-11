@@ -11,7 +11,7 @@ const setupCredentialAccess = new AsyncLocalStorage<SetupCredentialAccess>();
 
 export function isSetupCredentialAccessible(params: {
   profileId: string;
-  credential: AuthProfileCredential;
+  credential: Pick<AuthProfileCredential, "setup">;
   agentDir?: string;
 }): boolean {
   if (!params.credential.setup?.replacement) {
