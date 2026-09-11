@@ -218,10 +218,6 @@ type NativeDeviceSettingsWindow = Window & {
 };
 
 const CHANGE_EVENT = "openclaw:native-device-settings-changed";
-function isSnapshot(value: unknown): value is NativeDeviceSettingsSnapshot {
-  // Validate without replacing the host snapshot: retain unknown fields and object identity.
-  return nativeDeviceSettingsSnapshotSchema.safeParse(value).success;
-}
 
 export function createNativeDeviceSettingsCapability(): NativeDeviceSettingsCapability | null {
   if (typeof window === "undefined") {
@@ -234,20 +230,22 @@ export function createNativeDeviceSettingsCapability(): NativeDeviceSettingsCapa
     return null;
   }
   const post = handler.postMessage.bind(handler);
-  const initial = nativeWindow["__OPENCLAW_NATIVE_DEVICE_SETTINGS__"];
-  let snapshot = isSnapshot(initial) ? initial : null;
+  const initial = nativeDeviceSettingsSnapshotSchema.safeParse(
+    nativeWindow["__OPENCLAW_NATIVE_DEVICE_SETTINGS__"],
+  );
+  let snapshot = initial.success ? initial.data : null;
   let disposed = false;
   const listeners = new Set<(snapshot: NativeDeviceSettingsSnapshot) => void>();
   const onChange = (event: Event) => {
     if (!(event instanceof CustomEvent)) {
       return;
     }
-    const next: unknown = event.detail;
-    if (!isSnapshot(next)) {
+    const next = nativeDeviceSettingsSnapshotSchema.safeParse(event.detail);
+    if (!next.success) {
       return;
     }
-    snapshot = next;
-    listeners.forEach((listener) => listener(next));
+    snapshot = next.data;
+    listeners.forEach((listener) => listener(next.data));
   };
   const send = async (message: NativeDeviceSettingsMessage, onSettled?: () => void) => {
     try {
@@ -256,10 +254,11 @@ export function createNativeDeviceSettingsCapability(): NativeDeviceSettingsCapa
         return;
       }
       if (message.type === "set") {
-        if (!isSnapshot(reply)) {
+        const result = nativeDeviceSettingsSnapshotSchema.safeParse(reply);
+        if (!result.success) {
           throw new Error("Native settings returned an invalid edit result");
         }
-        snapshot = reply;
+        snapshot = result.data;
       }
     } catch (error) {
       console.warn("Native device settings request failed", error);
