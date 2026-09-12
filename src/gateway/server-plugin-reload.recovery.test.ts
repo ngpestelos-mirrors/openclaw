@@ -154,6 +154,57 @@ it.each(["services", "channel"] as const)(
 it("disables and re-enables a plugin after its service cleanup fails", () =>
   verifyServiceCleanupRecovery(createRecoveryFixture));
 
+it("preserves pending old service cleanup when candidate startup fails", async () => {
+  const stopEntered = createDeferredCore();
+  const releaseStop = createDeferredCore();
+  const events: string[] = [];
+  let candidateStarts = 0;
+  const fixture = await createRecoveryFixture({
+    abortOnCandidateStart: false,
+    initialStop: async () => {
+      events.push("old-stop-started");
+      stopEntered.resolve();
+      await releaseStop.promise;
+      events.push("old-stop-finished");
+    },
+    candidateStart: () => {
+      events.push("candidate-started");
+      if (++candidateStarts === 1) {
+        throw new Error("candidate startup rejected");
+      }
+    },
+    recoveryStart: async () => {
+      events.push("old-restarted");
+    },
+  });
+  vi.useFakeTimers();
+  const reload = fixture.reload().catch((error: unknown) => error);
+  try {
+    await stopEntered.promise;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await reload).toMatchObject({ details: { phase: "activate", committed: false } });
+    expect([...events]).toEqual(["old-stop-started", "candidate-started"]);
+    expect(fixture.firstStart).toHaveBeenCalledOnce();
+    expect(fixture.registryOwner.registry).toBe(fixture.previousRegistry);
+    expect(fixture.siblingStart).toHaveBeenCalledOnce();
+    expect(fixture.siblingStop).not.toHaveBeenCalled();
+
+    releaseStop.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events).toEqual(["old-stop-started", "candidate-started", "old-stop-finished"]);
+    await expect(fixture.reload()).resolves.toMatchObject({ runtime: { pluginIds: ["first"] } });
+    expect(candidateStarts).toBe(2);
+    expect(fixture.firstStart).toHaveBeenCalledOnce();
+    expect(fixture.firstStop).toHaveBeenCalledOnce();
+    expect(fixture.siblingStart).toHaveBeenCalledOnce();
+    expect(fixture.siblingStop).not.toHaveBeenCalled();
+  } finally {
+    releaseStop.resolve();
+    await reload;
+    vi.useRealTimers();
+  }
+});
+
 it("keeps a live Gateway's generated setup callbacks through another Gateway's reload", () =>
   verifyGatewayCacheOwnership(
     createRecoveryFixture,

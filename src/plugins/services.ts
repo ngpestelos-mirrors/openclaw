@@ -80,6 +80,7 @@ type OwnedPluginService = {
 
 type PluginServicesOwner = {
   services: OwnedPluginService[];
+  attempts: WeakMap<PluginServiceRegistration, OwnedPluginService>;
   registrations: Set<PluginServiceRegistration>;
   stopped: Set<PluginServiceRegistration>;
   closed: boolean;
@@ -103,27 +104,32 @@ export async function startPluginServices(
 ): Promise<PluginServicesHandle> {
   // Failed starts still own their cleanup and remain selectable for a later retry.
   const ownedServices: OwnedPluginService[] = [];
+  const previous = params.previous && serviceOwners.get(params.previous);
   const owner: PluginServicesOwner = {
     services: ownedServices,
+    attempts: previous?.attempts ?? new WeakMap(),
     registrations: new Set(params.registry.services),
     stopped: new Set(),
     closed: false,
   };
-  const previous = params.previous && serviceOwners.get(params.previous);
   if (previous) {
     for (const registration of owner.registrations) {
       previous.registrations.delete(registration);
-      const entry = previous.services.find((service) => service.registration === registration);
+      const entry = owner.attempts.get(registration);
       if (!entry) {
         continue;
       }
-      previous.services.splice(previous.services.indexOf(entry), 1);
+      // Rollback can reclaim an earlier attempt that the rejected candidate did not select.
+      const source = entry.owner;
+      source.registrations.delete(registration);
+      source.services.splice(source.services.indexOf(entry), 1);
       // Explicitly stopped, fully cleaned registrations can start again in a new
       // generation. Failed attempts stay in the inventory until an explicit reload.
-      if (previous.stopped.has(registration) && entry.cleaned && !entry.startup) {
+      if (source.stopped.has(registration) && entry.cleaned && !entry.startup) {
+        owner.attempts.delete(registration);
         continue;
       }
-      if (previous.stopped.has(registration)) {
+      if (source.stopped.has(registration)) {
         owner.stopped.add(registration);
       }
       entry.owner = owner;
@@ -550,6 +556,7 @@ export async function startPluginServices(
       );
       ownedServices.splice(following < 0 ? ownedServices.length : following, 0, ownedService);
     }
+    owner.attempts.set(entry, ownedService);
     try {
       const invokeStart = async () => {
         const settled = createDeferredCore();

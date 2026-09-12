@@ -266,7 +266,11 @@ export async function runPluginsReloadCommand(
   if (!gateway) {
     throw new Error("The Gateway is not running. Start it before reloading a plugin.");
   }
-  const consent = resolvePluginCapabilityConsentCliOptions({ ...opts, action: "reload" });
+  const consent = resolvePluginCapabilityConsentCliOptions({
+    ...opts,
+    action: "reload",
+    allowPrompt: !opts.json,
+  });
   const result = await gateway<{ runtime: { generation: number }; warnings?: string[] }>(
     "plugins.reload",
     { plugins: [{ pluginId }] },
