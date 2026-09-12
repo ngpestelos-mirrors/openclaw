@@ -34,6 +34,8 @@ import {
 } from "./prepared-model-runtime.facts.js";
 import {
   type PreparedModelRuntimeCatalogAccess,
+  filterPreparedProviderCatalog,
+  mergePreparedProviderCatalog,
   isPreparedModelCatalogFull,
   markPreparedModelCatalogFull,
   materializePreparedModelCatalog,
@@ -119,44 +121,6 @@ function preparedProviderCatalogCredentials(
       Object.entries(authStore.order ?? {}).filter(([id]) => normalize(id) === provider),
     ),
   });
-}
-
-function filterPreparedProviderCatalog(
-  catalog: ModelCatalogSnapshot,
-  includesProvider: (provider: string) => boolean,
-): ModelCatalogSnapshot {
-  return {
-    ...catalog,
-    entries: catalog.entries.filter((entry) => includesProvider(entry.provider)),
-    routeVariants: catalog.routeVariants.filter((entry) => includesProvider(entry.provider)),
-    staticEntries: catalog.staticEntries?.filter((entry) => includesProvider(entry.provider)),
-    providerOutcomes: catalog.providerOutcomes?.filter((outcome) =>
-      includesProvider(outcome.provider),
-    ),
-  };
-}
-
-function mergePreparedProviderCatalog(
-  previous: ModelCatalogSnapshot | undefined,
-  discovered: ModelCatalogSnapshot,
-  providers: ReadonlySet<string>,
-  normalize: (provider: string) => string,
-): ModelCatalogSnapshot {
-  const retained =
-    previous &&
-    filterPreparedProviderCatalog(previous, (provider) => !providers.has(normalize(provider)));
-  const scoped = filterPreparedProviderCatalog(discovered, (provider) =>
-    providers.has(normalize(provider)),
-  );
-  const outcomes = [...(retained?.providerOutcomes ?? []), ...(scoped.providerOutcomes ?? [])];
-  return {
-    ...scoped,
-    entries: [...(retained?.entries ?? []), ...scoped.entries],
-    routeVariants: [...(retained?.routeVariants ?? []), ...scoped.routeVariants],
-    staticEntries: [...(retained?.staticEntries ?? []), ...(scoped.staticEntries ?? [])],
-    providerOutcomes: outcomes,
-    authoritative: outcomes.every((outcome) => outcome.status === "ready"),
-  };
 }
 
 export function createFullModelCatalogAccess(params: {

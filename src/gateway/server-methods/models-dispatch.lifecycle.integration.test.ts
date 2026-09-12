@@ -168,6 +168,8 @@ async function withDispatchLifecycle(
       models: {
         providers: {
           opencode: {
+            baseUrl: "",
+            models: [],
             request: {
               allowPrivateNetwork: true,
               headers: { "X-Dispatch-Request": "initial-transport" },

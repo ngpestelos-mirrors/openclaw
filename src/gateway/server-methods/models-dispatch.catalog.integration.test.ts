@@ -134,6 +134,8 @@ it("dispatches a newly discovered model and preserves an admitted turn when disc
       models: {
         providers: {
           [provider]: {
+            baseUrl: "",
+            models: [],
             request: {
               allowPrivateNetwork: true,
               headers: { "X-Dispatch-Request": "configured-transport" },

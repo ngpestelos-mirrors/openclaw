@@ -8,6 +8,7 @@ import {
 } from "../config/resolution-facts.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { serveWorkerTasks } from "../infra/worker-task-pool.js";
+import type { Model } from "../llm/types.js";
 import { listRuntimePluginIdsFromRegistry } from "../plugins/active-runtime-registry.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { isManifestPluginAvailableForControlPlane } from "../plugins/manifest-contract-eligibility.js";
@@ -340,9 +341,13 @@ export async function runPreparedModelCatalogWorkerRequest(
       ),
       ...credentials,
     };
-    const runtimeModels = Map.groupBy(facts.templateModelRegistry.getAll(), (model) =>
-      normalizeProviderId(model.provider),
-    );
+    const runtimeModels = new Map<string, Model[]>();
+    for (const model of facts.templateModelRegistry.getAll()) {
+      const provider = normalizeProviderId(model.provider);
+      const models = runtimeModels.get(provider) ?? [];
+      models.push(model);
+      runtimeModels.set(provider, models);
+    }
     for (const outcome of facts.modelCatalog.providerOutcomes ?? []) {
       const provider = normalizeProviderId(outcome.provider);
       if (!runtimeModels.has(provider)) {

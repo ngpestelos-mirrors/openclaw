@@ -280,6 +280,8 @@ registrations, and later `refresh()` calls retain the captured model publication
 Published model metadata does not supply credentials or authorize an account.
 The optional argument requires a host release containing executable catalog
 publication; the v2026.9.4 host supports only `fork(authStorage)`.
+This session-extension subpath is runtime-only and does not publish TypeScript
+declarations.
 
 Session extension SDK and supported TypeBox imports share the host's modules.
 

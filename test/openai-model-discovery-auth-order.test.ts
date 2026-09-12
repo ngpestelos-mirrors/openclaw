@@ -19,6 +19,7 @@ import { resolveImplicitProviders } from "../src/agents/models-config.providers.
 import { prepareModelCatalogPublication } from "../src/agents/prepared-model-runtime.full-catalog.js";
 import type { ModelProviderConfig } from "../src/config/types.models.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
+import type { Model } from "../src/llm/types.js";
 import { createTestPluginApi } from "../src/plugin-sdk/plugin-test-api.js";
 import type { ProviderCatalogOutcome } from "../src/plugins/provider-catalog.types.js";
 import * as providerDiscovery from "../src/plugins/provider-discovery.js";
@@ -536,6 +537,16 @@ describe("Provider model discovery auth preparation", () => {
         name: "Prior Account Model",
         provider: providerId,
       };
+      const priorRuntimeModel: Model = {
+        ...priorModel,
+        api: "openai-completions",
+        baseUrl: "https://catalog-retention.example.invalid/v1",
+        reasoning: false,
+        input: ["text"],
+        contextWindow: 32768,
+        maxTokens: 1536,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      };
       const previous = prepareModelCatalogPublication(
         {
           entries: [priorModel],
@@ -544,6 +555,7 @@ describe("Provider model discovery auth preparation", () => {
             { provider: providerId, profileId: previousProfileId, status: "ready" },
           ],
         },
+        new Map([[providerId, [priorRuntimeModel]]]),
         undefined,
         auth,
         (provider) => provider,
@@ -559,12 +571,14 @@ describe("Provider model discovery auth preparation", () => {
           ),
           providerOutcomes: outcomes,
         },
+        new Map(),
         previous,
         auth,
         (provider) => provider,
       );
 
       expect(published.catalog.entries).toContainEqual(priorModel);
+      expect(published.runtimeModels.get(providerId)).toEqual([priorRuntimeModel]);
       expect(published.discoveryOrigins).toEqual(previous.discoveryOrigins);
       expect(outcomes).toEqual(
         profileIds.map((profileId) => ({ provider: providerId, profileId, status: "unavailable" })),
