@@ -16,6 +16,7 @@ import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
 import { prepareSystemAgentRunAdmission } from "./admitted-run-context.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir, resolveDefaultAgentId } from "./agent-scope.js";
+import { reconcileAuthProfileQuotaBlocks } from "./auth-profiles/usage.js";
 import { resolveCliBackendConfig, resolveCliRuntimeCanonicalProvider } from "./cli-backends.js";
 import { normalizeCliModel } from "./cli-runner/helpers.js";
 import { resolveEmbeddedCliBackendDispatchEligibility } from "./embedded-agent-runner/cli-backend-dispatch-eligibility.js";
@@ -560,7 +561,7 @@ async function runIsolatedCompletionOwned(
             allowKeychainPrompt: false,
             config,
           });
-          const authAttempts = prepareAgentRuntimeAuth({
+          const authParams = {
             provider: runtimeModel.provider,
             modelId: runtimeModel.id,
             modelApi: runtimeModel.api,
@@ -573,14 +574,15 @@ async function runIsolatedCompletionOwned(
             harnessId: harness.id,
             harnessRuntime: harness.id,
             harnessAuthBootstrap: harness.authBootstrap,
-          }).attempts;
+          } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
+          await reconcileAuthProfileQuotaBlocks(authParams);
+          assertCurrent();
+          const authAttempts = prepareAgentRuntimeAuth(authParams).attempts;
           harnessAuth = { model: runtimeModel, store: authProfileStore, attempts: authAttempts };
         }
         let firstError: unknown;
         let priorProfileAttempted = false;
-        for (const preparedAttempt of harnessAuth?.attempts.length
-          ? harnessAuth.attempts
-          : [undefined]) {
+        for (const preparedAttempt of harnessAuth?.attempts ?? [undefined]) {
           assertCurrent();
           const attempt: PreparedAgentRuntimeAuthAttempt | undefined =
             preparedAttempt?.kind === "profile"
