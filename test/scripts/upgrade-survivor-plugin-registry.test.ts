@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -239,6 +239,31 @@ describe("standalone upgrade survivor plugin registry", () => {
     expect(readFileSync(join(captureDir, "docker-args"), "utf8")).toContain(
       ":/tmp/openclaw-prepublish-plugin-registry:ro",
     );
+  });
+
+  it("forwards the hermetic extended-stable candidate registry contract", () => {
+    const { captureDir, result } = runSurvivor({
+      OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_INCLUDE_CORE: "1",
+      OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC: "openclaw@2026.6.35",
+      OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL: "extended-stable",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(captureDir, "node-env"), "utf8")).toBe(
+      "extended-stable-upgrade-survivor|openclaw@2026.6.35|base\n",
+    );
+    const args = readFileSync(join(captureDir, "docker-run-args"), "utf8").split("\0").slice(0, -1);
+    expect(args).toContain("OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_INCLUDE_CORE=1");
+    expect(args).toContain("OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL=extended-stable");
+    expect(args).toContain(`${resolve("scripts")}:/tmp/openclaw-release-harness/scripts:ro`);
+    const entrypointIndex = args.indexOf("--entrypoint");
+    expect(entrypointIndex).toBeGreaterThanOrEqual(0);
+    expect(args[entrypointIndex + 1]).toBe(
+      "/tmp/openclaw-release-harness/scripts/e2e/lib/prepublish-plugin-registry.sh",
+    );
+    expect(
+      statSync(resolve("scripts/e2e/lib/prepublish-plugin-registry.sh")).mode & 0o111,
+    ).not.toBe(0);
   });
 
   it("does not prepare a registry for a published candidate", () => {
