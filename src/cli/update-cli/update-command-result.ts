@@ -280,6 +280,12 @@ export type UpdateAdmissionReportParams = {
   controlPlaneUpdateSentinelMeta: ControlPlaneUpdateSentinelMetaFile["meta"] | null;
 };
 
+export type RefuseUpdate = (
+  reason: string,
+  message?: string,
+  failureFacts?: readonly UpdateFailureFact[],
+) => Promise<void>;
+
 /** A fresh admission decision is data until its staging and executor owners settle. */
 export class UnreportedUpdateAdmissionOutcome extends Error {
   constructor(

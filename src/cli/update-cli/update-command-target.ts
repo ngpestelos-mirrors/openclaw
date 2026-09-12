@@ -13,7 +13,6 @@ import {
   resolveExtendedStablePackage,
   resolveNpmChannelTag,
 } from "../../infra/update-check.js";
-import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   createGlobalInstallEnv,
@@ -42,7 +41,7 @@ import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
 } from "./update-command-executor.js";
-import { UnreportedUpdateAdmissionOutcome } from "./update-command-result.js";
+import { UnreportedUpdateAdmissionOutcome, type RefuseUpdate } from "./update-command-result.js";
 import {
   failUpdateCommandRun,
   assertUpdatePackageActivationAdmission,
@@ -75,11 +74,7 @@ export async function resolveUpdateCommandTarget(
   let { devTarget } = prepared;
   let root = discoveredRoot;
   let updateInstallKind = installKind;
-  const refuseUpdate = async (
-    reason: string,
-    message?: string,
-    failureFacts?: readonly UpdateFailureFact[],
-  ) => {
+  const refuseUpdate: RefuseUpdate = async (reason, message, failureFacts) => {
     const report = {
       root,
       installKind: updateInstallKind,

@@ -85,22 +85,9 @@ export async function runStep(opts: RunStepOptions): Promise<UpdateStepResult> {
         ]
       : undefined;
 
-  progress?.onStepComplete?.({
-    ...stepInfo,
-    durationMs,
-    exitCode: result.code,
-    stdoutTail,
-    stderrTail,
-    signal: result.signal,
-    killed: result.killed,
-    termination: result.termination,
-    ...(failureFacts ? { failureFacts } : {}),
-  });
-
-  const stepResult: UpdateStepResult = {
+  const completion: Omit<UpdateStepResult, "cwd"> = {
     name,
     command,
-    cwd,
     durationMs,
     exitCode: result.code,
     stdoutTail,
@@ -109,6 +96,12 @@ export async function runStep(opts: RunStepOptions): Promise<UpdateStepResult> {
     killed: result.killed,
     termination: result.termination,
     ...(failureFacts ? { failureFacts } : {}),
+  };
+  progress?.onStepComplete?.({ ...stepInfo, ...completion });
+
+  const stepResult: UpdateStepResult = {
+    ...completion,
+    cwd,
   };
   opts.results?.push(stepResult);
   return stepResult;

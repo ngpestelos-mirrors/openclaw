@@ -245,9 +245,15 @@ export async function convergeUpdatePlugins(params: {
           advisory: { kind: "package-post-install-doctor" as const, message },
         })),
       );
-      const pluginAdvisories = (postCorePluginUpdate?.warnings ?? []).filter(
-        (warning) => warning.reason === "plugin-target-unavailable",
-      );
+      const pluginAdvisories = [
+        ...(postCorePluginUpdate?.warnings ?? []).filter(
+          (warning) => warning.reason === "plugin-target-unavailable",
+        ),
+        // Committed handoff files can acknowledge success without npm details.
+        ...(postCorePluginUpdate?.npm?.outcomes ?? []).filter(
+          (outcome) => outcome.code === "source-bundled-plugin",
+        ),
+      ];
       resultWithPostUpdate.steps.push(
         ...pluginAdvisories.map((warning, index) => ({
           name: `finalize:plugins:${index}`,
