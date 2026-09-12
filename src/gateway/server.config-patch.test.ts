@@ -478,6 +478,7 @@ describe("gateway config methods", () => {
     let observeCompetingLock = false;
     let competingWriterStarted = false;
     const createIO = configFactory.createConfigIO;
+    // oxlint-disable-next-line typescript/unbound-method -- The observer calls the original with its queue receiver.
     const enqueue = KeyedAsyncQueue.prototype.enqueue;
 
     // Retain real IO and locks; pause only the post-write receipt read so the
@@ -590,7 +591,9 @@ describe("gateway config methods", () => {
         2_000,
         "competing write did not attempt the config lock",
       );
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
       expect(competingWriterStarted).toBe(false);
       releaseCanonicalRead.resolve();
       const [firstResult, secondResult] = await Promise.all([first, second]);
