@@ -2274,7 +2274,9 @@ describe("startGatewayConfigReloader", () => {
       }
       const current = await io.readConfigFileSnapshot();
       expect(current.valid, JSON.stringify(current.issues)).toBe(true);
-      if (storage === "include") {
+      if (superseded) {
+        expect(current.hash).not.toBe(write.persistedHash);
+      } else {
         expect(current.hash).toBe(write.persistedHash);
       }
       const runtime = { operationId: "written-config", generation: 9, pluginIds: ["notes"] };
