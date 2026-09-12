@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { prepareUpdateFailureReport } from "./update-failure-report-prepare.js";
 import { decodeRun, encodeRun } from "./update-run-codec.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
@@ -8,6 +8,7 @@ import {
   updateRunReportInputFromResult,
   updateRunReportInputFromSentinel,
 } from "./update-run-report.js";
+import { runStep } from "./update-runner-command.js";
 
 function run(patch: Partial<UpdateRunRecord> = {}): UpdateRunRecord {
   return {
@@ -33,6 +34,32 @@ function run(patch: Partial<UpdateRunRecord> = {}): UpdateRunRecord {
 }
 
 describe("update run report", () => {
+  it("captures the first npm error before log tail truncation and step completion", async () => {
+    const onStepComplete = vi.fn();
+    const result = await runStep({
+      name: "global install stage",
+      argv: ["npm", "install"],
+      cwd: "/fixture",
+      timeoutMs: 1000,
+      stepIndex: 0,
+      totalSteps: 1,
+      progress: { onStepComplete },
+      runCommand: async () => ({
+        code: 1,
+        stdout: "",
+        stderr: `npm error code EACCES\n${"cleanup output\n".repeat(1000)}`,
+      }),
+    });
+    expect(result.stderrTail).not.toContain("EACCES");
+    const expected = {
+      failureFacts: [
+        { check: "package-install", code: "EACCES", message: "npm error code EACCES" },
+      ],
+    };
+    expect(result).toMatchObject(expected);
+    expect(onStepComplete).toHaveBeenCalledWith(expect.objectContaining(expected));
+  });
+
   it.each([
     {
       check: "core/doctor/runtime-tool-schemas",
