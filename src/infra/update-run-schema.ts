@@ -6,7 +6,14 @@ import {
   UPDATE_RUN_STEP_STATUSES,
   UPDATE_RUN_TRIGGERS,
 } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
-import { UpdateFailureFactSchema } from "./update-failure-facts.js";
+
+export const UpdateFailureFactSchema = z.object({
+  check: z.string().max(128),
+  code: z.string().max(80),
+  message: z.string().max(200).optional(),
+  affectedKey: z.string().max(128).optional(),
+  pluginId: z.string().max(80).optional(),
+});
 
 const text = z.string().max(1024);
 const timestamp = z.number().int().nonnegative();

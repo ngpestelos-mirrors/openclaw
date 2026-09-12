@@ -7,10 +7,8 @@ import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
 import { resolveStateDir } from "../config/paths.js";
 import { readFileDescriptorBounded } from "../infra/boundary-file-read.js";
 import { writeTextAtomic } from "../infra/json-files.js";
-import {
-  UpdateFailureFactSchema,
-  normalizeUpdateFailureFacts,
-} from "../infra/update-failure-facts.js";
+import { normalizeUpdateFailureFacts } from "../infra/update-failure-facts.js";
+import { UpdateFailureFactSchema } from "../infra/update-run-schema.js";
 import {
   redactSupportString,
   type SupportRedactionContext,

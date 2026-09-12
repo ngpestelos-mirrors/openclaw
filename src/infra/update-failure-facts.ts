@@ -1,14 +1,7 @@
-import { z } from "zod";
+import type { z } from "zod";
 import { resolveStateDir } from "../config/paths.js";
 import { redactSupportDiagnosticLine } from "../logging/diagnostic-support-redaction.js";
-
-export const UpdateFailureFactSchema = z.object({
-  check: z.string().max(128),
-  code: z.string().max(80),
-  message: z.string().max(200).optional(),
-  affectedKey: z.string().max(128).optional(),
-  pluginId: z.string().max(80).optional(),
-});
+import type { UpdateFailureFactSchema } from "./update-run-schema.js";
 
 export type UpdateFailureFact = z.infer<typeof UpdateFailureFactSchema>;
 

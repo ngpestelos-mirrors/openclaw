@@ -14,6 +14,43 @@ function prepareDiagnosticReport(reason: string) {
 }
 
 describe("update report diagnostic command boundary", () => {
+  it.each(
+    (["check", "code", "pluginId", "affectedKey"] as const).flatMap((field) =>
+      [
+        "private-host.example",
+        "private-host.example:8123",
+        "10.20.30.40",
+        "mcp.servers.private-host.example",
+      ].map((host) => ({
+        field,
+        host,
+      })),
+    ),
+  )("does not publish endpoint $host supplied as $field", async ({ field, host }) => {
+    const report = await prepareUpdateFailureReport(
+      {
+        attemptId: "poisoned-identifier",
+        result: {
+          status: "error",
+          mode: "npm",
+          durationMs: 0,
+          steps: [
+            {
+              name: "verify",
+              command: "",
+              cwd: "",
+              durationMs: 0,
+              exitCode: 1,
+              failureFacts: [{ check: "readyz", code: "readyz-unhealthy", [field]: host }],
+            },
+          ],
+        },
+      },
+      context,
+    );
+    expect(report.body).not.toContain(host);
+    expect(report.body).toContain("Failing check");
+  });
   it.each([
     'Permission denied at "/Users/Example Person/private documents/secret.json"',
     "Permission denied at /home/example/private file.json",

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveNodeRuntimeInfo } from "../../daemon/runtime-paths.js";
+import { prepareUpdateFailureReport } from "../../infra/update-failure-report-prepare.js";
 import { withTempDir } from "../../test-utils/temp-dir.js";
 import { resolvePackageRuntimePreflight } from "./update-command-service-plan.js";
 
@@ -27,6 +28,52 @@ describe("package runtime compatibility guidance", () => {
     probeState.text = true;
     vi.mocked(resolveNodeRuntimeInfo).mockReset();
   });
+
+  it.each([
+    [">=24.16.0 <25 || >=26.1.0", "24.16.0"],
+    [null, "unspecified"],
+    ["invalid", "unspecified"],
+  ])(
+    "records inspected runtime facts for public refusal reports: %s",
+    async (nodeEngine, floor) => {
+      vi.mocked(resolveNodeRuntimeInfo).mockResolvedValue({
+        status: "probe-failed",
+        error: new Error("probe timed out"),
+      });
+      const runtime = await resolvePackageRuntimePreflight({
+        target: { version: "2026.9.4", nodeEngine },
+        nodeRunner: "/fixture/private/node",
+      });
+      expect(runtime).toMatchObject({
+        ok: false,
+        failureFacts: [{ check: "node-runtime", code: "node-runtime-preflight" }],
+      });
+      if (runtime.ok) {
+        throw new Error("Expected runtime refusal");
+      }
+      const report = await prepareUpdateFailureReport({
+        attemptId: "runtime-refusal",
+        result: {
+          status: "error",
+          mode: "npm",
+          durationMs: 0,
+          steps: [
+            {
+              name: "node-runtime-preflight",
+              command: "",
+              cwd: "",
+              durationMs: 0,
+              exitCode: 1,
+              failureFacts: runtime.failureFacts,
+            },
+          ],
+        },
+      });
+      expect(report.body).toContain("Target package: openclaw@2026.9.4");
+      expect(report.body).toContain(`Minimum Node engine: ${floor}`);
+      expect(report.body).not.toContain("/fixture/private");
+    },
+  );
 
   it.each([false, true])(
     "admits only a compatible explicit replacement (fallback=%s)",
@@ -91,6 +138,14 @@ describe("package runtime compatibility guidance", () => {
       });
       expect(result).toEqual({
         ok: false,
+        failureFacts: [
+          {
+            check: "node-runtime",
+            code: "node-runtime-preflight",
+            affectedKey: "engines.node",
+            message: `Target package: openclaw@2026.9.3; Minimum Node engine: 24.16.0; Running Node: ${node}`,
+          },
+        ],
         error: [
           `Node ${node} is incompatible with openclaw@2026.9.3.`,
           `Node ${node}: node:sqlite truncates TEXT at embedded NUL (nodejs/node#61954); use 24.16+/26.1+ or a build with the fix`,

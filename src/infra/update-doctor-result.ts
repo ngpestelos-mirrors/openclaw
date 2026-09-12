@@ -2,13 +2,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { z } from "zod";
 import { resolvePreferredOpenClawTmpDir } from "./tmp-openclaw-dir.js";
-import {
-  normalizeUpdateFailureFacts,
-  UpdateFailureFactSchema,
-  type UpdateFailureFact,
-} from "./update-failure-facts.js";
+import { normalizeUpdateFailureFacts, type UpdateFailureFact } from "./update-failure-facts.js";
+import { UpdateFailureFactSchema } from "./update-run-schema.js";
 
 // IPC contract between package update parents and the post-install doctor child.
 export const UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV =
@@ -55,38 +52,47 @@ export class UpdateDoctorError extends Error {
   }
 }
 
-/** Read the candidate's structured lint result before any diagnostic tail truncation. */
-export function parseUpdateDoctorFailureFacts(
-  stdout: string,
-  env: NodeJS.ProcessEnv = process.env,
-): UpdateFailureFact[] {
-  let report: unknown;
+const doctorLintReportSchema = z.object({
+  ok: z.boolean(),
+  checksRun: z.number().int().nonnegative(),
+  findings: z.array(
+    z.object({
+      checkId: z.string(),
+      message: z.string(),
+      severity: z.string().optional(),
+      source: z.string().optional(),
+      path: z.string().optional(),
+      requirement: z.string().optional(),
+      fixHint: z.string().optional(),
+    }),
+  ),
+});
+
+/** One child-result contract for candidate lint and post-plugin readiness. */
+export function parseUpdateDoctorLintReport(stdout: string, env: NodeJS.ProcessEnv = process.env) {
   try {
-    report = JSON.parse(stdout);
+    const parsed = doctorLintReportSchema.safeParse(JSON.parse(stdout));
+    if (!parsed.success) {
+      return undefined;
+    }
+    const report = parsed.data;
+    return {
+      ...report,
+      failureFacts: normalizeUpdateFailureFacts(
+        report.findings
+          .filter((finding) => finding.severity === "error" || finding.severity === undefined)
+          .map((finding) => ({
+            check: finding.checkId,
+            code: "doctor-failed",
+            message: [finding.requirement, finding.message].filter(Boolean).join(": "),
+            affectedKey: finding.path,
+          })),
+        env,
+      ),
+    };
   } catch {
-    return [];
+    return undefined;
   }
-  if (!isRecord(report) || !Array.isArray(report.findings)) {
-    return [];
-  }
-  return normalizeUpdateFailureFacts(
-    report.findings.flatMap((finding): UpdateFailureFact[] =>
-      isRecord(finding) &&
-      finding.severity === "error" &&
-      typeof finding.checkId === "string" &&
-      typeof finding.message === "string"
-        ? [
-            {
-              check: finding.checkId,
-              code: "doctor-failed",
-              message: finding.message,
-              ...(typeof finding.path === "string" ? { affectedKey: finding.path } : {}),
-            },
-          ]
-        : [],
-    ),
-    env,
-  );
 }
 
 /** Keep optional health diagnostics bounded across Doctor and its update parent. */

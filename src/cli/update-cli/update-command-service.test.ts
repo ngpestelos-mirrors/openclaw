@@ -90,6 +90,7 @@ describe("maybeRestartService", () => {
     "initial-stopped",
     "initial-stopped-reachable",
     "initial-plugin-error",
+    "initial-plugin-unavailable",
     "initial-channel-error",
     "initial-readyz-error",
     "initial-readyz-rollback",
@@ -110,21 +111,24 @@ describe("maybeRestartService", () => {
           }
         },
       };
-      const initialFailure = change.startsWith("initial-");
       const rollback = change === "initial-readyz-rollback";
-      if (initialFailure) {
+      const pluginOnly =
+        change === "initial-plugin-error" || change === "initial-plugin-unavailable";
+      const initialFailure = change.startsWith("initial-") && !pluginOnly;
+      const healthy = await mocks.inspectGatewayRestart();
+      if (change.startsWith("initial-")) {
         const health = await mocks.waitForGatewayHealthyRestart();
-        mocks.waitForGatewayHealthyRestart.mockResolvedValue({
+        const observedHealth = {
           ...health,
           healthy:
-            change === "initial-readyz-error" || rollback || change === "initial-stopped-reachable",
+            pluginOnly ||
+            change === "initial-readyz-error" ||
+            rollback ||
+            change === "initial-stopped-reachable",
           runtime: {
             status: change.startsWith("initial-stopped") ? "stopped" : "running",
             pid: 8000,
           },
-          ...(change === "initial-plugin-error"
-            ? { activatedPluginErrors: [{ id: "fixture-plugin", error: "load failed" }] }
-            : {}),
           ...(change === "initial-version-error"
             ? {
                 versionMismatch: { expected: "2026.9.2", actual: gateway.version },
@@ -140,10 +144,26 @@ describe("maybeRestartService", () => {
           ...(change === "initial-settle-error"
             ? { waitOutcome: "timeout", probeError: "Gateway did not settle" }
             : {}),
+          ...(change === "initial-plugin-error" || change.startsWith("initial-stopped")
+            ? {
+                activatedPluginErrors: [
+                  { id: "fixture", origin: "global", activated: true, error: "failed" },
+                ],
+              }
+            : {}),
+          ...(change === "initial-plugin-unavailable"
+            ? {
+                unavailablePlugins: [
+                  { id: "fixture", reason: "missing-extension-entry", detail: "Entry missing" },
+                ],
+              }
+            : {}),
           ...(change === "initial-channel-error"
             ? { channelProbeErrors: [{ id: "fixture-channel", error: "connection failed" }] }
             : {}),
-        });
+        };
+        mocks.waitForGatewayHealthyRestart.mockResolvedValue(observedHealth);
+        mocks.inspectGatewayRestart.mockResolvedValue(observedHealth);
       }
       const controller = new AbortController();
       mocks.waitForGatewayHttpReadiness.mockImplementationOnce(async () => {
@@ -164,7 +184,13 @@ describe("maybeRestartService", () => {
         signal: controller.signal,
         requireRunningService: true,
         result: updateResult,
-        serviceEnv: options.env,
+        serviceEnv: {
+          ...options.env,
+          ...(pluginOnly ? { OPENCLAW_PROFILE: "service-profile" } : {}),
+          ...(change === "initial-plugin-unavailable"
+            ? { OPENCLAW_CONTAINER_HINT: "service-box" }
+            : {}),
+        },
         gatewayPort: 18789,
         expectedVersion: gateway.version,
         expectedBuildId: gateway.buildId,
@@ -184,23 +210,16 @@ describe("maybeRestartService", () => {
               ? { check: "versionMatch", code: "version-mismatch" }
               : change === "initial-build-error"
                 ? { check: "versionMatch", code: "build-id-mismatch" }
-                : change === "initial-plugin-error"
+                : change === "initial-channel-error"
                   ? {
-                      check: "pluginErrors",
-                      code: "plugin-errors",
-                      pluginId: "fixture-plugin",
-                      message: "load failed",
+                      check: "channelsReady",
+                      code: "channel-errors",
+                      affectedKey: "fixture-channel",
+                      message: "connection failed",
                     }
-                  : change === "initial-channel-error"
-                    ? {
-                        check: "channelsReady",
-                        code: "channel-errors",
-                        affectedKey: "fixture-channel",
-                        message: "connection failed",
-                      }
-                    : change === "initial-settle-error"
-                      ? { check: "settled", code: "timeout", message: "Gateway did not settle" }
-                      : { check: "service", code: "service-not-running" };
+                  : change === "initial-settle-error"
+                    ? { check: "settled", code: "timeout", message: "Gateway did not settle" }
+                    : { check: "service", code: "service-not-running" };
         expect(updateResult.steps).toContainEqual(
           expect.objectContaining({
             name: "gateway verification",
@@ -224,11 +243,12 @@ describe("maybeRestartService", () => {
             version: gateway.version,
           };
         }
+        mocks.inspectGatewayRestart.mockResolvedValue(healthy);
         await expect(
           verifyUpdatedGateway({
             opts,
             result: updateResult,
-            health: await mocks.inspectGatewayRestart(),
+            health: healthy,
             serviceEnv: options.env,
             gatewayPort: 18789,
             requireRunningService: true,
@@ -257,7 +277,7 @@ describe("maybeRestartService", () => {
           }),
           expect.anything(),
         );
-      } else if (change !== "current") {
+      } else if (change === "aborted" || change === "revoked") {
         await expect(verification).rejects.toMatchObject({
           name: change === "aborted" ? "AbortError" : "Error",
         });
@@ -268,7 +288,25 @@ describe("maybeRestartService", () => {
           expect.anything(),
         );
       } else {
-        await expect(verification).resolves.toMatchObject({ ok: true });
+        const result = await verification;
+        expect(result.ok).toBe(true);
+        if (pluginOnly) {
+          const retry =
+            change === "initial-plugin-unavailable"
+              ? "openclaw --container service-box doctor --fix"
+              : "openclaw --profile service-profile doctor --fix";
+          expect(result.pluginWarnings).toEqual([
+            expect.objectContaining({
+              pluginId: "fixture",
+              message: expect.stringContaining("could not be loaded"),
+              guidance: [retry],
+            }),
+          ]);
+          expect(result.summary).toContain("plugin failures need a retry");
+          expect(mocks.waitForGatewayHealthyRestart).toHaveBeenCalledWith(
+            expect.objectContaining({ requirePluginHealth: false }),
+          );
+        }
         expect(onVerified).toHaveBeenCalledOnce();
       }
       expect(loadUpdateRecovery(admitted.runId, options)).toBeUndefined();

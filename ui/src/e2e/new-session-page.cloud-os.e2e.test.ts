@@ -8,12 +8,13 @@ import {
   createNewSessionPageE2eSuite,
   createdSessionListResult,
   installMockGateway,
+  openEnvironmentPicker,
 } from "./new-session-page.test-support.ts";
 
 const suite = createNewSessionPageE2eSuite();
 
 suite.define(() => {
-  it("explains unavailable cloud operating systems while preserving Linux dispatch", async () => {
+  it("omits unavailable cloud operating systems while preserving Linux dispatch", async () => {
     await suite.withPage(
       { locale: "en-US", serviceWorkers: "block", viewport: { width: 1440, height: 1080 } },
       async ({ page }) => {
@@ -38,12 +39,11 @@ suite.define(() => {
 
         await page.goto(`${suite.server.baseUrl}new`);
         await gateway.waitForRequest("environments.list");
-        const trigger = page.locator("#new-session-where-trigger");
         const picker = page.locator("wa-popover.new-session-page__where-popover");
-        await trigger.click();
+        await openEnvironmentPicker(page);
         await picker.getByRole("button", { name: "aws", exact: true }).click();
-        await trigger.click();
-        await picker.getByRole("button", { name: /Standard/ }).waitFor();
+        await picker.locator('[data-value="cloud:aws"]').hover();
+        await picker.locator('[data-value="machine:standard"]').waitFor();
         expect(await picker.locator('[data-value^="os:"]').count()).toBe(0);
         const capturePicker = async (fileName: string) => {
           if (captureUiProofEnabled) {
@@ -52,7 +52,7 @@ suite.define(() => {
               await takeControlUiElementScreenshot(
                 page,
                 picker.locator('wa-popup [part="popup"]'),
-                [picker.getByRole("button", { name: /Standard/ })],
+                [picker.locator('[data-value="machine:standard"]')],
               ),
             );
           }
@@ -74,31 +74,15 @@ suite.define(() => {
         });
         await gateway.emitGatewayEvent("node.runnerInventory.changed");
         const linux = picker.locator('[data-value="os:linux"]');
+        await picker.locator('[data-value="cloud:aws"]').hover();
         await linux.waitFor();
-        expect(await linux.isEnabled()).toBe(true);
-        expect(await linux.getAttribute("aria-pressed")).toBe("true");
+        expect(await linux.textContent()).toBe("Linux");
+        expect(await picker.getByRole("button", { name: "Linux", exact: true }).count()).toBe(0);
         for (const os of ["macos", "windows"]) {
           const option = picker.locator(`[data-value="os:${os}"]`);
-          expect(await option.isVisible()).toBe(true);
-          expect(await option.isDisabled()).toBe(true);
-          expect(await option.textContent()).toContain(disabledReason);
-          expect(await option.getAttribute("aria-pressed")).toBe("false");
-          for (const text of [
-            option.locator(".session-menu__text"),
-            option.getByText(disabledReason, { exact: true }),
-          ]) {
-            expect(
-              await text.evaluate(
-                (element) =>
-                  element.clientWidth >= element.scrollWidth &&
-                  element.clientHeight >= element.scrollHeight,
-              ),
-              `${os} label and upgrade instructions must remain fully readable`,
-            ).toBe(true);
-          }
+          expect(await option.count()).toBe(0);
         }
         await capturePicker("02-after-unavailable-operating-systems.png");
-        await linux.click();
         await page.keyboard.press("Escape");
         await page.locator(".new-session-page__message").fill("Continue on Linux");
         await page.getByRole("button", { name: "Start session" }).click();

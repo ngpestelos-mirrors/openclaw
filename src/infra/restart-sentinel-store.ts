@@ -7,8 +7,9 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
-import { UpdateFailureFactSchema, type UpdateFailureFact } from "./update-failure-facts.js";
+import type { UpdateFailureFact } from "./update-failure-facts.js";
 import { updateRecoverySchema, type UpdateRecovery } from "./update-recovery.js";
+import { UpdateFailureFactSchema } from "./update-run-schema.js";
 
 type RestartSentinelLog = {
   stdoutTail?: string | null;

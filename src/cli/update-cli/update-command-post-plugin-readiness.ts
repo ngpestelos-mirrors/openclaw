@@ -1,6 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { UPDATE_POST_CORE_CONVERGENCE_ENV } from "../../commands/doctor/shared/update-phase.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
+import { parseUpdateDoctorLintReport } from "../../infra/update-doctor-result.js";
 import { runExec } from "../../process/exec.js";
 import { resolveNodeRunner } from "./shared.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
@@ -8,51 +9,6 @@ import {
   disableUpdatedPackageCompileCacheEnv,
   stripGatewayServiceMarkerEnv,
 } from "./update-command-service-env.js";
-
-type UpdateReadinessFinding = {
-  checkId: string;
-  message: string;
-  source?: string;
-  fixHint?: string;
-};
-
-type UpdateReadinessReport = {
-  ok: boolean;
-  checksRun: number;
-  findings: UpdateReadinessFinding[];
-};
-
-function parseUpdateReadinessReport(stdout: string): UpdateReadinessReport {
-  const result: unknown = JSON.parse(stdout);
-  if (
-    !isRecord(result) ||
-    typeof result.ok !== "boolean" ||
-    typeof result.checksRun !== "number" ||
-    !Number.isInteger(result.checksRun) ||
-    result.checksRun < 0 ||
-    !Array.isArray(result.findings)
-  ) {
-    throw new Error("Updated Doctor returned an invalid readiness result.");
-  }
-  const findings = result.findings.map((finding): UpdateReadinessFinding => {
-    if (
-      !isRecord(finding) ||
-      typeof finding.checkId !== "string" ||
-      typeof finding.message !== "string" ||
-      (finding.source !== undefined && typeof finding.source !== "string") ||
-      (finding.fixHint !== undefined && typeof finding.fixHint !== "string")
-    ) {
-      throw new Error("Updated Doctor returned an invalid readiness finding.");
-    }
-    return {
-      checkId: finding.checkId,
-      message: finding.message,
-      ...(finding.source !== undefined ? { source: finding.source } : {}),
-      ...(finding.fixHint !== undefined ? { fixHint: finding.fixHint } : {}),
-    };
-  });
-  return { ok: result.ok, checksRun: result.checksRun, findings };
-}
 
 function createPostPluginReadinessExecutionFailure(
   pluginUpdate: PostCorePluginUpdateResult,
@@ -121,11 +77,12 @@ export async function applyPostPluginUpdateReadiness(params: {
     stdout = error.stdout;
   }
 
-  let report: UpdateReadinessReport;
-  try {
-    report = parseUpdateReadinessReport(stdout);
-  } catch (error) {
-    return createPostPluginReadinessExecutionFailure(params.pluginUpdate, String(error));
+  const report = parseUpdateDoctorLintReport(stdout);
+  if (!report) {
+    return createPostPluginReadinessExecutionFailure(
+      params.pluginUpdate,
+      "Updated Doctor returned an invalid readiness result.",
+    );
   }
   if (report.ok && !executionFailed && report.checksRun > 0 && report.findings.length === 0) {
     return params.pluginUpdate;
@@ -142,6 +99,7 @@ export async function applyPostPluginUpdateReadiness(params: {
     ...params.pluginUpdate,
     status: "error",
     reason: "post-plugin-update-readiness-failed",
+    failureFacts: report.failureFacts,
     warnings: [
       ...(params.pluginUpdate.warnings ?? []),
       ...report.findings.map((finding) => {

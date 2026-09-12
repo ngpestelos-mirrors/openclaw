@@ -1,6 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { prepareUpdateFailureReport } from "./update-failure-report-prepare.js";
-import { decodeRun, encodeRun } from "./update-run-codec.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 import {
   renderUpdateRunNotice,
@@ -8,7 +7,6 @@ import {
   updateRunReportInputFromResult,
   updateRunReportInputFromSentinel,
 } from "./update-run-report.js";
-import { runStep } from "./update-runner-command.js";
 
 function run(patch: Partial<UpdateRunRecord> = {}): UpdateRunRecord {
   return {
@@ -34,90 +32,6 @@ function run(patch: Partial<UpdateRunRecord> = {}): UpdateRunRecord {
 }
 
 describe("update run report", () => {
-  it("captures the first npm error before log tail truncation and step completion", async () => {
-    const onStepComplete = vi.fn();
-    const result = await runStep({
-      name: "global install stage",
-      argv: ["npm", "install"],
-      cwd: "/fixture",
-      timeoutMs: 1000,
-      stepIndex: 0,
-      totalSteps: 1,
-      progress: { onStepComplete },
-      runCommand: async () => ({
-        code: 1,
-        stdout: "",
-        stderr: `npm error code EACCES\n${"cleanup output\n".repeat(1000)}`,
-      }),
-    });
-    expect(result.stderrTail).not.toContain("EACCES");
-    const expected = {
-      failureFacts: [
-        { check: "package-install", code: "EACCES", message: "npm error code EACCES" },
-      ],
-    };
-    expect(result).toMatchObject(expected);
-    expect(onStepComplete).toHaveBeenCalledWith(expect.objectContaining(expected));
-  });
-
-  it.each([
-    {
-      check: "core/doctor/runtime-tool-schemas",
-      code: "doctor-failed",
-      affectedKey: "mcp.servers",
-      message: "Configured MCP server could not expose runtime tools.",
-    },
-    { check: "readyz", code: "readyz-unhealthy", message: "Gateway readiness returned HTTP 503." },
-    { check: "package-install", code: "EACCES", message: "npm error code EACCES" },
-    { check: "package-swap", code: "Error", message: "Package rollback launcher backup changed." },
-    {
-      check: "managed-service-preflight",
-      code: "systemd-user-bus-unavailable",
-      message: "User service manager is unavailable.",
-    },
-    {
-      check: "plugin-update",
-      code: "plugin-api-incompatible",
-      pluginId: "example",
-      message: "Plugin requires a newer host API.",
-    },
-  ])("retains $check in persisted, local, and public failure reports", async (fact) => {
-    const result = {
-      status: "error" as const,
-      mode: "npm" as const,
-      reason: "update-failed",
-      durationMs: 1,
-      steps: [
-        {
-          name: "failed update step",
-          command: "",
-          cwd: "",
-          durationMs: 1,
-          exitCode: 1,
-          failureFacts: [fact],
-        },
-      ],
-    };
-    const record = decodeRun(
-      encodeRun(run({ ...updateRunReportInputFromResult(result) }), { env: {} }),
-    );
-    expect(JSON.stringify(record.steps)).toContain(fact.check);
-    const local = renderUpdateRunReport(record).lines.join("\n");
-    const report = await prepareUpdateFailureReport(
-      { attemptId: record.runId, result },
-      { stateDir: "/fixture/state", env: {} },
-    );
-    for (const text of [local, report.body]) {
-      expect(text).toContain(`Failing check ${fact.check} (${fact.code})`);
-      expect(text).toContain(fact.message);
-      if (fact.affectedKey) {
-        expect(text).toContain(fact.affectedKey);
-      }
-      if (fact.pluginId) {
-        expect(text).toContain(fact.pluginId);
-      }
-    }
-  });
   it.each(["status", "failure"])(
     "includes the legacy expiry advisory in the %s report",
     async (surface) => {

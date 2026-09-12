@@ -133,7 +133,7 @@ export async function executeMutableUpdate(
     const { preflightConfiguredNpmPluginTargets } =
       await import("./update-command-plugin-preflight.js");
     const context = admission!.contexts.at(-1)!;
-    await preflightConfiguredNpmPluginTargets({
+    const warnings = await preflightConfiguredNpmPluginTargets({
       config: context.configSnapshot.sourceConfig,
       env: context.env,
       targetVersion,
@@ -141,6 +141,9 @@ export async function executeMutableUpdate(
       timeoutMs: params.updateStepTimeoutMs,
     });
     await recheckSchemas(admittedTargetSchemaVersions);
+    for (const warning of warnings) {
+      defaultRuntime[opts.json ? "error" : "log"](warning.message);
+    }
   };
   let recoveryEnv: NodeJS.ProcessEnv | undefined;
   let packageTransaction: PackageUpdateTransaction | undefined;
@@ -323,9 +326,7 @@ export async function executeMutableUpdate(
     assertUpdateCommandRecovery(opts);
     const env = ownedManagedUpdateContext?.env ?? opts.run?.env ?? process.env;
     if (opts.run) {
-      recordUpdateRunPhase(opts.run.runId, "validating", undefined, {
-        env: opts.run.env,
-      });
+      recordUpdateRunPhase(opts.run.runId, "validating", undefined, { env: opts.run.env });
     }
     const validate = async (
       signal?: AbortSignal,
@@ -508,6 +509,7 @@ export async function executeMutableUpdate(
           port,
           expectedVersion,
           expectedBuildId: expectedBuildId ?? undefined,
+          requirePluginHealth: false,
         }),
         waitForGatewayHttpReadiness({
           config,
@@ -544,9 +546,7 @@ export async function executeMutableUpdate(
     await recheckSchemas(admittedTargetSchemaVersions);
     assertUpdateCommandRecovery(opts);
     if (opts.run) {
-      recordUpdateRunPhase(opts.run.runId, "activating", undefined, {
-        env: opts.run.env,
-      });
+      recordUpdateRunPhase(opts.run.runId, "activating", undefined, { env: opts.run.env });
     }
     await stopManagedServiceBeforeMutableUpdate(roots);
     await recheckSchemas(admittedTargetSchemaVersions);

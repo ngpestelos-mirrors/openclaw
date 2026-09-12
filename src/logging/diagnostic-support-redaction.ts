@@ -1,8 +1,10 @@
 // Diagnostic support redaction helpers scrub support bundle files and paths.
 import path from "node:path";
+import { getSystemErrorMap } from "node:util";
 import { isSensitiveUrlQueryParamName } from "@openclaw/net-policy/redact-sensitive-url";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { valid as validVersion } from "semver";
 import { sanitizeForLog, stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import { REDACTED_SENTINEL } from "../config/redact-snapshot.js";
 import { isSecretRefShape } from "../config/redact-snapshot.secret-ref.js";
@@ -380,6 +382,67 @@ export function redactSupportDiagnosticLine(
     "[redacted-command]",
   );
   return truncateUtf16Safe(commandRedacted.trim(), maxLength);
+}
+
+const PUBLIC_ERROR_CODES = new Set([
+  ...Array.from(getSystemErrorMap().values(), ([code]) => code),
+  "ENOTFOUND",
+  "ERESOLVE",
+  "E401",
+  "E403",
+  "E404",
+  "ETARGET",
+  "EUSAGE",
+  "EOVERRIDE",
+  "EINVALIDTAGNAME",
+  "EUNSUPPORTEDPROTOCOL",
+  "EBADENGINE",
+  "EINTEGRITY",
+  "ERR_MODULE_NOT_FOUND",
+  "ERR_PACKAGE_PATH_NOT_EXPORTED",
+]);
+
+/** Error-code syntax alone cannot distinguish private identifiers from known errors. */
+export function normalizeSupportDiagnosticErrorCode(value: string | undefined): string | undefined {
+  return value && PUBLIC_ERROR_CODES.has(value) ? value : undefined;
+}
+
+/** Public diagnostics expose recognized causes, never arbitrary prose or executable arguments. */
+export function redactPublicSupportDiagnosticLine(
+  value: string,
+  context: SupportRedactionContext,
+): string {
+  const line = redactSupportDiagnosticLine(value, context);
+  const runtime =
+    /^Target package: openclaw@(\S+); Minimum Node engine: (\S+); Running Node: (\S+)$/u.exec(line);
+  if (
+    runtime &&
+    runtime
+      .slice(1)
+      .every(
+        (version) => version === "unknown" || version === "unspecified" || validVersion(version),
+      )
+  ) {
+    return line;
+  }
+  if (
+    /^Gateway readiness endpoint returned HTTP (?:[1-5]\d{2}|unavailable); expected HTTP 200\.$/u.test(
+      line,
+    )
+  ) {
+    return line;
+  }
+  const codes = (line.match(/\b(?:E[A-Z0-9_]+)\b/gu) ?? []).filter((code) =>
+    normalizeSupportDiagnosticErrorCode(code),
+  );
+  const causes =
+    line.match(
+      /\b(?:[Cc]onnection (?:refused|closed|timed out)|[Pp]ermission denied|[Nn]o space left on device|MCP error -?\d{1,5}|HTTP [1-5]\d{2}|Invalid package dist content inventory)\b/gu,
+    ) ?? [];
+  return truncateUtf16Safe(
+    [...new Set([...codes, ...causes])].join("; ") || "[redacted-diagnostic]",
+    200,
+  );
 }
 
 function sanitizeCommandArguments(args: unknown[], redaction: SupportRedactionContext): unknown[] {

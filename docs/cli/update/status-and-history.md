@@ -94,8 +94,10 @@ failure. Each fact names the check and reason code, with an optional affected
 config key, plugin ID, and one diagnostic line of at most 200 characters. These
 facts survive the run ledger and appear in the local summary and the reviewed
 GitHub failure report. Secrets and private paths are redacted before recording;
-public reports do not include command logs. Older runs cannot recover facts that
-their updater did not record. Existing history and report size limits still apply.
+public reports include recognized error causes instead of arbitrary command or
+user text, and show config key families instead of operator-defined names. Older
+runs cannot recover facts that their updater did not record. Existing history
+and report size limits still apply.
 
 Recoverable maintenance failures appear as recorded warnings even when the update
 succeeds. Each warning names the skipped work, the cause, and a repair command.
