@@ -190,12 +190,18 @@ class WearTalkStartLifecycleTest {
 
 @Implements(AudioRecord::class)
 class CountingTalkStartAudioRecord {
+  private var recording = false
+
+  @Implementation
+  fun getRecordingState(): Int = if (recording) AudioRecord.RECORDSTATE_RECORDING else AudioRecord.RECORDSTATE_STOPPED
+
   @Implementation
   fun getState(): Int = AudioRecord.STATE_INITIALIZED
 
   @Implementation
   fun startRecording() {
     starts += 1
+    recording = true
   }
 
   companion object {

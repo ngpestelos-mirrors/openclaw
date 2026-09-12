@@ -1,9 +1,11 @@
 package ai.openclaw.wear
 
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.click
@@ -192,9 +194,16 @@ class WearChatDisclosureTest {
   fun sessionSelectionExposesWatchOwnerAndInvokesRealCallback() {
     render()
     scrollToText("Session: Current")
-    compose.onNode(hasText("Session: Current") and hasClickAction()).performClick()
+    compose
+      .onNode(hasText("Session: Current") and hasClickAction())
+      .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+      .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
+      .performClick()
     scrollToText("Current")
-    compose.onNode(hasText("Current") and hasClickAction()).assertIsSelected()
+    compose
+      .onNode(hasText("Current") and hasClickAction())
+      .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.RadioButton))
+      .assertIsSelected()
     scrollToText("Other")
     compose.onNode(hasText("Other") and hasClickAction()).assertIsNotSelected().performClick()
     assertEquals(listOf("agent:alpha:other"), selectedSessions)

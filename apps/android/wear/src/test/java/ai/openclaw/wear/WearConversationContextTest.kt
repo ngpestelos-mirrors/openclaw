@@ -491,7 +491,7 @@ class WearConversationContextTest {
     var id = 0
     val tracker = WearSendAttemptTracker { (++id).toString() }
     val old = tracker.begin("agent:alpha:shared", "Reply", "phone")
-    tracker.clear()
+    tracker.reset()
     val current = tracker.begin("agent:beta:shared", "Reply", "phone")
     tracker.markAmbiguous(current)
     tracker.markAmbiguous(old)
@@ -801,7 +801,7 @@ class WearConversationContextTest {
     }
 
   @Test
-  fun lateOriginalErrorCannotResurrectConfirmedSameLogicalRetry() =
+  fun lateOriginalErrorCannotResurrectCompletedSameLogicalRetry() =
     withFlow { flow ->
       flow.holdSendResponses = true
       flow.sendFailureCode = "internal_error"
@@ -818,6 +818,8 @@ class WearConversationContextTest {
       val confirmedState = flow.state
       flow.deliverSendResponse(0)
       assertEquals(confirmedState, flow.state)
+      flow.emitChatTerminal("final", originalId)
+      assertNull(flow.state.pendingReply)
       reconnectForExplicitRetry(flow)
       flow.vm.sendReply("Same message")
       flow.idle()
@@ -825,13 +827,15 @@ class WearConversationContextTest {
     }
 
   @Test
-  fun confirmedSuccessBeforeDisconnectStartsANewIntentionalSameMessageSend() =
+  fun completedTerminalBeforeDisconnectStartsANewIntentionalSameMessageSend() =
     withFlow { flow ->
       flow.vm.sendReply("Same message")
       flow.idle()
       val originalId = flow.sentRunIds.single()
       assertFalse(flow.state.sending)
       assertNull(flow.state.failure)
+      flow.emitChatTerminal("final", originalId)
+      assertNull(flow.state.pendingReply)
       reconnectForExplicitRetry(flow)
       flow.vm.sendReply("Same message")
       flow.idle()
@@ -840,7 +844,7 @@ class WearConversationContextTest {
     }
 
   @Test
-  fun originalSuccessAfterDisconnectBeforeRetryResolvesItsLogicalRequest() =
+  fun originalAcknowledgmentAfterDisconnectCannotCompleteItsLogicalRequest() =
     withFlow { flow ->
       flow.holdSendResponses = true
       flow.vm.sendReply("Same message")
@@ -849,9 +853,16 @@ class WearConversationContextTest {
       flow.emitConnection(false)
       val disconnectedState = flow.state
       flow.deliverSendResponse(0)
-      assertEquals("Known success may resolve identity, not stale UI", disconnectedState, flow.state)
+      assertEquals("An old acknowledgment cannot restore callback authority or prove completion", disconnectedState, flow.state)
       flow.emitConnection(true)
       assertEquals(1, flow.sentRunIds.size)
+      flow.vm.sendReply("Same message")
+      flow.idle()
+      assertEquals(listOf(originalId, originalId), flow.sentRunIds)
+      assertTrue(flow.state.sending)
+      flow.deliverSendResponse(1)
+      flow.emitChatTerminal("final", originalId)
+      assertNull(flow.state.pendingReply)
       flow.vm.sendReply("Same message")
       flow.idle()
       assertNotEquals(originalId, flow.sentRunIds.last())
@@ -1038,11 +1049,13 @@ class WearConversationContextTest {
     }
 
   @Test
-  fun confirmedSuccessBeforePhoneInvalidationStartsANewIntent() =
+  fun completedTerminalBeforePhoneInvalidationStartsANewIntent() =
     withFlow { flow ->
       flow.vm.sendReply("Same message")
       flow.idle()
       val original = flow.sentRunIds.single()
+      flow.emitChatTerminal("final", original)
+      assertNull(flow.state.pendingReply)
       flow.invalidatePreferredPhone()
       assertTrue(flow.vm.sendReply("Same message", flow.vm.captureConversationContext()))
       flow.idle()

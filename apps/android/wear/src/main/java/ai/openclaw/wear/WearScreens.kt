@@ -686,27 +686,6 @@ private fun VoicePage(
   onStopSpeaking: () -> Unit,
 ) {
   val colors = OpenClawWearTheme.colors
-  if (microphonePermissionRequired) {
-    Column(
-      modifier = Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 42.dp),
-      horizontalAlignment = Alignment.CenterHorizontally,
-      verticalArrangement = Arrangement.Center,
-    ) {
-      Text(
-        text = stringResource(R.string.microphone_permission_required),
-        color = colors.danger,
-        textAlign = TextAlign.Center,
-        fontSize = 14.sp,
-      )
-      Spacer(modifier = Modifier.height(12.dp))
-      SecondaryButton(
-        label = stringResource(if (microphoneSettingsRequired) R.string.open_settings else R.string.retry),
-        enabled = true,
-        onClick = onMicrophoneRecovery,
-      )
-    }
-    return
-  }
   val voicePagerScope = rememberCoroutineScope()
   val view = LocalView.current
   var previousMode by remember { mutableIntStateOf(voicePagerState.currentPage) }
@@ -758,6 +737,9 @@ private fun VoicePage(
       when (mode) {
         VOICE_HOME_MODE -> {
           VoiceHomeMode(
+            microphonePermissionRequired = microphonePermissionRequired,
+            microphoneSettingsRequired = microphoneSettingsRequired,
+            onMicrophoneRecovery = onMicrophoneRecovery,
             realtimeTalk = realtimeTalk,
             realtimeStopping = realtimeStopping,
             speaking = speaking,
@@ -785,7 +767,13 @@ private fun VoicePage(
             actionBusy = actionBusy,
             inputEnabled = inputEnabled,
             onType = onType,
-            onRealtimeTalk = onRealtimeTalk,
+            onRealtimeTalk = {
+              if (microphonePermissionRequired && !realtimeTalk.active && !realtimeCapturing) {
+                selectMode(VOICE_HOME_MODE)
+              } else {
+                onRealtimeTalk()
+              }
+            },
           )
         }
       }
@@ -809,6 +797,9 @@ private fun VoicePage(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VoiceHomeMode(
+  microphonePermissionRequired: Boolean,
+  microphoneSettingsRequired: Boolean,
+  onMicrophoneRecovery: () -> Unit,
   realtimeTalk: WearRealtimeTalkSnapshot,
   realtimeStopping: Boolean,
   speaking: Boolean,
@@ -828,6 +819,7 @@ private fun VoiceHomeMode(
   val colors = OpenClawWearTheme.colors
   val realtimeActive = realtimeTalk.active || realtimeCapturing
   val ttsOnly = speaking && !realtimeActive
+  val recoverMicrophone = microphonePermissionRequired && !realtimeActive && !ttsOnly
   val state =
     realtimeVoiceButtonState(
       realtimeTalk = realtimeTalk,
@@ -856,6 +848,8 @@ private fun VoiceHomeMode(
     if (liveActionEnabled) {
       if (ttsOnly) {
         onStopSpeaking()
+      } else if (recoverMicrophone) {
+        onMicrophoneRecovery()
       } else {
         onRealtimeTalk()
       }
@@ -889,6 +883,7 @@ private fun VoiceHomeMode(
   val liveClickLabel =
     when {
       ttsOnly -> stringResource(R.string.stop_speaking)
+      recoverMicrophone -> stringResource(if (microphoneSettingsRequired) R.string.open_settings else R.string.retry)
       realtimeActive -> stringResource(R.string.stop_speaking)
       else -> stringResource(R.string.speak_to_agent)
     }
@@ -944,7 +939,8 @@ private fun VoiceHomeMode(
           modifier =
             Modifier
               .align(Alignment.Center)
-              .size(layout.orbSize)
+              .width(layout.orbSize)
+              .then(if (recoverMicrophone) Modifier else Modifier.height(layout.orbSize))
               .offset(y = voiceControlOffset)
               .combinedClickable(
                 // combinedClickable gates every gesture together; keep preview exclusive and fall back to Dictate.
@@ -960,14 +956,36 @@ private fun VoiceHomeMode(
               },
           contentAlignment = Alignment.Center,
         ) {
-          WearTalkAvatar(
-            state = avatarState,
-            mouthLevel = if (realtimePlaying) realtimeMouthLevel else 0f,
-            syntheticSpeech = ttsOnly,
-            accent = accent,
-            danger = colors.danger,
-            modifier = Modifier.fillMaxSize(),
-          )
+          if (recoverMicrophone) {
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              Text(
+                text = stringResource(R.string.microphone_permission_required),
+                color = colors.danger,
+                textAlign = TextAlign.Center,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+              )
+              Text(
+                text = stringResource(if (microphoneSettingsRequired) R.string.open_settings else R.string.retry),
+                color = colors.voiceAccent,
+                textAlign = TextAlign.Center,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+              )
+            }
+          } else {
+            WearTalkAvatar(
+              state = avatarState,
+              mouthLevel = if (realtimePlaying) realtimeMouthLevel else 0f,
+              syntheticSpeech = ttsOnly,
+              accent = accent,
+              danger = colors.danger,
+              modifier = Modifier.fillMaxSize(),
+            )
+          }
         }
         statusText?.let { status ->
           Text(
@@ -2072,6 +2090,7 @@ private fun ConversationContextPicker(
     enabled = !actionBusy,
     onClick = onOpenContextPicker,
     modifier = Modifier.padding(horizontal = 12.dp),
+    role = Role.Button,
   )
 }
 
@@ -2276,6 +2295,7 @@ private fun ContextPickerOption(
   enabled: Boolean,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
+  role: Role = Role.RadioButton,
 ) {
   val colors = OpenClawWearTheme.colors
   Column(
@@ -2283,8 +2303,13 @@ private fun ContextPickerOption(
       modifier
         .fillMaxWidth()
         .padding(horizontal = 12.dp)
-        .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
         .then(
+          if (role == Role.Button) {
+            Modifier.clickable(enabled = enabled, role = role, onClick = onClick)
+          } else {
+            Modifier.selectable(selected = selected, enabled = enabled, role = role, onClick = onClick)
+          },
+        ).then(
           Modifier.border(
             width = 1.dp,
             color = if (selected) colors.primary else colors.border,

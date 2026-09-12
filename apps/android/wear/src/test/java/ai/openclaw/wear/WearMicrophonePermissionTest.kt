@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Looper
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import android.view.View
 import android.view.ViewGroup
 import androidx.compose.ui.platform.ViewRootForTest
@@ -13,8 +14,10 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.lifecycle.ViewModelProvider
+import androidx.wear.input.RemoteInputIntentHelper
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -57,6 +60,31 @@ class WearMicrophonePermissionTest {
       idle()
       assertTrue(texts(activity.window.decorView).contains("Microphone permission required"))
       assertTrue(texts(activity.window.decorView).contains("Retry"))
+      val dictate = nodes(activity.window.decorView).first { it.config.getOrElseNullable(SemanticsActions.OnClick) { null }?.label == "Dictate" }
+      assertTrue(dictate.config[SemanticsActions.OnClick].action!!.invoke())
+      idle()
+      // AndroidUiDispatcher does not implement Delay: the 300 ms preview uses
+      // the coroutine default executor, not Robolectric's virtual main clock.
+      Thread.sleep(350L)
+      idle()
+      val dictateIntent = shadowOf(activity).nextStartedActivity
+      assertEquals(RecognizerIntent.ACTION_RECOGNIZE_SPEECH, dictateIntent.action)
+      shadowOf(activity).receiveResult(dictateIntent, Activity.RESULT_CANCELED, Intent())
+      idle()
+      assertFalse(state.value.realtimeCapturing)
+      val thread = nodes(activity.window.decorView).first { it.config.getOrElseNullable(SemanticsActions.OnClick) { null }?.label == "Open thread" }
+      assertTrue(thread.config[SemanticsActions.OnClick].action!!.invoke())
+      idle()
+      val type = nodes(activity.window.decorView).first { it.config.getOrElseNullable(SemanticsActions.OnClick) { null }?.label == "Type" }
+      assertTrue(type.config[SemanticsActions.OnClick].action!!.invoke())
+      val typeIntent = shadowOf(activity).nextStartedActivity
+      assertTrue(RemoteInputIntentHelper.isActionRemoteInput(typeIntent))
+      shadowOf(activity).receiveResult(typeIntent, Activity.RESULT_CANCELED, Intent())
+      idle()
+      // Return to Live recovery through the Thread microphone, not a whole-page gate.
+      val live = nodes(activity.window.decorView).first { it.config.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.contains("Talk") == true }
+      assertTrue(live.config[SemanticsActions.OnClick].action!!.invoke())
+      idle()
       val retry = nodes(activity.window.decorView).first { node -> node.config.getOrElseNullable(SemanticsProperties.Text) { null }?.any { it.text == "Retry" } == true }
       assertTrue(retry.config[SemanticsActions.OnClick].action!!.invoke())
       idle()
@@ -73,7 +101,7 @@ class WearMicrophonePermissionTest {
       controller.pause().stop()
       state.value = state.value.copy(selectedSession = state.value.selectedSession!!.copy(key = "agent:other:changed"))
       shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
-      completePermission(activity, repeated.requestCode, true)
+      // Settings grant is observed on resume; it is not a second result for the old dialog.
       controller
         .restart()
         .start()
@@ -116,6 +144,7 @@ class WearMicrophonePermissionTest {
   ) {
     // Dispatch through Activity's real permission-result branch. Calling only the
     // registry leaves mHasCurrentPermissionsRequest set, causing Retry to be rejected.
+    assertEquals("android.content.pm.action.REQUEST_PERMISSIONS", shadowOf(activity).nextStartedActivity.action)
     shadowOf(activity).internalCallDispatchActivityResult(
       "@android:requestPermissions:",
       requestCode,
