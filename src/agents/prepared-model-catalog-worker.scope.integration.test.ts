@@ -18,17 +18,22 @@ import {
   REF_ONLY_TOKEN_ENV,
   UNRELATED_PLUGIN_ID,
   UNRELATED_PLUGIN_WORKER_MARKER_ENV,
+  UNRELATED_SYNTHETIC_AUTH_ID,
   writeFixturePlugin,
   writeUnrelatedFixturePlugin,
 } from "./prepared-model-catalog-worker.test-support.js";
 import { getPreparedModelRuntimeAuthStore } from "./prepared-model-runtime-auth.js";
 import { startSerializedSnapshotBuildBatch } from "./prepared-model-runtime.build.js";
+import { retainPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
 import { usePreparedCatalogWorkerFixtures } from "./test-helpers/prepared-model-catalog-worker-fixture.js";
 
 const { makeTempDir, retireAfterTest } = usePreparedCatalogWorkerFixtures();
 
 describe("prepared model catalog worker plugin scope", () => {
-  it("keeps catalog contributors on the models.list route without importing unrelated plugins", async () => {
+  it.each([
+    { first: "full", asyncSyntheticAuth: false, syntheticAuthAvailable: true },
+    { first: "scoped", asyncSyntheticAuth: true, syntheticAuthAvailable: false },
+  ])("keeps models.list scoped with $first catalog discovery first", async (selection) => {
     const root = makeTempDir("openclaw-model-catalog-scope-worker-");
     const stateDir = path.join(root, "state");
     const agentDir = path.join(stateDir, "agents", "main", "agent");
@@ -38,7 +43,7 @@ describe("prepared model catalog worker plugin scope", () => {
     fs.mkdirSync(agentDir, { recursive: true });
     fs.mkdirSync(workspaceDir, { recursive: true });
 
-    const pluginFile = writeFixturePlugin({ root, spinMs: 0 });
+    const pluginFile = writeFixturePlugin({ root, spinMs: 0, ...selection });
     const unrelatedPluginFile = writeUnrelatedFixturePlugin(root);
     const config = {
       agents: {
@@ -100,6 +105,31 @@ describe("prepared model catalog worker plugin scope", () => {
     )[0];
     if (!prepared) {
       throw new Error("prepared runtime produced no snapshot");
+    }
+    await using _ = {
+      [Symbol.asyncDispose]: retainPreparedPluginGeneration(prepared.pluginGeneration),
+    };
+    if (selection.first === "scoped") {
+      expect(prepared.snapshot.authModes[HARNESS_ID]).toBeUndefined();
+      const probePath = path.join(root, "synthetic-auth-probes.txt");
+      const ownerPath = path.join(root, "synthetic-auth-owner.txt");
+      fs.writeFileSync(probePath, "");
+      fs.writeFileSync(ownerPath, "");
+      // Do not warm the worker: reconstruction needs the unavailable native sibling's fact.
+      const catalog = await prepared.snapshot.loadFullModelCatalog!({
+        providerIds: [PROVIDER_ID],
+        refresh: true,
+      });
+      expect(catalog.entries).toContainEqual(
+        expect.objectContaining({ provider: PROVIDER_ID, id: "plugin-generation-v1" }),
+      );
+      const probes = fs.readFileSync(probePath, "utf8").trim().split("\n");
+      expect(probes).toContain(HARNESS_ID);
+      expect(probes).not.toContain(UNRELATED_SYNTHETIC_AUTH_ID);
+      expect(new Set(fs.readFileSync(ownerPath, "utf8").trim().split("\n"))).toEqual(
+        new Set(["parent"]),
+      );
+      expect(fs.existsSync(unrelatedMarker)).toBe(false);
     }
     const authStore = getPreparedModelRuntimeAuthStore(prepared.snapshot);
     if (!authStore) {
