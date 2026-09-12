@@ -706,6 +706,9 @@ a.installed-plugins-card .installed-plugins-card__art > img.plugins-icon {
 /* Loading skeleton: same grid, same card slots (40px art, title, author, action,
    two summary lines), so the loaded cards land exactly where the placeholders were. */
 .plugin-catalog-card--skeleton {
+  /* Lighter than the default skeleton fill: eight cards of solid bars read as a wall. */
+  --skeleton-base: color-mix(in srgb, var(--bg-muted) 55%, var(--bg-elevated));
+
   pointer-events: none;
 }
 
@@ -716,7 +719,6 @@ a.installed-plugins-card .installed-plugins-card__art > img.plugins-icon {
 }
 
 .plugin-catalog-card__skeleton-title,
-.plugin-catalog-card__skeleton-author,
 .plugin-catalog-card__skeleton-action,
 .plugin-catalog-card__skeleton-line {
   display: block;
@@ -724,36 +726,32 @@ a.installed-plugins-card .installed-plugins-card__art > img.plugins-icon {
 }
 
 .plugin-catalog-card__skeleton-title {
-  width: min(72%, 150px);
-  height: 14px;
-}
-
-.plugin-catalog-card__skeleton-author {
-  width: min(44%, 88px);
-  height: 10px;
-  margin-top: 6px;
+  width: min(60%, 128px);
+  height: 12px;
 }
 
 .plugin-catalog-card__skeleton-action {
-  width: 58px;
-  height: 30px;
+  width: 52px;
+  height: 26px;
   border-radius: var(--radius-md);
 }
 
 .plugin-catalog-card__skeleton-summary {
   display: grid;
   align-content: start;
-  gap: 6px;
+  gap: 8px;
   min-height: calc(2 * 1.4em);
+  padding-top: 2px;
   font-size: var(--control-ui-text-sm);
 }
 
 .plugin-catalog-card__skeleton-line {
-  height: 11px;
+  width: 84%;
+  height: 9px;
 }
 
 .plugin-catalog-card__skeleton-line:last-child {
-  width: 78%;
+  width: 52%;
 }
 
 @media (max-width: 1100px) {

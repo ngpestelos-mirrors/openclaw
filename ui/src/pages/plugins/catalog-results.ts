@@ -212,8 +212,9 @@ function renderCatalogCard(
   </article>`;
 }
 
-// Mirrors renderCatalogCard's geometry (art tile, title + author, action slot,
-// two summary lines) inside the real grid so the layout does not jump on load.
+// Mirrors renderCatalogCard's geometry (art tile, title, action slot, two summary
+// lines) inside the real grid so the layout does not jump on load. Fills are kept
+// light and sparse on purpose: eight cards of solid bars read as a wall.
 function renderCatalogGridSkeleton(params: { label?: string; cards: number }): TemplateResult {
   return html`<div
     class="plugin-catalog-grid plugin-catalog-grid--skeleton"
@@ -232,7 +233,6 @@ function renderCatalogGridSkeleton(params: { label?: string; cards: number }): T
             <span class="skeleton plugin-catalog-card__skeleton-art"></span>
             <div class="installed-plugins-card__identity">
               <span class="skeleton plugin-catalog-card__skeleton-title"></span>
-              <span class="skeleton plugin-catalog-card__skeleton-author"></span>
             </div>
           </div>
           <div class="plugin-catalog-card__action">
