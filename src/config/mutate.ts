@@ -238,9 +238,6 @@ async function readConfigSnapshotForMutation(params: {
   const options = {
     ...(params.writeOptions?.skipPluginValidation ? { skipPluginValidation: true } : {}),
     ...(params.writeOptions?.observe === false ? { observe: false } : {}),
-    ...(params.writeOptions?.preservedLegacyRootKeys
-      ? { preservedLegacyRootKeys: params.writeOptions.preservedLegacyRootKeys }
-      : {}),
   };
   if (params.io) {
     return await params.io.readConfigFileSnapshotForWrite(options);

@@ -248,14 +248,10 @@ export async function readConfigFileSnapshotForRuntimeTransaction(
 export async function readConfigFileSnapshotForWrite(options?: {
   skipPluginValidation?: boolean;
   observe?: boolean;
-  preservedLegacyRootKeys?: readonly string[];
 }): Promise<ReadConfigFileSnapshotForWriteResult> {
   const readOptions = {
     ...(options?.skipPluginValidation ? { pluginValidation: "skip" as const } : {}),
     ...(options?.observe === false ? { observe: false } : {}),
-    ...(options?.preservedLegacyRootKeys
-      ? { preservedLegacyRootKeys: options.preservedLegacyRootKeys }
-      : {}),
   };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {

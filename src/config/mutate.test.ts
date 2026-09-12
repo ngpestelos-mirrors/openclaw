@@ -698,9 +698,7 @@ describe("config mutate helpers", () => {
       writeOptions: { expectedConfigPath: snapshot.path },
     });
 
-    expect(ioMocks.readConfigFileSnapshotForWrite.mock.invocationCallOrder[0]).toBeGreaterThan(
-      ioMocks.writeConfigFile.mock.invocationCallOrder[0],
-    );
+    expect(ioMocks.readConfigFileSnapshotForWrite).toHaveBeenCalledAfter(ioMocks.writeConfigFile);
     expect(ioMocks.writeConfigFile).toHaveBeenCalledWith(
       { gateway: { auth: { mode: "token", token: "minted" } } },
       {
