@@ -75,49 +75,6 @@ export class UpdateDoctorError extends Error {
   }
 }
 
-const doctorLintReportSchema = z.object({
-  ok: z.boolean(),
-  checksRun: z.number().int().nonnegative(),
-  findings: z.array(
-    z.object({
-      checkId: z.string(),
-      message: z.string(),
-      severity: z.string().optional(),
-      source: z.string().optional(),
-      path: z.string().optional(),
-      requirement: z.string().optional(),
-      fixHint: z.string().optional(),
-    }),
-  ),
-});
-
-/** One child-result contract for candidate lint and post-plugin readiness. */
-export function parseUpdateDoctorLintReport(stdout: string, env: NodeJS.ProcessEnv = process.env) {
-  try {
-    const parsed = doctorLintReportSchema.safeParse(JSON.parse(stdout));
-    if (!parsed.success) {
-      return undefined;
-    }
-    const report = parsed.data;
-    return {
-      ...report,
-      failureFacts: normalizeUpdateFailureFacts(
-        report.findings
-          .filter((finding) => finding.severity === "error" || finding.severity === undefined)
-          .map((finding) => ({
-            check: finding.checkId,
-            code: "doctor-failed",
-            message: [finding.requirement, finding.message].filter(Boolean).join(": "),
-            affectedKey: finding.path,
-          })),
-        env,
-      ),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 /** Keep optional health diagnostics bounded across Doctor and its update parent. */
 export function normalizeUpdatePostInstallDoctorWarnings(warnings: readonly string[]): string[] {
   const normalized: string[] = [];

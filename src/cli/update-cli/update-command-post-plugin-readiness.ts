@@ -1,7 +1,10 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { UPDATE_POST_CORE_CONVERGENCE_ENV } from "../../commands/doctor/shared/update-phase.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
-import { parseUpdateDoctorLintReport } from "../../infra/update-doctor-result.js";
+import {
+  parseUpdateDoctorLintReport,
+  type UpdateDoctorLintFinding,
+} from "../../infra/update-doctor-lint.js";
 import { runExec } from "../../process/exec.js";
 import { resolveNodeRunner } from "./shared.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
@@ -9,6 +12,21 @@ import {
   disableUpdatedPackageCompileCacheEnv,
   stripGatewayServiceMarkerEnv,
 } from "./update-command-service-env.js";
+
+function readinessWarning(
+  finding: UpdateDoctorLintFinding,
+  reason = finding.checkId,
+): NonNullable<PostCorePluginUpdateResult["warnings"]>[number] {
+  return {
+    reason,
+    message: finding.message,
+    guidance: [
+      finding.fixHint ??
+        `Resolve this finding, then rerun \`openclaw doctor --lint --only ${finding.checkId}\`.`,
+    ],
+    ...(finding.source ? { pluginId: finding.source } : {}),
+  };
+}
 
 function createPostPluginReadinessExecutionFailure(
   pluginUpdate: PostCorePluginUpdateResult,
@@ -77,45 +95,42 @@ export async function applyPostPluginUpdateReadiness(params: {
     stdout = error.stdout;
   }
 
-  const report = parseUpdateDoctorLintReport(stdout);
-  if (!report) {
-    return createPostPluginReadinessExecutionFailure(
-      params.pluginUpdate,
-      "Updated Doctor returned an invalid readiness result.",
-    );
+  let report: ReturnType<typeof parseUpdateDoctorLintReport>;
+  try {
+    report = parseUpdateDoctorLintReport(stdout);
+  } catch (error) {
+    return createPostPluginReadinessExecutionFailure(params.pluginUpdate, String(error));
   }
+  const pluginUpdate: PostCorePluginUpdateResult =
+    report.warnings.length > 0
+      ? {
+          ...params.pluginUpdate,
+          status: params.pluginUpdate.status === "error" ? "error" : "warning",
+          warnings: [
+            ...(params.pluginUpdate.warnings ?? []),
+            ...report.warnings.map((finding) => readinessWarning(finding, "doctor-advisory")),
+          ],
+        }
+      : params.pluginUpdate;
   if (report.ok && !executionFailed && report.checksRun > 0 && report.findings.length === 0) {
-    return params.pluginUpdate;
+    return pluginUpdate;
   }
   if (report.findings.length === 0) {
     return createPostPluginReadinessExecutionFailure(
-      params.pluginUpdate,
+      pluginUpdate,
       report.checksRun === 0
         ? "Updated Doctor did not run a declared readiness check."
         : "Updated Doctor readiness checks failed without a finding.",
     );
   }
   return {
-    ...params.pluginUpdate,
+    ...pluginUpdate,
     status: "error",
     reason: "post-plugin-update-readiness-failed",
     failureFacts: report.failureFacts,
     warnings: [
-      ...(params.pluginUpdate.warnings ?? []),
-      ...report.findings.map((finding) => {
-        const warning: NonNullable<PostCorePluginUpdateResult["warnings"]>[number] = {
-          reason: finding.checkId,
-          message: finding.message,
-          guidance: [
-            finding.fixHint ??
-              `Resolve this finding, then rerun \`openclaw doctor --lint --only ${finding.checkId}\`.`,
-          ],
-        };
-        if (finding.source) {
-          warning.pluginId = finding.source;
-        }
-        return warning;
-      }),
+      ...(pluginUpdate.warnings ?? []),
+      ...report.findings.map((finding) => readinessWarning(finding)),
     ],
   };
 }

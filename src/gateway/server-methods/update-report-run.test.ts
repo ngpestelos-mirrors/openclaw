@@ -10,7 +10,7 @@ import {
   readUpdateFailureReportReceipt,
   type RestartSentinelPayload,
 } from "../../infra/restart-sentinel.js";
-import { parseUpdateDoctorLintReport } from "../../infra/update-doctor-result.js";
+import { parseUpdateDoctorLintReport } from "../../infra/update-doctor-lint.js";
 import {
   createUpdateRun,
   finishUpdateRun,

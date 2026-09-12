@@ -24,10 +24,11 @@ import {
   type UpdateCandidateRehearsal,
 } from "./update-candidate-rehearsal.js";
 import type { UpdateDoctorConfigChange } from "./update-doctor-config.js";
+import { parseUpdateDoctorLintReport } from "./update-doctor-lint.js";
 import {
   consumeUpdatePostInstallDoctorResult,
-  parseUpdateDoctorLintReport,
   createUpdatePostInstallDoctorResultPath,
+  normalizeUpdatePostInstallDoctorWarnings,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   type UpdatePostInstallDoctorResult,
@@ -417,6 +418,22 @@ export async function validateUpdateCandidateCanary(params: {
         }
       }
       params.signal?.throwIfAborted();
+      let lintWarnings: string[] = [];
+      if (code === 0 && phase === "lint") {
+        if (running.outputExceeded()) {
+          throw new Error("Candidate Doctor lint output exceeded the inspection limit");
+        }
+        const report = parseUpdateDoctorLintReport(running.stdout());
+        lintWarnings = normalizeUpdatePostInstallDoctorWarnings(
+          report.warnings.map((finding) =>
+            redactSupportString(
+              [finding.message, finding.fixHint].filter(Boolean).join("\n"),
+              { env, stateDir: params.stateDir },
+              { maxLength: 20_000 },
+            ),
+          ),
+        );
+      }
       if (code === 0 && phase === "plugins") {
         const inventory: unknown = running.outputExceeded()
           ? undefined
@@ -484,12 +501,14 @@ export async function validateUpdateCandidateCanary(params: {
           : {}),
       };
       if (code !== 0 && !doctorAdvisory) {
-        const findings =
-          doctorReceipt?.status === "error"
-            ? doctorReceipt.failureFacts
-            : phase === "lint" && !running.outputExceeded()
-              ? parseUpdateDoctorLintReport(running.stdout(), env)?.failureFacts
-              : undefined;
+        let findings = doctorReceipt?.status === "error" ? doctorReceipt.failureFacts : undefined;
+        if (!findings?.length && phase === "lint" && !running.outputExceeded()) {
+          try {
+            findings = parseUpdateDoctorLintReport(running.stdout(), env).failureFacts;
+          } catch {
+            // A failed child may exit before emitting JSON; retain its first stderr line below.
+          }
+        }
         step.failureFacts = findings?.length
           ? findings
           : [
@@ -505,6 +524,9 @@ export async function validateUpdateCandidateCanary(params: {
                 env,
               ),
             ];
+      }
+      if (lintWarnings.length > 0) {
+        step.warnings = lintWarnings;
       }
       steps.push(step);
       if (code !== 0 && !doctorAdvisory) {
