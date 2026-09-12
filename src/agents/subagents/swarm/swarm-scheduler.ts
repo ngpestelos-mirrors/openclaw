@@ -69,7 +69,7 @@ function publishLaneCapacityChange(lane: SwarmGroupLane, previouslyFull: boolean
 function finalizeRemovedRun(
   item: QueuedSwarmRun,
   reason: SwarmRemovalReason = "cancelled",
-): Promise<void> | undefined {
+): Promise<void> {
   const onRemoved = item.launch?.onRemoved;
   if (item.launch && !item.removal) {
     pendingRemovals.add(item);
@@ -97,7 +97,7 @@ function finalizeRemovedRun(
       },
     );
   }
-  return item.removal;
+  return item.removal ?? Promise.resolve();
 }
 
 async function startQueuedRun(lane: SwarmGroupLane, item: QueuedSwarmRun, launch: SwarmLaunch) {

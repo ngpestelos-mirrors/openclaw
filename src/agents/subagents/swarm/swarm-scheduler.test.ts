@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { PluginRuntimeCloseRetainedError } from "../../../plugins/runtime-close-error.js";
 import {
@@ -166,7 +166,7 @@ describe("swarm scheduler", () => {
       const pendingCleanup = vi.fn(async () => {
         await releaseCleanup.promise;
       });
-      const releases: Array<Promise<void> | undefined> = [];
+      const releases: Promise<void>[] = [];
       for (const [runId, onRemoved] of [
         ["failed", failedCleanup],
         ["pending", pendingCleanup],
@@ -182,8 +182,9 @@ describe("swarm scheduler", () => {
           onRemoved,
         });
         const hold = holdQueuedSwarmRun(runId);
-        expect(hold?.withdraw()).toBe(true);
-        releases.push(hold?.release());
+        assert(hold);
+        expect(hold.withdraw()).toBe(true);
+        releases.push(hold.release());
       }
       let closed = false;
       const closing = closeSwarmScheduler(lifecycleOwner).then(
