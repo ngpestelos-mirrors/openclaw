@@ -457,6 +457,172 @@ describe("gateway config methods", () => {
     },
   );
 
+  it("config.set pairs the canonical config and revision while another writer waits", async () => {
+    const configFactory = await import("../config/io.factory.js");
+    const { KeyedAsyncQueue } = await import("../plugin-sdk/keyed-async-queue.js");
+    const original = await getCurrentConfigObject();
+    await writeJsonFile(original.path, {
+      ...original.config,
+      gateway: {
+        ...requireConfigObject(original.config.gateway ?? {}, "gateway config"),
+        reload: { mode: "off" },
+      },
+    });
+    invalidateConfigGetResponseCache();
+    const draft = await getCurrentConfigObject();
+    const canonicalRead = createDeferredCore();
+    const releaseCanonicalRead = createDeferredCore();
+    const competingLock = createDeferredCore();
+    let rootWritten = false;
+    let pauseCanonicalRead = true;
+    let observeCompetingLock = false;
+    let competingWriterStarted = false;
+    const createIO = configFactory.createConfigIO;
+    const enqueue = KeyedAsyncQueue.prototype.enqueue;
+
+    // Retain real IO and locks; pause only the post-write receipt read so the
+    // competing authenticated request has a deterministic contention window.
+    const ioObservation = vi
+      .spyOn(configFactory, "createConfigIO")
+      .mockImplementation((options) => {
+        const io = createIO(options);
+        return {
+          ...io,
+          writeConfigFile: async (...args) => {
+            const written = await io.writeConfigFile(...args);
+            if (io.configPath === original.path) {
+              rootWritten = true;
+            }
+            return written;
+          },
+          readConfigFileSnapshotForWrite: async (...args) => {
+            if (io.configPath === original.path && rootWritten && pauseCanonicalRead) {
+              pauseCanonicalRead = false;
+              canonicalRead.resolve();
+              await releaseCanonicalRead.promise;
+            }
+            return await io.readConfigFileSnapshotForWrite(...args);
+          },
+        };
+      });
+    const lockObservation = vi
+      .spyOn(KeyedAsyncQueue.prototype, "enqueue")
+      .mockImplementation(function <T>(
+        this: InstanceType<typeof KeyedAsyncQueue>,
+        ...args: Parameters<typeof enqueue<T>>
+      ): Promise<T> {
+        const enqueueTask = enqueue<T>;
+        if (args[0] !== original.path || !observeCompetingLock) {
+          return enqueueTask.call(this, ...args);
+        }
+        observeCompetingLock = false;
+        const [lockPath, write, hooks] = args;
+        const waiting = enqueueTask.call(
+          this,
+          lockPath,
+          async () => {
+            competingWriterStarted = true;
+            return await write();
+          },
+          hooks,
+        );
+        competingLock.resolve();
+        return waiting;
+      });
+    type Receipt = { config: Record<string, unknown>; hash: string };
+    const pending: Array<ReturnType<typeof rpcReq<Receipt>>> = [];
+    const started = performance.now();
+    try {
+      const first = rpcReq<Receipt>(
+        requireClient(),
+        "config.set",
+        {
+          raw: JSON.stringify({ ...draft.config, logging: { level: "debug" } }),
+          baseHash: draft.hash,
+        },
+        2_000,
+      );
+      pending.push(first);
+      await withTestTimeout(
+        Promise.race([
+          canonicalRead.promise,
+          first.then(() => {
+            throw new Error("write settled before its canonical receipt read");
+          }),
+        ]),
+        2_000,
+        "root write did not reach its canonical receipt read",
+      );
+
+      // An external editor need not take the config lock. Make the receipt
+      // distinguishable from both the submitted config and the writer result.
+      const written = JSON.parse(await fs.readFile(original.path, "utf8"));
+      expect(written.logging.level).toBe("debug");
+      await writeJsonFile(original.path, { ...written, ui: { prefs: { locale: "fr" } } });
+      invalidateConfigGetResponseCache();
+      const canonical = await getCurrentConfigObject();
+      expect(canonical.config).toMatchObject({
+        logging: { level: "debug" },
+        ui: { prefs: { locale: "fr" } },
+      });
+
+      observeCompetingLock = true;
+      const second = rpcReq<Receipt>(
+        requireClient(),
+        "config.set",
+        {
+          raw: JSON.stringify({
+            ...canonical.config,
+            logging: { level: "debug", consoleLevel: "warn" },
+          }),
+          baseHash: canonical.hash,
+        },
+        2_000,
+      );
+      pending.push(second);
+      await withTestTimeout(
+        Promise.race([
+          competingLock.promise,
+          second.then(() => {
+            throw new Error("competing write settled without waiting on the config lock");
+          }),
+        ]),
+        2_000,
+        "competing write did not attempt the config lock",
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(competingWriterStarted).toBe(false);
+      releaseCanonicalRead.resolve();
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+      const elapsedMs = performance.now() - started;
+      expect(elapsedMs).toBeLessThan(2_000);
+      expect(firstResult.ok, firstResult.error?.message).toBe(true);
+      expect(secondResult.ok, secondResult.error?.message).toBe(true);
+      expect(competingWriterStarted).toBe(true);
+      expect({ config: firstResult.payload?.config, hash: firstResult.payload?.hash }).toEqual({
+        config: canonical.config,
+        hash: canonical.hash,
+      });
+      const after = await getCurrentConfigObject();
+      expect({ config: secondResult.payload?.config, hash: secondResult.payload?.hash }).toEqual({
+        config: after.config,
+        hash: after.hash,
+      });
+      expect(after.hash).not.toBe(canonical.hash);
+      expect(JSON.parse(await fs.readFile(original.path, "utf8"))).toMatchObject({
+        logging: { level: "debug", consoleLevel: "warn" },
+        ui: { prefs: { locale: "fr" } },
+      });
+    } finally {
+      releaseCanonicalRead.resolve();
+      await Promise.allSettled(pending);
+      ioObservation.mockRestore();
+      lockObservation.mockRestore();
+      await restoreConfigFileForTest(original);
+      invalidateConfigGetResponseCache();
+    }
+  });
+
   it("rejects config.set when SecretRef resolution fails", async () => {
     const missingEnvVar = `OPENCLAW_MISSING_SECRETREF_${Date.now()}`;
     deleteTestEnvValue(missingEnvVar);
@@ -728,40 +894,45 @@ describe("gateway config methods", () => {
     }
   });
 
-  it("invalidates a warm config.get response when config.set commits", async () => {
-    const current = await getCurrentConfigObject();
-    const nextConfig = structuredClone(current.config);
-    delete nextConfig.meta;
-    const ui = (nextConfig.ui ??= {}) as Record<string, unknown>;
-    const prefs = (ui.prefs ??= {}) as Record<string, unknown>;
-    const locale = prefs.locale === "de" ? "en" : "de";
-    prefs.locale = locale;
+  it.each(["config.patch", "config.set", "config.apply"])(
+    "invalidates a warm config.get response when %s commits a canonical root receipt",
+    async (method) => {
+      const current = await getCurrentConfigObject();
+      const nextConfig = structuredClone(current.config);
+      delete nextConfig.meta;
+      const ui = (nextConfig.ui ??= {}) as Record<string, unknown>;
+      const prefs = (ui.prefs ??= {}) as Record<string, unknown>;
+      const locale = prefs.locale === "de" ? "en" : "de";
+      prefs.locale = locale;
 
-    const res = await rpcReq<{
-      ok?: boolean;
-      config?: Record<string, unknown>;
-      hash?: string;
-    }>(requireClient(), "config.set", {
-      ...configRawPayload(nextConfig, current.hash),
-    });
-    expect(res.error).toBeUndefined();
-    expect(res.ok, res.error?.message).toBe(true);
+      const res = await rpcReq<{
+        ok?: boolean;
+        config?: Record<string, unknown>;
+        hash?: string;
+      }>(requireClient(), method, {
+        ...configRawPayload(nextConfig, current.hash),
+      });
+      expect(res.error).toBeUndefined();
+      expect(res.ok, res.error?.message).toBe(true);
 
-    const after = await rpcReq<{
-      config?: Record<string, unknown>;
-      sourceConfig?: Record<string, unknown>;
-      hash?: string;
-    }>(requireClient(), "config.get", {});
-    expect(after.ok).toBe(true);
-    expect(res.payload?.config).toEqual(after.payload?.sourceConfig);
-    expect(res.payload?.hash).toBe(after.payload?.hash);
-    expect(after.payload?.hash).not.toBe(current.hash);
-    expect(
-      ((after.payload?.config?.ui as Record<string, unknown>)?.prefs as Record<string, unknown>)
-        ?.locale,
-    ).toBe(locale);
-    requireConfigObject(res.payload?.config, "response config");
-  });
+      const after = await rpcReq<{
+        config?: Record<string, unknown>;
+        sourceConfig?: Record<string, unknown>;
+        hash?: string;
+      }>(requireClient(), "config.get", {});
+      expect(after.ok).toBe(true);
+      expect({ config: res.payload?.config, hash: res.payload?.hash }).toEqual({
+        config: after.payload?.sourceConfig,
+        hash: after.payload?.hash,
+      });
+      expect(after.payload?.hash).not.toBe(current.hash);
+      expect(
+        ((after.payload?.config?.ui as Record<string, unknown>)?.prefs as Record<string, unknown>)
+          ?.locale,
+      ).toBe(locale);
+      requireConfigObject(res.payload?.config, "response config");
+    },
+  );
 
   it("accepts runtime-shaped config.set when bundled provider baseUrl was only defaulted", async () => {
     const { createConfigIO } = await import("../config/config.js");
