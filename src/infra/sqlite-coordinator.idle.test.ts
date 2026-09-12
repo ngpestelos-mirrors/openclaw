@@ -21,14 +21,9 @@ const loader = new URL("../../scripts/tsx.mjs", import.meta.url).href;
 const ownerUrl = new URL("./state-database-coordinator.ts", import.meta.url).href;
 
 function observeConnections() {
-  const databases = new Set<DatabaseSync>();
-  const prototype = requireNodeSqlite().DatabaseSync.prototype;
-  const exec = prototype.exec;
-  vi.spyOn(prototype, "exec").mockImplementation(function (this: DatabaseSync, sql) {
-    databases.add(this);
-    return exec.call(this, sql);
-  });
-  return databases;
+  const { DatabaseSync } = requireNodeSqlite();
+  const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+  return () => new Set(exec.mock.contexts.filter((context) => context instanceof DatabaseSync));
 }
 
 function firstConnection(databases: ReadonlySet<DatabaseSync>) {
@@ -94,13 +89,13 @@ describe("idle SQLite coordinator connections", () => {
     const databases = observeConnections();
     const warm = acquireStateDatabaseCoordinator({ ...params, busyTimeoutMs: 25 });
     warm.release();
-    const database = firstConnection(databases);
+    const database = firstConnection(databases());
     expect(database.isOpen).toBe(true);
     expect(database.isTransaction).toBe(false);
     const releasePeer = await holdPeer(location);
     await releasePeer();
     const next = acquireStateDatabaseCoordinator(params);
-    expect(databases.size).toBe(1);
+    expect(databases().size).toBe(1);
     expect(database.prepare("PRAGMA busy_timeout").get()).toEqual({ timeout: 0 });
     expect(database.isTransaction).toBe(true);
     next.release();
@@ -118,7 +113,7 @@ describe("idle SQLite coordinator connections", () => {
     tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
     const oldExpiry = timer.mock.calls.at(-1)?.[0];
     const active = tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true });
-    const database = firstConnection(databases);
+    const database = firstConnection(databases());
     if (typeof oldExpiry !== "function") {
       throw new Error("idle expiry was not scheduled");
     }
@@ -159,16 +154,16 @@ describe("idle SQLite coordinator connections", () => {
     const databases = observeConnections();
     const { location } = fixture();
     const held = tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true });
-    const activeDatabase = firstConnection(databases);
+    const activeDatabase = firstConnection(databases());
     for (let index = 0; index < 20; index++) {
       tryAcquireExclusiveSqliteCoordinator(fixture().location, { keepAlive: true })?.release();
     }
-    expect([...databases].filter((database) => database.isOpen)).toHaveLength(17);
+    expect([...databases()].filter((database) => database.isOpen)).toHaveLength(17);
     expect(activeDatabase.isTransaction).toBe(true);
     held?.release();
-    expect([...databases].filter((database) => database.isOpen)).toHaveLength(16);
+    expect([...databases()].filter((database) => database.isOpen)).toHaveLength(16);
     vi.advanceTimersByTime(30 * 60_000);
-    expect([...databases].some((database) => database.isOpen)).toBe(false);
+    expect([...databases()].some((database) => database.isOpen)).toBe(false);
   });
 
   it.each([tryAcquireExclusiveSqliteCoordinator, tryAcquireSharedSqliteCoordinator])(
@@ -177,7 +172,7 @@ describe("idle SQLite coordinator connections", () => {
       const { location } = fixture();
       const databases = observeConnections();
       acquire(location)?.release();
-      expect([...databases].every((database) => !database.isOpen)).toBe(true);
+      expect([...databases()].every((database) => !database.isOpen)).toBe(true);
       fs.unlinkSync(location);
     },
   );
@@ -195,7 +190,7 @@ describe("idle SQLite coordinator connections", () => {
       };
       const coordinator = acquireStateDatabaseCoordinator(params);
       coordinator.release();
-      expect([...databases].every((database) => !database.isOpen)).toBe(true);
+      expect([...databases()].every((database) => !database.isOpen)).toBe(true);
       fs.unlinkSync(coordinator.path);
     },
   );
@@ -221,7 +216,7 @@ describe("idle SQLite coordinator connections", () => {
           const coordinator = acquireStateDatabaseCoordinator(params);
           coordinatorPath = coordinator.path;
           coordinator.release();
-          expect([...databases].every((database) => !database.isOpen)).toBe(true);
+          expect([...databases()].every((database) => !database.isOpen)).toBe(true);
         },
       );
     } finally {
@@ -240,11 +235,11 @@ describe("idle SQLite coordinator connections", () => {
       const databases = observeConnections();
       fs.chmodSync(location, 0o600);
       tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
-      const previous = firstConnection(databases);
+      const previous = firstConnection(databases());
       fs.chmodSync(location, 0o640);
       tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
       expect(previous.isOpen).toBe(false);
-      expect(databases.size).toBe(2);
+      expect(databases().size).toBe(2);
     },
   );
 
@@ -256,15 +251,15 @@ describe("idle SQLite coordinator connections", () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
     }
-    expect(databases.size).toBe(2);
-    expect([...databases].every((database) => !database.isOpen)).toBe(true);
+    expect(databases().size).toBe(2);
+    expect([...databases()].every((database) => !database.isOpen)).toBe(true);
   });
 
   it.each(["throws", "remains open"])("discards a transaction when rollback %s", (failure) => {
     const { location } = fixture();
     const databases = observeConnections();
     const lease = tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true });
-    const database = firstConnection(databases);
+    const database = firstConnection(databases());
     const exec = database.exec.bind(database);
     const rollback = vi.spyOn(database, "exec").mockImplementation((sql) => {
       if (sql === "ROLLBACK") {
@@ -280,7 +275,7 @@ describe("idle SQLite coordinator connections", () => {
     expect(database.isOpen).toBe(false);
     const replacements = observeConnections();
     const next = tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true });
-    const replacement = firstConnection(replacements);
+    const replacement = firstConnection(replacements());
     expect(replacement === database).toBe(false);
     expect(replacement.isTransaction).toBe(true);
     next?.release();
@@ -291,7 +286,7 @@ describe("idle SQLite coordinator connections", () => {
     const existingExitListeners = new Set(process.listeners("exit"));
     const databases = observeConnections();
     tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
-    const database = firstConnection(databases);
+    const database = firstConnection(databases());
     const exitClose = process
       .listeners("exit")
       .find((listener) => !existingExitListeners.has(listener));
@@ -306,10 +301,10 @@ describe("idle SQLite coordinator connections", () => {
     );
     expect(database.isOpen).toBe(true);
     tryAcquireExclusiveSqliteCoordinator(location, { keepAlive: true })?.release();
-    expect(databases.size).toBe(2);
+    expect(databases().size).toBe(2);
     close.mockRestore();
     exitClose?.(0);
-    expect([...databases].every((connection) => !connection.isOpen)).toBe(true);
+    expect([...databases()].every((connection) => !connection.isOpen)).toBe(true);
     expect(process.listeners("exit")).not.toContain(exitClose);
   });
 
