@@ -554,19 +554,11 @@ function takeTailByEstimatedChars(text: string, budget: number): string {
   let acc = 0;
   let start = text.length;
   while (start > 0) {
-    let previous = start - 1;
-    const last = text.charCodeAt(previous);
-    if (last >= 0xdc00 && last <= 0xdfff && previous > 0) {
-      const first = text.charCodeAt(previous - 1);
-      if (first >= 0xd800 && first <= 0xdbff) {
-        previous -= 1;
-      }
-    }
-    const chars = estimateStringChars(text.slice(previous, start));
-    if (!(acc + chars <= budget)) {
+    const previous = start - ((text.codePointAt(start - 2) ?? 0) > 0xffff ? 2 : 1);
+    acc += estimateStringChars(text.slice(previous, start));
+    if (!(acc <= budget)) {
       break;
     }
-    acc += chars;
     start = previous;
   }
   return text.slice(start);
@@ -590,9 +582,6 @@ export function chunkMarkdown(
     : undefined;
 
   const flush = () => {
-    if (current.length === 0) {
-      return;
-    }
     const firstEntry = current[0];
     const lastEntry = current[current.length - 1];
     if (!firstEntry || !lastEntry) {
