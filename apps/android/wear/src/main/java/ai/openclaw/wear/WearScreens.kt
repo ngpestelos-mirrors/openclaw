@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -997,8 +998,11 @@ private fun VoiceHomeMode(
       modifier =
         Modifier
           .align(Alignment.TopCenter)
-          .offset(y = threadTop - threadOverlap)
-          .padding(horizontal = 28.dp)
+          .layout { measurable, constraints ->
+            val target = measurable.measure(constraints)
+            val top = minOf(threadTop.roundToPx(), orbTop.roundToPx() - target.height)
+            this.layout(target.width, target.height) { target.placeRelative(0, top) }
+          }.padding(horizontal = 28.dp)
           .fillMaxWidth()
           .minimumInteractiveComponentSize(),
     )

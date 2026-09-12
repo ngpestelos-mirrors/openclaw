@@ -110,11 +110,18 @@ class WearVoiceLayoutTest {
     Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
     try {
       render()
+      val modes =
+        listOf(
+          Scenario("idle-pointer"),
+          Scenario("active-pointer", active = true, capturing = true),
+          Scenario("recovery-retry", permissionRequired = true),
+          Scenario("recovery-settings", permissionRequired = true, settingsRequired = true),
+        )
       for (scale in listOf(1f, 0.85f, 1.3f)) {
-        for (active in listOf(false, true)) {
+        for (mode in modes) {
           compose.runOnIdle {
             fontScale.value = scale
-            scenario.value = Scenario("pointer", active = active, capturing = active)
+            scenario.value = mode
           }
           val orb = compose.onNodeWithContentDescription("Talk").fetchSemanticsNode().boundsInRoot
           assertTrue("Talk keeps an accessible target", orb.width >= 48f && orb.height >= 48f)
@@ -124,40 +131,42 @@ class WearVoiceLayoutTest {
                 listOf(0.1f, 0.5f, 0.9f).map { y -> Offset(orb.left + orb.width * x, orb.top + orb.height * y) }
               }
           for (sample in samples) {
-            val before = liveClicks
+            val before = if (mode.permissionRequired) recoveryClicks else liveClicks
             compose.onRoot().performTouchInput { click(sample) }
             compose.mainClock.advanceTimeBy(600)
             compose.waitForIdle()
-            assertEquals("Talk tap at $sample, scale=$scale, active=$active", before + 1, liveClicks)
+            assertEquals("Talk tap at $sample, scale=$scale, mode=$mode", before + 1, if (mode.permissionRequired) recoveryClicks else liveClicks)
           }
           val thread = threadTarget().fetchSemanticsNode().boundsInRoot
-          println("VOICE_TARGETS scale=$scale active=$active orb=$orb thread=$thread")
+          println("VOICE_TARGETS scale=$scale mode=$mode orb=$orb thread=$thread")
           assertTrue("Thread keeps its complete accessible target", thread.width >= 48f && thread.height >= 48f)
           assertTrue("Complete Thread and Talk targets must be disjoint", thread.bottom <= orb.top)
         }
       }
       // Thread deliberately requires two pointer taps, while accessibility has one named action.
       for (scale in listOf(1f, 0.85f, 1.3f)) {
-        compose.runOnIdle {
-          fontScale.value = scale
-          scenario.value = Scenario("idle")
-        }
-        for (fraction in listOf(0.1f, 0.5f, 0.9f)) {
-          val thread = threadTarget().fetchSemanticsNode().boundsInRoot
-          val sample = Offset(thread.center.x, thread.top + thread.height * fraction)
-          val before = liveClicks
-          compose.onRoot().performTouchInput { click(sample) }
-          compose.mainClock.advanceTimeBy(600)
-          threadTarget().assertExists()
-          assertEquals(before, liveClicks)
-          compose.onRoot().performTouchInput { doubleClick(sample) }
-          compose.mainClock.advanceTimeBy(600)
-          compose.waitForIdle()
-          threadTarget().assertDoesNotExist()
-          assertEquals(before, liveClicks)
-          compose.onRoot().performTouchInput { swipeRight() }
-          compose.mainClock.advanceTimeBy(600)
-          threadTarget().assertExists()
+        for (mode in modes) {
+          compose.runOnIdle {
+            fontScale.value = scale
+            scenario.value = mode
+          }
+          for (fraction in listOf(0.1f, 0.5f, 0.9f)) {
+            val thread = threadTarget().fetchSemanticsNode().boundsInRoot
+            val sample = Offset(thread.center.x, thread.top + thread.height * fraction)
+            val before = liveClicks + recoveryClicks
+            compose.onRoot().performTouchInput { click(sample) }
+            compose.mainClock.advanceTimeBy(600)
+            threadTarget().assertExists()
+            assertEquals(before, liveClicks + recoveryClicks)
+            compose.onRoot().performTouchInput { doubleClick(sample) }
+            compose.mainClock.advanceTimeBy(600)
+            compose.waitForIdle()
+            threadTarget().assertDoesNotExist()
+            assertEquals(before, liveClicks + recoveryClicks)
+            compose.onRoot().performTouchInput { swipeRight() }
+            compose.mainClock.advanceTimeBy(600)
+            threadTarget().assertExists()
+          }
         }
       }
     } finally {
