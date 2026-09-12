@@ -457,6 +457,70 @@ describe("gateway config methods", () => {
     },
   );
 
+  it.each(["plain", "unrelated-include", "include-only"] as const)(
+    "openclaw.changes.list preserves an approved %s operation without a duplicate write",
+    async (layout) => {
+      const { executeSystemAgentOperation } = await import("../system-agent/operations.js");
+      const { readConfigFileSnapshot } = await import("../config/config.js");
+      const original = await getCurrentConfigObject();
+      const model = "openai/gpt-4.1-mini";
+      const agents = {
+        entries: { main: { default: true } },
+        defaults: { model: { primary: "openai/gpt-4.1" } },
+      };
+      const includePath = path.join(path.dirname(original.path), "audit-include.json");
+      await writeJsonFile(includePath, layout === "include-only" ? agents : { level: "info" });
+      const root = {
+        ...original.config,
+        agents: layout === "include-only" ? { $include: "./audit-include.json" } : agents,
+        ...(layout === "unrelated-include"
+          ? { logging: { $include: "./audit-include.json" } }
+          : {}),
+      };
+      await writeJsonFile(original.path, root);
+      const rootBefore = await fs.readFile(original.path, "utf8");
+      const includeBefore = await fs.readFile(includePath, "utf8");
+      const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+      // Only inference is supplied: config reads, approved writes, and both journals are real.
+      const result = await executeSystemAgentOperation(
+        { kind: "set-default-model", model },
+        runtime,
+        {
+          approved: true,
+          deps: {
+            verifyInferenceConfig: async () => ({ ok: true, modelRef: model, latencyMs: 1 }),
+          },
+        },
+      );
+      expect(result).toEqual({ applied: true });
+      expect(runtime.error).not.toHaveBeenCalled();
+      expect((await readConfigFileSnapshot()).sourceConfig.agents?.defaults?.model).toEqual({
+        primary: model,
+      });
+      const history = await rpcReq<{
+        entries: Array<{ kind: string; source: string; summary: string; changedPaths?: string[] }>;
+      }>(requireClient(), "openclaw.changes.list", { limit: 100 });
+      expect(history.ok).toBe(true);
+      const operations = history.payload?.entries.filter((entry) => entry.kind === "operation");
+      expect.soft(operations).toEqual([
+        expect.objectContaining({
+          source: "system-agent",
+          summary: `Set default model to ${model}`,
+          ...(layout === "include-only"
+            ? {}
+            : { changedPaths: expect.arrayContaining(["agents.defaults.model.primary"]) }),
+        }),
+      ]);
+      expect(history.payload?.entries.filter((entry) => entry.kind === "config-write")).toEqual([]);
+      if (layout === "include-only") {
+        expect(await fs.readFile(original.path, "utf8")).toBe(rootBefore);
+        expect(operations?.[0]?.changedPaths).toBeUndefined();
+      } else {
+        expect(await fs.readFile(includePath, "utf8")).toBe(includeBefore);
+      }
+    },
+  );
+
   it("config.set pairs the canonical config and revision while another writer waits", async () => {
     const configFactory = await import("../config/io.factory.js");
     const { KeyedAsyncQueue } = await import("../plugin-sdk/keyed-async-queue.js");
