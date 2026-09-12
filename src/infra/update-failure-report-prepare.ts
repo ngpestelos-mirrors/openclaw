@@ -9,7 +9,8 @@ import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
 import { VERSION } from "../version.js";
 import { prepareGithubIssue, type PreparedGithubIssue } from "./github-issue.js";
 import { normalizeUpdateChannel } from "./update-channels.js";
-import { formatUpdateFailureFact, normalizeUpdateFailureFacts } from "./update-failure-facts.js";
+import { formatUpdateFailureFact } from "./update-failure-facts-format.js";
+import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
 import {
   LEGACY_UPDATE_RUN_ADVISORY,
   LEGACY_UPDATE_RUN_EXPIRED_REASON,

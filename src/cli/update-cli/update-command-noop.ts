@@ -20,6 +20,7 @@ import { preflightConfiguredNpmPluginTargets } from "./update-command-plugin-pre
 import { finishUpdate } from "./update-command-post-update.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import {
+  collectServiceInspectionFailureFacts,
   GatewayServiceUpdateOwnershipError,
   resolvePackageRuntimePreflight,
   type ManagedServiceRootRedirect,
@@ -150,19 +151,7 @@ export async function finishAlreadyCurrentUpdate(
           stopState.blockMessage ??
             "Run openclaw update from a terminal outside the Gateway service before changing installed plugins.",
         ),
-        stopState.serviceUpdateVerdict?.kind === "unavailable"
-          ? {
-              failureFacts: [
-                {
-                  check: "managed-service",
-                  code:
-                    stopState.serviceUpdateVerdict.inspectionReason ??
-                    "service-inspection-unavailable",
-                  message: stopState.serviceUpdateVerdict.message,
-                },
-              ],
-            }
-          : undefined,
+        { failureFacts: collectServiceInspectionFailureFacts(stopState.serviceUpdateVerdict) },
       );
     }
     await assertOpenClawStateWriteAllowedAtPath({

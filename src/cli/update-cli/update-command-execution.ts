@@ -68,6 +68,7 @@ import {
   withOwnedManagedUpdateEnv,
 } from "./update-command-service-env.js";
 import {
+  collectServiceInspectionFailureFacts,
   GatewayServiceUpdateOwnershipError,
   gatewayServiceCommandUsesRoot,
 } from "./update-command-service-plan.js";
@@ -274,19 +275,11 @@ export async function executeMutableUpdate(
       });
     }
 
-    const inspection = preManagedServiceStop?.serviceUpdateVerdict;
-    const inspectionFailure =
-      inspection?.kind === "unavailable"
-        ? {
-            failureFacts: [
-              {
-                check: "managed-service",
-                code: inspection.inspectionReason ?? "service-inspection-unavailable",
-                message: inspection.message,
-              },
-            ],
-          }
-        : undefined;
+    const inspectionFailure = {
+      failureFacts: collectServiceInspectionFailureFacts(
+        preManagedServiceStop?.serviceUpdateVerdict,
+      ),
+    };
     if (shouldBlockMutableUpdateFromGatewayServiceEnv({ preManagedServiceStop })) {
       params.stop();
       throw new UpdatePreMutationError(
@@ -656,6 +649,7 @@ export async function executeMutableUpdate(
             throw new UpdatePreMutationError(
               failed.name,
               failed.stderrTail ?? "Candidate validation failed.",
+              { failureFacts: failed.failureFacts },
             );
           }
         },

@@ -34,7 +34,3 @@ export function normalizeUpdateFailureFacts(
 ): UpdateFailureFact[] {
   return facts.slice(0, 5).map((fact) => createUpdateFailureFact(fact, env));
 }
-
-export function formatUpdateFailureFact(fact: UpdateFailureFact): string {
-  return `Failing check ${fact.check} (${fact.code})${fact.pluginId ? `; plugin ${fact.pluginId}` : ""}${fact.affectedKey ? `; key ${fact.affectedKey}` : ""}${fact.message ? `: ${fact.message}` : ""}`;
-}

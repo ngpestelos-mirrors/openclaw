@@ -4,6 +4,7 @@ import { UpdatePreMutationError } from "./shared.js";
 import { formatUpdateAncestryBlockMessage } from "./update-command-handoff.js";
 import { captureOwnedManagedUpdatePreflightContext } from "./update-command-managed-context.js";
 import {
+  collectServiceInspectionFailureFacts,
   GatewayServiceUpdateOwnershipError,
   type ManagedServiceRootRedirect,
 } from "./update-command-service-plan.js";
@@ -50,17 +51,7 @@ export async function inspectUpdateDatabaseContexts(params: {
       throw new UpdatePreMutationError(
         "managed-service-preflight",
         formatUpdateAncestryBlockMessage(inspected.blockMessage ?? unavailable!.message),
-        unavailable
-          ? {
-              failureFacts: [
-                {
-                  check: "managed-service",
-                  code: unavailable.inspectionReason ?? "service-inspection-unavailable",
-                  message: unavailable.message,
-                },
-              ],
-            }
-          : undefined,
+        { failureFacts: collectServiceInspectionFailureFacts(inspected.serviceUpdateVerdict) },
       );
     }
     if (inspected.serviceUpdateVerdict?.kind === "unresolved") {

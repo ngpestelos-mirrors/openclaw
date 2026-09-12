@@ -1,4 +1,3 @@
-import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
 import { summarizeUpdateStepFailure, type UpdateRunStep } from "./update-run-record.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
@@ -26,7 +25,7 @@ export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] 
       step: step.name,
       status: step.exitCode === 0 || step.advisory ? "completed" : "failed",
       ...(step.failureFacts?.length && !step.advisory
-        ? { failureFacts: normalizeUpdateFailureFacts(step.failureFacts) }
+        ? { failureFacts: step.failureFacts.slice(0, 5) }
         : {}),
       ...(step.exitCode !== 0
         ? { detail: step.advisory?.message ?? summarizeUpdateStepFailure(step) }

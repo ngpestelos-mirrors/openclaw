@@ -4,7 +4,6 @@ import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { disableCurrentOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
-import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { cleanupStaleManagedServiceUpdateHandoffs } from "../../infra/update-managed-service-handoff-cleanup.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
@@ -432,11 +431,7 @@ async function updateCommandInternal(
     devTarget,
   } = target;
   let { packageUpdateNodeRunner } = target;
-  const refuseUpdate = (
-    reason: string,
-    message?: string,
-    failureFacts?: readonly UpdateFailureFact[],
-  ) =>
+  const refuseUpdate: typeof target.refuseUpdate = (reason, message, failureFacts) =>
     reportPreMutationUpdateResult({
       root,
       installKind: updateInstallKind,
@@ -496,6 +491,7 @@ async function updateCommandInternal(
   }
 
   const currentCoreFinalization = {
+    legacyConfigPlan,
     root,
     previousInstallRoot: discoveredRoot,
     requestedChannel,
@@ -516,7 +512,6 @@ async function updateCommandInternal(
     const { finishAlreadyCurrentUpdate } = await import("./update-execution.runtime.js");
     return await finishAlreadyCurrentUpdate({
       ...currentCoreFinalization,
-      legacyConfigPlan,
       opts,
       result: {
         status: "skipped",
@@ -670,7 +665,6 @@ async function updateCommandInternal(
       result,
       ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
       packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
-      legacyConfigPlan,
     });
   }
   recoveryState.triageTarget.root = result.root ?? root;

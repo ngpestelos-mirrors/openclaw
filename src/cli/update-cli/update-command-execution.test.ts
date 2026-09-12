@@ -868,4 +868,55 @@ describe("mutable update execution", () => {
     expect(execution?.result.mode).toBe("git");
     expect(mocks.runPackageUpdate).not.toHaveBeenCalled();
   });
+
+  it("retains rejected Git canary findings in the terminal result", async () => {
+    const fact = {
+      check: "core/doctor/config-readable",
+      code: "doctor-failed",
+      message: "The configured state directory is not readable.",
+      affectedKey: "stateDir",
+    };
+    mocks.validateCanary.mockResolvedValue({
+      status: "error",
+      reason: "doctor-failed",
+      phase: "doctor",
+      durationMs: 1,
+      logTail: [fact.message],
+      steps: [
+        {
+          name: "candidate doctor",
+          command: "openclaw doctor",
+          cwd: "/candidate",
+          durationMs: 1,
+          exitCode: 1,
+          stderrTail: fact.message,
+          failureFacts: [fact],
+        },
+      ],
+    });
+    const repair = await import("./update-command-repair.js");
+    vi.spyOn(repair, "runUpdateCommandRepair").mockResolvedValue({
+      status: "unavailable",
+      attempts: [],
+      finalValidation: { ok: false, score: 0, summary: fact.message },
+    });
+    mocks.runGitUpdate.mockImplementation(
+      async (params: Parameters<typeof import("./update-command-git.js").updateGitInstall>[0]) => {
+        if (!params.validateCandidate) {
+          throw new Error("Expected the Git candidate validation callback");
+        }
+        await params.validateCandidate("/candidate");
+        return { ...successfulUpdate, mode: "git" };
+      },
+    );
+
+    const execution = await executeMutableUpdate(executionParams("git"));
+
+    expect(execution?.result).toMatchObject({
+      status: "error",
+      reason: "doctor-failed",
+      steps: [{ failureFacts: [fact] }],
+    });
+    expect(mocks.serviceStopped).toBe(false);
+  });
 });

@@ -41,6 +41,20 @@ export type ManagedGatewayUpdateVerdict =
   | { kind: "unresolved"; root: string; fingerprint: string }
   | { kind: "unavailable"; message: string; inspectionReason?: ServiceInspectionReason };
 
+export function collectServiceInspectionFailureFacts(
+  verdict: ManagedGatewayUpdateVerdict | undefined,
+): UpdateFailureFact[] | undefined {
+  return verdict?.kind === "unavailable"
+    ? [
+        createUpdateFailureFact({
+          check: "managed-service",
+          code: verdict.inspectionReason ?? "service-inspection-unavailable",
+          message: verdict.message,
+        }),
+      ]
+    : undefined;
+}
+
 export class GatewayServiceUpdateOwnershipError extends Error {
   readonly failureFacts: UpdateFailureFact[];
 
