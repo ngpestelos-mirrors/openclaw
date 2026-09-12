@@ -449,11 +449,38 @@ describe("Report action from the authoritative update ledger", () => {
           failureFacts: [fact],
         },
       });
+      for (const step of [
+        "package rollback",
+        "repairing",
+        "repair attempt 1",
+        "repair attempt 2",
+      ]) {
+        recordUpdateRunStep(runId, { step, status: "failed" });
+      }
+      for (const step of ["global install rollback", "global install backup retention"]) {
+        recordUpdateRunStep(runId, {
+          step,
+          status: "failed",
+          failureFacts: [
+            {
+              check: "package-swap",
+              code: "swap-failed",
+              message: "Rollback verification timed out",
+            },
+          ],
+        });
+      }
       finishUpdateRun(runId, { status: "failed", reason: "update-failed" });
       const recorded = getUpdateRun(runId)!;
-      expect(recorded.steps.at(-1)?.failureFacts).toEqual([fact]);
+      expect(recorded.steps.find((step) => step.step === "failing check")?.failureFacts).toEqual([
+        fact,
+      ]);
       const local = renderUpdateRunReport(recorded).lines.join("\n");
       const { body } = await preview();
+      expect(local.match(/^Failed:/gmu)).toHaveLength(3);
+      expect(body.match(/^- Failed phase /gmu)).toHaveLength(3);
+      expect(local).toContain("Failed: global install backup retention");
+      expect(body).toContain("Failing check package-swap (swap-failed)");
       for (const text of [local, body]) {
         expect(text).toContain(`Failing check ${fact.check} (${fact.code})`);
         if (fact.affectedKey) {

@@ -4,7 +4,10 @@ import { UPDATE_INSTALL_SKIP_GUIDANCE } from "../shared/update-outcome.js";
 import { formatDurationPrecise } from "./format-time/format-duration.ts";
 import type { RestartSentinelPayload } from "./restart-sentinel-store.js";
 import { formatUpdateDoctorConfigWriteRefusal } from "./update-doctor-config.js";
-import { formatUpdateFailureFact } from "./update-failure-facts-format.js";
+import {
+  formatUpdateFailureFact,
+  selectUpdateFailureReportSteps,
+} from "./update-failure-facts-format.js";
 import {
   LEGACY_UPDATE_RUN_ADVISORY,
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
@@ -165,7 +168,9 @@ export function renderUpdateRunReport(
   if (phases.length) {
     lines.push(`Phases: ${phases.join(" → ")}`);
   }
-  for (const step of run.steps.filter((item) => item.status === "failed").slice(-3)) {
+  for (const step of selectUpdateFailureReportSteps(
+    run.steps.filter((item) => item.status === "failed"),
+  )) {
     lines.push(bounded(`Failed: ${step.step}${step.detail ? ` — ${step.detail}` : ""}`, 300));
     lines.push(...(step.failureFacts ?? []).slice(0, 5).map(formatUpdateFailureFact));
   }

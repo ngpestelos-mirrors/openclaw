@@ -14,7 +14,10 @@ import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
 import { VERSION } from "../version.js";
 import { prepareGithubIssue, type PreparedGithubIssue } from "./github-issue.js";
 import { normalizeUpdateChannel } from "./update-channels.js";
-import { formatUpdateFailureFact } from "./update-failure-facts-format.js";
+import {
+  formatUpdateFailureFact,
+  selectUpdateFailureReportSteps,
+} from "./update-failure-facts-format.js";
 import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
 import { projectPublicUpdateFailureIdentifiers } from "./update-failure-public-identifiers.js";
 import {
@@ -243,7 +246,7 @@ async function renderBoundedDiagnostics(
   if (input.result.after?.buildId) {
     diagnostics.push(`After build: ${sanitizeReportField(input.result.after.buildId, context)}`);
   }
-  for (const step of steps.slice(-3)) {
+  for (const step of selectUpdateFailureReportSteps(steps)) {
     const phase = sanitizeFactIdentifier(step.name, context);
     const termination = step.termination ? `, termination ${step.termination}` : "";
     diagnostics.push(`Failed phase ${phase}: exit ${step.exitCode ?? "unknown"}${termination}`);
