@@ -39,7 +39,7 @@ it("dispatches a newly discovered model and preserves an admitted turn when disc
   const endpoint = createServer((request, response) => {
     if (request.method === "GET" && request.url === "/v1/models") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(advertised));
+      response.end(JSON.stringify({ object: "list", data: advertised }));
       return;
     }
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
@@ -112,7 +112,7 @@ it("dispatches a newly discovered model and preserves an admitted turn when disc
                   headers: { Authorization: "Bearer " + auth.discoveryApiKey },
                 });
                 if (!response.ok) throw new Error("Fixture discovery failed");
-                const rows = await response.json();
+                const { data: rows } = await response.json();
                 return { provider: {
                   baseUrl: ${JSON.stringify(baseUrl)}, api: "openai-completions",
                   models: rows.map((row) => ({
