@@ -66,7 +66,7 @@ export function assertBaseSnapshotStillCurrent(
   if (snapshot.readError) {
     return;
   }
-  const expectedHash = hashConfigRaw(snapshot.raw);
+  const expectedHash = snapshot.raw === null ? null : hashConfigRaw(snapshot.raw);
   let currentRaw: string | null = null;
   let currentExists = true;
   try {
@@ -78,7 +78,10 @@ export function assertBaseSnapshotStillCurrent(
     currentExists = false;
   }
   const currentHash = currentExists ? hashConfigRaw(currentRaw) : null;
-  if (currentExists !== snapshot.exists || (currentExists && currentHash !== expectedHash)) {
+  if (
+    currentExists !== snapshot.exists ||
+    (currentExists && expectedHash !== null && currentHash !== expectedHash)
+  ) {
     throw new ConfigMutationConflictError("config changed since last load");
   }
 }
