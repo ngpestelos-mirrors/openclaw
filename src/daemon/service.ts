@@ -99,7 +99,7 @@ export type GatewayService = {
   isLoaded: (args: GatewayServiceEnvArgs) => Promise<boolean>;
   isEnabled?: (args: GatewayServiceEnvArgs) => Promise<boolean>;
   hasInstalledDefinition?: (args: GatewayServiceEnvArgs) => Promise<boolean>;
-  isAbsent?: (args: GatewayServiceEnvArgs) => Promise<boolean>;
+  isAbsent?: (args: GatewayServiceEnvArgs & { strictCommandAbsent?: true }) => Promise<boolean>;
   readDefinitionMutationCapability?: (
     args: GatewayServiceEnvArgs & { environment?: GatewayServiceEnv; requireLoaded?: boolean },
   ) => ReturnType<typeof readSystemdDefinitionMutationCapability>;
@@ -218,37 +218,48 @@ export async function readGatewayServiceState(
 ): Promise<GatewayServiceState> {
   const baseEnv = args.env ?? (process.env as GatewayServiceEnv);
   const { timeoutMs } = args;
-  // Native absence is affirmative evidence; failed effective-command inspection is not.
-  if (await service.isAbsent?.({ env: baseEnv, timeoutMs }).catch(() => false)) {
-    args.validateEnvBeforeStatusRead?.(baseEnv);
+  const absentWithoutCommand = await service
+    .isAbsent?.({ env: baseEnv, timeoutMs })
+    .catch(() => false);
+  let commandInspectionReason: ServiceInspectionReason | undefined;
+  const command = absentWithoutCommand
+    ? null
+    : args.requireEffective
+      ? await service.readCommand(baseEnv, {
+          timeoutMs,
+          requireEffective: true,
+          ...(args.requireLoadedCommand ? { requireLoaded: true } : {}),
+          ...(args.loadForInspection ? { loadForInspection: args.loadForInspection } : {}),
+        })
+      : await service
+          .readCommand(baseEnv, {
+            timeoutMs,
+            onInspectionFailure: (reason) => {
+              commandInspectionReason = reason;
+            },
+          })
+          .catch(() => null);
+  const env = mergeGatewayServiceEnv(baseEnv, command);
+  // Reject persisted selector drift before invoking the native service manager.
+  args.validateEnvBeforeStatusRead?.(env);
+  // A strict command read proves only its selected scope. The platform owner
+  // must exclude other native scopes before projecting complete service absence.
+  if (
+    absentWithoutCommand ||
+    (args.requireEffective &&
+      args.requireLoadedCommand &&
+      command === null &&
+      (await service.isAbsent?.({ env, timeoutMs, strictCommandAbsent: true }).catch(() => false)))
+  ) {
     return {
       installed: false,
       loadState: { status: "not-loaded" },
       running: false,
-      env: baseEnv,
+      env,
       command: null,
       runtime: { status: "stopped", missingUnit: true },
     };
   }
-  let commandInspectionReason: ServiceInspectionReason | undefined;
-  const command = args.requireEffective
-    ? await service.readCommand(baseEnv, {
-        timeoutMs,
-        requireEffective: true,
-        ...(args.requireLoadedCommand ? { requireLoaded: true } : {}),
-        ...(args.loadForInspection ? { loadForInspection: args.loadForInspection } : {}),
-      })
-    : await service
-        .readCommand(baseEnv, {
-          timeoutMs,
-          onInspectionFailure: (reason) => {
-            commandInspectionReason = reason;
-          },
-        })
-        .catch(() => null);
-  const env = mergeGatewayServiceEnv(baseEnv, command);
-  // Reject persisted selector drift before invoking the native service manager.
-  args.validateEnvBeforeStatusRead?.(env);
   const [installed, loadState, runtime, definitionMutationCapability] = await Promise.all([
     command !== null
       ? true
@@ -443,7 +454,8 @@ const GATEWAY_SERVICE_REGISTRY: Record<SupportedGatewayServicePlatform, GatewayS
     restart: restartSystemdService,
     isLoaded: isSystemdServiceEnabled,
     isEnabled: isSystemdServiceEnabled,
-    isAbsent: ({ env }) => isSystemdServiceAbsent(env ?? process.env),
+    isAbsent: ({ env, timeoutMs, strictCommandAbsent }) =>
+      isSystemdServiceAbsent(env ?? process.env, { timeoutMs, strictCommandAbsent }),
     hasInstalledDefinition: async ({ env }) =>
       (await findInstalledSystemdGatewayScope(env ?? process.env)) !== null,
     readDefinitionMutationCapability: ({ env, environment, timeoutMs, requireLoaded }) =>
