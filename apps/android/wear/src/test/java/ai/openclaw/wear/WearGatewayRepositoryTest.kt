@@ -527,11 +527,14 @@ class WearGatewayRepositoryTest {
   }
 
   @Test
-  fun successfulAttemptCannotBecomeAmbiguousAgain() {
+  fun terminalRetirementPreventsAnAcknowledgedAttemptBecomingAmbiguousAgain() {
     var id = 0
     val tracker = WearSendAttemptTracker { (++id).toString() }
     val original = tracker.begin("session-1", "hello", "phone-1")
     tracker.markSucceeded(original)
+    assertTrue(tracker.isCurrent(original))
+    assertFalse(tracker.isAmbiguous(original))
+    assertTrue(tracker.retire("session-1", "phone-1", original.idempotencyKey))
     tracker.markAmbiguous(original)
 
     assertEquals("wear-2", tracker.begin("session-1", "hello", "phone-1").idempotencyKey)
@@ -560,7 +563,7 @@ class WearGatewayRepositoryTest {
     var id = 0
     val tracker = WearSendAttemptTracker { (++id).toString() }
     val original = tracker.begin("session-1", "hello", "phone-1")
-    tracker.markPhoneRouteUncertain(null)
+    tracker.markDisconnected(null)
     tracker.retainForTarget(null, null)
     assertNotEquals(original.idempotencyKey, tracker.begin("session-1", "hello", "phone-1").idempotencyKey)
   }
@@ -570,11 +573,11 @@ class WearGatewayRepositoryTest {
     var id = 0
     val tracker = WearSendAttemptTracker { (++id).toString() }
     val original = tracker.begin("session-1", "hello", "phone-1")
-    tracker.markPhoneRouteUncertain(null)
+    tracker.markDisconnected(null)
     tracker.retainForTarget("session-1", "phone-1")
     val retry = tracker.begin("session-1", "hello", "phone-1")
     tracker.markSucceeded(original)
-    tracker.markPhoneRouteUncertain(null)
+    tracker.markDisconnected(null)
     assertEquals(retry.idempotencyKey, tracker.begin("session-1", "hello", "phone-1").idempotencyKey)
   }
 

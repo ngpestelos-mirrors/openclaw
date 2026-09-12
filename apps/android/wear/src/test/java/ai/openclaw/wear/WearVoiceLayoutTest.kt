@@ -2,16 +2,13 @@ package ai.openclaw.wear
 
 import ai.openclaw.wear.shared.WearRealtimeTalkSnapshot
 import ai.openclaw.wear.shared.WearRealtimeTalkStatus
-import android.graphics.Bitmap
 import android.provider.Settings
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.SemanticsMatcher
-import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -35,7 +32,6 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowSystemClock
-import java.io.File
 import java.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
@@ -223,6 +219,9 @@ class WearVoiceLayoutTest {
           if (next.permissionRequired) {
             val before = recoveryClicks
             compose.onNodeWithText(texts.last()).performClick()
+            // Recovery now shares Live's double-tap recognizer, like the pointer checks above.
+            compose.mainClock.advanceTimeBy(600)
+            compose.waitForIdle()
             compose.runOnIdle { assertEquals(before + 1, recoveryClicks) }
           } else {
             compose.onNodeWithContentDescription(resources.getString(R.string.talk)).assertExists()
@@ -245,7 +244,6 @@ class WearVoiceLayoutTest {
             val orbBounds = compose.onNodeWithContentDescription(resources.getString(R.string.talk)).fetchSemanticsNode().boundsInRoot
             if (orbBounds.bottom > statusBounds.top) failures += "$key status overlaps the Talk control: $orbBounds / $statusBounds"
           }
-          capture(key)
         }
         compose.runOnIdle { scenario.value = Scenario("idle") }
         compose.runOnIdle { scenario.value = Scenario("elapsed", status = WearRealtimeTalkStatus.CONNECTING, active = true) }
@@ -279,8 +277,6 @@ class WearVoiceLayoutTest {
     val errors = mutableListOf<String>()
     val ellipsized = (0 until result.lineCount).any(result::isLineEllipsized)
     if (result.hasVisualOverflow || ellipsized) errors += "$key overflow: $text"
-    val characters = text.indices.map { result.getBoundingBox(it).translate(node.positionInRoot) }
-    println("VOICE_CHAR_BOUNDS key=$key text='$text' root=${root.size} boxes=$characters")
     val outside =
       text.indices.filter { !text[it].isWhitespace() }.filter { index ->
         val box = result.getBoundingBox(index).translate(node.positionInRoot)
@@ -293,24 +289,6 @@ class WearVoiceLayoutTest {
     if (outside.isNotEmpty()) errors += "$key characters outside round/root: $outside"
     println("VOICE_LAYOUT key=$key text='$text' width=${result.size.width} height=${result.size.height} lines=${result.lineCount} overflow=${result.hasVisualOverflow} ellipsis=$ellipsized bounds=${node.boundsInRoot} outside=$outside")
     return errors
-  }
-
-  private fun capture(key: String) {
-    val path = System.getenv("OPENCLAW_C3_HOST_RENDER_DIR") ?: return
-    val directory = File(path)
-    check(directory.isDirectory || directory.mkdirs())
-    val target = File(directory, "HOST-TEST-RENDERED-$key.png")
-    check(!target.exists()) { "Retain prior capture: $target" }
-    target.outputStream().use {
-      check(
-        compose
-          .onRoot()
-          .captureToImage()
-          .asAndroidBitmap()
-          .compress(Bitmap.CompressFormat.PNG, 100, it),
-      )
-    }
-    println("HOST_TEST_RENDER $target")
   }
 
   private fun render() {

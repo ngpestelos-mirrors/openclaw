@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
+import androidx.wear.compose.material3.AppScaffold
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -155,6 +156,10 @@ class WearChatLayoutTest {
         assertTrue("Status follows the header", pageNode.boundsInRoot.bottom <= statusNode.boundsInRoot.top)
         val headerHeight = pageNode.boundsInRoot.bottom - brandNode.boundsInRoot.top
         val statusBottom = statusNode.boundsInRoot.bottom
+        // Keep the production TimeText arc above the compact header and leave room to read.
+        assertTrue("Header leaves the top clock band clear", brandNode.boundsInRoot.top >= resources.configuration.screenHeightDp * 0.1f)
+        assertTrue("Compact header stays within a quarter of the viewport", headerHeight <= resources.configuration.screenHeightDp * 0.25f)
+        assertTrue("Header and status leave the lower half for messages", statusBottom <= resources.configuration.screenHeightDp * 0.5f)
         roundErrors += roundTextErrors(brandText)
         roundErrors += roundTextErrors("CHAT")
         roundErrors += roundTextErrors(resources.getString(R.string.ready))
@@ -241,41 +246,43 @@ class WearChatLayoutTest {
     compose.setContent {
       CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale.value)) {
         OpenClawWearTheme(themeMode = theme.value) {
-          OpenClawWearScreens(
-            snapshot = snapshot,
-            failure = null,
-            loading = false,
-            interaction = interaction.value,
-            speaking = speaking.value,
-            realtimeCapturing = false,
-            realtimePlaying = false,
-            realtimeMouthLevel = 0f,
-            realtimePlaybackFailed = false,
-            realtimeThinkingOverride = false,
-            actionBusy = false,
-            inputEnabled = true,
-            canAbort = false,
-            themeMode = theme.value,
-            autoSpeak = false,
-            notificationsGranted = true,
-            voiceSwipeHintEnabled = false,
-            initialPage = page,
-            onTalk = {},
-            onType = {},
-            onRealtimeTalk = {},
-            onAbort = {},
-            onSelectAgent = {},
-            onSelectSession = {},
-            onSelectModel = {},
-            onRefresh = {},
-            onGatewayEnabledChange = {},
-            onThemeModeChange = {},
-            onAutoSpeakChange = {},
-            onRequestNotifications = {},
-            onOpenNotificationSettings = {},
-            onSpeakLatest = {},
-            onStopSpeaking = {},
-          )
+          AppScaffold {
+            OpenClawWearScreens(
+              snapshot = snapshot,
+              failure = null,
+              loading = false,
+              interaction = interaction.value,
+              speaking = speaking.value,
+              realtimeCapturing = false,
+              realtimePlaying = false,
+              realtimeMouthLevel = 0f,
+              realtimePlaybackFailed = false,
+              realtimeThinkingOverride = false,
+              actionBusy = false,
+              inputEnabled = true,
+              canAbort = false,
+              themeMode = theme.value,
+              autoSpeak = false,
+              notificationsGranted = true,
+              voiceSwipeHintEnabled = false,
+              initialPage = page,
+              onTalk = {},
+              onType = {},
+              onRealtimeTalk = {},
+              onAbort = {},
+              onSelectAgent = {},
+              onSelectSession = {},
+              onSelectModel = {},
+              onRefresh = {},
+              onGatewayEnabledChange = {},
+              onThemeModeChange = {},
+              onAutoSpeakChange = {},
+              onRequestNotifications = {},
+              onOpenNotificationSettings = {},
+              onSpeakLatest = {},
+              onStopSpeaking = {},
+            )
+          }
         }
       }
     }

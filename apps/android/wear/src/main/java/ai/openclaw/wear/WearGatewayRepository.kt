@@ -207,33 +207,41 @@ internal class WearSendAttemptTracker(
   private var ambiguousAttempt: WearSendAttempt? = null
   private var latestAttempt: WearSendAttempt? = null
 
-  fun clear() {
-    ambiguousAttempt = null
-    latestAttempt = null
-  }
-
   fun begin(
     sessionKey: String,
     message: String,
     phoneNodeId: String,
   ): WearSendAttempt {
     val retry = ambiguousAttempt?.takeIf { it.sessionKey == sessionKey && it.message == message && it.phoneNodeId == phoneNodeId }
+    return own(retry?.copy() ?: WearSendAttempt(sessionKey, message, "wear-${newId()}", phoneNodeId))
+  }
+
+  fun retry(
+    runId: String,
+    sessionKey: String,
+    message: String,
+    phoneNodeId: String,
+  ): WearSendAttempt? =
+    ambiguousAttempt
+      ?.takeIf {
+        it.idempotencyKey == runId && it.sessionKey == sessionKey && it.message == message && it.phoneNodeId == phoneNodeId
+      }?.copy()
+      ?.let(::own)
+
+  private fun own(attempt: WearSendAttempt): WearSendAttempt {
+    // Retries reuse the logical key, never the authority of an older invocation.
     ambiguousAttempt = null
-    // A retry shares the logical request key, but each invocation owns only its own callbacks.
-    return (retry?.copy() ?: WearSendAttempt(sessionKey, message, "wear-${newId()}", phoneNodeId)).also { latestAttempt = it }
+    latestAttempt = attempt
+    return attempt
   }
 
-  fun markDisconnected() {
-    // A disconnect cannot tell whether the latest unresolved request was accepted.
-    ambiguousAttempt = latestAttempt
-  }
+  fun isCurrent(attempt: WearSendAttempt): Boolean = latestAttempt === attempt
 
-  fun markPhoneRouteUncertain(phoneNodeId: String?) {
-    if (phoneNodeId != null && latestAttempt?.phoneNodeId?.let { it != phoneNodeId } == true) {
-      clear()
-    } else {
-      markDisconnected()
-    }
+  fun isAmbiguous(attempt: WearSendAttempt): Boolean = isCurrent(attempt) && ambiguousAttempt === attempt
+
+  fun reset() {
+    ambiguousAttempt = null
+    latestAttempt = null
   }
 
   fun retainForTarget(
@@ -241,32 +249,43 @@ internal class WearSendAttemptTracker(
     phoneNodeId: String?,
   ) {
     val current = latestAttempt ?: return
-    if (current.sessionKey != sessionKey || current.phoneNodeId != phoneNodeId) clear()
+    if (current.sessionKey != sessionKey || current.phoneNodeId != phoneNodeId) reset()
+  }
+
+  fun markDisconnected(phoneNodeId: String?) {
+    val current = latestAttempt ?: return
+    if (phoneNodeId != null && current.phoneNodeId != phoneNodeId) {
+      reset()
+    } else {
+      // Delivery is uncertain, but callbacks from the disconnected invocation are retired.
+      latestAttempt = current.copy()
+      ambiguousAttempt = latestAttempt
+    }
   }
 
   fun markAmbiguous(attempt: WearSendAttempt) {
-    if (latestAttempt === attempt) ambiguousAttempt = attempt
+    if (isCurrent(attempt)) ambiguousAttempt = attempt
   }
 
   fun markSucceeded(attempt: WearSendAttempt) {
-    if (latestAttempt === attempt) clear()
+    if (isCurrent(attempt)) ambiguousAttempt = null
   }
 
-  fun markTerminal(
+  fun retire(
     sessionKey: String,
     phoneNodeId: String,
     runId: String?,
-  ) {
-    val current = latestAttempt ?: return
-    if (current.sessionKey == sessionKey && current.phoneNodeId == phoneNodeId && current.idempotencyKey == runId) clear()
+  ): Boolean {
+    val current = latestAttempt ?: return false
+    if (current.sessionKey != sessionKey || current.phoneNodeId != phoneNodeId || current.idempotencyKey != runId) return false
+    reset()
+    return true
   }
 
-  fun reconcileTerminalHistory(transcript: WearTranscript) {
-    val current = latestAttempt ?: return
-    if (current.sessionKey != transcript.sessionKey || current.phoneNodeId != transcript.phoneNodeId) return
-    // Canonical run-owned terminal records resolve a lost send acknowledgement,
-    // even after reconnect revoked the UI pending state. Reuse the terminal owner.
-    if (transcript.messages.any { it.replyOutcomeForRun(current.idempotencyKey) != null }) clear()
+  fun reconcileTerminalHistory(transcript: WearTranscript): Boolean {
+    val current = latestAttempt ?: return false
+    if (transcript.messages.none { it.replyOutcomeForRun(current.idempotencyKey) != null }) return false
+    return retire(transcript.sessionKey, transcript.phoneNodeId, current.idempotencyKey)
   }
 }
 
@@ -533,16 +552,18 @@ internal class WearGatewayRepository(
     sessionKey: String,
     runId: String?,
     phoneNodeId: String,
-  ) {
-    requester.request(
-      WearRpcMethod.ChatAbort,
-      buildJsonObject {
-        put("sessionKey", sessionKey)
-        runId?.let { put("runId", it) }
-      },
-      phoneNodeId,
-      requirePreferredNode = true,
-    )
+  ): Boolean {
+    val response =
+      requester.request(
+        WearRpcMethod.ChatAbort,
+        buildJsonObject {
+          put("sessionKey", sessionKey)
+          runId?.let { put("runId", it) }
+        },
+        phoneNodeId,
+        requirePreferredNode = true,
+      )
+    return response.payload.asObject("chat.abort").boolean("aborted") == true
   }
 
   suspend fun startRealtimeTalk(

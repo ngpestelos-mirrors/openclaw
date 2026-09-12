@@ -687,29 +687,6 @@ private fun VoicePage(
   onStopSpeaking: () -> Unit,
 ) {
   val colors = OpenClawWearTheme.colors
-  if (microphonePermissionRequired) {
-    Column(
-      modifier = Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 24.dp),
-      horizontalAlignment = Alignment.CenterHorizontally,
-      verticalArrangement = Arrangement.Center,
-    ) {
-      Text(
-        text = stringResource(R.string.microphone_permission_required),
-        color = colors.danger,
-        textAlign = TextAlign.Center,
-        fontSize = 14.sp,
-        lineHeight = 16.sp,
-      )
-      Spacer(modifier = Modifier.height(8.dp))
-      SecondaryButton(
-        label = stringResource(if (microphoneSettingsRequired) R.string.open_settings else R.string.retry),
-        enabled = true,
-        onClick = onMicrophoneRecovery,
-        horizontalPadding = 0.dp,
-      )
-    }
-    return
-  }
   val voicePagerScope = rememberCoroutineScope()
   val view = LocalView.current
   var previousMode by remember { mutableIntStateOf(voicePagerState.currentPage) }
@@ -762,6 +739,9 @@ private fun VoicePage(
         when (mode) {
           VOICE_HOME_MODE -> {
             VoiceHomeMode(
+              microphonePermissionRequired = microphonePermissionRequired,
+              microphoneSettingsRequired = microphoneSettingsRequired,
+              onMicrophoneRecovery = onMicrophoneRecovery,
               realtimeTalk = realtimeTalk,
               realtimeStopping = realtimeStopping,
               speaking = speaking,
@@ -789,7 +769,13 @@ private fun VoicePage(
               actionBusy = actionBusy,
               inputEnabled = inputEnabled,
               onType = onType,
-              onRealtimeTalk = onRealtimeTalk,
+              onRealtimeTalk = {
+                if (microphonePermissionRequired && !realtimeTalk.active && !realtimeCapturing) {
+                  selectMode(VOICE_HOME_MODE)
+                } else {
+                  onRealtimeTalk()
+                }
+              },
             )
           }
         }
@@ -814,6 +800,9 @@ private fun VoicePage(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VoiceHomeMode(
+  microphonePermissionRequired: Boolean,
+  microphoneSettingsRequired: Boolean,
+  onMicrophoneRecovery: () -> Unit,
   realtimeTalk: WearRealtimeTalkSnapshot,
   realtimeStopping: Boolean,
   speaking: Boolean,
@@ -833,6 +822,7 @@ private fun VoiceHomeMode(
   val colors = OpenClawWearTheme.colors
   val realtimeActive = realtimeTalk.active || realtimeCapturing
   val ttsOnly = speaking && !realtimeActive
+  val recoverMicrophone = microphonePermissionRequired && !realtimeActive && !ttsOnly
   val state =
     realtimeVoiceButtonState(
       realtimeTalk = realtimeTalk,
@@ -861,6 +851,8 @@ private fun VoiceHomeMode(
     if (liveActionEnabled) {
       if (ttsOnly) {
         onStopSpeaking()
+      } else if (recoverMicrophone) {
+        onMicrophoneRecovery()
       } else {
         onRealtimeTalk()
       }
@@ -879,6 +871,7 @@ private fun VoiceHomeMode(
     when {
       realtimeStopping -> stringResource(R.string.stopping)
       dictatePreview -> stringResource(R.string.listening)
+      recoverMicrophone -> stringResource(R.string.microphone_permission_required)
       label == null -> null
       realtimeActive -> "$label · ${formatVoiceElapsedTime(realtimeElapsedSeconds)}"
       else -> label
@@ -894,6 +887,7 @@ private fun VoiceHomeMode(
   val liveClickLabel =
     when {
       ttsOnly -> stringResource(R.string.stop_speaking)
+      recoverMicrophone -> stringResource(if (microphoneSettingsRequired) R.string.open_settings else R.string.retry)
       realtimeActive -> stringResource(R.string.stop_speaking)
       else -> stringResource(R.string.speak_to_agent)
     }
@@ -905,6 +899,8 @@ private fun VoiceHomeMode(
     modifier = Modifier.fillMaxSize(),
   ) {
     val layout = wearVoiceLayout(maxWidth = maxWidth, fontScale = fontScale)
+    // Keep the localized action readable; its explanation uses the wider status area below.
+    val liveControlHeight = if (recoverMicrophone) layout.orbSize.coerceAtLeast(64.dp) else layout.orbSize
     // Reserve up to three status lines without moving them into the lower round edge.
     val voiceControlOffset = if (fontScale > 1.1f) (-8).dp else (-4).dp
     Row(
@@ -937,7 +933,8 @@ private fun VoiceHomeMode(
           modifier =
             Modifier
               .align(Alignment.Center)
-              .size(layout.orbSize)
+              .width(layout.orbSize)
+              .height(liveControlHeight)
               .offset(y = voiceControlOffset)
               .combinedClickable(
                 // combinedClickable gates every gesture together; keep preview exclusive and fall back to Dictate.
@@ -953,14 +950,25 @@ private fun VoiceHomeMode(
               },
           contentAlignment = Alignment.Center,
         ) {
-          WearTalkAvatar(
-            state = avatarState,
-            mouthLevel = if (realtimePlaying) realtimeMouthLevel else 0f,
-            syntheticSpeech = ttsOnly,
-            accent = accent,
-            danger = colors.danger,
-            modifier = Modifier.fillMaxSize(),
-          )
+          if (recoverMicrophone) {
+            Text(
+              text = stringResource(if (microphoneSettingsRequired) R.string.open_settings else R.string.retry),
+              color = colors.voiceAccent,
+              textAlign = TextAlign.Center,
+              fontSize = 12.sp,
+              lineHeight = 14.sp,
+              fontWeight = FontWeight.SemiBold,
+            )
+          } else {
+            WearTalkAvatar(
+              state = avatarState,
+              mouthLevel = if (realtimePlaying) realtimeMouthLevel else 0f,
+              syntheticSpeech = ttsOnly,
+              accent = accent,
+              danger = colors.danger,
+              modifier = Modifier.fillMaxSize(),
+            )
+          }
         }
       }
       VoiceGestureLabel(
@@ -976,7 +984,7 @@ private fun VoiceHomeMode(
       )
     }
     val threadTop = if (fontScale > 1.1f) (-8).dp else (-16).dp
-    val orbTop = (maxHeight - layout.orbSize) / 2 + voiceControlOffset
+    val orbTop = (maxHeight - liveControlHeight) / 2 + voiceControlOffset
     val threadOverlap = (threadTop + 48.dp - orbTop).coerceAtLeast(0.dp)
     VoiceGestureLabel(
       title = stringResource(R.string.double_tap),
@@ -997,7 +1005,7 @@ private fun VoiceHomeMode(
     statusText?.let { status ->
       Text(
         text = status,
-        color = colors.textMuted,
+        color = if (recoverMicrophone) colors.danger else colors.textMuted,
         fontSize = 12.sp,
         lineHeight = 12.sp,
         textAlign = TextAlign.Center,
@@ -2082,6 +2090,7 @@ private fun ConversationContextPicker(
     enabled = !actionBusy,
     onClick = onOpenContextPicker,
     modifier = Modifier.padding(horizontal = 12.dp),
+    role = Role.Button,
   )
 }
 
@@ -2286,6 +2295,7 @@ private fun ContextPickerOption(
   enabled: Boolean,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
+  role: Role = Role.RadioButton,
 ) {
   val colors = OpenClawWearTheme.colors
   Column(
@@ -2293,8 +2303,13 @@ private fun ContextPickerOption(
       modifier
         .fillMaxWidth()
         .padding(horizontal = 12.dp)
-        .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
         .then(
+          if (role == Role.Button) {
+            Modifier.clickable(enabled = enabled, role = role, onClick = onClick)
+          } else {
+            Modifier.selectable(selected = selected, enabled = enabled, role = role, onClick = onClick)
+          },
+        ).then(
           Modifier.border(
             width = 1.dp,
             color = if (selected) colors.primary else colors.border,

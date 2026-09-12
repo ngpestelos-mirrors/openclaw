@@ -317,6 +317,8 @@ internal class WearRealtimeTalkClient(
     audioRecord = recorder
     check(recorder.state == AudioRecord.STATE_INITIALIZED)
     recorder.startRecording()
+    // Native start failure can return normally while the recorder remains stopped.
+    check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING)
     _isCapturing.value = true
     captureJob =
       scope.launch {

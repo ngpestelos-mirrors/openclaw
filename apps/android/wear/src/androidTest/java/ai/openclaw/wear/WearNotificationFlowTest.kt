@@ -72,7 +72,6 @@ class WearNotificationFlowTest {
         vm.state.value.selectedSession
           ?.key,
       )
-      pause("B-OPEN")
       if (a == b) failures += "A and B share an open PendingIntent"
       a.send()
       SystemClock.sleep(3500)
@@ -83,7 +82,6 @@ class WearNotificationFlowTest {
         failures += "Warm A opens B instead of A"
       }
       if (!device.hasObject(By.text("Alpha reply"))) failures += "Warm A transcript missing"
-      pause("WARM-A-RESULT")
       b.send()
       SystemClock.sleep(2000)
       await { !vm.state.value.loading }
@@ -108,7 +106,6 @@ class WearNotificationFlowTest {
       ) {
         failures += "Cold A follows current phone B"
       }
-      pause("COLD-A-RESULT")
       // Return from real remote input after the conversation changed underneath it.
       instrumentation.runOnMainSync {
         vm.openSession(WearSession("agent:beta:shared", "Beta", null, false, "synthetic-phone"))
@@ -144,7 +141,6 @@ class WearNotificationFlowTest {
         SystemClock.sleep(2000)
         await { !vm.state.value.loading && !vm.state.value.sending }
         if (phone.sends != 0) failures += "Stale input sent to a different conversation"
-        pause("STALE-INPUT-RESULT")
       } finally {
         instrumentation.removeMonitor(inputMonitor)
       }
@@ -173,7 +169,6 @@ class WearNotificationFlowTest {
       talkButton.click()
       await { vm.state.value.realtimeTalk.active && vm.state.value.realtimeCapturing }
       assertEquals("agent:beta:shared", phone.talkSession)
-      pause("TALK-B-ACTIVE")
       a.send()
       SystemClock.sleep(3500)
       await { !vm.state.value.loading }
@@ -185,7 +180,6 @@ class WearNotificationFlowTest {
         failures += "Talk notification did not open A"
       }
       if (!device.hasObject(By.text("Alpha reply"))) failures += "Talk notification did not navigate to Chat A"
-      pause("TALK-NOTIFICATION-A-RESULT")
       channels.shutdown()
       println("B2_NATIVE_ASSERTIONS: " + failures.ifEmpty { listOf("PASS") }.joinToString("; "))
       assertEquals("Captured notification context", emptyList<String>(), failures)
@@ -222,11 +216,6 @@ class WearNotificationFlowTest {
           .getCharSequence("android.text")
           ?.toString() == reply
       }.notification.contentIntent
-  }
-
-  private fun pause(label: String) {
-    println("B2_CAPTURE: $label")
-    SystemClock.sleep(4500)
   }
 
   private fun await(predicate: () -> Boolean) {
