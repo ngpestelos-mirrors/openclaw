@@ -1,11 +1,12 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as diskSpace from "./disk-space.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import { prepareUpdateCandidateRehearsal } from "./update-candidate-rehearsal.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "./update-control-plane-sentinel.js";
@@ -38,6 +39,7 @@ class FakeChild extends EventEmitter {
   }
 }
 
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let root: string;
 let nextPid = 41_000;
 const children = new Map<number, FakeChild>();
@@ -49,6 +51,13 @@ let runtimeError = false;
 let runtimeContract: unknown;
 let lintReport: { ok: boolean; checksRun: number; findings: unknown[]; warnings: unknown[] };
 
+function stubHealthyGateway() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ status: "started", ready: true })),
+  );
+}
+
 beforeEach(async () => {
   vi.clearAllMocks();
   pluginErrors = false;
@@ -56,17 +65,27 @@ beforeEach(async () => {
   runtimeError = false;
   runtimeContract = { state: 2, agent: 3 };
   lintReport = { ok: true, checksRun: 1, findings: [], warnings: [] };
-  root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "canary-unit-")));
+  root = path.join(await fs.realpath(tempDirs.make("canary-unit-")), "candidate");
+  await fs.mkdir(root);
   await fs.mkdir(path.join(root, "dist"));
   await fs.writeFile(path.join(root, "dist", "index.js"), "");
   await fs.mkdir(path.join(root, "dist", "infra"));
   await fs.writeFile(path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"), "");
   await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "2026.9.1" }));
-  mocks.snapshot.mockResolvedValue({
-    code: 0,
-    stdout: Buffer.from(JSON.stringify({ versions: [], pluginPaths: {} })),
-    stderr: Buffer.alloc(0),
-    termination: "exit",
+  mocks.snapshot.mockImplementation(async (_command, options: { input: string }) => {
+    const request: unknown = JSON.parse(options.input);
+    return {
+      code: 0,
+      stdout: Buffer.from(
+        JSON.stringify(
+          isRecord(request) && request.mode === "inventory"
+            ? { databases: [], pluginBytes: 0, pluginPlan: "plugin-copy-plan.json" }
+            : { versions: [], pluginPaths: {} },
+        ),
+      ),
+      stderr: Buffer.alloc(0),
+      termination: "exit",
+    };
   });
   mocks.spawn.mockImplementation(
     (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
@@ -117,13 +136,49 @@ beforeEach(async () => {
   );
 });
 
-afterEach(async () => {
+afterEach(() => {
   vi.unstubAllGlobals();
   children.clear();
-  await fs.rm(root, { recursive: true, force: true });
 });
 
 describe("update candidate canary", () => {
+  it("records a typed capacity refusal before notifying the snapshot failure", async () => {
+    const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockImplementation((targetPath) => ({
+      targetPath,
+      checkedPath: targetPath,
+      availableBytes: 0,
+      totalBytes: 1024,
+    }));
+    const onStep = vi.fn();
+    try {
+      const result = await validateUpdateCandidateCanary({
+        root,
+        stateDir: root,
+        config: {},
+        env: { TMPDIR: "/synthetic/tmp" },
+        onStep,
+      });
+      expect(result).toMatchObject({ status: "error", phase: "snapshot" });
+      const failed = result.steps.at(-1);
+      expect(failed).toMatchObject({
+        name: "candidate snapshot",
+        exitCode: 1,
+        snapshotCapacity: {
+          reason: "snapshot-capacity-insufficient",
+          selection: null,
+        },
+      });
+      expect(
+        failed?.snapshotCapacity?.candidates.map((candidate) => candidate.availableBytes),
+      ).toEqual([0, 0, 0]);
+      expect(onStep).toHaveBeenCalledExactlyOnceWith(failed);
+      expect(mocks.snapshot).not.toHaveBeenCalled();
+      expect(mocks.spawn).not.toHaveBeenCalled();
+    } finally {
+      capacity.mockRestore();
+    }
+  });
+
   it.each([false, true])(
     "retains posture warnings without admitting blocking lint errors (blocking: %s)",
     async (blocking) => {
@@ -141,10 +196,7 @@ describe("update candidate canary", () => {
           },
         ],
       };
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => Response.json({ status: "started", ready: true })),
-      );
+      stubHealthyGateway();
       const result = await validateUpdateCandidateCanary({
         root,
         stateDir: root,
@@ -162,10 +214,7 @@ describe("update candidate canary", () => {
     },
   );
   it("keeps snapshot and validation source selection inside the candidate", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ status: "started", ready: true })),
-    );
+    stubHealthyGateway();
     const servingRoot = path.join(root, "installed");
     const env = { OPENCLAW_DEV_SOURCE_ROOT: servingRoot };
     const result = await validateUpdateCandidateCanary({
@@ -187,10 +236,7 @@ describe("update candidate canary", () => {
   it("classifies a deadline before teardown when SIGTERM closes the child with zero", async () => {
     let now = 2_000_000;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ status: "started", ready: true })),
-    );
+    stubHealthyGateway();
     mocks.spawn.mockImplementationOnce((_command, _args, options) => {
       const child = new FakeChild(nextPid++);
       children.set(child.pid, child);
@@ -219,19 +265,15 @@ describe("update candidate canary", () => {
     const now = Date.now.bind(Date);
     let snapshotElapsed = 0;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now() + snapshotElapsed);
-    mocks.snapshot.mockImplementationOnce(async () => {
-      snapshotElapsed = 300_001;
-      return {
-        code: 0,
-        stdout: Buffer.from(JSON.stringify({ versions: [], pluginPaths: {} })),
-        stderr: Buffer.alloc(0),
-        termination: "exit",
-      };
+    const snapshot = mocks.snapshot.getMockImplementation()!;
+    mocks.snapshot.mockImplementation(async (command, options: { input: string }) => {
+      const request: unknown = JSON.parse(options.input);
+      if (isRecord(request) && request.mode === "snapshot") {
+        snapshotElapsed = 300_001;
+      }
+      return snapshot(command, options);
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ status: "started", ready: true })),
-    );
+    stubHealthyGateway();
     try {
       const result = await validateUpdateCandidateCanary({
         root,
@@ -283,10 +325,7 @@ describe("update candidate canary", () => {
           return child;
         },
       );
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => Response.json({ status: "started", ready: true })),
-      );
+      stubHealthyGateway();
       const result = await validateUpdateCandidateCanary({
         root,
         stateDir: root,
@@ -348,10 +387,7 @@ describe("update candidate canary", () => {
           return child;
         },
       );
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => Response.json({ status: "started", ready: true })),
-      );
+      stubHealthyGateway();
       const result = await validateUpdateCandidateCanary({
         root,
         stateDir: root,
@@ -396,10 +432,7 @@ describe("update candidate canary", () => {
     },
   ])("handles $label before proving core readiness", async ({ inventory, proceeds }) => {
     pluginInventory = inventory;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ status: "started", ready: true })),
-    );
+    stubHealthyGateway();
 
     const result = await validateUpdateCandidateCanary({
       root,
@@ -426,10 +459,7 @@ describe("update candidate canary", () => {
   });
 
   it("keeps verified readiness and records a warning when rehearsal cleanup fails", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ status: "started", ready: true })),
-    );
+    stubHealthyGateway();
     const remove = fs.rm.bind(fs);
     let retained: string | undefined;
     const denial = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
@@ -482,10 +512,7 @@ describe("update candidate canary", () => {
         executorDelegation: "pid-start-v1",
         candidateMutation,
       };
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => Response.json({ status: "started", ready: true })),
-      );
+      stubHealthyGateway();
       const result = await validateUpdateCandidateCanary({
         root,
         stateDir: root,
@@ -500,10 +527,7 @@ describe("update candidate canary", () => {
   );
   it("reports unavailable validation when the candidate predates the migration-continuation contract", async () => {
     await fs.rm(path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"));
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ status: "started", ready: true })),
-    );
+    stubHealthyGateway();
     const onStep = vi.fn();
     const result = await validateUpdateCandidateCanary({
       root,
@@ -573,13 +597,20 @@ describe("update candidate canary", () => {
       },
       timeoutMs: 3_000,
       onStep: (step) => {
-        completed.push({ name: step.name, argv: [...mocks.spawn.mock.calls.at(-1)![1]] });
+        completed.push({ name: step.name, argv: [...(mocks.spawn.mock.calls.at(-1)?.[1] ?? [])] });
       },
     });
     expect(result.status).toBe("ok");
     expect(result.candidateSchemaVersions).toEqual({ state: 2, agent: 3 });
+    expect(result.steps[0]?.snapshotCapacity).toMatchObject({
+      sqliteBytes: 0,
+      pluginBytes: 0,
+      reason: "state-volume",
+      selection: { kind: "state-volume" },
+    });
     expect(result).not.toHaveProperty("checkpointContinuation");
     expect(result.steps.map((step) => step.name)).toEqual([
+      "candidate snapshot",
       "candidate migration rehearsal",
       "candidate doctor lint",
       "candidate config validation",
@@ -589,6 +620,7 @@ describe("update candidate canary", () => {
     ]);
     expect(completed.map((step) => step.name)).toEqual(result.steps.map((step) => step.name));
     expect(completed.map((step) => step.argv.slice(1, 3))).toEqual([
+      [],
       ["doctor", "--fix"],
       ["doctor", "--lint"],
       ["config", "validate"],
@@ -686,7 +718,7 @@ describe("update candidate canary", () => {
         { configPath: rehearsal.configPath, level: "debug" },
         { configPath: rehearsal.configPath, level: "debug" },
       ]);
-      expect(mocks.snapshot).toHaveBeenCalledOnce();
+      expect(mocks.snapshot).toHaveBeenCalledTimes(2);
       expect(await fs.readFile(rehearsal.configPath, "utf8")).toBe(repairedConfig);
       await expect(fs.access(rehearsal.stateDir)).resolves.toBeUndefined();
     } finally {
@@ -760,11 +792,18 @@ describe("update candidate canary", () => {
       pluginErrors = failure === "plugins";
       runtimeError = failure === "runtime";
       if (failure === "snapshot") {
-        mocks.snapshot.mockResolvedValue({
-          code: 1,
-          stdout: Buffer.alloc(0),
-          stderr: Buffer.from("snapshot rejected"),
-          termination: "exit",
+        const snapshot = mocks.snapshot.getMockImplementation()!;
+        mocks.snapshot.mockImplementation(async (command, options: { input: string }) => {
+          const request: unknown = JSON.parse(options.input);
+          if (isRecord(request) && request.mode === "inventory") {
+            return snapshot(command, options);
+          }
+          return {
+            code: 1,
+            stdout: Buffer.alloc(0),
+            stderr: Buffer.from("snapshot rejected"),
+            termination: "exit",
+          };
         });
       }
       if (failure === "doctor") {
@@ -805,7 +844,7 @@ describe("update candidate canary", () => {
       } else {
         expect(mocks.signal).toHaveBeenCalled();
       }
-      const snapshotInput = JSON.parse(mocks.snapshot.mock.calls[0]![1].input) as {
+      const snapshotInput = JSON.parse(mocks.snapshot.mock.calls.at(-1)![1].input) as {
         targetStateDir: string;
       };
       await expect(fs.access(snapshotInput.targetStateDir)).rejects.toMatchObject({
@@ -880,8 +919,8 @@ describe("update candidate canary", () => {
         },
       }),
     ).rejects.toThrow("ledger unavailable");
-    expect(mocks.spawn).toHaveBeenCalledTimes(1);
-    const snapshotInput = JSON.parse(mocks.snapshot.mock.calls[0]![1].input) as {
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    const snapshotInput = JSON.parse(mocks.snapshot.mock.calls.at(-1)![1].input) as {
       targetStateDir: string;
     };
     await expect(fs.access(snapshotInput.targetStateDir)).rejects.toMatchObject({ code: "ENOENT" });
