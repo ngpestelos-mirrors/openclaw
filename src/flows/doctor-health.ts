@@ -5,18 +5,22 @@ import { stylePromptTitle } from "../../packages/terminal-core/src/prompt-style.
 import type { DoctorOptions } from "../commands/doctor-prompter.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
+import { formatUpdateDoctorConfigChange } from "../infra/update-doctor-config.js";
 import {
   captureUpdateDoctorConfigWrites,
   normalizeUpdatePostInstallDoctorWarnings,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   writeUpdatePostInstallDoctorResult,
+  type UpdateDoctorWriteAuthority,
+  type DoctorConfigCapture,
   type UpdatePostInstallDoctorResult,
 } from "../infra/update-doctor-result.js";
 import {
   createUpdateFailureFact,
   normalizeUpdateFailureFacts,
 } from "../infra/update-failure-facts.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import type { DoctorHealthFlowContext } from "./doctor-health-contributions.js";
@@ -83,11 +87,17 @@ function stateDirectoryExistsAtDoctorStart(): boolean {
 }
 
 /** Runs the full interactive doctor flow against the provided or default runtime. */
-export async function runDoctorHealthFlow(runtime?: RuntimeEnv, options: DoctorOptions = {}) {
+export async function runDoctorHealthFlow(
+  runtime?: RuntimeEnv,
+  options: DoctorOptions = {},
+  writeAuthority?: UpdateDoctorWriteAuthority,
+) {
   const resultPath = process.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]?.trim();
   return resultPath
-    ? captureUpdateDoctorConfigWrites(resolveConfigPath(), (capture) =>
-        runDoctorHealthFlowWithResult(runtime, options, { resultPath, capture }),
+    ? captureUpdateDoctorConfigWrites(
+        resolveConfigPath(),
+        (capture) => runDoctorHealthFlowWithResult(runtime, options, { resultPath, capture }),
+        writeAuthority,
       )
     : runDoctorHealthFlowWithResult(runtime, options);
 }
@@ -95,7 +105,7 @@ export async function runDoctorHealthFlow(runtime?: RuntimeEnv, options: DoctorO
 async function runDoctorHealthFlowWithResult(
   runtime: RuntimeEnv | undefined,
   options: DoctorOptions,
-  updateResult?: { resultPath: string; capture: { hash: string; inputHash?: string } },
+  updateResult?: { resultPath: string; capture: DoctorConfigCapture },
 ) {
   const effectiveRuntime = runtime ?? (await import("../runtime.js")).defaultRuntime;
   // Config loading can initialize SQLite-backed state before integrity runs.
@@ -292,10 +302,19 @@ async function runDoctorHealthFlowWithResult(
       await maintenance?.release();
     } finally {
       if (updateResult) {
+        for (const change of updateResult.capture.configChanges) {
+          createSubsystemLogger("update").warn(formatUpdateDoctorConfigChange(change));
+        }
         await writeUpdatePostInstallDoctorResult({
           resultPath: updateResult.resultPath,
           result: {
             ...doctorResult,
+            ...(updateResult.capture.configChanges.length
+              ? { configChanges: updateResult.capture.configChanges }
+              : {}),
+            ...(updateResult.capture.configWriteRefusal
+              ? { configWriteRefusal: updateResult.capture.configWriteRefusal }
+              : {}),
             configHash: updateResult.capture.hash,
             ...(updateResult.capture.inputHash === undefined
               ? {}

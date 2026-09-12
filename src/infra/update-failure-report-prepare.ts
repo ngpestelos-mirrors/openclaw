@@ -16,6 +16,7 @@ import { prepareGithubIssue, type PreparedGithubIssue } from "./github-issue.js"
 import { normalizeUpdateChannel } from "./update-channels.js";
 import { formatUpdateFailureFact } from "./update-failure-facts-format.js";
 import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
+import { projectPublicUpdateFailureIdentifiers } from "./update-failure-public-identifiers.js";
 import {
   LEGACY_UPDATE_RUN_ADVISORY,
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
@@ -215,11 +216,11 @@ function resolveRecoveryOutcome(
   return "not recorded";
 }
 
-function renderBoundedDiagnostics(
+async function renderBoundedDiagnostics(
   input: UpdateFailureReportInput,
   context: UpdateFailureReportContext,
   steps: ReportedFailedStep[],
-): string[] {
+): Promise<string[]> {
   const diagnostics = [
     `Result: ${input.result.status}`,
     `Update mode: ${sanitizeReportField(input.result.mode, context)}`,
@@ -247,17 +248,17 @@ function renderBoundedDiagnostics(
     const termination = step.termination ? `, termination ${step.termination}` : "";
     diagnostics.push(`Failed phase ${phase}: exit ${step.exitCode ?? "unknown"}${termination}`);
     diagnostics.push(
-      ...normalizeUpdateFailureFacts(step.failureFacts ?? [], context.env).map((fact) =>
-        formatUpdateFailureFact({
-          check: sanitizeFactIdentifier(fact.check, context),
-          code: sanitizeFactIdentifier(fact.code, context),
-          ...(fact.affectedKey ? { affectedKey: sanitizeFactConfigKey(fact.affectedKey) } : {}),
-          ...(fact.pluginId ? { pluginId: sanitizeFactIdentifier(fact.pluginId, context) } : {}),
-          ...(fact.message
-            ? { message: redactPublicSupportDiagnosticLine(fact.message, context) }
-            : {}),
-        }),
-      ),
+      ...(await Promise.all(
+        normalizeUpdateFailureFacts(step.failureFacts ?? [], context.env).map(async (fact) =>
+          formatUpdateFailureFact({
+            ...(await projectPublicUpdateFailureIdentifiers(fact)),
+            ...(fact.affectedKey ? { affectedKey: sanitizeFactConfigKey(fact.affectedKey) } : {}),
+            ...(fact.message
+              ? { message: redactPublicSupportDiagnosticLine(fact.message, context) }
+              : {}),
+          }),
+        ),
+      )),
     );
   }
   return diagnostics;
@@ -312,7 +313,7 @@ export async function prepareUpdateFailureReport(
     "",
     "## Bounded diagnostics",
     "",
-    ...renderBoundedDiagnostics(input, context, steps).map((line) => `- ${line}`),
+    ...(await renderBoundedDiagnostics(input, context, steps)).map((line) => `- ${line}`),
     "",
   ].join("\n");
   const reconciliationMarker = `openclaw-update-report:${createHash("sha256")

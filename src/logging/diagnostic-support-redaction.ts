@@ -415,15 +415,22 @@ export function redactPublicSupportDiagnosticLine(
   const line = redactSupportDiagnosticLine(value, context);
   const runtime =
     /^Target package: openclaw@(\S+); Minimum Node engine: (\S+); Running Node: (\S+)$/u.exec(line);
-  if (
-    runtime &&
-    runtime
+  if (runtime) {
+    // Custom SemVer labels can contain private project or host names.
+    const [target, minimum, running] = runtime
       .slice(1)
-      .every(
-        (version) => version === "unknown" || version === "unspecified" || validVersion(version),
-      )
-  ) {
-    return line;
+      .map((version) =>
+        version === "unknown" ||
+        version === "unspecified" ||
+        (validVersion(version) &&
+          /^\d+\.\d+\.\d+(?:-(?:0|(?:alpha|beta|rc|dev)(?:\.\d{1,8})?))?$/u.test(version))
+          ? version
+          : "[redacted-version]",
+      );
+    return truncateUtf16Safe(
+      `Target package: openclaw@${target}; Minimum Node engine: ${minimum}; Running Node: ${running}`,
+      200,
+    );
   }
   if (
     /^Gateway readiness endpoint returned HTTP (?:[1-5]\d{2}|unavailable); expected HTTP 200\.$/u.test(

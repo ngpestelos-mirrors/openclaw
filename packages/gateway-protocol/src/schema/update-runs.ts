@@ -88,6 +88,19 @@ export const UpdateRunRecordSchema = closedObject({
           { maxItems: 5 },
         ),
       ),
+      configChange: Type.Optional(
+        Type.Union([
+          closedObject({ kind: Type.Literal("key"), key: text }),
+          closedObject({ kind: Type.Literal("migration"), message: text }),
+        ]),
+      ),
+      configWriteRefusal: Type.Optional(
+        closedObject({
+          reason: text,
+          message: text,
+          keys: Type.Array(text, { maxItems: 32 }),
+        }),
+      ),
     }),
     { maxItems: 128 },
   ),

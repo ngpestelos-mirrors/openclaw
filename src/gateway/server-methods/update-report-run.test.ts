@@ -40,6 +40,29 @@ vi.mock("../../commands/configure.shared.js", async (importOriginal) => ({
   confirm: mocks.confirm,
 }));
 
+vi.mock("../../plugins/bundled-plugin-metadata.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../plugins/bundled-plugin-metadata.js")>();
+  return {
+    ...actual,
+    listBundledPluginMetadata: (...args: Parameters<typeof actual.listBundledPluginMetadata>) => {
+      const entries = actual.listBundledPluginMetadata(...args);
+      const shipped = entries.find((entry) => entry.manifest.id === "discord");
+      if (!shipped) {
+        throw new Error("Missing shipped Discord metadata fixture");
+      }
+      return [
+        ...entries,
+        {
+          ...shipped,
+          dirName: "private-customer-plugin",
+          idHint: "private-customer-plugin",
+          manifest: { ...shipped.manifest, id: "private-customer-plugin" },
+        },
+      ];
+    },
+  };
+});
+
 vi.mock("../../infra/github-issue.js", async () => {
   const actual = await vi.importActual<typeof import("../../infra/github-issue.js")>(
     "../../infra/github-issue.js",
@@ -255,13 +278,18 @@ describe("Report action from the authoritative update ledger", () => {
     {
       text: "Command failed with exit code 1: custom-tool --customer private-customer-text",
       code: "EACCES",
+      publicCode: "EACCES",
     },
-    { text: "custom-tool private-customer-text", code: "EACCES" },
-    { text: "Permission denied for private-customer-text", code: "EACCES" },
-    { text: "npm error code PRIVATE_CUSTOMER_ID", code: "command-failed" },
+    { text: "custom-tool private-customer-text", code: "EACCES", publicCode: "EACCES" },
+    { text: "Permission denied for private-customer-text", code: "EACCES", publicCode: "EACCES" },
+    {
+      text: "npm error code PRIVATE_CUSTOMER_ID",
+      code: "PRIVATE_CUSTOMER_ID",
+      publicCode: "[redacted-code]",
+    },
   ])(
     "excludes poisoned command diagnostics through ledger and public preview: $text",
-    async ({ text, code }) => {
+    async ({ text, code, publicCode }) => {
       const onStepComplete = vi.fn();
       const step = await runStep({
         name: "global install stage",
@@ -289,9 +317,10 @@ describe("Report action from the authoritative update ledger", () => {
       expect(recorded?.steps.at(-1)?.failureFacts?.[0]?.message?.length).toBeLessThanOrEqual(200);
       const { body, previewDigest } = await preview();
       expect(body).not.toContain("PRIVATE_CUSTOMER_ID");
-      for (const report of [body, renderUpdateRunReport(recorded!).lines.join("\n")]) {
-        expect(report).toContain(`Failing check package-install (${code})`);
-      }
+      expect(renderUpdateRunReport(recorded!).lines.join("\n")).toContain(
+        `Failing check package-install (${code})`,
+      );
+      expect(body).toContain(`Failing check package-install (${publicCode})`);
       for (const privateText of [
         "private-customer-text",
         "private-host.example",
@@ -306,6 +335,29 @@ describe("Report action from the authoritative update ledger", () => {
       expect(submission?.[1]?.input?.toString()).toContain("package-install");
       expect(submission?.[1]?.input?.toString()).not.toContain("private-customer-text");
       expect(submission?.[1]?.input?.toString()).not.toContain("PRIVATE_CUSTOMER_ID");
+    },
+  );
+
+  it.each([
+    { field: "check", value: "core/doctor/private-customer-check", marker: "[redacted-check]" },
+    { field: "code", value: "private-customer-code", marker: "[redacted-code]" },
+    { field: "pluginId", value: "private-customer-plugin", marker: "[redacted-plugin]" },
+  ] as const)(
+    "keeps an unrecognized $field local, including unshipped extensions, when publishing a report",
+    async ({ field, value, marker }) => {
+      const fact = { check: "doctor", code: "doctor-failed", pluginId: "discord", [field]: value };
+      createUpdateRun({ runId, trigger: "control-ui" });
+      recordUpdateRunPhase(runId, "validating", {
+        step: { step: "doctor", status: "failed", failureFacts: [fact] },
+      });
+      finishUpdateRun(runId, { status: "failed", reason: "doctor-failed" });
+      expect(renderUpdateRunReport(getUpdateRun(runId)!).lines.join("\n")).toContain(value);
+      const { body, previewDigest } = await preview();
+      expect(body).not.toContain(value);
+      expect(body).toContain(marker);
+      await invoke({ action: "submit", attemptId: runId, previewDigest });
+      const submission = mocks.runGh.mock.calls.find(([args]) => args[0] === "api");
+      expect(submission?.[1]?.input?.toString()).not.toContain(value);
     },
   );
 
@@ -380,10 +432,10 @@ describe("Report action from the authoritative update ledger", () => {
     },
     {
       check: "plugin-update",
-      code: "plugin-load-failed",
-      pluginId: "example",
-      message: "ERR_MODULE_NOT_FOUND: plugin entry was not found",
-      publicMessage: "ERR_MODULE_NOT_FOUND",
+      code: "incompatible_plugin_api",
+      pluginId: "discord",
+      message: "Plugin requires a newer host API.",
+      publicMessage: "[redacted-diagnostic]",
     },
   ])(
     "retains $check through the ledger, local summary and public preview",

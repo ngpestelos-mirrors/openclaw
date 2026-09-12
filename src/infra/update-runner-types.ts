@@ -4,6 +4,10 @@ import type { OpenClawSchemaVersions } from "../state/openclaw-schema-versions.j
 import type { LocalPackageOverridesResult } from "./package-local-overrides.js";
 import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
+import type {
+  UpdateDoctorConfigChange,
+  UpdateDoctorConfigWriteRefusal,
+} from "./update-doctor-config.js";
 import type { PackageUpdateStepAdvisory } from "./update-doctor-result.js";
 import type { UpdateFailureFact } from "./update-failure-facts.js";
 import type { GlobalInstallManager } from "./update-global.js";
@@ -28,6 +32,8 @@ export type UpdateStepResult = {
   /** Complete owner-classified warnings when one step reports several outcomes. */
   warnings?: string[];
   failureFacts?: UpdateFailureFact[];
+  configChanges?: UpdateDoctorConfigChange[];
+  configWriteRefusal?: UpdateDoctorConfigWriteRefusal;
 };
 
 export type UpdateRunResult = {
@@ -130,6 +136,8 @@ export type UpdateRunnerOptions = {
   /** Admit the built candidate after validation, before retention or activation. */
   inspectGitCandidate?: (candidateRoot: string) => Promise<void>;
   validateCandidate?: (root: string) => Promise<void>;
+  /** CLI-owned activation Doctor retains its config writer and requester authority. */
+  runGitDoctor?: (root: string) => Promise<UpdateStepResult | null>;
   prepareGitExposure?: (
     candidateRoot: string,
     candidateSha: string,

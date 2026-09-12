@@ -236,7 +236,11 @@ describe("update plugin lifecycle lease boundaries", () => {
       if (!needsTargetRuntime) {
         vi.mocked(updatePluginsAfterCoreUpdate).mockImplementationOnce(async () => {
           record("plugin-update");
-          return { ...successfulPluginUpdate, changed: false };
+          return {
+            ...successfulPluginUpdate,
+            assessment: { kind: "no-payload-repair" as const },
+            changed: false,
+          };
         });
       }
       vi.mocked(continuePostCoreUpdateInFreshProcess).mockImplementation(async () => {
@@ -293,6 +297,7 @@ describe("update plugin lifecycle lease boundaries", () => {
     vi.mocked(updatePluginsAfterCoreUpdate).mockResolvedValueOnce({
       ...successfulPluginUpdate,
       status: "error",
+      assessment: { kind: "unsafe", reason: "convergence-failed" },
       changed: false,
       npm: {
         changed: false,
@@ -300,7 +305,7 @@ describe("update plugin lifecycle lease boundaries", () => {
           {
             pluginId: "example",
             status: "error",
-            code: "plugin-api-incompatible",
+            code: "incompatible_plugin_api",
             message: "Plugin requires a newer host API.",
           },
         ],
@@ -333,7 +338,7 @@ describe("update plugin lifecycle lease boundaries", () => {
         failureFacts: [
           {
             check: "plugin-update",
-            code: "plugin-api-incompatible",
+            code: "incompatible_plugin_api",
             pluginId: "example",
             message: "Plugin requires a newer host API.",
           },

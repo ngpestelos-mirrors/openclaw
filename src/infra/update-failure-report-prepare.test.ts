@@ -76,7 +76,7 @@ describe("update report diagnostic command boundary", () => {
               exitCode: 1,
               failureFacts: [
                 {
-                  check: "config-readable",
+                  check: "core/doctor/gateway-config",
                   code: "EACCES",
                   affectedKey: "mcp.servers",
                   message: `token=synthetic-token-value ${message}\nprivate second line`,
@@ -88,7 +88,7 @@ describe("update report diagnostic command boundary", () => {
       },
       context,
     );
-    expect(report.body).toContain("Failing check config-readable (EACCES)");
+    expect(report.body).toContain("Failing check core/doctor/gateway-config (EACCES)");
     expect(report.body).toContain("Permission denied");
     expect(report.body).toContain("mcp.servers");
     for (const secret of [

@@ -18,6 +18,7 @@ import {
   type ControlPlaneUpdateSentinelMetaFile,
 } from "../../infra/update-control-plane-sentinel.js";
 import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
+import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -72,11 +73,14 @@ export function createUpdateCommandFailureResult(
   const preMutationFailure = cause instanceof UpdatePreMutationError;
   const admissionFailure =
     admission === true && cause instanceof GatewayServiceUpdateOwnershipError;
-  const reason = preMutationFailure
-    ? cause.reason
-    : admissionFailure
-      ? "managed-service-preflight"
-      : "update-failed";
+  const reason =
+    cause instanceof UpdateRequesterRevokedError
+      ? cause.code
+      : preMutationFailure
+        ? cause.reason
+        : admissionFailure
+          ? "managed-service-preflight"
+          : "update-failed";
   return {
     ...result,
     status: "error",
@@ -90,7 +94,10 @@ export function createUpdateCommandFailureResult(
         exitCode: 1,
         ...(isAbortError(cause) ? { termination: "signal" as const } : {}),
         ...(detail !== undefined ? { stderrTail: detail } : {}),
-        ...(preMutationFailure || admissionFailure ? { failureFacts: cause.failureFacts } : {}),
+        // Recorded diagnostics do not change post-mutation recovery eligibility.
+        ...(preMutationFailure || cause instanceof GatewayServiceUpdateOwnershipError
+          ? { failureFacts: cause.failureFacts }
+          : {}),
       },
     ],
   };

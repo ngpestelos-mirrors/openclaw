@@ -30,18 +30,20 @@ describe("package runtime compatibility guidance", () => {
   });
 
   it.each([
-    [">=24.16.0 <25 || >=26.1.0", "24.16.0"],
-    [null, "unspecified"],
-    ["invalid", "unspecified"],
-  ])(
-    "records inspected runtime facts for public refusal reports: %s",
-    async (nodeEngine, floor) => {
+    [">=24.16.0 <25 || >=26.1.0", "24.16.0", "2026.9.4", "2026.9.4"],
+    [null, "unspecified", "2026.9.4", "2026.9.4"],
+    ["invalid", "unspecified", "2026.9.4", "2026.9.4"],
+    [">=24.16.0", "24.16.0", "2026.9.4-beta.1", "2026.9.4-beta.1"],
+    [">=24.16.0", "24.16.0", "2026.9.4-private-customer", "[redacted-version]"],
+  ] as const)(
+    "records inspected runtime facts for public refusal reports: %s / %s / %s",
+    async (nodeEngine, floor, version, publicVersion) => {
       vi.mocked(resolveNodeRuntimeInfo).mockResolvedValue({
         status: "probe-failed",
         error: new Error("probe timed out"),
       });
       const runtime = await resolvePackageRuntimePreflight({
-        target: { version: "2026.9.4", nodeEngine },
+        target: { version, nodeEngine },
         nodeRunner: "/fixture/private/node",
       });
       expect(runtime).toMatchObject({
@@ -51,6 +53,7 @@ describe("package runtime compatibility guidance", () => {
       if (runtime.ok) {
         throw new Error("Expected runtime refusal");
       }
+      expect(runtime.failureFacts?.[0]?.message).toContain(`Target package: openclaw@${version}`);
       const report = await prepareUpdateFailureReport({
         attemptId: "runtime-refusal",
         result: {
@@ -69,7 +72,8 @@ describe("package runtime compatibility guidance", () => {
           ],
         },
       });
-      expect(report.body).toContain("Target package: openclaw@2026.9.4");
+      expect(report.body).not.toContain("private-customer");
+      expect(report.body).toContain(`Target package: openclaw@${publicVersion}`);
       expect(report.body).toContain(`Minimum Node engine: ${floor}`);
       expect(report.body).not.toContain("/fixture/private");
     },

@@ -3,11 +3,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
+import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import type { captureTargetDatabaseSchemaContext } from "./schema-preflight.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
+import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
 
 const mocks = vi.hoisted(() => ({
@@ -847,20 +849,43 @@ describe("mutable update execution", () => {
     },
   );
 
-  it("reports activation exceptions without retrying a fallback package updater", async () => {
-    const failure = new Error("activation failed");
-    mocks.runPackageUpdate.mockRejectedValue(failure);
+  it.each(["activation", "requester revocation", "service ownership"])(
+    "reports %s exceptions without retrying a fallback package updater",
+    async (kind) => {
+      const failure =
+        kind === "requester revocation"
+          ? new UpdateRequesterRevokedError()
+          : kind === "service ownership"
+            ? new GatewayServiceUpdateOwnershipError(
+                "Service manager returned EACCES.",
+                undefined,
+                "service-manager-access-denied",
+              )
+            : new Error("activation failed");
+      mocks.runPackageUpdate.mockRejectedValue(failure);
 
-    const execution = await executeMutableUpdate(executionParams("package"));
+      const execution = await executeMutableUpdate(executionParams("package"));
 
-    expect(mocks.runPackageUpdate).toHaveBeenCalledOnce();
-    expect(execution?.failure?.cause).toBe(failure);
-    expect(execution?.result).toMatchObject({
-      status: "error",
-      reason: "update-failed",
-      recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-    });
-  });
+      expect(mocks.runPackageUpdate).toHaveBeenCalledOnce();
+      expect(execution?.failure?.cause).toBe(failure);
+      expect(execution?.result).toMatchObject({
+        status: "error",
+        reason: kind === "requester revocation" ? "requester-revoked" : "update-failed",
+        recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        steps: [expect.objectContaining({ name: "update", exitCode: 1 })],
+      });
+      expect(mocks.verifyPackageRecovery).not.toHaveBeenCalled();
+      if (kind === "service ownership") {
+        expect(execution?.result.steps[0]?.failureFacts).toEqual([
+          {
+            check: "managed-service",
+            code: "service-manager-access-denied",
+            message: "Service manager returned EACCES.",
+          },
+        ]);
+      }
+    },
+  );
 
   it("keeps Git candidate selection online and delegates its later activation", async () => {
     const events: string[] = [];

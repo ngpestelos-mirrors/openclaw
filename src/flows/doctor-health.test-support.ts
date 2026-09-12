@@ -227,6 +227,14 @@ export function registerDoctorConfigReceiptTests(
                   ],
                 }
               : {}),
+            ...(outcome === "unchanged"
+              ? {}
+              : {
+                  configChanges: [
+                    { kind: "key", key: "gateway" },
+                    { kind: "key", key: "meta" },
+                  ],
+                }),
             ...(outcome === "unchanged" || outcome === "interleaved"
               ? {}
               : { configInputHash: expectedInputHash }),

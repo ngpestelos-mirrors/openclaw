@@ -95,8 +95,9 @@ config key, plugin ID, and one diagnostic line of at most 200 characters. These
 facts survive the run ledger and appear in the local summary and the reviewed
 GitHub failure report. Secrets and private paths are redacted before recording;
 public reports include recognized error causes instead of arbitrary command or
-user text, and show config key families instead of operator-defined names. Older
-runs cannot recover facts that their updater did not record. Existing history
+user text, and show config key families instead of operator-defined names. Only
+catalog-confirmed public check and plugin IDs are included; unknown IDs and codes
+remain complete locally and are redacted publicly. Older runs cannot recover facts that their updater did not record. Existing history
 and report size limits still apply.
 
 Recoverable maintenance failures appear as recorded warnings even when the update

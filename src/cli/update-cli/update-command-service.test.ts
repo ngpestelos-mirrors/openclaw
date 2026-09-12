@@ -214,7 +214,7 @@ describe("maybeRestartService", () => {
                   ? {
                       check: "channelsReady",
                       code: "channel-errors",
-                      affectedKey: "fixture-channel",
+                      pluginId: "fixture-channel",
                       message: "connection failed",
                     }
                   : change === "initial-settle-error"
