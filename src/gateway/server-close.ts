@@ -679,11 +679,7 @@ export async function completeGatewayClose(
     try {
       const { memoryErrors } = await params.closePluginRegistry(async (retireRegistry) => {
         // SDK cleanup can use prepared donors; release its claims before model or registry disposal.
-        try {
-          await params.closeSdkResources?.();
-        } catch (error) {
-          recordResourceCleanupFailure(error);
-        }
+        await params.closeSdkResources?.().catch(recordResourceCleanupFailure);
         await params.pluginMetadata.close(async (retire) => {
           await closeSwarmScheduler().catch(recordResourceCleanupFailure);
           await closePreparedModelRuntimeSnapshots();
