@@ -419,6 +419,44 @@ describe("gateway config methods", () => {
     expect(response.error?.message).toContain("config changed since last load");
   });
 
+  it.each(["config.patch", "config.set", "config.apply"])(
+    "%s rejects an include-only stale draft and accepts a reloaded draft",
+    async (method) => {
+      const original = await getCurrentConfigObject();
+      const includePath = path.join(path.dirname(original.path), "logging.json5");
+      await writeJsonFile(includePath, { level: "info" });
+      const root = { ...original.config, logging: { $include: "./logging.json5" } };
+      await writeJsonFile(original.path, root);
+      await expect
+        .poll(async () => (await getCurrentConfigObject()).config.logging)
+        .toEqual({
+          level: "info",
+        });
+      const draft = await getCurrentConfigObject();
+      const raw = JSON.stringify(
+        method === "config.patch"
+          ? { logging: { level: "debug" } }
+          : { ...draft.config, logging: { level: "debug" } },
+      );
+      await writeJsonFile(includePath, { level: "warn" });
+
+      const stale = await rpcReq(requireClient(), method, { raw, baseHash: draft.hash });
+
+      expect(stale.ok).toBe(false);
+      expect(stale.error?.message).toContain("config changed since last load");
+      expect(JSON.parse(await fs.readFile(includePath, "utf8"))).toEqual({ level: "warn" });
+      await expect.poll(getConfigHash).not.toBe(draft.hash);
+      const fresh = await rpcReq<{ hash: string }>(requireClient(), method, {
+        raw,
+        baseHash: await getConfigHash(),
+      });
+      expect(fresh.ok, fresh.error?.message).toBe(true);
+      expect(JSON.parse(await fs.readFile(includePath, "utf8"))).toEqual({ level: "debug" });
+      expect(JSON.parse(await fs.readFile(original.path, "utf8"))).toEqual(root);
+      await expect.poll(getConfigHash).toBe(fresh.payload?.hash);
+    },
+  );
+
   it("rejects config.set when SecretRef resolution fails", async () => {
     const missingEnvVar = `OPENCLAW_MISSING_SECRETREF_${Date.now()}`;
     deleteTestEnvValue(missingEnvVar);

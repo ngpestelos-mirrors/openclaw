@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { formatErrorMessage } from "../infra/errors.js";
 import { recordUpdateDoctorConfigWrite } from "../infra/update-doctor-result.js";
@@ -247,10 +248,14 @@ export async function readConfigFileSnapshotForRuntimeTransaction(
 export async function readConfigFileSnapshotForWrite(options?: {
   skipPluginValidation?: boolean;
   observe?: boolean;
+  preservedLegacyRootKeys?: readonly string[];
 }): Promise<ReadConfigFileSnapshotForWriteResult> {
   const readOptions = {
     ...(options?.skipPluginValidation ? { pluginValidation: "skip" as const } : {}),
     ...(options?.observe === false ? { observe: false } : {}),
+    ...(options?.preservedLegacyRootKeys
+      ? { preservedLegacyRootKeys: options.preservedLegacyRootKeys }
+      : {}),
   };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -416,6 +421,7 @@ async function finalizeCommittedConfigWrite(params: {
   } = params;
   let canonicalSourceConfig = params.nextCfg;
   let canonicalRuntimeConfig = params.nextCfg;
+  let canonicalPersistedHash = writeResult.persistedHash;
   let envBeforeCanonicalRead = snapshotEnv(io.env);
   let envAfterCanonicalRead: Record<string, string | undefined>;
   let canonicalReadFailure: ConfigRuntimeRefreshError | null = null;
@@ -436,6 +442,10 @@ async function finalizeCommittedConfigWrite(params: {
       if (freshSnapshot.exists && freshSnapshot.valid) {
         canonicalSourceConfig = freshSnapshot.sourceConfig;
         canonicalRuntimeConfig = freshSnapshot.config;
+        canonicalPersistedHash = expectDefined(
+          freshSnapshot.hash,
+          "canonical config snapshot hash",
+        );
       } else {
         // An invalid or vanished reread means a concurrent edit beat us to the
         // file; runtime keeps the just-written config, but that divergence must
@@ -495,7 +505,7 @@ async function finalizeCommittedConfigWrite(params: {
           configPath: io.configPath,
           sourceConfig: canonicalSourceConfig,
           runtimeConfig: notificationRuntimeConfig,
-          persistedHash: writeResult.persistedHash,
+          persistedHash: canonicalPersistedHash,
           afterWrite: options.afterWrite,
           runtimeRefresh: options.runtimeRefresh,
           ...(notificationPreparedCandidates.size > 0

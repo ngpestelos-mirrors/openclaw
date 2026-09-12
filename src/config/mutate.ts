@@ -238,6 +238,9 @@ async function readConfigSnapshotForMutation(params: {
   const options = {
     ...(params.writeOptions?.skipPluginValidation ? { skipPluginValidation: true } : {}),
     ...(params.writeOptions?.observe === false ? { observe: false } : {}),
+    ...(params.writeOptions?.preservedLegacyRootKeys
+      ? { preservedLegacyRootKeys: params.writeOptions.preservedLegacyRootKeys }
+      : {}),
   };
   if (params.io) {
     return await params.io.readConfigFileSnapshotForWrite(options);
@@ -247,6 +250,9 @@ async function readConfigSnapshotForMutation(params: {
       configPath: params.ownedConfigPathForWrite,
       ...(params.writeOptions?.skipPluginValidation ? { pluginValidation: "skip" as const } : {}),
       ...(params.writeOptions?.observe === false ? { observe: false } : {}),
+      ...(params.writeOptions?.preservedLegacyRootKeys
+        ? { preservedLegacyRootKeys: params.writeOptions.preservedLegacyRootKeys }
+        : {}),
     };
     const io = hasManagedRuntimeConfigWriteOwner(params.ownedConfigPathForWrite)
       ? createConfigIO({
@@ -1101,13 +1107,6 @@ async function tryWriteIncludeOwnedConfigMutation(params: {
   );
 }
 
-function resolveConfigWriteResult(
-  result: ConfigWriteResult | void,
-  fallbackConfig: OpenClawConfig,
-): ConfigMutationWriteResult {
-  return result ?? { persistedHash: null, persistedConfig: fallbackConfig };
-}
-
 export type ConfigReplaceInput =
   | { sourceConfig: OpenClawConfig; nextConfig?: never }
   | { nextConfig: OpenClawConfig; sourceConfig?: never };
@@ -1199,10 +1198,30 @@ async function replaceConfigFileUnlocked(
         await ioPreCommitRuntimePreflight?.(sourceConfig);
       };
     }
-    writeResult = resolveConfigWriteResult(
-      await (params.io?.writeConfigFile ?? writeConfigFile)(nextConfig, fallbackWriteOptions),
+    const written = await (params.io?.writeConfigFile ?? writeConfigFile)(
       nextConfig,
+      fallbackWriteOptions,
     );
+    const persisted = await readConfigSnapshotForMutation({
+      ownedConfigPathForWrite: snapshot.path,
+      io: params.io,
+      writeOptions: mergedWriteOptions,
+    });
+    if (!persisted.snapshot.exists || !persisted.snapshot.valid) {
+      throw new ConfigWritePostCommitError({
+        configPath: snapshot.path,
+        rollbackStatus: "not-restored",
+        cause: createInvalidConfigError(
+          snapshot.path,
+          formatInvalidConfigDetails(persisted.snapshot.issues),
+        ),
+      });
+    }
+    writeResult = {
+      persistedHash: resolveConfigSnapshotHash(persisted.snapshot),
+      persistedConfig: persisted.snapshot.sourceConfig,
+      persistedSourceConfig: written?.persistedSourceConfig,
+    };
   }
   return {
     path: snapshot.path,
