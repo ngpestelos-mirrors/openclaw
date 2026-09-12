@@ -265,6 +265,11 @@ export function createFullModelCatalogAccess(params: {
           catalog: filterPreparedProviderCatalog(previousInventory.catalog, (provider) =>
             retainedProviders.has(normalizeProvider(provider)),
           ),
+          runtimeModels: new Map(
+            [...previousInventory.runtimeModels].filter(([provider]) =>
+              retainedProviders.has(normalizeProvider(provider)),
+            ),
+          ),
           nativeSource,
           providerSources: new Map(
             [...previousInventory.providerSources].filter(([provider]) =>
@@ -433,8 +438,11 @@ export function createFullModelCatalogAccess(params: {
       for (const providerIds of scopes) {
         await limitFullModelCatalogBuild(async () => {
           assertCurrent();
-          const { modelCatalog: workerCatalog, configuredRuntimeModels } =
-            await worker.loadCatalog(providerIds);
+          const {
+            modelCatalog: workerCatalog,
+            configuredRuntimeModels,
+            runtimeModels,
+          } = await worker.loadCatalog(providerIds);
           assertCurrent();
           const scope = new Set(
             (
@@ -477,11 +485,20 @@ export function createFullModelCatalogAccess(params: {
                   scope.has(normalizeProvider(provider)),
                 )
               : workerCatalog,
+            new Map(
+              [...runtimeModels].filter(([provider]) => scope.has(normalizeProvider(provider))),
+            ),
             inventory,
             auth,
             normalizeProvider,
           );
           if (providerIds) {
+            publication.runtimeModels = new Map([
+              ...[...(inventory?.runtimeModels ?? [])].filter(
+                ([provider]) => !scope.has(normalizeProvider(provider)),
+              ),
+              ...publication.runtimeModels,
+            ]);
             publication.catalog = mergePreparedProviderCatalog(
               inventory?.catalog,
               publication.catalog,
@@ -619,6 +636,7 @@ export function createFullModelCatalogAccess(params: {
           setPreparedModelFullCatalogAuth(rawCatalog, catalogAuth);
           inventory = {
             catalog: mergePreparedNativeCatalog(rawCatalog, rawInventory),
+            runtimeModels: inventory?.runtimeModels ?? new Map(),
             key: inventoryKey,
             pluginFingerprint,
             nativeSource,
@@ -691,6 +709,10 @@ export function createFullModelCatalogAccess(params: {
     readFullModelCatalog: () => {
       assertCurrent();
       return fullCatalog;
+    },
+    readPublishedModels: () => {
+      assertCurrent();
+      return inventory?.runtimeModels;
     },
     loadFullModelCatalog: async (options) => {
       let timer: ReturnType<typeof setTimeout> | undefined;

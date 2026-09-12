@@ -340,11 +340,21 @@ export async function runPreparedModelCatalogWorkerRequest(
       ),
       ...credentials,
     };
+    const runtimeModels = Map.groupBy(facts.templateModelRegistry.getAll(), (model) =>
+      normalizeProviderId(model.provider),
+    );
+    for (const outcome of facts.modelCatalog.providerOutcomes ?? []) {
+      const provider = normalizeProviderId(outcome.provider);
+      if (!runtimeModels.has(provider)) {
+        runtimeModels.set(provider, []);
+      }
+    }
     return {
       status: "ok",
       kind: "catalog",
       generationFingerprint,
       snapshot: facts.modelCatalog,
+      runtimeModels,
       configuredRuntimeModels: facts.configuredRuntimeModels,
       credentials: catalogCredentials,
       providerAuthLabels: withPluginRuntimeGenerationScope(pluginGenerationScope, () =>

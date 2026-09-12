@@ -157,10 +157,13 @@ export function mergePreparedNativeCatalog(
 
 export function prepareModelCatalogPublication(
   discovered: ModelCatalogSnapshot,
-  inventory: Pick<PreparedModelCatalogInventory, "catalog" | "discoveryOrigins"> | undefined,
+  runtimeModels: ReadonlyMap<string, readonly Model[]>,
+  inventory:
+    | Pick<PreparedModelCatalogInventory, "catalog" | "discoveryOrigins" | "runtimeModels">
+    | undefined,
   auth: PreparedModelCatalogAuth,
   normalizeProvider: (provider: string) => string,
-): Pick<PreparedModelCatalogInventory, "catalog" | "discoveryOrigins"> {
+): Pick<PreparedModelCatalogInventory, "catalog" | "discoveryOrigins" | "runtimeModels"> {
   // Provider discovery publishes provider rows; the inventory owner merges native observations.
   const catalog: ModelCatalogSnapshot = {
     ...discovered,
@@ -176,7 +179,7 @@ export function prepareModelCatalogPublication(
     .filter((outcome) => outcome.status === "ready")
     .map(({ provider, profileId }) => ({ provider: normalizeProvider(provider), profileId }));
   if (failed.length === 0) {
-    return { catalog, discoveryOrigins };
+    return { catalog, discoveryOrigins, runtimeModels };
   }
   const previous = inventory?.catalog;
   const previousAuth = previous && getPreparedModelFullCatalogAuth(previous);
@@ -255,6 +258,14 @@ export function prepareModelCatalogPublication(
   setPreparedModelFullCatalogAuth(published, auth);
   return {
     catalog: published,
+    runtimeModels: new Map([
+      ...[...runtimeModels].filter(
+        ([provider]) => !retainedProviders.has(normalizeProvider(provider)),
+      ),
+      ...[...(inventory?.runtimeModels ?? [])].filter(([provider]) =>
+        retainedProviders.has(normalizeProvider(provider)),
+      ),
+    ]),
     discoveryOrigins: [
       ...discoveryOrigins,
       ...(inventory?.discoveryOrigins ?? []).filter((origin) =>
@@ -333,6 +344,7 @@ export type PreparedModelRuntimeCatalogAccess = Readonly<{
   isCurrent: () => boolean;
   withRefreshStatus: (catalog: ModelCatalogSnapshot) => ModelCatalogSnapshot;
   readFullModelCatalog: () => ModelCatalogSnapshot | undefined;
+  readPublishedModels: () => ReadonlyMap<string, readonly Model[]> | undefined;
   loadFullModelCatalog: (
     options?: PreparedModelCatalogRefreshOptions,
   ) => Promise<ModelCatalogSnapshot>;
@@ -400,6 +412,7 @@ export function createPreparedModelRuntimeSnapshot(
       : {}),
     modelCatalog: catalogAccess.withRefreshStatus(modelCatalog),
     readFullModelCatalog: catalogAccess.readFullModelCatalog,
+    readPublishedModels: catalogAccess.readPublishedModels,
     loadFullModelCatalog: catalogAccess.loadFullModelCatalog,
     configuredRuntimeModels,
     inlineProviderModels,
