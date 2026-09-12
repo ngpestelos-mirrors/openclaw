@@ -1331,17 +1331,18 @@ describe("markAuthProfileFailure — WHAM-aware Codex cooldowns", () => {
     mockWhamResponse(200, { rate_limit: { limit_reached: false } });
     mockLockedUpdatesForStore(store);
 
-    maybeReprobeWhamBlockedProfiles({
+    const firstProbe = maybeReprobeWhamBlockedProfiles({
       store,
       profileIds: ["openai:default"],
       now,
     });
-    maybeReprobeWhamBlockedProfiles({
+    const secondProbe = maybeReprobeWhamBlockedProfiles({
       store,
       profileIds: ["openai:default"],
       now,
     });
 
+    await Promise.all([firstProbe, secondProbe]);
     await vi.waitFor(() => {
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(store.usageStats?.["openai:default"]?.blockedUntil).toBeUndefined();
@@ -1371,7 +1372,7 @@ describe("markAuthProfileFailure — WHAM-aware Codex cooldowns", () => {
     const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
 
     try {
-      maybeReprobeWhamBlockedProfiles({
+      await maybeReprobeWhamBlockedProfiles({
         store,
         profileIds: ["openai:default"],
         forModel: "gpt-5.5",
@@ -1408,7 +1409,7 @@ describe("markAuthProfileFailure — WHAM-aware Codex cooldowns", () => {
     );
     mockLockedUpdatesForStore(store);
 
-    maybeReprobeWhamBlockedProfiles({
+    const probe = maybeReprobeWhamBlockedProfiles({
       store,
       profileIds: ["openai:default"],
       now,
@@ -1422,6 +1423,7 @@ describe("markAuthProfileFailure — WHAM-aware Codex cooldowns", () => {
     stats.lastFailureAt = now + 1;
     releaseResponse(Response.json({ rate_limit: { limit_reached: false } }));
 
+    await probe;
     await vi.waitFor(() => {
       expect(storeMocks.updateAuthProfileStoreWithLock).toHaveBeenCalledTimes(2);
     });
