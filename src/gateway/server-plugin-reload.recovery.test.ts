@@ -44,6 +44,7 @@ import { verifyGatewayMemoryReplacement } from "./server-plugin-reload.memory.te
 import {
   createPluginReloadRecoveryFixture,
   verifyChannelReplacementContracts,
+  verifyColdAccountReplacement,
   verifyChannelCleanupFailureFence,
   verifyGatewayCleanupRetry,
   verifyMalformedReloadFailureReceipt,
@@ -202,6 +203,9 @@ it.each(["retry", "shutdown"] as const)(
 
 it("replaces channel command provenance while keeping webhook ingress retryable", () =>
   verifyChannelReplacementContracts(createRecoveryFixture));
+
+it("keeps cold accounts isolated while replacing their plugin and healthy accounts", () =>
+  verifyColdAccountReplacement(createRecoveryFixture));
 
 it.each(["rejection", "timeout"] as const)(
   "replaces channels after cleanup %s while retaining predecessor fences and warnings",

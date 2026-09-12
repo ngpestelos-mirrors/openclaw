@@ -1,5 +1,6 @@
 // Runtime implementations for `openclaw plugins` subcommands. Heavy plugin modules stay
 // lazy-loaded so the base CLI can start without activating the plugin registry.
+import type { PluginsRefreshResult } from "../../packages/gateway-protocol/src/schema/plugins.js";
 import { formatDocsLink } from "../../packages/terminal-core/src/links.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
@@ -957,9 +958,12 @@ export async function runPluginMarketplaceRefreshCommand(
   if (result.source !== "bundled-fallback") {
     if (gateway) {
       try {
-        const applied = await gateway<{ runtime?: { generation: number } }>("plugins.refresh", {});
+        const applied = await gateway<PluginsRefreshResult>("plugins.refresh", {});
         if (!applied.runtime) {
           throw new Error("Marketplace refresh did not return a runtime application receipt.");
+        }
+        for (const warning of applied.warnings ?? []) {
+          (opts.json ? defaultRuntime.error : defaultRuntime.log)(theme.warn(warning));
         }
         runtimeNotice = `Marketplace catalog applied in Gateway generation ${applied.runtime.generation}.`;
       } catch (error) {

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { expect, vi } from "vitest";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
-import { disposePluginRegistryInstances } from "../plugins/runtime.js";
+import {
+  disposePluginRegistryInstances,
+  waitForPluginRegistryRetirement,
+} from "../plugins/runtime.js";
 import { startPluginServices } from "../plugins/services.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createChannelTestPluginBase } from "../test-utils/channel-plugins.js";
@@ -37,11 +40,11 @@ export async function verifyManagedCandidateRetirement(
       api.registerService({
         id: "held-candidate",
         async start() {
-          process.on(event, listener);
           if (current === 2) {
             entered.resolve();
             await release.promise;
           }
+          process.on(event, listener);
           order.push(`start:${current}`);
         },
         stop() {
@@ -69,16 +72,19 @@ export async function verifyManagedCandidateRetirement(
     const candidate = fixture.candidates[0]!.registry;
     const instance = getPluginInstance(candidate.plugins.find((record) => record.id === "first")!);
     assert(instance);
-    expect(process.listenerCount(event)).toBe(before + 1);
+    expect(process.listenerCount(event)).toBe(before);
     // Observe each existing deadline: failed startup, service stop, then instance drain.
     await vi.advanceTimersByTimeAsync(5_000);
     expect(outcome).toBeUndefined();
     expect(instance.disposing).toBe(false);
     expect(queuedStart).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(5_000);
+    expect(
+      await waitForPluginRegistryRetirement(candidate, { deferConsumers: true }),
+    ).toMatchObject({ deferredPluginIds: ["first"] });
     expect(instance.disposing).toBe(true);
     expect(order).toEqual([]);
-    expect(process.listenerCount(event)).toBe(before + 1);
+    expect(process.listenerCount(event)).toBe(before);
     let retired = false;
     alternateRetirement = disposePluginRegistryInstances(candidate).then(() => {
       retired = true;
@@ -88,8 +94,6 @@ export async function verifyManagedCandidateRetirement(
     }
     await vi.advanceTimersByTimeAsync(5_000);
     await reloading;
-    await alternateRetirement;
-    await shuttingDown;
     expect(outcome).toMatchObject({
       details: { phase: "activate", committed: false },
       cause: {
@@ -100,25 +104,34 @@ export async function verifyManagedCandidateRetirement(
         ]),
       },
     });
-    expect(retired).toBe(true);
-    expect(instance.lifecycle.signal.aborted).toBe(true);
+    expect(retired).toBe(false);
+    expect(instance.lifecycle.signal.aborted).toBe(false);
     expect(() => instance.run(() => "retired dispatch")).toThrow("reloaded or disabled");
-    expect(order.filter((entry) => entry.endsWith(":2"))).toEqual(["dispose:2"]);
+    expect(order.filter((entry) => entry.endsWith(":2"))).toEqual([]);
     expect(process.listenerCount(event)).toBe(before);
     expect(queuedStart).not.toHaveBeenCalled();
     expect(fixture.runtime.runtimeState.gatewayLifetimeSidecars).toEqual([]);
     if (action === "shutdown") {
-      await fixture.lifetime.sealAndJoin();
+      shuttingDown = fixture.lifetime.sealAndJoin();
     } else {
       await expect(fixture.reload()).resolves.toMatchObject({
         runtime: { pluginIds: ["first"] },
       });
       expect(queuedStart).toHaveBeenCalledOnce();
     }
-    // Native continuation may finish after best-effort disposal; it cannot reopen dispatch.
+    // Native startup can acquire resources late; its one stop still precedes instance disposal.
     release.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    expect(order.filter((entry) => entry.endsWith(":2"))).toEqual(["dispose:2", "start:2"]);
+    await alternateRetirement;
+    await shuttingDown;
+    expect(retired).toBe(true);
+    expect(instance.lifecycle.signal.aborted).toBe(true);
+    expect(order.filter((entry) => entry.endsWith(":2"))).toEqual([
+      "start:2",
+      "stop:2",
+      "dispose:2",
+    ]);
+    expect(process.listenerCount(event)).toBe(before + (action === "retry" ? 1 : 0));
     expect(() => instance.run(() => "still retired")).toThrow("reloaded or disabled");
     expect(queuedStart).toHaveBeenCalledTimes(action === "retry" ? 1 : 0);
   } finally {
@@ -208,7 +221,7 @@ export async function verifyPendingServiceCleanupRetry(
         ]),
       },
     });
-    expect(instance.lifecycle.signal.aborted).toBe(true);
+    expect(instance.lifecycle.signal.aborted).toBe(false);
     expect(() => instance.run(() => "retired dispatch")).toThrow("reloaded or disabled");
     expect(serviceStop).toHaveBeenCalledOnce();
     expect(hookStop).toHaveBeenCalledOnce();
@@ -218,11 +231,12 @@ export async function verifyPendingServiceCleanupRetry(
     startupRelease.resolve();
     await startup;
     await vi.advanceTimersByTimeAsync(0);
-    expect(serviceStop).toHaveBeenCalledOnce();
+    expect(serviceStop).toHaveBeenCalledTimes(2);
+    expect(instance.lifecycle.signal.aborted).toBe(true);
     retry = fixture.reload();
     await expect(retry).resolves.toMatchObject({ runtime: { pluginIds: ["first"] } });
     expect(starts).toBe(4);
-    expect(serviceStop).toHaveBeenCalledTimes(2);
+    expect(serviceStop).toHaveBeenCalledTimes(3);
     expect(hookStop).toHaveBeenCalledTimes(2);
     expect(() => instance.run(() => "still retired")).toThrow("reloaded or disabled");
     expect(fixture.siblingStart).toHaveBeenCalledTimes(2);

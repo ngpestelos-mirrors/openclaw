@@ -27,6 +27,7 @@ import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { startPluginServices, type PluginServicesHandle } from "../plugins/services.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import type { OpenClawPluginApi } from "../plugins/types.js";
+import { setActiveDegradedSecretOwners } from "../secrets/runtime-degraded-state.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createChannelTestPluginBase } from "../test-utils/channel-plugins.js";
 import { createChannelManager } from "./server-channels.js";
@@ -558,6 +559,69 @@ export async function verifyChannelReplacementContracts(
   }
   expect(stops).toEqual([1, 2]);
   expect(fixture.registryOwner.registry.httpRoutes).toEqual([]);
+}
+
+export async function verifyColdAccountReplacement(createRecoveryFixture: RecoveryFixtureFactory) {
+  const channelId = "cold-account-reload";
+  const starts: string[] = [];
+  const fixture = await createRecoveryFixture({
+    abortOnCandidateStart: false,
+    register(api, owner) {
+      if (owner !== "first") {
+        return;
+      }
+      api.registerChannel({
+        plugin: {
+          ...createChannelTestPluginBase({
+            id: channelId,
+            config: { listAccountIds: () => ["healthy", "cold"] },
+          }),
+          gateway: {
+            startAccount: async ({ accountId, abortSignal }) => {
+              starts.push(accountId);
+              await new Promise<void>((resolve) => {
+                abortSignal.addEventListener("abort", () => resolve(), { once: true });
+              });
+            },
+          },
+        },
+      });
+    },
+  });
+  const manager = createChannelManager({
+    getRuntimeConfig: fixture.getConfig,
+    getPluginRegistry: () => fixture.registryOwner.registry,
+    channelLogs: {},
+    channelRuntimeEnvs: {},
+  });
+  fixture.runtime.channelManager = manager;
+  setActiveDegradedSecretOwners([
+    {
+      ownerKind: "account",
+      ownerId: `${channelId}:cold`,
+      state: "unavailable",
+      degradationState: "cold",
+      paths: [`channels.${channelId}.accounts.cold.token`],
+      refKeys: ["env:default:MISSING_CHANNEL_TOKEN"],
+      reason: "secret reference was not found",
+    },
+  ]);
+  try {
+    await manager.startChannel(channelId, "healthy");
+    await expect(fixture.reload()).resolves.toMatchObject({ runtime: { pluginIds: ["first"] } });
+    expect(starts).toEqual(["healthy", "healthy"]);
+    expect(manager.getRuntimeSnapshot().channelAccounts[channelId]).toMatchObject({
+      healthy: { running: true },
+      cold: { running: false, lastError: expect.stringContaining("configured but unavailable") },
+    });
+    await expect(manager.startChannel(channelId, "cold", { manual: true })).rejects.toMatchObject({
+      code: "SECRET_SURFACE_UNAVAILABLE",
+      ownerId: `${channelId}:cold`,
+    });
+  } finally {
+    setActiveDegradedSecretOwners([]);
+    await manager.stopChannel(channelId);
+  }
 }
 
 export async function verifyChannelCleanupFailureFence(
