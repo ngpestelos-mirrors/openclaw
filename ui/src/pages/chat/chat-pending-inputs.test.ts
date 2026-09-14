@@ -93,6 +93,9 @@ describe("server-owned pending input display", () => {
         }),
       ]),
     );
+    expect(items.find((item) => item.kind === "message")).not.toMatchObject({
+      message: { __openclaw: { pendingInput: expect.anything() } },
+    });
   });
 
   it.each([
@@ -118,6 +121,16 @@ describe("server-owned pending input display", () => {
         notice ? [notice] : [],
       );
       expect(items.some((item) => item.kind === "message")).toBe(true);
+      if (state === "queued") {
+        expect(items.find((item) => item.kind === "message")).toMatchObject({
+          message: {
+            __openclaw: {
+              id: "pending:input-1",
+              pendingInput: input.id,
+            },
+          },
+        });
+      }
     },
   );
 
@@ -878,7 +891,7 @@ describe("server-owned pending input display", () => {
     });
   });
 
-  it("keeps unconsumed input in order without a generic queue notice", () => {
+  it("keeps unconsumed input in order with an inline queued state", () => {
     const earlier = { role: "assistant", content: "Earlier reply", timestamp: 50 };
     const later = { role: "assistant", content: "Later reply", timestamp: 150 };
     const items = buildChatItems({
@@ -899,7 +912,17 @@ describe("server-owned pending input display", () => {
       {
         kind: "group",
         role: "user",
-        messages: [{ message: { content: "Keep my accepted input" } }],
+        messages: [
+          {
+            message: {
+              content: "Keep my accepted input",
+              __openclaw: {
+                id: "pending:input-1",
+                pendingInput: input.id,
+              },
+            },
+          },
+        ],
       },
       { kind: "group", role: "assistant", messages: [{ message: later }] },
     ]);

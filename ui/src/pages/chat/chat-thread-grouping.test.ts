@@ -232,6 +232,30 @@ describe("forwarded source-session grouping", () => {
   });
 });
 
+describe("pending send status grouping", () => {
+  it("keeps a queued input separate from an adjacent pending input", () => {
+    const queued = {
+      role: "user",
+      content: "Queued input",
+      __openclaw: { pendingInput: "queued-1" },
+    };
+    const cancelled = {
+      role: "user",
+      content: "Cancelled input",
+    };
+
+    expect(
+      groupMessages([
+        { kind: "message", key: "queued", message: queued },
+        { kind: "message", key: "cancelled", message: cancelled },
+      ]),
+    ).toMatchObject([
+      { kind: "group", messages: [{ message: queued }] },
+      { kind: "group", messages: [{ message: cancelled }] },
+    ]);
+  });
+});
+
 describe("cached group content classification", () => {
   beforeEach(() => resetChatThreadState());
 

@@ -12,7 +12,7 @@ import { resolveMessageVisibleContent } from "../../lib/chat/message-visibility.
 import { senderIdentityKey } from "../../lib/chat/sender-label.ts";
 import { extractToolCardsCached, isToolCardError } from "../../lib/chat/tool-cards.ts";
 import { prepareMessagesForGrouping } from "./chat-thread-duplicates.ts";
-import { userTurnRunId } from "./chat-thread-items.ts";
+import { readPendingSendStatus, userTurnRunId } from "./chat-thread-items.ts";
 import {
   isKeyedAssistantStreamFallbackMessage,
   transcriptRunId,
@@ -111,6 +111,9 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
     // user runIds onto groups: reply-less activity pooling uses that field.
     const steerTarget = role === "user" ? persistedSteerTargetRunId(item.message) : null;
     const userTurnIdentity = role === "user" ? (steerTarget ?? userTurnRunId(item.message)) : null;
+    const splitsPendingSendStatus =
+      readPendingSendStatus(item.message) !== null ||
+      readPendingSendStatus(currentGroup?.messages.at(-1)?.message) !== null;
     const shouldSplitBySender = role === "user" || role === "assistant";
     const startsProjectedTurn =
       asRecord(asRecord(item.message)?.["__openclaw"])?.turnBoundary === true;
@@ -126,6 +129,7 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
       currentGroup.role !== role ||
       currentGroup.runId !== runId ||
       currentUserTurnIdentity !== userTurnIdentity ||
+      splitsPendingSendStatus ||
       splitsAssistantKind ||
       messageClientSourcesKey(currentGroup.sourceClients ?? []) !==
         messageClientSourcesKey(normalized.sourceClients ?? []) ||
