@@ -8,6 +8,7 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { compileConfigRegex } from "../security/config-regex.js";
 import { readLoggingConfig } from "./config.js";
+import { buildFileLogMessage, type FileLogMessagePart } from "./logger-file-message.js";
 import { replacePatternBounded } from "./redact-bounded.js";
 import {
   applyRedactionEdits,
@@ -1501,7 +1502,7 @@ export function redactLogRecordForTransport(
   record: Record<string, unknown>,
   options: {
     format?: "file" | "console";
-    deriveMessage?: (record: Record<string, unknown>) => RedactionMessage | undefined;
+    messageParts?: readonly FileLogMessagePart[];
     decodedOptions?: ResolvedRedactOptions;
   } = {},
 ): Record<string, unknown> {
@@ -1572,25 +1573,31 @@ export function redactLogRecordForTransport(
       return emitted;
     });
     inputChars = json.length;
-    let materialized: Record<string, unknown> = JSON.parse(json);
-    const message = options.deriveMessage?.(materialized);
-    if (message) {
-      origins.children.set("message", { value: ordinary, children: new Map() });
-      if (Object.hasOwn(materialized, "message")) {
-        materialized.message = message.text;
-      } else {
-        // Serialized-context rules observe the file message immediately after hostname.
-        const entries = Object.entries(materialized);
-        entries.splice(entries.findIndex(([key]) => key === "hostname") + 1, 0, [
-          "message",
-          message.text,
-        ]);
-        materialized = Object.fromEntries(entries);
+    let serialized = json;
+    let message: RedactionMessage | undefined;
+    const messageParts = options.messageParts;
+    if (messageParts !== undefined) {
+      let materialized: Record<string, unknown> = JSON.parse(json);
+      message = buildFileLogMessage(materialized, messageParts);
+      if (message) {
+        origins.children.set("message", { value: ordinary, children: new Map() });
+        if (Object.hasOwn(materialized, "message")) {
+          materialized.message = message.text;
+        } else {
+          // Serialized-context rules observe the file message immediately after hostname.
+          const entries = Object.entries(materialized);
+          entries.splice(entries.findIndex(([key]) => key === "hostname") + 1, 0, [
+            "message",
+            message.text,
+          ]);
+          materialized = Object.fromEntries(entries);
+        }
+        serialized = JSON.stringify(materialized);
       }
     }
     const result: Record<string, unknown> = JSON.parse(
       redactJsonRecord(
-        message ? JSON.stringify(materialized) : json,
+        serialized,
         origins,
         [
           options.decodedOptions?.patterns ?? resolved.patterns,

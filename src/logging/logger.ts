@@ -30,7 +30,7 @@ import {
   resolveDefaultRollingLogFile,
 } from "./log-file-path.js";
 import { canUseNodeFs, formatLocalDate, LOG_PREFIX, LOG_SUFFIX } from "./log-file-shared.js";
-import { buildFileLogMessage, type FileLogMessagePart } from "./logger-file-message.js";
+import type { FileLogMessagePart } from "./logger-file-message.js";
 import { fileLogTransport } from "./logger-file-transport.js";
 import { defaultLoggerHostnameResolver, loggerHostnameState } from "./logger-hostname-state.js";
 import { setLoggerFileTargetResolver } from "./logger-settings-internal.js";
@@ -618,7 +618,7 @@ function buildLogger(): TsLogger<LogObj> {
             ...fields,
           },
           {
-            deriveMessage: (materialized) => buildFileLogMessage(materialized, messageParts),
+            messageParts,
             decodedOptions: resolveFileLogRedactOptions(),
           },
         );
