@@ -8,32 +8,9 @@ import { t } from "../../../i18n/index.ts";
 import type { EditorId } from "../../../lib/editor-links.ts";
 import type { SidebarContent } from "./chat-sidebar-content-types.ts";
 import { renderChatSidebarEditorMenu } from "./chat-sidebar-editor-menu.ts";
+import { detectLineSeparator } from "./file-line-separator.ts";
 
 type FileSidebarContent = Extract<SidebarContent, { kind: "file" }>;
-
-type RetainedFileDraft = {
-  content: string;
-  expectedHash: string;
-};
-
-const retainedFileDrafts = new Map<string, RetainedFileDraft>();
-
-function retainedFileDraftKey(content: FileSidebarContent): string {
-  return content.draftKey ?? `${content.root ?? ""}\u0000${content.path}`;
-}
-
-export function readFileDraft(content: FileSidebarContent): RetainedFileDraft | undefined {
-  return retainedFileDrafts.get(retainedFileDraftKey(content));
-}
-
-export function setFileDraft(content: FileSidebarContent, draft: RetainedFileDraft | null) {
-  const key = retainedFileDraftKey(content);
-  retainedFileDrafts.delete(key);
-  if (!draft) {
-    return;
-  }
-  retainedFileDrafts.set(key, draft);
-}
 
 export function hasUniformLineEndings(content: string): boolean {
   const crlf = content.split("\r\n").length - 1;
@@ -48,7 +25,7 @@ export function computeFileMatches(content: string, query: string): number[] {
     return [];
   }
   return content
-    .split("\n")
+    .split(detectLineSeparator(content) ?? /\r\n?|\n/)
     .flatMap((line, index) =>
       line.toLocaleLowerCase().includes(normalizedQuery) ? [index + 1] : [],
     );

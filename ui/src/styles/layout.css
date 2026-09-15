@@ -430,6 +430,55 @@ html:is(.openclaw-native-macos, .openclaw-native-nav, .openclaw-native-web-chrom
   color: var(--text-strong);
 }
 
+.settings-sidebar__agent {
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 8px 12px 0;
+}
+
+.settings-sidebar__agent openclaw-agent-select {
+  display: block;
+  min-width: 0;
+}
+
+.settings-sidebar__agent .agent-select__trigger {
+  min-width: 0;
+  min-height: 40px;
+  padding: 6px 8px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 14px;
+}
+
+:root[data-theme-mode="light"] .settings-sidebar__agent .agent-select__trigger {
+  background: transparent;
+}
+
+.settings-sidebar__agent .agent-select__trigger:hover:not(:disabled),
+.settings-sidebar__agent .agent-select__trigger[aria-expanded="true"],
+:root[data-theme-mode="light"] .settings-sidebar__agent .agent-select__trigger:hover:not(:disabled),
+:root[data-theme-mode="light"]
+  .settings-sidebar__agent
+  .agent-select__trigger[aria-expanded="true"] {
+  background: var(--bg-hover);
+}
+
+.settings-sidebar__loading-agent {
+  display: block;
+  height: 40px;
+  border-radius: var(--radius-md);
+}
+
+@media (pointer: coarse) {
+  .settings-sidebar__agent .agent-select__trigger {
+    min-height: 44px;
+  }
+
+  .settings-sidebar__loading-agent {
+    height: 44px;
+  }
+}
+
 .settings-sidebar__search {
   position: relative;
   z-index: 1;
@@ -1198,6 +1247,15 @@ openclaw-settings-save-indicator:empty {
 .sidebar-nav {
   position: relative;
   padding: 0;
+}
+
+/* Keep the live session tree mounted while a route owns the lower region. */
+.sidebar-session-content {
+  display: contents;
+}
+
+.sidebar-session-content[hidden] {
+  display: none;
 }
 
 .sidebar-sessions,
@@ -2095,6 +2153,7 @@ openclaw-settings-save-indicator:empty {
    here so gateway threads and native coding catalogs cannot drift apart. */
 .sidebar-recent-session {
   --sidebar-child-session-toggle-width: max(34px, calc(36px * var(--control-ui-text-scale)));
+  --session-row-bg: transparent;
 
   display: flex;
   align-items: center;
@@ -2102,6 +2161,7 @@ openclaw-settings-save-indicator:empty {
   min-height: var(--sidebar-session-row-min-height);
   padding-right: 2px;
   border-radius: var(--radius-md);
+  background: var(--session-row-bg);
   color: var(--muted);
   cursor: var(--cursor-action);
   transition:
@@ -2121,7 +2181,8 @@ openclaw-settings-save-indicator:empty {
 }
 
 .sidebar-recent-session:hover {
-  background: color-mix(in srgb, var(--bg-hover) 78%, transparent);
+  --session-row-bg: color-mix(in srgb, var(--bg-hover) 78%, transparent);
+
   color: var(--text);
 }
 
@@ -2131,14 +2192,16 @@ openclaw-settings-save-indicator:empty {
    Doubled class outranks .sidebar-recent-session:hover so the selection fill
    does not degrade to the weaker hover fill while the row is under pointer. */
 .sidebar-recent-session.sidebar-recent-session--active {
-  background: color-mix(in srgb, var(--text) 10%, transparent);
+  --session-row-bg: color-mix(in srgb, var(--text) 10%, transparent);
+
   color: var(--text-strong);
 }
 
 /* Multi-select is an accent wash so it stays distinguishable by hue from the
    neutral --active fill when a selection includes the active row. */
 .sidebar-recent-session.sidebar-recent-session--selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  --session-row-bg: color-mix(in srgb, var(--accent) 14%, transparent);
+
   color: var(--text-strong);
 }
 
@@ -2152,6 +2215,13 @@ openclaw-settings-save-indicator:empty {
   padding: var(--sidebar-session-link-padding-block) 2px var(--sidebar-session-link-padding-block)
     var(--sidebar-inset);
   color: inherit;
+}
+
+/* Session rows sit flush with the horizontal clip that protects the sidebar
+   scroller. Keep their focus outline inside the link box so its leading edge
+   remains visible. */
+.sidebar-recent-session__link:focus-visible {
+  outline-offset: -2px;
 }
 
 .sidebar-child-session-toggle {
@@ -2329,6 +2399,10 @@ openclaw-settings-save-indicator:empty {
   font-size: calc(13px * var(--control-ui-text-scale));
   font-weight: 500;
   color: var(--text);
+}
+
+.sidebar-recent-session__name.hover-marquee--scrolling {
+  transition-duration: calc(var(--hover-marquee-duration, 600ms) * 2);
 }
 
 .sidebar-recent-sessions
@@ -2888,6 +2962,7 @@ wa-dropdown-item.session-menu__item::part(submenu-icon) {
 }
 
 .session-menu__icon,
+.session-menu__avatar,
 .session-menu__check {
   display: inline-flex;
   align-items: center;
@@ -2905,9 +2980,12 @@ wa-dropdown-item.session-menu__item::part(submenu-icon) {
   color: var(--muted);
 }
 
-.session-menu__icon .viewer-avatar {
-  width: 14px;
-  height: 14px;
+/* Identity choices need room for recognizable faces, not action-sized glyphs. */
+.session-menu__avatar,
+.session-menu__avatar .viewer-avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
 }
 
 .session-menu__icon svg,
@@ -3356,11 +3434,13 @@ a:is(
    keeps the list's --text: a session name is content in both zones, and pinning
    a row must not make it read as dimmer than the same row further down. */
 .sidebar-zone-entry .sidebar-recent-session {
+  --session-row-bg: transparent;
+
   position: relative;
   min-height: max(32px, var(--sidebar-session-row-min-height));
   padding: 0 8px;
   border: 1px solid transparent;
-  background: transparent;
+  background: var(--session-row-bg);
   color: var(--muted);
   transition:
     border-color var(--duration-fast) ease,
@@ -3398,14 +3478,16 @@ a:is(
 }
 
 .sidebar-zone-entry .sidebar-recent-session:hover {
+  --session-row-bg: color-mix(in srgb, var(--bg-hover) 84%, transparent);
+
   color: var(--text);
-  background: color-mix(in srgb, var(--bg-hover) 84%, transparent);
   border-color: color-mix(in srgb, var(--border) 72%, transparent);
 }
 
 .sidebar-zone-entry .sidebar-recent-session.sidebar-recent-session--active {
+  --session-row-bg: color-mix(in srgb, var(--accent-subtle) 88%, var(--bg-elevated) 12%);
+
   color: var(--text-strong);
-  background: color-mix(in srgb, var(--accent-subtle) 88%, var(--bg-elevated) 12%);
   border-color: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
@@ -4156,6 +4238,7 @@ wa-dropdown-item.sidebar-agent-menu__agent-switch:focus-visible {
 
 .sidebar-agent-menu__agent-tile .agent-select__option-label {
   display: -webkit-box;
+  width: 100%;
   overflow: hidden;
   line-height: 1.25;
   text-overflow: ellipsis;

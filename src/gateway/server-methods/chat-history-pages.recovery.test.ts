@@ -5,7 +5,9 @@ import {
   replaceSessionEntry,
   replaceTranscriptEvents,
 } from "../../config/sessions/session-accessor.js";
+import * as nestedActivity from "../../sessions/nested-tool-activity.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import * as historySanitize from "../chat-display-projection.sanitize.js";
 import { readChatHistoryMessageId } from "../session-history-tail.js";
 import * as anchorReader from "../session-transcript-anchor-reader.js";
 import { readSessionMessagesAsync } from "../session-transcript-readers.js";
@@ -151,30 +153,61 @@ describe("historical page recovery context", () => {
     );
   });
 
-  it("finds recovery across multiple newer pages without returning their messages", async () => {
-    const progress: Array<[string, Record<string, unknown>]> = Array.from(
-      { length: 250 },
-      (_, index) => [
-        `progress-${index}`,
-        { role: "toolResult", content: "Still working", toolCallId: `tool-${index}` },
-      ],
-    );
-    await withTranscript(
-      [["user", user], ["failed", failed], ...progress, ["answer", answer]],
-      async ({ read, raw }) => {
-        const original = await raw();
-        const page = await read({ offset: progress.length + 1, messageId: undefined });
+  it.each(["offset", "anchor"] as const)(
+    "finds recovery across multiple newer pages without repeatedly rendering them (%s)",
+    async (mode) => {
+      const progress: Array<[string, Record<string, unknown>]> = Array.from(
+        { length: 1000 },
+        (_, index) => [
+          `progress-${index}`,
+          { role: "toolResult", content: "Still working", toolCallId: `tool-${index}` },
+        ],
+      );
+      await withTranscript(
+        [["user", user], ["failed", failed], ...progress, ["answer", answer]],
+        async ({ read, raw }) => {
+          const original = await raw();
+          const sanitize = historySanitize.sanitizeChatHistoryMessages;
+          let renderedMessages = 0;
+          let decodedMessages = 0;
+          const readActivity = nestedActivity.readNestedToolActivity;
+          const activityReads = vi
+            .spyOn(nestedActivity, "readNestedToolActivity")
+            .mockImplementation((message) => {
+              decodedMessages++;
+              return readActivity(message);
+            });
+          vi.spyOn(historySanitize, "sanitizeChatHistoryMessages").mockImplementation((...args) => {
+            renderedMessages += args[0].length;
+            return sanitize(...args);
+          });
+          const page = await read({
+            ...(mode === "offset"
+              ? { offset: progress.length + 1, messageId: undefined }
+              : { offset: undefined, messageId: "failed" }),
+            maxHistoryBytes: 8 * 1024 * 1024,
+          });
 
-        expect(page.messages.map(readChatHistoryMessageId)).toEqual(["user"]);
-        expect(page.pagination).toEqual({
-          offset: progress.length + 1,
-          totalMessages: progress.length + 3,
-          rawPageMessages: 2,
-        });
-        expect(await raw()).toEqual(original);
-      },
-    );
-  });
+          activityReads.mockRestore();
+          expect(page.messages.map(readChatHistoryMessageId)).toEqual(
+            mode === "offset" ? ["user"] : [],
+          );
+          if (mode === "offset") {
+            expect(page.pagination).toEqual({
+              offset: progress.length + 1,
+              totalMessages: progress.length + 3,
+              rawPageMessages: 2,
+            });
+          } else {
+            expect(Object.keys(page)).toEqual(["messages"]);
+          }
+          expect(await raw()).toEqual(original);
+          expect(renderedMessages).toBeLessThanOrEqual(original.length * 5);
+          expect(decodedMessages).toBeLessThanOrEqual(original.length * 8);
+        },
+      );
+    },
+  );
 
   it("keeps the failure when newer recovery evidence exceeds the read byte budget", async () => {
     await withTranscript(

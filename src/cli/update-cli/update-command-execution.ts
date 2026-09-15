@@ -86,11 +86,14 @@ export async function executeMutableUpdate(
   const { opts, updateStepTimeoutMs } = params;
   const originalRun = opts.run;
   const requesterAuthority = originalRun?.requesterAuthority;
-  const assertExecutionCurrent = () => {
-    assertUpdateCommandRecovery(opts);
+  const assertRequesterCurrent = () => {
     if (opts.run !== originalRun || requesterAuthority?.isCurrent() === false) {
       throw new UpdateRequesterRevokedError();
     }
+  };
+  const assertExecutionCurrent = () => {
+    assertUpdateCommandRecovery(opts);
+    assertRequesterCurrent();
   };
   const mode: UpdateRunResult["mode"] =
     params.updateInstallKind === "git"
@@ -180,6 +183,7 @@ export async function executeMutableUpdate(
       inputHash: validatedConfigSnapshot?.hash,
       changes: doctorConfigChanges,
       assertCurrent: assertExecutionCurrent,
+      assertRequesterCurrent,
     });
   const originalRecovery = () =>
     params.installKind === "git"
@@ -579,7 +583,6 @@ export async function executeMutableUpdate(
         timeoutMs: updateStepTimeoutMs,
         startedAt: params.startedAt,
         progress: params.progress,
-        jsonMode: Boolean(opts.json),
         invocationCwd: params.invocationCwd,
         honorPackageRoot:
           params.managedServiceRootRedirect !== null ||
@@ -589,6 +592,7 @@ export async function executeMutableUpdate(
         installTarget: params.packageInstallTarget,
         validateCandidate,
         beforeActivate,
+        assertCurrent: assertExecutionCurrent,
         managedServiceEnv: preManagedServiceStop?.serviceEnv,
         onTransaction: (transaction) => {
           packageTransaction = transaction;
@@ -611,6 +615,7 @@ export async function executeMutableUpdate(
         channel: params.channel,
         tag: params.tag,
         devTarget: params.devTarget,
+        assertCurrent: assertExecutionCurrent,
         inspectGitTarget: async (target) => {
           if (target.metadataUnreadable) {
             throw new UpdatePreMutationError(
@@ -633,6 +638,13 @@ export async function executeMutableUpdate(
         getDoctorContext,
         // Foreign inspection metadata cannot authorize backup or Doctor writes.
         getManagedServiceEnv: () => ownedManagedUpdateContext?.env,
+        getSnapshotSource: async () => {
+          const env =
+            ownedManagedUpdateContext?.env ?? admission?.managedEnv ?? opts.run?.env ?? process.env;
+          const source = await readUpdateCandidateSource(env, params.legacyConfigPlan);
+          return { config: source.config, env };
+        },
+        jsonMode: Boolean(opts.json),
         invocationCwd: params.invocationCwd,
         nodeRunner: params.packageUpdateNodeRunner,
         validateCandidate: async (candidateRoot) => {

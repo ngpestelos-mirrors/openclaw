@@ -18,6 +18,36 @@ The full chat window is a native split view:
 
 The anchored compact chat panel from the menu bar keeps the compact single-column layout with the same model, thinking, verbosity, and Fast controls inline, plus starter prompts, Talk Mode, voice notes, and Listen. Assistant reasoning and tool activity remain hidden in this compact surface.
 
+In the full macOS chat window, completed commentary, reasoning, and tool work
+collapse into a **Worked for…** disclosure above the answer. Expand it to inspect
+the work; final text, images, and other attachments stay visible. Active turns,
+work without a final answer, and unresolved or failed work after the answer remain
+expanded. Work stays on its own side of forwarded messages, new inputs, and
+history dividers. Find in Conversation expands the transcript while searching.
+This presentation applies to primary agent conversations and new threads without
+changing stored history or transcript exports.
+
+Subagent activity uses one claw shape throughout its lifecycle: muted and still
+while queued, animated while running, briefly green after completion, and dimmed
+after cancellation. Failed tasks add a small warning badge; timed-out tasks add
+an amber clock. Hover for the exact status, which is also available to VoiceOver.
+Names stay free of status suffixes, and unnamed tasks appear as **Subagent**.
+Reduced Motion keeps the running claw still. Existing detail expansion and
+completed-task retention are unchanged.
+
+## Sources
+
+Completed answers in native chat and Quick Chat show up to eight compact
+**Sources** cards for cited pages returned by web search or web fetch during
+that answer's run. Click a card to inspect the recorded **Search snippet** or
+**Page excerpt** in a popover, then choose **Open source** to visit the page.
+Cards without recorded excerpts say so; opening a source preview does not
+retrieve the page again.
+
+Source icons follow the Gateway's automatic favicon preference and use its
+authenticated favicon service, with a globe when disabled or unavailable.
+Session links and GitHub issue or pull request links keep their existing cards.
+
 ## Diagrams
 
 Completed fenced blocks labeled `mermaid` render as diagrams in native chat,

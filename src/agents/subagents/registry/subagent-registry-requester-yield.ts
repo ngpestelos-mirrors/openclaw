@@ -1,5 +1,10 @@
+import { scheduleYieldedSubagentRunProgress } from "../../../tasks/task-registry-progress.js";
 /** Settles durable child ownership when the spawning requester turn ends. */
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
+import {
+  captureRequesterCronAuthority,
+  promoteRequesterCronAuthority,
+} from "../requester-cron-authority.js";
 import { promoteRequesterFinalAttachment } from "../requester-final-attachment.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -26,6 +31,13 @@ export function markRequesterTurnYieldedInRuns(params: {
   if (entries.every((entry) => entry.requesterTurnYielded === true)) {
     return entries.length;
   }
+  const cronAuthority = captureRequesterCronAuthority({
+    requesterSessionKey,
+    requesterAgentId: params.requesterAgentId,
+    requesterTurnRunId,
+    batch: entries,
+    runs: params.runs,
+  });
   const previous = entries.map((entry) => entry.requesterTurnYielded);
   for (const entry of entries) {
     entry.requesterTurnYielded = true;
@@ -33,11 +45,13 @@ export function markRequesterTurnYieldedInRuns(params: {
   try {
     params.persistOrThrow(...entries.map((entry) => entry.runId));
   } catch (error) {
+    cronAuthority?.revoke();
     entries.forEach((entry, index) => {
       entry.requesterTurnYielded = previous[index];
     });
     throw error;
   }
+  cronAuthority?.commit();
   return entries.length;
 }
 
@@ -49,7 +63,7 @@ export function settleRequesterTurnAfterSessionSpawns(params: {
   acceptedSessionSpawns: readonly AcceptedSessionSpawn[];
   runs: Map<string, SubagentRunRecord>;
   persistOrThrow(...runIds: string[]): void;
-  schedule(runId: string, entry: SubagentRunRecord): void;
+  schedule(runId: string, entry: SubagentRunRecord, kind: "completion" | "settle"): void;
 }): boolean {
   const requesterSessionKey = params.requesterSessionKey.trim();
   const requesterTurnRunId = params.requesterTurnRunId.trim();
@@ -130,7 +144,6 @@ export function settleRequesterTurnAfterSessionSpawns(params: {
       const completionEnded = typeof entry.execution.endedAt === "number";
       // An in-progress delivery may already target the requester run being aborted.
       // Re-arm it like a delivered result so that completion cannot die with that turn.
-      const completionMayBeAttachedToYieldedTurn = completionEnded;
       if (completionEnded && entry.delivery?.status !== "delivered") {
         // The persisted yielded batch now owns terminal delivery. Mark the old
         // per-child attempt terminal so it cannot keep the batch unsettled.
@@ -144,7 +157,7 @@ export function settleRequesterTurnAfterSessionSpawns(params: {
         attemptCount: 0,
         batchRunIds,
         requesterYieldBatch: true,
-        ...(completionMayBeAttachedToYieldedTurn ? { afterRequesterYield: true } : {}),
+        ...(completionEnded ? { afterRequesterYield: true } : {}),
         rearmGeneration,
         ...(existing?.retireAfterSettle === true || entry.retireAfterRequesterTurn === true
           ? { retireAfterSettle: true }
@@ -191,6 +204,7 @@ export function settleRequesterTurnAfterSessionSpawns(params: {
     throw error;
   }
 
+  promoteRequesterCronAuthority({ requesterTurnRunId, batch: entries, rearmGeneration });
   if (rearmGeneration !== undefined && params.requesterAgentId) {
     promoteRequesterFinalAttachment({
       requesterAgentId: params.requesterAgentId,
@@ -200,12 +214,26 @@ export function settleRequesterTurnAfterSessionSpawns(params: {
       rearmGeneration,
     });
   }
+  if (rearmGeneration !== undefined) {
+    for (const entry of entries) {
+      scheduleYieldedSubagentRunProgress(entry);
+    }
+  }
+  for (const entry of entries) {
+    if (
+      entry.completionTarget === "parent" &&
+      typeof entry.execution.endedAt === "number" &&
+      params.runs.has(entry.runId)
+    ) {
+      params.schedule(entry.runId, entry, "completion");
+    }
+  }
   if (
     rearmGeneration !== undefined &&
     entries.every((entry) => typeof entry.execution.endedAt === "number")
   ) {
     // Active children keep the frozen batch; their normal completion owner schedules it.
-    params.schedule(firstEntry.runId, firstEntry);
+    params.schedule(firstEntry.runId, firstEntry, "settle");
   } else if (
     !params.requesterYielded &&
     entries.every((entry) => typeof entry.execution.endedAt === "number")
@@ -214,7 +242,7 @@ export function settleRequesterTurnAfterSessionSpawns(params: {
     // Once a normal parent response settles, resume its original per-child delivery.
     for (const entry of entries) {
       if (params.runs.has(entry.runId)) {
-        params.schedule(entry.runId, entry);
+        params.schedule(entry.runId, entry, "settle");
       }
     }
   }

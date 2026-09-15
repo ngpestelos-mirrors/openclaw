@@ -1,5 +1,8 @@
 import { fileURLToPath } from "node:url";
+import { logbookSqliteBackendEntrypoint } from "../../extensions/logbook/src/sqlite-backend-entrypoint.test-support.ts";
 import { qaGatewayCleanupRuntimeEntrypoint } from "../../extensions/qa-lab/src/gateway-child-artifacts-runtime.test-support.ts";
+import { teamReportsSqliteBackendEntrypoint } from "../../extensions/team-reports/src/sqlite-backend-entrypoint.test-support.ts";
+import { workboardSqliteBackendEntrypoint } from "../../extensions/workboard/src/sqlite-backend-entrypoint.test-support.ts";
 import {
   codeModeDescriptionRetentionEntrypoint,
   codeModeRetentionEntrypoint,
@@ -30,6 +33,7 @@ import {
   agentDatabaseHeldRuntimeEntrypoint,
   stateLeaseProcessExitRuntimeEntrypoint,
 } from "../../src/state/openclaw-state-lease-runtime.test-support.ts";
+import { groqSetupSdkEntrypoints } from "../../src/system-agent/setup-inference-groq-sdk.test-support.ts";
 import { tuiPtyRuntimeEntrypoints } from "../../src/tui/tui-pty-runtime-test-support.ts";
 import { channelIngressGatewayRestartEntrypoint } from "../../test/fixtures/channel-ingress-gateway-restart-entrypoint.ts";
 import { runtimeProcessBuildEntries } from "./runtime-process-build-entries.mts";
@@ -46,6 +50,7 @@ export const vitestWorkerBuildEntries = {
       ...cliCompactionBackendEntrypoints,
       ...publishedSdkBridgeEntrypoints,
       mcpProviderCatalogEntrypoint,
+      ...groqSetupSdkEntrypoints,
       ...Object.values(cliRecoveryEntrypoints),
       ...Object.values(updateExecutorNativeEntrypoints),
       ...Object.values(gatewayDirectStopEntrypoints),
@@ -60,6 +65,9 @@ export const vitestWorkerBuildEntries = {
       channelIngressGatewayRestartEntrypoint,
       persistenceRuntimeEntrypoint,
       qaGatewayCleanupRuntimeEntrypoint,
+      logbookSqliteBackendEntrypoint,
+      teamReportsSqliteBackendEntrypoint,
+      workboardSqliteBackendEntrypoint,
       stateLeaseProcessExitRuntimeEntrypoint,
       agentDatabaseHeldRuntimeEntrypoint,
     ].map((entry) => [

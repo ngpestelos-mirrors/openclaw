@@ -215,7 +215,26 @@ function pathCandidates(file: string): string[] {
     return [path.resolve(file)];
   }
   const resolved = path.win32.resolve(file);
-  return [resolved, resolved.replaceAll("\\", "/")];
+  const candidates = [resolved, resolved.replaceAll("\\", "/")];
+  // path.win32.resolve preserves "\\?\" / "\\.\" namespace markers, but configured
+  // prefixes never carry them; also match the unmarked spelling when one exists.
+  const marker = WINDOWS_NAMESPACE_MARKER_RE.exec(file);
+  if (marker) {
+    const stripped = file.slice(marker[0].length);
+    let unmarked: string | undefined;
+    if (/^UNC[\\/]/iu.test(stripped)) {
+      // "\\?\UNC\server\share" spells "\\server\share" without the marker.
+      unmarked = path.win32.resolve(`\\\\${stripped.slice(4)}`);
+    } else if (/^[A-Za-z]:[\\/]/u.test(stripped)) {
+      unmarked = path.win32.resolve(stripped);
+    }
+    // Device paths ("\\.\pipe\...") and other suffixes without an absolute
+    // unmarked spelling must not be resolved against the working directory.
+    if (unmarked !== undefined) {
+      candidates.push(unmarked, unmarked.replaceAll("\\", "/"));
+    }
+  }
+  return candidates;
 }
 
 function hasPathPrefix(value: string, prefix: PathRedactionPrefix): boolean {
@@ -250,8 +269,9 @@ export function redactPathForSupport(
     return file;
   }
   const candidates = pathCandidates(file);
+  const prefixes = pathRedactionPrefixes(options);
   for (const next of candidates) {
-    for (const prefix of pathRedactionPrefixes(options)) {
+    for (const prefix of prefixes) {
       const suffix = matchPathPrefix(next, prefix);
       if (suffix !== undefined) {
         return `${prefix.label}${suffix}`;
@@ -259,6 +279,21 @@ export function redactPathForSupport(
     }
   }
   return redactSensitiveTextForSupport(candidates[0] ?? file);
+}
+
+// Win32 namespace markers ("\\?\" extended-length, "\\.\" device) can precede a known
+// path prefix in raw fs error text; they must be redacted together with the path they decorate.
+const WINDOWS_NAMESPACE_MARKER_RE = /^\\\\[?.][\\/]/u;
+const WINDOWS_NAMESPACE_MARKER_LENGTH = 4;
+
+function namespaceMarkerLengthBefore(value: string, endIndex: number): number {
+  const start = endIndex - WINDOWS_NAMESPACE_MARKER_LENGTH;
+  if (start < 0) {
+    return 0;
+  }
+  return WINDOWS_NAMESPACE_MARKER_RE.test(value.slice(start, endIndex))
+    ? WINDOWS_NAMESPACE_MARKER_LENGTH
+    : 0;
 }
 
 function replaceKnownPathPrefix(value: string, prefix: PathRedactionPrefix): string {
@@ -272,7 +307,9 @@ function replaceKnownPathPrefix(value: string, prefix: PathRedactionPrefix): str
       next += value.slice(offset);
       break;
     }
-    next += value.slice(offset, index);
+    // Consume a Win32 namespace marker directly preceding the matched prefix so it is
+    // not left orphaned in front of the replacement label.
+    next += value.slice(offset, index - namespaceMarkerLengthBefore(value, index));
     next += prefix.label;
     offset = index + prefix.prefix.length;
   }
@@ -415,6 +452,16 @@ export function normalizeSupportDiagnosticErrorCode(value: string | undefined): 
   return value && PUBLIC_ERROR_CODES.has(value) ? value : undefined;
 }
 
+/** Custom SemVer labels can contain private project or host names. */
+export function redactPublicSupportVersion(version: string): string {
+  return version === "unknown" ||
+    version === "unspecified" ||
+    (validVersion(version) &&
+      /^\d+\.\d+\.\d+(?:-(?:0|(?:alpha|beta|rc|dev)(?:\.\d{1,8})?))?$/u.test(version))
+    ? version
+    : "[redacted-version]";
+}
+
 /** Public diagnostics expose recognized causes, never arbitrary prose or executable arguments. */
 export function redactPublicSupportDiagnosticLine(
   value: string,
@@ -431,17 +478,7 @@ export function redactPublicSupportDiagnosticLine(
   const runtime =
     /^Target package: openclaw@(\S+); Minimum Node engine: (\S+); Running Node: (\S+)$/u.exec(line);
   if (runtime) {
-    // Custom SemVer labels can contain private project or host names.
-    const [target, minimum, running] = runtime
-      .slice(1)
-      .map((version) =>
-        version === "unknown" ||
-        version === "unspecified" ||
-        (validVersion(version) &&
-          /^\d+\.\d+\.\d+(?:-(?:0|(?:alpha|beta|rc|dev)(?:\.\d{1,8})?))?$/u.test(version))
-          ? version
-          : "[redacted-version]",
-      );
+    const [target, minimum, running] = runtime.slice(1).map(redactPublicSupportVersion);
     return truncateUtf16Safe(
       `Target package: openclaw@${target}; Minimum Node engine: ${minimum}; Running Node: ${running}`,
       200,

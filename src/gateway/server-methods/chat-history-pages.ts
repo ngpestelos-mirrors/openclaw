@@ -1,17 +1,18 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { readTranscriptDisplayPosition } from "../../chat/transcript-display-position.js";
 import { getCliSessionBinding } from "../../config/sessions/cli-session-binding.js";
-import { resolveSessionTranscriptActiveLeafEntryId } from "../../config/sessions/session-accessor.sqlite-message-cut.js";
 import type {
   ChatHistoryPage,
   ChatHistoryPageParams,
 } from "../../config/sessions/session-history-types.js";
+import { resolveSessionTranscriptActiveLeafEntryId } from "../../config/sessions/transcript-tree.js";
 import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
 import {
   dropPreSessionStartAnnouncePairs,
   isHeartbeatHistoryTurnBoundaryMessage,
   projectChatDisplayMessages,
   projectChatDisplayMessagesWithState,
+  createChatHistoryRecoveryProjection,
   augmentChatHistoryWithCanvasBlocks,
   createCurrentUserProfileMessageProjector,
 } from "../chat-display-projection.js";
@@ -401,7 +402,11 @@ export async function readChatHistoryPageLocal(
     ) {
       const recoveryContext = await readChatHistoryRecoveryContext({
         messages: localMessages,
-        project,
+        createRecovery: (messages) => {
+          const recovery = createChatHistoryRecoveryProjection({ maxChars: effectiveMaxChars });
+          recovery.append(messages);
+          return recovery;
+        },
         readScope,
         displaySource: readPage.displaySource,
         maxBytes: maxHistoryBytes,

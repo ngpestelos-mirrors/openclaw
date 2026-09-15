@@ -282,8 +282,12 @@
     {
       "provider": "github-copilot",
       "method": "device",
+      "credentialOnly": true,
+      "channelLogin": {},
       "choiceId": "github-copilot",
       "appGuidedAuth": "device-code",
+      "credentialOnly": true,
+      "channelLogin": {},
       "appGuidedSecret": true,
       "choiceLabel": "GitHub Copilot",
       "choiceHint": "Device login with your GitHub account",
@@ -299,8 +303,10 @@
     {
       "provider": "github-copilot",
       "method": "device-enterprise",
+      "credentialOnly": true,
       "choiceId": "github-copilot-enterprise",
       "appGuidedAuth": "device-code",
+      "credentialOnly": true,
       "choiceLabel": "GitHub Copilot (Enterprise / data residency)",
       "choiceHint": "Device login against your GitHub Enterprise (*.ghe.com) tenant",
       "assistantPriority": 2,

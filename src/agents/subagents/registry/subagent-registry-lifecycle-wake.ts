@@ -5,13 +5,14 @@ import {
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import {
   isGatewayRestartDrainError,
-  runWithGatewayIndependentRootWorkAdmission,
+  runWithGatewayDetachedWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { retireSessionMcpRuntimeForSessionKey } from "../../agent-bundle-mcp-tools.js";
 import { removeInternalSessionEffectsSession } from "../../internal-session-effects.js";
 import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announce-dispatch.js";
 import { blockSubagentCompletionDelivery } from "../completion/subagent-completion-admission.store.js";
+import { revokeRequesterCronAuthorityBatch } from "../requester-cron-authority.js";
 import { ensureDeliveryState } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
@@ -185,6 +186,7 @@ const completeRequesterSettleWakeBatch = (
     });
     throw error;
   }
+  revokeRequesterCronAuthorityBatch(entries, rearmGeneration);
   const retiredEntries: SubagentRunRecord[] = [];
   for (const entry of entries) {
     const { runId } = entry;
@@ -448,9 +450,9 @@ export function completeCleanupBookkeeping(
       );
     };
     const runCleanupTail = (label: string, run: () => Promise<unknown>) => {
-      // Admission can wait beyond retirement or replacement. Recheck ownership
-      // inside the independent root; surviving tails must still block snapshots.
-      void runWithGatewayIndependentRootWorkAdmission(async () => {
+      // Admission can outlive the caller's async scope. Own the tail's lifetime
+      // and recheck row ownership after waiting; surviving tails still block snapshots.
+      void runWithGatewayDetachedWorkAdmission(async () => {
         if (postBookkeepingEffectsAllowed()) {
           await run();
         }

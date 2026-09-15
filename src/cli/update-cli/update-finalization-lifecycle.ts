@@ -19,6 +19,7 @@ import {
   heartbeatUpdateRun,
   recordUpdateRunDiagnostic,
   recordUpdateRunPhase,
+  recordUpdateRunRepairContinuation,
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
 import {
@@ -71,7 +72,7 @@ export class UpdateFinalizationLifecycle {
     private readonly stopChildren: () => void,
   ) {}
 
-  attachLedger(): string {
+  attachLedger(repair = false): string {
     this.driver = readUpdateRunDriver();
     const inherited = process.env[UPDATE_RUN_ID_ENV]?.trim();
     this.ledgerOptions = { env: { ...process.env } };
@@ -81,6 +82,9 @@ export class UpdateFinalizationLifecycle {
     ).runId;
     this.ownsRun = !inherited;
     adoptUpdateRun(this.runId, this.ledgerOptions);
+    if (repair && this.ownsRun) {
+      recordUpdateRunRepairContinuation(this.runId, this.runId, this.ledgerOptions);
+    }
     if (this.active) {
       recordUpdateRunStep(
         this.runId,
@@ -91,13 +95,14 @@ export class UpdateFinalizationLifecycle {
     return this.runId;
   }
 
-  recordInstallKind(installKind: "git" | "package" | "unknown"): void {
+  recordInstallKind(installKind: "git" | "package" | "unknown", version?: string | null): void {
     if (this.runId && this.ownsRun && installKind !== "unknown") {
       recordUpdateRunPhase(
         this.runId,
         "requested",
         {
-          target: { kind: installKind },
+          target: { kind: installKind, ...(version ? { version } : {}) },
+          ...(version ? { after: { version } } : {}),
           ...(installKind === "package" && this.ledgerOptions?.env[POST_CORE_UPDATE_ENV] !== "1"
             ? {
                 step: {
@@ -120,12 +125,14 @@ export class UpdateFinalizationLifecycle {
     at: number,
     detail?: string,
     failureFacts?: UpdateFailureFact[],
+    exitCode?: number | null,
   ): void {
     const step = {
       step: active.step,
       status,
       ...(detail ? { detail } : {}),
       ...(failureFacts?.length ? { failureFacts } : {}),
+      ...(exitCode !== undefined ? { exitCode } : {}),
       ...(status === "failed"
         ? {
             reason:
@@ -211,7 +218,12 @@ export class UpdateFinalizationLifecycle {
       }
     }, UPDATE_RUN_HEARTBEAT_MS);
     heartbeat.unref();
-    const end = (result: Outcome, detail?: string, failureFacts?: UpdateFailureFact[]) => {
+    const end = (
+      result: Outcome,
+      detail?: string,
+      failureFacts?: UpdateFailureFact[],
+      exitCode?: number | null,
+    ) => {
       this.phaseTimings.push({
         phase,
         startedOffsetMs: Math.max(0, Math.round(startedAt - this.startedAt)),
@@ -224,6 +236,7 @@ export class UpdateFinalizationLifecycle {
         Date.now(),
         detail,
         failureFacts,
+        exitCode,
       );
     };
     // Borrowed invocations keep awaiting the phase without taking over their host's lifetime.
@@ -295,6 +308,7 @@ export class UpdateFinalizationLifecycle {
           stateDir: resolveStateDir(process.env),
         }),
         facts,
+        error instanceof UpdateDoctorError ? error.exitCode : undefined,
       );
       throw error;
     } finally {

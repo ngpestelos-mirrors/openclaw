@@ -7,6 +7,7 @@ import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-ru
 import { resolveStateDir } from "../config/paths.js";
 import {
   redactPublicSupportDiagnosticLine,
+  redactPublicSupportVersion,
   redactSupportString,
 } from "../logging/diagnostic-support-redaction.js";
 import { classifyUpdateOutcome } from "../shared/update-outcome.js";
@@ -25,6 +26,8 @@ import {
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
 } from "./update-run-legacy-expiry.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
+import { readUpdateRunReportHealth } from "./update-run-report-health.js";
+import { formatUpdateRunCurrentHealth, formatUpdateRunIdentity } from "./update-run-report.js";
 import type { UpdateRunResult, UpdateStepResult } from "./update-runner.js";
 
 const UPDATE_REPORT_BODY_MAX_BYTES = 16_000;
@@ -42,7 +45,7 @@ export type UpdateFailureReportInput = {
   error?: string;
   result: UpdateRunResult;
   recordedRun?: Pick<UpdateRunRecord, "runId" | "steps"> &
-    Partial<Pick<UpdateRunRecord, "reason" | "target">>;
+    Partial<Pick<UpdateRunRecord, "reason" | "target" | "after" | "verification">>;
   target?: string;
 };
 
@@ -148,7 +151,7 @@ function resolveFailedSteps(input: UpdateFailureReportInput): ReportedFailedStep
         ? [
             {
               name: step.step,
-              exitCode: null,
+              exitCode: step.exitCode ?? null,
               failureFacts: step.failureFacts,
               detail: step.detail,
             },
@@ -176,7 +179,8 @@ function resolveUpdateTarget(
   input: UpdateFailureReportInput,
   context: UpdateFailureReportContext,
 ): string {
-  const explicit = input.target?.trim();
+  const explicit =
+    input.target?.trim() || input.recordedRun?.target?.sha || input.recordedRun?.target?.version;
   if (explicit) {
     // update.run records these two display forms from validated campaign facts.
     // Revalidate their scalar payloads before adding the fixed display words.
@@ -319,6 +323,7 @@ export async function prepareUpdateFailureReport(
     result: {
       ...request.result,
       reason: request.result.reason ?? recordedRun?.reason ?? undefined,
+      after: request.result.after ?? recordedRun?.after,
     },
   };
   const env = options.env ?? process.env;
@@ -330,6 +335,13 @@ export async function prepareUpdateFailureReport(
   const steps = resolveFailedSteps(input);
   const phase = resolveFailedPhase(input.result, steps, context);
   const recovery = resolveRecoveryOutcome(input, context);
+  const verification = recordedRun?.verification;
+  const identity = verification
+    ? formatUpdateRunIdentity(verification, recordedRun?.after ?? input.result.after ?? {})
+    : undefined;
+  const currentHealth = verification
+    ? await readUpdateRunReportHealth(verification, { env })
+    : undefined;
   const bodyWithoutMarker = [
     "# OpenClaw update failure report",
     "",
@@ -341,6 +353,20 @@ export async function prepareUpdateFailureReport(
     `- Update target: ${target}`,
     `- Failed phase: ${phase}`,
     `- Recovery outcome: ${recovery}`,
+    ...(identity ? [`- Recorded verification: ${identity}`] : []),
+    ...(currentHealth
+      ? [
+          `- ${formatUpdateRunCurrentHealth(
+            currentHealth.kind === "responding"
+              ? {
+                  ...currentHealth,
+                  version: redactPublicSupportVersion(currentHealth.version),
+                }
+              : currentHealth,
+          )}`,
+          "- Recovery and verification above describe the update attempt, not a current instruction to stop or restart the Gateway.",
+        ]
+      : []),
     "",
     "## Bounded diagnostics",
     "",

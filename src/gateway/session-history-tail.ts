@@ -8,6 +8,8 @@ import {
   dropPreSessionStartAnnouncePairs,
   isHeartbeatHistoryTurnBoundaryMessage,
   projectChatDisplayMessagesWithState,
+  createChatHistoryRecoveryProjection,
+  createPreSessionStartAnnouncePairFilter,
 } from "./chat-display-projection.js";
 import { resolveCurrentUserProfileDisplay } from "./current-user-profile-display.js";
 import { readSessionMessagesAroundIdWithStatsAsync } from "./session-transcript-anchor-reader.js";
@@ -104,7 +106,10 @@ async function readAdjacentChatHistoryMessages(params: {
 /** Resolve only the newer turn context a historical page needs to classify its pending error. */
 export async function readChatHistoryRecoveryContext(params: {
   messages: unknown[];
-  project: (messages: unknown[]) => ReturnType<typeof projectChatDisplayMessagesWithState>;
+  createRecovery: (messages: unknown[]) => {
+    append: (messages: unknown[]) => void;
+    readonly pending: boolean;
+  };
   readScope: SessionTranscriptReadScope;
   displaySource: string | undefined;
   expectedReadWindow?: TranscriptReadWindow;
@@ -112,6 +117,7 @@ export async function readChatHistoryRecoveryContext(params: {
   readOnly?: boolean;
 }): Promise<unknown[]> {
   const context: unknown[] = [];
+  let recovery: ReturnType<typeof params.createRecovery> | undefined;
   let anchorId = readChatHistoryMessageId(params.messages.at(-1));
   let scannedBytes = 0;
   while (anchorId && context.length < SILENT_CHAT_HISTORY_TAIL_SCAN_MAX_MESSAGES) {
@@ -131,6 +137,7 @@ export async function readChatHistoryRecoveryContext(params: {
     if (newer.length === 0) {
       break;
     }
+    const previousContextLength = context.length;
     let boundaryReached = false;
     for (const message of newer) {
       scannedBytes += Buffer.byteLength(JSON.stringify(message), "utf8");
@@ -143,10 +150,12 @@ export async function readChatHistoryRecoveryContext(params: {
         break;
       }
     }
-    if (
-      boundaryReached ||
-      !params.project([...params.messages, ...context]).assistantErrorPending
-    ) {
+    if (boundaryReached) {
+      break;
+    }
+    recovery ??= params.createRecovery(params.messages);
+    recovery.append(context.slice(previousContextLength));
+    if (!recovery.pending) {
       break;
     }
     anchorId = readChatHistoryMessageId(context.at(-1));
@@ -235,22 +244,23 @@ export async function readIncrementalChatHistoryTail(params: {
   );
   let recoveryContext: unknown[] | undefined = offset === 0 ? [] : undefined;
   const newestPageSeq = readChatHistoryMessageSeq(rawMessages.at(-1));
+  const filterWindowMessages = (messages: unknown[], contextMessage: unknown) =>
+    sessionStartedAt === undefined
+      ? messages
+      : dropChatHistoryOverreadContextMessage(
+          dropPreSessionStartAnnouncePairs(
+            contextMessage === undefined ? messages : [contextMessage, ...messages],
+            sessionStartedAt,
+          ),
+          contextMessage,
+        );
   const project = (
     messages = rawMessages,
     contextMessage = overreadContextMessage,
     resolveProfileDisplay = true,
     newerContext = recoveryContext ?? [],
   ) => {
-    const filteredRawMessages =
-      sessionStartedAt === undefined
-        ? messages
-        : dropChatHistoryOverreadContextMessage(
-            dropPreSessionStartAnnouncePairs(
-              contextMessage === undefined ? messages : [contextMessage, ...messages],
-              sessionStartedAt,
-            ),
-            contextMessage,
-          );
+    const filteredRawMessages = filterWindowMessages(messages, contextMessage);
     const projection = projectChatDisplayMessagesWithState(
       newerContext.length > 0 ? [...filteredRawMessages, ...newerContext] : filteredRawMessages,
       {
@@ -286,7 +296,34 @@ export async function readIncrementalChatHistoryTail(params: {
     }
     recoveryContext = await readChatHistoryRecoveryContext({
       messages: result.filteredRawMessages,
-      project: (messages) => project(messages, overreadContextMessage, true, []).projection,
+      createRecovery: (messages) => {
+        const recovery = createChatHistoryRecoveryProjection({
+          maxChars: params.effectiveMaxChars,
+        });
+        if (sessionStartedAt === undefined) {
+          recovery.append(messages);
+          return recovery;
+        }
+        const filter = createPreSessionStartAnnouncePairFilter(sessionStartedAt);
+        let contextRemoved = overreadContextMessage === undefined;
+        const append = (chunk: unknown[]) => {
+          const filtered = filter(chunk);
+          const prepared = contextRemoved
+            ? filtered
+            : dropChatHistoryOverreadContextMessage(filtered, overreadContextMessage);
+          contextRemoved ||= prepared.length !== filtered.length;
+          recovery.append(prepared);
+        };
+        append(
+          overreadContextMessage === undefined ? messages : [overreadContextMessage, ...messages],
+        );
+        return {
+          append,
+          get pending() {
+            return recovery.pending;
+          },
+        };
+      },
       readScope: params.readScope,
       displaySource: readPage.displaySource,
       expectedReadWindow: readWindow,

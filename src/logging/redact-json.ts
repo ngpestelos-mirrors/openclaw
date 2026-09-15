@@ -259,7 +259,7 @@ function currentDecodedBoundary(
     : decoded + (previous ? previous.decodedEnd - previous.sourceDecodedEnd : 0);
 }
 
-function commitPatternEdits(input: string, token: ScalarToken): boolean {
+function commitPatternEdits(token: ScalarToken): boolean {
   const pending = token.pending;
   token.pending = undefined;
   if (!pending) {
@@ -272,7 +272,6 @@ function commitPatternEdits(input: string, token: ScalarToken): boolean {
   }
   token.edits = composeRedactionEdits(token.value.length, token.edits, edits);
   token.currentValue = value;
-  updateCurrentToken(input, token);
   return true;
 }
 
@@ -298,7 +297,7 @@ function changedRedactionEdits(
   });
 }
 
-function commitOriginalEdits(input: string, token: ScalarToken, edits: RedactionEdit[]): boolean {
+function commitOriginalEdits(token: ScalarToken, edits: RedactionEdit[]): boolean {
   if (edits.length === 0) {
     return false;
   }
@@ -309,11 +308,11 @@ function commitOriginalEdits(input: string, token: ScalarToken, edits: Redaction
   }
   token.edits = combined;
   token.currentValue = value;
-  updateCurrentToken(input, token);
   return true;
 }
 
 function updateCurrentRecord(
+  input: string,
   current: string,
   tokens: ScalarToken[],
   changed: ReadonlySet<ScalarToken>,
@@ -325,6 +324,7 @@ function updateCurrentRecord(
     const start = token.currentStart;
     const end = token.currentEnd;
     if (changed.has(token)) {
+      updateCurrentToken(input, token);
       const raw = expectDefined(token.currentRaw, "changed JSON token");
       parts.push(current.slice(cursor, start), raw);
       cursor = end;
@@ -369,14 +369,11 @@ export function redactJsonRecord(
   legacyFieldEdits: (field: RedactionField, original: string) => RedactionEdit[],
   fieldEdits: (field: RedactionField) => RedactionEdit[],
   prepEdits: (field: RedactionField) => RedactionEdit[],
-  preserveDecodedField: (field: RedactionField) => boolean,
+  skipDecodedPatterns: (field: RedactionField, currentValue: string) => boolean,
   message?: RedactionMessage,
   batch?: { preserveLines: boolean },
 ): string {
   let tokens = batch ? [] : readScalarTokens(input, origins);
-  const decodedTokens = tokens.filter(
-    (token) => !token.isKey && token.string && !preserveDecodedField(token),
-  );
   const messageToken = message
     ? tokens.find((token) => !token.isKey && token.path.length === 1 && token.key === "message")
     : undefined;
@@ -386,13 +383,16 @@ export function redactJsonRecord(
   let current = input;
   const prepared = new Set<ScalarToken>();
   for (const token of tokens) {
-    if (commitOriginalEdits(input, token, prepEdits(token))) {
+    if (commitOriginalEdits(token, prepEdits(token))) {
       prepared.add(token);
     }
   }
   if (prepared.size > 0) {
-    current = updateCurrentRecord(current, tokens, prepared);
+    current = updateCurrentRecord(input, current, tokens, prepared);
   }
+  const decodedTokens = tokens.filter(
+    (token) => !token.isKey && token.string && !skipDecodedPatterns(token, token.currentValue),
+  );
   const projectMessage = (): boolean => {
     if (!messageToken || !message) {
       return false;
@@ -442,14 +442,15 @@ export function redactJsonRecord(
       projectedMessageEdits,
       sourceEdits,
     );
-    return commitPatternEdits(input, messageToken);
+    return commitPatternEdits(messageToken);
   };
   for (const [phase, patterns] of patternPhases.entries()) {
+    const changed = new Set<ScalarToken>();
     for (const pattern of patterns) {
-      const pending = new Set<ScalarToken>();
+      let pending: Set<ScalarToken> | undefined;
       const add = (token: ScalarToken, edit: RedactionEdit) => {
         (token.pending ??= []).push(edit);
-        pending.add(token);
+        (pending ??= new Set()).add(token);
       };
       if (phase === 0) {
         for (const token of decodedTokens) {
@@ -547,32 +548,41 @@ export function redactJsonRecord(
           }
         }
       }
+      if (!pending) {
+        continue;
+      }
       for (const token of pending) {
-        if (!commitPatternEdits(input, token)) {
+        if (!commitPatternEdits(token)) {
           pending.delete(token);
+        } else if (phase === 0) {
+          changed.add(token);
         }
       }
-      if (pending.size > 0) {
-        current = updateCurrentRecord(current, tokens, pending);
+      // Decoded rules read current field values; serialized rules need each rebuilt record.
+      if (phase !== 0 && pending.size > 0) {
+        current = updateCurrentRecord(input, current, tokens, pending);
       }
     }
-    const changed = new Set<ScalarToken>();
     for (const token of tokens) {
       if (phase === 0) {
         token.pending = legacyFieldEdits({ ...token, value: token.currentValue }, token.value);
-        if (commitPatternEdits(input, token)) {
+        if (commitPatternEdits(token)) {
           changed.add(token);
         }
-      } else if (commitOriginalEdits(input, token, fieldEdits(token))) {
+      } else if (commitOriginalEdits(token, fieldEdits(token))) {
         // Final field protection must not change the hints consumed by configured rules.
         changed.add(token);
       }
     }
-    if (projectMessage() && messageToken) {
+    if (
+      (phase !== 0 || prepared.size > 0 || changed.size > 0) &&
+      projectMessage() &&
+      messageToken
+    ) {
       changed.add(messageToken);
     }
     if (changed.size > 0) {
-      current = updateCurrentRecord(current, tokens, changed);
+      current = updateCurrentRecord(input, current, tokens, changed);
     }
   }
   if (messageToken && message) {

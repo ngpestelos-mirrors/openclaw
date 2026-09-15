@@ -196,6 +196,17 @@ function parseDispatchedSubcommands(script: string): string[] {
 }
 
 describe("scripts/pr wrappers", () => {
+  it("loads the tooling include policy from the wrapper source inventory", () => {
+    const root = tempDirs.make("openclaw-wrapper-include-policy-");
+    copyPrWrapperSources(root);
+    const loaded = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", "await import('./test/vitest/vitest.include-patterns.ts')"],
+      { cwd: root, encoding: "utf8", env: isolatedWrapperEnv(root) },
+    );
+    expect(loaded.status, loaded.stderr).toBe(0);
+  });
+
   it("keeps the main PR helper usage and command table aligned", () => {
     const script = readScript("scripts/pr");
 
@@ -1496,11 +1507,26 @@ exit 99
     { name: "successful last quota request", status: 200, code: 0, body: viewer, headers: quota },
   ];
 
+  const esmPreflightCase: (typeof preflightCases)[number] = {
+    name: "valid viewer below an ESM package",
+    status: 200,
+    code: 0,
+    body: viewer,
+  };
   it.each([
-    ...preflightCases.map((scenario) => ({ ...scenario, route: "default" })),
-    { ...preflightCases[0]!, route: "override" },
-  ])("GitHub API preflight: $name ($route)", ({ route, ...scenario }) => {
-    const dir = tempDirs.make("openclaw-pr-auth-");
+    ...preflightCases.map((scenario) => ({ ...scenario, route: "default", esmParent: false })),
+    { ...preflightCases[0]!, route: "override", esmParent: false },
+    { ...esmPreflightCase, route: "default", esmParent: true },
+    { ...esmPreflightCase, route: "override", esmParent: true },
+  ])("GitHub API preflight: $name ($route)", ({ route, esmParent, ...scenario }) => {
+    const root = tempDirs.make("openclaw-pr-auth-");
+    const dir = esmParent ? join(root, "fixture") : root;
+    if (esmParent) {
+      writeFileSync(join(root, "package.json"), '{"type":"module"}\n');
+      mkdirSync(dir);
+    }
+    // Both extensionless executables use CommonJS, even below a repo-local TMPDIR.
+    writeFileSync(join(dir, "package.json"), '{"type":"commonjs"}\n');
     const env = isolatedWrapperEnv(dir);
     const bin = join(dir, "bin");
     mkdirSync(bin);

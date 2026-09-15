@@ -1,11 +1,29 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
 import {
   runWithOwnedSessionTranscriptWrite,
   withOwnedSessionTranscriptWrites,
 } from "../../../config/sessions/transcript-write-context.js";
+import { LegacyContextEngine } from "../../../context-engine/legacy.js";
+import {
+  listContextEngineQuarantines,
+  registerContextEngineInRegistry,
+  resolveContextEngine,
+} from "../../../context-engine/registry.js";
+import { resetContextEngineRuntimeQuarantineForTests } from "../../../context-engine/registry.test-support.js";
 import type { CallGatewayOptions } from "../../../gateway/call.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import {
+  claimAgentRunDelegatedAuthority,
+  clearAgentRunContext,
+  registerAgentRunContext,
+  releaseAgentRunDelegatedAuthority,
+} from "../../../infra/agent-run-registry.js";
+import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
+import { PluginRegistryInspectionResources } from "../../../plugins/registry-inspection-resources.js";
+import { retireInspectionInstances } from "../../../plugins/registry-inspection.test-support.js";
 // Subagent registry lifecycle tests cover completion, cleanup, announce retry,
 // detached task status, and resource retirement around child-run endings.
 import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
@@ -18,12 +36,23 @@ import {
   tryBeginGatewayRootWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../../../process/gateway-work-admission.js";
+import {
+  AsyncWorkScope,
+  getAsyncWorkSignal,
+  trackAsyncWork,
+} from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-contract.js";
+import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
 import {
   buildAnnounceIdFromChildRun,
   buildAnnounceIdempotencyKey,
 } from "../../announce-idempotency.js";
+import {
+  createCronCreatorAuthorityCapability,
+  runWithCronCreatorAuthorityCapability,
+} from "../../cron-creator-authority-context.js";
+import { withGatewayToolCallerIdentity } from "../../tools/gateway-caller-context.js";
 import { createStructuredOutputTool } from "../../tools/structured-output-tool.js";
 import {
   runSubagentAnnounceDispatch,
@@ -31,11 +60,22 @@ import {
 } from "../announce/subagent-announce-dispatch.js";
 import { maybeWakeRequesterAfterAllChildrenSettled as runRequesterSettleWake } from "../announce/subagent-announce.requester-settle-wake.js";
 import {
+  consumeRequesterCronAuthorityAdmission,
+  revokeRequesterCronAuthority,
+  withRequesterCronAuthority,
+} from "../requester-cron-authority.js";
+import {
   SUBAGENT_ENDED_REASON_COMPLETE,
   SUBAGENT_ENDED_REASON_ERROR,
   SUBAGENT_ENDED_REASON_KILLED,
 } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
+import { createSubagentRegistryContextCleanup } from "./subagent-registry-context-cleanup.js";
+import {
+  resetSubagentRegistryRuntimeLoadersForTests,
+  setSubagentRegistryDepsForTest,
+  subagentRegistryDeps,
+} from "./subagent-registry-deps.js";
 import { loadPendingFinalDeliveryPayload } from "./subagent-registry-lifecycle-delivery.js";
 import {
   SubagentLifecycleController,
@@ -47,6 +87,10 @@ import {
   countPendingDescendantRuns,
   getLatestLiveSubagentRunByChildSessionKey,
 } from "./subagent-registry-read.js";
+import {
+  markRequesterTurnYieldedInRuns,
+  settleRequesterTurnAfterSessionSpawns,
+} from "./subagent-registry-requester-yield.js";
 import { markSubagentRunPausedAfterYield } from "./subagent-registry-run-manager.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -722,15 +766,17 @@ describe("subagent registry lifecycle hardening", () => {
     { label: "bound", hasOwner: true },
     { label: "unbound", hasOwner: false },
   ])("uses only the $label run owner for announce dispatch", async ({ hasOwner }) => {
-    const entry = createRunEntry({ expectsCompletionMessage: true });
+    const entry = createRunEntry({ expectsCompletionMessage: true, runTimeoutSeconds: 600 });
     const liveContext = { marker: "live-context" };
     const resolveGatewayContext = () => liveContext;
     if (hasOwner) {
       bindGatewayContextResolver(entry, resolveGatewayContext as never);
     }
     const runSubagentAnnounceFlow = vi.fn(
-      async (_announceParams: { resolveGatewayContext?: () => unknown }) =>
-        "delivered" as AnnounceFlowOutcome,
+      async (_announceParams: {
+        resolveGatewayContext?: () => unknown;
+        runTimeoutSeconds?: number;
+      }) => "delivered" as AnnounceFlowOutcome,
     );
     const controller = createLifecycleController({
       entry,
@@ -743,6 +789,7 @@ describe("subagent registry lifecycle hardening", () => {
     expect(announceParams?.resolveGatewayContext).toBe(
       hasOwner ? resolveGatewayContext : undefined,
     );
+    expect(announceParams?.runTimeoutSeconds).toBe(600);
   });
 
   it("hands announce dispatch the durable requester agent id on a multi-agent roster", async () => {
@@ -4650,6 +4697,136 @@ describe("subagent registry lifecycle hardening", () => {
     expect(persist).toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "holds private completion until requester settlement (yielded: %s)",
+    async (requesterYielded) => {
+      const entry = createRunEntry({
+        endedAt: Date.now(),
+        outcome: { status: "ok" },
+        requesterTurnRunId: "run-requester",
+        completionTarget: "parent",
+        expectsCompletionMessage: true,
+        retainAttachmentsOnKeep: true,
+        completion: { required: true, resultText: "private child result" },
+        delivery: { status: "pending" },
+      });
+      const sibling = createRunEntry({
+        runId: "slow-sibling",
+        childSessionKey: "agent:main:subagent:slow-sibling",
+        requesterSessionKey: entry.requesterSessionKey,
+        requesterTurnRunId: "run-requester",
+        expectsCompletionMessage: true,
+      });
+      const runSubagentAnnounceFlow = vi.fn<LifecycleControllerParams["runSubagentAnnounceFlow"]>(
+        async (params) =>
+          params.isCompletionOwnedByRequesterYield?.() ? "intentional_non_delivery" : "delivered",
+      );
+      const runs = new Map([
+        [entry.runId, entry],
+        [sibling.runId, sibling],
+      ]);
+      const controller = createLifecycleController({
+        entry,
+        runs,
+        runSubagentAnnounceFlow,
+        resumeSubagentRun: (runId) => {
+          controller.startSubagentAnnounceCleanupFlow(runId, runs.get(runId)!);
+        },
+        maybeWakeRequesterAfterAllChildrenSettled: async () => false,
+      });
+      try {
+        expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(false);
+        expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
+        expect(entry.cleanupHandled).not.toBe(true);
+        expect(entry.completion?.resultText).toBe("private child result");
+        if (requesterYielded) {
+          markRequesterTurnYieldedInRuns({
+            requesterSessionKey: entry.requesterSessionKey,
+            requesterTurnRunId: "run-requester",
+            runs,
+            persistOrThrow: () => undefined,
+          });
+        }
+        expect(
+          controller.settleRequesterTurnAfterSessionSpawns({
+            requesterSessionKey: entry.requesterSessionKey,
+            requesterTurnRunId: "run-requester",
+            requesterYielded,
+            acceptedSessionSpawns: [entry, sibling].map((child) => ({
+              runId: child.runId,
+              childSessionKey: child.childSessionKey,
+              expectsCompletionMessage: true,
+            })),
+          }),
+        ).toBe(true);
+        await waitForLifecycleState(() => expect(entry.cleanupCompletedAt).toBeTypeOf("number"));
+        expect(entry.requesterTurnRunId).toBeUndefined();
+        expect(entry.delivery?.status).toBe(requesterYielded ? "pending" : "delivered");
+        expect(entry.requesterSettleWake?.requesterYieldBatch).toBe(
+          requesterYielded ? true : undefined,
+        );
+        expect(sibling.execution.endedAt).toBeUndefined();
+        expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce();
+      } finally {
+        controller.clearScheduledResumeTimers();
+      }
+    },
+  );
+
+  it("does not let a late announce failure reclaim a pending yielded batch", async () => {
+    const entry = createRunEntry({
+      endedAt: Date.now(),
+      outcome: { status: "ok" },
+      requesterTurnRunId: "run-requester",
+      expectsCompletionMessage: true,
+      retainAttachmentsOnKeep: true,
+      completion: { required: true, resultText: "child result" },
+      delivery: { status: "pending" },
+    });
+    const announce = createDeferredCore();
+    const runSubagentAnnounceFlow = vi.fn<LifecycleControllerParams["runSubagentAnnounceFlow"]>(
+      async (params) => {
+        await announce.promise;
+        params.onDeliveryResult?.({
+          delivered: false,
+          path: "direct",
+          error: "obsolete announce failure",
+          disposition: "retryable",
+        });
+        return "retryable";
+      },
+    );
+    const controller = createLifecycleController({
+      entry,
+      runSubagentAnnounceFlow,
+      maybeWakeRequesterAfterAllChildrenSettled: async () => false,
+    });
+    try {
+      controller.startSubagentAnnounceCleanupFlow(entry.runId, entry);
+      await waitForLifecycleState(() => expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce());
+      entry.requesterTurnYielded = true;
+      controller.settleRequesterTurnAfterSessionSpawns({
+        requesterSessionKey: entry.requesterSessionKey,
+        requesterTurnRunId: "run-requester",
+        requesterYielded: true,
+        acceptedSessionSpawns: [{ runId: entry.runId, childSessionKey: entry.childSessionKey }],
+      });
+      const batch = structuredClone(entry.requesterSettleWake);
+      announce.resolve();
+      await waitForLifecycleState(() => expect(entry.cleanupCompletedAt).toBeTypeOf("number"));
+      expect(entry.requesterSettleWake).toEqual(batch);
+      expect(entry.delivery).toMatchObject({
+        status: "pending",
+        disposition: "intentional_non_delivery",
+      });
+      expect(entry.delivery?.lastError).toBeUndefined();
+      expect(entry.delivery?.nextAttemptAt).toBeUndefined();
+    } finally {
+      announce.resolve();
+      controller.clearScheduledResumeTimers();
+    }
+  });
+
   it.each([
     { waitingOn: "announce", outcome: "intentional_non_delivery" },
     { waitingOn: "announce", outcome: "retryable" },
@@ -5099,6 +5276,134 @@ describe("requester settle wake trigger", () => {
       .mockReset()
       .mockResolvedValue(undefined);
   });
+
+  it.each(["completed", "stale-after-resolution", "restart-before-admission"] as const)(
+    "owns context cleanup after its caller scope drains (%s)",
+    async (mode) => {
+      resetGatewayWorkAdmission();
+      resetContextEngineRuntimeQuarantineForTests();
+      runtimeMocks.log.mockClear();
+      const registry = createEmptyPluginRegistry();
+      const resources = new PluginRegistryInspectionResources(retireInspectionInstances);
+      resources.attach(registry);
+      const retire = vi.fn();
+      resources.register("fixture", { id: "cleanup-resource", dispose: retire });
+      const factoryStarted = createDeferredCore();
+      const factoryGate = createDeferredCore();
+      const disposalStarted = createDeferredCore();
+      const disposalGate = createDeferredCore();
+      const descendantGate = createDeferredCore();
+      const descendantDone = createDeferredCore();
+      const onSubagentEnded = vi.fn(async () => {});
+      const dispose = vi.fn(async () => {
+        expect(retire).not.toHaveBeenCalled();
+        disposalStarted.resolve();
+        await disposalGate.promise;
+      });
+      const factory = vi.fn(async () => {
+        expect(getAsyncWorkSignal()?.aborted).toBe(false);
+        factoryStarted.resolve();
+        await factoryGate.promise;
+        return Object.assign(new LegacyContextEngine(), { onSubagentEnded, dispose });
+      });
+      registerContextEngineInRegistry(registry, "cleanup-owned", factory, "plugin:fixture");
+      registerContextEngineInRegistry(registry, "legacy", () => new LegacyContextEngine(), "core");
+      setSubagentRegistryDepsForTest({
+        getRuntimeConfig: () => ({ plugins: { slots: { contextEngine: "cleanup-owned" } } }),
+        loadAgentRuntimePluginRegistryHandle: () => registry,
+        ensureContextEnginesInitialized: vi.fn(),
+        resolveContextEngine,
+      });
+      const warn = vi.fn();
+      const cleanup = createSubagentRegistryContextCleanup({
+        deps: () => subagentRegistryDeps,
+        persist: vi.fn(),
+        warn,
+      });
+      const entry = makeRunModeCleanupEntry("closed-cleanup-caller", { generation: 1 });
+      const runs = new Map([[entry.runId, entry]]);
+      const cleanupDone = createDeferredCore();
+      const controller = createLifecycleController({
+        entry,
+        runs,
+        notifyContextEngineSubagentEnded: async (params, options) => {
+          try {
+            await cleanup.notifyContextEngineSubagentEnded(params, options);
+            // A cooperating descendant must keep the root counted even after notification returns.
+            void trackAsyncWork(async () => {
+              await descendantGate.promise;
+              descendantDone.resolve();
+            }).catch((error: unknown) => warn("descendant admission failed", { error }));
+          } finally {
+            cleanupDone.resolve();
+          }
+        },
+      });
+      const caller = new AsyncWorkScope();
+      const continuation = caller.run(() => AsyncLocalStorage.snapshot());
+      const suspension = tryBeginGatewaySuspendAdmission(() => {});
+      expect(suspension?.commit()).toBe(true);
+      try {
+        continuation(() =>
+          controller.completeCleanupBookkeeping({
+            runId: entry.runId,
+            entry,
+            cleanup: "keep",
+            completedAt: 5_000,
+            skipRequesterSettleWake: true,
+          }),
+        );
+        // Admission is parked while the originating async owner becomes permanently closed.
+        await caller.drain();
+        expect(factory).not.toHaveBeenCalled();
+        if (mode === "restart-before-admission") {
+          markGatewayRestartDraining();
+          await waitForLifecycleState(() =>
+            expect(runtimeMocks.log).toHaveBeenCalledWith(
+              expect.stringContaining("subagent context-engine cleanup failed"),
+            ),
+          );
+          expect(factory).not.toHaveBeenCalled();
+          expect(getActiveGatewayRootWorkCount()).toBe(0);
+          expect(listContextEngineQuarantines()).toEqual([]);
+          return;
+        }
+        expect(suspension?.release()).toBe(true);
+        await waitForLifecycleState(() => expect(factory).toHaveBeenCalledOnce());
+        await factoryStarted.promise;
+        if (mode === "stale-after-resolution") {
+          runs.set(entry.runId, createRunEntry({ generation: 2 }));
+        }
+        factoryGate.resolve();
+        await disposalStarted.promise;
+        expect(getActiveGatewayRootWorkHolders()).toContain("subagents:lifecycle-cleanup");
+        await resources.release();
+        expect(retire).not.toHaveBeenCalled();
+        disposalGate.resolve();
+        await cleanupDone.promise;
+        expect(retire).toHaveBeenCalledOnce();
+        expect(dispose).toHaveBeenCalledOnce();
+        expect(onSubagentEnded).toHaveBeenCalledTimes(mode === "completed" ? 1 : 0);
+        expect(warn).not.toHaveBeenCalled();
+        expect(listContextEngineQuarantines()).toEqual([]);
+        expect(getActiveGatewayRootWorkHolders()).toContain("subagents:lifecycle-cleanup");
+        descendantGate.resolve();
+        await descendantDone.promise;
+        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      } finally {
+        suspension?.release();
+        factoryGate.resolve();
+        disposalGate.resolve();
+        descendantGate.resolve();
+        await resources.release();
+        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+        setSubagentRegistryDepsForTest();
+        resetSubagentRegistryRuntimeLoadersForTests();
+        resetContextEngineRuntimeQuarantineForTests();
+        resetGatewayWorkAdmission();
+      }
+    },
+  );
 
   it("runs a detached settle wake outside a disposed requester transcript owner", async () => {
     const sessionKey = "agent:main:disposed-settle-wake-owner";
@@ -5752,6 +6057,138 @@ describe("requester settle wake trigger", () => {
     expect(entry.requesterSettleWake).toBeUndefined();
     expect(hasDeliveredTaskStatusUpdate(entry.runId)).toBe(false);
   });
+
+  it.each(["committed", "failed persistence", "stale generation"] as const)(
+    "retires requester cron authority only after its own wake cleanup is %s",
+    async (mode) => {
+      const requesterTurnRunId = "cron-authority-requester";
+      const requesterSessionId = "cron-authority-session";
+      const entry = createRunEntry({
+        requesterTurnRunId,
+        requesterAgentId: "main",
+        endedAt: 4_000,
+        expectsCompletionMessage: true,
+        delivery: { status: "delivered" },
+      });
+      const requesterSessionKey = entry.requesterSessionKey;
+      const runs = new Map([[entry.runId, entry]]);
+      const sessionRead = vi.spyOn(sessionAccessor, "loadSessionEntryReadOnly").mockReturnValue({
+        sessionId: requesterSessionId,
+        updatedAt: 1,
+      });
+      const { operationalRunInstance } = createTestAdmittedRunContext(requesterTurnRunId);
+      const authority = claimAgentRunDelegatedAuthority(operationalRunInstance);
+      registerAgentRunContext(requesterTurnRunId, {
+        sessionKey: requesterSessionKey,
+        sessionId: requesterSessionId,
+        agentId: "main",
+      });
+      const capability = createCronCreatorAuthorityCapability(
+        requesterTurnRunId,
+        { kind: "unknown" },
+        { source: "control-ui-admin" },
+      )!;
+      try {
+        await runWithCronCreatorAuthorityCapability(capability, () =>
+          withGatewayToolCallerIdentity(
+            {
+              agentId: "main",
+              sessionKey: requesterSessionKey,
+              operationalRunInstance,
+              approvalAuthority: authority,
+            },
+            async () => {
+              expect(
+                markRequesterTurnYieldedInRuns({
+                  requesterSessionKey,
+                  requesterAgentId: "main",
+                  requesterTurnRunId,
+                  runs,
+                  persistOrThrow: () => undefined,
+                }),
+              ).toBe(1);
+            },
+          ),
+        );
+        expect(
+          settleRequesterTurnAfterSessionSpawns({
+            requesterSessionKey,
+            requesterAgentId: "main",
+            requesterTurnRunId,
+            requesterYielded: true,
+            acceptedSessionSpawns: [
+              {
+                runId: entry.runId,
+                childSessionKey: entry.childSessionKey,
+                expectsCompletionMessage: true,
+              },
+            ],
+            runs,
+            persistOrThrow: () => undefined,
+            schedule: () => undefined,
+          }),
+        ).toBe(true);
+        const wake = structuredClone(entry.requesterSettleWake)!;
+        let settleParams: RequesterSettleWakeParams | undefined;
+        const persistOrThrow = vi.fn();
+        const controller = createLifecycleController({
+          entry,
+          runs,
+          persistOrThrow,
+          maybeWakeRequesterAfterAllChildrenSettled: vi.fn(async (params) => {
+            settleParams = params;
+            return false;
+          }),
+        });
+        controller.resumeRequesterSettleWake(entry.runId, entry);
+        await waitForLifecycleState(() => expect(settleParams).toBeDefined());
+        if (mode === "failed persistence") {
+          persistOrThrow.mockImplementationOnce(() => {
+            throw new Error("write failed");
+          });
+          expect(() => settleParams!.completeBatch([entry], wake.rearmGeneration)).toThrow(
+            "write failed",
+          );
+        } else {
+          settleParams!.completeBatch(
+            [entry],
+            mode === "stale generation" ? 0 : wake.rearmGeneration,
+          );
+        }
+        // A stale in-process reference cannot resurrect authority after committed outbox cleanup.
+        entry.requesterSettleWake = wake;
+        await withRequesterCronAuthority(
+          {
+            requesterSessionKey,
+            requesterSessionId,
+            requesterAgentId: "main",
+            batch: [entry],
+            rearmGeneration: wake.rearmGeneration,
+            runId: "cron-authority-continuation",
+            isCurrent: () => true,
+          },
+          async () => {
+            const admission = consumeRequesterCronAuthorityAdmission({
+              runId: "cron-authority-continuation",
+              sessionKey: requesterSessionKey,
+              sessionId: requesterSessionId,
+              inputProvenance: {
+                kind: "inter_session",
+                sourceTool: "subagent_settle",
+                sourceSessionKey: entry.childSessionKey,
+              },
+            });
+            expect(Boolean(admission)).toBe(mode !== "committed");
+          },
+        );
+      } finally {
+        revokeRequesterCronAuthority(requesterSessionKey);
+        releaseAgentRunDelegatedAuthority(authority);
+        clearAgentRunContext(requesterTurnRunId);
+        sessionRead.mockRestore();
+      }
+    },
+  );
 
   it("keeps committed blocked state when requester-settle bookkeeping persistence fails", async () => {
     const entry = createRunEntry({

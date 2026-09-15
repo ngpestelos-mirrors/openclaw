@@ -64,6 +64,15 @@ function serviceInspectionBlockMessage(state: GatewayServiceState): string {
   if (state.inspectionReason) {
     return formatServiceInspectionReason(state.inspectionReason);
   }
+  if (process.platform === "freebsd") {
+    return (
+      "Gateway service inspection is not supported by this CLI on FreeBSD. " +
+      "Refusing maintenance because service-owned state directories cannot be verified. " +
+      "Have the installation owner manage Gateway shutdown and state maintenance. " +
+      "For updates, use the original package manager or installer; " +
+      "keep pkg-owned files under pkg management."
+    );
+  }
   const runtime = state.runtime;
   const tasksCurrent = runtime?.systemd?.tasksCurrent;
   if (
@@ -76,10 +85,10 @@ function serviceInspectionBlockMessage(state: GatewayServiceState): string {
   ) {
     return `The Gateway main process has stopped, but processes remain in its systemd service cgroup (${tasksCurrent} tasks). Inspect the unit with systemctl --user status and its journal, then have the process owner stop the remaining children before retrying Doctor or the update.`;
   }
-  const timeoutMs = state.runtime?.inspectionFailure?.timeoutMs;
-  return timeoutMs === undefined
-    ? GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE
-    : `Scheduled Task probe timed out after ${timeoutMs} ms (ETIMEDOUT). ${GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE}`;
+  const detail = runtime?.inspectionFailure?.detail;
+  return detail
+    ? `${detail} ${GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE}`
+    : GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE;
 }
 
 export function resolvePreparedGatewayUpdatePolicy(
@@ -421,9 +430,13 @@ async function stopManagedServiceBeforeMutableUpdate(
     },
     blockMessage: message,
   });
-  const serviceMutationSkipMessage = resolveGatewayServiceManagementBlockMessageForUpdate(
-    process.env,
-  );
+  // Preparation must keep using the manager route admitted during inspection.
+  // Re-reading through process.env can select a different raw systemd route
+  // (for example after the service snapshot fills in an explicit unit/profile),
+  // which invalidates the retained native binding before activation.
+  const serviceEnv = params.expectedService?.serviceEnv ?? process.env;
+  const serviceMutationSkipMessage =
+    resolveGatewayServiceManagementBlockMessageForUpdate(serviceEnv);
   if (serviceMutationSkipMessage) {
     return { ...uninspected, serviceMutationAllowed: false, serviceMutationSkipMessage };
   }
@@ -432,7 +445,7 @@ async function stopManagedServiceBeforeMutableUpdate(
   try {
     service = resolveGatewayService();
     serviceState = await readGatewayServiceState(service, {
-      env: process.env,
+      env: serviceEnv,
       requireEffective: true,
       requireLoadedCommand: true,
       validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
@@ -444,7 +457,7 @@ async function stopManagedServiceBeforeMutableUpdate(
     ) {
       // Re-read the definition too: a timed-out snapshot cannot grant service ownership.
       serviceState = await readGatewayServiceState(service, {
-        env: process.env,
+        env: serviceEnv,
         requireEffective: true,
         validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
         timeoutMs: params.timeoutMs,

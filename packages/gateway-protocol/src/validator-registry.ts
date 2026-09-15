@@ -270,6 +270,9 @@ export const validateSessionsDiffParams = compile(S.SessionsDiffParamsSchema);
 export const validateSessionsCompanionAskParams = compile(S.SessionsCompanionAskParamsSchema);
 export const validateSessionsCompanionStateParams = compile(S.SessionsCompanionStateParamsSchema);
 export const validateSessionsCompanionResetParams = compile(S.SessionsCompanionResetParamsSchema);
+export const validateSessionsActivitySummaryEnsureParams = compile(
+  S.SessionsActivitySummaryEnsureParamsSchema,
+);
 export const validateSessionsObserverVisibilityParams = compile(
   S.SessionsObserverVisibilityParamsSchema,
 );
@@ -403,6 +406,8 @@ export const validateChannelsPairingDismissParams = compile(S.ChannelsPairingDis
 export const validateChannelsStartParams = compile(S.ChannelsStartParamsSchema);
 export const validateChannelsStopParams = compile(S.ChannelsStopParamsSchema);
 export const validateChannelsLogoutParams = compile(S.ChannelsLogoutParamsSchema);
+export const validateModelsAuthSetApiKeyParams = compile(S.ModelsAuthSetApiKeyParamsSchema);
+export const validateModelsAuthSetApiKeyResult = compile(S.ModelsAuthSetApiKeyResultSchema);
 export const validateModelsAuthLogoutParams = compile(S.ModelsAuthLogoutParamsSchema);
 export const validateModelsAuthOrderSetParams = compile(S.ModelsAuthOrderSetParamsSchema);
 export const validateModelsAuthRefreshParams = compile(S.ModelsAuthRefreshParamsSchema);

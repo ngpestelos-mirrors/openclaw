@@ -18,11 +18,13 @@ import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { SessionPendingInputs } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import {
+  ensureSessionInputCompletionsSchema,
   ensureSessionPendingInputsSchema,
   hasSessionPendingInputsSchema,
 } from "../../state/openclaw-agent-pending-inputs-schema.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
 
 export type SessionPendingInputState = "queued" | "interrupted" | "cancelled";
 export type SessionPendingInput = {
@@ -112,7 +114,9 @@ function assertPendingInputOwnerCurrent(owner: SessionPendingInputOwner): void {
     owners.live.get(owner.inputId) !== owner ||
     !isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration)
   ) {
-    throw new Error("Pending input ownership ended; submit a new turn to continue");
+    throw new SessionPendingInputCustodyError(
+      "Pending input ownership ended; submit a new turn to continue",
+    );
   }
   owner.assertCurrent();
 }
@@ -153,7 +157,10 @@ export function withSessionPendingInputRelocation<T>(
 /** Registration owns disposition; execution and promotion check the private operational predicates. */
 export function readSessionPendingInputOwnerIds(
   database: PendingInputDatabase,
-  rows: readonly SessionPendingInputRow[],
+  rows: readonly Pick<
+    SessionPendingInputRow,
+    "input_id" | "session_key" | "session_id" | "lifecycle_generation"
+  >[],
 ): Set<string> {
   const candidates = rows.filter((row) => {
     const owner = owners.live.get(row.input_id);
@@ -372,23 +379,27 @@ export function resolveSessionPendingInputAppend(
   const idempotencyKey = record.idempotencyKey.trim();
   const row = readSessionPendingInputByKey(database, scope, idempotencyKey);
   const owner = owners.current.getStore();
-  const ownsInput = owner?.idempotencyKey === idempotencyKey;
+  // A bound-session mirror shares source correlation, never its pending custody.
+  const ownsInput =
+    owner?.idempotencyKey === idempotencyKey &&
+    owner.databasePath === database.path &&
+    owner.sessionId === scope.sessionId &&
+    owner.sessionKey === scope.sessionKey;
   if (!row && !ownsInput) {
     return undefined;
   }
   if (
     !owner ||
     !ownsInput ||
-    owner.databasePath !== database.path ||
-    owner.sessionId !== scope.sessionId ||
-    owner.sessionKey !== scope.sessionKey ||
     (row &&
       (row.input_id !== owner.inputId ||
         row.consumed_event_id != null ||
         row.state !== "queued" ||
         row.lifecycle_generation !== owner.lifecycleGeneration))
   ) {
-    throw new Error("Pending input cannot be appended outside its admitted turn");
+    throw new SessionPendingInputCustodyError(
+      "Pending input cannot be appended outside its admitted turn",
+    );
   }
   const relocation = owners.relocation.getStore();
   const transactionRelocations = owners.transactionRelocations.get(database.db);
@@ -458,14 +469,18 @@ export function resolveSessionPendingInputAppend(
         accepted.lifecycle_generation !== source.lifecycleGeneration ||
         accepted.message_json !== source.messageJson
       ) {
-        throw new Error("Collected input custody changed before transcript promotion");
+        throw new SessionPendingInputCustodyError(
+          "Collected input custody changed before transcript promotion",
+        );
       }
       return accepted;
     });
     const alreadyPromoted = sources.every((source) => source.consumed_event_id === owner.inputId);
     if (!alreadyPromoted) {
       if (sources.some((source) => source.consumed_event_id != null || source.state !== "queued")) {
-        throw new Error("Collected input custody ended before transcript promotion");
+        throw new SessionPendingInputCustodyError(
+          "Collected input custody ended before transcript promotion",
+        );
       }
       assertPendingInputOwnerCurrent(owner);
     }
@@ -516,7 +531,9 @@ export function consumeSessionPendingInput(
         .where("consumed_event_id", "is", null),
     );
     if (updated.numAffectedRows !== BigInt(pending.sourceInputIds.length)) {
-      throw new Error("Collected input custody changed during transcript promotion");
+      throw new SessionPendingInputCustodyError(
+        "Collected input custody changed during transcript promotion",
+      );
     }
   } else {
     const deleted = executeSqliteQuerySync(
@@ -633,6 +650,82 @@ export function copySessionPendingInputsForRepair(
         session_key: canonicalKey,
         state: row.state === "cancelled" ? "cancelled" : "interrupted",
       }),
+    );
+  }
+}
+
+/** Transfer terminal facts without transferring the old admission's execution authority. */
+export function copySessionInputCompletionsForRepair(
+  source: PendingInputDatabase,
+  destination: PendingInputDatabase,
+  sourceKeys: readonly string[],
+  canonicalKey: string,
+): void {
+  // The artifact owner checks optional table presence before calling this operation.
+  const rows = executeSqliteQuerySync(
+    source.db,
+    getSessionKysely(source.db)
+      .selectFrom("session_input_completions")
+      .selectAll()
+      .where("session_key", "in", sourceKeys),
+  ).rows;
+  if (rows.length === 0) {
+    return;
+  }
+  ensureSessionInputCompletionsSchema(destination.db);
+  const db = getSessionKysely(destination.db);
+  if (source.db === destination.db) {
+    // Rekey the same physical receipt without replacing any terminal fact.
+    executeSqliteQuerySync(
+      destination.db,
+      db
+        .updateTable("session_input_completions")
+        .set({ session_key: canonicalKey })
+        .where("session_key", "in", sourceKeys),
+    );
+    return;
+  }
+  for (const row of rows) {
+    // Conflict identity excludes session_key: another logical owner must never
+    // be overwritten just because it shares the physical generation/input key.
+    const existing = executeSqliteQueryTakeFirstSync(
+      destination.db,
+      db
+        .selectFrom("session_input_completions")
+        .selectAll()
+        .where("session_id", "=", row.session_id)
+        .where("idempotency_key", "=", row.idempotency_key),
+    );
+    if (existing) {
+      if (
+        existing.session_key !== canonicalKey ||
+        existing.run_id !== row.run_id ||
+        existing.request_hash !== row.request_hash
+      ) {
+        throw new Error("Canonical repair found conflicting input completions");
+      }
+      // SAFETY: the feature-owned receipt writer persists typed terminal outcomes.
+      const existingOutcome = JSON.parse(existing.outcome_json) as AgentRunTerminalOutcome;
+      // A Stop is final even though it is not successful. Never replace a final
+      // destination receipt with an older/retryable source attempt.
+      if (isFinalInputCompletion(existingOutcome)) {
+        continue;
+      }
+      // SAFETY: repair preserves feature-owned typed outcomes, just like the receipt reader.
+      const outcome = JSON.parse(row.outcome_json) as AgentRunTerminalOutcome;
+      if (!isFinalInputCompletion(outcome) && existing.completed_at >= row.completed_at) {
+        continue;
+      }
+    }
+    const canonical = { ...row, session_key: canonicalKey };
+    executeSqliteQuerySync(
+      destination.db,
+      db
+        .insertInto("session_input_completions")
+        .values(canonical)
+        .onConflict((conflict) =>
+          conflict.columns(["session_id", "idempotency_key"]).doUpdateSet(canonical),
+        ),
     );
   }
 }

@@ -10,13 +10,12 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "openclaw/plugin-sdk/sqlite-runtime";
-import { hasMemorySessionTombstone } from "../memory-session-tombstones.js";
 import { createMemoryChunkWriter, type IndexedMemoryChunk } from "./manager-chunk-writer.js";
 import {
   markMemoryVectorRebuildRequired,
   memoryTableExists,
 } from "./manager-vector-rebuild-state.js";
-import { replaceMemoryVectorRow } from "./manager-vector-write.js";
+import { createMemoryVectorWriter } from "./manager-vector-write.js";
 
 export type MemorySourceIndexReplacement = {
   entry: { path: string; hash: string; mtimeMs: number; size: number };
@@ -66,20 +65,11 @@ export class MemorySourceIndexKernel {
     private readonly state: SourceIndexState,
   ) {}
 
-  replace(
-    params: MemorySourceIndexReplacement,
-    sessionAuthority: MemorySourceIndexKernel,
-  ): "replaced" | "forgotten" {
+  replace(params: MemorySourceIndexReplacement): void {
     const { entry, source, chunks, embeddings, model, now, vectorReady } = params;
-    // A shadow index must consult the live generation's tombstones at publication.
-    if (
-      params.source === "sessions" &&
-      hasMemorySessionTombstone(sessionAuthority.database, params.agentId, params.sessionId)
-    ) {
-      return "forgotten";
-    }
     this.clear(entry.path, source);
     let writeChunk: ReturnType<typeof createMemoryChunkWriter> | undefined;
+    let writeVector: ReturnType<typeof createMemoryVectorWriter> | undefined;
     let ftsStatement: StatementSync | undefined;
     for (const [index, chunk] of chunks.entries()) {
       const embedding = embeddings[index] ?? [];
@@ -94,12 +84,8 @@ export class MemorySourceIndexKernel {
       });
       writeChunk(id, chunk, embedding);
       if (vectorReady && embedding.length > 0) {
-        replaceMemoryVectorRow({
-          db: this.database,
-          tableName: MEMORY_INDEX_VECTOR_TABLE,
-          id,
-          embedding,
-        });
+        writeVector ??= createMemoryVectorWriter(this.database, MEMORY_INDEX_VECTOR_TABLE);
+        writeVector(id, embedding);
       }
       if (this.state.fts.enabled && this.state.fts.available) {
         ftsStatement ??= this.database.prepare(
@@ -132,7 +118,6 @@ export class MemorySourceIndexKernel {
     if (!vectorReady && embeddings.some((embedding) => embedding.length > 0)) {
       markMemoryVectorRebuildRequired(this.database);
     }
-    return "replaced";
   }
 
   deleteIfCurrent(params: {

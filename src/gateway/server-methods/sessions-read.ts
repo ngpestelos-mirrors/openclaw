@@ -25,6 +25,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { SessionTranscriptColdError } from "../../config/sessions/session-cold-storage-state.js";
 import { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
+import { buildProjectedAgentRunIndex } from "../../infra/agent-run-registry.js";
 import {
   measureDiagnosticsTimelineSpan,
   measureDiagnosticsTimelineSpanSync,
@@ -41,6 +42,8 @@ import {
   tryResolveSessionCompatibilityOwnerAgentId,
 } from "../session-request-agent.js";
 import {
+  authorizeIncognitoSessionTarget,
+  authorizeSessionSharingTarget,
   canAccessIncognitoSession,
   createSessionListEntryFilter,
   isGatewayAdmin,
@@ -52,6 +55,8 @@ import { resolveSessionStoreAgentId } from "../session-store-key.js";
 import { readSessionPreviewItemsFromTranscript } from "../session-transcript-preview.js";
 import type { SessionListActiveRunProjector } from "../session-utils-contracts.js";
 import { projectGatewaySessionActiveRun } from "../session-utils-display.js";
+import { resolveGatewaySessionActiveModel } from "../session-utils-row.js";
+import type { GatewaySessionStoreDiscoveryCache } from "../session-utils-store-lookup.js";
 import {
   listSessionsFromStoreAsync,
   loadCombinedSessionStoreForGatewayCore,
@@ -98,6 +103,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       ? createSessionListEntryFilter({ client, cfg })
       : undefined;
     const restrictVisibility = restrictIncognito || Boolean(roleVisibilityFilter);
+    const targetDiscoveryCache: GatewaySessionStoreDiscoveryCache = new Map();
     const canSearchSessionKey = (sessionKey: string) => {
       if (
         isIncognitoSessionKey(sessionKey) &&
@@ -108,7 +114,12 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       if (!roleVisibilityFilter) {
         return true;
       }
-      const target = resolveSessionSharingTarget({ cfg, sessionKey, agentId });
+      const target = resolveSessionSharingTarget({
+        cfg,
+        sessionKey,
+        agentId,
+        targetDiscoveryCache,
+      });
       return Boolean(target && roleVisibilityFilter(target.storeKey, target.entry));
     };
     if (requestedAgentId && !params.sessionKeys && configured) {
@@ -138,6 +149,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
+      let archivedTranscriptsExcluded = 0;
       const targetResults = searchTargets.flatMap((target) => {
         const targetSessionKeys =
           scopedSessionKeys ??
@@ -161,16 +173,16 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         if (targetSessionKeys?.length === 0) {
           return [];
         }
-        return [
-          searchSessionTranscripts({
-            ...target,
-            query,
-            // Over-fetch retired multi-store searches so deduplication can still fill the caller's
-            // requested page when the same transcript was copied during a store migration.
-            limit: configured ? params.limit : 25,
-            ...(targetSessionKeys ? { sessionKeys: targetSessionKeys } : {}),
-          }),
-        ];
+        const result = searchSessionTranscripts({
+          ...target,
+          query,
+          // Over-fetch retired multi-store searches so deduplication can still fill the caller's
+          // requested page when the same transcript was copied during a store migration.
+          limit: configured ? params.limit : 25,
+          ...(targetSessionKeys ? { sessionKeys: targetSessionKeys } : {}),
+        });
+        archivedTranscriptsExcluded += result.archivedTranscriptsExcluded ?? 0;
+        return [result];
       });
       const limit = params.limit ?? 10;
       const sortedHits = targetResults
@@ -192,14 +204,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       });
       respond(true, {
         results: hits.slice(0, limit),
-        ...(targetResults.some((result) => result.archivedTranscriptsExcluded)
-          ? {
-              archivedTranscriptsExcluded: targetResults.reduce(
-                (count, result) => count + (result.archivedTranscriptsExcluded ?? 0),
-                0,
-              ),
-            }
-          : {}),
+        ...(archivedTranscriptsExcluded ? { archivedTranscriptsExcluded } : {}),
         ...(targetResults.some((result) => result.indexing) ? { indexing: true } : {}),
         ...(targetResults.some((result) => result.truncated) || hits.length > limit
           ? { truncated: true }
@@ -452,7 +457,11 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
           );
           diagnostics?.mark("decoration");
           const projectPlacement = createSessionPlacementBatchProjector(context, result.sessions);
-          const projectActiveRun = createVisibleActiveSessionRunProjector(context);
+          const projectedAgentRuns = buildProjectedAgentRunIndex();
+          const projectActiveRun = createVisibleActiveSessionRunProjector(
+            context,
+            projectedAgentRuns,
+          );
           // These rows are unpublished; decorate them with fresh caller facts after the yields.
           const sharing = prepareSessionSharing({ client, cfg });
           measureDiagnosticsTimelineSpanSync(
@@ -460,6 +469,27 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
             () =>
               result.sessions.forEach((session, index) => {
                 const sharingTarget = sharingTargets[index];
+                const isMember = sharingTarget
+                  ? membershipKeys.has(
+                      `${sharingTarget.storeTarget.agentId}\0${sharingTarget.storePath}\0${sharingTarget.storeKey}`,
+                    )
+                  : false;
+                if (session.activitySummary) {
+                  session.activitySummary.canEnsure = Boolean(
+                    sharingTarget &&
+                    !authorizeIncognitoSessionTarget({
+                      client,
+                      sessionKey: session.key,
+                      target: sharingTarget,
+                    }) &&
+                    !authorizeSessionSharingTarget({
+                      cfg,
+                      client,
+                      target: sharingTarget,
+                      isMember,
+                    }),
+                  );
+                }
                 const visibility = sharingTarget
                   ? resolveSessionVisibility(sharingTarget.entry)
                   : "shared";
@@ -471,16 +501,28 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                   agentId: session.agentId,
                   defaultAgentId: tryResolveSessionCompatibilityOwnerAgentId(cfg, storeKey),
                 });
+                const target = targetsBySessionKey.get(session.key);
+                const activeModel = resolveGatewaySessionActiveModel({
+                  cfg,
+                  active: activeRunState.active,
+                  agentId:
+                    session.agentId ?? tryResolveSessionCompatibilityOwnerAgentId(cfg, storeKey),
+                  sessionId: session.sessionId,
+                  sessionKey: storeKey,
+                  projectedAgentRuns,
+                  modelSource: target
+                    ? { ...target.modelSource, entry: sharingTarget?.entry }
+                    : undefined,
+                  entry: sharingTarget?.entry,
+                  storePath: sharingTarget?.storePath,
+                });
+                session.activeModelProvider = activeModel?.provider;
+                session.activeModel = activeModel?.model;
                 Object.assign(session, {
                   visibility,
                   ...(sharingTarget
                     ? {
-                        sharingRole: sharing.roleForTarget(
-                          sharingTarget,
-                          membershipKeys.has(
-                            `${sharingTarget.storeTarget.agentId}\0${sharingTarget.storePath}\0${sharingTarget.storeKey}`,
-                          ),
-                        ),
+                        sharingRole: sharing.roleForTarget(sharingTarget, isMember),
                       }
                     : {}),
                   ...projectGatewaySessionActiveRun(activeRunState, session.status),

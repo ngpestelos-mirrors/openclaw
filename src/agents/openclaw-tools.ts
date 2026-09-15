@@ -115,6 +115,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     runId: options?.runId,
     swarmCollector: options?.swarmCollector,
     swarmOutputSchema: options?.swarmOutputSchema,
+    assertCollectorWriteAuthority: options?.assertCollectorWriteAuthority,
   });
   const inferredWorkspaceDir =
     options?.workspaceDir || !resolvedConfig
@@ -172,6 +173,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
           authProfileStore: options?.authProfileStore,
           workspaceDir,
           sandbox,
+          cwd: options?.cwd,
           fsPolicy: options?.fsPolicy,
           agentChannel: options?.agentChannel,
           agentAccountId: options?.agentAccountId,
@@ -191,6 +193,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     workspaceDir,
     preparedModelRuntime: options?.preparedModelRuntime,
     sandbox,
+    cwd: options?.cwd,
     fsPolicy: options?.fsPolicy,
     onAsyncTaskStarted: mediaGenerationAsyncStartCallback,
   };
@@ -216,6 +219,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
           authProfileStore: options?.authProfileStore,
           workspaceDir,
           sandbox,
+          cwd: options?.cwd,
           fsPolicy: options?.fsPolicy,
           deferAutoModelResolution: true,
         })
@@ -618,6 +622,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
         requesterTurnRunId: options?.runId,
         swarmCollector: options?.swarmCollector,
         claimYieldCompletion: options?.claimYieldCompletion,
+        processScopeKey: options?.processScopeKey,
       }),
       onYield: options?.onYield,
     }),

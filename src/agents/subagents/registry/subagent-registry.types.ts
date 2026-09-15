@@ -340,11 +340,28 @@ export type SubagentRunReadRecord = Pick<
   | "accumulatedRuntimeMs"
   | "runTimeoutSeconds"
   | "endedReason"
+  | "pauseReason"
   | "cleanupCompletedAt"
   | "delivery"
 > & {
   execution: Pick<SubagentExecutionState, "status" | "startedAt" | "endedAt" | "outcome">;
   collectorCompletion?: Pick<SwarmCollectorCompletion, "status">;
+};
+
+/** Lifecycle facts needed to protect child transcripts during session maintenance. */
+export type SubagentRunMaintenanceRecord = Pick<
+  SubagentRunRecord,
+  | "runId"
+  | "childSessionKey"
+  | "requesterSessionKey"
+  | "createdAt"
+  | "cleanupCompletedAt"
+  | "expectsCompletionMessage"
+  | "killIntent"
+  | "killReconciliation"
+> & {
+  execution: Pick<SubagentExecutionState, "status" | "endedAt">;
+  delivery?: Pick<SubagentCompletionDeliveryState, "status" | "suspendedAt">;
 };
 
 export type RegisterSubagentRunParams = {

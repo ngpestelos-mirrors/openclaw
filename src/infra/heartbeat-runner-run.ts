@@ -9,13 +9,13 @@ import {
 import { withReplySystemEventContext } from "../auto-reply/reply/system-event-session-key.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { formatErrorMessage } from "./errors.js";
+import { resolveHeartbeatTimeoutOverrideSeconds } from "./heartbeat-config.js";
 import { createHeartbeatDispatch, deliverHeartbeatDispatch } from "./heartbeat-dispatch.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
+import { heartbeatLog } from "./heartbeat-log.js";
 import {
-  heartbeatLog,
   isHeartbeatTypingEnabled,
   resolveHeartbeatChannelPlugin,
-  resolveHeartbeatTimeoutOverrideSeconds,
   resolveHeartbeatTypingIntervalSeconds,
 } from "./heartbeat-runner-config.js";
 import {
@@ -124,7 +124,10 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
               }
             : {}),
           abortSignal: signal,
-          timeoutOverrideSeconds: resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat),
+          // Admitted task continuations retain their ordinary agent budget even after wake coalescing.
+          timeoutOverrideSeconds: prepared.hasTaskContinuation
+            ? undefined
+            : resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat),
           bootstrapContextMode: heartbeat?.lightContext === true ? "lightweight" : undefined,
           disableBlockStreaming: true,
           suppressToolProgressMessages: true,

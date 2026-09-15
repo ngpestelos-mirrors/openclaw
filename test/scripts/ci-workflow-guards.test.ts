@@ -425,6 +425,7 @@ function runCiManifestFixture(options: {
   nodeTestGroupsCodec?: boolean;
   startupCorpusCoverage?: boolean;
   changedPlannerSource?: string | null;
+  changedPlannerDependencies?: string[];
   changedPaths?: string[] | null;
   changedCoreTestSupport?: boolean;
   repository?: string;
@@ -459,6 +460,11 @@ function runCiManifestFixture(options: {
   try {
     const scriptsDir = path.join(root, "scripts", "lib");
     mkdirSync(scriptsDir, { recursive: true });
+    for (const dependency of options.changedPlannerDependencies ?? []) {
+      const destination = path.join(root, dependency);
+      mkdirSync(path.dirname(destination), { recursive: true });
+      writeFileSync(destination, readFileSync(dependency));
+    }
     // The manifest packs grouped Node rows through the target's codec and the
     // shard runner unpacks them; targets that predate the codec omit it.
     if (options.nodeTestGroupsCodec ?? true) {
@@ -1406,6 +1412,246 @@ function findUnpinnedExternalActions(): string[] {
 
 function runGit(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function runReleaseFallbackHistoryFixture(options: {
+  route: "branch" | "tag" | "orphan" | "non-release-tag";
+  many?: boolean;
+  failure?: "fetch-branches" | "fetch-tags" | "branch-producer" | "tag-producer";
+}) {
+  const ownedDirs = createTempDirTracker();
+  const root = ownedDirs.make("openclaw-release-fallback-");
+  const origin = path.join(root, "origin.git");
+  const checkout = path.join(root, "checkout");
+  const bin = path.join(root, "bin");
+  const home = path.join(root, "home");
+  const hooks = path.join(root, "hooks");
+  const records = path.join(root, "git-results.jsonl");
+  const fixtureEnv: NodeJS.ProcessEnv = {
+    PATH: [path.dirname(testNodeExecPath), "/usr/local/bin", "/usr/bin", "/bin"].join(
+      path.delimiter,
+    ),
+    HOME: home,
+    XDG_CONFIG_HOME: home,
+    LC_ALL: "C",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: devNull,
+    GIT_ALLOW_PROTOCOL: "file",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "6",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+    GIT_CONFIG_KEY_1: "core.hooksPath",
+    GIT_CONFIG_VALUE_1: hooks,
+    GIT_CONFIG_KEY_2: "gc.auto",
+    GIT_CONFIG_VALUE_2: "0",
+    GIT_CONFIG_KEY_3: "maintenance.auto",
+    GIT_CONFIG_VALUE_3: "false",
+    GIT_CONFIG_KEY_4: "commit.gpgsign",
+    GIT_CONFIG_VALUE_4: "false",
+    GIT_CONFIG_KEY_5: "protocol.file.allow",
+    GIT_CONFIG_VALUE_5: "always",
+    GIT_AUTHOR_NAME: "Release Fixture",
+    GIT_AUTHOR_EMAIL: "release-fixture@example.com",
+    GIT_COMMITTER_NAME: "Release Fixture",
+    GIT_COMMITTER_EMAIL: "release-fixture@example.com",
+    GITHUB_TOKEN: "synthetic-fixture-token",
+  };
+  try {
+    for (const dir of [checkout, bin, home, hooks]) {
+      mkdirSync(dir);
+    }
+    const realGit = execFileSync("bash", ["--noprofile", "--norc", "-c", "command -v git"], {
+      env: fixtureEnv,
+      encoding: "utf8",
+    }).trim();
+    const git = (cwd: string, args: string[], input?: string) =>
+      execFileSync(realGit, args, {
+        cwd,
+        env: fixtureEnv,
+        input,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 20_000,
+      }).trim();
+    git(root, ["init", "--bare", "-q", origin]);
+    const tree = git(origin, ["mktree"], "");
+    const selected = git(origin, ["commit-tree", tree, "-m", "selected"]);
+    const unrelated = git(origin, ["commit-tree", tree, "-m", "unrelated"]);
+    const count = options.many ? 4096 : 1;
+    const refs = Array.from({ length: count }, (_, index) => {
+      const suffix = options.many
+        ? `${String(index).padStart(4, "0")}-${"a".repeat(192)}/${"b".repeat(192)}`
+        : "small";
+      return options.route === "branch"
+        ? `refs/heads/fixture/${suffix}`
+        : `refs/tags/${options.route === "non-release-tag" ? "fixture" : "vfixture"}/${suffix}`;
+    });
+    git(
+      origin,
+      ["update-ref", "--stdin"],
+      [
+        `create refs/heads/setup-target ${selected}`,
+        `create refs/heads/unrelated ${unrelated}`,
+        ...(options.route === "orphan" ? [] : refs.map((ref) => `create ${ref} ${selected}`)),
+        "",
+      ].join("\n"),
+    );
+    git(origin, ["pack-refs", "--all"]);
+    git(checkout, ["init", "-q"]);
+    git(checkout, ["remote", "add", "origin", pathToFileURL(origin).href]);
+    git(checkout, ["fetch", "--no-tags", "origin", "refs/heads/setup-target"]);
+    git(checkout, ["checkout", "-q", "--detach", "FETCH_HEAD"]);
+    git(origin, ["update-ref", "-d", "refs/heads/setup-target"]);
+    git(checkout, ["update-ref", "-d", "refs/remotes/origin/setup-target"]);
+    expect(
+      git(checkout, [
+        "for-each-ref",
+        "--format=%(objectname)",
+        "--contains",
+        selected,
+        "refs/remotes",
+      ]),
+    ).toBe("");
+    expect(git(checkout, ["tag", "--points-at", selected])).toBe("");
+    if (options.route === "tag") {
+      git(checkout, [
+        "config",
+        "http.https://github.com/.extraheader",
+        "AUTHORIZATION: basic Zml4dHVyZQ==",
+      ]);
+    }
+    const enumerationBytes = Buffer.byteLength(
+      refs
+        .map((ref) => ref.replace(/^refs\/heads\//u, "origin/").replace(/^refs\/tags\//u, ""))
+        .join("\n") + "\n",
+    );
+    if (options.many && existsSync("/proc/sys/fs/pipe-max-size")) {
+      expect(enumerationBytes).toBeGreaterThan(
+        Number(readFileSync("/proc/sys/fs/pipe-max-size", "utf8").trim()),
+      );
+    }
+
+    // Enumeration inherits the real pipeline. Only verbose fetch stderr uses a regular file.
+    const launcher = path.join(root, "git-launcher.mjs");
+    writeFileSync(
+      launcher,
+      [
+        'import { spawnSync } from "node:child_process";',
+        'import { createHash } from "node:crypto";',
+        'import { appendFileSync, closeSync, openSync, readFileSync, statSync } from "node:fs";',
+        'import { constants } from "node:os";',
+        `const git = ${JSON.stringify(realGit)};`,
+        `const records = ${JSON.stringify(records)};`,
+        `const failure = ${JSON.stringify(options.failure ?? null)};`,
+        "let args = process.argv.slice(2);",
+        'const op = args.includes("fetch") ? (args.includes("--no-tags") ? "fetch-branches" : "fetch-tags")',
+        '  : args[0] === "tag" ? "tag-producer" : args[0] === "for-each-ref" ? "branch-producer" : args[0];',
+        'if (op.startsWith("fetch-") && op === failure) {',
+        `  args = args.map(arg => arg === "origin" ? ${JSON.stringify(pathToFileURL(path.join(root, "missing.git")).href)} : arg);`,
+        "}",
+        `const fetchPath = ${JSON.stringify(path.join(root, "fetch-"))} + op + ".stderr";`,
+        'const fd = op.startsWith("fetch-") ? openSync(fetchPath, "w", 0o600) : null;',
+        'const result = spawnSync(git, args, { stdio: ["inherit", "inherit", fd ?? "inherit"], timeout: 20_000 });',
+        "if (fd !== null) closeSync(fd);",
+        "const exitCode = result.signal ? 128 + constants.signals[result.signal] : result.status ?? 1;",
+        "const entry = { op, status: result.status, signal: result.signal, exitCode, error: result.error?.code };",
+        "if (fd !== null) {",
+        "  const size = statSync(fetchPath).size;",
+        '  if (size > 8 * 1024 * 1024) throw new Error("fixture fetch capture exceeded 8 MiB");',
+        "  const bytes = readFileSync(fetchPath);",
+        '  entry.stderr = { bytes: size, sha256: createHash("sha256").update(bytes).digest("hex") };',
+        "  process.stderr.write(bytes.subarray(Math.max(0, bytes.length - 1024)));",
+        "}",
+        'appendFileSync(records, JSON.stringify(entry) + "\\n");',
+        "if (op === failure && fd === null && result.status === 0) {",
+        '  const failed = spawnSync(git, ["rev-parse", "--verify", "refs/heads/fixture-missing"], { stdio: ["ignore", "ignore", "inherit"] });',
+        '  appendFileSync(records, JSON.stringify({ op: "post-output-failure", status: failed.status, signal: failed.signal }) + "\\n");',
+        "  process.exit(failed.status ?? 1);",
+        "}",
+        "process.exit(exitCode);",
+        "",
+      ].join("\n"),
+    );
+    writeExecutable(path.join(bin, "git"), [
+      "#!/bin/bash",
+      `exec ${quoteShell(testNodeExecPath)} ${quoteShell(launcher)} "$@"`,
+    ]);
+    const allocatedBytes = () =>
+      Number(
+        execFileSync("du", ["-sk", root], { env: fixtureEnv, encoding: "utf8" })
+          .trim()
+          .split(/\s/u)[0],
+      ) * 1024;
+    const beforeBytes = allocatedBytes();
+    expect(beforeBytes).toBeLessThan(256 * 1024 * 1024);
+    console.info(
+      "fallback-fixture-before",
+      JSON.stringify({ ...options, refs: count, enumerationBytes, allocatedBytes: beforeBytes }),
+    );
+    const step = expectDefined(
+      readReleaseChecksWorkflow().jobs.resolve_target.steps.find(
+        (candidate: WorkflowStep) =>
+          candidate.name === "Validate selected ref belongs to this repository",
+      ) as WorkflowStep | undefined,
+      "fallback history validation",
+    );
+    const result = runWorkflowShellScript(expectDefined(step.run, "fallback validation body"), {
+      cwd: checkout,
+      env: {
+        ...fixtureEnv,
+        PATH: `${bin}${path.delimiter}${fixtureEnv.PATH}`,
+        RELEASE_REF: selected,
+      },
+    });
+    const events = readFileSync(records, "utf8")
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            op: string;
+            status: number | null;
+            signal: string | null;
+            error?: string;
+          },
+      );
+    const containingBranches = git(checkout, [
+      "for-each-ref",
+      "--format=%(objectname)",
+      "--contains",
+      selected,
+      "refs/remotes",
+    ])
+      .split(/\s/u)
+      .filter(Boolean).length;
+    if (!options.failure?.startsWith("fetch-")) {
+      expect(containingBranches).toBe(options.route === "branch" ? count : 0);
+    }
+    const afterBytes = allocatedBytes();
+    expect(afterBytes).toBeLessThan(256 * 1024 * 1024);
+    console.info(
+      "fallback-fixture-result",
+      JSON.stringify({
+        ...options,
+        status: result.status,
+        signal: result.signal,
+        error: result.error?.message,
+        enumerationBytes,
+        containingBranches,
+        allocatedBytes: afterBytes,
+        events,
+        rejection: result.stderr.includes("but that commit is not reachable"),
+      }),
+    );
+    expect(result.error).toBeUndefined();
+    expect(events.every((event) => event.error === undefined)).toBe(true);
+    return { result, events };
+  } finally {
+    ownedDirs.cleanup();
+    expect(existsSync(root)).toBe(false);
+    console.info("fallback-fixture-cleanup", JSON.stringify({ ...options, remaining: 0 }));
+  }
 }
 
 function runDiffBaseFixture(options: {
@@ -4208,14 +4454,20 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       "src/commands/doctor-config-runtime.test-support.ts",
       ...(options.production ? ["src/commands/doctor-config-preflight.ts"] : []),
     ];
-    const selected = resolveChangedDockerSeedLanes(changedPaths);
+    expect(resolveChangedDockerSeedLanes(changedPaths)).toEqual(
+      options.production ? ["published-upgrade-survivor"] : [],
+    );
     const result = runCiManifestFixture({
       bundledPlanner: true,
       runNode: false,
       changedPaths,
       eventName: options.eventName,
       scopeEnv: { GITHUB_REF: "refs/heads/main" },
-      changedPlannerSource: `export const resolveChangedDockerSeedLanes = () => ${JSON.stringify(selected)};`,
+      changedPlannerSource: `export { resolveChangedDockerSeedLanes } from "./ci-docker-seed-plan.mts";`,
+      changedPlannerDependencies: [
+        "scripts/lib/ci-docker-seed-plan.mts",
+        "scripts/lib/changed-path-facts.mjs",
+      ],
     });
     expect(result.status, result.output).toBe(0);
     expect(result.outputs.run_docker_seed_e2e).toBe(String(options.expected));
@@ -4957,7 +5209,37 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
     expect(nativeResourcesSetup.if).toBe(
       "needs.preflight.outputs.use_compatible_android_ci != 'true'",
     );
-    expect(nativeResourcesSetup.with).toMatchObject({ "install-bun": "false" });
+    expect(nativeResourcesSetup.with).toMatchObject({
+      "install-bun": "false",
+      "install-deps": "false",
+    });
+    const nativeResourcesInstall = expectDefined(
+      androidJob.steps.find(
+        (step: WorkflowStep) => step.name === "Install Mermaid renderer dependencies",
+      ),
+      "Android native resources dependency install",
+    );
+    expect(nativeResourcesInstall.if).toBe(nativeResourcesSetup.if);
+    expect(nativeResourcesInstall.env).toEqual({ CI: "true" });
+    expect(nativeResourcesInstall.run.trim().split(/\s+/u)).toEqual([
+      "pnpm",
+      "install",
+      "--frozen-lockfile",
+      "--prefer-offline",
+      "--optional",
+      "--filter",
+      "'@openclaw/mermaid-renderer...'",
+      "--config.ignore-scripts=false",
+      "--config.engine-strict=false",
+      "--config.enable-pre-post-scripts=true",
+      "--config.side-effects-cache=true",
+    ]);
+    expect(androidJob.steps.indexOf(nativeResourcesSetup)).toBeLessThan(
+      androidJob.steps.indexOf(nativeResourcesInstall),
+    );
+    expect(androidJob.steps.indexOf(nativeResourcesInstall)).toBeLessThan(
+      androidJob.steps.indexOf(runStep),
+    );
   });
 
   describe("Android validation tiers", () => {
@@ -6307,7 +6589,7 @@ setImmediate(() => {
       ]) {
         for (const lint of [undefined, false, true]) {
           const extendedBudget =
-            (task === "test-third-party" && lint === true) ||
+            ((task === "test-play" || task === "test-third-party") && lint === true) ||
             (task === "build-play" && runner === "ubuntu-24.04");
           expect(
             evaluateTimeout("android", { ...context, matrix: { task, lint } }),
@@ -7064,13 +7346,14 @@ process.exit(JSON.parse(process.env.RECIPE_EXITS)[count] ?? 99);
         }
       }
       // Capture the pinned CLI before switching to the fixture-only registry/store.
-      const bootstrap = resolvePnpmRunner();
+      const nodeExecPath = resolveTestNodeExecPath();
+      const bootstrap = resolvePnpmRunner({ nodeExecPath });
       const npmExecPath = execFileSync(
         bootstrap.command,
         [...bootstrap.args, "--silent", "run", "pnpm-path"],
         { cwd: source, encoding: "utf8", env: { ...process.env, CI: "true" } },
       ).trim();
-      const pnpm = resolvePnpmRunner({ npmExecPath });
+      const pnpm = resolvePnpmRunner({ nodeExecPath, npmExecPath });
       const action = parse(readFileSync(".github/actions/setup-node-env/action.yml", "utf8"));
       const configureCache = expectDefined(
         action.runs.steps.find(
@@ -9738,6 +10021,84 @@ server.listen(0, "127.0.0.1", () => {
     }
   });
 
+  describe.skipIf(process.platform !== "linux")("release fallback history with real Git", () => {
+    it.each(["branch", "tag"] as const)("accepts a small valid %s history", (route) => {
+      const { result, events } = runReleaseFallbackHistoryFixture({ route });
+      expect(result.status, result.stderr).toBe(0);
+      expect(events.filter((event) => event.op.startsWith("fetch-"))).toMatchObject([
+        { op: "fetch-branches", status: 0, signal: null },
+        { op: "fetch-tags", status: 0, signal: null },
+      ]);
+      expect(events.find((event) => event.op === `${route}-producer`)).toMatchObject({
+        status: 0,
+        signal: null,
+      });
+    });
+
+    it.each(["orphan", "non-release-tag"] as const)("rejects %s history", (route) => {
+      const { result, events } = runReleaseFallbackHistoryFixture({ route });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("but that commit is not reachable");
+      expect(events.filter((event) => event.op.endsWith("-producer"))).toMatchObject([
+        { op: "tag-producer", status: 0, signal: null },
+        { op: "branch-producer", status: 0, signal: null },
+      ]);
+    });
+
+    it.each(["fetch-branches", "fetch-tags"] as const)(
+      "fails closed when the real %s command fails",
+      (failure) => {
+        const { result, events } = runReleaseFallbackHistoryFixture({ route: "branch", failure });
+        expect(result.status).not.toBe(0);
+        expect(events.find((event) => event.op === failure)).toMatchObject({
+          status: 128,
+          signal: null,
+        });
+        expect(events.some((event) => event.op.endsWith("-producer"))).toBe(false);
+        expect(result.stderr).not.toContain("but that commit is not reachable");
+      },
+    );
+
+    it.each(["branch", "tag"] as const)(
+      "does not accept matching %s output followed by a real Git failure",
+      (route) => {
+        const { result, events } = runReleaseFallbackHistoryFixture({
+          route,
+          failure: `${route}-producer`,
+        });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("but that commit is not reachable");
+        expect(events.find((event) => event.op === `${route}-producer`)).toMatchObject({
+          status: 0,
+          signal: null,
+        });
+        expect(events.find((event) => event.op === "post-output-failure")).toMatchObject({
+          status: 128,
+          signal: null,
+        });
+      },
+    );
+
+    it.each(["branch", "tag"] as const)(
+      "accepts valid %s enumeration larger than the pipe capacity",
+      (route) => {
+        const { result, events } = runReleaseFallbackHistoryFixture({ route, many: true });
+        expect(events.filter((event) => event.op.startsWith("fetch-"))).toMatchObject([
+          { op: "fetch-branches", status: 0, signal: null },
+          { op: "fetch-tags", status: 0, signal: null },
+        ]);
+        const producer = events.find((event) => event.op === `${route}-producer`);
+        if (result.status !== 0) {
+          expect(result.stderr).toContain("but that commit is not reachable");
+          expect(producer).toMatchObject({ status: null, signal: "SIGPIPE", exitCode: 141 });
+        }
+        expect(result.status, JSON.stringify({ producer, stderr: result.stderr })).toBe(0);
+        expect(producer).toMatchObject({ status: 0, signal: null });
+      },
+      60_000,
+    );
+  });
+
   it("checks the generated Git owner in the workflow guard lane", () => {
     const check = spawnSync(process.execPath, ["scripts/generate-ci-git-owner.mts", "--check"], {
       encoding: "utf8",
@@ -12269,6 +12630,12 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "OPENCLAW_E2E_SKIP_BUILD=1 OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test test/openclaw-launcher.e2e.test.ts",
     );
     expect(checksFastRun.run).toContain(
+      "if [[ -f src/plugins/plugin-module-generation.test.ts ]]; then",
+    );
+    expect(checksFastRun.run).toContain(
+      'elif [[ "${{ needs.preflight.outputs.frozen_target }}" != "true" ]]; then',
+    );
+    expect(checksFastRun.run).toContain(
       "for required_script in check:max-lines-ratchet check:assertion-safety config:docs:check plugins:inventory:check; do",
     );
     expect(checksFastRun.run).toContain('has_package_script "$required_script"');
@@ -13691,6 +14058,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             inSuiteServer &&
             (node.expression.text === "createOpenClawTestInstance" ||
               node.expression.text === "startProductionControlUiE2eServer" ||
+              node.expression.text === "startProviderBrowserLoginFixture" ||
               node.expression.text === "createServer")
           ) {
             ownsPrivateServer = true;
@@ -13752,6 +14120,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "ui/src/e2e/chat-project-media.real-gateway.e2e.test.ts",
       "ui/src/e2e/chat-stop-finished-run.real-gateway.e2e.test.ts",
       "ui/src/e2e/chat-thinking-metadata.real-gateway.e2e.test.ts",
+      "ui/src/e2e/chat-tts-supplement.real-gateway.e2e.test.ts",
       "ui/src/e2e/chat-widget-sandbox.real-gateway.e2e.test.ts",
       "ui/src/e2e/child-session-load-errors.e2e.test.ts",
       "ui/src/e2e/command-palette-catalog.real-gateway.e2e.test.ts",
@@ -13764,6 +14133,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "ui/src/e2e/model-catalog-partial-refresh.real-gateway.e2e.test.ts",
       "ui/src/e2e/model-picker-search.real-gateway.e2e.test.ts",
       "ui/src/e2e/new-session-page.cloud-startup.runtime-load.e2e.test.ts",
+      "ui/src/e2e/provider-browser-login.real-gateway.e2e.test.ts",
       "ui/src/e2e/quota-reset-status.real-gateway.e2e.test.ts",
       "ui/src/e2e/session-management.delete.e2e.test.ts",
       "ui/src/e2e/sidebar-account-footer.e2e.test.ts",
@@ -18380,7 +18750,10 @@ describe("Linux App validation routing", () => {
               eventName,
               repository: "openclaw/openclaw",
               runAttempt: 1,
-              steps: { "inline-browser": { outputs: {}, outcome: "success" } },
+              steps: {
+                "inline-browser": { outputs: {}, outcome: "success" },
+                "gateway-switch": { outputs: {}, outcome: "success" },
+              },
             }),
         );
       const linux = selected(linuxSteps);
@@ -18403,6 +18776,7 @@ describe("Linux App validation routing", () => {
       ).toContain("-s apps/linux/tests -p 'test_packaged_runtime_smoke.py'");
       expect(linux.map((step) => step.run)).toContain("cargo +stable build --locked");
       expect(linux.find((step) => step.id === "inline-browser")?.run).toContain("--inline-browser");
+      expect(linux.find((step) => step.id === "gateway-switch")?.run).toContain("--gateway-switch");
       for (const name of packagingSteps) {
         expect(
           linuxSteps.some((step) => step.name === name),
@@ -18418,7 +18792,7 @@ describe("Linux App validation routing", () => {
           linux
             .filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
             .map((step) => step.with?.name),
-        ).toEqual(["linux-inline-browser"]);
+        ).toEqual(["linux-inline-browser", "linux-gateway-switch"]);
       }
     },
   );
@@ -18426,20 +18800,26 @@ describe("Linux App validation routing", () => {
   it.each(["success", "failure", "cancelled", "skipped"] as const)(
     "uploads native browser proof after an attempted run: %s",
     (outcome) => {
-      const upload = expectDefined(
-        linuxSteps.find((step) => step.name === "Upload native inline browser proof"),
-        "native browser proof upload",
-      );
-      expect(
-        evaluateWorkflowExpression(`\${{ ${upload.if} }}`, {
-          eventName: "pull_request",
-          repository: "openclaw/openclaw",
-          runAttempt: 1,
-          failed: outcome === "failure",
-          cancelled: outcome === "cancelled",
-          steps: { "inline-browser": { outputs: {}, outcome } },
-        }),
-      ).toBe(outcome !== "skipped");
+      for (const [name, id] of [
+        ["Upload native inline browser proof", "inline-browser"],
+        ["Upload native Gateway switching proof", "gateway-switch"],
+      ] as const) {
+        const upload = expectDefined(
+          linuxSteps.find((step) => step.name === name),
+          `${id} proof upload`,
+        );
+        expect(
+          evaluateWorkflowExpression(`\${{ ${upload.if} }}`, {
+            eventName: "pull_request",
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            failed: outcome === "failure",
+            cancelled: outcome === "cancelled",
+            steps: { [id]: { outputs: {}, outcome } },
+          }),
+          name,
+        ).toBe(outcome !== "skipped");
+      }
     },
   );
 
@@ -18518,12 +18898,14 @@ it.each(["publish", "promote"])(
         }),
       ).toBe(result === "success");
     }
+    const activationCommand =
+      owner === "publish" ? "linux-app-channel.mjs finalize-core" : "gh release edit";
     const activation = (finalize.steps as WorkflowStep[]).find(({ run }) =>
-      run?.includes("gh release edit"),
+      run?.includes(activationCommand),
     )?.run;
     expect(activation).toContain("node scripts/linux-updater-manifest.mjs carry");
     expect(activation?.indexOf("linux-updater-manifest.mjs carry")).toBeLessThan(
-      activation?.indexOf("gh release edit") ?? -1,
+      activation?.indexOf(activationCommand) ?? -1,
     );
   },
 );
@@ -18536,7 +18918,7 @@ it("serializes Linux manifests with stable activation and reuses completed Linux
       ["openclaw-release-promote.yml", "finalize"],
     ] as const
   ).map(([file, job]) => parse(readFileSync(`.github/workflows/${file}`, "utf8")).jobs[job]);
-  for (const job of [...finalizers, linux.jobs.publish]) {
+  for (const job of [...finalizers, linux.jobs.publish, linux.jobs.mirror_legacy]) {
     expect(job.concurrency).toEqual({
       group: "linux-app-release-publish",
       "cancel-in-progress": false,
@@ -18577,7 +18959,6 @@ it("serializes Linux manifests with stable activation and reuses completed Linux
     "Download Debian bundle",
     "Download signed AppImage",
     "Assemble release assets and updater manifest",
-    "Attach bundles to the release",
   ]) {
     const condition = expectDefined(steps.find((step) => step.name === name)?.if, name);
     expect(
@@ -18586,9 +18967,70 @@ it("serializes Linux manifests with stable activation and reuses completed Linux
       }),
     ).toBe(false);
   }
-  expect(
-    steps.findIndex(({ name }) => name === "Update the current stable Linux updater"),
-  ).toBeGreaterThan(steps.findIndex(({ name }) => name === "Attach bundles to the release"));
+  const publisher = expectDefined(
+    steps.find(
+      ({ name }) =>
+        name === "Publish immutable bundles, canonical Linux channel, and legacy mirror",
+    ),
+    "one publisher",
+  );
+  expect(publisher.if).toBeUndefined();
+  expect(publisher.run).toContain("linux-app-channel.mjs publish");
+  expect(publisher.run).toContain("input_args=()");
+  expect(publisher.run).toContain('"${input_args[@]}"');
+  expect(publisher.run).toContain("--request-run-id");
+  expect(JSON.stringify(steps)).not.toContain("linux-updater-manifest.mjs publish");
+  expect(JSON.stringify(steps)).not.toContain("--clobber");
+});
+
+it("detaches Linux mirror-only writers from both completed core finalizers", () => {
+  const linux = parse(readFileSync(".github/workflows/linux-app-release.yml", "utf8"));
+  for (const event_name of ["push", "pull_request", "workflow_run", "workflow_dispatch"]) {
+    expect(
+      runInNewContext(linux.jobs.mirror_legacy.if.slice(3, -2), {
+        github: { repository: "openclaw/openclaw", event_name },
+      }),
+    ).toBe(event_name === "workflow_dispatch");
+  }
+  expect(linux.on.push).toBeUndefined();
+  expect(linux.on.pull_request).toBeUndefined();
+  const mirrorSteps = linux.jobs.mirror_legacy.steps as WorkflowStep[];
+  expect(JSON.stringify(mirrorSteps)).not.toContain("TAURI_SIGNING_PRIVATE_KEY");
+  expect(JSON.stringify(mirrorSteps)).not.toContain("linux-app-channel.mjs publish");
+  expect(JSON.stringify(mirrorSteps)).not.toContain("cargo");
+  const admission = expectDefined(
+    mirrorSteps.find(({ name }) => name === "Verify detached mirror dispatch identity"),
+    "mirror admission",
+  );
+  expect(admission.run).toContain("refs/tags/release-publish/*");
+  expect(admission.run).toContain('"$EXPECTED_TOOLING_SHA" == "$WORKFLOW_SHA"');
+  expect(admission.run).toContain("--release-publish-parent-state-policy active-or-success");
+  for (const [file, finalizer] of [
+    ["openclaw-release-publish.yml", "finalize_github_release"],
+    ["openclaw-release-promote.yml", "finalize"],
+  ] as const) {
+    const workflow = parse(readFileSync(`.github/workflows/${file}`, "utf8"));
+    const dispatch = workflow.jobs.dispatch_linux_mirror;
+    expect(dispatch.needs).toContain(finalizer);
+    expect(dispatch["continue-on-error"]).toBe(true);
+    expect(dispatch["timeout-minutes"]).toBe(5);
+    expect(dispatch.concurrency).toBeUndefined();
+    expect(workflow.jobs[finalizer].needs).not.toContain("dispatch_linux_mirror");
+    const dispatchStep = expectDefined(
+      (dispatch.steps as WorkflowStep[]).find(
+        ({ name }) => name === "Dispatch detached Linux mirror",
+      ),
+      "bounded mirror dispatch",
+    );
+    expect(dispatchStep.run).toContain("dispatch_linux_mirror");
+    expect(dispatchStep.run).not.toMatch(/\b(?:watch|sleep|until|while)\b/u);
+  }
+  const prepared = parse(readFileSync(".github/workflows/openclaw-release-promote.yml", "utf8"));
+  const preparedDispatch = JSON.stringify(prepared.jobs.dispatch_linux_mirror);
+  expect(preparedDispatch).toContain(".releaseRunId");
+  expect(preparedDispatch).toContain(".releaseRunAttempt");
+  expect(preparedDispatch).toContain(".tooling.fullRef");
+  expect(preparedDispatch).not.toContain("$GITHUB_RUN_ID");
 });
 
 it("reports stale Linux release requests before selected code runs", () => {
@@ -18607,6 +19049,7 @@ it("reports stale Linux release requests before selected code runs", () => {
   };
   const github = {
     repository: "openclaw/openclaw",
+    event_name: "workflow_run",
     workflow_sha: requestSha,
     event: { workflow_run: requestRun },
   };
@@ -18696,13 +19139,18 @@ it("pins simple release admission owners before selected checkout and preserves 
   expect(Object.keys(request.on.workflow_dispatch.inputs)).toEqual(["tag", "desktop-test-bundles"]);
   expect(request.jobs.validate_request.permissions).toBeUndefined();
   expect(JSON.stringify(request)).not.toContain("${{ secrets.");
-  expect(linux.on).toEqual({
-    workflow_run: {
-      workflows: ["Linux App Release Request"],
-      branches: ["main"],
-      types: ["completed"],
-    },
+  expect(linux.on.workflow_run).toEqual({
+    workflows: ["Linux App Release Request"],
+    branches: ["main"],
+    types: ["completed"],
   });
+  expect(Object.keys(linux.on.workflow_dispatch.inputs)).toEqual([
+    "release_tag",
+    "source_sha",
+    "tooling_sha",
+    "release_publish_run_id",
+    "release_publish_run_attempt",
+  ]);
   const releaseDocs = expectDefined(
     readFileSync("apps/linux/README.md", "utf8").split("## Releases\n")[1],
     "Linux release documentation",
@@ -18756,7 +19204,7 @@ it("pins simple release admission owners before selected checkout and preserves 
           (job as { permissions?: { contents?: string } }).permissions?.contents === "write",
       )
       .map(([name]) => name),
-  ).toEqual(["publish"]);
+  ).toEqual(["publish", "mirror_legacy"]);
   expect(linux.jobs.publish.permissions).toEqual({ actions: "read", contents: "write" });
   expect(
     Object.entries(linux.jobs)
@@ -19233,20 +19681,22 @@ it("pins simple release admission owners before selected checkout and preserves 
     "artifact-ids": "${{ needs.sign_desktop.outputs.signed_desktop_artifact_id }}",
     path: "dist/input",
   });
-  const publishLinuxBundles = expectDefined(
+  const assembleLinuxBundles = expectDefined(
     (linux.jobs.publish.steps as WorkflowStep[]).find(
       ({ name }) => name === "Assemble release assets and updater manifest",
     ),
-    "Linux release publication step",
+    "Linux release assembly step",
   );
-  expect(publishLinuxBundles.run).toContain(
-    'linux_signature=$(cat "dist/input/linux/signatures/OpenClaw-${version}-amd64.AppImage.sig")',
+  expect(assembleLinuxBundles.run).not.toContain('"linux-x86_64"');
+  const publishLinuxMetadata = expectDefined(
+    (linux.jobs.publish.steps as WorkflowStep[]).find(
+      ({ name }) =>
+        name === "Publish immutable bundles, canonical Linux channel, and legacy mirror",
+    ),
+    "Linux publication owner",
   );
-  expect(publishLinuxBundles.run).toContain(
-    '--arg linux_url "${url_base}/OpenClaw-${version}-amd64.AppImage"',
-  );
-  expect(publishLinuxBundles.run).toContain(
-    '"linux-x86_64": {signature: $linux_signature, url: $linux_url}',
+  expect(publishLinuxMetadata.run).toContain(
+    '--assets dist/release --signature "dist/input/linux/signatures/OpenClaw-${RELEASE_TAG#v}-amd64.AppImage.sig"',
   );
   const appImageToolsPath = "apps/linux/scripts/tauri-appimage-tools.sh";
   const appImageTools = readFileSync(appImageToolsPath, "utf8");

@@ -6,7 +6,7 @@ import { isDefaultInstallIdentity, resolveConfigPath, resolveStateDir } from "..
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import {
-  acquireGatewayLifecycleCoordinator,
+  acquireGatewayMaintenanceCoordinator,
   acquireStateDatabaseCoordinator,
 } from "../infra/state-database-coordinator.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
@@ -14,6 +14,10 @@ import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
 import { inspectUpdateRepairDriverAdmission } from "../infra/update-run-activity.js";
 import { listUpdateRuns, recordUpdateRunRepairContinuation } from "../infra/update-run-ledger.js";
 import type { RuntimeEnv } from "../runtime.js";
+import {
+  createOpenClawDatabaseMaintenanceScope,
+  type OpenClawDatabaseMaintenanceScope,
+} from "../state/openclaw-state-db-async-lifecycle.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import type { DoctorOptions } from "./doctor-prompter.js";
 import { isDoctorUpdateRepairMode, resolveDoctorRepairMode } from "./doctor-repair-mode.js";
@@ -66,7 +70,14 @@ export async function beginDoctorMaintenance(params: {
   options: DoctorOptions;
   root: string | null;
   runtime: RuntimeEnv;
-}): Promise<{ release(): Promise<void>; finish(cfg: OpenClawConfig): Promise<void> } | undefined> {
+}): Promise<
+  | {
+      run<T>(operation: () => T): T;
+      release(): Promise<void>;
+      finish(cfg: OpenClawConfig): Promise<void>;
+    }
+  | undefined
+> {
   if (!(params.options.repair === true || params.options.yes === true)) {
     return undefined;
   }
@@ -82,19 +93,13 @@ export async function beginDoctorMaintenance(params: {
     | undefined;
   const coordinators: Array<{ release(): void }> = [];
   let repairStoresMayBeOpen = false;
+  let resources: OpenClawDatabaseMaintenanceScope | undefined;
   let inspectingActivation = false;
   let assertContinuationCurrent: (() => void) | undefined;
+  let assertUpdateAdmissionCurrent: (() => void) | undefined;
   const release = async () => {
     if (repairStoresMayBeOpen) {
-      const [{ closeOpenClawAgentDatabasesAsync }, { closeOpenClawStateDatabaseByPathAsync }] =
-        await Promise.all([
-          import("../state/openclaw-agent-db.js"),
-          import("../state/openclaw-state-db.js"),
-        ]);
-      // Agent handles release leases through shared state. Keep maintenance
-      // ownership and retry state until both drains succeed.
-      await closeOpenClawAgentDatabasesAsync();
-      await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(env));
+      await resources?.close();
       repairStoresMayBeOpen = false;
     }
     for (const coordinator of coordinators.splice(0).toReversed()) {
@@ -125,11 +130,7 @@ export async function beginDoctorMaintenance(params: {
         phase: "inspect",
       });
       assertDoctorMaintenanceInspection(inspection, env);
-      if (
-        parentActivation !== undefined &&
-        inspection.serviceUpdateVerdict?.kind !== "absent" &&
-        inspection.offline !== true
-      ) {
+      if (inspection.serviceUpdateVerdict?.kind !== "absent" && inspection.offline !== true) {
         const inheritedRunId = env[UPDATE_RUN_ID_ENV]?.trim();
         const readAdmission = () => {
           const runs = listUpdateRuns(
@@ -143,6 +144,9 @@ export async function beginDoctorMaintenance(params: {
           return admission;
         };
         const admission = readAdmission();
+        assertUpdateAdmissionCurrent = () => {
+          readAdmission();
+        };
         const continuation =
           admission.kind === "continuation"
             ? admission.run
@@ -152,6 +156,7 @@ export async function beginDoctorMaintenance(params: {
             readAdmission();
             recordUpdateRunRepairContinuation(continuation.runId, inheritedRunId, { env });
           };
+          assertUpdateAdmissionCurrent = assertContinuationCurrent;
         }
       }
       if (
@@ -179,7 +184,7 @@ export async function beginDoctorMaintenance(params: {
             shouldRestart: true,
             jsonMode: true,
             expectedService: inspection,
-            assertCurrent: assertContinuationCurrent,
+            assertCurrent: assertUpdateAdmissionCurrent,
           });
           assertDoctorMaintenanceInspection(stopped, env);
           if (stopped.stopped) {
@@ -197,7 +202,9 @@ export async function beginDoctorMaintenance(params: {
     // Hold the reentrant lifecycle coordinators, not an in-tree Gateway lock:
     // individual migrations acquire their own in-tree locks under this scope.
     // Gateway ownership lasts until that process stops, not for a short transaction.
-    coordinators.push(acquireGatewayLifecycleCoordinator({ databasePath, busyTimeoutMs: 0 }));
+    const owner = acquireGatewayMaintenanceCoordinator({ databasePath, busyTimeoutMs: 0 });
+    coordinators.push(owner);
+    resources = createOpenClawDatabaseMaintenanceScope(owner.createSchemaFenceDelegate);
     coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
     const { assertNoOpenClawAgentDatabaseLeasesReadOnly, OpenClawAgentDatabaseLeaseActiveError } =
       await import("../state/openclaw-agent-db-lease.js");
@@ -240,6 +247,7 @@ export async function beginDoctorMaintenance(params: {
     throw refusal;
   }
   return {
+    run: (operation) => resources!.run(operation),
     release,
     async finish(cfg) {
       await release();
@@ -267,7 +275,7 @@ export async function beginDoctorMaintenance(params: {
         const state = await withGatewayServiceOperationLock(serviceEnv, async (assertCurrent) => {
           const assertMaintenanceCurrent = () => {
             assertCurrent();
-            assertContinuationCurrent?.();
+            assertUpdateAdmissionCurrent?.();
           };
           assertMaintenanceCurrent();
           const current = await readGatewayServiceState(service, {

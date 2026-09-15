@@ -593,6 +593,7 @@ export async function prepareAgentRunDispatch(params: {
       assertCompletionCurrent: () => assertInputOwnerCurrent(true),
       abortSignal: activeRunAbort.controller.signal,
       getAbortStopReason: () => activeRunAbort.entry?.abortStopReason ?? "rpc",
+      deferTimeoutCompletion: activeRunAbort.deferTimeoutCompletion,
       privateCompletion: params.privateCompletion,
       request: params.request,
       cfg: params.cfg,
@@ -675,6 +676,7 @@ export async function prepareAgentRunDispatch(params: {
   const cronCreatorAuthority = resolveGatewayCronCreatorAuthorityAdmission({
     runId: params.runId,
     resolvedSessionKey: params.resolvedSessionKey,
+    sessionId: params.getAdmittedSessionId(),
     spawnedBy: params.sessionEntry?.spawnedBy,
     client: params.client,
     request: params.request,

@@ -172,7 +172,7 @@ const execFile = vi.fn((...args: unknown[]) => {
 });
 const spawn = vi.fn();
 const { defaultRuntime: runtimeCapture, resetRuntimeCapture } = createCliRuntimeCapture();
-const serviceEnvSnapshot = captureEnv([
+const fixtureEnvSnapshot = captureEnv([
   ...SUPERVISOR_HINT_ENV_VARS,
   "OPENCLAW_COMPATIBILITY_HOST_VERSION",
   "OPENCLAW_UPDATE_RUN_HANDOFF",
@@ -180,6 +180,8 @@ const serviceEnvSnapshot = captureEnv([
   "OPENCLAW_SERVICE_KIND",
   GATEWAY_SERVICE_RUNTIME_PID_ENV,
   ...GATEWAY_SERVICE_SELECTOR_ENV_KEYS,
+  "NPM_CONFIG_GLOBALCONFIG",
+  "npm_config_globalconfig",
 ]);
 
 vi.mock("@clack/prompts", () => ({
@@ -824,6 +826,8 @@ describe("update-cli", () => {
   const fixtureRoot = fsSync.realpathSync(
     fsSync.mkdtempSync(path.join(os.tmpdir(), "openclaw-update-tests-")),
   );
+  const globalNpmConfig = path.join(fixtureRoot, "global-npmrc");
+  fsSync.writeFileSync(globalNpmConfig, "");
   const profileStateDir = (profile = "default") =>
     path.join(
       expectDefined(process.env.HOME, "isolated test home"),
@@ -2065,15 +2069,11 @@ describe("update-cli", () => {
     // Clear the helper's state selector below so HOME and profile overrides keep their semantics.
     const { createTempHomeEnv } = await import("../test-utils/temp-home.js");
     tempHome = await createTempHomeEnv("openclaw-update-cli-home-");
+    // Fresh homes must not repeatedly discover the host's global npm policy.
+    process.env.NPM_CONFIG_GLOBALCONFIG = globalNpmConfig;
+    process.env.npm_config_globalconfig = globalNpmConfig;
     const executorTmp = tempDirs.make("update-cli-owner-");
     absentServicePort = await getFreePort();
-    const gatewayEntrypoint = await import("../daemon/gateway-entrypoint.js");
-    const actualGatewayEntrypoint = await vi.importActual<
-      typeof import("../daemon/gateway-entrypoint.js")
-    >("../daemon/gateway-entrypoint.js");
-    vi.mocked(gatewayEntrypoint.resolveGatewayInstallEntrypoint).mockImplementation(
-      actualGatewayEntrypoint.resolveGatewayInstallEntrypoint,
-    );
     delete process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION;
     delete process.env.OPENCLAW_SERVICE_MARKER;
     delete process.env.OPENCLAW_SERVICE_KIND;
@@ -2353,7 +2353,7 @@ describe("update-cli", () => {
   });
 
   afterAll(async () => {
-    serviceEnvSnapshot.restore();
+    fixtureEnvSnapshot.restore();
     await fs.rm(fixtureRoot, { recursive: true, force: true });
   });
 
@@ -7664,7 +7664,7 @@ describe("update-cli", () => {
     ).toMatchObject({ status: "succeeded", downtimeMs: 0 });
   });
 
-  it("keeps an explicit same-version channel no-op skipped without rewriting config", async () => {
+  it("keeps an explicit same-version channel no-op skipped without snapshot capacity or config rewrites", async () => {
     const root = await mockPackageInstallAtCaseDir("openclaw-current-package", VERSION);
     const stateDir = tempDirs.make("openclaw-update-channel-noop-");
     initializeExistingUpdateProfile({ ...process.env, OPENCLAW_STATE_DIR: stateDir });
@@ -7677,6 +7677,8 @@ describe("update-cli", () => {
       update: { channel: "beta" },
     });
     mockRunningManagedGateway(["node", path.join(root, "dist", "index.js"), "gateway", "run"]);
+
+    vi.spyOn(fsSync, "statfsSync").mockReturnValue(statfsFixture({ bavail: 0 }));
 
     await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
       await updateCommand({ channel: "beta", yes: true, restart: true, json: true });
@@ -7772,7 +7774,7 @@ describe("update-cli", () => {
     expect(packageInstallCommandCall()?.[0]).toBeUndefined();
   });
 
-  it("warns but still runs package updates when disk space looks low", async () => {
+  it("records low disk space before target lookup and still runs package updates", async () => {
     await mockPackageInstallAtCaseDir();
     mockCurrentProcessFreshDoctor();
     vi.spyOn(fsSync, "statfsSync").mockReturnValue(
@@ -7781,9 +7783,28 @@ describe("update-cli", () => {
         bsize: 1024 * 1024,
       }),
     );
+    const targetLookups: Array<{ output: string; steps: UpdateRunRecord["steps"] }> = [];
+    const resolveTag = vi.mocked(resolveNpmChannelTag).getMockImplementation()!;
+    vi.mocked(resolveNpmChannelTag).mockImplementation(async (...args) => {
+      targetLookups.push({
+        output: getLogOutput(),
+        steps: listUpdateRuns({ limit: 1 })[0]?.steps ?? [],
+      });
+      return await resolveTag(...args);
+    });
 
     await updateCommand({ yes: true });
 
+    expect(targetLookups).toContainEqual({
+      output: expect.stringContaining("Low disk space near"),
+      steps: expect.arrayContaining([
+        expect.objectContaining({
+          step: "warning:disk-space-preflight",
+          status: "completed",
+          detail: expect.stringContaining("256 MiB available"),
+        }),
+      ]),
+    });
     expectPackageInstallSpec("openclaw@9999.0.0");
     const preflightParams = vi
       .mocked(fetchNpmPackageTargetStatus)
@@ -7797,8 +7818,84 @@ describe("update-cli", () => {
     );
     expect(packageInstallCommandCall()?.[1].env).toBe(preflightParams?.env);
     expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
-    expect(getLogOutput()).toContain("Low disk space near");
   });
+
+  it.each(["insufficient", "alternative", "unknown", "plenty", "package-only"] as const)(
+    "checks initial snapshot capacity before staging (%s)",
+    async (scenario) => {
+      const pkgRoot = await mockPackageInstallAtCaseDir();
+      initializeExistingUpdateProfile();
+      const stateDir = await fs.realpath(profileStateDir());
+      const captureDir = `${stateDir}.update-captures`;
+      await fs.mkdir(captureDir);
+      vi.stubEnv("TMPDIR", tempDirs.make("initial-snapshot-temp-"));
+      vi.spyOn(fsSync, "statfsSync").mockImplementation((checkedPath) => {
+        if (scenario === "unknown") {
+          throw new Error("capacity unavailable");
+        }
+        const location = String(checkedPath);
+        const low =
+          scenario === "insufficient" ||
+          (scenario === "alternative" && location !== captureDir) ||
+          (scenario === "package-only" && location === path.dirname(pkgRoot));
+        return statfsFixture({ bavail: low ? 32 : 2048, bsize: 1024 * 1024 });
+      });
+      const allocate = vi.spyOn(fs, "mkdtemp");
+
+      const update = updateCommand({ yes: true, json: true });
+      if (scenario === "insufficient") {
+        await expect(update).rejects.toMatchObject({ code: 1 });
+      } else {
+        await update;
+      }
+
+      const record = listUpdateRuns({ limit: 1 })[0];
+      if (scenario === "insufficient") {
+        expect(lastWriteJsonCall()).toMatchObject({
+          status: "error",
+          reason: "snapshot-capacity-insufficient",
+        });
+        expect(packageInstallCommandCall()).toBeUndefined();
+        expect(
+          allocate.mock.calls.some(
+            ([prefix]) =>
+              prefix.includes(".openclaw.update-stage-") ||
+              prefix.includes("openclaw-update-canary-"),
+          ),
+        ).toBe(false);
+        expect(record).toMatchObject({
+          status: "failed",
+          reason: "snapshot-capacity-insufficient",
+        });
+        expect(record?.steps).toContainEqual(
+          expect.objectContaining({
+            step: "snapshot-space-preflight",
+            status: "failed",
+            snapshotCapacity: expect.objectContaining({
+              pluginBytes: null,
+              candidates: expect.arrayContaining([
+                expect.objectContaining({ availableBytes: 32 * 1024 * 1024 }),
+              ]),
+            }),
+          }),
+        );
+        expect(getErrorOutput()).toContain("bytes needed");
+        expect(getErrorOutput()).toContain("33554432 bytes free");
+        expect(getErrorOutput()).toContain("SQLite family");
+      } else {
+        expectPackageInstallSpec("openclaw@9999.0.0");
+        expect(lastWriteJsonCall()).toMatchObject({ status: "ok" });
+        expect(record?.steps).toContainEqual(
+          expect.objectContaining({
+            step: "warning:snapshot-space-preflight",
+            detail: expect.stringContaining("Snapshot capacity estimate incomplete"),
+          }),
+        );
+        expect(getErrorOutput()).toContain("SQLite family");
+        expect(getErrorOutput()).toContain("openclaw.sqlite");
+      }
+    },
+  );
 
   const packageUpdateInGatewayMessage = [
     "Package updates cannot run from inside the gateway service process.",
@@ -8621,7 +8718,6 @@ describe("update-cli", () => {
         timeoutMs: 30_000,
         startedAt: Date.now(),
         progress: {},
-        jsonMode: true,
         managedServiceEnv: { OPENCLAW_CONFIG_PATH: managedConfig },
         validateCandidate: async () => [],
         beforeActivate: async () => {},
@@ -13153,12 +13249,12 @@ describe("update-cli", () => {
     },
   );
 
-  it("explains why git updates cannot run with edited files", async () => {
+  it.each(["error", "skipped"] as const)("explains edited files (%s)", async (status) => {
     vi.mocked(defaultRuntime.log).mockClear();
     vi.mocked(defaultRuntime.error).mockClear();
     vi.mocked(defaultRuntime.exit).mockClear();
     vi.mocked(runGatewayUpdate).mockResolvedValue({
-      status: "skipped",
+      status,
       mode: "git",
       reason: "dirty",
       steps: [],
@@ -13168,15 +13264,13 @@ describe("update-cli", () => {
     await expect(updateCommand({ channel: "dev" })).rejects.toEqual(new ExitError(1));
 
     const logs = getLogOutput();
-    expect(logs).toContain("OpenClaw update skipped: dirty.");
+    expect(logs).toContain(`OpenClaw update ${status === "error" ? "failed" : "skipped"}: dirty.`);
     expect(logs).toContain(
-      "Git-based updates need a clean working tree before they can switch commits, fetch, or rebase.",
+      "Local changes prevented this update before installation. Your checkout was preserved.",
     );
-    expect(logs).toContain(
-      "Commit, stash, or discard the local changes, then rerun `openclaw update`.",
-    );
+    expect(logs).toContain("Commit your changes and retry, or run `openclaw triage` for help.");
     expect(listUpdateRuns({ limit: 1 })[0]?.origin.nextAction).toContain(
-      "Commit, stash, or discard the local changes",
+      "Commit your changes and retry",
     );
     expect(serviceStop).not.toHaveBeenCalled();
     expect(defaultRuntime.exit).not.toHaveBeenCalled();

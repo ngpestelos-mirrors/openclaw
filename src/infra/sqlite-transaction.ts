@@ -1,4 +1,5 @@
 // Provides SQLite transaction helpers with nested savepoints.
+import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isMainThread, threadId } from "node:worker_threads";
@@ -8,6 +9,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 // The cache-state module keeps this lifecycle edge off the kysely value graph
 // so cold control-plane paths using transactions do not load kysely.
 import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state.js";
+import { normalizeWindowsPathPreservingCase } from "./path-guards.js";
 import {
   readSqliteBusyTimeout,
   runWithSqliteBusyTimeout,
@@ -43,6 +45,26 @@ const writeAdmissionServices = resolveGlobalSingleton(
   Symbol.for("openclaw.sqliteWriteAdmissionServices"),
   () => new Map<string, Set<() => void>>(),
 );
+const writeAdmissionLocations = new WeakMap<DatabaseSync, string | null>();
+
+function writeAdmissionLocation(database: DatabaseSync): string | null {
+  const cached = writeAdmissionLocations.get(database);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const location = database.location();
+  // A native handle's filename is stable; normalize namespace aliases once, without filesystem IO.
+  const normalized =
+    location !== null && process.platform === "win32"
+      ? normalizeWindowsPathPreservingCase(location)
+      : location;
+  const canonical =
+    process.platform === "win32" && normalized !== null && !path.win32.isAbsolute(normalized)
+      ? location
+      : normalized;
+  writeAdmissionLocations.set(database, canonical);
+  return canonical;
+}
 
 /** Keep worker-owned lock holders serviceable across connections and module graphs. */
 export async function withSqliteWriteAdmissionService<T>(
@@ -50,7 +72,7 @@ export async function withSqliteWriteAdmissionService<T>(
   service: () => void,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const location = database.location();
+  const location = writeAdmissionLocation(database);
   if (location === null) {
     throw new Error("SQLite write admission service requires a file-backed database");
   }
@@ -88,8 +110,7 @@ function beginImmediateTransaction(
   db: DatabaseSync,
   diagnostics: SqliteBeginAdmissionDiagnostics,
 ): void {
-  // Native location identifies reopened handles without probing the filesystem.
-  const location = writeAdmissionServices.size > 0 ? db.location() : null;
+  const location = writeAdmissionServices.size > 0 ? writeAdmissionLocation(db) : null;
   const services = location === null ? undefined : writeAdmissionServices.get(location);
   if (!services) {
     execNativeBegin(db, diagnostics);
@@ -127,6 +148,8 @@ function beginImmediateTransaction(
 }
 
 export type SqliteTransactionOptions = {
+  /** Already-started BEGIN budget, carried between workers in the same process. */
+  beginDeadlineNs?: bigint;
   busyTimeoutMs?: number;
   databaseLabel?: string;
   logger?: Pick<SubsystemLogger, "warn">;
@@ -411,6 +434,11 @@ export async function runSqliteImmediateTransaction<T>(
     throw new Error("Asynchronous SQLite preparation cannot join an existing transaction");
   }
   const deadline = performance.now() + readSqliteBusyTimeout(db);
+  const inheritedDeadlineNs = options?.beginDeadlineNs;
+  const remainingMs =
+    inheritedDeadlineNs === undefined
+      ? () => deadline - performance.now()
+      : () => Number(inheritedDeadlineNs - process.hrtime.bigint()) / 1_000_000;
   let entered = false;
   while (true) {
     const operation = await prepare();
@@ -445,13 +473,13 @@ export async function runSqliteImmediateTransaction<T>(
         );
       });
     } catch (error) {
-      if (entered || !isSqliteLockError(error) || performance.now() >= deadline) {
+      if (entered || !isSqliteLockError(error) || remainingMs() <= 0) {
         throw error;
       }
       // The synchronous helper restored connection policy and left no transaction.
-      await sleep(Math.min(25, Math.max(0, deadline - performance.now())));
+      await sleep(Math.min(25, Math.max(0, remainingMs())));
       assertTransactionUsable(db);
-      if (performance.now() >= deadline) {
+      if (remainingMs() <= 0) {
         throw error;
       }
     }

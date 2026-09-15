@@ -14,6 +14,12 @@ Availability checks and the durable record every update leaves behind. Part of t
 Show the active update channel, git tag/branch/SHA (source checkouts only),
 update availability, and the active or most recent update report.
 
+Status also shows current pending plugin migrations and their repair commands,
+including when an older updater did not record those warnings in its run history.
+JSON exposes them as `migrationWarnings`; they clear when the plugin migration
+completes. If migration state cannot be read, `migrationWarningsError` reports
+that failure while availability and run history remain visible.
+
 ```bash
 openclaw update status
 openclaw update status --json
@@ -60,8 +66,9 @@ there are no active or past runs, and status does not repair unreadable history.
 Status can reconcile an untouched, identityless legacy admission after more than
 24 hours if it remains at its initial `requested/in_progress` step and has no
 retained recovery descriptor. The row stays in history as `failed` with reason
-`legacy-driver-expired`, and status shows a retry advisory. Other history remains
-read-only.
+`legacy-driver-expired`. Status shows retry guidance when that row is the current
+run. When another run is current, status keeps a historical notice without retry
+instructions, including after a later successful update. Other history remains read-only.
 
 When the active row has been inactive for more than 30 minutes and its recorded
 driver is verifiably dead, status also reports `abandonedRun` with its `runId`
@@ -90,6 +97,21 @@ old run. See [Updating](/install/updating#stale-update-history).
 Human output, chat completion notices, the Control UI update view, and the
 `openclaw status` update line use the same report, including on success. The report shows recorded facts; an absent verification fact
 means that check has not been observed.
+
+An unsuccessful identity check is reported as a version or build mismatch only
+when the saved observed and expected values disagree. Missing identity evidence
+is reported as unavailable, including old runs whose updater saved only
+`versionMatch: false`.
+The Control UI's version badge shows **Not verified** for unavailable identity
+evidence and **Failed** for an observed version or build mismatch. This does not
+change the recorded update outcome.
+
+For failed runs, human status, completion notices, and reviewed failure reports
+also try a read-only health request to the recorded Gateway port. A response
+supersedes historical claims that the Gateway is stopped; it does not change the
+failed update outcome or verify rollback safety. Saved recovery advice is labeled
+historical, preserving config and migration constraints. If current health cannot
+be read, the report says so. JSON run records remain the original historical facts.
 
 Failed steps include bounded `failureFacts` when the updater observed a specific
 check, Doctor finding, package-manager error, service inspection reason, or plugin
@@ -164,6 +186,15 @@ Phases are `requested`, `staging`, `validating`, optional `repairing`, `activati
 automatic rollback cannot complete. Phase timings, repair attempts, and
 verification facts are included only when observed. Chat reports are limited to 1,500 characters;
 `update.runs.get` preserves the bounded record for detailed inspection.
+
+Standalone finalization and repair record the installed target version before
+Doctor runs. Failed Doctor steps retain the observed child exit code alongside
+the bounded, redacted failure reason; a terminated child can have a `null` exit
+code. Status and failure reports use these same recorded facts. The installed
+version is not proof of the version currently serving requests. Optional Doctor
+diagnostic failures remain warnings, while refused config writes and incomplete
+required migrations remain errors. Historical runs cannot recover facts that
+their updater never recorded.
 
 Current updaters record their process identities and refresh the ledger
 every 30 seconds during long build, install, and finalization phases. The Gateway checks for
