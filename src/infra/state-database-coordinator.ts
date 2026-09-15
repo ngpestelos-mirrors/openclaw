@@ -345,6 +345,9 @@ export function tryAcquireGatewayLifecycleCleanupCoordinator(
 
 /** The broker owns this pin until backend close acknowledges or worker exit joins. */
 export function tryCreateGatewaySchemaFenceDelegate(params: GatewaySchemaFenceDelegateParams) {
+  if (heldCoordinators.size === 0) {
+    return undefined;
+  }
   const coordinatorPath = resolveGatewaySchemaFencePath(params);
   const owner = heldCoordinators.get(coordinatorPath);
   if (!owner || owner.gatewayOwners === 0) {
@@ -413,6 +416,9 @@ export async function attachGatewaySchemaFenceDelegate(
 export function tryCreateStateLifecycleDelegate(
   params: Pick<GatewaySchemaFenceDelegateParams, "databasePath" | "actorId">,
 ) {
+  if (heldCoordinators.size === 0) {
+    return undefined;
+  }
   const coordinatorPath = resolveStateDatabaseCoordinatorPath({
     databasePath: params.databasePath,
     runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
