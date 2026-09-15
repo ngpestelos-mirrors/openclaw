@@ -486,10 +486,12 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
         });
         latestThoughtSignature = undefined;
       } else if (currentBlockType === "toolCall" && currentToolCall) {
-        try {
-          currentToolCall.arguments = JSON.parse(currentToolArgs || "{}");
-        } catch {
-          currentToolCall.arguments = { raw: currentToolArgs };
+        if (currentToolArgs.trim()) {
+          try {
+            currentToolCall.arguments = JSON.parse(currentToolArgs);
+          } catch {
+            currentToolCall.arguments = { raw: currentToolArgs };
+          }
         }
         stream.push({
           type: "toolcall_end",
@@ -638,8 +640,8 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
                 }
               }
             }
-          } else if (deltaType === "arguments") {
-            const argText = String(delta?.text ?? "");
+          } else if (deltaType === "arguments" || deltaType === "arguments_delta") {
+            const argText = String(delta?.arguments ?? delta?.text ?? "");
             if (currentBlockType !== "toolCall") {
               endCurrentBlock();
               currentBlockType = "toolCall";
@@ -659,6 +661,16 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
                 contentIndex: currentBlockIndex,
                 partial: output,
               });
+            }
+            if (
+              delta?.name &&
+              currentToolCall &&
+              (!currentToolCall.name || currentToolCall.name === "tool")
+            ) {
+              currentToolCall.name = String(delta.name);
+            }
+            if (delta?.id && currentToolCall) {
+              currentToolCall.id = String(delta.id);
             }
             currentToolArgs += argText;
             stream.push({
@@ -709,13 +721,18 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
             currentBlockIndex = output.content.length;
             const toolName = String(step.name ?? "tool");
             const toolCallId = String(step.id ?? nextToolCallId(toolName));
+            const stepArgs =
+              step.arguments && typeof step.arguments === "object"
+                ? (step.arguments as Record<string, unknown>)
+                : {};
+            const initialArgs = Object.keys(stepArgs).length > 0 ? JSON.stringify(stepArgs) : "";
             currentToolCall = {
               type: "toolCall",
               id: toolCallId,
               name: toolName,
-              arguments: (step.arguments as Record<string, unknown>) ?? {},
+              arguments: stepArgs,
             };
-            currentToolArgs = JSON.stringify(currentToolCall.arguments);
+            currentToolArgs = initialArgs;
             output.content.push(currentToolCall);
             stream.push({
               type: "toolcall_start",

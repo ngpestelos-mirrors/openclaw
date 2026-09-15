@@ -226,4 +226,47 @@ describe("google-interactions provider", () => {
     const toolCall = doneMessage?.content.find((c): c is ToolCall => c.type === "toolCall");
     expect(toolCall?.thoughtSignature).toBeUndefined();
   });
+
+  it("accumulates tool call arguments streamed across arguments_delta events", async () => {
+    const encoder = new TextEncoder();
+    const ssePayload = [
+      'data: {"event_type":"step.start","step":{"type":"function_call","id":"call_exec_1","name":"exec","arguments":{}}}\n\n',
+      'data: {"event_type":"step.delta","delta":{"type":"arguments_delta","arguments":"{\\"command\\":\\"ls "}}\n\n',
+      'data: {"event_type":"step.delta","delta":{"type":"arguments_delta","arguments":"-la\\"}"}}\n\n',
+      'data: {"event_type":"step.stop"}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(encoder.encode(ssePayload), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }),
+    );
+
+    const model = makeInteractionsModel();
+    const eventStream = streamGoogleInteractions(model, basicContext, {
+      apiKey: "test-api-key",
+    });
+
+    let doneMessage: AssistantMessage | null = null;
+    for await (const event of eventStream) {
+      if (event.type === "done") {
+        doneMessage = event.message;
+      }
+    }
+
+    expect(doneMessage).toBeDefined();
+    expect(doneMessage?.content).toEqual([
+      {
+        type: "toolCall",
+        id: "call_exec_1",
+        name: "exec",
+        arguments: { command: "ls -la" },
+      },
+    ]);
+  });
 });
