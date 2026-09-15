@@ -3,7 +3,10 @@
  * POST /v1beta/interactions
  */
 
+import fs from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
 import { getEnvApiKey } from "../env-api-keys.js";
 import { getAiTransportHost } from "../host.js";
 import { calculateCost } from "../model-utils.js";
@@ -340,6 +343,21 @@ export function buildGoogleInteractionsParams<T extends GoogleApiType>(
   return body;
 }
 
+function logGoogleInteractionsHttp(entry: Record<string, unknown>): void {
+  if (process.env.OPENCLAW_LOG_HTTP !== "1" && process.env.OPENCLAW_LOG_HTTP !== "true") {
+    return;
+  }
+  try {
+    const logPath =
+      process.env.OPENCLAW_LOG_HTTP_PATH?.trim() ||
+      path.join(os.homedir(), ".openclaw", "logs", "google-interactions-http.jsonl");
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.appendFileSync(logPath, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`);
+  } catch {
+    // Best-effort diagnostic logging; ignore file system errors.
+  }
+}
+
 export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(params: {
   stream: AssistantMessageEventStream;
   model: Model<T>;
@@ -388,6 +406,21 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
       ...options?.headers,
     };
 
+    const redactedHeaders = { ...headers };
+    if (redactedHeaders["x-goog-api-key"]) {
+      const key = redactedHeaders["x-goog-api-key"];
+      redactedHeaders["x-goog-api-key"] =
+        key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : "***";
+    }
+
+    logGoogleInteractionsHttp({
+      event: "http_request",
+      method: "POST",
+      url,
+      headers: redactedHeaders,
+      body,
+    });
+
     const response = await fetch(url, {
       method: "POST",
       headers,
@@ -395,8 +428,19 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
       signal: options?.signal,
     });
 
+    logGoogleInteractionsHttp({
+      event: "http_response",
+      status: response.status,
+      statusText: response.statusText,
+    });
+
     if (!response.ok) {
       const errorText = await response.text();
+      logGoogleInteractionsHttp({
+        event: "http_error",
+        status: response.status,
+        errorText,
+      });
       throw new Error(`Google Interactions API error HTTP ${response.status}: ${errorText}`);
     }
 
@@ -487,6 +531,11 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
         } catch {
           continue;
         }
+
+        logGoogleInteractionsHttp({
+          event: "sse_event",
+          data: event,
+        });
 
         const eventType = event.event_type || event.type;
 
