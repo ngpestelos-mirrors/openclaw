@@ -2,7 +2,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { sha256File } from "@openclaw/fs-safe/durability";
 import type { AnyAgentTool } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   ARCHIVE_LIMIT_ERROR_CODE,
@@ -50,12 +49,22 @@ async function computeFileSha256(filePath: string): Promise<string> {
   // Stream the hash so we never pull a whole large file into memory.
   // file_fetch caps single files at 16MB, but unpacked dir_fetch entries
   // share the 64MB uncompressed budget — better to stream regardless.
+  const hash = crypto.createHash("sha256");
   const handle = await fs.open(filePath, "r");
   try {
-    return (await sha256File(handle)).digest;
+    const chunkSize = 64 * 1024;
+    const buf = Buffer.allocUnsafe(chunkSize);
+    while (true) {
+      const { bytesRead } = await handle.read(buf, 0, chunkSize, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      hash.update(buf.subarray(0, bytesRead));
+    }
   } finally {
     await handle.close();
   }
+  return hash.digest("hex");
 }
 
 type UnpackedFileEntry = {
