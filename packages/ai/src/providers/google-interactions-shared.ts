@@ -190,6 +190,18 @@ export function buildGoogleInteractionsParams<T extends GoogleApiType>(
         steps.push({ type: "user_input", content });
       }
     } else if (msg.role === "assistant") {
+      if ((msg as AssistantMessage).stopReason === "error") {
+        continue;
+      }
+      const isFailedPlaceholder =
+        Array.isArray(msg.content) &&
+        msg.content.length === 1 &&
+        msg.content[0]?.type === "text" &&
+        msg.content[0]?.text?.includes("[assistant turn failed before producing content]");
+      if (isFailedPlaceholder) {
+        continue;
+      }
+
       let pendingTextParts: string[] = [];
       const flushText = () => {
         if (pendingTextParts.length > 0) {
@@ -255,6 +267,28 @@ export function buildGoogleInteractionsParams<T extends GoogleApiType>(
     }
   }
 
+  // Ensure that within any contiguous model turn (between user_input / function_result),
+  // all 'thought' steps appear before 'model_output' or 'function_call' steps.
+  const normalizedSteps: GoogleInteractionsStep[] = [];
+  let currentModelSegment: GoogleInteractionsStep[] = [];
+  const flushModelSegment = () => {
+    if (currentModelSegment.length > 0) {
+      const thoughts = currentModelSegment.filter((s) => s.type === "thought");
+      const others = currentModelSegment.filter((s) => s.type !== "thought");
+      normalizedSteps.push(...thoughts, ...others);
+      currentModelSegment = [];
+    }
+  };
+  for (const step of steps) {
+    if (step.type === "user_input" || step.type === "function_result") {
+      flushModelSegment();
+      normalizedSteps.push(step);
+    } else {
+      currentModelSegment.push(step);
+    }
+  }
+  flushModelSegment();
+
   const generation_config: GoogleInteractionsRequestBody["generation_config"] = {};
   if (options.temperature !== undefined) {
     generation_config.temperature = options.temperature;
@@ -286,7 +320,7 @@ export function buildGoogleInteractionsParams<T extends GoogleApiType>(
 
   const body: GoogleInteractionsRequestBody = {
     model: model.id,
-    input: steps,
+    input: normalizedSteps,
     store: false,
     stream: true,
   };
@@ -325,10 +359,19 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
       process.env.GEMINI_API_KEY ||
       process.env.GOOGLE_API_KEY ||
       "";
-    const body = buildGoogleInteractionsParams(model, context, options);
+    let body = buildGoogleInteractionsParams(model, context, options);
+    const nextBody = await options?.onPayload?.(body, model);
+    if (nextBody !== undefined && nextBody !== null && typeof nextBody === "object") {
+      body = nextBody as GoogleInteractionsParams;
+    }
 
-    const baseUrl = model.baseUrl || "https://generativelanguage.googleapis.com/v1beta";
-    const url = `${baseUrl.replace(/\/+$/, "")}/interactions?alt=sse`;
+    let baseUrl = (model.baseUrl || "https://generativelanguage.googleapis.com/v1beta")
+      .trim()
+      .replace(/\/+$/, "");
+    if (/^https:\/\/generativelanguage\.googleapis\.com$/i.test(baseUrl)) {
+      baseUrl = "https://generativelanguage.googleapis.com/v1beta";
+    }
+    const url = `${baseUrl}/interactions?alt=sse`;
 
     const googleClientHeaders = resolveGoogleApiClientHeaders({
       baseUrl,
