@@ -1,6 +1,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { root as fsSafeRoot, type Root } from "@openclaw/fs-safe/root";
 import { describe, expect, it, vi } from "vitest";
 import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.ts";
 import { withTestDir } from "../test-helpers/temp-dir.js";
@@ -844,17 +845,23 @@ describe("package update recovery safety", () => {
       await fs.mkdir(binDir, { recursive: true });
       await fs.writeFile(targetShim, "old openclaw\n", "utf8");
       await fs.writeFile(targetCmdShim, "old openclaw.cmd\n", "utf8");
-      const copyFile = fs.copyFile.bind(fs);
-      const copyFileSpy = vi.spyOn(fs, "copyFile").mockImplementation(async (...args) => {
-        const source = String(args[0]);
-        if (
-          path.basename(source) === "openclaw.cmd" &&
-          path.basename(path.dirname(source)).startsWith(".openclaw.shim-backup-")
-        ) {
-          throw Object.assign(new Error("launcher restoration denied"), { code: "EACCES" });
-        }
-        return await copyFile(...args);
-      });
+      const prototype = Object.getPrototypeOf(await fsSafeRoot(base)) as Root;
+      // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted Root receiver to preserve its path and mutation authority.
+      const copy = prototype.copyIn;
+      let injections = 0;
+      const copySpy = vi
+        .spyOn(prototype, "copyIn")
+        .mockImplementation(async function (this: Root, destination, source, options) {
+          if (
+            typeof source === "string" &&
+            path.basename(source) === "openclaw.cmd" &&
+            path.basename(path.dirname(source)).startsWith(".openclaw.shim-backup-")
+          ) {
+            injections += 1;
+            throw Object.assign(new Error("launcher restoration denied"), { code: "EACCES" });
+          }
+          await copy.call(this, destination, source, options);
+        });
       let result: Awaited<ReturnType<typeof runGlobalPackageUpdateSteps>>;
       try {
         result = await runGlobalPackageUpdateSteps({
@@ -899,9 +906,10 @@ describe("package update recovery safety", () => {
           timeoutMs: 1000,
         });
       } finally {
-        copyFileSpy.mockRestore();
+        copySpy.mockRestore();
       }
 
+      expect(injections).toBe(1);
       expect(result.failedStep).toMatchObject({ name: "global install swap", exitCode: 1 });
       expect(result.failedStep).toMatchObject({
         failureFacts: [expect.objectContaining({ check: "package-swap", code: "swap-failed" })],

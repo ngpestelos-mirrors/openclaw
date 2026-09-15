@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { root as fsSafeRoot, type Root } from "@openclaw/fs-safe/root";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Command } from "commander";
@@ -8429,13 +8430,22 @@ describe("update-cli", () => {
         await fs.writeFile(targetShim, "old shim\n");
       }
       let stagedShim: string | undefined;
-      const copyFile = fs.copyFile.bind(fs);
-      const copyFileSpy = vi.spyOn(fs, "copyFile").mockImplementation(async (...args) => {
-        if (String(args[0]) === stagedShim) {
-          throw new Error("staged shim copy failed");
-        }
-        return await copyFile(...args);
-      });
+      const prototype = Object.getPrototypeOf(await fsSafeRoot(tempDir)) as Root;
+      // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted Root receiver to preserve its path and mutation authority.
+      const copy = prototype.copyIn;
+      let injections = 0;
+      const copySpy = vi
+        .spyOn(prototype, "copyIn")
+        .mockImplementation(async function (this: Root, destination, source, options) {
+          if (source === stagedShim) {
+            injections += 1;
+            expect(
+              JSON.parse(await fs.readFile(path.join(pkgRoot, "package.json"), "utf8")).version,
+            ).toBe("2026.8.1");
+            throw new Error("staged shim copy failed");
+          }
+          await copy.call(this, destination, source, options);
+        });
       readPackageVersion.mockResolvedValue("2026.7.1");
       primeNpmChannelTag("latest", "2026.8.1");
       mockNpmGlobalCommands(nodeModules, async (argv) => {
@@ -8481,9 +8491,10 @@ describe("update-cli", () => {
       try {
         await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
       } finally {
-        copyFileSpy.mockRestore();
+        copySpy.mockRestore();
       }
 
+      expect(injections).toBe(failure === "shim swap" ? 1 : 0);
       expect(defaultRuntime.exit).not.toHaveBeenCalled();
       expect(doctorCommandCall()).toBeUndefined();
       expect(updateNpmInstalledPlugins).not.toHaveBeenCalled();

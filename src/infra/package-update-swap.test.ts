@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { root as fsSafeRoot, type Root } from "@openclaw/fs-safe/root";
 import { describe, expect, it, vi } from "vitest";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { swapStagedPackageInstall, type PackageUpdateTransaction } from "./package-update-swap.js";
@@ -96,21 +97,25 @@ describe("launcher backup capture", () => {
       const originals = await Promise.all(
         [packageRoot, launcher, secondLauncher].map(async (entry) => (await fs.lstat(entry)).ino),
       );
-      const copyFile = fs.copyFile.bind(fs);
+      const prototype = Object.getPrototypeOf(await fsSafeRoot(base)) as Root;
+      // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted Root receiver to preserve its path and mutation authority.
+      const copyIn = prototype.copyIn;
       let firstBackup: string | undefined;
-      const copy = vi.spyOn(fs, "copyFile").mockImplementation(async (...args) => {
-        if (String(args[0]) === secondLauncher) {
-          const backupDir = (await fs.readdir(globalRoot)).find((entry) =>
-            entry.startsWith(".openclaw.shim-backup-"),
-          );
-          if (!backupDir) {
-            throw new Error("missing partial launcher backup");
+      const copy = vi
+        .spyOn(prototype, "copyIn")
+        .mockImplementation(async function (this: Root, destination, source, options) {
+          if (source === secondLauncher) {
+            const backupDir = (await fs.readdir(globalRoot)).find((entry) =>
+              entry.startsWith(".openclaw.shim-backup-"),
+            );
+            if (!backupDir) {
+              throw new Error("missing partial launcher backup");
+            }
+            firstBackup = await fs.readFile(path.join(globalRoot, backupDir, "openclaw"), "utf8");
+            throw new Error("second launcher backup refused");
           }
-          firstBackup = await fs.readFile(path.join(globalRoot, backupDir, "openclaw"), "utf8");
-          throw new Error("second launcher backup refused");
-        }
-        return copyFile(...args);
-      });
+          await copyIn.call(this, destination, source, options);
+        });
       const beforeActivate = vi.fn();
       const onLiveMutation = vi.fn();
       const onTransaction = vi.fn();

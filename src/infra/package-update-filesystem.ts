@@ -1,11 +1,40 @@
+import fsSync, { type BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { FsSafeError } from "@openclaw/fs-safe/errors";
+import { root as fsSafeRoot } from "@openclaw/fs-safe/root";
 import { hasErrnoCode } from "./errors.js";
+import { isRemovalIoError, removePathWithinRoot } from "./fs-safe-remove.js";
+import { retainMutationAuthority } from "./mutation-authority.js";
 import type { createPackageIntegrityReader } from "./package-update-integrity.js";
 import type { StagedPackageSwapParams } from "./package-update-swap-contract.js";
 import { movePathWithCopyFallback } from "./replace-file.js";
 
 export const PACKAGE_MANAGER_SWAP_SOURCE_HARDLINKS = "allow" as const;
+
+function assertPackagePathIdentity(filePath: string, expected: BigIntStats | undefined): void {
+  let current: BigIntStats | undefined;
+  try {
+    current = fsSync.lstatSync(filePath, { bigint: true, throwIfNoEntry: false });
+  } catch (cause) {
+    throw new FsSafeError("path-mismatch", `package path could not be verified: ${filePath}`, {
+      cause: cause instanceof Error ? cause : undefined,
+    });
+  }
+  if (
+    expected
+      ? !current ||
+        current.dev !== expected.dev ||
+        current.ino !== expected.ino ||
+        current.isDirectory() !== expected.isDirectory() ||
+        current.isSymbolicLink() !== expected.isSymbolicLink() ||
+        (process.platform === "win32" &&
+          (current.dev === 0n || current.ino === 0n || expected.dev === 0n || expected.ino === 0n))
+      : current !== undefined
+  ) {
+    throw new FsSafeError("path-mismatch", `package path changed: ${filePath}`);
+  }
+}
 
 export async function packagePathEntryExists(targetPath: string): Promise<boolean> {
   try {
@@ -52,7 +81,8 @@ export async function activateStagedNpmPackageRoot(
   if (assertCurrent) {
     // A durable descriptor binds the staged inode. A copied replacement would
     // invalidate that evidence and cannot be silently admitted for recovery.
-    assertCurrent();
+    const assertOwner = retainMutationAuthority(assertCurrent);
+    assertOwner();
     await fs.rename(source, destination);
     return;
   }
@@ -77,10 +107,18 @@ export async function activateStagedNpmPackageRoot(
 }
 
 export function removePackagePath(target: string, assertCurrent = () => {}): Promise<void> {
-  assertCurrent();
-  return fs.rm(target, {
+  const assertOwner = retainMutationAuthority(assertCurrent);
+  assertOwner();
+  if (!fsSync.lstatSync(target, { throwIfNoEntry: false })) {
+    return Promise.resolve();
+  }
+  return removePathWithinRoot({
+    rootDir: path.dirname(target),
+    relativePath: path.basename(target),
     recursive: true,
     force: true,
+    symlinks: "unlink",
+    assertBeforeMutation: assertOwner,
     maxRetries: process.platform === "win32" ? 5 : 2,
     retryDelay: 100,
   });
@@ -89,40 +127,144 @@ export function removePackagePath(target: string, assertCurrent = () => {}): Pro
 export async function copyPackagePathEntry(
   source: string,
   destination: string,
-  assertCurrent = () => {},
+  assertCaller = () => {},
 ): Promise<void> {
-  const stat = await fs.lstat(source);
+  const assertCurrent = retainMutationAuthority(assertCaller);
   assertCurrent();
-  if (stat.isDirectory()) {
-    await removePackagePath(destination, assertCurrent);
-    assertCurrent();
-    await fs.cp(source, destination, { recursive: true, force: true, preserveTimestamps: false });
-    return;
+  const sourceIdentity = fsSync.lstatSync(source, { bigint: true });
+  const destinationParent = await fs.realpath(path.dirname(destination));
+  assertCurrent();
+  const parentIdentity = fsSync.lstatSync(destinationParent, { bigint: true });
+  if (!parentIdentity.isDirectory() || parentIdentity.isSymbolicLink()) {
+    throw new FsSafeError("path-mismatch", "package destination parent changed");
   }
-  // A partial launcher cannot be reconciled as either generation. Prepare its
-  // replacement beside the destination so publication leaves exact old or new bytes.
-  const staging = await fs.mkdtemp(path.join(path.dirname(destination), ".openclaw-shim-stage-"));
-  const staged = path.join(staging, "entry");
-  try {
-    if (stat.isSymbolicLink()) {
-      const target = await fs.readlink(source);
-      assertCurrent();
-      await fs.symlink(target, staged);
-      if (process.platform === "darwin") {
-        // macOS applies umask to symlinks; preserve the link, never chmod its target.
-        assertCurrent();
-        await fs.lchmod(staged, stat.mode);
-      }
-    } else {
-      assertCurrent();
-      await fs.copyFile(source, staged);
-      assertCurrent();
-      await fs.chmod(staged, stat.mode);
-    }
+  const target = path.join(destinationParent, path.basename(destination));
+  let destinationIdentity = fsSync.lstatSync(target, { bigint: true, throwIfNoEntry: false });
+  const assertParent = retainMutationAuthority(() => {
     assertCurrent();
-    await fs.rename(staged, destination);
+    assertPackagePathIdentity(destinationParent, parentIdentity);
+  });
+  // Prepare complete files and directories privately. Even fs-safe's native copy
+  // can finish metadata after publication; none of that may touch a live launcher.
+  assertParent();
+  const staging = await fs.mkdtemp(path.join(destinationParent, ".openclaw-shim-stage-"));
+  const stagingIdentity = fsSync.lstatSync(staging, { bigint: true });
+  const staged = path.join(staging, "entry");
+  const assertStaging = () => {
+    assertParent();
+    assertPackagePathIdentity(staging, stagingIdentity);
+  };
+  let failure: { error: unknown } | undefined;
+  try {
+    const stagedRoot = await fsSafeRoot(staging, { assertBeforeMutation: assertStaging });
+    assertStaging();
+    const copyEntry = async (
+      from: string,
+      relativePath: string,
+      identity: BigIntStats,
+      assertParents: () => void,
+      nested: boolean,
+    ): Promise<void> => {
+      const assertEntry = () => {
+        assertParents();
+        assertPackagePathIdentity(from, identity);
+      };
+      assertEntry();
+      const to = path.join(staging, relativePath);
+      if (identity.isDirectory()) {
+        await stagedRoot.mkdir(relativePath, { assertBeforeMutation: assertEntry });
+        assertEntry();
+        const directoryIdentity = fsSync.lstatSync(to, { bigint: true });
+        const assertDirectory = () => {
+          assertEntry();
+          assertPackagePathIdentity(to, directoryIdentity);
+        };
+        const names = (await fs.readdir(from)).toSorted();
+        assertDirectory();
+        const children = names.map((name) => ({
+          name,
+          identity: fsSync.lstatSync(path.join(from, name), { bigint: true }),
+        }));
+        for (const child of children) {
+          await copyEntry(
+            path.join(from, child.name),
+            path.join(relativePath, child.name),
+            child.identity,
+            assertDirectory,
+            true,
+          );
+        }
+        assertDirectory();
+        await fs.chmod(to, Number(identity.mode));
+      } else if (identity.isSymbolicLink()) {
+        let linkTarget = await fs.readlink(from);
+        assertEntry();
+        // Match fs.cp's directory-tree links; standalone launcher links keep
+        // their authored spelling because they return to their original location.
+        if (nested && !path.isAbsolute(linkTarget)) {
+          linkTarget = path.resolve(path.dirname(from), linkTarget);
+        }
+        await fs.symlink(linkTarget, to);
+        if (process.platform === "darwin") {
+          const linkIdentity = fsSync.lstatSync(to, { bigint: true });
+          assertEntry();
+          assertPackagePathIdentity(to, linkIdentity);
+          await fs.lchmod(to, Number(identity.mode));
+        }
+      } else if (identity.isFile()) {
+        await stagedRoot.copyIn(relativePath, from, {
+          assertBeforeMutation: assertEntry,
+          sourceHardlinks: PACKAGE_MANAGER_SWAP_SOURCE_HARDLINKS,
+          preserveSourceMode: true,
+          mkdir: false,
+          durable: false,
+        });
+      } else {
+        throw new Error(`Unsupported package entry: ${from}`);
+      }
+      assertEntry();
+    };
+    await copyEntry(source, "entry", sourceIdentity, assertStaging, false);
+    assertStaging();
+    const stagedIdentity = fsSync.lstatSync(staged, { bigint: true });
+    assertPackagePathIdentity(target, destinationIdentity);
+    if (sourceIdentity.isDirectory()) {
+      await removePackagePath(
+        target,
+        retainMutationAuthority(() => {
+          assertStaging();
+          // The last owned unlink may already have removed the target. Missing
+          // is safe here; replacing it with a different object is never safe.
+          if (fsSync.lstatSync(target, { throwIfNoEntry: false })) {
+            assertPackagePathIdentity(target, destinationIdentity);
+          }
+        }),
+      );
+      destinationIdentity = undefined;
+    }
+    assertStaging();
+    assertPackagePathIdentity(staged, stagedIdentity);
+    assertPackagePathIdentity(target, destinationIdentity);
+    await fs.rename(staged, target);
+    assertParent();
+  } catch (error) {
+    failure = { error };
   } finally {
-    await removePackagePath(staging);
+    try {
+      await removePackagePath(staging, () => {
+        // Private cleanup keeps its captured objects, not the now-revoked or
+        // successor update lease. It cannot adopt a replacement staging tree.
+        assertPackagePathIdentity(destinationParent, parentIdentity);
+        if (fsSync.lstatSync(staging, { throwIfNoEntry: false })) {
+          assertPackagePathIdentity(staging, stagingIdentity);
+        }
+      });
+    } catch (error) {
+      failure ??= { error };
+    }
+  }
+  if (failure) {
+    throw failure.error;
   }
 }
 
@@ -202,7 +344,7 @@ export async function restoreNpmPackageRoot(params: {
   candidatePresent: boolean;
   assertCurrent?: () => void;
 }): Promise<void> {
-  const assertCurrent = params.assertCurrent ?? (() => {});
+  const assertCurrent = retainMutationAuthority(params.assertCurrent ?? (() => {}));
   if (params.candidatePresent) {
     assertCurrent();
     await fs.rename(params.liveRoot, params.displacedRoot);
@@ -226,25 +368,63 @@ export async function discardPackageUpdateBackup(
   backupPath: string,
   label: string,
   globalRoot: string,
-  assertCurrent = () => {},
+  assertCaller = () => {},
 ): Promise<string | null> {
-  try {
-    await removePackagePath(backupPath, assertCurrent);
+  const assertCurrent = retainMutationAuthority(assertCaller);
+  assertCurrent();
+  const backupIdentity = fsSync.lstatSync(backupPath, { bigint: true, throwIfNoEntry: false });
+  if (!backupIdentity) {
     return null;
-  } catch {
+  }
+  const backupParent = fsSync.realpathSync(path.dirname(backupPath));
+  const retiredParent = fsSync.realpathSync(globalRoot);
+  const parents = [backupParent, retiredParent].map((directory) => ({
+    directory,
+    identity: fsSync.lstatSync(directory, { bigint: true }),
+  }));
+  const backup = path.join(backupParent, path.basename(backupPath));
+  const assertParents = retainMutationAuthority(() => {
     assertCurrent();
+    for (const { directory, identity } of parents) {
+      assertPackagePathIdentity(directory, identity);
+    }
+  });
+  const assertBackup = retainMutationAuthority(() => {
+    assertParents();
+    if (fsSync.lstatSync(backup, { throwIfNoEntry: false })) {
+      assertPackagePathIdentity(backup, backupIdentity);
+    }
+  });
+  try {
+    await removePackagePath(backup, assertBackup);
+    return null;
+  } catch (error) {
+    assertBackup();
+    // A path/authority refusal is not an ordinary obsolete-backup cleanup error.
+    // Keep it at its original name instead of moving unowned bytes to retirement.
+    if (!isRemovalIoError(error)) {
+      throw error;
+    }
     const retiredPath = path.join(
-      globalRoot,
+      retiredParent,
       path.basename(backupPath).replace(/^\.openclaw\./, ".openclaw-"),
     );
     try {
       // npm may clean the disposable namespace on a later update. Only an
-      // already-obsolete backup can enter it; failure preserves the artifact.
-      assertCurrent();
-      await fs.rename(backupPath, retiredPath);
+      // already-obsolete captured object can enter it, never a replacement.
+      assertBackup();
+      assertPackagePathIdentity(backup, backupIdentity);
+      assertPackagePathIdentity(retiredPath, undefined);
+      await fs.rename(backup, retiredPath);
+      assertParents();
+      assertPackagePathIdentity(retiredPath, backupIdentity);
       return `preserved ${label} at ${retiredPath} for delayed cleanup`;
-    } catch {
-      assertCurrent();
+    } catch (retirementError) {
+      assertBackup();
+      assertPackagePathIdentity(backup, backupIdentity);
+      if (!isRemovalIoError(retirementError)) {
+        throw retirementError;
+      }
       return `preserved ${label} at ${backupPath}; remove it manually after verifying the installation`;
     }
   }
