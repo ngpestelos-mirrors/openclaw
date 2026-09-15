@@ -23,6 +23,11 @@ import {
   createCoordinatorDelegate,
   acquireDelegatedLifecycleCoordinator,
 } from "./state-database-coordinator-delegate.js";
+import type {
+  CoordinatorFamily,
+  CoordinatorOptions,
+  StateDatabaseCoordinatorLease,
+} from "./state-database-coordinator.types.js";
 
 type HeldCoordinator = {
   coordinator: SqliteCoordinatorLease;
@@ -60,23 +65,6 @@ const {
     ReadonlyMap<string, { active: boolean; assertCurrent: () => void }>
   >(),
 }));
-
-type CoordinatorFamily = "gateway-lifecycle" | "state-lifecycle" | "state-handles";
-type CoordinatorOptions = {
-  databasePath: string;
-  coordinatorPath?: string;
-  runtimeDirectory?: string;
-  uid?: number;
-  busyTimeoutMs?: number;
-  keepAlive?: boolean;
-};
-
-type StateDatabaseCoordinatorLease = {
-  path: string;
-  // A remaining reference can accept custody without closing the native handle.
-  readonly closed: boolean;
-  release: () => void;
-};
 
 export const StateDatabaseCoordinatorContentionError = resolveGlobalSingleton(
   Symbol.for("openclaw.stateDatabaseCoordinatorContentionError"),
