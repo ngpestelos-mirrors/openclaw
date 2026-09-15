@@ -488,8 +488,9 @@ describe("registered Codex catalog diagnostics", () => {
     }
   });
 
-  it("retires successful pagination observations and freezes the terminal failure without changing the error host", async () => {
+  it("sums repeated control phases and retires each call before late callbacks or page completion", async () => {
     const f = await fixture();
+    const thread = await f.thread("codex");
     let previous: CodexControlRequestObservation | undefined;
     commandRpcMocks.codexControlRequest.mockImplementation(
       async (
@@ -502,21 +503,46 @@ describe("registered Codex catalog diagnostics", () => {
         if (!observation) {
           throw new Error("expected the active control observation");
         }
-        clock += 1_100;
         if (!previous) {
+          clock += 50;
+          observation.phase("prepare");
+          for (let attempt = 0; attempt < 2; attempt++) {
+            clock += 25.25;
+            observation.phase("acquire-client");
+            clock += 100;
+            observation.phase("prepare");
+            clock += 25.25;
+            observation.phase("client-request");
+            clock += 300;
+            observation.phase("release-client");
+            clock += 50;
+            if (attempt === 0) {
+              observation.phase("prepare");
+            }
+          }
           previous = observation;
-          return { data: [], nextCursor: "next" };
+          return { data: [thread], nextCursor: "next" };
         }
         expect(observation).not.toBe(previous);
-        previous.failed({ phase: "release-client", category: "other" });
+        clock += 50;
+        observation.phase("prepare");
+        clock += 50;
+        observation.phase("acquire-client");
+        clock += 200;
         observation.phase("client-request");
+        clock += 600;
+        observation.phase("release-client");
+        clock += 100;
         observation.failed({ phase: "client-request", category: "rpc-method-unavailable" });
+        clock += 1_000;
+        previous.phase("prepare");
+        previous.failed({ phase: "release-client", category: "other" });
         observation.phase("release-client");
         observation.failed({ phase: "release-client", category: "deadline-observed" });
         throw new Error(privateText);
       },
     );
-    const hosts = await f.list("unmatched");
+    const hosts = await f.list(privateText);
     expect(hosts[0]).toMatchObject({
       connected: false,
       sessions: [],
@@ -530,9 +556,20 @@ describe("registered Codex catalog diagnostics", () => {
     expect(fields(pages[0])).toMatchObject({
       outcome: "rejected",
       controlRequestCalls: 2,
+      inclusiveControlRequestWaitMs: 3_051,
+      controlLoadMs: 100,
+      controlPrepareMs: 151,
+      controlAcquireClientMs: 400,
+      controlClientRequestMs: 1_200,
+      controlReleaseClientMs: 200,
+      postResponseMs: 0,
+      provenanceReadCalls: 1,
+      provenanceMs: 0,
       controlFailurePhase: "client-request",
       controlFailureCategory: "rpc-method-unavailable",
     });
+    expect(Object.keys(fields(pages[0])).length).toBeLessThanOrEqual(28);
+    expect(Buffer.byteLength(JSON.stringify(fields(pages[0])))).toBeLessThanOrEqual(2_048);
     expect(JSON.stringify({ hosts, records })).not.toContain(privateText);
   });
 

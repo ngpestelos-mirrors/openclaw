@@ -58,6 +58,11 @@ type PageFields = {
   controlFailureCategory?: CodexControlRequestFailureCategory;
   inclusiveControlRequestWaitMs?: number;
   inclusiveControlRequestWaitMaxMs?: number;
+  controlLoadMs?: number;
+  controlPrepareMs?: number;
+  controlAcquireClientMs?: number;
+  controlClientRequestMs?: number;
+  controlReleaseClientMs?: number;
   postResponseMs?: number;
   provenanceChecks: number;
   provenanceCacheHits: number;
@@ -68,6 +73,14 @@ type PageFields = {
 
 export type CodexCatalogListDiagnostics = Observation<ListFields>;
 export type CodexCatalogPageDiagnostics = Observation<PageFields>;
+
+const CONTROL_PHASE_FIELDS = {
+  "load-control": "controlLoadMs",
+  prepare: "controlPrepareMs",
+  "acquire-client": "controlAcquireClientMs",
+  "client-request": "controlClientRequestMs",
+  "release-client": "controlReleaseClientMs",
+} as const satisfies Record<CodexControlRequestPhase, keyof PageFields>;
 
 function enabled(): boolean {
   return areDiagnosticsEnabledForProcess() && log.isEnabled("warn");
@@ -223,14 +236,23 @@ export function startCodexCatalogControlRequestDiagnostics(
   }
   let state: "active" | "failed" | "closed" = "active";
   let phase: CodexControlRequestPhase = "load-control";
+  let phaseStarted = performance.now();
+  const finishPhase = () => {
+    const now = performance.now();
+    const field = CONTROL_PHASE_FIELDS[phase];
+    page.fields[field] = (page.fields[field] ?? 0) + (now - phaseStarted);
+    phaseStarted = now;
+  };
   const observation = {
     phase(next: CodexControlRequestPhase) {
       if (state === "active" && !page.closed) {
+        finishPhase();
         phase = next;
       }
     },
     failed(failure: CodexControlRequestFailure) {
       if (state === "active" && !page.closed) {
+        finishPhase();
         state = "failed";
         page.fields.controlFailurePhase = failure.phase;
         page.fields.controlFailureCategory = failure.category;
@@ -240,6 +262,9 @@ export function startCodexCatalogControlRequestDiagnostics(
       observation.failed({ phase, category: "other" });
     },
     close() {
+      if (state === "active" && !page.closed) {
+        finishPhase();
+      }
       state = "closed";
     },
   } satisfies CodexControlRequestObservation & { rejected(): void; close(): void };
