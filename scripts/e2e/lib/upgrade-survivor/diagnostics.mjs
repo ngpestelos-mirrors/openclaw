@@ -24,6 +24,11 @@ const logNames = [
   "post-update-validate.err",
   "doctor.log",
   "baseline-doctor.log",
+  "workshop-doctor-recovery.json",
+  "workshop-published-refusal.json",
+  "workshop-baseline-doctor.json",
+  "workshop-recovered-upgrade.json",
+  "workshop-candidate-doctor.json",
   "gateway.log",
   "gateway.log.doctor",
   "baseline-service-install.err",
@@ -790,10 +795,14 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
       return { phase: sanitize(event.phase, "phase"), status: event.status, at: event.at };
     }),
     logs: Object.fromEntries(
-      ["update.json", "repair.json", "recovery-update.json"].map((name) => [
-        name,
-        sanitize(readOwned(artifactRoot, name, name), name),
-      ]),
+      [
+        "update.json",
+        "repair.json",
+        "recovery-update.json",
+        ...(snapshot.scenario === "workshop-doctor-recovery"
+          ? ["workshop-doctor-recovery.json", "baseline-doctor.log", "doctor.log"]
+          : []),
+      ].map((name) => [name, sanitize(readOwned(artifactRoot, name, name), name)]),
     ),
     omissions,
   };
