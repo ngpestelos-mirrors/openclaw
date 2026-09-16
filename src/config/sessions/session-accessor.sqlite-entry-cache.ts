@@ -66,7 +66,7 @@ const sessionEntryCaches = new WeakMap<DatabaseSync, SqliteSessionEntryCache>();
 const sessionEntryCacheFills = new WeakMap<
   DatabaseSync,
   {
-    validityToken: SqliteSessionEntryCacheValidityToken;
+    validityToken: SqliteSessionEntryRevision;
     mainKey: string;
     promise: Promise<SessionEntryCacheSnapshot>;
   }
@@ -407,7 +407,7 @@ export function readSessionEntryCacheAsync(
   },
 ): Promise<SessionEntryCacheSnapshot> {
   params.assertCurrent();
-  const validityToken = readCacheValidityToken(database.db);
+  const validityToken = readSessionEntryCacheValidityToken(database.db);
   const mainKey = readCanonicalSessionMainKey(database);
   const admission = withCanonicalSessionValidationDeferral(() =>
     assertCanonicalSqliteSessionKeysCurrent(database),
@@ -418,7 +418,7 @@ export function readSessionEntryCacheAsync(
     owner &&
     !owner.selectedKeys &&
     cacheValidityTokensEqual(owner.validityToken, validityToken) &&
-    cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))
+    cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))
   ) {
     return Promise.resolve(owner);
   }
@@ -444,7 +444,7 @@ export function readSessionEntryCacheAsync(
       }
       if (
         database.db.isTransaction ||
-        !cacheValidityTokensEqual(validityToken, readCacheValidityToken(database.db))
+        !cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))
       ) {
         return loaded;
       }
