@@ -71,6 +71,11 @@ const sessionEntryCacheFills = new WeakMap<
     promise: Promise<SessionEntryCacheSnapshot>;
   }
 >();
+/** Commit-driven projections borrow owner memory; ordinary reads still validate SQLite. */
+export function readCommittedSessionEntryCache(database: DatabaseSync) {
+  const cached = sessionEntryCaches.get(database);
+  return cached?.selectedKeys ? undefined : cached?.entries;
+}
 const sessionNodesGenerationTrackerSchemaVersions = new WeakMap<DatabaseSync, number>();
 
 function ensureSessionNodesGenerationTracker(database: DatabaseSync): void {
