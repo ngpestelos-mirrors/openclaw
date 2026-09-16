@@ -435,7 +435,7 @@ export function readSessionEntryCacheAsync(
   return fill.promise;
 }
 
-function publishTrackedCacheUpdate(database: OpenClawAgentDatabase, publish: () => void): void {
+function publishTrackedCacheUpdate(database: SessionEntryCacheDatabase, publish: () => void): void {
   // Committed cache state must settle before observers can reenter with newer writes.
   if (
     stageSqliteTransactionState(database.db, {
@@ -457,7 +457,7 @@ function publishTrackedCacheUpdate(database: OpenClawAgentDatabase, publish: () 
 type SessionEntrySideMetadata = Pick<SessionEntry, "owner" | "participants" | "participantCount">;
 
 function readSessionEntrySideMetadata(
-  database: OpenClawAgentDatabase,
+  database: SessionEntryCacheDatabase,
   sessionKey: string,
 ): SessionEntrySideMetadata {
   const ownerRow = hasSqliteSessionOwnerColumns(database.db)
@@ -508,7 +508,7 @@ function advanceSessionEntryCacheGeneration(
 }
 
 function publishSqliteSessionEntryCacheUpsert(
-  database: OpenClawAgentDatabase,
+  database: SessionEntryCacheDatabase,
   update: { sessionKey: string; entry?: SessionEntry },
   writeGeneration: SqliteSessionEntryCacheWriteGeneration,
 ): void {
@@ -559,7 +559,7 @@ function publishSqliteSessionEntryCacheUpsert(
 }
 
 export function publishSessionEntryCacheInvalidation(
-  database: OpenClawAgentDatabase,
+  database: SessionEntryCacheDatabase & { path: string },
   update?: { sessionKey: string; entry?: SessionEntry },
   writeGeneration?: SqliteSessionEntryCacheWriteGeneration,
 ): void {
