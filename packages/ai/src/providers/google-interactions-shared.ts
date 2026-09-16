@@ -261,11 +261,38 @@ export function buildGoogleInteractionsParams<T extends GoogleApiType>(
 
       flushText();
     } else if (msg.role === "toolResult") {
+      let result: unknown = msg.content;
+      if (Array.isArray(msg.content)) {
+        result = msg.content.map((item) => {
+          if (item && typeof item === "object") {
+            if ("type" in item && item.type === "image") {
+              const imageItem = item as {
+                type: "image";
+                mimeType?: string;
+                mime_type?: string;
+                data?: string;
+              };
+              return {
+                type: "image",
+                mime_type: imageItem.mime_type ?? imageItem.mimeType,
+                data: imageItem.data,
+              };
+            }
+            if ("type" in item && item.type === "text") {
+              return {
+                type: "text",
+                text: sanitizeSurrogates((item as { text?: string }).text ?? ""),
+              };
+            }
+          }
+          return item;
+        });
+      }
       steps.push({
         type: "function_result",
         call_id: msg.toolCallId,
         name: msg.toolName || "tool",
-        result: msg.content,
+        result,
       });
     }
   }

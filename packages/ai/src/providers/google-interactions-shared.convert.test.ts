@@ -297,4 +297,65 @@ describe("buildGoogleInteractionsParams", () => {
       } as Record<string, unknown>),
     ).toThrow(/Explicit prompt caching/);
   });
+
+  it("normalizes toolResult image blocks to snake_case mime_type", () => {
+    const context: Context = {
+      messages: [
+        { role: "user", content: "Read the file" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call_read_1",
+              name: "read",
+              arguments: { path: "test.png" },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "call_read_1",
+          toolName: "read",
+          content: [
+            { type: "text", text: "Read image file" },
+            {
+              type: "image",
+              mimeType: "image/png",
+              data: "base64data",
+            },
+          ],
+        },
+      ],
+    };
+
+    const params = buildGoogleInteractionsParams(model, context, {});
+
+    expect(params.input).toEqual([
+      {
+        type: "user_input",
+        content: [{ type: "text", text: "Read the file" }],
+      },
+      {
+        type: "function_call",
+        id: "call_read_1",
+        name: "read",
+        arguments: { path: "test.png" },
+      },
+      {
+        type: "function_result",
+        call_id: "call_read_1",
+        name: "read",
+        result: [
+          { type: "text", text: "Read image file" },
+          {
+            type: "image",
+            mime_type: "image/png",
+            data: "base64data",
+          },
+        ],
+      },
+    ]);
+  });
 });
+
