@@ -156,6 +156,7 @@ import {
 } from "./thread-policy.js";
 import { buildCodexTemporalAdditionalContext } from "./turn-params.js";
 import type { CodexAppServerServerRequest, CodexThreadRouteScope } from "./turn-router.js";
+import { buildCodexUserInput } from "./user-input.js";
 import { filterCodexVisionTools } from "./vision-tools.js";
 import {
   resolveCodexWebSearchPlan,
@@ -903,7 +904,7 @@ export async function runCodexAppServerSideQuestion(
           "turn/start",
           {
             threadId: sideThreadId,
-            input: [{ type: "text", text: params.question.trim(), text_elements: [] }],
+            input: buildCodexUserInput(params.question.trim(), params.images),
             additionalContext: buildCodexTemporalAdditionalContext(sideRunParams, {
               sessionStatusAvailable: toolBridge.availableTools.some(
                 (tool) => tool.name === "session_status",

@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { consumeReplyUsageState } from "../auto-reply/reply/reply-usage-state.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { onInternalDiagnosticEvent } from "../infra/diagnostic-events.js";
+import type { ImageContent } from "../llm/types.js";
 import type { ProviderResolveModelRoutesContext } from "../plugin-sdk/provider-model-types.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
@@ -410,6 +411,11 @@ const DEFAULT_STORE_PATH = "/tmp/sessions.json";
 const DEFAULT_QUESTION = "What changed?";
 const MATH_QUESTION = "What is 17 * 19?";
 const MATH_ANSWER = "323";
+const QUESTION_IMAGE: ImageContent = {
+  type: "image",
+  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=",
+  mimeType: "image/png",
+};
 let defaultPluginMetadataSnapshot: ReturnType<typeof resolvePluginMetadataSnapshot> | undefined;
 
 const DEFAULT_USAGE = {
@@ -2851,6 +2857,66 @@ describe("runBtwSideQuestion", () => {
     const options = mockArg(streamSimpleMock, 0, 2);
     expect((options as { reasoning?: unknown } | undefined)?.reasoning).toBeUndefined();
   });
+
+  it("runBtwSideQuestion sends current images after question text with reasoning and tools off", async () => {
+    mockDoneAnswer("A tiny dot.");
+    await runSideQuestion({ images: [QUESTION_IMAGE], resolvedThinkLevel: "adaptive" });
+
+    const context = expectRecordFields(mockArg(streamSimpleMock, 0, 1), {
+      tools: undefined,
+    });
+    expect(context.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: [
+            { type: "text", text: expect.stringContaining(DEFAULT_QUESTION) },
+            QUESTION_IMAGE,
+          ],
+        }),
+      ]),
+    );
+    expectRecordFields(mockArg(streamSimpleMock, 0, 2), { reasoning: undefined });
+  });
+
+  it("runBtwSideQuestion passes current images to the Codex side-question hook", async () => {
+    const hook = registerCodexSideQuestionHarness();
+    await runSideQuestion({ images: [QUESTION_IMAGE] });
+
+    expect(hook).toHaveBeenCalledWith(expect.objectContaining({ images: [QUESTION_IMAGE] }));
+    expect(streamSimpleMock).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 2])(
+    "runBtwSideQuestion reports %i omitted current images to CLI runtimes",
+    async (imageCount) => {
+      mockCliOutput({ text: "CLI side answer." });
+      await runSideQuestion({
+        cfg: {
+          agents: {
+            defaults: {
+              models: {
+                [`${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`]: { agentRuntime: { id: "claude-cli" } },
+              },
+            },
+          },
+        },
+        images: imageCount ? Array.from({ length: imageCount }, () => QUESTION_IMAGE) : undefined,
+      });
+
+      const prepared = expectRecordFields(mockArg(prepareCliRunContextMock, 0, 0), {
+        disableTools: true,
+        images: undefined,
+      });
+      if (imageCount) {
+        expect(prepared.prompt).toContain(
+          `[${imageCount} attached image(s) omitted from CLI side-question input.]`,
+        );
+      } else {
+        expect(prepared.prompt).not.toContain("omitted from CLI side-question input");
+      }
+    },
+  );
 
   it("fails when the current branch has no messages", async () => {
     clearBuiltSessionMessages();

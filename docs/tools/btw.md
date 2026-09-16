@@ -29,6 +29,11 @@ The two side-question contracts are deliberately separate. BTW is a one-shot que
 
 The main run, if one is active, is left untouched.
 
+Images attached to the `/btw` message are sent with the side question on direct
+and harness runtimes. This includes a photo with a `/btw` caption, or media from
+the replied-to message when the channel supplies it as reply context. CLI
+runtimes receive a text note with the number of omitted images instead.
+
 When their runtime supplies usage, completed direct-provider and harness side
 questions report it through the configured [diagnostics pipeline](/gateway/opentelemetry).
 This does not add the exchange to session history or session-derived `/usage cost` totals.
