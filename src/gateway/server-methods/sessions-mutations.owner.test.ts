@@ -41,8 +41,8 @@ import type {
   RespondFn,
 } from "./types.js";
 
-afterEach(() => {
-  flushPendingSessionsChangedEvents();
+afterEach(async () => {
+  await flushPendingSessionsChangedEvents();
   closeOpenClawAgentDatabasesForTest();
   vi.restoreAllMocks();
 });

@@ -115,11 +115,11 @@ export function addSessionMember(
         })
         .onConflict((conflict) => conflict.columns(["session_key", "identity_id"]).doNothing()),
     );
-    const inserted = (result.numAffectedRows ?? 0n) > 0n;
-    if (inserted) {
+    const changed = (result.numAffectedRows ?? 0n) > 0n;
+    if (changed) {
       sessionChanges.emit({ agentId, storePath: database.path, sessionKey }, database.db);
     }
-    return inserted;
+    return changed;
   }, options);
   return { member: { identityId, addedBy, addedAt }, inserted };
 }
