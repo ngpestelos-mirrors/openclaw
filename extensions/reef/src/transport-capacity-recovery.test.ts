@@ -100,13 +100,8 @@ function relayRetaining(entries: Map<number, InboxEntry>) {
 }
 
 describe("Reef capacity-parked delivery recovery (production connection path)", () => {
-  beforeEach(() => {
-    resetFlowStoresForTests();
-  });
-
-  afterEach(() => {
-    resetFlowStoresForTests();
-  });
+  beforeEach(resetFlowStoresForTests);
+  afterEach(resetFlowStoresForTests);
 
   it("survives delivered-capacity parks from two peers, keeps later entries attemptable, and completes both once capacity frees", async () => {
     const alice = generateIdentity();

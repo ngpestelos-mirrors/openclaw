@@ -7,6 +7,7 @@ import {
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { vi } from "vitest";
 import {
@@ -28,7 +29,9 @@ import type { ReefKeys, ReefRejectionNoticeState } from "./types.js";
 const model = "mock-2026-07-12";
 const stateDirs: string[] = [];
 
-export function resetFlowStoresForTests(): void {
+export async function resetFlowStoresForTests(): Promise<void> {
+  vi.restoreAllMocks();
+  await closeOpenClawStateDatabaseAsync();
   resetPluginStateStoreForTests();
   for (const stateDir of stateDirs.splice(0)) {
     fs.rmSync(stateDir, { recursive: true, force: true });
