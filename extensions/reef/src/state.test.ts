@@ -23,6 +23,7 @@ import {
   verifyChainSegment,
   type ReviewRequest,
 } from "../protocol/index.js";
+import { REEF_REPLAY_TTL_MS, reefReplayStoreKey } from "./replay-store.js";
 import {
   assertReefIdentityBinding,
   clearReefSetupSession,
@@ -35,13 +36,11 @@ import {
   REEF_DELIVERED_MAX_ENTRIES,
   REEF_DELIVERED_NAMESPACE,
   ReefInboxCursorStore,
-  REEF_REPLAY_TTL_MS,
   REEF_DELIVERED_TTL_MS,
   REEF_REVIEWS_NAMESPACE,
   releaseReefIdentityReservation,
   reserveReefIdentityBinding,
   ReviewApprovalStore,
-  reefReplayStoreKey,
   saveReefSetupSession,
 } from "./state.js";
 

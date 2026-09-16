@@ -115,7 +115,7 @@ Reef registration binding reads, reservations, finalization, release, and setup-
 persistence use the shared-state worker. Reservation mutations compare the current
 row before writing; a conflict rereads ownership before retrying. The CLI, setup
 wizard, and channel startup await these operations. Keys, migration gates, trust,
-audit, replay, review, and delivery state retain their existing native
+audit, review, and delivery state retain their existing native
 owners. Key creation still performs its synchronous guard checks and insert without
 an event-loop yield; those separate operations do not form a cross-process transaction.
 Stored registration JSON, reservation expiry, namespace limits, and Doctor imports
@@ -132,6 +132,18 @@ supported hosts without comparison operations retain atomic native updates until
 approved minimum host version guarantees comparison support. Worker failures never
 switch to that path. Invalid-row diagnostics on current hosts report
 the Reef validation error directly; older hosts retain native store error wrapping.
+
+Reef replay claims, renewals, completion, consumption, release, and reads use the
+shared-state worker. The replay owner preserves invocation order through durable
+settlement and local claim publication; conflicted mutations revalidate the current
+claim and reuse prepared completion bytes. Inbound processing joins admitted
+heartbeat renewals before returning. Existing-row refusal paths still renew the
+stored TTL, and an expired claim remains usable by its matching owner until a
+successor replaces it. Stored JSON, encryption, quotas, and retention are unchanged.
+Hosts without both comparison methods retain the atomic native callback path until
+an approved minimum host version guarantees both methods. Available worker failures
+never fall back. Modern domain validation errors surface
+directly, while older hosts retain their native callback error wrapping.
 
 Use Kysely for ordinary queries and mutations. The current
 `getNodeSqliteKysely` facade compiles queries; `executeSqliteQuerySync` runs them

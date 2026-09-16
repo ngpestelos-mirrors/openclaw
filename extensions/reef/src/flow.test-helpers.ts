@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
+  createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
@@ -40,6 +41,11 @@ export function flowStores(deliveredMaxEntries?: number) {
   const runtime = createPluginRuntimeMock();
   runtime.state.openSyncKeyedStore = <T>(options: OpenKeyedStoreOptions) =>
     createPluginStateSyncKeyedStoreForTests<T>("reef", {
+      ...options,
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+  runtime.state.openKeyedStore = <T>(options: OpenKeyedStoreOptions) =>
+    createPluginStateKeyedStoreForTests<T>("reef", {
       ...options,
       env: { OPENCLAW_STATE_DIR: stateDir },
     });
