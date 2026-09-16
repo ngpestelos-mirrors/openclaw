@@ -7,29 +7,14 @@ import {
   runWithDiagnosticTraceContext,
 } from "../../infra/diagnostic-trace-context.js";
 import { createStageTimingTracker } from "../../shared/stage-timing.js";
-import type { SessionListProjectionTiming } from "../session-utils-list.js";
+import type {
+  SessionListDiagnostics,
+  SessionListPhase,
+} from "../session-list-diagnostics.types.js";
 import { sessionLog } from "./sessions-shared.js";
 import type { GatewayRequestHandler, GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 
-type Phase =
-  | "setup"
-  | "modelCatalog"
-  | "storeLoad"
-  | "filterSetup"
-  | "rows"
-  | "sharing"
-  | "decoration"
-  | "visibilityRepair"
-  | "response"
-  | "handlerExit";
-type SynchronousCpuMetric =
-  | "storeLoadThreadCpuMs"
-  | "prepareThreadCpuMs"
-  | "rowThreadCpuMs"
-  | "responseThreadCpuMs";
 const sessionListDiagnostics = channel("openclaw.session.list");
-
-export type SessionListDiagnostics = NonNullable<ReturnType<typeof startSessionListDiagnostics>>;
 
 function startSessionListDiagnostics(
   respond: RespondFn,
@@ -43,13 +28,8 @@ function startSessionListDiagnostics(
   const startedAt = checkpoint;
   const timing = createStageTimingTracker(() => checkpoint);
   const trace = getActiveDiagnosticTraceContext();
-  let phase: Phase = "setup";
-  const projection: SessionListProjectionTiming & {
-    selectedRowCount: number;
-    dirtyRowCount: number;
-    materializedRowCount: number;
-    reusedRowCount: number;
-  } = {
+  let phase: SessionListPhase = "setup";
+  const projection: SessionListDiagnostics["projection"] = {
     prepareSyncMs: 0,
     rowSyncMs: 0,
     yieldWaitMs: 0,
@@ -60,7 +40,7 @@ function startSessionListDiagnostics(
     reusedRowCount: 0,
   };
   let responseOutcome: "none" | "ok" | "error" | "threw" = "none";
-  let cpuMetrics: Partial<Record<SynchronousCpuMetric, number>> | undefined = {};
+  let cpuMetrics: Partial<Record<Parameters<SessionListDiagnostics["finishSyncCpu"]>[0], number>> | undefined = {};
   const startSyncCpu = (): NodeJS.CpuUsage | undefined => {
     if (!cpuMetrics) {
       return undefined;
@@ -72,7 +52,7 @@ function startSessionListDiagnostics(
       return undefined;
     }
   };
-  const finishSyncCpu = (metric: SynchronousCpuMetric, started: NodeJS.CpuUsage | undefined) => {
+  const finishSyncCpu = (metric: Parameters<SessionListDiagnostics["finishSyncCpu"]>[0], started: NodeJS.CpuUsage | undefined) => {
     if (!started || !cpuMetrics) {
       return;
     }
@@ -84,7 +64,7 @@ function startSessionListDiagnostics(
       cpuMetrics = undefined;
     }
   };
-  const mark = (next: Phase) => {
+  const mark = (next: SessionListPhase) => {
     checkpoint = performance.now();
     timing.mark(phase);
     phase = next;
