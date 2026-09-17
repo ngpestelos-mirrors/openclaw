@@ -543,23 +543,27 @@ describe("runDoctorConfigPreflight", () => {
       const configPath = path.join(stateDir, "openclaw.json");
       const defaultConfigPath = path.join(home, ".openclaw", "openclaw.json");
 
-      await withEnvAsync(
-        {
-          OPENCLAW_CONFIG_PATH: undefined,
-          OPENCLAW_PROFILE: undefined,
-          OPENCLAW_STATE_DIR: stateDir,
-        },
-        async () => {
-          const preflight = await runDoctorConfigPreflight({
-            migrateState: false,
-            invalidConfigNote: false,
-          });
+      try {
+        await withEnvAsync(
+          {
+            OPENCLAW_CONFIG_PATH: undefined,
+            OPENCLAW_PROFILE: undefined,
+            OPENCLAW_STATE_DIR: stateDir,
+          },
+          async () => {
+            const preflight = await runDoctorConfigPreflight({
+              migrateState: false,
+              invalidConfigNote: false,
+            });
 
-          expect(preflight.snapshot.path).toBe(configPath);
-          await expect(fs.readFile(configPath, "utf-8")).resolves.toContain('"mode":"local"');
-          await expect(fs.access(defaultConfigPath)).rejects.toMatchObject({ code: "ENOENT" });
-        },
-      ).finally(() => cleanupSessionStateForTest({ stateDir }));
+            expect(preflight.snapshot.path).toBe(configPath);
+            await expect(fs.readFile(configPath, "utf-8")).resolves.toContain('"mode":"local"');
+            await expect(fs.access(defaultConfigPath)).rejects.toMatchObject({ code: "ENOENT" });
+          },
+        );
+      } finally {
+        await cleanupSessionStateForTest({ stateDir });
+      }
     });
   });
 
@@ -594,23 +598,27 @@ describe("runDoctorConfigPreflight", () => {
       const profileStateDir = path.join(home, ".openclaw-work");
       const configPath = path.join(profileStateDir, "openclaw.json");
 
-      await withEnvAsync(
-        {
-          OPENCLAW_CONFIG_PATH: undefined,
-          OPENCLAW_PROFILE: undefined,
-          OPENCLAW_STATE_DIR: undefined,
-        },
-        async () => {
-          applyCliProfileEnv({ profile: "work", homedir: () => home });
-          const preflight = await runDoctorConfigPreflight({
-            migrateState: false,
-            invalidConfigNote: false,
-          });
+      try {
+        await withEnvAsync(
+          {
+            OPENCLAW_CONFIG_PATH: undefined,
+            OPENCLAW_PROFILE: undefined,
+            OPENCLAW_STATE_DIR: undefined,
+          },
+          async () => {
+            applyCliProfileEnv({ profile: "work", homedir: () => home });
+            const preflight = await runDoctorConfigPreflight({
+              migrateState: false,
+              invalidConfigNote: false,
+            });
 
-          expect(preflight.snapshot.path).toBe(configPath);
-          await expect(fs.readFile(configPath, "utf-8")).resolves.toContain('"mode":"local"');
-        },
-      ).finally(() => cleanupSessionStateForTest({ stateDir: profileStateDir }));
+            expect(preflight.snapshot.path).toBe(configPath);
+            await expect(fs.readFile(configPath, "utf-8")).resolves.toContain('"mode":"local"');
+          },
+        );
+      } finally {
+        await cleanupSessionStateForTest({ stateDir: profileStateDir });
+      }
     });
   });
 
