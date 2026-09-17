@@ -519,6 +519,12 @@ async function stopGatewayProcess(
           },
     );
 
+  const signals = ["SIGTERM", "SIGKILL"] as const;
+  // Preserve an exited leader's inherited output before terminating its writers.
+  // Windows still finalizes the retained Job after drainage, including handle closure.
+  if (hasChildExited(child) && (await waitForClose(signals.length + 1)) && platform !== "win32") {
+    return true;
+  }
   if (platform === "win32") {
     const startedAt = Date.now();
     const taskkill: Array<{
@@ -592,12 +598,6 @@ async function stopGatewayProcess(
       failed("exception", error);
       throw error;
     }
-  }
-  const signals = ["SIGTERM", "SIGKILL"] as const;
-  // An exited leader can leave inherited stdio open in descendants. Let it
-  // settle briefly, then terminate the owned tree before releasing the slot.
-  if (hasChildExited(child) && (await waitForClose(signals.length + 1))) {
-    return true;
   }
   for (const [index, signal] of signals.entries()) {
     if (hasGatewayProcessClosed(child, platform)) {

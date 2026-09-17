@@ -1350,9 +1350,10 @@ export default class {
         }
         // This is a synthetic source checkout. Its dist is valid old code, not an
         // invalid sentinel that could fail even if stale-artifact fallback regressed.
-        fs.cpSync(path.join(initialDirectory, "dist"), path.join(fixture, "dist"), {
-          recursive: true,
-        });
+        const staleWorkerPath = "infra/sqlite-readonly-location.worker.js";
+        const staleWorker = path.join(fixture, "dist", staleWorkerPath);
+        fs.mkdirSync(path.dirname(staleWorker), { recursive: true });
+        fs.copyFileSync(path.join(initialDirectory, "dist", staleWorkerPath), staleWorker);
         // This checkout exercises source freshness, not the full runtime inventory.
         // Keep real compiler phases while avoiding repeated unrelated application builds.
         writeFixture(
@@ -1370,10 +1371,7 @@ export default class {
         database.exec("CREATE TABLE probe(value TEXT); INSERT INTO probe VALUES ('native work');");
         database.close();
         const childArgs = ["--openclaw-sqlite-readonly-child", "async", databasePath];
-        const stale = await node([
-          path.join(fixture, "dist/infra/sqlite-readonly-location.worker.js"),
-          ...childArgs,
-        ]);
+        const stale = await node([staleWorker, ...childArgs]);
         expect(stale.code, stale.stderr).toBe(0);
         fs.rmSync(path.dirname(JSON.parse(stale.stdout).location), { recursive: true });
 
@@ -1453,13 +1451,22 @@ export default class {
           "Source changed during compiled subprocess invocation",
         );
         fs.writeFileSync(dependency, changedSource);
-        const tuiDeclaration = path.join(fixture, "src/tui/tui-pty-runtime-test-support.ts");
-        const originalDeclaration = fs.readFileSync(tuiDeclaration, "utf8");
-        fs.appendFileSync(tuiDeclaration, "\n// declaration changed after preparation\n");
-        await expect(verifyVitestWorkerArtifacts(directory)).rejects.toThrow(
-          "Source changed during compiled subprocess invocation",
-        );
-        fs.writeFileSync(tuiDeclaration, originalDeclaration);
+        for (const input of [
+          "src/tui/tui-pty-runtime-test-support.ts",
+          "scripts/lib/managed-windows-job-entrypoint.mts",
+          "scripts/lib/managed-windows-job.mts",
+        ]) {
+          const filename = path.join(fixture, input);
+          const original = fs.readFileSync(filename, "utf8");
+          try {
+            fs.appendFileSync(filename, "\n// source changed after preparation\n");
+            await expect(verifyVitestWorkerArtifacts(directory)).rejects.toThrow(
+              `Source changed during compiled subprocess invocation: ${filename}`,
+            );
+          } finally {
+            fs.writeFileSync(filename, original);
+          }
+        }
         const parent = path.join(fixture, ".artifacts/vitest-workers");
         const before = fs.readdirSync(parent).toSorted();
         writeFixture(fixture, "dist/source-input.js", changedSource);

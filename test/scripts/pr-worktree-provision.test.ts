@@ -10,10 +10,10 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { collectRuntimeImportClosure } from "../../scripts/lib/runtime-import-closure.mts";
 import { detectWorktreeFilesystemBackend } from "../../src/agents/worktrees/filesystem-backend.js";
 import { listTemplates } from "../../src/agents/worktrees/template-registry.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
-import { collectEagerRuntimeImportClosure } from "./eager-import-closure.test-support.js";
 import { createMainRefreshFixture } from "./pr-main-refresh.test-support.js";
 import { copyPrWrapperSources } from "./pr-wrapper.test-support.js";
 
@@ -30,7 +30,9 @@ it("extracts the complete eager runtime import closure without duplicate wrapper
     .filter((entry) => entry.isFile())
     .map((entry) => relative(extracted, join(entry.parentPath, entry.name)));
   expect(
-    collectEagerRuntimeImportClosure(files).filter((file) => !existsSync(join(extracted, file))),
+    collectRuntimeImportClosure(process.cwd(), files).filter(
+      (file) => !existsSync(join(extracted, file)),
+    ),
   ).toEqual([]);
 });
 

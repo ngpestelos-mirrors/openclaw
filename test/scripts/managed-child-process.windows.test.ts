@@ -92,7 +92,8 @@ it.runIf(process.platform === "win32").each(["abort", "normal exit"])(
 const fs = require("node:fs");
 const {spawn} = require("node:child_process");
 const out = fs.openSync(process.argv[1] + ".output", "w");
-const descendant = spawn(process.execPath, ["-e", 'setInterval(() => process.stdout.write("."), 100)'], {stdio:["ignore",out,out]});
+// Escape libuv's kill-on-parent-exit Job while retaining OpenClaw's outer Job.
+const descendant = spawn(process.execPath, ["-e", 'setInterval(() => process.stdout.write("."), 100)'], {detached:true,stdio:["ignore",out,out]});
 fs.closeSync(out);
 fs.writeFileSync(process.argv[1] + ".tmp", process.pid + " " + descendant.pid);
 fs.renameSync(process.argv[1] + ".tmp", process.argv[1]);

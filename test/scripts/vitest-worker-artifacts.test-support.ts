@@ -188,13 +188,11 @@ export function createControlledWorkerCompiler(
     directory,
     "compiler-preload.mjs",
     `
-    import cp from 'node:child_process';
-    import {syncFixtureBuiltinExports} from ${JSON.stringify(new URL("./fixtures/ci-fixture-runtime.cjs", import.meta.url).href)};
-    const spawn = cp.spawn;
-    cp.spawn = (bin, args, options) => args[0] === ${JSON.stringify(path.join(root, "scripts/lib/vitest-worker-compiler.mts"))}
-      ? spawn(bin, [${JSON.stringify(compiler)}, args[1], ${JSON.stringify(input)}, ${JSON.stringify(receipt)}], options)
-      : spawn(bin, args, options);
-    syncFixtureBuiltinExports(["node:child_process"]);
+    if (process.argv[1] === ${JSON.stringify(path.join(root, "scripts/lib/vitest-worker-compiler.mts"))}) {
+      const {runWorkerFixtureCompiler} = await import(${JSON.stringify(pathToFileURL(compiler).href)});
+      await runWorkerFixtureCompiler(process.argv[2], ${JSON.stringify(input)}, ${JSON.stringify(receipt)});
+      process.exit(0);
+    }
   `,
   );
   const preloadEnv = Object.fromEntries(
