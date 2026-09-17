@@ -113,17 +113,42 @@ export function hasCompleteStartupCorpusCoverage(
   const groups = shards.flatMap((shard) =>
     !shard.requiresDist && !shard.targets?.length ? (shard.groups ?? []) : [],
   );
-  return [
-    "src/config/config-startup-corpus.test.ts",
-    "src/config/state-startup-corpus.test.ts",
-  ].every((file) =>
-    groups.some(
-      (group) =>
-        group.configs.length === 1 &&
-        group.configs[0] === "test/vitest/vitest.runtime-config.config.ts" &&
-        Object.keys(group.env ?? {}).every((key) => key === "OPENCLAW_VITEST_MAX_WORKERS") &&
-        group.includePatterns?.includes(file),
-    ),
+  const config = "test/vitest/vitest.runtime-config.config.ts";
+  const ownsFile = (group: NodeTestShardGroup, file: string) =>
+    group.configs.length === 1 &&
+    group.configs[0] === config &&
+    group.includePatterns?.includes(file);
+  const configOwners = groups.filter(
+    (group) =>
+      ownsFile(group, "src/config/config-startup-corpus.test.ts") &&
+      Object.keys(group.env ?? {}).every((key) => key === "OPENCLAW_VITEST_MAX_WORKERS"),
+  );
+  const stateOwners = groups.filter((group) =>
+    ownsFile(group, "src/config/state-startup-corpus.test.ts"),
+  );
+  const unshardedStateOwners = stateOwners.filter(
+    (group) =>
+      group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD === undefined &&
+      Object.keys(group.env ?? {}).every((key) => key === "OPENCLAW_VITEST_MAX_WORKERS"),
+  );
+  const expectedStateShards = ["1/4", "2/4", "3/4", "4/4"];
+  const stateShardOwners = stateOwners.filter(
+    (group) =>
+      group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== undefined &&
+      Object.keys(group.env ?? {}).every(
+        (key) =>
+          key === "OPENCLAW_VITEST_MAX_WORKERS" || key === "OPENCLAW_TEST_STARTUP_CORPUS_SHARD",
+      ),
+  );
+  const stateShards = stateShardOwners
+    .map((group) => group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD)
+    .toSorted();
+  return (
+    configOwners.length === 1 &&
+    ((unshardedStateOwners.length === 1 && stateOwners.length === 1) ||
+      (stateOwners.length === expectedStateShards.length &&
+        stateShards.length === expectedStateShards.length &&
+        stateShards.every((shard, index) => shard === expectedStateShards[index])))
   );
 }
 
@@ -738,7 +763,7 @@ function isParallelCompactGroup(group: NodeTestShardGroup): boolean {
 // scales with the runner class. infra-process spawns child processes per test
 // and hit worker-startup timeouts under contention before serialization.
 const PINNED_WORKER_COMPACT_GROUP_RE =
-  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^core-runtime-infra-process$|^core-runtime-config$|^core-runtime-media-ui-(?:\d+|support)$|^agentic-cli(?:-process)?$|^agentic-gateway-(?:core-\d+|methods)$/u;
+  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^core-runtime-infra-process$|^core-runtime-config(?:-startup-(?:config|state-[1-4]))?$|^core-runtime-media-ui-(?:\d+|support)$|^agentic-cli(?:-process)?$|^agentic-gateway-(?:core-\d+|methods)$/u;
 const PINNED_COMPACT_GROUP_ENV = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
 
 function applyCompactGroupWorkerPins(group: NodeTestShardGroup): NodeTestShardGroup {
@@ -841,6 +866,9 @@ function estimateCompactStripeSeconds(
 // Identify split siblings, including nested children of deliberately separated
 // fixed stripes.
 function compactStripeFamily(group: NodeTestShardGroup): string | undefined {
+  if (/^core-runtime-config-startup-state-[1-4]$/u.test(group.shard_name)) {
+    return "core-runtime-config-startup-state";
+  }
   if (
     /^agentic-commands-doctor-sessions-cron(?:-(?:memory|sqlite))?(?:-hosted-\d+)?$/u.test(
       group.shard_name,
@@ -1853,6 +1881,39 @@ function createCoreRuntimeMediaUiSplitShards(): NodeTestSplitShard[] {
   ];
 }
 
+const CONFIG_STARTUP_CORPUS_TEST = "src/config/config-startup-corpus.test.ts";
+const STATE_STARTUP_CORPUS_TEST = "src/config/state-startup-corpus.test.ts";
+
+function createRuntimeConfigSplitShards(): NodeTestSplitShard[] {
+  const configs = ["test/vitest/vitest.runtime-config.config.ts"];
+  const startupFiles = new Set([CONFIG_STARTUP_CORPUS_TEST, STATE_STARTUP_CORPUS_TEST]);
+  const ordinaryFiles = listTestFiles("src/config").filter((file) => !startupFiles.has(file));
+  return [
+    {
+      shardName: "core-runtime-config",
+      configs,
+      includePatterns: ordinaryFiles,
+      requiresDist: false,
+      runner: "blacksmith-4vcpu-ubuntu-2404",
+    },
+    {
+      shardName: "core-runtime-config-startup-config",
+      configs,
+      includePatterns: [CONFIG_STARTUP_CORPUS_TEST],
+      requiresDist: false,
+      runner: "blacksmith-4vcpu-ubuntu-2404",
+    },
+    ...Array.from({ length: 4 }, (_, index): NodeTestSplitShard => ({
+      shardName: `core-runtime-config-startup-state-${index + 1}`,
+      configs,
+      env: { OPENCLAW_TEST_STARTUP_CORPUS_SHARD: `${index + 1}/4` },
+      includePatterns: [STATE_STARTUP_CORPUS_TEST],
+      requiresDist: false,
+      runner: "blacksmith-4vcpu-ubuntu-2404",
+    })),
+  ];
+}
+
 function partitionRuntimeTestFiles(configs: string[], files: string[]) {
   const runtimeFiles = new Set(listVitestRuntimeConsumerFiles(configs));
   return {
@@ -1950,12 +2011,7 @@ const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
         requiresDist: false,
         runner: "blacksmith-4vcpu-ubuntu-2404",
       },
-      {
-        shardName: "core-runtime-config",
-        configs: ["test/vitest/vitest.runtime-config.config.ts"],
-        requiresDist: false,
-        runner: "blacksmith-4vcpu-ubuntu-2404",
-      },
+      ...createRuntimeConfigSplitShards(),
       {
         shardName: "core-runtime-tui-pty",
         configs: ["test/vitest/vitest.tui-pty.config.ts"],
@@ -3165,7 +3221,11 @@ function createCompactNodeTestShardBundles(
   const hasDistinctStripeFamilies = (groups: NodeTestShardGroup[]) => {
     const families = groups
       .map((group) => prepareStripe(group).family)
-      .filter((family): family is string => family !== undefined);
+      .filter(
+        (family): family is string =>
+          family !== undefined &&
+          (isBlacksmithProfile || family !== "core-runtime-config-startup-state"),
+      );
     return new Set(families).size === families.length;
   };
   const admitsCompactBin = (

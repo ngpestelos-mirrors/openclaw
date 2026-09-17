@@ -13228,7 +13228,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           (!group.includePatterns ||
             group.includePatterns.some((pattern) => minimatch(file, pattern))),
       );
-      expect(nodeOwners, file).toHaveLength(1);
+      const expectedNodeOwners = file === "src/config/state-startup-corpus.test.ts" ? 4 : 1;
+      expect(nodeOwners, file).toHaveLength(expectedNodeOwners);
       const extraOwners = steps.filter(
         (step) =>
           step.run?.includes(file) &&
@@ -13242,7 +13243,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
               runAttempt: 1,
             })),
       );
-      expect(nodeOwners.length + extraOwners.length, file).toBe(1);
+      expect(nodeOwners.length + extraOwners.length, file).toBe(expectedNodeOwners);
     }
   });
 

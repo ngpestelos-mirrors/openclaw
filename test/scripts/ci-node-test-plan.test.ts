@@ -93,6 +93,33 @@ describe("startup corpus coverage", () => {
       expect.arrayContaining(files),
     );
   });
+  it("retains complete ownership across all four state corpus partitions", () => {
+    const groups = [
+      { ...group, includePatterns: [files[0]!] },
+      ...["1/4", "2/4", "3/4", "4/4"].map((shard) => ({
+        ...group,
+        env: {
+          OPENCLAW_VITEST_MAX_WORKERS: "2",
+          OPENCLAW_TEST_STARTUP_CORPUS_SHARD: shard,
+        },
+        includePatterns: [files[1]!],
+      })),
+    ];
+    expect(hasCompleteStartupCorpusCoverage([{ requiresDist: false, groups }])).toBe(true);
+    expect(
+      hasCompleteStartupCorpusCoverage([
+        {
+          requiresDist: false,
+          groups: groups.filter((entry) => entry.env.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== "4/4"),
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      hasCompleteStartupCorpusCoverage([
+        { requiresDist: false, groups: [...groups, groups.at(-1)!] },
+      ]),
+    ).toBe(false);
+  });
   it.each<
     { label: string } & Partial<Parameters<typeof hasCompleteStartupCorpusCoverage>[0][number]>
   >([
@@ -402,6 +429,51 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(shards.flatMap((shard) => shard.configs)).not.toContain(
       "test/vitest/vitest.ui-browser.config.ts",
     );
+  });
+
+  it("partitions the startup corpus without changing runtime-config inventory", () => {
+    const config = "test/vitest/vitest.runtime-config.config.ts";
+    const configCorpus = "src/config/config-startup-corpus.test.ts";
+    const stateCorpus = "src/config/state-startup-corpus.test.ts";
+    const expectedFiles = listMatchedTestFiles(createRuntimeConfigVitestConfig({}));
+    const runtimeShards = defaultShards.filter(
+      (shard) => shard.configs.length === 1 && shard.configs[0] === config,
+    );
+    const owners = (file: string) =>
+      runtimeShards.filter((shard) => shard.includePatterns?.includes(file));
+
+    for (const file of expectedFiles) {
+      expect(owners(file), file).toHaveLength(file === stateCorpus ? 4 : 1);
+    }
+    expect(
+      runtimeShards
+        .flatMap((shard) => shard.includePatterns ?? [])
+        .filter((file) => file !== stateCorpus)
+        .toSorted(),
+    ).toEqual(expectedFiles.filter((file) => file !== stateCorpus).toSorted());
+    expect(owners(configCorpus)[0]?.env).toBeUndefined();
+    expect(
+      owners(stateCorpus)
+        .map((shard) => shard.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD)
+        .toSorted(),
+    ).toEqual(["1/4", "2/4", "3/4", "4/4"]);
+
+    const compact = getCommittedCompactPlan("push");
+    const stateJobs = compact.filter((job) =>
+      job.groups.some((group) => group.includePatterns?.includes(stateCorpus)),
+    );
+    expect(stateJobs).toHaveLength(4);
+    expect(new Set(stateJobs.map((job) => job.checkName))).toHaveLength(4);
+    expect(
+      stateJobs
+        .map(
+          (job) =>
+            job.groups.find((group) => group.includePatterns?.includes(stateCorpus))?.env
+              ?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD,
+        )
+        .toSorted(),
+    ).toEqual(["1/4", "2/4", "3/4", "4/4"]);
+    expect(hasCompleteStartupCorpusCoverage(compact)).toBe(true);
   });
   it.each(["github", "hybrid"])("keeps oversized sparse groups nonempty on %s", (runnerBackend) => {
     const native = createNodeTestShards({ includeReleaseOnlyPluginShards: false });
@@ -1724,7 +1796,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           listMatchedTestFiles(createCliProcessVitestConfig({})),
           listMatchedTestFiles(createPluginSdkVitestConfig({})),
           listMatchedTestFiles(createPluginSdkLightVitestConfig({})),
-          listMatchedTestFiles(createRuntimeConfigVitestConfig({})),
         )
         .toSorted((a, b) => a.localeCompare(b)),
     );
@@ -1742,7 +1813,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           listMatchedTestFiles(createCliProcessVitestConfig({})),
           listMatchedTestFiles(createPluginSdkVitestConfig({})),
           listMatchedTestFiles(createPluginSdkLightVitestConfig({})),
-          listMatchedTestFiles(createRuntimeConfigVitestConfig({})),
         )
         .toSorted((a, b) => a.localeCompare(b)),
     );
