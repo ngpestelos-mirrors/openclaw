@@ -12,6 +12,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { WorktreeRemovalContentionError } from "./errors.js";
 import { parseWorktreeRunEndCleanup } from "./registry-run-end-cleanup.js";
 import {
   deactivateBindingRows,
@@ -40,6 +41,7 @@ export {
   isRegistryWorktreeSessionBound,
   listRegistryWorktreeSessionBindings,
 } from "./registry-session-bindings.js";
+export { WorktreeRemovalContentionError } from "./errors.js";
 
 type WorktreesTable = OpenClawStateKyselyDatabase["worktrees"];
 type WorktreeRow = Selectable<WorktreesTable>;
@@ -502,16 +504,6 @@ export function deleteRegistryWorktree(env: NodeJS.ProcessEnv, id: string): void
     },
     { env },
   );
-}
-
-export class WorktreeRemovalContentionError extends Error {
-  constructor(
-    readonly kind: "busy" | "finalized",
-    message: string,
-  ) {
-    super(message);
-    this.name = "WorktreeRemovalContentionError";
-  }
 }
 
 export function admitWorktreeRunLeaseRow(

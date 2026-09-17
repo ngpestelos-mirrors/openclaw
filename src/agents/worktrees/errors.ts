@@ -1,9 +1,17 @@
-import { WorktreeRemovalContentionError } from "./registry.js";
-
 export class WorktreeRepositoryError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "WorktreeRepositoryError";
+  }
+}
+
+export class WorktreeRemovalContentionError extends Error {
+  constructor(
+    readonly kind: "busy" | "finalized",
+    message: string,
+  ) {
+    super(message);
+    this.name = "WorktreeRemovalContentionError";
   }
 }
 
