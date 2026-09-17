@@ -59,8 +59,6 @@ export type UpdateCommandOptions = {
   json?: boolean;
   restart?: boolean;
   dryRun?: boolean;
-  /** Wait for a managed-service handoff to reach its durable terminal result. */
-  wait?: boolean;
   channel?: string;
   tag?: string;
   timeout?: string;

@@ -11,9 +11,9 @@ import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 import {
   formatUpdateAncestryBlockMessage,
   gatewayMaintenanceBlockMessage,
-  UPDATE_HANDOFF_IN_PROGRESS_EXIT_CODE,
-  updateRunSettlementExitCode,
 } from "./update-command-handoff.js";
+
+const UPDATE_HANDOFF_IN_PROGRESS_EXIT_CODE = 75;
 
 const tempDirs = createTrackedTempDirs();
 afterEach(() => tempDirs.cleanup());
@@ -200,15 +200,5 @@ describe("formatUpdateAncestryBlockMessage", () => {
     expect(formatUpdateAncestryBlockMessage("service inspection unavailable")).toBe(
       "service inspection unavailable",
     );
-  });
-});
-
-describe("updateRunSettlementExitCode", () => {
-  it("keeps running handoffs distinct from successful settlement", () => {
-    expect(updateRunSettlementExitCode("running")).toBeUndefined();
-    expect(updateRunSettlementExitCode("succeeded")).toBe(0);
-    expect(updateRunSettlementExitCode("skipped")).toBe(0);
-    expect(updateRunSettlementExitCode("failed")).toBe(1);
-    expect(updateRunSettlementExitCode("rolled-back")).toBe(1);
   });
 });

@@ -152,17 +152,6 @@ describe("update cli option collisions", () => {
     },
   );
 
-  it.each(["status", "wizard", "repair", "finalize", "cleanup"])(
-    "rejects handoff waiting on the %s leaf",
-    async (leaf) => {
-      await runRegisteredCli({ register: registerUpdateCli, argv: ["update", "--wait", leaf] });
-      expect(defaultRuntime.error).toHaveBeenCalledWith(
-        expect.stringContaining("--wait is not supported"),
-      );
-      expect(updateCommand).not.toHaveBeenCalled();
-    },
-  );
-
   it("dispatches cleanup after the parent option delimiter", async () => {
     await runRegisteredCli({ register: registerUpdateCli, argv: ["update", "--", "cleanup"] });
     expect(mocks.updateCleanupCommand).toHaveBeenCalledWith({
