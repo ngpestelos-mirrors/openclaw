@@ -23,10 +23,13 @@ export function createRuntimeProcessBuildEntries(
   );
 }
 
-export const runtimeProcessCoreBuildEntries = createRuntimeProcessBuildEntries([
+export const runtimeProcessCoreEntrypoints = [
   ...Object.values(runtimeProcessEntrypoints),
   managedWindowsJobEntrypoint,
-]);
+];
+export const runtimeProcessCoreBuildEntries = createRuntimeProcessBuildEntries(
+  runtimeProcessCoreEntrypoints,
+);
 
 // Keep small helper processes out of the shared runtime bundle.
 export const standaloneRuntimeProcessBuildEntries = createRuntimeProcessBuildEntries([
