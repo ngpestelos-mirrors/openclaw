@@ -207,6 +207,31 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     },
   );
 
+  it("keeps startup-corpus partitions in child env while sharing the compiler", async () => {
+    vi.spyOn(groupOwner, "shouldUseDetachedVitestProcessGroup").mockReturnValue(true);
+    const runChild = vi.fn(async (_args: string[], _env: NodeJS.ProcessEnv) => 0);
+    const plans = resolveShardPlans({
+      OPENCLAW_NODE_TEST_GROUPS_JSON: JSON.stringify([
+        {
+          configs: ["one.config.ts"],
+          env: { OPENCLAW_TEST_STARTUP_CORPUS_SHARD: "1/4" },
+        },
+        {
+          configs: ["one.config.ts"],
+          env: { OPENCLAW_TEST_STARTUP_CORPUS_SHARD: "2/4" },
+        },
+      ]),
+    });
+
+    await expect(
+      runShardPlans(plans, { env: {}, runChild, scratchDir: makeScratchDir() }),
+    ).resolves.toBe(0);
+    expect(runChild.mock.calls.map(([, env]) => env.OPENCLAW_TEST_STARTUP_CORPUS_SHARD)).toEqual([
+      "1/4",
+      "2/4",
+    ]);
+  });
+
   it.each([
     { key: "NODE_OPTIONS", shared: true },
     { key: "NODE_OPTIONS", shared: false },

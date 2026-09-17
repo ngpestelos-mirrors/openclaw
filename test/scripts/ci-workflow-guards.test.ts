@@ -13207,7 +13207,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     },
   );
 
-  it("runs the startup corpus once on full canonical main pushes", () => {
+  it("runs the complete startup corpus on full canonical main pushes", () => {
     const files = [
       "src/config/config-startup-corpus.test.ts",
       "src/config/state-startup-corpus.test.ts",

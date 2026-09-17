@@ -2997,11 +2997,17 @@ export function createSelectedNodeTestShardBundles(
         group.env?.OPENCLAW_NODE_TEST_VITEST_ARGS_JSON === undefined &&
         (!group.includePatterns || group.includePatterns.includes(target)),
     );
-    if (matches.length !== 1) {
+    const isStartupCorpusFanout =
+      target === STATE_STARTUP_CORPUS_TEST &&
+      matches.length === 4 &&
+      new Set(matches.map((group) => group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD)).size === 4 &&
+      matches.every((group) => group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== undefined);
+    if (matches.length !== 1 && !isStartupCorpusFanout) {
       return null;
     }
-    const owner = matches[0]!;
-    selectedGroups.set(owner, [...(selectedGroups.get(owner) ?? []), target]);
+    for (const owner of matches) {
+      selectedGroups.set(owner, [...(selectedGroups.get(owner) ?? []), target]);
+    }
   }
   return [
     ...(tooling.size

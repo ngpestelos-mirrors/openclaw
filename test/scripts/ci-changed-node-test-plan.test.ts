@@ -1122,14 +1122,32 @@ describe("CI changed Node test plan", () => {
   });
 
   describe("documentation targeting", () => {
-    it("keeps the complete two-job corpus plan beside a documentation page", () => {
+    it("keeps the complete corpus plan beside a documentation page", () => {
       const targets = [
         "src/config/config-startup-corpus.test.ts",
         "src/config/state-startup-corpus.test.ts",
       ];
       const before = createChangedNodeTestShards(targets);
-      expect(before).toHaveLength(2);
-      expect(before?.flatMap((shard) => shard.targets ?? [])).toEqual(targets);
+      expect(before).not.toBeNull();
+      expect(before?.flatMap((shard) => shard.groups ?? [])).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            env: expect.objectContaining({ OPENCLAW_TEST_STARTUP_CORPUS_SHARD: "1/4" }),
+            includePatterns: ["src/config/state-startup-corpus.test.ts"],
+          }),
+          expect.objectContaining({
+            env: expect.objectContaining({ OPENCLAW_TEST_STARTUP_CORPUS_SHARD: "4/4" }),
+            includePatterns: ["src/config/state-startup-corpus.test.ts"],
+          }),
+        ]),
+      );
+      expect(
+        before
+          ?.flatMap((shard) => shard.groups ?? [])
+          .filter((group) =>
+            group.includePatterns?.includes("src/config/state-startup-corpus.test.ts"),
+          ),
+      ).toHaveLength(4);
       expect(before?.some((shard) => shard.pretestBuildMode === "runtime")).toBe(true);
       expect(createChangedNodeTestShards([...targets, "docs/ci/pipeline.md"])).toEqual(before);
     });

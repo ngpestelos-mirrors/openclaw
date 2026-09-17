@@ -19,7 +19,6 @@ import {
   type NodeTestShardGroup,
   createNodeTestShardBundles,
   createSelectedNodeTestShardBundles,
-  isExclusiveCompactShardName,
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { rebalanceRuntimeTestJobs } from "../../scripts/lib/ci-runtime-test-placement.mts";
 import { refitTestTimings, type CiTimingRun } from "../../scripts/lib/ci-test-timings-refit.mts";
@@ -80,13 +79,14 @@ describe("runtime placement observations", () => {
       includeReleaseOnlyPluginShards: false,
     };
     const groups = createNodeTestShardBundles(options).flatMap((job) => job.groups);
-    const corpusFile = "src/config/state-startup-corpus.test.ts";
     const handoffFile = "src/infra/update-managed-service-handoff-lifecycle.test.ts";
-    const corpus = groups.find((group) => group.includePatterns?.includes(corpusFile))!;
     const handoff = groups.find((group) => group.includePatterns?.includes(handoffFile))!;
-    expect(corpus.includePatterns!.length).toBeGreaterThan(1);
+    const expanded = groups.find(
+      (group) => group !== handoff && (group.includePatterns?.length ?? 0) > 1,
+    )!;
+    const observedFile = expanded.includePatterns![0]!;
     const observations = [
-      { ...corpus, includePatterns: [corpusFile], seconds: 200 },
+      { ...expanded, includePatterns: [observedFile], seconds: 200 },
       { ...handoff, seconds: 300 },
     ];
     const runs = [1, 2].map((id) =>
@@ -125,17 +125,17 @@ describe("runtime placement observations", () => {
     syncBuiltinESMExports();
     try {
       const plan = createNodeTestShardBundles(options);
-      const corpusJob = plan.find((job) =>
-        job.groups.some((group) => group.includePatterns?.includes(corpusFile)),
+      const expandedJob = plan.find((job) =>
+        job.groups.some((group) => group.includePatterns?.includes(observedFile)),
       );
       const handoffJob = plan.find((job) =>
         job.groups.some((group) => group.includePatterns?.includes(handoffFile)),
       );
-      expect(corpusJob).toBeDefined();
+      expect(expandedJob).toBeDefined();
       expect(handoffJob).toBeDefined();
       // These recorded workloads exceed the shared 440s budget, including
       // preparation. Added files must not make the known reader appear cheap.
-      expect(corpusJob).not.toBe(handoffJob);
+      expect(expandedJob).not.toBe(handoffJob);
     } finally {
       read.mockRestore();
       syncBuiltinESMExports();
@@ -328,7 +328,9 @@ describe("runtime placement observations", () => {
         const runtimeGroups = before
           .flatMap((job) => job.groups)
           .filter((group) => group.pretestBuildMode === "runtime");
-        expect(runtimeGroups).toHaveLength(4);
+        expect(runtimeGroups.filter((group) => group.configs.includes(runtimeConfig))).toHaveLength(
+          6,
+        );
         const selected = ["src/config/state-startup-corpus.test.ts"];
         const preciseBefore = createSelectedNodeTestShardBundles(selected, {
           runnerBackend: "hybrid",
@@ -338,13 +340,14 @@ describe("runtime placement observations", () => {
           env: group.env ?? {},
           includePatterns: group.includePatterns!,
           pretestBuildMode: "runtime",
-          seconds: group.configs.includes(runtimeConfig)
-            ? 200
-            : group.includePatterns?.includes(
-                  "src/infra/update-managed-service-handoff-lifecycle.test.ts",
-                )
-              ? 300
-              : 20,
+          seconds:
+            group.shard_name === "core-runtime-config"
+              ? 200
+              : group.includePatterns?.includes(
+                    "src/infra/update-managed-service-handoff-lifecycle.test.ts",
+                  )
+                ? 300
+                : 20,
         }));
         spy.mockImplementation((profile) => (profile === "blacksmith" ? blacksmith : []));
         const after = createNodeTestShardBundles(options);
@@ -388,20 +391,11 @@ describe("runtime placement observations", () => {
         const changed = after.filter(
           (job, index) => JSON.stringify(job.groups) !== JSON.stringify(before[index]!.groups),
         );
-        expect(changed).toHaveLength(2);
-        for (const job of changed) {
-          expect(job.predictedSeconds).toBeLessThanOrEqual(440);
-          expect(job.planConcurrency).toBe(1);
-          expect(job.groups.every((group) => !isExclusiveCompactShardName(group.shard_name))).toBe(
-            true,
-          );
-        }
-        const crossing = changed.flatMap((job) =>
-          job.groups.filter((group) => group.runner !== job.runner),
-        );
-        expect(crossing.length).toBeGreaterThan(0);
-        expect(crossing.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2")).toBe(
-          true,
+        // The startup corpus now has fixed partition owners, so fresh runtime
+        // measurements update costs without moving groups across those owners.
+        expect(changed).toHaveLength(0);
+        expect(after.map((job) => job.predictedSeconds)).not.toEqual(
+          before.map((job) => job.predictedSeconds),
         );
         spy.mockImplementation((profile) =>
           profile === "blacksmith"
