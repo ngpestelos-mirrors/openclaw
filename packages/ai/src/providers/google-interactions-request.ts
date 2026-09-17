@@ -293,8 +293,10 @@ export function buildGoogleInteractionsParams<T extends GoogleApiType>(
   }
   if (options.thinking) {
     generationConfig.thinking_summaries = options.thinking.enabled ? "auto" : "none";
-    if (options.thinking.enabled) {
-      generationConfig.thinking_level = options.thinking.level?.toLowerCase() ?? "high";
+    if (options.thinking.level) {
+      generationConfig.thinking_level = options.thinking.level.toLowerCase();
+    } else if (options.thinking.enabled) {
+      generationConfig.thinking_level = "high";
     }
   }
   if (options.toolChoice) {

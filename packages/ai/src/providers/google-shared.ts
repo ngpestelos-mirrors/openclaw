@@ -254,6 +254,39 @@ export function buildGoogleSimpleThinking<T extends GoogleApiType>(
   };
 }
 
+export function buildGoogleInteractionsSimpleThinking<T extends GoogleApiType>(
+  model: Model<T>,
+  options: SimpleStreamOptions | undefined,
+): GoogleThinkingOptions {
+  const thinking = buildGoogleSimpleThinking(model, options);
+  if (!thinking.enabled) {
+    if (!model.reasoning) {
+      return thinking;
+    }
+    const disabled = getDisabledGoogleThinkingConfig(model);
+    return {
+      enabled: false,
+      ...(disabled.thinkingLevel ? { level: disabled.thinkingLevel } : {}),
+    };
+  }
+  if (
+    thinking.level !== undefined ||
+    !options?.reasoning ||
+    isAdaptiveGoogleReasoningLevel(options.reasoning)
+  ) {
+    return thinking;
+  }
+
+  const clampedReasoning = clampThinkingLevel(model, options.reasoning);
+  if (clampedReasoning === "off") {
+    return { enabled: false };
+  }
+  if (clampedReasoning === "xhigh" || clampedReasoning === "max") {
+    return { enabled: true, level: getGoogleThinkingLevel("high", model) };
+  }
+  return { enabled: true, level: getGoogleThinkingLevel(clampedReasoning, model) };
+}
+
 function getDisabledGoogleThinkingConfig<T extends GoogleApiType>(model: Model<T>): ThinkingConfig {
   // Google docs: Gemini 3.1 Pro cannot disable thinking, and Gemini 3 Flash / Flash-Lite
   // do not support full thinking-off either. For Gemini 3 models, use the lowest supported

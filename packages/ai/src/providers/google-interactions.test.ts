@@ -421,30 +421,41 @@ describe("google-interactions provider", () => {
   });
 
   it.each([
-    { reasoning: "low" as const, expected: { thinking_level: "low", thinking_summaries: "auto" } },
-    { reasoning: "off" as const, expected: { thinking_summaries: "none" } },
-  ])("maps simple reasoning=$reasoning into the request", async ({ reasoning, expected }) => {
-    let requestBody: Record<string, unknown> | undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        if (typeof init?.body !== "string") {
-          throw new Error("expected serialized Interactions request body");
-        }
-        requestBody = JSON.parse(init.body);
-        return new Response(new TextEncoder().encode(completedSse() + "data: [DONE]\n\n"), {
-          status: 200,
-          headers: { "Content-Type": "text/event-stream" },
-        });
-      }),
-    );
+    {
+      modelId: "gemini-2.5-flash",
+      reasoning: "low" as const,
+      expected: { thinking_level: "low", thinking_summaries: "auto" },
+    },
+    {
+      modelId: "gemini-3-flash-preview",
+      reasoning: "off" as const,
+      expected: { thinking_level: "minimal", thinking_summaries: "none" },
+    },
+  ])(
+    "maps $modelId reasoning=$reasoning into the request",
+    async ({ modelId, reasoning, expected }) => {
+      let requestBody: Record<string, unknown> | undefined;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_url: string, init?: RequestInit) => {
+          if (typeof init?.body !== "string") {
+            throw new Error("expected serialized Interactions request body");
+          }
+          requestBody = JSON.parse(init.body);
+          return new Response(new TextEncoder().encode(completedSse() + "data: [DONE]\n\n"), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }),
+      );
 
-    await streamSimpleGoogleInteractions(
-      { ...makeInteractionsModel(), reasoning: true },
-      basicContext,
-      { apiKey: "test-api-key", reasoning },
-    ).result();
+      await streamSimpleGoogleInteractions(
+        { ...makeInteractionsModel(), id: modelId, reasoning: true },
+        basicContext,
+        { apiKey: "test-api-key", reasoning },
+      ).result();
 
-    expect(requestBody?.generation_config).toMatchObject(expected);
-  });
+      expect(requestBody?.generation_config).toMatchObject(expected);
+    },
+  );
 });
