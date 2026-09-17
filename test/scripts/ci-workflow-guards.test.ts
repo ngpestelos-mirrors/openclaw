@@ -16,7 +16,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { isBuiltin } from "node:module";
 import { connect } from "node:net";
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
@@ -24,7 +23,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
 import { expectDefined } from "@openclaw/normalization-core";
 import { minimatch } from "minimatch";
-import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import * as qaEvidence from "../../extensions/qa-lab/api.js";
@@ -37,7 +35,6 @@ import {
 import { resolveShardPlans, runShardPlans } from "../../scripts/ci-run-node-test-shard.mts";
 import { resolveChangedDockerSeedLanes } from "../../scripts/lib/ci-changed-node-test-plan.mts";
 import { createNodeTestShardBundles } from "../../scripts/lib/ci-node-test-plan.mts";
-import { visitModuleSpecifiers } from "../../scripts/lib/guard-inventory-utils.mjs";
 import { pnpmLockfileDocuments } from "../../scripts/lib/pnpm-lockfile-documents.mjs";
 import { resolveRunVitestSpawnEnv } from "../../scripts/lib/vitest-process-env.mts";
 import { NATIVE_I18N_LOCALES } from "../../scripts/native-i18n-locales.ts";
@@ -56,6 +53,7 @@ import {
   uiE2eRealGatewayTestFiles,
 } from "../vitest/vitest.ui-e2e.config.ts";
 import { runCiGitStep } from "./ci-git-owner.test-support.js";
+import { runDependencyFreePreflight } from "./ci-preflight-dependencies.test-support.js";
 import { assertControlUiE2eOwnership } from "./ci-ui-e2e-ownership.test-support.js";
 import { runGeneratedPublisherScenario } from "./generated-publisher.test-support.js";
 
@@ -12542,99 +12540,13 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       manifestRun.match(/--input-type=module <<'([A-Z][A-Z0-9_]*)'\n([\s\S]*?)\n\1(?=\n|$)/u)?.[2],
       "Build CI manifest Node source",
     );
-    const repoRoot = process.cwd();
-    const pending = new Set<string>();
-
-    function inspectImports(file: string, source: string, workflow = false) {
-      const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-      const specifiers = new Set<string>();
-      const constants = new Map<string, string>();
-      for (const statement of sourceFile.statements) {
-        if (
-          !ts.isVariableStatement(statement) ||
-          !(statement.declarationList.flags & ts.NodeFlags.Const)
-        ) {
-          continue;
-        }
-        for (const declaration of statement.declarationList.declarations) {
-          if (
-            ts.isIdentifier(declaration.name) &&
-            declaration.initializer &&
-            ts.isStringLiteralLike(declaration.initializer)
-          ) {
-            constants.set(declaration.name.text, declaration.initializer.text);
-          }
-        }
-      }
-      visitModuleSpecifiers(
-        ts,
-        sourceFile,
-        ({ specifier }: { specifier: string }) => specifiers.add(specifier),
-        { includeCommonJs: true, includeImportTypes: true },
-      );
-      function visit(node: ts.Node) {
-        // The workflow selects current .mts or historical .mjs candidates before
-        // importing them through variables/helpers. Follow its existing module paths.
-        if (
-          workflow &&
-          ts.isStringLiteralLike(node) &&
-          /^\.\.?\/.*\.[cm]?[jt]s$/u.test(node.text) &&
-          existsSync(node.text)
-        ) {
-          specifiers.add(node.text);
-        }
-        if (
-          !workflow &&
-          ts.isCallExpression(node) &&
-          (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-            (ts.isIdentifier(node.expression) && node.expression.text === "require"))
-        ) {
-          const argument = node.arguments[0];
-          if (!argument || !ts.isStringLiteralLike(argument)) {
-            const specifier =
-              argument && ts.isIdentifier(argument) ? constants.get(argument.text) : undefined;
-            expect(
-              specifier,
-              `${file}: cannot statically resolve module specifier ${argument?.getText(sourceFile) ?? "<missing>"}`,
-            ).toBeDefined();
-            specifiers.add(expectDefined(specifier, "resolved module specifier"));
-          }
-        }
-        ts.forEachChild(node, visit);
-      }
-      visit(sourceFile);
-      for (const specifier of specifiers) {
-        const diagnostic = `${file}: preflight import ${JSON.stringify(specifier)} must resolve without node_modules`;
-        if (specifier.startsWith("node:")) {
-          expect(isBuiltin(specifier), diagnostic).toBe(true);
-          continue;
-        }
-        expect(specifier, diagnostic).toMatch(/^\.\.?\//u);
-        const importedFile = path.relative(
-          repoRoot,
-          path.resolve(
-            workflow ? repoRoot : path.dirname(file),
-            // CI materializes trusted actions under the harness checkout prefix.
-            workflow ? specifier.replace(/^\.\/\.ci-harness\//u, "./") : specifier,
-          ),
-        );
-        expect(importedFile, diagnostic).not.toMatch(/^(?:\.\.(?:[\\/]|$)|[\\/])/u);
-        expect(importedFile.split(path.sep), diagnostic).not.toContain("node_modules");
-        expect(existsSync(importedFile), `${diagnostic}; missing ${importedFile}`).toBe(true);
-        pending.add(importedFile);
-      }
-    }
-
-    inspectImports(".github/workflows/ci.yml (Build CI manifest)", manifestSource, true);
-    expect(pending.size, "workflow must declare preflight module entry points").toBeGreaterThan(0);
-    // Set iteration visits newly discovered modules once, including cycles.
-    for (const file of pending) {
-      expect(
-        pending.size,
-        "preflight import closure exceeded 256 repository files",
-      ).toBeLessThanOrEqual(256);
-      inspectImports(file, readFileSync(file, "utf8"));
-    }
+    const { result, manifest } = runDependencyFreePreflight(
+      manifestSource,
+      tempDirs.make("ci-preflight-dependencies-"),
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(manifest).toContain("run_node=true\n");
+    expect(manifest).toContain("run_windows=true\n");
   });
 
   it("runs mobile protocol coverage for Node and native-only changes", () => {

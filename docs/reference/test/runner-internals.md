@@ -114,7 +114,11 @@ allowing artifact stamps or downstream checks to proceed. POSIX process groups d
 not detect descendants that deliberately leave the group.
 
 On Windows, managed commands and the Gateway test instance use a retained kernel
-Job. The launcher joins that Job before it can start the command. Cleanup waits
+Job. Platform code loads only when a Windows command is requested; planner imports
+stay independent of installed application packages. Loading finishes before spawn,
+so listener registration remains synchronous with child creation. Tooling resolves
+its worker URL with Node built-ins and reuses the native Job bindings from core.
+The launcher joins that Job before it can start the command. Cleanup waits
 for an empty Job, leader exit, and output closure; leader exit alone never proves
 descendant completion. Failed termination reports the observed surviving PIDs and
 retains resource claims while the Job remains unresolved. Normal leader exit also

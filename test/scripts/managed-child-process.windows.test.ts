@@ -3,10 +3,14 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
+import {
+  loadManagedChildSpawner,
+  runManagedCommand,
+} from "../../scripts/lib/managed-child-process.mts";
 import type { ManagedWindowsJob } from "../../scripts/lib/managed-windows-job.mts";
 import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
 import { createWindowsJobBindings } from "../../src/process/supervisor/service-child-windows-job-native.js";
+import { testing } from "../helpers/openclaw-test-instance.js";
 import { waitForFile } from "../helpers/process-wait.js";
 import { createDeferred } from "../helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -31,6 +35,34 @@ vi.mock("../../scripts/lib/managed-windows-job.mts", async (original) => {
 });
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
+
+it.runIf(process.platform === "win32")(
+  "releases an already-exited Gateway's native Job through the Gateway helper",
+  async ({ signal }) => {
+    const spawn = await loadManagedChildSpawner();
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const closed = once(child, "close", { signal });
+    child.stdout.resume();
+    child.stderr.resume();
+    const job = fault.job;
+    if (!job) {
+      throw new Error("Windows Job launcher was not created");
+    }
+    const close = vi.spyOn(job, "close");
+    try {
+      await closed;
+      await expect(testing.stopGatewayProcess(child, Date.now() + 5_000, 2_000)).resolves.toBe(
+        true,
+      );
+      expect(close).toHaveBeenCalledOnce();
+      expect(() => job.inspect()).toThrow("Windows command Job is closed");
+    } finally {
+      job.close();
+    }
+  },
+);
 
 it.runIf(process.platform === "win32").each(["abort", "normal exit"])(
   "joins native Job descendants with independent output after %s",

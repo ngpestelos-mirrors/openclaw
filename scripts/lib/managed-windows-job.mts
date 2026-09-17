@@ -2,9 +2,8 @@ import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { resolveRuntimeWorkerUrl } from "../../src/infra/runtime-worker-url.ts";
 import { createWindowsJobBindings } from "../../src/process/supervisor/service-child-windows-job-native.ts";
-import { managedWindowsJobEntrypoint } from "./managed-windows-job-entrypoint.mts";
+import { resolveManagedWindowsJobEntrypointUrl } from "./managed-windows-job-entrypoint.mts";
 
 export type ManagedWindowsJob = {
   inspect: () => number[];
@@ -106,7 +105,7 @@ export function spawnWindowsJobChild(
     stdio.push("ipc");
     const child = spawn(
       process.execPath,
-      [fileURLToPath(resolveRuntimeWorkerUrl(managedWindowsJobEntrypoint)), name],
+      [fileURLToPath(resolveManagedWindowsJobEntrypointUrl()), name],
       {
         cwd: launch.options.cwd,
         // Windows environment keys are case-insensitive. Preloads belong inside the Job.

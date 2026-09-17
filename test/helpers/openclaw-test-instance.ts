@@ -16,7 +16,7 @@ import {
   finalizeManagedChild,
   inspectManagedProcessGroup,
   runManagedCommand,
-  spawnManagedChild,
+  loadManagedChildSpawner,
   terminateManagedChild,
 } from "../../scripts/lib/managed-child-process.mts";
 import { hasErrnoCode } from "../../src/infra/errno.js";
@@ -519,9 +519,6 @@ async function stopGatewayProcess(
           },
     );
 
-  if (hasGatewayProcessClosed(child, platform)) {
-    return true;
-  }
   if (platform === "win32") {
     const startedAt = Date.now();
     const taskkill: Array<{
@@ -799,7 +796,11 @@ export async function createOpenClawTestInstance(
     return next.promise;
   };
   const stopTimeoutMs = options.stopTimeoutMs ?? GATEWAY_STOP_TIMEOUT_MS;
-  const spawnGatewayProcess = (args: string[], attemptStderr: string[]): OpenClawTestProcess => {
+  const spawnGatewayProcess = (
+    spawnManagedChild: Awaited<ReturnType<typeof loadManagedChildSpawner>>,
+    args: string[],
+    attemptStderr: string[],
+  ): OpenClawTestProcess => {
     const [command = "node", ...prefixArgs] = options.gatewayCommandPrefix ?? [];
     signal?.throwIfAborted();
     const next = spawnManagedChild(command, [...prefixArgs, ...args], {
@@ -912,6 +913,7 @@ export async function createOpenClawTestInstance(
         }
         readiness.length = 0;
         const commandEntrypoint = await entrypoint();
+        const spawnManagedChild = await loadManagedChildSpawner();
         signal?.throwIfAborted();
         const gatewayArgs = [
           ...commandEntrypoint,
@@ -941,7 +943,7 @@ export async function createOpenClawTestInstance(
           signal?.throwIfAborted();
           let attempt: OpenClawTestProcess;
           try {
-            attempt = spawnGatewayProcess(gatewayArgs, attemptStderr);
+            attempt = spawnGatewayProcess(spawnManagedChild, gatewayArgs, attemptStderr);
           } catch (error) {
             await runQaGatewayFixture(async (): Promise<never> => {
               throw error;

@@ -24,6 +24,53 @@ vi.mock("../../scripts/lib/managed-windows-job.mts", () => ({
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
+it("cancels admission while Windows platform code loads without spawning or retaining a claim", async () => {
+  const root = dirs.make("managed-platform-cancel-");
+  const owner = createVitestResourceOwner(root);
+  mocks.spawn.mockClear();
+  mocks.spawnWindowsJobChild.mockClear();
+  const abort = new AbortController();
+  const command = runManagedCommand({
+    bin: "fixture",
+    platform: "win32",
+    signal: abort.signal,
+    env: { TMPDIR: root },
+  });
+  abort.abort();
+  await expect(command).rejects.toMatchObject({ name: "AbortError" });
+  expect(mocks.spawn).not.toHaveBeenCalled();
+  expect(mocks.spawnWindowsJobChild).not.toHaveBeenCalled();
+  owner.assertReleased();
+});
+
+it("preserves requested command inputs across Windows platform loading", async () => {
+  const root = dirs.make("managed-platform-inputs-");
+  const child = new ChildProcess();
+  Object.defineProperties(child, { pid: { value: 12345 }, exitCode: { value: 0 } });
+  let launched: { argument?: string; value?: string } | undefined;
+  mocks.spawnWindowsJobChild.mockImplementation((_command, args, options) => {
+    launched = { argument: args[0], value: options.env.VALUE };
+    return {
+      child,
+      job: { inspect: () => [], beginStop() {}, stop() {}, close() {} },
+    };
+  });
+  const args = ["original"];
+  const env = { TMPDIR: root, VALUE: "original" };
+  const command = runManagedCommand({
+    bin: "fixture",
+    args,
+    env,
+    platform: "win32",
+    shell: false,
+    onReady: () => child.emit("close", 0, null),
+  });
+  args[0] = "mutated";
+  env.VALUE = "mutated";
+  await expect(command).resolves.toBe(0);
+  expect(launched).toEqual({ argument: "original", value: "original" });
+});
+
 it("does not certify an unavailable POSIX group observation when its wait expires", async () => {
   vi.spyOn(process, "kill").mockImplementation(() => {
     throw Object.assign(new Error("group observation unavailable"), { code: "EIO" });

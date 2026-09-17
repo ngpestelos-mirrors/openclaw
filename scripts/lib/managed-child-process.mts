@@ -10,7 +10,7 @@ import type {
 import { constants as osConstants, tmpdir } from "node:os";
 import { Writable, type Readable } from "node:stream";
 import { buildCmdExeCommandLine, resolveWindowsCmdExePath } from "../windows-cmd-helpers.mjs";
-import { spawnWindowsJobChild, type ManagedWindowsJob } from "./managed-windows-job.mts";
+import type { ManagedWindowsJob } from "./managed-windows-job.mts";
 import { findVitestResourceOwner } from "./vitest-resource-ownership.mts";
 import { resolveWindowsTaskkillPath } from "./windows-taskkill.mjs";
 
@@ -100,27 +100,36 @@ const signalHandlers = new Map<NodeJS.Signals, () => void>();
 const windowsJobs = new WeakMap<object, ManagedWindowsJob>();
 const windowsTerminations = new WeakMap<object, ManagedChildTermination>();
 
-export function spawnManagedChild(
-  command: string,
-  args: string[],
-  options: SpawnOptionsWithStdioTuple<"ignore", "pipe", "pipe">,
-): ChildProcessByStdio<null, Readable, Readable>;
-export function spawnManagedChild(
-  command: string,
-  args: string[],
-  options: SpawnOptions,
-): ChildProcess;
-export function spawnManagedChild(
-  command: string,
-  args: string[],
-  options: SpawnOptions,
-): ChildProcess {
-  const owned = spawnWindowsJobChild(command, args, options);
-  if (!owned) {
-    return spawn(command, args, options);
+/** Resolve platform code before spawning so callers can attach listeners synchronously. */
+export function loadManagedChildSpawner(platform = process.platform) {
+  if (platform !== "win32") {
+    return spawn;
   }
-  windowsJobs.set(owned.child, owned.job);
-  return owned.child;
+  return import("./managed-windows-job.mts").then(({ spawnWindowsJobChild }) => {
+    function spawnManagedChild(
+      command: string,
+      args: string[],
+      options: SpawnOptionsWithStdioTuple<"ignore", "pipe", "pipe">,
+    ): ChildProcessByStdio<null, Readable, Readable>;
+    function spawnManagedChild(
+      command: string,
+      args: string[],
+      options: SpawnOptions,
+    ): ChildProcess;
+    function spawnManagedChild(
+      command: string,
+      args: string[],
+      options: SpawnOptions,
+    ): ChildProcess {
+      const owned = spawnWindowsJobChild(command, args, options);
+      if (!owned) {
+        return spawn(command, args, options);
+      }
+      windowsJobs.set(owned.child, owned.job);
+      return owned.child;
+    }
+    return spawnManagedChild;
+  });
 }
 
 function observeWindowsTree(child: ManagedProcessGroupChild): ManagedChildTermination {
@@ -483,12 +492,19 @@ export async function runManagedCommand({
     }
     return undefined;
   });
+  // Preserve spawn's input snapshot while Windows platform code loads.
+  const commandEnv = { ...(commandOptions.env ?? process.env) };
   const spawnSpec = createManagedCommandSpawnSpec({
     ...commandOptions,
+    args: commandOptions.args?.slice(),
+    cwd: commandOptions.cwd ?? process.cwd(),
+    env: commandEnv,
     stdio: managedStdio,
     platform,
   });
-  const commandEnv = commandOptions.env ?? process.env;
+  const loading = loadManagedChildSpawner(platform);
+  const spawnManagedChild = typeof loading === "function" ? loading : await loading;
+  signal?.throwIfAborted();
   let releaseClaim = findVitestResourceOwner(
     commandEnv.TMPDIR || commandEnv.TMP || commandEnv.TEMP || tmpdir(),
   )?.claim();
