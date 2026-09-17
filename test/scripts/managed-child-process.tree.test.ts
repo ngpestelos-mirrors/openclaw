@@ -63,7 +63,10 @@ it("preserves requested command inputs across Windows platform loading", async (
     env,
     platform: "win32",
     shell: false,
-    onReady: () => child.emit("close", 0, null),
+    onReady: () => {
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+    },
   });
   args[0] = "mutated";
   env.VALUE = "mutated";

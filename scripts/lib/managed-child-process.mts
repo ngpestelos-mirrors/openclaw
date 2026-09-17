@@ -522,6 +522,7 @@ export async function runManagedCommand({
     releaseOwnership();
     throw error;
   }
+  const ownsProcessTree = requireProcessTreeExit || windowsJobs.has(child);
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
   let finalization: Promise<{ type: "failed"; error: unknown } | undefined> | undefined;
   let cancellation: ManagedCommandOutcome | undefined;
@@ -574,9 +575,9 @@ export async function runManagedCommand({
     });
     // The wall deadline includes output drainage, but not group verification after close.
     child.once("close", () => clearTimeout(timeoutTimer));
-    // Strict owners must start cleanup at exit: descendants can hold output
+    // Tree owners must start cleanup at exit: descendants can hold output
     // open indefinitely. Finalization still joins the group and output pipes.
-    child.once(requireProcessTreeExit ? "exit" : "close", (status, received) => {
+    child.once(ownsProcessTree ? "exit" : "close", (status, received) => {
       notifyOutcome({
         type: "completed",
         exit: received ?? status ?? 1,
@@ -615,7 +616,7 @@ export async function runManagedCommand({
       throw error;
     }
     let outcome = await completion;
-    if (outcome.type === "completed" && (requireProcessTreeExit || windowsJobs.has(child))) {
+    if (outcome.type === "completed" && ownsProcessTree) {
       // Preserve actual signal cleanup; numeric 143 must still reject lingering descendants.
       const exitSignal = typeof outcome.exit === "string" ? outcome.exit : undefined;
       void finalize(exitSignal);
@@ -625,7 +626,7 @@ export async function runManagedCommand({
     outcome = cleanup ?? cancellation ?? outcome;
     // Preserve the ordinary API's close-based contract. Cancellation and strict
     // commands release only at the finalizer's positive termination boundary.
-    if (outcome.type === "completed" && !requireProcessTreeExit && !cancellation && !finalization) {
+    if (outcome.type === "completed" && !ownsProcessTree && !cancellation && !finalization) {
       releaseOwnership();
     }
     if (outcome.type === "failed") {
@@ -677,7 +678,7 @@ export async function finalizeManagedChild(
 ) {
   // Nested wrappers own detached groups. Let them forward the signal before
   // killing their leader, then join inherited pipes as well as our own group.
-  // Normal exit has no grace period: surviving group members are a failure.
+  // POSIX normal exit has no grace period: surviving group members are a failure.
   const startedAt = Date.now();
   const forceDelay = signal ? forceKillDelayMs : 0;
   const signalErrors: unknown[] = [];
@@ -693,9 +694,24 @@ export async function finalizeManagedChild(
     onProcessGroupSignalError: recordSignalError,
   };
   const job = windowsJobs.get(child);
+  const normalJobExit = !signal && job !== undefined;
+  const outputClosed = () => [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed);
   let joined = false;
   const failures: unknown[] = [];
   try {
+    if (normalJobExit && !outputClosed()) {
+      // Give terminal writers half the existing allowance to drain naturally;
+      // reserve the rest for Job termination and verified output closure.
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          child.off("close", finish);
+          resolve();
+        };
+        const timer = setTimeout(finish, Math.max(0, startedAt + drainTimeoutMs / 2 - Date.now()));
+        child.once("close", finish);
+      });
+    }
     const termination: ManagedChildTermination | undefined =
       !signal &&
       inspectManagedProcessGroup(child, {
@@ -714,9 +730,9 @@ export async function finalizeManagedChild(
         termination?.error,
       );
     }
-    // POSIX probes share the original budget; Windows retains its existing
-    // post-taskkill drainage allowance.
-    const forceAt = (platform === "win32" ? Date.now() : startedAt) + forceDelay;
+    // Normal Job output drainage shares the original budget. Windows cancellation
+    // retains its existing post-taskkill allowance; POSIX probes remain bounded too.
+    const forceAt = (platform === "win32" && !normalJobExit ? Date.now() : startedAt) + forceDelay;
     const deadline = forceAt + drainTimeoutMs;
     let forced = !signal || platform === "win32";
     let groupState: "dead" | "indeterminate" | "live" = "indeterminate";
@@ -759,8 +775,7 @@ export async function finalizeManagedChild(
           platform,
         });
       }
-      const pipesClosed = [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed);
-      if (groupState === "dead" && exited && pipesClosed) {
+      if (groupState === "dead" && exited && outputClosed()) {
         joined = true;
         // A missing group at signal time supersedes the earlier racy liveness probe.
         if (!signal && platform !== "win32" && termination?.processTreeState !== "terminated") {
