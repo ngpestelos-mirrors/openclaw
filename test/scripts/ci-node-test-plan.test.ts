@@ -93,10 +93,10 @@ describe("startup corpus coverage", () => {
       expect.arrayContaining(files),
     );
   });
-  it("retains complete ownership across all four state corpus partitions", () => {
+  it("retains complete ownership across all three state corpus partitions", () => {
     const groups = [
       { ...group, includePatterns: [files[0]!] },
-      ...["1/4", "2/4", "3/4", "4/4"].map((shard) => ({
+      ...["1/3", "2/3", "3/3"].map((shard) => ({
         ...group,
         env: {
           OPENCLAW_VITEST_MAX_WORKERS: "2",
@@ -110,7 +110,7 @@ describe("startup corpus coverage", () => {
       hasCompleteStartupCorpusCoverage([
         {
           requiresDist: false,
-          groups: groups.filter((entry) => entry.env.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== "4/4"),
+          groups: groups.filter((entry) => entry.env.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== "3/3"),
         },
       ]),
     ).toBe(false);
@@ -443,7 +443,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       runtimeShards.filter((shard) => shard.includePatterns?.includes(file));
 
     for (const file of expectedFiles) {
-      expect(owners(file), file).toHaveLength(file === stateCorpus ? 4 : 1);
+      expect(owners(file), file).toHaveLength(file === stateCorpus ? 3 : 1);
     }
     expect(
       runtimeShards
@@ -456,14 +456,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       owners(stateCorpus)
         .map((shard) => shard.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD)
         .toSorted(),
-    ).toEqual(["1/4", "2/4", "3/4", "4/4"]);
+    ).toEqual(["1/3", "2/3", "3/3"]);
 
     const compact = getCommittedCompactPlan("push");
     const stateJobs = compact.filter((job) =>
       job.groups.some((group) => group.includePatterns?.includes(stateCorpus)),
     );
-    expect(stateJobs).toHaveLength(4);
-    expect(new Set(stateJobs.map((job) => job.checkName))).toHaveLength(4);
+    expect(stateJobs).toHaveLength(3);
+    expect(new Set(stateJobs.map((job) => job.checkName))).toHaveLength(3);
     expect(
       stateJobs
         .map(
@@ -472,13 +472,12 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
               ?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD,
         )
         .toSorted(),
-    ).toEqual(["1/4", "2/4", "3/4", "4/4"]);
+    ).toEqual(["1/3", "2/3", "3/3"]);
     expect(hasCompleteStartupCorpusCoverage(compact)).toBe(true);
 
     for (const [runnerBackend, partitionSeconds] of [
-      ["blacksmith", 122],
-      ["hybrid", 106],
-      ["github", 195],
+      ["blacksmith", 163],
+      ["hybrid", 142],
     ] as const) {
       const backendPlan = createNodeTestShardBundles({
         compactMode: "push",
@@ -491,7 +490,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       const backendStateGroups = backendStateJobs.flatMap((job) =>
         job.groups.filter((group) => group.includePatterns?.includes(stateCorpus)),
       );
-      expect(backendStateGroups, runnerBackend).toHaveLength(4);
+      expect(backendStateGroups, runnerBackend).toHaveLength(3);
       for (const job of backendStateJobs) {
         const partitions = job.groups.filter((group) =>
           group.includePatterns?.includes(stateCorpus),
@@ -501,6 +500,18 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         );
       }
     }
+
+    const githubPlan = createNodeTestShardBundles({
+      compactMode: "push",
+      includeReleaseOnlyPluginShards: false,
+      runnerBackend: "github",
+    });
+    const githubStateGroups = githubPlan.flatMap((job) =>
+      job.groups.filter((group) => group.includePatterns?.includes(stateCorpus)),
+    );
+    expect(githubStateGroups).toHaveLength(1);
+    expect(githubStateGroups[0]?.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD).toBeUndefined();
+    expect(hasCompleteStartupCorpusCoverage(githubPlan)).toBe(true);
   });
   it.each(["github", "hybrid"])("keeps oversized sparse groups nonempty on %s", (runnerBackend) => {
     const native = createNodeTestShards({ includeReleaseOnlyPluginShards: false });

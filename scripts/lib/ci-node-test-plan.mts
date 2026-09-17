@@ -101,6 +101,8 @@ type NodeTestPlanOptions = {
   runnerBackend?: string;
 };
 
+const STATE_STARTUP_CORPUS_PARTITION_COUNT = 3;
+
 export function hasCompleteStartupCorpusCoverage(
   shards: readonly {
     requiresDist: boolean;
@@ -131,7 +133,10 @@ export function hasCompleteStartupCorpusCoverage(
       group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD === undefined &&
       Object.keys(group.env ?? {}).every((key) => key === "OPENCLAW_VITEST_MAX_WORKERS"),
   );
-  const expectedStateShards = ["1/4", "2/4", "3/4", "4/4"];
+  const expectedStateShards = Array.from(
+    { length: STATE_STARTUP_CORPUS_PARTITION_COUNT },
+    (_, index) => `${index + 1}/${STATE_STARTUP_CORPUS_PARTITION_COUNT}`,
+  );
   const stateShardOwners = stateOwners.filter(
     (group) =>
       group.env?.OPENCLAW_TEST_STARTUP_CORPUS_SHARD !== undefined &&
@@ -362,7 +367,6 @@ const UNIT_FAST_NODE_TEST_STRIPES = 2;
 const EMBEDDED_BASE_NODE_TEST_STRIPES = 3;
 // Cold-start fallback when committed CI measurements are missing. Refresh
 // config/ci-test-timings.json with pnpm ci:timings:refit, not these literals.
-const STATE_STARTUP_CORPUS_PARTITION_COUNT = 4;
 // Run 35200708607 measured 488s for the unsplit corpus. Preserve that parent
 // cost across the new identities until each partition has direct samples.
 const STATE_STARTUP_CORPUS_PARTITION_SECONDS = Math.ceil(
@@ -454,6 +458,7 @@ const COMPACT_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["auto-reply-reply-state-routing", 63],
   // Apportioned from the split infra-process trio (see below).
   ["core-runtime-config", 113],
+  ["core-runtime-config-startup-state", 488],
   ...Array.from(
     { length: STATE_STARTUP_CORPUS_PARTITION_COUNT },
     (_, index) =>
@@ -777,7 +782,7 @@ function isParallelCompactGroup(group: NodeTestShardGroup): boolean {
 // scales with the runner class. infra-process spawns child processes per test
 // and hit worker-startup timeouts under contention before serialization.
 const PINNED_WORKER_COMPACT_GROUP_RE =
-  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^core-runtime-infra-process$|^core-runtime-config(?:-startup-(?:config|state-[1-4]))?$|^core-runtime-media-ui-(?:\d+|support)$|^agentic-cli(?:-process)?$|^agentic-gateway-(?:core-\d+|methods)$/u;
+  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^core-runtime-infra-process$|^core-runtime-config(?:-startup-(?:config|state-[1-3]))?$|^core-runtime-media-ui-(?:\d+|support)$|^agentic-cli(?:-process)?$|^agentic-gateway-(?:core-\d+|methods)$/u;
 const PINNED_COMPACT_GROUP_ENV = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
 
 function applyCompactGroupWorkerPins(group: NodeTestShardGroup): NodeTestShardGroup {
@@ -880,7 +885,7 @@ function estimateCompactStripeSeconds(
 // Identify split siblings, including nested children of deliberately separated
 // fixed stripes.
 function compactStripeFamily(group: NodeTestShardGroup): string | undefined {
-  if (/^core-runtime-config-startup-state-[1-4]$/u.test(group.shard_name)) {
+  if (/^core-runtime-config-startup-state-[1-3]$/u.test(group.shard_name)) {
     return "core-runtime-config-startup-state";
   }
   if (
@@ -3102,9 +3107,39 @@ function createCompactNodeTestShardBundles(
           }
         }
       : undefined;
-  const shards = sourceShards.filter(
-    (shard) => compactMode !== "push" || !COMPACT_PUSH_EXCLUDED_SHARDS.has(shard.shardName),
-  );
+  const shards = sourceShards
+    .filter((shard) => compactMode !== "push" || !COMPACT_PUSH_EXCLUDED_SHARDS.has(shard.shardName))
+    .flatMap((shard) => {
+      if (options.runnerBackend !== "github") {
+        return [shard];
+      }
+      // The hosted fallback has a fixed runner-registration budget and cannot
+      // execute sibling groups concurrently. Preserve an unsharded corpus and
+      // fold the small config corpus into the ordinary owner there;
+      // Blacksmith-backed plans retain the three-way fanout.
+      if (shard.shardName === "core-runtime-config") {
+        return [
+          {
+            ...shard,
+            includePatterns: [
+              ...(shard.includePatterns ?? []),
+              "src/config/config-startup-corpus.test.ts",
+            ],
+          },
+        ];
+      }
+      if (shard.shardName === "core-runtime-config-startup-config") {
+        return [];
+      }
+      if (!/^core-runtime-config-startup-state-[1-3]$/u.test(shard.shardName)) {
+        return [shard];
+      }
+      if (shard.shardName !== "core-runtime-config-startup-state-1") {
+        return [];
+      }
+      const { env: _partitionEnv, ...unsharded } = shard;
+      return [{ ...unsharded, shardName: "core-runtime-config-startup-state" }];
+    });
   const groupsByRunner = new Map<string, [NodeTestShardGroup, ...NodeTestShardGroup[]]>();
   const synthesizedSplitSeconds = new Map<string, number>();
   const runnerRank = (group: Pick<NodeTestShardGroup, "runner">) =>

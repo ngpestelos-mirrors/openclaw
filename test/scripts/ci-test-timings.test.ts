@@ -19,6 +19,7 @@ import {
   type NodeTestShardGroup,
   createNodeTestShardBundles,
   createSelectedNodeTestShardBundles,
+  isExclusiveCompactShardName,
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { rebalanceRuntimeTestJobs } from "../../scripts/lib/ci-runtime-test-placement.mts";
 import { refitTestTimings, type CiTimingRun } from "../../scripts/lib/ci-test-timings-refit.mts";
@@ -329,7 +330,7 @@ describe("runtime placement observations", () => {
           .flatMap((job) => job.groups)
           .filter((group) => group.pretestBuildMode === "runtime");
         expect(runtimeGroups.filter((group) => group.configs.includes(runtimeConfig))).toHaveLength(
-          6,
+          5,
         );
         const selected = ["src/config/state-startup-corpus.test.ts"];
         const preciseBefore = createSelectedNodeTestShardBundles(selected, {
@@ -391,11 +392,20 @@ describe("runtime placement observations", () => {
         const changed = after.filter(
           (job, index) => JSON.stringify(job.groups) !== JSON.stringify(before[index]!.groups),
         );
-        // The startup corpus now has fixed partition owners, so fresh runtime
-        // measurements update costs without moving groups across those owners.
-        expect(changed).toHaveLength(0);
-        expect(after.map((job) => job.predictedSeconds)).not.toEqual(
-          before.map((job) => job.predictedSeconds),
+        expect(changed).toHaveLength(2);
+        for (const job of changed) {
+          expect(job.predictedSeconds).toBeLessThanOrEqual(440);
+          expect(job.planConcurrency).toBe(1);
+          expect(job.groups.every((group) => !isExclusiveCompactShardName(group.shard_name))).toBe(
+            true,
+          );
+        }
+        const crossing = changed.flatMap((job) =>
+          job.groups.filter((group) => group.runner !== job.runner),
+        );
+        expect(crossing.length).toBeGreaterThan(0);
+        expect(crossing.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2")).toBe(
+          true,
         );
         spy.mockImplementation((profile) =>
           profile === "blacksmith"
