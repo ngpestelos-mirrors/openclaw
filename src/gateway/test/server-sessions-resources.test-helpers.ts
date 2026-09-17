@@ -10,6 +10,10 @@ import {
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import { isPathInside } from "../../infra/path-guards.js";
+import {
+  collectActiveSessionWorkAdmissions,
+  getSessionWorkAdmissionRelease,
+} from "../../sessions/session-lifecycle-admission.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { unregisterOpenClawAgentDatabase } from "../../state/openclaw-agent-db-registry.js";
 import {
@@ -31,6 +35,18 @@ export async function releaseGatewaySessionStoreFixture(dir: string) {
   const root = existsSync(dir) ? realpathSync(dir) : path.resolve(dir);
   const ownsPath = (candidate: string) =>
     isPathInside(root, candidate) || isPathInside(path.resolve(dir), candidate);
+  // A recovery ACK can leave its admitted continuation writing after the test returns.
+  while (true) {
+    const releases = [...collectActiveSessionWorkAdmissions()]
+      .filter(([scope]) => ownsPath(scope))
+      .flatMap(
+        ([scope, identities]) => getSessionWorkAdmissionRelease({ scope, identities }) ?? [],
+      );
+    if (releases.length === 0) {
+      break;
+    }
+    await Promise.all(releases);
+  }
   if (testState.sessionStorePath && ownsPath(testState.sessionStorePath)) {
     testState.sessionStorePath = undefined;
   }
