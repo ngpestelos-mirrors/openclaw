@@ -4,8 +4,8 @@ import {
   onSessionLifecycleEvent,
   type SessionLifecycleEvent,
 } from "../../../sessions/session-lifecycle-events.js";
-import { buildSubagentRunReadIndexFromRuns } from "./subagent-registry-queries.js";
 import { sessionChanges } from "../../../sessions/session-row-changes.js";
+import { buildSubagentRunReadIndexFromRuns } from "./subagent-registry-queries.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 import {
   clearSubagentRunsReadCacheForTest,

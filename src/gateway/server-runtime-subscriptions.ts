@@ -321,7 +321,10 @@ export function startGatewayEventSubscriptions(params: {
               const owner = options?.ownerEvent
                 ? eventRowOwners.get(options.ownerEvent)
                 : undefined;
-              if (owner?.record && !owner.projection.isCurrent(owner.record)) {
+              if (
+                options?.ownerEvent &&
+                (!owner?.record || !owner.projection.isCurrent(owner.record))
+              ) {
                 return { row: null };
               }
               const scope = resolveSessionEventAgentScope(

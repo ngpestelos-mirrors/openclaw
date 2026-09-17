@@ -250,20 +250,19 @@ durations, not CPU time or proof of client receipt. No query text or session
 contents are included.
 
 The same record includes fractional-millisecond current-thread CPU measurements
-for synchronous work: `storeLoadThreadCpuMs`, `prepareThreadCpuMs`,
-`rowThreadCpuMs`, `cacheSelectionThreadCpuMs`, `cachePublicationThreadCpuMs`, and
-`responseThreadCpuMs`. Preparation and row totals accumulate synchronous
-chunks, excluding yields and intervening microtasks. Row CPU also includes final
-list construction. Cache selection and publication finish before the response
-callback is measured; response CPU excludes network waits. Measurements finish
-before this diagnostic record is published or logged.
-Registry readiness waits and worker CPU are not included in these measurements.
+for synchronous work: `prepareThreadCpuMs`, `rowThreadCpuMs`, and
+`responseThreadCpuMs`. Preparation covers resident selection, filtering, and
+sorting after projection readiness. Row CPU includes presentation and final list
+construction. Both intervals finish before the response callback is measured;
+response CPU excludes network waits. Measurements finish before this diagnostic
+record is published or logged. Projection readiness waits, background
+materialization, intervening microtasks, and worker CPU are not included.
 These are selected inclusive CPU intervals, including same-thread native work and
 garbage collection, not SQL-only CPU or a complete request CPU total.
 
-Unvisited measurements are omitted. Hits and followers retain their own selection
-and response CPU without inheriting the producer's store, projection, or publication
-work. If a CPU counter read fails, all CPU fields are omitted for that request;
+Unvisited measurements are omitted. Each request retains its own selection,
+presentation, and response CPU without inheriting shared background work.
+If a CPU counter read fails, all CPU fields are omitted for that request;
 its result and elapsed diagnostics are preserved. Existing activation and the
 one-second warning threshold are unchanged, so missing slow records do not account
 for CPU consumed by faster requests.

@@ -40,7 +40,9 @@ function startSessionListDiagnostics(
     reusedRowCount: 0,
   };
   let responseOutcome: "none" | "ok" | "error" | "threw" = "none";
-  let cpuMetrics: Partial<Record<Parameters<SessionListDiagnostics["finishSyncCpu"]>[0], number>> | undefined = {};
+  let cpuMetrics:
+    | Partial<Record<Parameters<SessionListDiagnostics["finishSyncCpu"]>[0], number>>
+    | undefined = {};
   const startSyncCpu = (): NodeJS.CpuUsage | undefined => {
     if (!cpuMetrics) {
       return undefined;
@@ -52,7 +54,10 @@ function startSessionListDiagnostics(
       return undefined;
     }
   };
-  const finishSyncCpu = (metric: Parameters<SessionListDiagnostics["finishSyncCpu"]>[0], started: NodeJS.CpuUsage | undefined) => {
+  const finishSyncCpu = (
+    metric: Parameters<SessionListDiagnostics["finishSyncCpu"]>[0],
+    started: NodeJS.CpuUsage | undefined,
+  ) => {
     if (!started || !cpuMetrics) {
       return;
     }

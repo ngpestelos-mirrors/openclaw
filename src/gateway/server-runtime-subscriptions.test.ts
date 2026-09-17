@@ -252,49 +252,56 @@ describe("startGatewayEventSubscriptions", () => {
     },
   );
 
-  it.each(["same-id reset", "replacement"])(
-    "does not attach a successor row after a queued %s",
-    async (change) => {
-      const prepared = createDeferred();
-      const original = { sessionId: "original" };
-      let current = original;
-      const projection = {
-        capture: () => current,
-        ensureMaterialized: () => prepared.promise,
-        isCurrent: (record: typeof original) => record === current,
-        snapshot: () => ({ row: { key: "agent:main:queued", sessionId: current.sessionId } }),
-      } as unknown as SessionRowProjection;
-      const delivered = vi.fn();
-      agentEventHandlerMocks.create.mockImplementation((options: AgentEventHandlerOptions) =>
-        Object.assign(
-          (event: AgentEventPayload) => {
-            delivered(
-              options.loadGatewaySessionLifecycleSnapshotForEvent?.("agent:main:queued", {
-                agentId: "main",
-                ownerEvent: event,
-              }).row,
-            );
-          },
-          { dispose: vi.fn() },
-        ),
-      );
-      unsubs = startGatewayEventSubscriptions({
-        ...createParams(),
-        getSessionRowProjection: () => projection,
-      });
-      emitAgentEvent({
-        runId: "queued-owner",
-        agentId: "main",
-        sessionKey: "agent:main:queued",
-        sessionId: "original",
-        stream: "lifecycle",
-        data: { phase: "start", startedAt: 1 },
-      });
-      current = { sessionId: change === "replacement" ? "successor" : "original" };
-      prepared.resolve();
-      await waitForFast(() => expect(delivered).toHaveBeenCalledWith(null));
-    },
-  );
+  it.each([
+    "same-id reset",
+    "replacement",
+    "missing row",
+    "missing row without ID",
+    "missing projection",
+  ])("does not attach a successor row after a queued %s", async (change) => {
+    const prepared = createDeferred();
+    const original = { sessionId: "original" };
+    let current: typeof original | undefined = change.startsWith("missing row")
+      ? undefined
+      : original;
+    let admitted = change !== "missing projection";
+    const projection = {
+      capture: () => current,
+      ensureMaterialized: () => prepared.promise,
+      isCurrent: (record: typeof original) => record === current,
+      snapshot: () => ({ row: current ? { key: "agent:main:queued", ...current } : null }),
+    } as unknown as SessionRowProjection;
+    const delivered = vi.fn();
+    agentEventHandlerMocks.create.mockImplementation((options: AgentEventHandlerOptions) =>
+      Object.assign(
+        (event: AgentEventPayload) => {
+          delivered(
+            options.loadGatewaySessionLifecycleSnapshotForEvent?.("agent:main:queued", {
+              agentId: "main",
+              ownerEvent: event,
+            }).row,
+          );
+        },
+        { dispose: vi.fn() },
+      ),
+    );
+    unsubs = startGatewayEventSubscriptions({
+      ...createParams(),
+      getSessionRowProjection: () => (admitted ? projection : undefined),
+    });
+    emitAgentEvent({
+      runId: "queued-owner",
+      agentId: "main",
+      sessionKey: "agent:main:queued",
+      sessionId: change === "missing row without ID" ? undefined : "original",
+      stream: "lifecycle",
+      data: { phase: "start", startedAt: 1 },
+    });
+    current = { sessionId: change === "replacement" ? "successor" : "original" };
+    admitted = true;
+    prepared.resolve();
+    await waitForFast(() => expect(delivered).toHaveBeenCalledWith(null));
+  });
 
   it.each([false, true])(
     "keeps activity-summary publication bound to its captured lifecycle (same-ID reset: %s)",

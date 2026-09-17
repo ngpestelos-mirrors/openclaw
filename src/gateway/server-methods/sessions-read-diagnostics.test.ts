@@ -19,6 +19,7 @@ import {
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
+import * as sessionModels from "../session-utils-model.js";
 import * as sessionRows from "../session-utils-row.js";
 import {
   identifiedClient,
@@ -26,6 +27,7 @@ import {
   listSessions,
   requestContext,
   seedSessions,
+  sessionReadHandlers,
 } from "./sessions-read-cache.test-support.js";
 import { sessionLog } from "./sessions-shared.js";
 import { sessionSubscriptionHandlers } from "./sessions-subscriptions.js";
@@ -33,12 +35,25 @@ import type { RespondFn } from "./types.js";
 
 let previousDiagnostics: boolean;
 let clock: number;
+let cpu: NodeJS.CpuUsage;
+let cpuProbeFailure: Error | undefined;
+const threadCpuProbe = vi.fn<(previous?: NodeJS.CpuUsage) => NodeJS.CpuUsage>();
+const threadCpuFields = ["prepareThreadCpuMs", "rowThreadCpuMs", "responseThreadCpuMs"];
 let records: Array<{ trace: DiagnosticTraceContext | undefined; fields: Record<string, unknown> }>;
 beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
   previousDiagnostics = areDiagnosticsEnabledForProcess();
   setDiagnosticsEnabledForProcess(true);
   clock = 0;
+  cpu = { user: 0, system: 0 };
+  cpuProbeFailure = undefined;
+  threadCpuProbe.mockReset().mockImplementation((previous = { user: 0, system: 0 }) => {
+    if (cpuProbeFailure) {
+      throw cpuProbeFailure;
+    }
+    return { user: cpu.user - previous.user, system: cpu.system - previous.system };
+  });
+  vi.spyOn(process, "threadCpuUsage").mockImplementation(threadCpuProbe);
   records = [];
   vi.spyOn(sessionLog, "isEnabled").mockReturnValue(true);
   vi.spyOn(sessionLog, "warn").mockImplementation((message, fields) => {
@@ -52,13 +67,45 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function controlProjectionClock() {
+function expectNoCpuFields(record: unknown) {
+  for (const field of threadCpuFields) {
+    expect(record).not.toHaveProperty(field);
+  }
+}
+
+function controlProjectionClock(
+  projection: NonNullable<ReturnType<typeof getSessionRowProjection>>,
+  afterRow?: () => void,
+) {
   vi.spyOn(performance, "now").mockImplementation(() => clock);
+  const select = projection.select.bind(projection);
+  vi.spyOn(projection, "select").mockImplementation((...args) => {
+    try {
+      return select(...args);
+    } finally {
+      cpu.user += 1_250;
+      cpu.system += 250;
+    }
+  });
+  const defaults = sessionModels.getSessionDefaults;
+  vi.spyOn(sessionModels, "getSessionDefaults").mockImplementation((...args) => {
+    try {
+      return defaults(...args);
+    } finally {
+      cpu.user += 250;
+      cpu.system += 125;
+    }
+  });
   const present = sessionRows.presentSessionRow;
   return vi.spyOn(sessionRows, "presentSessionRow").mockImplementation((...args) => {
-    const row = present(...args);
-    clock += 20;
-    return row;
+    try {
+      return present(...args);
+    } finally {
+      clock += 20;
+      cpu.user += 750;
+      cpu.system += 250;
+      afterRow?.();
+    }
   });
 }
 
@@ -79,7 +126,7 @@ test.each(["channel-only", "slow-warning"])("attributes %s operations", async (m
       await ensure();
       clock += waitMs;
     });
-    const presentation = controlProjectionClock();
+    const presentation = controlProjectionClock(owner);
     const trace = createDiagnosticTraceContext();
     const events: unknown[] = [];
     const diagnostics = channel("openclaw.session.list");
@@ -96,7 +143,11 @@ test.each(["channel-only", "slow-warning"])("attributes %s operations", async (m
         client,
         context,
         isWebchatConnect: () => true,
-        respond: (...response) => responses.push(response),
+        respond: (...response) => {
+          cpu.user += 750;
+          cpu.system += 375;
+          responses.push(response);
+        },
       });
       expect(responses).toMatchObject([
         [true, { subscribed: true, list: { sessions: listed.sessions } }, undefined, undefined],
@@ -113,6 +164,9 @@ test.each(["channel-only", "slow-warning"])("attributes %s operations", async (m
           handlerElapsedMs: 20 + waitMs,
           prepareSyncMs: 0,
           rowSyncMs: 20,
+          prepareThreadCpuMs: 1.5,
+          rowThreadCpuMs: 1.375,
+          responseThreadCpuMs: index === 0 ? 0 : 1.125,
           yieldWaitMs: waitMs,
           yieldCount: 1,
           selectedRowCount: 1,
@@ -142,8 +196,14 @@ test.each(["channel-only", "slow-warning"])("attributes %s operations", async (m
     } finally {
       diagnostics.unsubscribe(collect);
     }
+    threadCpuProbe.mockClear();
     await listSessions({ client, context, request });
     expect(events).toHaveLength(2);
+    if (warn) {
+      expect(threadCpuProbe).toHaveBeenCalled();
+    } else {
+      expect(threadCpuProbe).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -156,7 +216,7 @@ test("reports materialized and reused selected rows after a keyed commit", async
     const initial = await listSessions({ client, context, request: { agentId: "main", limit: 1 } });
     const query = { agentId: "main", key: initial.sessions[0]!.key };
     const entry = projection.describe(query)!.entry;
-    controlProjectionClock();
+    controlProjectionClock(projection);
     const events: unknown[] = [];
     const diagnostics = channel("openclaw.session.list");
     const collect = (event: unknown) => events.push(event);
@@ -195,6 +255,7 @@ test("captures a fast failed readiness wait while preserving the original error"
     vi.spyOn(getSessionRowProjection(context)!, "ensureMaterialized").mockImplementationOnce(
       async () => {
         clock += 25;
+        cpu.user += 500_000;
         throw failure;
       },
     );
@@ -214,12 +275,86 @@ test("captures a fast failed readiness wait while preserving the original error"
         responseOutcome: "none",
       });
       expect(JSON.stringify(events)).not.toContain(failure.message);
+      expectNoCpuFields(events[0]);
+      expect(threadCpuProbe).not.toHaveBeenCalled();
       expect(sessionLog.warn).not.toHaveBeenCalled();
     } finally {
       diagnostics.unsubscribe(collect);
     }
   });
 });
+
+test.each([
+  { stage: "selection", cpuFailure: "none" },
+  { stage: "row", cpuFailure: "none" },
+  { stage: "response", cpuFailure: "none" },
+  { stage: "selection", cpuFailure: "start" },
+  { stage: "selection", cpuFailure: "finish" },
+] as const)(
+  "preserves a fast $stage error when CPU probe failure is $cpuFailure",
+  async ({ stage, cpuFailure }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const context = requestContext(await seedSessions());
+      await initializeSessionReadContext(context);
+      setDiagnosticsEnabledForProcess(false);
+      vi.spyOn(performance, "now").mockImplementation(() => clock);
+      const failure = new Error("synthetic-private-synchronous-error");
+      const fail = () => {
+        clock += 25;
+        cpu.user += 250;
+        cpu.system += 125;
+        if (cpuFailure === "finish") {
+          cpuProbeFailure = new Error("synthetic CPU probe failure");
+        }
+        throw failure;
+      };
+      if (stage === "selection") {
+        vi.spyOn(getSessionRowProjection(context)!, "select").mockImplementation(fail);
+      } else if (stage === "row") {
+        vi.spyOn(sessionRows, "presentSessionRow").mockImplementation(fail);
+      }
+      if (cpuFailure === "start") {
+        cpuProbeFailure = new Error("synthetic CPU probe failure");
+      }
+      const events: unknown[] = [];
+      const diagnostics = channel("openclaw.session.list");
+      const collect = (event: unknown) => events.push(event);
+      diagnostics.subscribe(collect);
+      try {
+        await expect(
+          sessionReadHandlers["sessions.list"]!({
+            req: { type: "req", id: "private-request", method: "sessions.list" },
+            params: { agentId: "main", limit: 1 },
+            client: identifiedClient("owner@example.com"),
+            context,
+            respond: stage === "response" ? fail : vi.fn(),
+            isWebchatConnect: () => true,
+          }),
+        ).rejects.toBe(failure);
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          handlerElapsedMs: 25,
+          handlerOutcome: "threw",
+          responseOutcome: stage === "response" ? "threw" : "none",
+        });
+        if (cpuFailure === "none") {
+          const metric = stage === "selection" ? "prepare" : stage;
+          expect(events[0]).toHaveProperty(`${metric}ThreadCpuMs`, 0.375);
+        } else {
+          expect(threadCpuProbe.mock.results).toContainEqual({
+            type: "throw",
+            value: cpuProbeFailure,
+          });
+          expectNoCpuFields(events[0]);
+        }
+        expect(JSON.stringify(events)).not.toContain(failure.message);
+        expect(sessionLog.warn).not.toHaveBeenCalled();
+      } finally {
+        diagnostics.unsubscribe(collect);
+      }
+    });
+  },
+);
 
 test("attributes concurrent presentation and readiness waits to each request trace", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -233,14 +368,19 @@ test("attributes concurrent presentation and readiness waits to each request tra
     const readiness = vi.spyOn(projection, "ensureMaterialized").mockImplementation(async () => {
       await release.promise;
       await ensure();
+      queueMicrotask(() => {
+        cpu.user += 500_000;
+      });
     });
-    const presentation = controlProjectionClock();
+    const presentation = controlProjectionClock(projection);
     const traces = [createDiagnosticTraceContext(), createDiagnosticTraceContext()];
     const pending = traces.map((trace) =>
       runWithDiagnosticTraceContext(trace, () => listSessions({ client, context, request })),
     );
     await vi.waitFor(() => expect(readiness).toHaveBeenCalledTimes(2));
     clock += 1_500;
+    cpu.user += 900_000;
+    cpu.system += 100_000;
     release.resolve();
     const results = await Promise.all(pending);
     expect(results[0]?.sessions).toEqual(results[1]?.sessions);
@@ -256,6 +396,9 @@ test("attributes concurrent presentation and readiness waits to each request tra
           isMainThread,
           rowSyncMs: 20,
           prepareSyncMs: 0,
+          prepareThreadCpuMs: 1.5,
+          rowThreadCpuMs: 1.375,
+          responseThreadCpuMs: 0,
           yieldCount: 1,
           selectedRowCount: 1,
           materializedRowCount: 0,
@@ -289,8 +432,8 @@ test("reports fresh visibility after a readiness yield without charging the wait
     const client = identifiedClient("viewer@example.com");
     const context = requestContext(config);
     await initializeSessionReadContext(context);
-    controlProjectionClock();
     const projection = getSessionRowProjection(context)!;
+    controlProjectionClock(projection);
     const ensure = projection.ensureMaterialized.bind(projection);
     vi.spyOn(projection, "ensureMaterialized").mockImplementationOnce(async () => {
       for (const name of ["first", "second", "third"]) {
@@ -301,6 +444,7 @@ test("reports fresh visibility after a readiness yield without charging the wait
       }
       await ensure();
       clock += 2_000;
+      cpu.user += 300_000;
     });
     const result = await listSessions({ client, context, request: { agentId: "main", limit: 1 } });
     expect(result.sessions.map((row) => row.key)).toEqual(["agent:main:repair-fourth"]);
@@ -311,6 +455,8 @@ test("reports fresh visibility after a readiness yield without charging the wait
       reusedRowCount: 1,
       prepareSyncMs: 0,
       rowSyncMs: 20,
+      prepareThreadCpuMs: 1.5,
+      rowThreadCpuMs: 1.375,
       yieldWaitMs: 2_000,
       yieldCount: 1,
       phaseDurationsMs: { rows: 20 },
@@ -318,62 +464,93 @@ test("reports fresh visibility after a readiness yield without charging the wait
   });
 });
 
-test.each(["disabled", "sink-disabled", "sink-throws", "disabled-during-request"])(
-  "preserves the response when diagnostics are %s",
-  async (mode) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const context = requestContext(await seedSessions());
-      const client = identifiedClient("owner@example.com");
-      await initializeSessionReadContext(context);
-      if (mode === "disabled") {
-        setDiagnosticsEnabledForProcess(false);
-      }
-      if (mode === "sink-disabled") {
-        vi.mocked(sessionLog.isEnabled).mockReturnValue(false);
-      }
-      if (mode === "sink-throws") {
-        vi.mocked(sessionLog.warn).mockImplementation(() => {
-          throw new Error("synthetic sink failure");
-        });
-      }
-      vi.spyOn(performance, "now").mockImplementation(() => clock);
-      const projection = getSessionRowProjection(context)!;
-      const ensure = projection.ensureMaterialized.bind(projection);
-      vi.spyOn(projection, "ensureMaterialized").mockImplementationOnce(async () => {
-        await ensure();
-        clock += 1_100;
-        if (mode === "disabled-during-request") {
-          setDiagnosticsEnabledForProcess(false);
-        }
-      });
-      const result = await listSessions({
-        client,
-        context,
-        request: { agentId: "main", limit: 1 },
-      });
-      expect(result.sessions).toHaveLength(1);
-      if (mode === "sink-throws") {
-        expect(sessionLog.warn).toHaveBeenCalledOnce();
-      } else {
-        expect(sessionLog.warn).not.toHaveBeenCalled();
+test.each([
+  "disabled",
+  "sink-disabled",
+  "sink-throws",
+  "disabled-during-request",
+  "cpu-start-throws",
+  "cpu-finish-throws",
+])("preserves the response when diagnostics are %s", async (mode) => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const context = requestContext(await seedSessions());
+    const client = identifiedClient("owner@example.com");
+    await initializeSessionReadContext(context);
+    const projection = getSessionRowProjection(context)!;
+    const cpuThrows = mode === "cpu-start-throws" || mode === "cpu-finish-throws";
+    controlProjectionClock(projection, () => {
+      if (mode === "cpu-finish-throws") {
+        cpuProbeFailure = new Error("synthetic CPU probe failure");
       }
     });
-  },
-);
+    threadCpuProbe.mockClear();
+    if (mode === "cpu-start-throws") {
+      cpuProbeFailure = new Error("synthetic CPU probe failure");
+    }
+    if (mode === "disabled") {
+      setDiagnosticsEnabledForProcess(false);
+    }
+    if (mode === "sink-disabled") {
+      vi.mocked(sessionLog.isEnabled).mockReturnValue(false);
+    }
+    if (mode === "sink-throws") {
+      vi.mocked(sessionLog.warn).mockImplementation(() => {
+        throw new Error("synthetic sink failure");
+      });
+    }
+    const ensure = projection.ensureMaterialized.bind(projection);
+    vi.spyOn(projection, "ensureMaterialized").mockImplementationOnce(async () => {
+      await ensure();
+      clock += 1_100;
+      if (mode === "disabled-during-request") {
+        setDiagnosticsEnabledForProcess(false);
+      }
+    });
+    const result = await listSessions({
+      client,
+      context,
+      request: { agentId: "main", limit: 1 },
+    });
+    expect(result.sessions).toHaveLength(1);
+    if (mode === "sink-throws" || cpuThrows) {
+      expect(sessionLog.warn).toHaveBeenCalledOnce();
+    } else {
+      expect(sessionLog.warn).not.toHaveBeenCalled();
+    }
+    if (mode === "disabled" || mode === "sink-disabled") {
+      expect(threadCpuProbe).not.toHaveBeenCalled();
+    }
+    if (cpuThrows) {
+      expect(threadCpuProbe.mock.results).toContainEqual({
+        type: "throw",
+        value: cpuProbeFailure,
+      });
+      expect(records).toHaveLength(1);
+      expectNoCpuFields(records[0]?.fields);
+      if (mode === "cpu-finish-throws") {
+        expect(
+          threadCpuProbe.mock.results.some(
+            (reading) => reading.type === "return" && reading.value.user + reading.value.system > 0,
+          ),
+        ).toBe(true);
+      }
+    }
+  });
+});
 
-test("preserves the original readiness error even when its slow diagnostic sink throws", async () => {
+test("preserves the original selection error even when its slow diagnostic sink throws", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const context = requestContext(await seedSessions());
     const client = identifiedClient("owner@example.com");
     await initializeSessionReadContext(context);
     vi.spyOn(performance, "now").mockImplementation(() => clock);
     const failure = new Error("synthetic projection failure");
-    vi.spyOn(getSessionRowProjection(context)!, "ensureMaterialized").mockImplementationOnce(
-      async () => {
-        clock += 1_500;
-        throw failure;
-      },
-    );
+    vi.spyOn(getSessionRowProjection(context)!, "select").mockImplementationOnce(() => {
+      clock += 1_500;
+      cpu.user += 500;
+      cpu.system += 125;
+      throw failure;
+    });
     vi.mocked(sessionLog.warn).mockImplementation(() => {
       throw new Error("synthetic sink failure");
     });
@@ -381,5 +558,9 @@ test("preserves the original readiness error even when its slow diagnostic sink 
       listSessions({ client, context, request: { agentId: "main", limit: 1 } }),
     ).rejects.toBe(failure);
     expect(sessionLog.warn).toHaveBeenCalledOnce();
+    expect(sessionLog.warn).toHaveBeenCalledWith(
+      "slow session list",
+      expect.objectContaining({ prepareThreadCpuMs: 0.625, handlerOutcome: "threw" }),
+    );
   });
 });
