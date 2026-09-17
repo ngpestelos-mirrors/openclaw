@@ -4,7 +4,7 @@ import { createAssistantOutput } from "../transports/assistant-output.js";
 import type { Context, Model, SimpleStreamOptions, StreamFunction } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { runGoogleInteractionsLifecycle } from "./google-interactions-shared.js";
-import type { GoogleProviderOptions } from "./google-shared.js";
+import { buildGoogleSimpleThinking, type GoogleProviderOptions } from "./google-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 
 export type GoogleInteractionsOptions = GoogleProviderOptions;
@@ -48,5 +48,6 @@ export const streamSimpleGoogleInteractions: StreamFunction<
   const base = buildBaseOptions(model, options, apiKey);
   return streamGoogleInteractions(model, context, {
     ...base,
+    thinking: buildGoogleSimpleThinking(model, options),
   } satisfies GoogleInteractionsOptions);
 };

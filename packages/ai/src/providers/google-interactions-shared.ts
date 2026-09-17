@@ -3,386 +3,47 @@
  * POST /v1beta/interactions
  */
 
-import fs from "node:fs";
-import { createRequire } from "node:module";
-import os from "node:os";
-import path from "node:path";
+import {
+  asOptionalRecord,
+  asRecord,
+  readStringField,
+} from "@openclaw/normalization-core/record-coerce";
 import { getEnvApiKey } from "../env-api-keys.js";
-import { getAiTransportHost } from "../host.js";
+import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.js";
 import { calculateCost } from "../model-utils.js";
+import { buildGuardedModelFetch } from "../transports/host-policy.js";
 import {
   assignTransportErrorDetails,
+  notifyProviderHttpResponse,
   notifyProviderStreamOpened,
   transportAbortError,
 } from "../transports/transport-stream-shared.js";
-import type {
-  AssistantMessage,
-  Context,
-  Model,
-  StopReason,
-  TextContent,
-  ThinkingContent,
-  ToolCall,
-} from "../types.js";
+import type { AssistantMessage, Context, Model, ThinkingContent, ToolCall } from "../types.js";
 import type { AssistantMessageEventStream } from "../utils/event-stream.js";
-import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
-import { stripSystemPromptCacheBoundary } from "../utils/system-prompt-cache-boundary.js";
+import {
+  buildGoogleInteractionsParams,
+  resolveGoogleApiClientHeaders,
+  type GoogleInteractionsRequestBody,
+} from "./google-interactions-request.js";
 import type { GoogleApiType, GoogleProviderOptions } from "./google-shared.js";
 
 export type { GoogleApiType };
 
-export const DEFAULT_GOOGLE_API_BASE_URL = "https://generativelanguage.googleapis.com";
-
-let packageVersionMemo: string | undefined;
-
-function resolvePackageVersion(): string {
-  if (packageVersionMemo) {
-    return packageVersionMemo;
-  }
-  if (typeof process !== "undefined" && process.env?.OPENCLAW_VERSION) {
-    packageVersionMemo = process.env.OPENCLAW_VERSION;
-    return packageVersionMemo;
-  }
-  try {
-    const require = createRequire(import.meta.url);
-    const candidates = [
-      "../package.json",
-      "../../package.json",
-      "../../../package.json",
-      "../../../../package.json",
-    ];
-    for (const candidate of candidates) {
-      try {
-        const parsed = require(candidate) as { name?: string; version?: string };
-        if (parsed?.version && (parsed.name === "openclaw" || parsed.name === "@openclaw/ai")) {
-          packageVersionMemo = parsed.version;
-          return packageVersionMemo;
-        }
-      } catch {
-        // next candidate
-      }
-    }
-  } catch {
-    // fallback
-  }
-  packageVersionMemo = "0.0";
-  return packageVersionMemo;
+function logGoogleInteractionsDebug(message: string, data?: Record<string, unknown>): void {
+  getAiTransportHost().logDebug("google-interactions", () => ({ message, data }));
 }
 
-export function resolveGoogleApiClientHeaders(params?: {
-  api?: string;
-  baseUrl?: string;
-  capability?: string;
-  transport?: string;
-  model?: Model;
-}): Record<string, string> {
-  const hostHeaders = getAiTransportHost().resolveProviderRequestHeaders({
-    provider: "google",
-    api: params?.api ?? params?.model?.api ?? "google-generative-ai",
-    baseUrl: params?.baseUrl ?? DEFAULT_GOOGLE_API_BASE_URL,
-    model: params?.model,
-  });
-  if (hostHeaders?.["x-goog-api-client"]) {
-    return hostHeaders;
+function isGoogleInteractionsRequestBody(value: unknown): value is GoogleInteractionsRequestBody {
+  const record = asOptionalRecord(value);
+  if (!record) {
+    return false;
   }
-  const version = resolvePackageVersion();
-  return {
-    ...hostHeaders,
-    "x-goog-api-client": `openclaw/${version}`,
-  };
-}
-
-export type GoogleInteractionsStep =
-  | {
-      type: "user_input";
-      content: Array<
-        { type: "text"; text: string } | { type: "image"; mime_type: string; data: string }
-      >;
-    }
-  | {
-      type: "thought";
-      signature?: string;
-      summary?: Array<{ type: "text"; text: string }>;
-    }
-  | {
-      type: "model_output";
-      content: Array<{ type: "text"; text: string }>;
-    }
-  | {
-      type: "function_call";
-      id: string;
-      name: string;
-      arguments: Record<string, unknown>;
-    }
-  | {
-      type: "function_result";
-      call_id: string;
-      name: string;
-      result: unknown;
-    };
-
-export type GoogleInteractionsRequestBody = {
-  model: string;
-  input: GoogleInteractionsStep[];
-  system_instruction?: string;
-  tools?: Array<{
-    type: "function";
-    name: string;
-    description?: string;
-    parameters?: Record<string, unknown>;
-  }>;
-  generation_config?: {
-    temperature?: number;
-    top_p?: number;
-    top_k?: number;
-    max_output_tokens?: number;
-    stop_sequences?: string[];
-    thinking_level?: string;
-    thinking_summaries?: "auto" | "none";
-  };
-  store: boolean;
-  stream: boolean;
-};
-
-export function buildGoogleInteractionsParams<T extends GoogleApiType>(
-  model: Model<T>,
-  context: Context,
-  options: GoogleProviderOptions = {},
-): GoogleInteractionsRequestBody {
-  // Reject unsupported parameters locally with clear errors
-  if (
-    (options as Record<string, unknown>).cachedContent ||
-    (options as Record<string, unknown>).cached_content
-  ) {
-    throw new Error(
-      "Explicit prompt caching ('cachedContent') is not supported with the Gemini Interactions API. The Interactions API handles caching implicitly on the server.",
-    );
-  }
-  if (
-    (options as Record<string, unknown>).videoMetadata ||
-    (options as Record<string, unknown>).video_metadata
-  ) {
-    throw new Error(
-      "video_metadata clipping offsets are not supported with the Gemini Interactions API.",
-    );
-  }
-
-  const steps: GoogleInteractionsStep[] = [];
-
-  for (const msg of context.messages) {
-    if (msg.role === "user") {
-      if (typeof msg.content === "string") {
-        steps.push({
-          type: "user_input",
-          content: [{ type: "text", text: sanitizeSurrogates(msg.content) || " " }],
-        });
-      } else {
-        const content: Array<
-          { type: "text"; text: string } | { type: "image"; mime_type: string; data: string }
-        > = [];
-        for (const item of msg.content) {
-          if (item.type === "text") {
-            content.push({ type: "text", text: sanitizeSurrogates(item.text) || " " });
-          } else if (item.type === "image" && item.mimeType && item.data) {
-            content.push({ type: "image", mime_type: item.mimeType, data: item.data });
-          }
-        }
-        if (content.length === 0) {
-          content.push({ type: "text", text: " " });
-        }
-        steps.push({ type: "user_input", content });
-      }
-    } else if (msg.role === "assistant") {
-      if ((msg as AssistantMessage).stopReason === "error") {
-        continue;
-      }
-      const isFailedPlaceholder =
-        Array.isArray(msg.content) &&
-        msg.content.length === 1 &&
-        msg.content[0]?.type === "text" &&
-        msg.content[0]?.text?.includes("[assistant turn failed before producing content]");
-      if (isFailedPlaceholder) {
-        continue;
-      }
-
-      let pendingTextParts: string[] = [];
-      const flushText = () => {
-        if (pendingTextParts.length > 0) {
-          steps.push({
-            type: "model_output",
-            content: [{ type: "text", text: pendingTextParts.join("\n\n") }],
-          });
-          pendingTextParts = [];
-        }
-      };
-
-      for (const block of msg.content) {
-        if (block.type === "thinking") {
-          flushText();
-          const signature =
-            block.thinkingSignature || (block as { thoughtSignature?: string }).thoughtSignature;
-          if (signature) {
-            steps.push({
-              type: "thought",
-              signature,
-              ...(block.thinking && block.thinking.trim()
-                ? { summary: [{ type: "text", text: sanitizeSurrogates(block.thinking) }] }
-                : {}),
-            });
-          }
-        } else if (block.type === "text") {
-          if (block.text && block.text.trim()) {
-            pendingTextParts.push(sanitizeSurrogates(block.text));
-          }
-        } else if (block.type === "toolCall") {
-          flushText();
-          // In the Interactions API, thoughts are dedicated "thought" steps and signatures
-          // are restricted exclusively to thought steps and built-in tools. They never appear
-          // on standard function calls. If a toolCall has a thoughtSignature from an external or legacy session
-          // and no dedicated thinking block was present in this message, emit it as a separate thought step.
-          if (
-            block.thoughtSignature &&
-            block.thoughtSignature !== "skip_thought_signature_validator" &&
-            !msg.content.some((b) => b.type === "thinking")
-          ) {
-            steps.push({
-              type: "thought",
-              signature: block.thoughtSignature,
-            });
-          }
-          steps.push({
-            type: "function_call",
-            id: block.id,
-            name: block.name,
-            arguments: (block.arguments as Record<string, unknown>) ?? {},
-          });
-        }
-      }
-
-      flushText();
-    } else if (msg.role === "toolResult") {
-      let result: unknown = msg.content;
-      if (Array.isArray(msg.content)) {
-        result = msg.content.map((item) => {
-          if (item && typeof item === "object") {
-            if ("type" in item && item.type === "image") {
-              const imageItem = item as {
-                type: "image";
-                mimeType?: string;
-                mime_type?: string;
-                data?: string;
-              };
-              return {
-                type: "image",
-                mime_type: imageItem.mime_type ?? imageItem.mimeType,
-                data: imageItem.data,
-              };
-            }
-            if ("type" in item && item.type === "text") {
-              return {
-                type: "text",
-                text: sanitizeSurrogates((item as { text?: string }).text ?? ""),
-              };
-            }
-          }
-          return item;
-        });
-      }
-      steps.push({
-        type: "function_result",
-        call_id: msg.toolCallId,
-        name: msg.toolName || "tool",
-        result,
-      });
-    }
-  }
-
-  // Ensure that within any contiguous model turn (between user_input / function_result),
-  // all 'thought' steps appear before 'model_output' or 'function_call' steps.
-  const normalizedSteps: GoogleInteractionsStep[] = [];
-  let currentModelSegment: GoogleInteractionsStep[] = [];
-  const flushModelSegment = () => {
-    if (currentModelSegment.length > 0) {
-      const thoughts = currentModelSegment.filter((s) => s.type === "thought");
-      const others = currentModelSegment.filter((s) => s.type !== "thought");
-      normalizedSteps.push(...thoughts, ...others);
-      currentModelSegment = [];
-    }
-  };
-  for (const step of steps) {
-    if (step.type === "user_input" || step.type === "function_result") {
-      flushModelSegment();
-      normalizedSteps.push(step);
-    } else {
-      currentModelSegment.push(step);
-    }
-  }
-  flushModelSegment();
-
-  const generation_config: GoogleInteractionsRequestBody["generation_config"] = {};
-  if (options.temperature !== undefined) {
-    generation_config.temperature = options.temperature;
-  }
-  if (options.maxTokens !== undefined) {
-    generation_config.max_output_tokens = options.maxTokens;
-  }
-  if (options.stop !== undefined && options.stop.length > 0) {
-    generation_config.stop_sequences = options.stop;
-  }
-  if (options.thinking?.enabled) {
-    generation_config.thinking_summaries = "auto";
-    if (options.thinking.level) {
-      generation_config.thinking_level = options.thinking.level.toLowerCase();
-    } else {
-      generation_config.thinking_level = "high";
-    }
-  }
-
-  let tools: GoogleInteractionsRequestBody["tools"] | undefined;
-  if (context.tools && context.tools.length > 0) {
-    tools = context.tools.map((t) => ({
-      type: "function" as const,
-      name: t.name,
-      description: t.description || "",
-      parameters: (t.parameters as Record<string, unknown>) ?? { type: "object", properties: {} },
-    }));
-  }
-
-  const body: GoogleInteractionsRequestBody = {
-    model: model.id,
-    input: normalizedSteps,
-    store: false,
-    stream: true,
-  };
-
-  if (context.systemPrompt) {
-    body.system_instruction = sanitizeSurrogates(
-      stripSystemPromptCacheBoundary(context.systemPrompt),
-    );
-  }
-  if (tools && tools.length > 0) {
-    body.tools = tools;
-  }
-  if (Object.keys(generation_config).length > 0) {
-    body.generation_config = generation_config;
-  }
-
-  return body;
-}
-
-function logGoogleInteractionsHttp(entry: Record<string, unknown>): void {
-  if (process.env.OPENCLAW_LOG_HTTP !== "1" && process.env.OPENCLAW_LOG_HTTP !== "true") {
-    return;
-  }
-  try {
-    const logPath =
-      process.env.OPENCLAW_LOG_HTTP_PATH?.trim() ||
-      path.join(os.homedir(), ".openclaw", "logs", "google-interactions-http.jsonl");
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    fs.appendFileSync(logPath, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`);
-  } catch {
-    // Best-effort diagnostic logging; ignore file system errors.
-  }
+  return (
+    typeof record.model === "string" &&
+    Array.isArray(record.input) &&
+    typeof record.store === "boolean" &&
+    typeof record.stream === "boolean"
+  );
 }
 
 export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(params: {
@@ -397,17 +58,25 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
   const { stream, model, output, options, context, nextToolCallId } = params;
 
   try {
-    const apiKey =
+    const host = getAiTransportHost();
+    const unresolvedApiKey =
       params.apiKey ||
       options?.apiKey ||
       getEnvApiKey(model.provider) ||
       process.env.GEMINI_API_KEY ||
       process.env.GOOGLE_API_KEY ||
       "";
+    const apiKey = host.resolveSecretSentinel(unresolvedApiKey);
+    if (!apiKey.trim()) {
+      throw new Error(`No API key for provider: ${model.provider}`);
+    }
     let body = buildGoogleInteractionsParams(model, context, options);
     const nextBody = await options?.onPayload?.(body, model);
-    if (nextBody !== undefined && nextBody !== null && typeof nextBody === "object") {
-      body = nextBody as GoogleInteractionsParams;
+    if (nextBody !== undefined) {
+      if (!isGoogleInteractionsRequestBody(nextBody)) {
+        throw new Error("Google Interactions onPayload returned an invalid request body");
+      }
+      body = nextBody;
     }
 
     let baseUrl = (model.baseUrl || "https://generativelanguage.googleapis.com/v1beta")
@@ -421,52 +90,46 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
     const googleClientHeaders = resolveGoogleApiClientHeaders({
       baseUrl,
       api: "google-generative-ai",
-      model: model as Model,
+      model,
     });
 
-    const headers: Record<string, string> = {
+    const headers = resolveAiTransportHeaderSentinels({
       "Content-Type": "application/json",
       "x-goog-api-key": apiKey,
       "Api-Revision": "2026-05-20",
       ...googleClientHeaders,
       ...model.headers,
       ...options?.headers,
-    };
+    }) ?? { "Content-Type": "application/json", "x-goog-api-key": apiKey };
 
-    const redactedHeaders = { ...headers };
-    if (redactedHeaders["x-goog-api-key"]) {
-      const key = redactedHeaders["x-goog-api-key"];
-      redactedHeaders["x-goog-api-key"] =
-        key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : "***";
-    }
-
-    logGoogleInteractionsHttp({
-      event: "http_request",
+    logGoogleInteractionsDebug("request", {
       method: "POST",
       url,
-      headers: redactedHeaders,
-      body,
+      model: model.id,
+      inputSteps: body.input.length,
+      tools: body.tools?.length ?? 0,
     });
 
-    const response = await fetch(url, {
+    const guardedFetch = buildGuardedModelFetch({ ...model, baseUrl }, options?.timeoutMs, {
+      sanitizeSse: true,
+    });
+    const response = await guardedFetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal: options?.signal,
     });
+    await notifyProviderHttpResponse({ options, response, model });
 
-    logGoogleInteractionsHttp({
-      event: "http_response",
+    logGoogleInteractionsDebug("response", {
       status: response.status,
       statusText: response.statusText,
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      logGoogleInteractionsHttp({
-        event: "http_error",
+      logGoogleInteractionsDebug("request failed", {
         status: response.status,
-        errorText,
       });
       throw new Error(`Google Interactions API error HTTP ${response.status}: ${errorText}`);
     }
@@ -482,6 +145,7 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
         await reader.cancel();
       },
     });
+    stream.push({ type: "start", partial: output });
     const decoder = new TextDecoder();
     let buffer = "";
 
@@ -493,7 +157,8 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
 
     const endCurrentBlock = () => {
       if (currentBlockType === "text") {
-        const textBlock = output.content[currentBlockIndex] as TextContent | undefined;
+        const block = output.content[currentBlockIndex];
+        const textBlock = block?.type === "text" ? block : undefined;
         stream.push({
           type: "text_end",
           contentIndex: currentBlockIndex,
@@ -501,7 +166,8 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
           partial: output,
         });
       } else if (currentBlockType === "thinking") {
-        const thinkingBlock = output.content[currentBlockIndex] as ThinkingContent | undefined;
+        const block = output.content[currentBlockIndex];
+        const thinkingBlock = block?.type === "thinking" ? block : undefined;
         if (thinkingBlock && !thinkingBlock.thinkingSignature && latestThoughtSignature) {
           thinkingBlock.thinkingSignature = latestThoughtSignature;
         }
@@ -533,6 +199,7 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
     };
 
     let streamDone = false;
+    let sawCompletion = false;
     while (!streamDone) {
       const { done, value } = await reader.read();
       if (done) {
@@ -556,24 +223,32 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
 
         let event: Record<string, unknown>;
         try {
-          event = JSON.parse(dataStr);
+          event = asRecord(JSON.parse(dataStr));
         } catch {
           continue;
         }
 
-        logGoogleInteractionsHttp({
-          event: "sse_event",
-          data: event,
+        const eventType = event.event_type || event.type;
+        logGoogleInteractionsDebug("stream event", {
+          eventType: typeof eventType === "string" ? eventType : "unknown",
         });
 
-        const eventType = event.event_type || event.type;
-
-        if (eventType === "step.delta") {
-          const delta = event.delta as Record<string, unknown> | undefined;
+        if (eventType === "error") {
+          const providerError = asOptionalRecord(event.error);
+          const message =
+            readStringField(providerError, "message") ?? "Google Interactions stream failed";
+          const error = Object.assign(new Error(message), {
+            code: readStringField(providerError, "code"),
+            type: "google_interactions_stream_error",
+          });
+          await reader.cancel();
+          throw error;
+        } else if (eventType === "step.delta") {
+          const delta = asOptionalRecord(event.delta);
           const deltaType = delta?.type;
 
           if (deltaType === "text") {
-            const text = String(delta?.text ?? "");
+            const text = readStringField(delta, "text") ?? "";
             if (text) {
               if (currentBlockType !== "text") {
                 endCurrentBlock();
@@ -586,7 +261,10 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
                   partial: output,
                 });
               }
-              const block = output.content[currentBlockIndex] as { type: "text"; text: string };
+              const block = output.content[currentBlockIndex];
+              if (!block || block.type !== "text") {
+                throw new Error("Google Interactions text delta has no active text block");
+              }
               block.text += text;
               stream.push({
                 type: "text_delta",
@@ -605,14 +283,12 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
               thinkingText = delta.text;
             } else if (typeof delta?.content === "string") {
               thinkingText = delta.content;
-            } else if (delta?.content && typeof delta.content === "object") {
-              if (typeof (delta.content as { text?: string }).text === "string") {
-                thinkingText = (delta.content as { text: string }).text;
-              } else if (Array.isArray(delta.content)) {
-                thinkingText = (delta.content as Array<{ text?: string }>)
-                  .map((c) => c?.text ?? "")
-                  .join("");
-              }
+            } else if (Array.isArray(delta?.content)) {
+              thinkingText = delta.content
+                .map((content) => readStringField(asOptionalRecord(content), "text") ?? "")
+                .join("");
+            } else {
+              thinkingText = readStringField(asOptionalRecord(delta?.content), "text") ?? "";
             }
             if (thinkingText) {
               if (currentBlockType !== "thinking") {
@@ -630,10 +306,10 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
                   partial: output,
                 });
               }
-              const block = output.content[currentBlockIndex] as {
-                type: "thinking";
-                thinking: string;
-              };
+              const block = output.content[currentBlockIndex];
+              if (!block || block.type !== "thinking") {
+                throw new Error("Google Interactions thought delta has no active thought block");
+              }
               block.thinking += thinkingText;
               stream.push({
                 type: "thinking_delta",
@@ -646,16 +322,18 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
             deltaType === "thought_signature" ||
             (delta && typeof delta.signature === "string" && !delta.text)
           ) {
-            const signature = String(delta?.signature ?? "");
+            const signature = readStringField(delta, "signature") ?? "";
             if (signature) {
               latestThoughtSignature = signature;
               if (currentBlockType === "thinking") {
-                const block = output.content[currentBlockIndex] as ThinkingContent;
-                block.thinkingSignature = signature;
+                const block = output.content[currentBlockIndex];
+                if (block?.type === "thinking") {
+                  block.thinkingSignature = signature;
+                }
               } else {
-                const lastThinking = output.content.findLast((b) => b.type === "thinking") as
-                  | ThinkingContent
-                  | undefined;
+                const lastThinking = output.content.findLast(
+                  (block): block is ThinkingContent => block.type === "thinking",
+                );
                 if (lastThinking && !lastThinking.thinkingSignature) {
                   lastThinking.thinkingSignature = signature;
                 } else if (!lastThinking) {
@@ -668,13 +346,14 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
               }
             }
           } else if (deltaType === "arguments" || deltaType === "arguments_delta") {
-            const argText = String(delta?.arguments ?? delta?.text ?? "");
+            const argText =
+              readStringField(delta, "arguments") ?? readStringField(delta, "text") ?? "";
             if (currentBlockType !== "toolCall") {
               endCurrentBlock();
               currentBlockType = "toolCall";
               currentBlockIndex = output.content.length;
-              const toolName = String(delta?.name ?? "tool");
-              const toolCallId = String(delta?.id ?? nextToolCallId(toolName));
+              const toolName = readStringField(delta, "name") ?? "tool";
+              const toolCallId = readStringField(delta, "id") ?? nextToolCallId(toolName);
               currentToolCall = {
                 type: "toolCall",
                 id: toolCallId,
@@ -689,15 +368,17 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
                 partial: output,
               });
             }
+            const streamedToolName = readStringField(delta, "name");
             if (
-              delta?.name &&
+              streamedToolName &&
               currentToolCall &&
               (!currentToolCall.name || currentToolCall.name === "tool")
             ) {
-              currentToolCall.name = String(delta.name);
+              currentToolCall.name = streamedToolName;
             }
-            if (delta?.id && currentToolCall) {
-              currentToolCall.id = String(delta.id);
+            const streamedToolCallId = readStringField(delta, "id");
+            if (streamedToolCallId && currentToolCall) {
+              currentToolCall.id = streamedToolCallId;
             }
             currentToolArgs += argText;
             stream.push({
@@ -708,15 +389,16 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
             });
           }
         } else if (eventType === "step.start") {
-          const step = event.step as Record<string, unknown> | undefined;
+          const step = asOptionalRecord(event.step);
           if (step?.type === "thought") {
-            if (step.signature) {
-              latestThoughtSignature = String(step.signature);
+            const stepSignature = readStringField(step, "signature");
+            if (stepSignature) {
+              latestThoughtSignature = stepSignature;
             }
             let initialThinking = "";
             if (Array.isArray(step.summary)) {
-              initialThinking = (step.summary as Array<{ text?: string }>)
-                .map((c) => (typeof c?.text === "string" ? c.text : ""))
+              initialThinking = step.summary
+                .map((content) => readStringField(asOptionalRecord(content), "text") ?? "")
                 .join("");
             }
             if (currentBlockType !== "thinking") {
@@ -746,12 +428,9 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
             endCurrentBlock();
             currentBlockType = "toolCall";
             currentBlockIndex = output.content.length;
-            const toolName = String(step.name ?? "tool");
-            const toolCallId = String(step.id ?? nextToolCallId(toolName));
-            const stepArgs =
-              step.arguments && typeof step.arguments === "object"
-                ? (step.arguments as Record<string, unknown>)
-                : {};
+            const toolName = readStringField(step, "name") ?? "tool";
+            const toolCallId = readStringField(step, "id") ?? nextToolCallId(toolName);
+            const stepArgs = asRecord(step.arguments);
             const initialArgs = Object.keys(stepArgs).length > 0 ? JSON.stringify(stepArgs) : "";
             currentToolCall = {
               type: "toolCall",
@@ -770,17 +449,25 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
         } else if (eventType === "step.stop") {
           endCurrentBlock();
         } else if (eventType === "interaction.completed" || eventType === "interaction.complete") {
-          const interaction = (event.interaction as Record<string, unknown>) || event;
-          const usage = (interaction.usage as Record<string, unknown>) || {};
+          sawCompletion = true;
+          const interaction = asOptionalRecord(event.interaction) ?? event;
+          const usage = asRecord(interaction.usage);
           const promptTokens = Number(usage.total_input_tokens ?? 0);
+          const cacheRead = Number(usage.total_cached_tokens ?? 0);
           const candidatesTokens = Number(usage.total_output_tokens ?? 0);
-          const totalTokens = Number(usage.total_tokens ?? promptTokens + candidatesTokens);
+          const thoughtTokens = Number(usage.total_thought_tokens ?? 0);
+          const toolUseTokens = Number(usage.total_tool_use_tokens ?? 0);
+          const outputTokens = candidatesTokens + thoughtTokens;
+          const totalTokens = Number(
+            usage.total_tokens ?? promptTokens + outputTokens + toolUseTokens,
+          );
 
           output.usage = {
-            input: promptTokens,
-            output: candidatesTokens,
-            cacheRead: 0,
+            input: Math.max(0, promptTokens - cacheRead) + toolUseTokens,
+            output: outputTokens,
+            cacheRead,
             cacheWrite: 0,
+            cacheTelemetry: { state: "available" },
             totalTokens,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
           };
@@ -788,8 +475,16 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
             calculateCost(model, output.usage);
           }
 
-          const hasToolCalls = output.content.some((b) => b.type === "toolCall");
-          output.stopReason = hasToolCalls ? ("toolUse" as StopReason) : ("stop" as StopReason);
+          const status = typeof interaction.status === "string" ? interaction.status : "completed";
+          if (status === "failed" || status === "cancelled" || status === "budget_exceeded") {
+            throw new Error(`Google Interactions API completed with status: ${status}`);
+          }
+          if (status === "incomplete") {
+            output.stopReason = "length";
+          } else {
+            const hasToolCalls = output.content.some((b) => b.type === "toolCall");
+            output.stopReason = hasToolCalls ? "toolUse" : "stop";
+          }
         }
       }
     }
@@ -800,19 +495,21 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
 
     endCurrentBlock();
 
+    if (!sawCompletion) {
+      throw new Error("Google Interactions stream ended before interaction.completed");
+    }
+
     if (latestThoughtSignature) {
       for (const block of output.content) {
         if (block.type === "thinking" && !block.thinkingSignature) {
           block.thinkingSignature = latestThoughtSignature;
-        } else if (block.type === "toolCall" && !block.thoughtSignature) {
-          block.thoughtSignature = latestThoughtSignature;
         }
       }
     }
 
     if (!output.stopReason) {
       const hasToolCalls = output.content.some((b) => b.type === "toolCall");
-      output.stopReason = hasToolCalls ? ("toolUse" as StopReason) : ("stop" as StopReason);
+      output.stopReason = hasToolCalls ? "toolUse" : "stop";
     }
 
     if (output.stopReason === "aborted" || output.stopReason === "error") {

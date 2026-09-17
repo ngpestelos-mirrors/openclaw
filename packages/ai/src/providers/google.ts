@@ -7,7 +7,6 @@ import { resolveOpencodeSessionHeaders } from "../transports/session-affinity.js
 import { mergeTransportHeaders } from "../transports/transport-stream-shared.js";
 import type { Context, Model, SimpleStreamOptions, StreamFunction } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
-import { streamGoogleInteractions } from "./google-interactions.js";
 import {
   buildGoogleGenerateContentParams,
   buildGoogleSimpleThinking,
@@ -26,13 +25,6 @@ export const streamGoogle: StreamFunction<"google-generative-ai", GoogleOptions>
   context: Context,
   options?: GoogleOptions,
 ) => {
-  if (options?.useInteractions) {
-    return streamGoogleInteractions(
-      model as unknown as Model<"google-interactions">,
-      context,
-      options,
-    ) as unknown as AssistantMessageEventStream;
-  }
   const stream = new AssistantMessageEventStream();
   const output = createAssistantOutput(model, "google-generative-ai");
 

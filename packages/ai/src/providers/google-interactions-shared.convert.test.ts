@@ -1,27 +1,71 @@
 import { describe, expect, it } from "vitest";
-import type { Context, Tool } from "../types.js";
+import type {
+  AssistantMessage,
+  Context,
+  Model,
+  Tool,
+  ToolResultMessage,
+  UserMessage,
+} from "../types.js";
 import {
   buildGoogleInteractionsParams,
   resolveGoogleApiClientHeaders,
-} from "./google-interactions-shared.js";
+} from "./google-interactions-request.js";
 import { makeModel } from "./google-shared.test-helpers.js";
 
+const zeroUsage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function user(content: UserMessage["content"]): UserMessage {
+  return { role: "user", content, timestamp: 0 };
+}
+
+function assistant(
+  content: AssistantMessage["content"],
+  identity?: Partial<Pick<AssistantMessage, "api" | "provider" | "model">>,
+): AssistantMessage {
+  return {
+    role: "assistant",
+    content,
+    api: identity?.api ?? "google-interactions",
+    provider: identity?.provider ?? "google",
+    model: identity?.model ?? "gemini-3-flash-preview",
+    usage: zeroUsage,
+    stopReason: "stop",
+    timestamp: 0,
+  };
+}
+
+function toolResult(
+  toolCallId: string,
+  toolName: string,
+  content: ToolResultMessage["content"],
+): ToolResultMessage {
+  return { role: "toolResult", toolCallId, toolName, content, isError: false, timestamp: 0 };
+}
+
 describe("buildGoogleInteractionsParams", () => {
-  const model = makeModel("gemini-3-flash-preview");
+  const model = {
+    ...makeModel("gemini-3-flash-preview"),
+    api: "google-interactions",
+  } satisfies Model<"google-interactions">;
 
   it("converts basic messages to user_input and model_output steps", () => {
     const context: Context = {
       systemPrompt: "You are a helpful assistant.",
       messages: [
-        { role: "user", content: "Hello" },
-        {
-          role: "assistant",
-          content: [
-            { type: "text", text: "Hi there!" },
-            { type: "thinking", thinking: "internal thoughts" },
-          ],
-        },
-        { role: "user", content: "What is 2+2?" },
+        user("Hello"),
+        assistant([
+          { type: "text", text: "Hi there!" },
+          { type: "thinking", thinking: "internal thoughts" },
+        ]),
+        user("What is 2+2?"),
       ],
     };
 
@@ -63,24 +107,18 @@ describe("buildGoogleInteractionsParams", () => {
 
     const context: Context = {
       messages: [
-        { role: "user", content: "Weather in Tokyo?" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "call_123",
-              name: "getWeather",
-              arguments: { city: "Tokyo" },
-            },
-          ],
-        },
-        {
-          role: "toolResult",
-          toolCallId: "call_123",
-          toolName: "getWeather",
-          content: JSON.stringify({ temp: "20C" }),
-        },
+        user("Weather in Tokyo?"),
+        assistant([
+          {
+            type: "toolCall",
+            id: "call_123",
+            name: "getWeather",
+            arguments: { city: "Tokyo" },
+          },
+        ]),
+        toolResult("call_123", "getWeather", [
+          { type: "text", text: JSON.stringify({ temp: "20C" }) },
+        ]),
       ],
       tools,
     };
@@ -115,7 +153,7 @@ describe("buildGoogleInteractionsParams", () => {
         type: "function_result",
         call_id: "call_123",
         name: "getWeather",
-        result: JSON.stringify({ temp: "20C" }),
+        result: [{ type: "text", text: JSON.stringify({ temp: "20C" }) }],
       },
     ]);
   });
@@ -123,19 +161,16 @@ describe("buildGoogleInteractionsParams", () => {
   it("recirculates thinking blocks with thought signatures as thought steps", () => {
     const context: Context = {
       messages: [
-        { role: "user", content: "Solve this problem" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "thinking",
-              thinking: "Let me break down the steps.",
-              thinkingSignature: "sig_step_1234==",
-            },
-            { type: "text", text: "Here is the answer." },
-          ],
-        },
-        { role: "user", content: "Tell me more" },
+        user("Solve this problem"),
+        assistant([
+          {
+            type: "thinking",
+            thinking: "Let me break down the steps.",
+            thinkingSignature: "sig_step_1234==",
+          },
+          { type: "text", text: "Here is the answer." },
+        ]),
+        user("Tell me more"),
       ],
     };
 
@@ -165,19 +200,16 @@ describe("buildGoogleInteractionsParams", () => {
   it("emits thought signatures in separate thought steps and not on function_call steps", () => {
     const context: Context = {
       messages: [
-        { role: "user", content: "Weather in Tokyo?" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "call_123",
-              name: "getWeather",
-              arguments: { city: "Tokyo" },
-              thoughtSignature: "sig_tool_call_token==",
-            },
-          ],
-        },
+        user("Weather in Tokyo?"),
+        assistant([
+          {
+            type: "toolCall",
+            id: "call_123",
+            name: "getWeather",
+            arguments: { city: "Tokyo" },
+            thoughtSignature: "sig_tool_call_token==",
+          },
+        ]),
       ],
     };
 
@@ -198,29 +230,32 @@ describe("buildGoogleInteractionsParams", () => {
         name: "getWeather",
         arguments: { city: "Tokyo" },
       },
+      {
+        type: "function_result",
+        call_id: "call_123",
+        name: "getWeather",
+        result: [{ type: "text", text: "No result provided" }],
+      },
     ]);
   });
 
   it("converts assistant message with both thinking and toolCall into separate thought and function_call steps", () => {
     const context: Context = {
       messages: [
-        { role: "user", content: "Weather in Tokyo?" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "thinking",
-              thinking: "Looking up weather in Tokyo...",
-              thinkingSignature: "sig_reasoning_token==",
-            },
-            {
-              type: "toolCall",
-              id: "call_123",
-              name: "getWeather",
-              arguments: { city: "Tokyo" },
-            },
-          ],
-        },
+        user("Weather in Tokyo?"),
+        assistant([
+          {
+            type: "thinking",
+            thinking: "Looking up weather in Tokyo...",
+            thinkingSignature: "sig_reasoning_token==",
+          },
+          {
+            type: "toolCall",
+            id: "call_123",
+            name: "getWeather",
+            arguments: { city: "Tokyo" },
+          },
+        ]),
       ],
     };
 
@@ -242,24 +277,27 @@ describe("buildGoogleInteractionsParams", () => {
         name: "getWeather",
         arguments: { city: "Tokyo" },
       },
+      {
+        type: "function_result",
+        call_id: "call_123",
+        name: "getWeather",
+        result: [{ type: "text", text: "No result provided" }],
+      },
     ]);
   });
 
   it("does not attach dummy skip_thought_signature_validator to function_call steps for Gemini 3 models", () => {
     const context: Context = {
       messages: [
-        { role: "user", content: "Calculate 2+2" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "call_calc",
-              name: "calculator",
-              arguments: { expr: "2+2" },
-            },
-          ],
-        },
+        user("Calculate 2+2"),
+        assistant([
+          {
+            type: "toolCall",
+            id: "call_calc",
+            name: "calculator",
+            arguments: { expr: "2+2" },
+          },
+        ]),
       ],
     };
 
@@ -276,6 +314,12 @@ describe("buildGoogleInteractionsParams", () => {
         name: "calculator",
         arguments: { expr: "2+2" },
       },
+      {
+        type: "function_result",
+        call_id: "call_calc",
+        name: "calculator",
+        result: [{ type: "text", text: "No result provided" }],
+      },
     ]);
   });
 
@@ -288,7 +332,7 @@ describe("buildGoogleInteractionsParams", () => {
 
   it("rejects unsupported explicit prompt caching locally", () => {
     const context: Context = {
-      messages: [{ role: "user", content: "Hello" }],
+      messages: [user("Hello")],
     };
 
     expect(() =>
@@ -298,38 +342,106 @@ describe("buildGoogleInteractionsParams", () => {
     ).toThrow(/Explicit prompt caching/);
   });
 
+  it.each(["auto", "none", "any"] as const)(
+    "maps toolChoice=%s into generation_config",
+    (toolChoice) => {
+      const params = buildGoogleInteractionsParams(
+        model,
+        {
+          messages: [user("Use a tool")],
+          tools: [
+            {
+              name: "lookup",
+              description: "Look up a value",
+              parameters: { type: "object", properties: {} },
+            },
+          ],
+        },
+        { toolChoice },
+      );
+
+      expect(params.generation_config?.tool_choice).toBe(toolChoice);
+    },
+  );
+
+  it("strips incompatible thought signatures and repairs missing tool results before conversion", () => {
+    const params = buildGoogleInteractionsParams(
+      model,
+      {
+        messages: [
+          user("Use a tool"),
+          assistant(
+            [
+              {
+                type: "thinking",
+                thinking: "Reasoning from the old transport",
+                thinkingSignature: "incompatible-signature",
+              },
+              {
+                type: "toolCall",
+                id: "call_legacy",
+                name: "lookup",
+                arguments: { query: "value" },
+                thoughtSignature: "incompatible-tool-signature",
+              },
+            ],
+            { api: "google-generative-ai" },
+          ),
+        ],
+      },
+      {},
+    );
+
+    expect(params.input).toEqual([
+      { type: "user_input", content: [{ type: "text", text: "Use a tool" }] },
+      {
+        type: "model_output",
+        content: [{ type: "text", text: "Reasoning from the old transport" }],
+      },
+      {
+        type: "function_call",
+        id: "call_legacy",
+        name: "lookup",
+        arguments: { query: "value" },
+      },
+      {
+        type: "function_result",
+        call_id: "call_legacy",
+        name: "lookup",
+        result: [{ type: "text", text: "No result provided" }],
+      },
+    ]);
+    expect(JSON.stringify(params.input)).not.toContain("incompatible-signature");
+  });
+
   it("normalizes toolResult image blocks to snake_case mime_type", () => {
     const context: Context = {
       messages: [
-        { role: "user", content: "Read the file" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "call_read_1",
-              name: "read",
-              arguments: { path: "test.png" },
-            },
-          ],
-        },
-        {
-          role: "toolResult",
-          toolCallId: "call_read_1",
-          toolName: "read",
-          content: [
-            { type: "text", text: "Read image file" },
-            {
-              type: "image",
-              mimeType: "image/png",
-              data: "base64data",
-            },
-          ],
-        },
+        user("Read the file"),
+        assistant([
+          {
+            type: "toolCall",
+            id: "call_read_1",
+            name: "read",
+            arguments: { path: "test.png" },
+          },
+        ]),
+        toolResult("call_read_1", "read", [
+          { type: "text", text: "Read image file" },
+          {
+            type: "image",
+            mimeType: "image/png",
+            data: "base64data",
+          },
+        ]),
       ],
     };
 
-    const params = buildGoogleInteractionsParams(model, context, {});
+    const params = buildGoogleInteractionsParams(
+      { ...model, input: ["text", "image"] },
+      context,
+      {},
+    );
 
     expect(params.input).toEqual([
       {
@@ -358,4 +470,3 @@ describe("buildGoogleInteractionsParams", () => {
     ]);
   });
 });
-
