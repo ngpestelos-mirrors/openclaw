@@ -30,12 +30,9 @@ import {
 import { parseSessionEntryJson, selectSessionEntryRows } from "./session-accessor.sqlite-status.js";
 import type { SessionEntryReadScope } from "./session-accessor.types.js";
 import {
-  adoptCanonicalSessionReadAdmission,
   assertCanonicalSqliteSessionKeysCurrent,
-  readCanonicalSessionMainKey,
   type ValidatedSessionMetadata,
 } from "./session-canonical-key.js";
-import { withCanonicalSessionValidationDeferral } from "./session-canonical-validation-deferral.js";
 import type { InternalSessionEntry, SessionEntry } from "./types.js";
 
 type SessionEntryCacheTables = Pick<OpenClawAgentKyselyDatabase, "session_nodes">;
@@ -63,14 +60,6 @@ type SqliteSessionEntryCacheWriteGeneration = {
 // structural/unknown writes invalidate. Without both, every read would re-query and re-parse
 // every entry_json document.
 const sessionEntryCaches = new WeakMap<DatabaseSync, SqliteSessionEntryCache>();
-const sessionEntryCacheFills = new WeakMap<
-  DatabaseSync,
-  {
-    validityToken: SqliteSessionEntryRevision;
-    mainKey: string;
-    promise: Promise<SessionEntryCacheSnapshot>;
-  }
->();
 /** Commit-driven projections borrow owner memory; ordinary reads still validate SQLite. */
 export function readCommittedSessionEntryCache(database: DatabaseSync) {
   return sessionEntryCaches.get(database)?.entries;
@@ -163,7 +152,7 @@ function cacheValidityTokensEqual(
 }
 
 /** Reuse only complete, current metadata; exact reads still own misses and invalid rows. */
-export function readCachedExactSessionEntries(
+function readCachedExactSessionEntries(
   database: SessionEntryCacheDatabase,
   sessionKeys: readonly string[],
 ): Map<string, SessionEntry> | undefined {
@@ -283,7 +272,7 @@ export function trackSessionEntryCacheWrite(
   return generation;
 }
 
-export function loadSessionEntrySnapshot(
+function loadSessionEntrySnapshot(
   database: SessionEntryCacheDatabase,
   projection: "full" | "list" = "list",
   prepared?: ValidatedSessionMetadata,
@@ -362,77 +351,6 @@ export function readSessionEntryCache(
   const next = { ...loaded, validityToken };
   sessionEntryCaches.set(database.db, next);
   return next;
-}
-
-/** A read cohort may consume its snapshot once; only unchanged admissions publish reusable state. */
-export function readSessionEntryCacheAsync(
-  database: SessionEntryCacheDatabase & { path: string },
-  params: {
-    assertCurrent: () => void;
-    load: (
-      validateCanonical: boolean,
-      mainKey: string,
-    ) => Promise<SessionEntryCacheSnapshot & { mainKey: string }>;
-  },
-): Promise<SessionEntryCacheSnapshot> {
-  params.assertCurrent();
-  const validityToken = readSessionEntryCacheValidityToken(database.db);
-  const mainKey = readCanonicalSessionMainKey(database);
-  const admission = withCanonicalSessionValidationDeferral(() =>
-    assertCanonicalSqliteSessionKeysCurrent(database),
-  );
-  const owner = sessionEntryCaches.get(database.db);
-  if (
-    admission.kind === "complete" &&
-    owner &&
-    cacheValidityTokensEqual(owner.validityToken, validityToken) &&
-    cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))
-  ) {
-    return Promise.resolve(owner);
-  }
-  const pending = sessionEntryCacheFills.get(database.db);
-  if (
-    pending?.mainKey === mainKey &&
-    cacheValidityTokensEqual(pending.validityToken, validityToken)
-  ) {
-    return pending.promise.then((snapshot) => {
-      params.assertCurrent();
-      return snapshot;
-    });
-  }
-  const fill = {
-    validityToken,
-    mainKey,
-    promise: Promise.resolve().then(async (): Promise<SessionEntryCacheSnapshot> => {
-      params.assertCurrent();
-      const loaded = await params.load(admission.kind === "pending", mainKey);
-      params.assertCurrent();
-      if (!adoptCanonicalSessionReadAdmission(database, loaded.mainKey)) {
-        throw new Error("Session metadata canonical policy changed during the read");
-      }
-      if (
-        database.db.isTransaction ||
-        !cacheValidityTokensEqual(validityToken, readSessionEntryCacheValidityToken(database.db))
-      ) {
-        return loaded;
-      }
-      const current = sessionEntryCaches.get(database.db);
-      if (current !== owner) {
-        return loaded;
-      }
-      const next = { entries: loaded.entries, keys: loaded.keys, validityToken };
-      sessionEntryCaches.set(database.db, next);
-      return next;
-    }),
-  };
-  sessionEntryCacheFills.set(database.db, fill);
-  const clear = () => {
-    if (sessionEntryCacheFills.get(database.db) === fill) {
-      sessionEntryCacheFills.delete(database.db);
-    }
-  };
-  void fill.promise.then(clear, clear);
-  return fill.promise;
 }
 
 function publishTrackedCacheUpdate(database: SessionEntryCacheDatabase, publish: () => void): void {

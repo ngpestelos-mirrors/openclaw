@@ -7,7 +7,11 @@ import {
 } from "../../gateway/session-row-projection.js";
 import { listProjectedSessions } from "../../gateway/session-utils-list.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
-import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
+import {
+  inspectAgentDatabaseAdmission,
+  readAgentDatabaseAdmissionRefusal,
+  recordAgentDatabaseAdmissions,
+} from "../../state/agent-database-admission.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -17,7 +21,11 @@ import { assertOpenClawDatabasesReady } from "../../state/openclaw-database-pref
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { loadCombinedSessionStoreForGatewayCore } from "./combined-store-gateway.js";
-import { persistSessionTranscriptTurn, replaceSessionEntrySync } from "./session-accessor.js";
+import {
+  listSessionEntriesReadOnly,
+  persistSessionTranscriptTurn,
+  replaceSessionEntrySync,
+} from "./session-accessor.js";
 import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 
 async function withResidentRows(
@@ -97,6 +105,51 @@ it("lists admitted sessions across cached targets while preserving a refused dat
     ).toHaveLength(2);
   });
 });
+
+it.each(["ops", "main"])(
+  "rechecks %s admission after reading a shared store through a different logical owner",
+  async (refusedAgentId) => {
+    await withOpenClawTestState({ label: "combined-read-admission" }, async (state) => {
+      const storePath = state.statePath("ops.sqlite");
+      openOpenClawAgentDatabase({ agentId: "main", path: storePath });
+      replaceSessionEntrySync(
+        { agentId: "ops", storePath, sessionKey: "agent:ops:main" },
+        { sessionId: "ops-session", updatedAt: 1 },
+      );
+      const cfg: OpenClawConfig = {
+        agents: { entries: { ops: { default: true } } },
+        session: { store: state.statePath("{agentId}.sqlite") },
+      };
+      const opts = { agentId: "ops", projection: "list" as const };
+      const expected = loadCombinedSessionStoreForGatewayCore(cfg, opts);
+      expect(expected.durableTargets).toEqual([{ agentId: "ops", storePath }]);
+      expect(expected.targetsBySessionKey.get("agent:ops:main")?.storeTarget).toEqual({
+        agentId: "main",
+        storePath,
+      });
+      const refusal = inspectAgentDatabaseAdmission({
+        agentId: refusedAgentId,
+        path: storePath,
+        metadata: { role: "agent", agentId: "replacement-owner" },
+      })!;
+      try {
+        expect(() =>
+          loadCombinedSessionStoreForGatewayCore(cfg, {
+            ...opts,
+            loadEntries: (target, projection) => {
+              expect(target).toEqual({ agentId: "main", storePath });
+              const rows = listSessionEntriesReadOnly({ ...target, projection });
+              recordAgentDatabaseAdmissions([refusal], { source: "startup", env: state.env });
+              return rows;
+            },
+          }),
+        ).toThrow(expect.objectContaining({ name: "AgentDatabaseAdmissionError", refusal }));
+      } finally {
+        recordAgentDatabaseAdmissions([], { source: "startup", env: state.env });
+      }
+    });
+  },
+);
 
 it.each(["global", "unknown"])("projects the recorded aggregate %s owner", async (sessionKey) => {
   await withOpenClawTestState({ label: "combined-list-owner" }, async () => {
