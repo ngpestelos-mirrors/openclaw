@@ -474,6 +474,33 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .toSorted(),
     ).toEqual(["1/4", "2/4", "3/4", "4/4"]);
     expect(hasCompleteStartupCorpusCoverage(compact)).toBe(true);
+
+    for (const [runnerBackend, partitionSeconds] of [
+      ["blacksmith", 122],
+      ["hybrid", 106],
+      ["github", 195],
+    ] as const) {
+      const backendPlan = createNodeTestShardBundles({
+        compactMode: "push",
+        includeReleaseOnlyPluginShards: false,
+        runnerBackend,
+      });
+      const backendStateJobs = backendPlan.filter((job) =>
+        job.groups.some((group) => group.includePatterns?.includes(stateCorpus)),
+      );
+      const backendStateGroups = backendStateJobs.flatMap((job) =>
+        job.groups.filter((group) => group.includePatterns?.includes(stateCorpus)),
+      );
+      expect(backendStateGroups, runnerBackend).toHaveLength(4);
+      for (const job of backendStateJobs) {
+        const partitions = job.groups.filter((group) =>
+          group.includePatterns?.includes(stateCorpus),
+        ).length;
+        expect(job.predictedSeconds, `${runnerBackend}:${job.checkName}`).toBeGreaterThanOrEqual(
+          100 + partitions * partitionSeconds,
+        );
+      }
+    }
   });
   it.each(["github", "hybrid"])("keeps oversized sparse groups nonempty on %s", (runnerBackend) => {
     const native = createNodeTestShards({ includeReleaseOnlyPluginShards: false });

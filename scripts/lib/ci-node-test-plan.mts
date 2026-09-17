@@ -362,6 +362,12 @@ const UNIT_FAST_NODE_TEST_STRIPES = 2;
 const EMBEDDED_BASE_NODE_TEST_STRIPES = 3;
 // Cold-start fallback when committed CI measurements are missing. Refresh
 // config/ci-test-timings.json with pnpm ci:timings:refit, not these literals.
+const STATE_STARTUP_CORPUS_PARTITION_COUNT = 4;
+// Run 35200708607 measured 488s for the unsplit corpus. Preserve that parent
+// cost across the new identities until each partition has direct samples.
+const STATE_STARTUP_CORPUS_PARTITION_SECONDS = Math.ceil(
+  488 / STATE_STARTUP_CORPUS_PARTITION_COUNT,
+);
 const COMPACT_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["agentic-agents-core-auth", 30],
   ["agentic-agents-core-isolated", 18],
@@ -448,6 +454,14 @@ const COMPACT_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["auto-reply-reply-state-routing", 63],
   // Apportioned from the split infra-process trio (see below).
   ["core-runtime-config", 113],
+  ...Array.from(
+    { length: STATE_STARTUP_CORPUS_PARTITION_COUNT },
+    (_, index) =>
+      [
+        `core-runtime-config-startup-state-${index + 1}`,
+        STATE_STARTUP_CORPUS_PARTITION_SECONDS,
+      ] as const,
+  ),
   ["core-runtime-cron-core", 25],
   ["core-runtime-cron-isolated-agent", 105],
   ["core-runtime-cron-service", 58],
@@ -1903,14 +1917,19 @@ function createRuntimeConfigSplitShards(): NodeTestSplitShard[] {
       requiresDist: false,
       runner: "blacksmith-4vcpu-ubuntu-2404",
     },
-    ...Array.from({ length: 4 }, (_, index): NodeTestSplitShard => ({
-      shardName: `core-runtime-config-startup-state-${index + 1}`,
-      configs,
-      env: { OPENCLAW_TEST_STARTUP_CORPUS_SHARD: `${index + 1}/4` },
-      includePatterns: [STATE_STARTUP_CORPUS_TEST],
-      requiresDist: false,
-      runner: "blacksmith-4vcpu-ubuntu-2404",
-    })),
+    ...Array.from(
+      { length: STATE_STARTUP_CORPUS_PARTITION_COUNT },
+      (_, index): NodeTestSplitShard => ({
+        shardName: `core-runtime-config-startup-state-${index + 1}`,
+        configs,
+        env: {
+          OPENCLAW_TEST_STARTUP_CORPUS_SHARD: `${index + 1}/${STATE_STARTUP_CORPUS_PARTITION_COUNT}`,
+        },
+        includePatterns: [STATE_STARTUP_CORPUS_TEST],
+        requiresDist: false,
+        runner: "blacksmith-4vcpu-ubuntu-2404",
+      }),
+    ),
   ];
 }
 
