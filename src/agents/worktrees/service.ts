@@ -88,6 +88,7 @@ import {
   generateAvailableWorktreeName,
   validateWorktreeName,
 } from "./service-name-allocation.js";
+import { bindSessionForCreation as bindSession } from "./service-session-binding.js";
 import { hasTemplates } from "./template-registry.js";
 import type {
   CreateEmptyManagedWorktreeParams,
@@ -141,6 +142,7 @@ type RemoveWorktreeParams = WorktreeMutationGuard & {
   inspectedHead?: string;
   claimToken?: string;
   runEndCleanup?: ManagedWorktreeRunEndCleanup;
+  expectedActiveSessionKeys?: readonly string[];
 };
 const WORKTREE_CLEANUP_TARGET = 100;
 
@@ -417,11 +419,12 @@ export class ManagedWorktreeService {
             `worktree owner ${params.ownerKind ?? "manual"} ${params.ownerId} is already bound to another repository`,
           );
         }
-        params.commitGuard?.();
-        if (params.ownerKind === "session" && params.ownerId) {
-          bindRegistryWorktreeSession(this.env, validated.id, params.ownerId, this.now());
-        }
-        return { record: validated, materialized: false };
+        const sessionBindingPreviousState = bindSession(this.env, this.now(), params, validated);
+        return {
+          record: validated,
+          materialized: false,
+          ...(sessionBindingPreviousState ? { sessionBindingPreviousState } : {}),
+        };
       }
       if (existing) {
         params.commitGuard?.();
@@ -489,13 +492,11 @@ export class ManagedWorktreeService {
     if (existing && existing.removedAt === undefined) {
       if (await worktreePathExists(existing.path)) {
         const record = await this.rebindLiveRepository(existing, params);
-        if (params.ownerKind === "session" && params.ownerId) {
-          params.commitGuard?.();
-          bindRegistryWorktreeSession(this.env, record.id, params.ownerId, this.now());
-        }
+        const sessionBindingPreviousState = bindSession(this.env, this.now(), params, record);
         return {
           record,
           materialized: false,
+          ...(sessionBindingPreviousState ? { sessionBindingPreviousState } : {}),
         };
       }
       updateRegistryWorktree(this.env, existing.id, { removedAt: this.now() });
@@ -512,13 +513,11 @@ export class ManagedWorktreeService {
         commitGuard: params.commitGuard,
         rollbackGuard: params.rollbackGuard,
       });
-      if (params.ownerKind === "session" && params.ownerId) {
-        params.commitGuard?.();
-        bindRegistryWorktreeSession(this.env, record.id, params.ownerId, this.now());
-      }
+      const sessionBindingPreviousState = bindSession(this.env, this.now(), params, record);
       return {
         record,
         materialized: true,
+        ...(sessionBindingPreviousState ? { sessionBindingPreviousState } : {}),
       };
     }
     const root = path.join(await this.worktreesRoot(), repository.fingerprint);
@@ -849,7 +848,11 @@ export class ManagedWorktreeService {
     // opaque token makes the claim exclusive against competing removers; a caller
     // that already claimed (removeIfLossless) passes its token to keep one claim.
     const claimToken = params.claimToken ?? randomUUID();
-    claimWorktreeRemoval(this.env, { worktreeId: record.id, token: claimToken });
+    claimWorktreeRemoval(this.env, {
+      worktreeId: record.id,
+      token: claimToken,
+      expectedActiveSessionKeys: params.expectedActiveSessionKeys,
+    });
     try {
       record = await this.rebindLiveRepository(record, params);
       const gitOptions = {
@@ -1251,7 +1254,10 @@ export class ManagedWorktreeService {
     return restored;
   }
 
-  async removeIfLossless(id: string): Promise<boolean> {
+  async removeIfLossless(
+    id: string,
+    options: { expectedActiveSessionKeys?: readonly string[] } = {},
+  ): Promise<boolean> {
     let record = this.requireLiveRecord(id);
     let inspectedHead: string;
     const claimToken = randomUUID();
@@ -1280,7 +1286,11 @@ export class ManagedWorktreeService {
     // Run-end cleanup must leave a durable outcome even when safety retains the checkout.
     // QA and operators observe this product-boundary fact through worktrees.list.
     try {
-      claimWorktreeRemoval(this.env, { worktreeId: id, token: claimToken });
+      claimWorktreeRemoval(this.env, {
+        worktreeId: id,
+        token: claimToken,
+        expectedActiveSessionKeys: options.expectedActiveSessionKeys,
+      });
     } catch (error) {
       if (error instanceof WorktreeRemovalContentionError) {
         if (error.kind === "finalized") {
@@ -1333,6 +1343,7 @@ export class ManagedWorktreeService {
         id,
         reason: "run-end",
         claimToken,
+        expectedActiveSessionKeys: options.expectedActiveSessionKeys,
         requireLossless: true,
         inspectedHead,
         runEndCleanup: { outcome: "removed-lossless", at: this.now() },
@@ -1365,7 +1376,10 @@ export class ManagedWorktreeService {
     } else if (!worktreeOwnerMatches(record, owner)) {
       return false;
     }
-    return await this.removeIfLossless(record.id);
+    return await this.removeIfLossless(record.id, {
+      expectedActiveSessionKeys:
+        owner.ownerKind === "session" && owner.ownerId ? [owner.ownerId] : undefined,
+    });
   }
 
   async releaseByPath(worktreePath: string): Promise<void> {

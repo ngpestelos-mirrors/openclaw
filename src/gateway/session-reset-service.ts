@@ -34,7 +34,6 @@ import {
 import { clearAllCliSessions } from "../agents/cli-session.js";
 import { resetRegisteredAgentHarnessSessions } from "../agents/harness/registry.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
-import { managedWorktrees } from "../agents/worktrees/service.js";
 import {
   buildSessionEndHookPayload,
   buildSessionStartHookPayload,
@@ -106,6 +105,7 @@ import {
   handleSessionStateSessionReset,
   recordSessionCreated,
 } from "../sessions/session-state-events.js";
+import { detachSessionWorktreeForReset as detachReset } from "../sessions/session-worktree-reset.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import { listTasksForRelatedSessionKey } from "../tasks/task-registry-query.js";
@@ -1973,16 +1973,14 @@ export async function performGatewaySessionReset(params: {
         // Preserve reset notifications and unbinding order, but finalize the exact
         // old checkout before the fence opens to same-key successors.
         try {
-          if (!(await managedWorktrees.removeIfLossless(detachedWorktreeId))) {
-            const retained = managedWorktrees.findLiveById(detachedWorktreeId);
-            if (retained) {
-              const safePath = truncateUtf16Safe(sanitizeForLog(retained.path), 256);
-              reportLifecycleCleanupError(
-                new Error(
-                  `worktree retained: branch=${retained.branch} path=${safePath} outcome=${retained.runEndCleanup?.outcome}`,
-                ),
-              );
-            }
+          const retained = await detachReset(detachedWorktreeId, target.canonicalKey ?? params.key);
+          if (retained) {
+            const safePath = truncateUtf16Safe(sanitizeForLog(retained.path), 256);
+            reportLifecycleCleanupError(
+              new Error(
+                `worktree retained: branch=${retained.branch} path=${safePath} outcome=${retained.runEndCleanup?.outcome}`,
+              ),
+            );
           }
         } catch (error) {
           reportLifecycleCleanupError(error);

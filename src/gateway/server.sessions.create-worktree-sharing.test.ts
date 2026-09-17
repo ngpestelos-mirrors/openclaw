@@ -1,6 +1,7 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { getRegistryWorktree } from "../agents/worktrees/registry.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
+import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { identifiedClient } from "./server-methods/sessions-sharing.test-support.js";
@@ -48,6 +49,207 @@ test("sessions.create requires participation permission before attaching a named
       owner.payload!.key,
     ]);
   } finally {
+    const record = worktreeId ? getRegistryWorktree(process.env, worktreeId) : undefined;
+    if (record && record.removedAt === undefined) {
+      await managedWorktrees.remove({
+        id: record.id,
+        reason: "test-cleanup",
+        allowSnapshotLoss: true,
+      });
+    }
+    closeOpenClawStateDatabaseForTest();
+    testState.agentConfig = undefined;
+    await state.cleanup();
+  }
+});
+
+test("sessions.create authorizes the worktree that wins concurrent name allocation", async () => {
+  const state = await createOpenClawTestState({
+    layout: "state-only",
+    prefix: "openclaw-session-worktree-sharing-race-",
+  });
+  const workspace = await initializeRemoteBackedGitWorkspace(state.root);
+  closeOpenClawStateDatabaseForTest();
+  testState.agentConfig = { workspace };
+  await createSessionStoreDir();
+  const originalCreate = managedWorktrees.createWithOutcome.bind(managedWorktrees);
+  let entered = 0;
+  let releaseBoth!: () => void;
+  const bothEntered = new Promise<void>((resolve) => {
+    releaseBoth = resolve;
+  });
+  let ownerFinished!: () => void;
+  const ownerDone = new Promise<void>((resolve) => {
+    ownerFinished = resolve;
+  });
+  let markFirstEntered!: () => void;
+  const firstEntered = new Promise<void>((resolve) => {
+    markFirstEntered = resolve;
+  });
+  const createSpy = vi
+    .spyOn(managedWorktrees, "createWithOutcome")
+    .mockImplementation(async (params) => {
+      entered += 1;
+      const ordinal = entered;
+      if (ordinal === 1) {
+        markFirstEntered();
+      }
+      if (ordinal === 2) {
+        releaseBoth();
+      }
+      await bothEntered;
+      if (ordinal === 1) {
+        const result = await originalCreate(params);
+        ownerFinished();
+        return result;
+      }
+      await ownerDone;
+      return await originalCreate(params);
+    });
+  let worktreeId: string | undefined;
+  try {
+    const ownerPromise = directSessionReq<{
+      key: string;
+      worktree: { id: string; path: string };
+    }>(
+      "sessions.create",
+      { agentId: "main", visibility: "draft", worktree: true, worktreeName: "raced" },
+      { client: identifiedClient("profile-owner") },
+    );
+    await firstEntered;
+    const deniedPromise = directSessionReq(
+      "sessions.create",
+      { agentId: "main", worktree: true, worktreeName: "raced" },
+      { client: identifiedClient("profile-other") },
+    );
+    const [owner, denied] = await Promise.all([ownerPromise, deniedPromise]);
+    expect(owner.ok, JSON.stringify(owner.error)).toBe(true);
+    worktreeId = owner.payload!.worktree.id;
+    expect(denied).toMatchObject({ ok: false });
+    expect(managedWorktrees.listSessionBindings(worktreeId)).toEqual([owner.payload!.key]);
+  } finally {
+    createSpy.mockRestore();
+    const record = worktreeId ? getRegistryWorktree(process.env, worktreeId) : undefined;
+    if (record && record.removedAt === undefined) {
+      await managedWorktrees.remove({
+        id: record.id,
+        reason: "test-cleanup",
+        allowSnapshotLoss: true,
+      });
+    }
+    closeOpenClawStateDatabaseForTest();
+    testState.agentConfig = undefined;
+    await state.cleanup();
+  }
+});
+
+test("sessions.create removes a newly attached membership when lifecycle commit fails", async () => {
+  const state = await createOpenClawTestState({
+    layout: "state-only",
+    prefix: "openclaw-session-worktree-sharing-rollback-",
+  });
+  const workspace = await initializeRemoteBackedGitWorkspace(state.root);
+  closeOpenClawStateDatabaseForTest();
+  testState.agentConfig = { workspace };
+  testState.sessionConfig = { sharing: { drafts: false } };
+  await createSessionStoreDir();
+  let worktreeId: string | undefined;
+  try {
+    const owner = await directSessionReq<{
+      key: string;
+      worktree: { id: string; path: string };
+    }>(
+      "sessions.create",
+      { agentId: "main", worktree: true, worktreeName: "rollback-membership" },
+      { client: { connect: { scopes: ["operator.admin"] } } as never },
+    );
+    expect(owner.ok, JSON.stringify(owner.error)).toBe(true);
+    worktreeId = owner.payload!.worktree.id;
+
+    const failed = await directSessionReq(
+      "sessions.create",
+      {
+        agentId: "main",
+        visibility: "draft",
+        worktree: true,
+        worktreeName: "rollback-membership",
+      },
+      { client: { connect: { scopes: ["operator.admin"] } } as never },
+    );
+    expect(failed).toMatchObject({ ok: false });
+    expect(managedWorktrees.listSessionBindings(worktreeId)).toEqual([owner.payload!.key]);
+  } finally {
+    const record = worktreeId ? getRegistryWorktree(process.env, worktreeId) : undefined;
+    if (record && record.removedAt === undefined) {
+      await managedWorktrees.remove({
+        id: record.id,
+        reason: "test-cleanup",
+        allowSnapshotLoss: true,
+      });
+    }
+    closeOpenClawStateDatabaseForTest();
+    testState.agentConfig = undefined;
+    testState.sessionConfig = undefined;
+    await state.cleanup();
+  }
+});
+
+test("sessions.create rolls back attachment when peer authorization changes before filesystem access", async () => {
+  const state = await createOpenClawTestState({
+    layout: "state-only",
+    prefix: "openclaw-session-worktree-sharing-revocation-",
+  });
+  const workspace = await initializeRemoteBackedGitWorkspace(state.root);
+  closeOpenClawStateDatabaseForTest();
+  testState.agentConfig = { workspace };
+  const { storePath } = await createSessionStoreDir();
+  let worktreeId: string | undefined;
+  let restoreCreate = () => {};
+  try {
+    const owner = await directSessionReq<{
+      key: string;
+      sessionId: string;
+      worktree: { id: string; path: string };
+    }>(
+      "sessions.create",
+      {
+        agentId: "main",
+        visibility: "shared",
+        worktree: true,
+        worktreeName: "revoked-share",
+      },
+      { client: identifiedClient("profile-owner") },
+    );
+    expect(owner.ok, JSON.stringify(owner.error)).toBe(true);
+    worktreeId = owner.payload!.worktree.id;
+    const originalCreate = managedWorktrees.createWithOutcome.bind(managedWorktrees);
+    const createSpy = vi
+      .spyOn(managedWorktrees, "createWithOutcome")
+      .mockImplementationOnce(async (params) => {
+        const outcome = await originalCreate(params);
+        expect(outcome.sessionBindingPreviousState).toBe("absent");
+        await patchSessionEntryCore(
+          { storePath, sessionKey: owner.payload!.key },
+          (entry) => ({ ...entry!, visibility: "draft" }),
+          { skipMaintenance: true },
+        );
+        return outcome;
+      });
+    restoreCreate = () => createSpy.mockRestore();
+    const denied = await directSessionReq(
+      "sessions.create",
+      { agentId: "main", worktree: true, worktreeName: "revoked-share" },
+      { client: identifiedClient("profile-other") },
+    );
+    createSpy.mockRestore();
+
+    expect(denied).toMatchObject({
+      ok: false,
+      error: { message: "session is draft for this connection" },
+    });
+    expect(managedWorktrees.listSessionBindings(worktreeId)).toEqual([owner.payload!.key]);
+  } finally {
+    restoreCreate();
     const record = worktreeId ? getRegistryWorktree(process.env, worktreeId) : undefined;
     if (record && record.removedAt === undefined) {
       await managedWorktrees.remove({

@@ -55,6 +55,8 @@ export type CreateManagedWorktreeParams = {
   onProgress?: (phase: "checkout" | "setup") => void;
   /** Synchronous caller-authority guard checked at allocation commit boundaries. */
   commitGuard?: () => void;
+  /** Authorizes the actual persisted membership set immediately before session attachment. */
+  sessionBindingGuard?: (record: ManagedWorktreeRecord, sessionKeys: readonly string[]) => void;
 };
 
 export type CreateEmptyManagedWorktreeParams = Omit<
@@ -69,6 +71,8 @@ export type ManagedWorktreeCreationOutcome = {
   record: ManagedWorktreeRecord;
   /** This allocation created or restored the checkout instead of reusing a live one. */
   materialized: boolean;
+  /** Membership state before this allocation attached the requested session. */
+  sessionBindingPreviousState?: "absent" | "inactive" | "active";
 };
 
 export type RemoveManagedWorktreeResult = {

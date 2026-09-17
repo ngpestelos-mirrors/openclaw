@@ -8,10 +8,12 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { WORKTREE_REMOVING_LEASE_KEY, worktreeRunLeaseScope } from "./run-lease-owner.js";
 import type { ManagedWorktreeRecord } from "./types.js";
 
-type BindingsDatabase = Pick<DB, "worktrees" | "worktree_session_bindings">;
+type BindingsDatabase = Pick<DB, "worktrees" | "worktree_session_bindings" | "state_leases">;
 type WorktreeRow = Selectable<DB["worktrees"]>;
+export type WorktreeSessionBindingState = "absent" | "inactive" | "active";
 
 function dbFor(env: NodeJS.ProcessEnv): DatabaseSync {
   return openOpenClawStateDatabase({ env }).db;
@@ -21,7 +23,7 @@ function queryFor(db: DatabaseSync) {
   return getNodeSqliteKysely<BindingsDatabase>(db);
 }
 
-function explicitBindings(
+function explicitWorktreeSessionBindings(
   db: DatabaseSync,
   worktreeId: string,
 ): Array<{ sessionKey: string; active: boolean }> {
@@ -75,16 +77,15 @@ export function hasExplicitWorktreeSessionBindings(
   env: NodeJS.ProcessEnv,
   worktreeId: string,
 ): boolean {
-  return explicitBindings(dbFor(env), worktreeId).length > 0;
+  return explicitWorktreeSessionBindings(dbFor(env), worktreeId).length > 0;
 }
 
-export function listRegistryWorktreeSessionBindings(
-  env: NodeJS.ProcessEnv,
+export function worktreeSessionBindingsFromDatabase(
+  db: DatabaseSync,
   worktreeId: string,
   options: { activeOnly?: boolean } = {},
 ): string[] {
-  const db = dbFor(env);
-  const explicit = explicitBindings(db, worktreeId);
+  const explicit = explicitWorktreeSessionBindings(db, worktreeId);
   if (explicit.length > 0) {
     return explicit
       .filter((binding) => !options.activeOnly || binding.active)
@@ -92,6 +93,14 @@ export function listRegistryWorktreeSessionBindings(
   }
   const record = worktreeOwner(db, worktreeId);
   return record?.owner_kind === "session" && record.owner_id ? [record.owner_id] : [];
+}
+
+export function listRegistryWorktreeSessionBindings(
+  env: NodeJS.ProcessEnv,
+  worktreeId: string,
+  options: { activeOnly?: boolean } = {},
+): string[] {
+  return worktreeSessionBindingsFromDatabase(dbFor(env), worktreeId, options);
 }
 
 export function isRegistryWorktreeSessionBound(
@@ -108,18 +117,52 @@ export function bindRegistryWorktreeSession(
   worktreeId: string,
   sessionKey: string,
   now = Date.now(),
-): void {
+  options: { expectedSessionKeys?: readonly string[] } = {},
+): WorktreeSessionBindingState {
   const db = dbFor(env);
   ensureWorktreeSessionBindingsSchema(db);
-  runOpenClawStateWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     () => {
       const record = worktreeOwner(db, worktreeId);
       if (!record || record.removed_at !== null) {
         throw new Error(`unknown active worktree: ${worktreeId}`);
       }
-      const bindings = explicitBindings(db, worktreeId);
+      const bindings = explicitWorktreeSessionBindings(db, worktreeId);
       const initialSessionKey =
         bindings.length === 0 && record.owner_kind === "session" ? record.owner_id : undefined;
+      const currentBindings =
+        bindings.length > 0
+          ? bindings.map((binding) => binding.sessionKey)
+          : initialSessionKey
+            ? [initialSessionKey]
+            : [];
+      if (
+        options.expectedSessionKeys &&
+        (currentBindings.length !== options.expectedSessionKeys.length ||
+          currentBindings.some((key, index) => key !== options.expectedSessionKeys![index]))
+      ) {
+        throw new Error("worktree session membership changed; retry attachment");
+      }
+      const removing = executeSqliteQuerySync(
+        db,
+        queryFor(db)
+          .selectFrom("state_leases")
+          .select("lease_key")
+          .where("scope", "=", worktreeRunLeaseScope(worktreeId))
+          .where("lease_key", "=", WORKTREE_REMOVING_LEASE_KEY)
+          .limit(1),
+      ).rows[0];
+      if (removing) {
+        throw new Error("worktree removal is in progress; retry attachment");
+      }
+      const prior = bindings.find((binding) => binding.sessionKey === sessionKey);
+      const previousState: WorktreeSessionBindingState = prior
+        ? prior.active
+          ? "active"
+          : "inactive"
+        : initialSessionKey === sessionKey
+          ? "active"
+          : "absent";
       for (const key of [initialSessionKey, sessionKey]) {
         if (key) {
           executeSqliteQuerySync(
@@ -133,6 +176,7 @@ export function bindRegistryWorktreeSession(
           );
         }
       }
+      return previousState;
     },
     { env },
   );
@@ -152,7 +196,7 @@ export function deactivateRegistryWorktreeSession(
         return 0;
       }
       if (
-        explicitBindings(db, worktreeId).length === 0 &&
+        explicitWorktreeSessionBindings(db, worktreeId).length === 0 &&
         record.owner_kind === "session" &&
         record.owner_id
       ) {
@@ -174,7 +218,8 @@ export function deactivateRegistryWorktreeSession(
           .where("worktree_id", "=", worktreeId)
           .where("session_key", "=", sessionKey),
       );
-      return explicitBindings(db, worktreeId).filter((binding) => binding.active).length;
+      return explicitWorktreeSessionBindings(db, worktreeId).filter((binding) => binding.active)
+        .length;
     },
     { env },
   );
@@ -189,7 +234,22 @@ export function deleteRegistryWorktreeSessionBinding(
   if (!tableExists(db, "worktree_session_bindings")) {
     return;
   }
-  runOpenClawStateWriteTransaction(() => deleteBindingRows(db, worktreeId, sessionKey), { env });
+  runOpenClawStateWriteTransaction(
+    () => {
+      deleteBindingRows(db, worktreeId, sessionKey);
+      if (explicitWorktreeSessionBindings(db, worktreeId).length === 0) {
+        executeSqliteQuerySync(
+          db,
+          queryFor(db)
+            .updateTable("worktrees")
+            .set({ owner_id: null })
+            .where("id", "=", worktreeId)
+            .where("owner_kind", "=", "session"),
+        );
+      }
+    },
+    { env },
+  );
 }
 
 export function insertInitialBindingRow(db: DatabaseSync, record: ManagedWorktreeRecord): void {

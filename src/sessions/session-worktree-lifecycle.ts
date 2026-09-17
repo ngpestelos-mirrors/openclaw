@@ -53,7 +53,13 @@ export async function removeSessionWorktree(params: {
   const env = params.env ?? process.env;
   const service = serviceFor(params.env);
   const record = getRegistryWorktree(env, params.id);
-  if (!record || record.removedAt !== undefined) {
+  if (!record) {
+    return undefined;
+  }
+  if (record.removedAt !== undefined) {
+    if (params.reason === "session-delete") {
+      service.forgetSession(record.id, params.sessionKey);
+    }
     return undefined;
   }
   const preserved = (
@@ -87,11 +93,17 @@ export async function removeSessionWorktree(params: {
       return undefined;
     }
     if (!activeBindings.includes(params.sessionKey) && activeBindings.length > 0) {
+      if (params.reason === "session-delete") {
+        service.forgetSession(record.id, params.sessionKey);
+      }
       return undefined;
     }
     await service.remove({
       id: record.id,
       reason: params.reason,
+      expectedActiveSessionKeys: activeBindings.includes(params.sessionKey)
+        ? [params.sessionKey]
+        : [],
       commitGuard: () => {
         assertCurrent();
         const currentBindings = service.listSessionBindings(record.id, { activeOnly: true });

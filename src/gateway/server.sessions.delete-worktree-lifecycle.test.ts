@@ -68,6 +68,33 @@ test("deleting one shared-worktree session leaves the checkout attached to its p
   expect(managedWorktrees.listSessionBindings(worktree.id)).toEqual([peer.payload!.key]);
 });
 
+test("deleting an archived shared-worktree session forgets its inactive membership", async () => {
+  const { key, sessionId, worktree } = await createArchiveWorktreeFixture();
+  const record = getRegistryWorktree(process.env, worktree.id);
+  expect(record).toBeDefined();
+  const peer = await directSessionReq<{
+    key: string;
+    worktree: { id: string; path: string };
+  }>(
+    "sessions.create",
+    { agentId: "main", worktree: true, worktreeName: record!.name },
+    { client: { connect: { scopes: ["operator.admin"] } } as never },
+  );
+  expect(peer.ok).toBe(true);
+
+  await expect(
+    directSessionReq("sessions.patch", { key, expectedSessionId: sessionId, archived: true }),
+  ).resolves.toMatchObject({ ok: true });
+  expect(managedWorktrees.listSessionBindings(worktree.id)).toContain(key);
+
+  await expect(directSessionReq("sessions.delete", { key })).resolves.toMatchObject({
+    ok: true,
+    payload: { deleted: true },
+  });
+  expect(managedWorktrees.listSessionBindings(worktree.id)).toEqual([peer.payload!.key]);
+  await expect(fs.access(worktree.path)).resolves.toBeUndefined();
+});
+
 test("worktree fixtures keep committed changes and remote cleanup local to each case", async () => {
   const tempDirs = createTempDirTracker();
   onTestFinished(tempDirs.cleanup);

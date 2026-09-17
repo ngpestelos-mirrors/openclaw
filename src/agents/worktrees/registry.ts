@@ -19,10 +19,12 @@ import {
   findActiveSessionWorktreeBinding,
   hasExplicitWorktreeSessionBindings,
   insertInitialBindingRow,
+  worktreeSessionBindingsFromDatabase,
 } from "./registry-session-bindings.js";
 import {
   collectLiveRunLeases,
   WORKTREE_REMOVING_LEASE_KEY,
+  worktreeRunLeaseScope,
   type RunLeaseOwnerChecks,
 } from "./run-lease-owner.js";
 import type {
@@ -502,8 +504,6 @@ export function deleteRegistryWorktree(env: NodeJS.ProcessEnv, id: string): void
   );
 }
 
-const WORKTREE_RUN_LEASE_SCOPE_PREFIX = "worktree-run:";
-
 export class WorktreeRemovalContentionError extends Error {
   constructor(
     readonly kind: "busy" | "finalized",
@@ -512,10 +512,6 @@ export class WorktreeRemovalContentionError extends Error {
     super(message);
     this.name = "WorktreeRemovalContentionError";
   }
-}
-
-function worktreeRunLeaseScope(worktreeId: string): string {
-  return `${WORKTREE_RUN_LEASE_SCOPE_PREFIX}${worktreeId}`;
 }
 
 export function admitWorktreeRunLeaseRow(
@@ -591,6 +587,7 @@ export function claimWorktreeRemovalRow(
     startTime: number | null;
     now: number;
     checks?: RunLeaseOwnerChecks;
+    expectedActiveSessionKeys?: readonly string[];
   },
 ): void {
   runOpenClawStateWriteTransaction(
@@ -622,6 +619,20 @@ export function claimWorktreeRemovalRow(
       // another remover is mid-operation, so this remover must not enter it too.
       if (removingToken !== undefined && removingToken !== params.token) {
         throw new WorktreeRemovalContentionError("busy", "worktree removal is already in progress");
+      }
+      if (params.expectedActiveSessionKeys) {
+        const activeSessionKeys = worktreeSessionBindingsFromDatabase(db, params.worktreeId, {
+          activeOnly: true,
+        });
+        if (
+          activeSessionKeys.length !== params.expectedActiveSessionKeys.length ||
+          activeSessionKeys.some((key, index) => key !== params.expectedActiveSessionKeys![index])
+        ) {
+          throw new WorktreeRemovalContentionError(
+            "busy",
+            "worktree session membership changed during removal",
+          );
+        }
       }
       const payloadJson = JSON.stringify({
         pid: params.pid,

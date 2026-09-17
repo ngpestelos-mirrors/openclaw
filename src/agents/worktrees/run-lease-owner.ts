@@ -6,6 +6,11 @@ import type { DB } from "../../state/openclaw-state-db.generated.js";
 
 type WorktreeLeaseDatabase = Pick<DB, "worktrees" | "state_leases">;
 export const WORKTREE_REMOVING_LEASE_KEY = "__removing__";
+const WORKTREE_RUN_LEASE_SCOPE_PREFIX = "worktree-run:";
+
+export function worktreeRunLeaseScope(worktreeId: string): string {
+  return `${WORKTREE_RUN_LEASE_SCOPE_PREFIX}${worktreeId}`;
+}
 
 export type RunLeaseOwnerChecks = {
   isPidDefinitelyDead?: (pid: number) => boolean;

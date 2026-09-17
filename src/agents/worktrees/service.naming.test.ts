@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
+import { abortWorktreeRemoval, claimWorktreeRemoval } from "./run-lease.js";
 import { ManagedWorktreeService } from "./service.js";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +21,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 describe("ManagedWorktreeService naming", () => {
   let root: string;
   let repo: string;
+  let env: NodeJS.ProcessEnv;
   let service: ManagedWorktreeService;
 
   beforeEach(async () => {
@@ -31,9 +36,8 @@ describe("ManagedWorktreeService naming", () => {
     await git(repo, "add", "README.md");
     await git(repo, "commit", "-m", "initial");
     repo = await fs.realpath(repo);
-    service = new ManagedWorktreeService({
-      env: { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") },
-    });
+    env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
+    service = new ManagedWorktreeService({ env });
   });
 
   afterEach(async () => {
@@ -132,6 +136,103 @@ describe("ManagedWorktreeService naming", () => {
       }),
     ).resolves.toBe(false);
     await expect(fs.stat(created.path)).resolves.toBeDefined();
+  });
+
+  it("authorizes the actual membership set before binding a shared name", async () => {
+    const created = await service.create({
+      repoRoot: repo,
+      name: "guarded-share",
+      ownerKind: "session",
+      ownerId: "agent:main:session-1",
+    });
+    const observed: string[][] = [];
+
+    await expect(
+      service.create({
+        repoRoot: repo,
+        name: "guarded-share",
+        ownerKind: "session",
+        ownerId: "agent:main:session-2",
+        sessionBindingGuard: (_record, sessionKeys) => {
+          observed.push([...sessionKeys]);
+          throw new Error("sharing denied");
+        },
+      }),
+    ).rejects.toThrow("sharing denied");
+
+    expect(observed).toEqual([["agent:main:session-1"]]);
+    expect(service.listSessionBindings(created.id)).toEqual(["agent:main:session-1"]);
+  });
+
+  it("fences lossless removal against a newly attached peer", async () => {
+    const firstKey = "agent:main:session-1";
+    const created = await service.create({
+      repoRoot: repo,
+      name: "removal-fence",
+      ownerKind: "session",
+      ownerId: firstKey,
+    });
+    await service.create({
+      repoRoot: repo,
+      name: "removal-fence",
+      ownerKind: "session",
+      ownerId: "agent:main:session-2",
+    });
+
+    await expect(
+      service.removeIfLossless(created.id, { expectedActiveSessionKeys: [firstKey] }),
+    ).resolves.toBe(false);
+    await expect(fs.access(created.path)).resolves.toBeUndefined();
+    expect(service.listSessionBindings(created.id, { activeOnly: true })).toHaveLength(2);
+  });
+
+  it("rejects session attachment while removal owns the checkout", async () => {
+    const created = await service.create({
+      repoRoot: repo,
+      name: "claimed-removal",
+      ownerKind: "session",
+      ownerId: "agent:main:session-1",
+    });
+    claimWorktreeRemoval(env, { worktreeId: created.id, token: "test-removal" });
+    try {
+      await expect(
+        service.create({
+          repoRoot: repo,
+          name: "claimed-removal",
+          ownerKind: "session",
+          ownerId: "agent:main:session-2",
+        }),
+      ).rejects.toThrow("removal is in progress");
+      expect(service.listSessionBindings(created.id)).toEqual(["agent:main:session-1"]);
+    } finally {
+      abortWorktreeRemoval(env, created.id, "test-removal");
+    }
+  });
+
+  it("upgrades and reopens a legacy owner row through explicit bindings", async () => {
+    const ownerKey = "agent:main:legacy-owner";
+    const peerKey = "agent:main:legacy-peer";
+    const created = await service.create({
+      repoRoot: repo,
+      name: "legacy-share",
+      ownerKind: "session",
+      ownerId: ownerKey,
+    });
+    openOpenClawStateDatabase({ env }).db.exec("DROP TABLE worktree_session_bindings");
+    expect(service.listSessionBindings(created.id)).toEqual([ownerKey]);
+
+    await service.create({
+      repoRoot: repo,
+      name: "legacy-share",
+      ownerKind: "session",
+      ownerId: peerKey,
+    });
+    closeOpenClawStateDatabaseForTest();
+
+    expect(service.listSessionBindings(created.id, { activeOnly: true })).toEqual([
+      ownerKey,
+      peerKey,
+    ]);
   });
 
   it("numbers a generated name colliding with the owner's removed record", async () => {
