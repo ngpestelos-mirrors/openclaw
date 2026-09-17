@@ -7,6 +7,7 @@ export const UPDATE_OPTION_SPECS: readonly [
   ["--json", "Output result as JSON", false],
   ["--no-restart", "Skip restarting the gateway service after a successful update"],
   ["--dry-run", "Preview update actions without making changes", false],
+  ["--wait", "Wait for a managed update handoff to finish", false],
   ["--channel <stable|extended-stable|beta|dev>", "Persist update channel (git + npm)"],
   [
     "--tag <dist-tag|version|spec>",

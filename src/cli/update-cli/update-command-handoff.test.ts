@@ -11,6 +11,8 @@ import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 import {
   formatUpdateAncestryBlockMessage,
   gatewayMaintenanceBlockMessage,
+  UPDATE_HANDOFF_IN_PROGRESS_EXIT_CODE,
+  updateRunSettlementExitCode,
 } from "./update-command-handoff.js";
 
 const tempDirs = createTrackedTempDirs();
@@ -129,7 +131,9 @@ process.stdin.once('end',()=>{if(child.exitCode===null&&child.signalCode===null)
       const result = JSON.parse(await fs.readFile(resultPath, "utf8"));
       expect(readLease()).toBeUndefined();
       expect(gateway.exitCode).toBeNull();
-      expect(result.code, result.stderr).toBe(mode === "transfer" ? 0 : 23);
+      expect(result.code, result.stderr).toBe(
+        mode === "transfer" ? UPDATE_HANDOFF_IN_PROGRESS_EXIT_CODE : 23,
+      );
       const trace = (await fs.readFile(tracePath, "utf8"))
         .trim()
         .split("\n")
@@ -196,5 +200,15 @@ describe("formatUpdateAncestryBlockMessage", () => {
     expect(formatUpdateAncestryBlockMessage("service inspection unavailable")).toBe(
       "service inspection unavailable",
     );
+  });
+});
+
+describe("updateRunSettlementExitCode", () => {
+  it("keeps running handoffs distinct from successful settlement", () => {
+    expect(updateRunSettlementExitCode("running")).toBeUndefined();
+    expect(updateRunSettlementExitCode("succeeded")).toBe(0);
+    expect(updateRunSettlementExitCode("skipped")).toBe(0);
+    expect(updateRunSettlementExitCode("failed")).toBe(1);
+    expect(updateRunSettlementExitCode("rolled-back")).toBe(1);
   });
 });

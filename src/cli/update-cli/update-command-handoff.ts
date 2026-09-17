@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 import { GATEWAY_SERVICE_RUNTIME_PID_ENV, isGatewayServiceEnv } from "../../daemon/constants.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
@@ -23,7 +24,7 @@ import {
   startManagedServiceUpdateHandoff,
   transferManagedServiceUpdateHandoff,
 } from "../../infra/update-managed-service-handoff.js";
-import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
+import { getUpdateRunAsync, recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { isPidAlive } from "../../shared/pid-alive.js";
@@ -39,6 +40,37 @@ function parsePositivePid(value: unknown): number | null {
   }
   const trimmed = typeof value === "string" ? value.trim() : "";
   return /^\d+$/u.test(trimmed) ? (parseStrictPositiveInteger(trimmed) ?? null) : null;
+}
+
+/** EX_TEMPFAIL: ownership transferred successfully, but the update is not terminal yet. */
+export const UPDATE_HANDOFF_IN_PROGRESS_EXIT_CODE = 75;
+
+export function updateRunSettlementExitCode(
+  status: Exclude<Awaited<ReturnType<typeof getUpdateRunAsync>>, undefined>["status"],
+): number | undefined {
+  if (status === "running") {
+    return undefined;
+  }
+  return status === "succeeded" || status === "skipped" ? 0 : 1;
+}
+
+async function waitForManagedUpdateSettlement(
+  runId: string,
+  env: NodeJS.ProcessEnv,
+): Promise<number> {
+  for (;;) {
+    try {
+      const run = await getUpdateRunAsync(runId, { env });
+      const exitCode = run ? updateRunSettlementExitCode(run.status) : undefined;
+      if (exitCode !== undefined) {
+        return exitCode;
+      }
+    } catch {
+      // Candidate activation can briefly replace the database schema beneath this
+      // old-process reader. The durable helper remains the settlement authority.
+    }
+    await delay(500);
+  }
 }
 
 const GATEWAY_ANCESTRY_SHELL_GUIDANCE =
@@ -251,5 +283,10 @@ export async function handoffUpdateFromGateway(params: {
   if (!params.opts.json) {
     defaultRuntime.log(guidance);
   }
+  const runId = params.opts.run?.runId;
+  process.exitCode =
+    params.opts.wait && runId
+      ? await waitForManagedUpdateSettlement(runId, params.opts.run?.env ?? env)
+      : UPDATE_HANDOFF_IN_PROGRESS_EXIT_CODE;
   return true;
 }

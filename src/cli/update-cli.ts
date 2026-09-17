@@ -54,6 +54,7 @@ type CommanderUpdateOptions = Record<string, unknown> & {
   reapplyLocalOverrides?: boolean;
   tag?: string;
   timeout?: string;
+  wait?: boolean;
   yes?: boolean;
 };
 
@@ -77,6 +78,11 @@ function createUpdateLeafAction(
       if (inheritOptionFromParent<boolean>(command, "reapplyLocalOverrides")) {
         throw new Error(
           `--reapply-local-overrides is not supported for openclaw update ${command.name()}. Use it with openclaw update.`,
+        );
+      }
+      if (inheritOptionFromParent<boolean>(command, "wait")) {
+        throw new Error(
+          `--wait is not supported for openclaw update ${command.name()}. Use it with openclaw update.`,
         );
       }
       if (!options.supportsDryRun && inheritOptionFromParent<boolean>(command, "dryRun")) {
@@ -211,6 +217,7 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/update", "docs.openclaw.ai/cli/up
           channel: opts.channel,
           tag: opts.tag,
           timeout: opts.timeout,
+          wait: Boolean(opts.wait),
           yes: Boolean(opts.yes),
           acceptCapabilities: Boolean(opts.acceptCapabilities),
         });
