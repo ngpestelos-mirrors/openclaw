@@ -19,7 +19,6 @@ import {
   type NodeTestShardGroup,
   createNodeTestShardBundles,
   createSelectedNodeTestShardBundles,
-  isExclusiveCompactShardName,
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { rebalanceRuntimeTestJobs } from "../../scripts/lib/ci-runtime-test-placement.mts";
 import { refitTestTimings, type CiTimingRun } from "../../scripts/lib/ci-test-timings-refit.mts";
@@ -392,20 +391,11 @@ describe("runtime placement observations", () => {
         const changed = after.filter(
           (job, index) => JSON.stringify(job.groups) !== JSON.stringify(before[index]!.groups),
         );
-        expect(changed).toHaveLength(2);
-        for (const job of changed) {
-          expect(job.predictedSeconds).toBeLessThanOrEqual(440);
-          expect(job.planConcurrency).toBe(1);
-          expect(job.groups.every((group) => !isExclusiveCompactShardName(group.shard_name))).toBe(
-            true,
-          );
-        }
-        const crossing = changed.flatMap((job) =>
-          job.groups.filter((group) => group.runner !== job.runner),
-        );
-        expect(crossing.length).toBeGreaterThan(0);
-        expect(crossing.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2")).toBe(
-          true,
+        // The startup corpus has fixed partition owners, so fresh runtime
+        // measurements update costs without moving groups across those owners.
+        expect(changed).toHaveLength(0);
+        expect(after.map((job) => job.predictedSeconds)).not.toEqual(
+          before.map((job) => job.predictedSeconds),
         );
         spy.mockImplementation((profile) =>
           profile === "blacksmith"
@@ -419,9 +409,9 @@ describe("runtime placement observations", () => {
         const readerJob = unmeasured.find((job) =>
           job.groups.some((group) => group.configs.includes(runtimeConfig)),
         )!;
-        // The 300s sibling costs 261s in hybrid plus one 100s build. Unknown readers
-        // retain a positive cost instead of disappearing from that shared estimate.
-        expect(readerJob.predictedSeconds).toBeGreaterThan(361);
+        // An unmeasured startup partition retains its 142s hybrid floor plus
+        // the 100s runtime build instead of disappearing from the estimate.
+        expect(readerJob.predictedSeconds).toBeGreaterThanOrEqual(242);
         spy.mockImplementation((profile) =>
           profile === "blacksmith"
             ? blacksmith.map((entry) => Object.assign({}, entry, { seconds: 1_000 }))

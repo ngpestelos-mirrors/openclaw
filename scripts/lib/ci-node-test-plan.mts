@@ -458,7 +458,6 @@ const COMPACT_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["auto-reply-reply-state-routing", 63],
   // Apportioned from the split infra-process trio (see below).
   ["core-runtime-config", 113],
-  ["core-runtime-config-startup-state", 488],
   ...Array.from(
     { length: STATE_STARTUP_CORPUS_PARTITION_COUNT },
     (_, index) =>
@@ -3114,31 +3113,16 @@ function createCompactNodeTestShardBundles(
         return [shard];
       }
       // The hosted fallback has a fixed runner-registration budget and cannot
-      // execute sibling groups concurrently. Preserve an unsharded corpus and
-      // fold the small config corpus into the ordinary owner there;
-      // Blacksmith-backed plans retain the three-way fanout.
+      // execute sibling groups concurrently. Preserve its existing whole-config
+      // owner there; Blacksmith-backed plans retain the three-way fanout.
       if (shard.shardName === "core-runtime-config") {
-        return [
-          {
-            ...shard,
-            includePatterns: [
-              ...(shard.includePatterns ?? []),
-              "src/config/config-startup-corpus.test.ts",
-            ],
-          },
-        ];
+        const { includePatterns: _files, ...wholeConfig } = shard;
+        return [wholeConfig];
       }
-      if (shard.shardName === "core-runtime-config-startup-config") {
-        return [];
-      }
-      if (!/^core-runtime-config-startup-state-[1-3]$/u.test(shard.shardName)) {
-        return [shard];
-      }
-      if (shard.shardName !== "core-runtime-config-startup-state-1") {
-        return [];
-      }
-      const { env: _partitionEnv, ...unsharded } = shard;
-      return [{ ...unsharded, shardName: "core-runtime-config-startup-state" }];
+      return shard.shardName === "core-runtime-config-startup-config" ||
+        /^core-runtime-config-startup-state-[1-3]$/u.test(shard.shardName)
+        ? []
+        : [shard];
     });
   const groupsByRunner = new Map<string, [NodeTestShardGroup, ...NodeTestShardGroup[]]>();
   const synthesizedSplitSeconds = new Map<string, number>();
