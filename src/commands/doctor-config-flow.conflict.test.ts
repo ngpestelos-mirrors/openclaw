@@ -9,6 +9,7 @@ import {
 } from "../flows/doctor-health-contribution-runners.config.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { setTestEnvValue, withEnvAsync } from "../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { prepareDoctorContext } from "./doctor-config-flow.test-support.js";
 import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
 
@@ -237,7 +238,7 @@ describe("Doctor repair confirmation conflicts", () => {
             .join("\n");
           expect(warnings).not.toContain("config fixes were not written");
         },
-      );
+      ).finally(() => cleanupSessionStateForTest({ stateDir }));
     });
   });
 });

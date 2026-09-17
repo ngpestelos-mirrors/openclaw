@@ -34,6 +34,7 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { resolveMigrationCheckpointIdentity } from "./doctor-config-preflight-checkpoint.js";
 import { shouldSkipPluginValidationForDoctorConfigPreflight } from "./doctor-config-preflight-plugin-index.js";
 import { runDoctorConfigPreflight } from "./doctor-config-preflight.js";
@@ -558,7 +559,7 @@ describe("runDoctorConfigPreflight", () => {
           await expect(fs.readFile(configPath, "utf-8")).resolves.toContain('"mode":"local"');
           await expect(fs.access(defaultConfigPath)).rejects.toMatchObject({ code: "ENOENT" });
         },
-      );
+      ).finally(() => cleanupSessionStateForTest({ stateDir }));
     });
   });
 
@@ -609,7 +610,7 @@ describe("runDoctorConfigPreflight", () => {
           expect(preflight.snapshot.path).toBe(configPath);
           await expect(fs.readFile(configPath, "utf-8")).resolves.toContain('"mode":"local"');
         },
-      );
+      ).finally(() => cleanupSessionStateForTest({ stateDir: profileStateDir }));
     });
   });
 
