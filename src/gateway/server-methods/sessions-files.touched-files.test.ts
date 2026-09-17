@@ -69,6 +69,26 @@ describe("sessions.files touched-file folds", () => {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
+  it("rechecks retained authorization after reading a workspace file", async () => {
+    useSqliteSession(hoisted.loadSessionEntry, workspaceRoot, "sess-revoked-read");
+    mockVisibleMessages([]);
+    const assertCurrent = vi.fn(() => {
+      if (assertCurrent.mock.calls.length === 3) {
+        throw new Error("peer authorization revoked");
+      }
+    });
+
+    await expect(
+      invokeSessionFilesHandler(
+        "sessions.files.get",
+        { sessionKey: "agent:main:main", path: "ui/chat.ts" },
+        {},
+        { assertCurrent, assertTargetCurrent: vi.fn() },
+      ),
+    ).rejects.toThrow("peer authorization revoked");
+    expect(assertCurrent).toHaveBeenCalledTimes(3);
+  });
+
   it("lists session-touched files with a browser rooted at the session workspace", async () => {
     useSqliteSession(hoisted.loadSessionEntry, workspaceRoot, "sess-touched-list");
     mockVisibleMessages([

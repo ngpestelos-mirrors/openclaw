@@ -411,6 +411,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
         : loaded.repository
           ? await loaded.repository.inspect("list", request)
           : await listSessionWorkspaceFiles({ ...loaded, ...request });
+    sessionMutationAuthorization?.assertCurrent();
     respond(true, {
       sessionKey: params.sessionKey,
       ...result,
@@ -440,6 +441,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
         : loaded.repository
           ? await loaded.repository.inspect("get", request)
           : await getSessionWorkspaceFile({ ...loaded, ...request });
+    sessionMutationAuthorization?.assertCurrent();
     if (!result.file || result.file.missing) {
       respondSessionFileNotFound(respond, params.path);
       return;

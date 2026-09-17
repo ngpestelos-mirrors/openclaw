@@ -54,23 +54,33 @@ function worktreeOwner(
   ).rows[0];
 }
 
-export function findActiveSessionWorktreeBinding(
+export function findSessionWorktreeBinding(
   env: NodeJS.ProcessEnv,
   sessionKey: string,
+  options: { activeOnly?: boolean } = {},
 ): string | undefined {
   const db = dbFor(env);
   if (!tableExists(db, "worktree_session_bindings")) {
     return undefined;
   }
+  let query = queryFor(db)
+    .selectFrom("worktree_session_bindings")
+    .select("worktree_id")
+    .where("session_key", "=", sessionKey);
+  if (options.activeOnly) {
+    query = query.where("active", "=", 1);
+  }
   return executeSqliteQuerySync(
     db,
-    queryFor(db)
-      .selectFrom("worktree_session_bindings")
-      .select("worktree_id")
-      .where("session_key", "=", sessionKey)
-      .where("active", "=", 1)
-      .limit(1),
+    query.orderBy("active", "desc").orderBy("attached_at", "desc").limit(1),
   ).rows[0]?.worktree_id;
+}
+
+export function findActiveSessionWorktreeBinding(
+  env: NodeJS.ProcessEnv,
+  sessionKey: string,
+): string | undefined {
+  return findSessionWorktreeBinding(env, sessionKey, { activeOnly: true });
 }
 
 export function hasExplicitWorktreeSessionBindings(

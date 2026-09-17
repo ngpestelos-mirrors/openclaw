@@ -5,6 +5,8 @@ import {
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import { AgentSelectionRequiredError } from "../agents/agent-scope.js";
+import { findSessionWorktreeBinding } from "../agents/worktrees/registry-session-bindings.js";
+import { getRegistryWorktree } from "../agents/worktrees/registry.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -64,6 +66,7 @@ type AuthorizedSessionMutationTarget = SessionMutationTarget & {
   resolved: Omit<SessionSharingTarget, "entry" | "storeKeys"> | null;
   sessionId: string | null;
   lifecycleRevision?: string;
+  peerOnly?: true;
 };
 
 type ExpectedSessionMutationTarget = Readonly<{
@@ -116,13 +119,21 @@ const AGENT_RUN_START_METHODS = new Set([
 // applies incognito checks and the operator role cap: a view/suggest-capped caller
 // must not reassign ownership of a foreign session it can merely see.
 const VISIBILITY_AUTHORIZED_METHODS = new Set(["sessions.assignOwner"]);
+const RETAINED_PEER_READ_METHODS = new Set([
+  "sessions.files.get",
+  "sessions.files.list",
+  "sessions.files.reveal",
+]);
 
 function authorizeSharedWorktreePeers(params: {
   cfg: OpenClawConfig;
   client: GatewayClient | null;
   target: SessionSharingTarget;
 }): ErrorShape | null {
-  const worktree = managedWorktrees.findLiveByOwner("session", params.target.canonicalKey);
+  const binding = findSessionWorktreeBinding(process.env, params.target.canonicalKey);
+  const worktree = binding
+    ? getRegistryWorktree(process.env, binding)
+    : managedWorktrees.findLiveByOwner("session", params.target.canonicalKey);
   if (!worktree) {
     return null;
   }
@@ -298,6 +309,7 @@ export function resolveSessionMutationAuthorization(params: {
   // Visibility-authorized read handlers may not produce mutation targets. Their
   // shared checkout still exposes every peer's files, so enforce peer access at
   // request admission even when the selected session itself is handler-authorized.
+  const authorizedTargets: AuthorizedSessionMutationTarget[] = [];
   for (const targetRef of directTargets) {
     const resolved = resolveAuthorizedTarget(targetRef, directTargets.length);
     if ("error" in resolved) {
@@ -312,6 +324,19 @@ export function resolveSessionMutationAuthorization(params: {
       : null;
     if (peerError) {
       return { error: peerError };
+    }
+    if (resolved.target && RETAINED_PEER_READ_METHODS.has(params.method)) {
+      authorizedTargets.push({
+        ...targetRef,
+        resolved: {
+          agentId: resolved.target.agentId,
+          canonicalKey: resolved.target.canonicalKey,
+          storeKey: resolved.target.storeKey,
+          storePath: resolved.target.storePath,
+        },
+        sessionId: resolved.target.entry.sessionId?.trim() || null,
+        peerOnly: true,
+      });
     }
   }
   const targetRefs =
@@ -335,7 +360,9 @@ export function resolveSessionMutationAuthorization(params: {
         }),
       };
     }
-    return { error: null };
+    if (authorizedTargets.length === 0) {
+      return { error: null };
+    }
   }
   if (talkSessionTarget && authorizesAgentRun) {
     const error = authorizeGatewaySessionCreation({
@@ -347,9 +374,8 @@ export function resolveSessionMutationAuthorization(params: {
       return { error };
     }
   }
-  const authorizedTargets: AuthorizedSessionMutationTarget[] = [];
-  for (const targetRef of targetRefs) {
-    const resolved = resolveAuthorizedTarget(targetRef, targetRefs.length);
+  for (const targetRef of targetRefs ?? []) {
+    const resolved = resolveAuthorizedTarget(targetRef, targetRefs?.length ?? 0);
     if ("error" in resolved) {
       return { error: resolved.error };
     }
@@ -498,11 +524,13 @@ export function resolveSessionMutationAuthorization(params: {
             sessionKey: targetRef.sessionKey,
             target: current,
           }) ??
-          authorizeSessionSharingTarget({
-            cfg: currentCfg,
-            client: params.client,
-            target: current,
-          });
+          (expected?.peerOnly
+            ? null
+            : authorizeSessionSharingTarget({
+                cfg: currentCfg,
+                client: params.client,
+                target: current,
+              }));
         if (error) {
           throw new SessionMutationAuthorizationChangedError(error);
         }

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, vi } from "vitest";
-import type { GatewayRequestHandlers, RespondFn } from "./types.js";
+import type { GatewayRequestHandlers, RespondFn, SessionMutationAuthorization } from "./types.js";
 
 type SessionFilesMethod =
   | "sessions.files.list"
@@ -79,6 +79,7 @@ export function createSessionFilesHandlerInvoker(handlers: GatewayRequestHandler
     method: SessionFilesMethod,
     params: Record<string, unknown>,
     context: Record<string, unknown> = {},
+    sessionMutationAuthorization?: SessionMutationAuthorization,
   ) => {
     const responder = createResponder();
     await handlers[method]?.({
@@ -87,6 +88,7 @@ export function createSessionFilesHandlerInvoker(handlers: GatewayRequestHandler
       client: null,
       isWebchatConnect: () => false,
       respond: responder.respond,
+      sessionMutationAuthorization,
       context: {
         getRuntimeConfig: () => ({ agents: { list: [{ id: "main", default: true }] } }),
         ...context,

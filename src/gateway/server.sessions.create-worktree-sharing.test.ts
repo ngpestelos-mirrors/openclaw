@@ -335,6 +335,7 @@ test("sessions.files.get revalidates every shared peer after participation is re
   const { storePath } = await createSessionStoreDir();
   let worktreeId: string | undefined;
   try {
+    const ownerClient = identifiedClient("profile-owner");
     const owner = await directSessionReq<{
       key: string;
       worktree: { id: string; path: string };
@@ -346,14 +347,14 @@ test("sessions.files.get revalidates every shared peer after participation is re
         worktree: true,
         worktreeName: "revoked-files",
       },
-      { client: identifiedClient("profile-owner") },
+      { client: ownerClient },
     );
     expect(owner.ok, JSON.stringify(owner.error)).toBe(true);
     worktreeId = owner.payload!.worktree.id;
     const peerProfile = ensureProfileForEmail("profile-other@example.test");
     setUserProfileRole(peerProfile.id, "writer");
     const peerClient = identifiedClient(peerProfile.id);
-    const peer = await directSessionReq<{ key: string }>(
+    const peer = await directSessionReq<{ key: string; sessionId: string }>(
       "sessions.create",
       {
         agentId: "main",
@@ -405,6 +406,13 @@ test("sessions.files.get revalidates every shared peer after participation is re
       { skipMaintenance: true },
     );
 
+    await expect(
+      directSessionReq("sessions.files.get", requestParams, {
+        client: peerClient,
+        sessionMutationAuthorization: admitted.authorization,
+      }),
+    ).rejects.toThrow("session is draft for this connection");
+
     expect(
       resolveSessionMutationAuthorization({
         client: peerClient,
@@ -413,6 +421,140 @@ test("sessions.files.get revalidates every shared peer after participation is re
         context: authorizationContext,
       }).error,
     ).toMatchObject({ message: "session is draft for this connection" });
+  } finally {
+    const record = worktreeId ? getRegistryWorktree(process.env, worktreeId) : undefined;
+    if (record && record.removedAt === undefined) {
+      await managedWorktrees.remove({
+        id: record.id,
+        reason: "test-cleanup",
+        allowSnapshotLoss: true,
+      });
+    }
+    closeOpenClawStateDatabaseForTest();
+    testState.agentConfig = undefined;
+    await state.cleanup();
+  }
+});
+
+test("sessions.files.get authorizes peers retained by an inactive membership", async () => {
+  const state = await createOpenClawTestState({
+    layout: "state-only",
+    prefix: "openclaw-session-worktree-sharing-archived-files-auth-",
+  });
+  const workspace = await initializeRemoteBackedGitWorkspace(state.root);
+  closeOpenClawStateDatabaseForTest();
+  testState.agentConfig = { workspace };
+  const { storePath } = await createSessionStoreDir();
+  let worktreeId: string | undefined;
+  try {
+    const ownerClient = identifiedClient("profile-owner");
+    const owner = await directSessionReq<{
+      key: string;
+      sessionId: string;
+      worktree: { id: string; path: string };
+    }>(
+      "sessions.create",
+      {
+        agentId: "main",
+        visibility: "shared",
+        worktree: true,
+        worktreeName: "archived-revoked-files",
+      },
+      { client: ownerClient },
+    );
+    expect(owner.ok, JSON.stringify(owner.error)).toBe(true);
+    worktreeId = owner.payload!.worktree.id;
+    const peerProfile = ensureProfileForEmail("profile-archived-peer@example.test");
+    setUserProfileRole(peerProfile.id, "writer");
+    const peerClient = identifiedClient(peerProfile.id);
+    const peer = await directSessionReq<{ key: string; sessionId: string }>(
+      "sessions.create",
+      {
+        agentId: "main",
+        visibility: "draft",
+        worktree: true,
+        worktreeName: "archived-revoked-files",
+      },
+      { client: peerClient },
+    );
+    expect(peer.ok, JSON.stringify(peer.error)).toBe(true);
+    await fs.writeFile(path.join(owner.payload!.worktree.path, "archived-secret.txt"), "private\n");
+    expect(
+      await directSessionReq(
+        "sessions.patch",
+        { key: peer.payload!.key, expectedSessionId: peer.payload!.sessionId, archived: true },
+        { client: peerClient },
+      ),
+    ).toMatchObject({ ok: true });
+    expect(managedWorktrees.listSessionBindings(worktreeId, { activeOnly: true })).toEqual([
+      owner.payload!.key,
+    ]);
+    await patchSessionEntryCore(
+      { storePath, sessionKey: owner.payload!.key },
+      (entry) => ({ ...entry!, visibility: "draft" }),
+      { skipMaintenance: true },
+    );
+
+    const { getRuntimeConfig } = await getGatewayConfigModule();
+    const baseConfig = getRuntimeConfig();
+    const restrictedConfig = {
+      ...baseConfig,
+      gateway: {
+        ...baseConfig.gateway,
+        roles: {
+          default: "writer",
+          definitions: {
+            writer: {
+              sessions: { others: "write" },
+              agents: "*",
+              scopes: ["operator.read", "operator.write"],
+            },
+          },
+        },
+      },
+    } as const;
+    const requestParams = { sessionKey: peer.payload!.key, path: "archived-secret.txt" };
+    expect(
+      resolveSessionMutationAuthorization({
+        client: peerClient,
+        method: "sessions.files.get",
+        requestParams,
+        context: { getRuntimeConfig: () => restrictedConfig } as never,
+      }).error,
+    ).toMatchObject({ message: "session is draft for this connection" });
+
+    const archivedOwner = await directSessionReq(
+      "sessions.patch",
+      {
+        key: owner.payload!.key,
+        expectedSessionId: owner.payload!.sessionId,
+        archived: true,
+      },
+      {
+        client: {
+          ...ownerClient,
+          connect: {
+            ...ownerClient.connect,
+            scopes: [...(ownerClient.connect.scopes ?? []), "operator.admin"],
+          },
+        },
+      },
+    );
+    expect(archivedOwner, JSON.stringify(archivedOwner.error)).toMatchObject({ ok: true });
+    await expect(fs.access(owner.payload!.worktree.path)).rejects.toThrow();
+    expect(
+      resolveSessionMutationAuthorization({
+        client: peerClient,
+        method: "sessions.patch",
+        requestParams: {
+          key: peer.payload!.key,
+          expectedSessionId: peer.payload!.sessionId,
+          archived: false,
+        },
+        context: { getRuntimeConfig: () => restrictedConfig } as never,
+      }).error,
+    ).toMatchObject({ message: "session is draft for this connection" });
+    await expect(fs.access(owner.payload!.worktree.path)).rejects.toThrow();
   } finally {
     const record = worktreeId ? getRegistryWorktree(process.env, worktreeId) : undefined;
     if (record && record.removedAt === undefined) {
