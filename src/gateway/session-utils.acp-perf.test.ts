@@ -1,10 +1,10 @@
 import { expect, test, vi } from "vitest";
+import { readAcpSessionMetaForEntry } from "../acp/runtime/session-meta-readonly.js";
+import * as acpSessionMeta from "../acp/runtime/session-meta-readonly.js";
 import {
   readAcpSessionMetaBatch,
-  readAcpSessionMetaForEntry,
   writeAcpSessionMetaForMigration,
 } from "../acp/runtime/session-meta.js";
-import * as acpSessionMeta from "../acp/runtime/session-meta.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
