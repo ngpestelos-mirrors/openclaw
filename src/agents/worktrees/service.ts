@@ -57,6 +57,7 @@ import {
   snapshotProvisionedFiles,
   SNAPSHOT_CHUNK_BYTES,
 } from "./provisioned-files.js";
+import { retireRegistryWorktree } from "./registry-retirement.js";
 import {
   bindRegistryWorktreeSession,
   clearRegistryWorktreeProvisionedChunks,
@@ -88,7 +89,7 @@ import {
   generateAvailableWorktreeName,
   validateWorktreeName,
 } from "./service-name-allocation.js";
-import { bindSessionForCreation as bindSession } from "./service-session-binding.js";
+import * as sb from "./service-session-binding.js";
 import { hasTemplates } from "./template-registry.js";
 import type {
   CreateEmptyManagedWorktreeParams,
@@ -419,7 +420,7 @@ export class ManagedWorktreeService {
             `worktree owner ${params.ownerKind ?? "manual"} ${params.ownerId} is already bound to another repository`,
           );
         }
-        const sessionBindingPreviousState = bindSession(this.env, this.now(), params, validated);
+        const sessionBindingPreviousState = sb.bind(this.env, this.now(), params, validated);
         return {
           record: validated,
           materialized: false,
@@ -428,7 +429,7 @@ export class ManagedWorktreeService {
       }
       if (existing) {
         params.commitGuard?.();
-        updateRegistryWorktree(this.env, existing.id, { removedAt: this.now() });
+        retireRegistryWorktree(this.env, existing.id, this.now());
       }
     }
     return await this.createForRepository(
@@ -492,14 +493,14 @@ export class ManagedWorktreeService {
     if (existing && existing.removedAt === undefined) {
       if (await worktreePathExists(existing.path)) {
         const record = await this.rebindLiveRepository(existing, params);
-        const sessionBindingPreviousState = bindSession(this.env, this.now(), params, record);
+        const sessionBindingPreviousState = sb.bind(this.env, this.now(), params, record);
         return {
           record,
           materialized: false,
           ...(sessionBindingPreviousState ? { sessionBindingPreviousState } : {}),
         };
       }
-      updateRegistryWorktree(this.env, existing.id, { removedAt: this.now() });
+      retireRegistryWorktree(this.env, existing.id, this.now());
     }
     if (existing && existing.removedAt !== undefined && existing.snapshotRef) {
       if (!worktreeOwnerMatches(existing, params) && !sharesSessionWorktree) {
@@ -507,13 +508,14 @@ export class ManagedWorktreeService {
           `worktree name is already in use by ${existing.ownerKind}${existing.ownerId ? ` ${existing.ownerId}` : ""}: ${suppliedName}`,
         );
       }
+      sb.authorizeSessionRestore(this.env, params, existing);
       const record = await this.restoreWithAllocation({
         id: existing.id,
         signal: params.signal,
         commitGuard: params.commitGuard,
         rollbackGuard: params.rollbackGuard,
       });
-      const sessionBindingPreviousState = bindSession(this.env, this.now(), params, record);
+      const sessionBindingPreviousState = sb.bind(this.env, this.now(), params, record);
       return {
         record,
         materialized: true,
@@ -695,7 +697,7 @@ export class ManagedWorktreeService {
     for (const record of records) {
       if (record.removedAt === undefined && !(await worktreePathExists(record.path))) {
         const removedAt = this.now();
-        updateRegistryWorktree(this.env, record.id, { removedAt });
+        retireRegistryWorktree(this.env, record.id, removedAt);
         record.removedAt = removedAt;
       }
     }
@@ -1397,7 +1399,7 @@ export class ManagedWorktreeService {
     for (const record of records) {
       try {
         if (record.removedAt === undefined && !(await worktreePathExists(record.path))) {
-          updateRegistryWorktree(this.env, record.id, { removedAt: now });
+          retireRegistryWorktree(this.env, record.id, now);
           record.removedAt = now;
         }
         // Manual worktrees remain until explicit removal; only run-owned worktrees expire.

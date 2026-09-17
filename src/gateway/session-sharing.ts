@@ -5,6 +5,7 @@ import {
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import { AgentSelectionRequiredError } from "../agents/agent-scope.js";
+import { managedWorktrees } from "../agents/worktrees/service.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
@@ -31,6 +32,7 @@ import {
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import {
   authorizeIncognitoSessionTarget,
+  authorizeResolvedSessionMutation,
   authorizeSessionAgentRun,
   authorizeSessionSharingTarget,
   canManageSessionSharing,
@@ -114,6 +116,31 @@ const AGENT_RUN_START_METHODS = new Set([
 // applies incognito checks and the operator role cap: a view/suggest-capped caller
 // must not reassign ownership of a foreign session it can merely see.
 const VISIBILITY_AUTHORIZED_METHODS = new Set(["sessions.assignOwner"]);
+
+function authorizeSharedWorktreePeers(params: {
+  cfg: OpenClawConfig;
+  client: GatewayClient | null;
+  target: SessionSharingTarget;
+}): ErrorShape | null {
+  const worktree = managedWorktrees.findLiveByOwner("session", params.target.canonicalKey);
+  if (!worktree) {
+    return null;
+  }
+  for (const sessionKey of managedWorktrees.listSessionBindings(worktree.id)) {
+    if (sessionKey === params.target.canonicalKey) {
+      continue;
+    }
+    const error = authorizeResolvedSessionMutation({
+      cfg: params.cfg,
+      client: params.client,
+      sessionKey,
+    });
+    if (error) {
+      return error;
+    }
+  }
+  return null;
+}
 
 export { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 export { invalidateSessionSharingSnapshot } from "./session-sharing-snapshot-cache.js";
@@ -251,6 +278,12 @@ export function resolveSessionMutationAuthorization(params: {
     if (error) {
       return { error };
     }
+    const peerError = target
+      ? authorizeSharedWorktreePeers({ cfg: getCfg(), client: params.client, target })
+      : null;
+    if (peerError) {
+      return { error: peerError };
+    }
     if (
       hidesForeignSessions &&
       target &&
@@ -260,6 +293,25 @@ export function resolveSessionMutationAuthorization(params: {
       )
     ) {
       return { error: hiddenSessionNotFound(targetRef.sessionKey) };
+    }
+  }
+  // Visibility-authorized read handlers may not produce mutation targets. Their
+  // shared checkout still exposes every peer's files, so enforce peer access at
+  // request admission even when the selected session itself is handler-authorized.
+  for (const targetRef of directTargets) {
+    const resolved = resolveAuthorizedTarget(targetRef, directTargets.length);
+    if ("error" in resolved) {
+      return { error: resolved.error };
+    }
+    const peerError = resolved.target
+      ? authorizeSharedWorktreePeers({
+          cfg: getCfg(),
+          client: params.client,
+          target: resolved.target,
+        })
+      : null;
+    if (peerError) {
+      return { error: peerError };
     }
   }
   const targetRefs =
@@ -325,6 +377,12 @@ export function resolveSessionMutationAuthorization(params: {
         : null);
     if (error) {
       return { error };
+    }
+    const peerError = target
+      ? authorizeSharedWorktreePeers({ cfg: getCfg(), client: params.client, target })
+      : null;
+    if (peerError) {
+      return { error: peerError };
     }
     authorizedTargets.push({
       ...targetRef,
@@ -447,6 +505,14 @@ export function resolveSessionMutationAuthorization(params: {
           });
         if (error) {
           throw new SessionMutationAuthorizationChangedError(error);
+        }
+        const peerError = authorizeSharedWorktreePeers({
+          cfg: currentCfg,
+          client: params.client,
+          target: current,
+        });
+        if (peerError) {
+          throw new SessionMutationAuthorizationChangedError(peerError);
         }
       };
       return {

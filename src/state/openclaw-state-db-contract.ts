@@ -4,6 +4,7 @@ import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 
 export type OpenClawStateSchemaReadAdmission = (database: DatabaseSync) => (() => void) | undefined;
 
+// v18 gates shared worktree memberships so v17 readers cannot apply single-owner cleanup.
 // v17 records one-use prepared worker capacity and node workspace ownership.
 // v16 makes Skill Workshop ownership directory-based instead of row-provenance-based.
 // v15 removes redundant agent/session projections from conversation bindings.
@@ -17,7 +18,7 @@ export type OpenClawStateSchemaReadAdmission = (database: DatabaseSync) => (() =
 // v7 retires the inert shared commitments table.
 // v6 makes every committed shared-state table part of the canonical runtime schema.
 // v5 records durable cloud-worker result refs on pending workspace fences.
-export const OPENCLAW_STATE_SCHEMA_VERSION = 17;
+export const OPENCLAW_STATE_SCHEMA_VERSION = 18;
 export const OPENCLAW_STATE_STRICT_SCHEMA_VERSION = 3;
 // Privacy-sensitive feature tables remain absent even in fresh databases until
 // their feature-local first write. The canonical SQL still owns their shape.
@@ -76,7 +77,6 @@ export const LAZY_ADDITIVE_STATE_TABLES = [
   "secret_store_entries",
   "projects",
   "worktree_templates",
-  "worktree_session_bindings",
   "user_preferences",
   "device_pair_setup_completions",
   "github_publication_requests",
@@ -95,7 +95,6 @@ export const LAZY_ADDITIVE_STATE_INDEXES = [
   "idx_github_publication_requests_pending",
   "secret_store_entries_live_idx",
   "idx_skill_workshop_collection_reviews_owner_time",
-  "idx_worktree_session_bindings_active_session",
 ] as const;
 /** Maximum time one synchronous SQLite call may wait for a lock. */
 export const OPENCLAW_SQLITE_BUSY_TIMEOUT_MS = 5_000;

@@ -1589,7 +1589,7 @@ afterEach(async () => {
 });
 
 describe("openclaw state database", () => {
-  it("migrates v15 Skill Workshop ownership through v16 and prepared workers to v17 without losing rows", () => {
+  it("migrates v15 Skill Workshop ownership through the current schema without losing rows", () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const legacy = openMaterializedCurrentStateDatabase(stateDir);
@@ -1702,7 +1702,7 @@ describe("openclaw state database", () => {
     legacy.close();
 
     const migrated = openOpenClawStateDatabase(options);
-    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(17);
+    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(18);
     expect(migrated.db.prepare("PRAGMA table_info(skill_workshop_proposals)").all()).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "workspace_dir" }),
@@ -2009,7 +2009,7 @@ describe("openclaw state database", () => {
     expect(readDanglingSkillWorkshopReviewIndex(databasePath)).toBeUndefined();
   });
 
-  it("upgrades a v15 store without Workshop tables through v16 and prepared workers to v17", () => {
+  it("upgrades a v15 store without Workshop tables through the current schema", () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const legacy = openMaterializedCurrentStateDatabase(stateDir);
@@ -2027,7 +2027,7 @@ describe("openclaw state database", () => {
     legacy.close();
 
     const migrated = openOpenClawStateDatabase(options);
-    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(17);
+    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(18);
     for (const tableName of ["skill_workshop_proposals", "skill_workshop_collection_reviews"]) {
       expect(
         migrated.db
