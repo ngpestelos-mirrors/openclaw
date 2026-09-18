@@ -1,3 +1,4 @@
+import { isProviderRefusalAssistantError } from "@openclaw/llm-core/diagnostics";
 import {
   emitAgentEvent,
   emitAgentEventForRunContext,
@@ -71,6 +72,7 @@ export function createEmbeddedModelState(
   let lastUsage: NormalizedUsage | undefined;
   let retryUsage: NormalizedUsage | undefined;
   let completed: AssistantMessage | undefined;
+  let successfulModelResponse = false;
   let publishedMessageModel: string | undefined;
   const runContext = getAgentRunContext(params.runId);
 
@@ -177,6 +179,9 @@ export function createEmbeddedModelState(
           }
           return;
         case "message_end":
+          successfulModelResponse ||=
+            (message.stopReason === "stop" || message.stopReason === "toolUse") &&
+            !isProviderRefusalAssistantError(message);
           recordPendingUsage(message.usage);
           preserveAssistantUsage(message, pending);
           if (hasNonzeroUsage(pending)) {
@@ -205,5 +210,6 @@ export function createEmbeddedModelState(
     getUsageTotals: () => toNormalizedUsage(totals),
     getLastAssistantUsage: () => normalizeUsage(lastUsage),
     getCurrentAttemptAssistant: () => (completed ? structuredClone(completed) : undefined),
+    hasSuccessfulModelResponse: () => successfulModelResponse,
   };
 }
