@@ -17,6 +17,7 @@ export async function reconcileGatewayServiceDefinition(params: {
   command: GatewayServiceCommandConfig | null;
   expectedCommand: Pick<GatewayServiceCommandConfig, "programArguments" | "workingDirectory">;
   automatic: boolean;
+  taskAutoStartSuspended?: boolean;
   assertCurrent: () => void;
   install: () => Promise<void>;
   warn: (message: string) => void;
@@ -41,6 +42,7 @@ export async function reconcileGatewayServiceDefinition(params: {
     env: params.env,
     command: params.command,
     expectedCommand: params.expectedCommand,
+    taskAutoStartSuspended: params.taskAutoStartSuspended,
   });
   const blocked = issues.filter((issue) => issue.rewriteBlocked);
   if (blocked.length) {

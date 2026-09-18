@@ -44,6 +44,7 @@ export async function auditScheduledTaskDefinition(
   env: GatewayServiceEnv,
   issues: ServiceConfigIssue[],
   timeoutMs?: number,
+  taskAutoStartSuspended = false,
 ): Promise<void> {
   const scriptPath = resolveTaskScriptPath(env);
   const finding = (key: string, blocked = false, detail = scriptPath) =>
@@ -147,6 +148,7 @@ export async function auditScheduledTaskDefinition(
       if (
         duplicate ||
         (!preserved.test(key) &&
+          !(taskAutoStartSuspended && key === "Settings.Enabled" && node.textContent === "false") &&
           !matchingUser &&
           !releasedDefault &&
           !/^Settings\.RestartOnFailure(?:\.(?:Count|Interval))?$/u.test(key) &&

@@ -2,10 +2,20 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import {
+  buildScheduledTaskXml,
+  buildTaskScript,
+  parseScheduledTaskXmlEnabled,
+  resolveTaskScriptPath,
+  resolveTaskUser,
+  setScheduledTaskXmlEnabled,
+} from "../daemon/schtasks-layout.js";
 import type { GatewayServiceCommandConfig } from "../daemon/service-types.js";
+import "../daemon/test-helpers/service-audit-mocks.js";
 import type { GatewayService } from "../daemon/service.js";
 import { createMockGatewayService, mockSystemAccountHome } from "../daemon/service.test-helpers.js";
 import { readLoadedSystemdServiceRuntime } from "../daemon/systemd-loaded-runtime.js";
+import { resetServiceAuditMocks } from "../daemon/test-helpers/service-audit-fixtures.js";
 import * as sqliteSnapshotSource from "../infra/sqlite-snapshot-source.js";
 import { readUpdateRunDriver } from "../infra/update-run-driver.js";
 import { createUpdateRun } from "../infra/update-run-ledger.js";
@@ -27,6 +37,8 @@ const mocks = vi.hoisted(() => ({
   runtimeDirectory: "",
   installPlanBuilt: false,
   note: vi.fn(),
+  audit: vi.fn<typeof import("../daemon/service-audit.js").auditGatewayServiceConfig>(),
+  task: vi.fn<typeof import("../daemon/schtasks-exec.js").execSchtasks>(),
   health: vi.fn(async () => ({ healthy: true })),
   suspend: vi.fn<typeof import("../daemon/schtasks.js").suspendScheduledTaskAutoStartForUpdate>(),
   resume: vi.fn<typeof import("../daemon/schtasks.js").resumeScheduledTaskAutoStartAfterUpdate>(),
@@ -61,7 +73,13 @@ vi.mock("./daemon-install-helpers.js", () => ({
 }));
 vi.mock("../daemon/service-audit.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../daemon/service-audit.js")>()),
-  auditGatewayServiceConfig: async () => ({ ok: true, issues: [] }),
+  auditGatewayServiceConfig: mocks.audit,
+}));
+vi.mock("../daemon/schtasks-exec.js", () => ({ execSchtasks: mocks.task }));
+vi.mock("../infra/windows-encoding.js", async (original) => ({
+  ...(await original<typeof import("../infra/windows-encoding.js")>()),
+  resolveWindowsOemCodePage: () => 437,
+  resolveWindowsOemEncoding: () => "cp437",
 }));
 vi.mock("../cli/daemon-cli/restart-health.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../cli/daemon-cli/restart-health.js")>()),
@@ -99,6 +117,9 @@ vi.mock("../infra/state-database-coordinator.js", async (importOriginal) => {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 beforeEach(() => {
   vi.clearAllMocks();
+  resetServiceAuditMocks();
+  mocks.audit.mockReset().mockResolvedValue({ ok: true, issues: [] });
+  mocks.task.mockReset();
   mocks.installPlanBuilt = false;
   for (const native of [mocks.suspend, mocks.resume]) {
     native.mockImplementation(async (_env, options) => {
@@ -124,6 +145,7 @@ async function runInstallationCase(params: {
   inspectionFailure?: "unavailable" | "lost-before-install";
   inspectionScenario?: "slow-admission" | "competing-update";
   invocationPort?: string;
+  taskEnabled?: boolean;
 }) {
   const { installFails, initiallyStopped } = params;
   mockProcessPlatform(params.platform);
@@ -147,6 +169,12 @@ async function runInstallationCase(params: {
     {
       HOME: home,
       USERPROFILE: home,
+      USERNAME: params.taskEnabled === undefined ? process.env.USERNAME : "doctor-task-fixture",
+      USERDOMAIN: params.taskEnabled === undefined ? process.env.USERDOMAIN : "WORKGROUP",
+      OPENCLAW_WINDOWS_TASK_NAME:
+        params.taskEnabled === undefined
+          ? process.env.OPENCLAW_WINDOWS_TASK_NAME
+          : `OpenClaw Gateway ${path.basename(home)}`,
       OPENCLAW_HOME: undefined,
       OPENCLAW_STATE_DIR: undefined,
       OPENCLAW_CONFIG_PATH: undefined,
@@ -176,6 +204,47 @@ async function runInstallationCase(params: {
         ],
         environment: { HOME: home },
       };
+      let taskXml = "";
+      const taskScript = resolveTaskScriptPath(process.env);
+      if (params.taskEnabled !== undefined) {
+        command = { ...command, sourcePath: taskScript };
+        await fs.mkdir(path.dirname(taskScript), { recursive: true });
+        await fs.writeFile(taskScript, buildTaskScript(command));
+        taskXml = setScheduledTaskXmlEnabled(
+          buildScheduledTaskXml({
+            taskDescription: "OpenClaw Gateway",
+            taskUser: resolveTaskUser(process.env),
+            launchPath: taskScript,
+          }),
+          params.taskEnabled,
+        );
+        const actual = await vi.importActual<typeof import("../daemon/service-audit.js")>(
+          "../daemon/service-audit.js",
+        );
+        mocks.audit.mockImplementation(actual.auditGatewayServiceConfig);
+        mocks.task.mockImplementation(async (args) => {
+          if (args[0] !== "/Query" || !args.includes("/XML")) {
+            throw new Error("Unexpected native task operation");
+          }
+          return { code: 0, stdout: taskXml, stderr: "" };
+        });
+        for (const [native, enabled] of [
+          [mocks.suspend, false],
+          [mocks.resume, true],
+        ] as const) {
+          native.mockImplementation(async (_env, options) => {
+            options?.assertCurrent?.();
+            if (parseScheduledTaskXmlEnabled(taskXml) === enabled) {
+              return false;
+            }
+            await options?.beforeMutation?.();
+            options?.assertCurrent?.();
+            taskXml = setScheduledTaskXmlEnabled(taskXml, enabled);
+            return true;
+          });
+        }
+      }
+      const originalTaskXml = taskXml;
       let running = !initiallyStopped;
       let nativeInspectionReads = 0;
       let inspectionClock = 0;
@@ -241,7 +310,15 @@ async function runInstallationCase(params: {
           if (installFails) {
             throw new Error("Synthetic native install rollback");
           }
-          command = { programArguments: plan.programArguments, environment: { HOME: home } };
+          command = {
+            programArguments: plan.programArguments,
+            environment: { HOME: home },
+            ...(taskXml ? { sourcePath: taskScript } : {}),
+          };
+          if (taskXml) {
+            await fs.writeFile(taskScript, buildTaskScript(command));
+            taskXml = setScheduledTaskXmlEnabled(taskXml, true);
+          }
           running = true;
         },
         restart: async () => {
@@ -324,6 +401,17 @@ async function runInstallationCase(params: {
           return;
         }
         expect(finishError).toBeUndefined();
+        if (params.taskEnabled === false) {
+          expect(events).toEqual(["stop", "repair-state"]);
+          expect(command.programArguments[1]).toBe(path.join(oldRoot, "dist/index.js"));
+          expect(running).toBe(false);
+          expect(mocks.note.mock.calls.flat().join("\n")).toContain(
+            "Settings.Enabled cannot be preserved by the installer",
+          );
+          expect(maintenance?.warnings).toEqual([expect.stringContaining("could not reconcile")]);
+          expect(mocks.health).not.toHaveBeenCalled();
+          return;
+        }
         if (params.inspectionScenario === "slow-admission") {
           expect(installationInspectionElapsedMs.length).toBeGreaterThan(0);
           for (const elapsed of installationInspectionElapsedMs) {
@@ -362,6 +450,13 @@ async function runInstallationCase(params: {
         }
       } finally {
         await maintenance?.release();
+        if (params.taskEnabled !== undefined) {
+          expect(parseScheduledTaskXmlEnabled(taskXml)).toBe(params.taskEnabled && !installFails);
+          if (!params.taskEnabled) {
+            expect(taskXml).toBe(originalTaskXml);
+            expect(mocks.resume).not.toHaveBeenCalled();
+          }
+        }
       }
       if (params.platform === "win32") {
         expect(mocks.resume).not.toHaveBeenCalled();
@@ -410,7 +505,8 @@ it.each([
   { installFails: true, releaseStateBeforeFinish: true },
 ])(
   "keeps Windows activation with the repaired installation (installFails=$installFails, releaseStateBeforeFinish=$releaseStateBeforeFinish)",
-  async (scenario) => runInstallationCase({ platform: "win32", mode: "maintenance", ...scenario }),
+  async (scenario) =>
+    runInstallationCase({ platform: "win32", mode: "maintenance", taskEnabled: true, ...scenario }),
 );
 
 it.each(["unavailable", "lost-before-install"] as const)(
@@ -418,3 +514,6 @@ it.each(["unavailable", "lost-before-install"] as const)(
   async (inspectionFailure) =>
     runInstallationCase({ platform: "linux", mode: "direct", inspectionFailure }),
 );
+
+it("preserves an independently disabled Scheduled Task during Doctor installation repair", async () =>
+  runInstallationCase({ platform: "win32", mode: "maintenance", taskEnabled: false }));

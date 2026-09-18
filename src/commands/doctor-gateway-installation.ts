@@ -13,6 +13,7 @@ import { assertGatewayServiceMutationAllowed } from "../infra/gateway-supervisio
 
 export type DoctorGatewayInstallationMaintenance = {
   managerUid?: number;
+  taskAutoStartSuspended?: boolean;
   assertCurrent: () => void;
   assertReadCurrent: () => void;
 };
@@ -82,7 +83,12 @@ export async function repairGatewayServiceInstallation(
     updateRepairMode: boolean;
   },
 ): Promise<void> {
-  await withGatewayServiceOperationLock(params.env, async (assertCurrent) => {
+  await withGatewayServiceOperationLock(params.env, async (assertNativeCurrent) => {
+    const assertCurrent = () => {
+      assertNativeCurrent();
+      params.maintenance?.assertCurrent();
+    };
+    assertCurrent();
     if (params.activeRoot) {
       await assertGatewayServiceInstallationRepairAllowed({
         ...params,
@@ -92,6 +98,7 @@ export async function repairGatewayServiceInstallation(
     await reconcileGatewayServiceDefinition({
       ...params,
       automatic: true,
+      taskAutoStartSuspended: params.maintenance?.taskAutoStartSuspended,
       assertCurrent,
       warn: (message) => note(message, "Gateway service config"),
     });

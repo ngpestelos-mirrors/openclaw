@@ -458,6 +458,7 @@ export async function auditGatewayServiceConfig(params: {
     "programArguments" | "workingDirectory"
   >;
   platform?: NodeJS.Platform;
+  taskAutoStartSuspended?: boolean;
   expectedGatewayToken?: string;
   expectedManagedServiceEnvKeys?: Iterable<string>;
   expectedServicePath?: string;
@@ -491,7 +492,12 @@ export async function auditGatewayServiceConfig(params: {
   } else if (platform === "darwin") {
     await auditLaunchdDefinition(params.env, issues, params.timeoutMs);
   } else if (platform === "win32" && params.command) {
-    await auditScheduledTaskDefinition(params.env, issues, params.timeoutMs);
+    await auditScheduledTaskDefinition(
+      params.env,
+      issues,
+      params.timeoutMs,
+      params.taskAutoStartSuspended,
+    );
   }
 
   const notes = runtimeNote ? { runtimeNote } : {};

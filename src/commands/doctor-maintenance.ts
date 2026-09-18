@@ -246,6 +246,8 @@ export async function beginDoctorMaintenance(params: {
                 stageOnly: !before.stopped,
                 serviceMaintenance: {
                   managerUid: before.serviceManagerUid,
+                  taskAutoStartSuspended:
+                    retainStoppedInstallation && Boolean(before.windowsTaskAutoStartRecovery),
                   assertCurrent: assertMaintenanceCurrent,
                   assertReadCurrent: assertCurrent,
                 },

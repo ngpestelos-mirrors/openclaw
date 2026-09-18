@@ -536,10 +536,12 @@ export async function maybeRepairGatewayServiceConfig(
   const expectedManagedServiceEnvKeys = readManagedServiceEnvKeysFromEnvironment(
     expectedPlan.environment,
   );
+  options.serviceMaintenance?.assertCurrent();
   const audit = await auditGatewayServiceConfig({
     env: process.env,
     command,
     expectedCommand: expectedPlan,
+    taskAutoStartSuspended: options.serviceMaintenance?.taskAutoStartSuspended,
     expectedGatewayToken,
     expectedManagedServiceEnvKeys,
     expectedServicePath: expectedPlan.environment.PATH,
