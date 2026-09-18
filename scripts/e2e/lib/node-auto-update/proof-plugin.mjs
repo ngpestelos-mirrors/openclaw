@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export function createNodeUpdateProofPlugin(root) {
+export function createNodeUpdateProofPlugin(root, { legacy = false } = {}) {
   const id = "node-update-proof";
   const command = "proof.update.work";
   const directory = path.join(root, id);
@@ -57,7 +57,7 @@ export default {
   register(api) {
     api.registerNodeHostCommand({
       command: ${JSON.stringify(command)}, cap: "proof-update",
-      hasActiveWork: () => active.size > 0,
+      ${legacy ? "" : "hasActiveWork: () => active.size > 0,"}
       async onDisconnect() {
         for (const run of active) run.child.kill("SIGTERM");
         await Promise.allSettled([...active].map((run) => run.done));
@@ -94,14 +94,19 @@ export default {
         const abort = () => child.kill("SIGTERM");
         context.signal?.addEventListener("abort", abort, { once: true });
         if (context.signal?.aborted) abort();
-        try {
-          const workload = JSON.parse(await done);
-          return JSON.stringify({ ...workload, hostPid: process.pid, hostArgv: [...process.argv] });
-        }
-        finally {
+        const cleanup = () => {
           context.signal?.removeEventListener("abort", abort);
           active.delete(run);
+        };
+        void done.then(cleanup, cleanup);
+        if (${legacy} && params.action === "hold") {
+          return JSON.stringify({
+            marker: "NODE_UPDATE_HOLD_STARTED", pid: child.pid,
+            hostPid: process.pid, hostArgv: [...process.argv],
+          });
         }
+        const workload = JSON.parse(await done);
+        return JSON.stringify({ ...workload, hostPid: process.pid, hostArgv: [...process.argv] });
       },
     });
   },

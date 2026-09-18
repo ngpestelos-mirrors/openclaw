@@ -187,7 +187,12 @@ export function hasRegisteredNodeHostCommandActiveWork(): boolean {
   return withPluginRuntimeRegistryScope(registry, () => {
     for (const entry of registry?.nodeHostCommands ?? []) {
       try {
-        if (entry.command.hasActiveWork?.()) {
+        if (entry.command.hasActiveWork?.() !== false) {
+          if (!entry.command.hasActiveWork) {
+            logDebug(
+              `node-host: ${entry.pluginId}/${entry.command.command} has no idle hook; auto-update deferred`,
+            );
+          }
           return true;
         }
       } catch (error) {

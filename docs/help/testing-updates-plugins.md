@@ -115,6 +115,10 @@ case confirms that the Gateway process, configuration, and global installation
 stay unchanged while the node activates its private runtime. A separate cell
 runs the published `openclaw@2026.9.4` updater against the candidate.
 
+A legacy-plugin case returns from its command while a child keeps running,
+then proves that a missing idle-work callback blocks activation both during
+that work and after the child finishes.
+
 Use a new artifact directory outside the source checkout for every run, or omit
 it to create a fresh temporary directory. The scenario retains `observations.json`
 and per-process logs there and stops its child processes on completion or failure.

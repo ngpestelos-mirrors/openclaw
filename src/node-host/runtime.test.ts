@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { SkillBinTrustEntry } from "../infra/exec-approvals.js";
 import { NODE_DEVICE_APPS_COMMAND } from "../infra/node-commands.js";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import type { OpenClawPluginNodeHostCommandIo } from "../plugins/types.js";
 import { NODE_DESKTOP_STREAM_COMMAND } from "../shared/node-desktop-stream.js";
 import { withEnvAsync } from "../test-utils/env.js";
@@ -302,6 +304,72 @@ function holdInvoke(onCommand?: (io: OpenClawPluginNodeHostCommandIo) => void) {
 }
 
 describe("node-host update pause", () => {
+  it.each(["missing", "missing without disconnect", "undefined", "throwing", "declared"])(
+    "requires an explicit plugin idle result after invocation with a %s hook",
+    async (mode) => {
+      const pluginBridge =
+        await vi.importActual<typeof import("./plugin-node-host.js")>("./plugin-node-host.js");
+      let retainedWork = false;
+      let available = true;
+      const onDisconnect = vi.fn(() => {
+        retainedWork = false;
+      });
+      const hasActiveWork =
+        mode === "undefined"
+          ? vi.fn<() => boolean>()
+          : mode === "throwing"
+            ? () => {
+                throw new Error("plugin work state unavailable");
+              }
+            : mode === "declared"
+              ? () => retainedWork
+              : undefined;
+      const registry = createEmptyPluginRegistry();
+      registry.nodeHostCommands = [
+        {
+          pluginId: "legacy-work",
+          pluginName: "Legacy work",
+          source: "test",
+          command: {
+            command: "legacy.start",
+            isAvailable: () => available,
+            handle: async () => {
+              retainedWork = true;
+              return '{"workId":"background-1"}';
+            },
+            ...(mode === "missing without disconnect" ? {} : { onDisconnect }),
+            ...(hasActiveWork ? { hasActiveWork } : {}),
+          },
+        },
+      ];
+      setActivePluginRegistry(registry);
+      mocks.pluginHasActiveWork.mockImplementation(
+        pluginBridge.hasRegisteredNodeHostCommandActiveWork,
+      );
+      mocks.handleInvoke.mockImplementationOnce(async () => {
+        await pluginBridge.invokeRegisteredNodeHostCommand("legacy.start");
+      });
+      const runtime = await startRuntime();
+      try {
+        await runtime.invoke({ ...frame, command: "legacy.start" });
+        expect(retainedWork).toBe(true);
+        expect(runtime.tryPauseForUpdate()).toBe(false);
+        available = false;
+        expect(
+          pluginBridge.listRegisteredNodeHostCapsAndCommands({ config: {}, env: {} }).commands,
+        ).toEqual([]);
+        expect(runtime.tryPauseForUpdate()).toBe(false);
+        expect(onDisconnect).not.toHaveBeenCalled();
+
+        retainedWork = false;
+        expect(runtime.tryPauseForUpdate()).toBe(mode === "declared");
+      } finally {
+        await runtime.close();
+        resetPluginRuntimeStateForTest();
+      }
+    },
+  );
+
   it.each(["system.run", "test.duplex", NODE_DESKTOP_STREAM_COMMAND])(
     "keeps %s busy from admission through disconnected command settlement",
     async (command) => {

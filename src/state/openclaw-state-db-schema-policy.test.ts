@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { NodeWorkerPreparedWorkspaceStore } from "../node-host/node-worker-prepared-workspace-store.js";
-import { VERSION } from "../version.js";
 import { writeConfigMachineState } from "./config-machine-state-write.js";
 import { readConfigMachineState } from "./config-machine-state.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
@@ -132,10 +131,10 @@ describe("existing shared-state schema admission", () => {
     });
     expect(
       reopened.db.prepare("SELECT app_version FROM schema_meta WHERE meta_key = 'primary'").get(),
-    ).toEqual({ app_version: VERSION });
+    ).toEqual({ app_version: previousAppVersion });
     expect(
       reopened.db.prepare("SELECT estimated_bytes FROM acp_replay_sessions").get()?.estimated_bytes,
-    ).toBeGreaterThan(0);
+    ).toBe(0);
     expect(readConfigMachineState("node.schema-policy-probe", options)).toEqual({
       nodeId: "paired-node",
     });
@@ -143,6 +142,16 @@ describe("existing shared-state schema admission", () => {
       preparation_key: "a".repeat(64),
       state: "available",
     });
+
+    closeOpenClawStateDatabase();
+    expect(repairOpenClawStateDatabaseSchema(options).warnings).toEqual([]);
+    const repaired = openOpenClawStateDatabase(options);
+    expect(
+      repaired.db.prepare("SELECT app_version FROM schema_meta WHERE meta_key = 'primary'").get(),
+    ).toEqual({ app_version: previousAppVersion });
+    expect(
+      repaired.db.prepare("SELECT estimated_bytes FROM acp_replay_sessions").get()?.estimated_bytes,
+    ).toBeGreaterThan(0);
   });
 
   it("does not create a missing database or its parent directory", () => {
@@ -196,6 +205,14 @@ describe("existing shared-state schema admission", () => {
       sql: `DROP INDEX idx_plugin_state_listing;
             CREATE INDEX idx_plugin_state_listing
               ON plugin_state_entries(plugin_id, namespace, created_at, entry_key);`,
+    },
+    {
+      name: "retired cron history",
+      sql: `CREATE TABLE cron_run_logs (
+              store_key TEXT NOT NULL, job_id TEXT NOT NULL,
+              seq INTEGER NOT NULL, ts INTEGER NOT NULL,
+              PRIMARY KEY (store_key, job_id, seq)
+            );`,
     },
     {
       name: "incompatible existing lazy table",
@@ -277,7 +294,7 @@ describe("existing shared-state schema admission", () => {
       const reopened = openOpenClawStateDatabase(aliasOptions);
       expect(
         reopened.db.prepare("SELECT app_version FROM schema_meta WHERE meta_key = 'primary'").get(),
-      ).toEqual({ app_version: VERSION });
+      ).toEqual({ app_version: previousAppVersion });
     },
   );
 

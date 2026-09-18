@@ -6,7 +6,6 @@ import { withExistingOpenClawStateSchema } from "../state/openclaw-state-db-sche
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { executeOpenClawStateWorker } from "../state/openclaw-state-worker-store.js";
-import { VERSION } from "../version.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
@@ -30,7 +29,7 @@ function readAppVersion(databasePath: string) {
 }
 
 describe("existing-schema shared-state workers", () => {
-  it("keeps the installed release metadata through worker opens and operations until ordinary admission", async () => {
+  it("preserves installed release metadata through managed and ordinary worker opens", async () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("worker-existing-schema-") };
     const database = openOpenClawStateDatabase({ env });
     const databasePath = database.path;
@@ -65,7 +64,7 @@ describe("existing-schema shared-state workers", () => {
         input: { ownerKey: "agent:main:ordinary" },
       }),
     ).toEqual([]);
-    expect(readAppVersion(databasePath)).toBe(VERSION);
+    expect(readAppVersion(databasePath)).toBe("synthetic-installed-runtime");
   });
 
   it("admits queued checks only while their captured existing-schema scope remains active", async () => {

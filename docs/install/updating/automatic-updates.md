@@ -27,6 +27,11 @@ between the idle check and restart. Busy work can postpone the update
 indefinitely. Automatic activations are at least 12 hours apart; this limit never
 forces a busy node to restart.
 
+Plugins must explicitly report that their retained work is idle. An older plugin
+without the idle-work callback postpones automatic activation, even after its
+last command returns. Update that plugin to a compatible version, or finish its
+work and use `openclaw update` followed by a node restart.
+
 The replacement process reconnects with the same identity, pairing, settings,
 and launch options. The separate runtime changes program files, not the node's
 state directory. Activation requires the candidate to reconnect successfully;

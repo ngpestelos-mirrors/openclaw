@@ -84,6 +84,11 @@ version; `openclaw --version` reports the CLI version. For delayed updates,
 opt-outs, fallback, and migration or repair deferrals, see
 [Headless node updates](/install/updating/automatic-updates#headless-node-updates).
 
+If an apparently idle node keeps deferring an update, check its installed
+plugins. A plugin without an idle-work callback cannot confirm that its
+background work has finished, so the node keeps running. Update the plugin, or
+finish its work before updating and restarting the node manually.
+
 ## Foreground requirements
 
 `camera.*` and `screen.*` are foreground-only on iOS/Android nodes.

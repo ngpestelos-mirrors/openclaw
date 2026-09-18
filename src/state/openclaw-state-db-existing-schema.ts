@@ -8,7 +8,10 @@ import {
 } from "../infra/sqlite-schema-contract.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
-import { assertCurrentStateRuntimeSchema } from "./openclaw-state-db-fast-path.js";
+import {
+  assertCurrentStateRuntimeSchema,
+  assertNoLegacyStateRuntimeRepair,
+} from "./openclaw-state-db-fast-path.js";
 import {
   assertSupportedStateSchemaVersion,
   readStateSchemaMigrationVersion,
@@ -56,6 +59,7 @@ export function assertExistingOpenClawStateRuntimeSchema(
       validatedSchemas.delete(database);
       assertSqliteIntegrity(database, pathname);
       assertCurrentStateRuntimeSchema(database, pathname);
+      assertNoLegacyStateRuntimeRepair(database, pathname);
       assertSqliteSchemaContains(
         database,
         pathname,

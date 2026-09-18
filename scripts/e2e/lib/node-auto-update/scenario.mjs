@@ -172,6 +172,15 @@ function fileHash(file) {
   return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
+function processChildren(pid) {
+  return fs
+    .readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(Number);
+}
+
 async function listen(server) {
   servers.add(server);
   server.listen(0, "127.0.0.1");
@@ -239,6 +248,7 @@ function writeConfig(name, value) {
 }
 
 async function startNode(name, registryUrl, options = {}) {
+  const plugin = options.plugin ?? proofPlugin;
   const env = options.sharedEnv
     ? { ...options.sharedEnv }
     : writeConfig(name, {
@@ -247,7 +257,7 @@ async function startNode(name, registryUrl, options = {}) {
           browserProxy: { enabled: false },
           skills: { enabled: false },
         },
-        plugins: proofPlugin.plugins,
+        plugins: plugin.plugins,
         tools: { exec: { mode: "full" } },
         update: { channel: "stable", checkOnStart: options.checkOnStart !== false },
       });
@@ -256,7 +266,7 @@ async function startNode(name, registryUrl, options = {}) {
   if (options.noAutoEnv) {
     env.OPENCLAW_NO_AUTO_UPDATE = "1";
   }
-  const commands = [proofPlugin.command, "system.which"].toSorted((left, right) =>
+  const commands = [plugin.command, "system.which"].toSorted((left, right) =>
     left.localeCompare(right),
   );
   const args = [
@@ -526,14 +536,8 @@ try {
   const { hostPid, hostArgv: updatedArguments } = healthy.payload;
   assert(Number.isSafeInteger(hostPid) && hostPid > 0);
   assert(Array.isArray(updatedArguments));
-  const runtimeChildren = fs
-    .readFileSync(`/proc/${positive.child.pid}/task/${positive.child.pid}/children`, "utf8")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(Number);
   assert(
-    runtimeChildren.includes(hostPid),
+    processChildren(positive.child.pid).includes(hostPid),
     "updated runtime is not owned by the original supervisor",
   );
   assert(
@@ -583,6 +587,95 @@ try {
     globalVersion: manifest.version,
   });
   await stop(positive);
+
+  const legacyRoot = path.join(root, "legacy-plugin");
+  fs.mkdirSync(legacyRoot);
+  const legacyPlugin = createNodeUpdateProofPlugin(legacyRoot, { legacy: true });
+  selectedVersion = versions[0];
+  metadataReleased = false;
+  const legacy = await startNode("node-legacy-plugin", proxyUrl, { plugin: legacyPlugin });
+  const retained = await invoke(legacy.row.nodeId, "hold");
+  assert.equal(retained.ok, true);
+  assert.equal(retained.payload.marker, "NODE_UPDATE_HOLD_STARTED");
+  const { pid: retainedPid, hostPid: legacyHostPid, hostArgv: legacyArguments } = retained.payload;
+  assert(Number.isSafeInteger(retainedPid) && retainedPid > 0);
+  assert(Number.isSafeInteger(legacyHostPid) && legacyHostPid > 0);
+  const requireLegacyRuntime = () => {
+    if (!fs.existsSync(`/proc/${legacyHostPid}`)) {
+      return new Error("Legacy plugin runtime restarted without an idle declaration");
+    }
+    return readNodeUpdateFailure(legacy.logPath);
+  };
+  const requireLegacyHolding = () =>
+    requireLegacyRuntime() ??
+    (!fs.existsSync(`/proc/${retainedPid}`)
+      ? new Error("Legacy plugin child exited before release")
+      : undefined);
+  await waitFor(
+    "legacy command returns with a retained child",
+    () =>
+      fs.existsSync(legacyPlugin.busyPath) &&
+      Number(fs.readFileSync(legacyPlugin.busyPath, "utf8")) === retainedPid,
+    120_000,
+    requireLegacyHolding,
+  );
+  assert(processChildren(legacy.child.pid).includes(legacyHostPid));
+  assert(processChildren(legacyHostPid).includes(retainedPid));
+  metadataReleased = true;
+  await waitFor(
+    "legacy plugin defers the prepared update after its command returns",
+    () => /ready; waiting for active work to finish/i.test(fs.readFileSync(legacy.logPath, "utf8")),
+    900_000,
+    requireLegacyHolding,
+  );
+  const assertLegacyRetained = async () => {
+    assert.equal(legacy.child.exitCode, null);
+    assert.equal(legacy.child.signalCode, null);
+    assert(processChildren(legacy.child.pid).includes(legacyHostPid));
+    const row = await nodeRow(legacy.name);
+    assert.equal(row.nodeId, legacy.row.nodeId);
+    assert.equal(row.version, manifest.version);
+    const ping = await invoke(legacy.row.nodeId);
+    assert.equal(ping.payload.marker, "NODE_UPDATE_PING_OK");
+    assert.equal(ping.payload.hostPid, legacyHostPid);
+    assert.deepEqual(ping.payload.hostArgv, legacyArguments);
+    assert(!fs.existsSync(path.join(legacy.env.OPENCLAW_STATE_DIR, "node-runtime/current")));
+  };
+  await assertLegacyRetained();
+  assert(processChildren(legacyHostPid).includes(retainedPid));
+  assert.deepEqual(
+    await cli("legacy-identity-after-deferral", ["node", "identity"], legacy.env),
+    legacy.identity,
+  );
+  record("legacy-plugin-retained-work-deferred", {
+    nodeId: legacy.row.nodeId,
+    retainedChildPid: retainedPid,
+    runtimePid: legacyHostPid,
+    supervisorPid: legacy.child.pid,
+    connectedVersion: manifest.version,
+    sameIdentity: true,
+    commandReturned: true,
+  });
+  fs.writeFileSync(legacyPlugin.releasePath, "release\n");
+  await waitFor(
+    "legacy retained child completes and is reaped",
+    () =>
+      !fs.existsSync(`/proc/${retainedPid}`) &&
+      fs.readFileSync(legacy.logPath, "utf8").includes("child-exit action=hold code=0 signal=null"),
+    120_000,
+    requireLegacyRuntime,
+  );
+  // Cross the next idle retry with no command or child work left to mask the missing hook.
+  await delay(35_000);
+  await assertLegacyRetained();
+  record("legacy-plugin-missing-idle-hook-stays-deferred", {
+    connectedVersion: manifest.version,
+    runtimePid: legacyHostPid,
+    childReaped: true,
+  });
+  await stop(legacy);
+  assert(!fs.existsSync(`/proc/${legacyHostPid}`));
+  assert(!fs.existsSync(`/proc/${retainedPid}`));
 
   for (const { name, options } of [
     { name: "node-optout", options: { enabled: false } },
@@ -795,6 +888,8 @@ try {
   record("proof-passed", {
     checks: [
       "busy-deferral",
+      "legacy-plugin-retained-work-deferral",
+      "legacy-plugin-missing-idle-hook-deferral",
       "idle-activation",
       "pairing-preserved",
       "launch-surface-preserved",
