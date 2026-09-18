@@ -474,7 +474,7 @@ describe("persisted subagent requester wakes", () => {
           {
             delivered,
             path: "direct",
-            requesterVisibleFinalDelivered: delivered,
+            requesterVisibleFinalDelivered: delivered ? true : undefined,
             error: delivered ? undefined : "requester unavailable",
           },
           finalized,
