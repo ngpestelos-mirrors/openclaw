@@ -156,7 +156,8 @@ export function createEmbeddedModelState(
       if (
         evt.type !== "message_start" &&
         evt.type !== "message_update" &&
-        evt.type !== "message_end"
+        evt.type !== "message_end" &&
+        evt.type !== "turn_end"
       ) {
         return;
       }
@@ -169,6 +170,12 @@ export function createEmbeddedModelState(
       }
       publishMessageModel(message, evt.type === "message_start");
       switch (evt.type) {
+        case "turn_end":
+          // Async tool fragments emit message_end before the provider response finishes.
+          successfulModelResponse ||=
+            (message.stopReason === "stop" || message.stopReason === "toolUse") &&
+            !isProviderRefusalAssistantError(message);
+          return;
         case "message_start":
           pending = undefined;
           return;
@@ -179,9 +186,6 @@ export function createEmbeddedModelState(
           }
           return;
         case "message_end":
-          successfulModelResponse ||=
-            (message.stopReason === "stop" || message.stopReason === "toolUse") &&
-            !isProviderRefusalAssistantError(message);
           recordPendingUsage(message.usage);
           preserveAssistantUsage(message, pending);
           if (hasNonzeroUsage(pending)) {

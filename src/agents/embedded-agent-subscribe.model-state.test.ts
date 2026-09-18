@@ -4,11 +4,14 @@ import {
   type AssistantMessage,
   type Message,
   type Model,
+  type ToolCall,
 } from "openclaw/plugin-sdk/llm";
+import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as agentEvents from "../infra/agent-events.js";
 import { runAgentLoop, type AgentEvent } from "../plugin-sdk/agent-core.js";
+import { createEmbeddedRunFailoverRetryController } from "./embedded-agent-runner/run/failover-retry-controller.js";
 import { createSubscribedSessionHarness } from "./embedded-agent-subscribe.e2e-harness.js";
 import { SessionManager } from "./sessions/session-manager.js";
 import { recordSessionModelUsage } from "./sessions/session-model-usage.js";
@@ -27,6 +30,7 @@ type UsageCall = {
   usage: StreamUsage;
   streamedUsage?: StreamUsage;
   text?: string;
+  asyncTool?: boolean;
   stopReason?: "stop" | "error" | "aborted";
 };
 
@@ -66,7 +70,19 @@ async function runUsageCalls(
   let callIndex = 0;
   await runAgentLoop(
     [{ role: "user", content: "First request.", timestamp: 0 }],
-    { systemPrompt: "", messages: [] },
+    {
+      systemPrompt: "",
+      messages: [],
+      tools: [
+        {
+          name: "lookup",
+          label: "Lookup",
+          description: "Fixture lookup",
+          parameters: Type.Object({}),
+          execute: async () => ({ content: [], details: {}, terminate: true }),
+        },
+      ],
+    },
     {
       model,
       convertToLlm: (messages) =>
@@ -96,9 +112,16 @@ async function runUsageCalls(
     () => {
       const call = expectDefined(calls[callIndex++], "Expected a configured model call");
       const text = call.text ?? "Reply.";
+      const asyncCall: ToolCall = {
+        type: "toolCall",
+        id: "lookup-1",
+        name: "lookup",
+        arguments: {},
+        async: true,
+      };
       const message: AssistantMessage = {
         role: "assistant",
-        content: [{ type: "text", text }],
+        content: [...(call.asyncTool ? [asyncCall] : []), { type: "text", text }],
         api: model.api,
         provider: model.provider,
         model: model.id,
@@ -111,6 +134,14 @@ async function runUsageCalls(
       };
       const stream = new AssistantMessageEventStream();
       stream.push({ type: "start", partial: { ...message, content: [], usage: makeUsage() } });
+      if (call.asyncTool) {
+        stream.push({
+          type: "toolcall_end",
+          contentIndex: 0,
+          toolCall: asyncCall,
+          partial: { ...message, content: [asyncCall] },
+        });
+      }
       if (call.streamedUsage) {
         stream.push({
           type: "text_end",
@@ -173,11 +204,70 @@ describe("subscribeEmbeddedAgentSession model state", () => {
       expect(subscription.hasSuccessfulModelResponse()).toBe(false);
 
       emit({ type: "message_end", message });
+      expect(subscription.hasSuccessfulModelResponse()).toBe(false);
+      emit({ type: "turn_end", message, toolResults: [] });
       expect(subscription.hasSuccessfulModelResponse()).toBe(expected);
     } finally {
       subscription.unsubscribe();
     }
   });
+
+  it.each(["error", "stop"] as const)(
+    "uses response completion after an async fragment ending with %s",
+    async (stopReason) => {
+      let nowMs = Date.now();
+      const now = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+      const harness = createSubscribedSessionHarness({ runId: "async-progress" });
+      const controller = createEmbeddedRunFailoverRetryController({
+        runParams: {
+          sessionId: "async-progress",
+          sessionFile: "unused",
+          runId: "async-progress",
+          workspaceDir: "/tmp/async-progress",
+          prompt: "Continue",
+          timeoutMs: 300_000,
+        },
+        provider: "test-provider",
+        modelId: "usage-model",
+        globalLane: "test",
+        agentDir: "/tmp/async-progress",
+        fallbackConfigured: false,
+        profileFailureStore: { version: 1, profiles: {} },
+        getLastProfileId: () => undefined,
+        getSessionId: () => "async-progress",
+        harnessOwnsTransport: () => false,
+        getRuntimeAuthOwnerId: () => "embedded",
+        getApiKeyInfo: () => null,
+        advanceAuthProfile: async () => false,
+      });
+      const messages: string[] = [];
+      try {
+        await expect(controller.maybeRetryTransient({ reason: "timeout" })).resolves.toBe(true);
+        nowMs += 130_000;
+        await runUsageCalls(
+          harness,
+          [{ asyncTool: true, stopReason, usage: makeUsage() }],
+          (event) => {
+            if (event.type === "message_end" && event.message.role === "assistant") {
+              messages.push(event.message.stopReason);
+              expect(harness.subscription.hasSuccessfulModelResponse()).toBe(false);
+            }
+          },
+        );
+        expect(messages).toEqual(["toolUse", stopReason]);
+        controller.observeAttempt({
+          hasSuccessfulModelResponse: harness.subscription.hasSuccessfulModelResponse(),
+        });
+        await expect(controller.maybeRetryTransient({ reason: "timeout" })).resolves.toBe(
+          stopReason === "stop",
+        );
+        expect(controller.transientRetryCount).toBe(stopReason === "stop" ? 2 : 1);
+      } finally {
+        now.mockRestore();
+        harness.subscription.unsubscribe();
+      }
+    },
+  );
 
   it.each([
     { blockReplyBreak: "text_end", retry: false },
@@ -527,7 +617,7 @@ describe("subscribeEmbeddedAgentSession model state", () => {
           expect(subscription.assistantTexts).toEqual(["Before retry."]);
           expect(subscription.getLastAssistantTextMessageIndex()).toEqual(expect.any(Number));
           emit(retryingCompactionEnd());
-          expect(subscription.hasSuccessfulModelResponse()).toBe(true);
+          expect(subscription.hasSuccessfulModelResponse()).toBe(false);
           expect(subscription.assistantTexts).toEqual([]);
           expect(subscription.getLastAssistantTextMessageIndex()).toBeUndefined();
           expect(subscription.getCurrentAttemptAssistant()).toBeUndefined();
