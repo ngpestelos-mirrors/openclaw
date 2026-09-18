@@ -895,6 +895,7 @@ describe("live repair ownership after activation", () => {
     { transientRead: false, pending: false, repairStatus: "repaired" },
     { transientRead: true, pending: false, repairStatus: "repaired" },
     { transientRead: false, pending: true, repairStatus: "unrepaired" },
+    { transientRead: false, pending: "still-starting", repairStatus: "unrepaired" },
     { transientRead: false, pending: true, repairStatus: "unavailable" },
     { transientRead: false, pending: true, repairStatus: "aborted" },
   ] as const)(
@@ -942,7 +943,7 @@ describe("live repair ownership after activation", () => {
         ok: false,
         score: 1,
         summary: "Gateway is still starting; readiness remains unverified.",
-        stopReason: "gateway-readiness-pending",
+        stopReason: pending === "still-starting" ? "still-starting" : "gateway-readiness-pending",
       };
       const verify = vi
         .spyOn(verificationOwner, "verifyUpdatedGateway")
@@ -1025,7 +1026,9 @@ describe("live repair ownership after activation", () => {
         repair: [expect.objectContaining({ status: pending ? "failed" : "succeeded" })],
       });
       if (pending) {
-        expect(result.reason).toBe(repairFailed ? "restart-unhealthy" : undefined);
+        expect(result.reason).toBe(
+          repairFailed ? "restart-unhealthy" : pending === "still-starting" ? pending : undefined,
+        );
         expect(result.recovery).toBeUndefined();
         expect(result.steps).toEqual([
           expect.objectContaining({

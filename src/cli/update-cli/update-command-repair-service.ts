@@ -161,8 +161,14 @@ export async function repairUpdateService(params: {
   });
   return repair.status === "repaired" ||
     (repair.status === "unrepaired" &&
-      repair.reason === "gateway-readiness-pending" &&
-      repair.finalValidation.stopReason === "gateway-readiness-pending")
-    ? { ...result, status: "ok", reason: undefined, recovery: undefined }
+      (repair.reason === "gateway-readiness-pending" || repair.reason === "still-starting") &&
+      repair.finalValidation.stopReason === repair.reason)
+    ? {
+        ...result,
+        status: "ok",
+        reason:
+          repair.finalValidation.stopReason === "still-starting" ? "still-starting" : undefined,
+        recovery: undefined,
+      }
     : result;
 }
