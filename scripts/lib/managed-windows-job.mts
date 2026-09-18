@@ -1,12 +1,16 @@
 import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { createDeferredCore, type Deferred } from "../shared/deferred.ts";
-import { createWindowsJobBindings } from "./supervisor/service-child-windows-job-native.ts";
-import { resolveWindowsJobEntrypointUrl } from "./windows-job-entrypoint.ts";
+import { createWindowsJobBindings } from "../../src/process/supervisor/service-child-windows-job-native.ts";
+import { createDeferredCore, type Deferred } from "../../src/shared/deferred.ts";
+import { resolveManagedWindowsJobEntrypointUrl } from "./managed-windows-job-entrypoint.mts";
 
-export type WindowsJobExtinction = { status: "confirmed" } | { status: "uncertain"; cause: Error };
+export type WindowsJobExtinction =
+  | { status: "confirmed" }
+  | { status: "uncertain"; reason: "job-unavailable" }
+  | { status: "uncertain"; reason: "job-observation-failed"; cause: Error };
 
 export type ManagedWindowsJob = {
   inspect: () => number[];
@@ -29,14 +33,16 @@ export type WindowsJobLaunch = {
 let native: ReturnType<typeof createWindowsJobBindings> | undefined;
 function bindings() {
   if (!native) {
-    const koffi: typeof import("koffi").default = createRequire(import.meta.url)("koffi");
-    native = createWindowsJobBindings(koffi);
-    native.assertLayouts();
+    const require = createRequire(import.meta.url);
+    const koffi: typeof import("koffi").default = require("koffi");
+    const candidate = createWindowsJobBindings(koffi);
+    candidate.assertLayouts();
+    native = candidate;
   }
   return native;
 }
 
-/** The host retains one kill-on-close Job; the launcher admits target code only inside it. */
+/** One retained kernel Job owns the launcher and every command descendant. */
 export function spawnWindowsJobChild(
   command: string,
   args: string[],
@@ -46,6 +52,17 @@ export function spawnWindowsJobChild(
   if (process.platform !== "win32") {
     return undefined;
   }
+  const launcher = resolveManagedWindowsJobEntrypointUrl();
+  if (!existsSync(launcher)) {
+    return undefined;
+  }
+  let api: ReturnType<typeof bindings>;
+  try {
+    api = bindings();
+  } catch {
+    // Portable archives and installations without the native module still spawn normally.
+    return undefined;
+  }
   const configuredStdio = options.stdio;
   const stdio: Exclude<StdioOptions, string> = Array.isArray(configuredStdio)
     ? [...configuredStdio]
@@ -53,9 +70,8 @@ export function spawnWindowsJobChild(
   while (stdio.length < 3) {
     stdio.push("pipe");
   }
-  const api = bindings();
-  const name = `Local\\OpenClawChild-${randomUUID()}`;
-  const handle = api.requireHandle(api.CreateJobObjectW(null, name), "CreateJobObjectW(child)");
+  const name = `Local\\OpenClawTooling-${randomUUID()}`;
+  const handle = api.requireHandle(api.CreateJobObjectW(null, name), "CreateJobObjectW(tooling)");
   const ready = createDeferredCore();
   void ready.promise.catch(() => {});
   let child: ChildProcess | undefined;
@@ -92,7 +108,7 @@ export function spawnWindowsJobChild(
           return;
         }
         if (!api.TerminateJobObject(handle, 1)) {
-          throw api.lastError("TerminateJobObject(child)");
+          throw api.lastError("TerminateJobObject(tooling)");
         }
         // The helper may still be starting outside the Job, but has not received user code.
         if (!admitted) {
@@ -106,7 +122,7 @@ export function spawnWindowsJobChild(
       stopped = true;
       if (!closed) {
         if (!api.CloseHandle(handle)) {
-          throw api.lastError("CloseHandle(child Job)");
+          throw api.lastError("CloseHandle(tooling Job)");
         }
         closed = true;
       }
@@ -147,6 +163,7 @@ export function spawnWindowsJobChild(
       }
       outcome = {
         status: "uncertain",
+        reason: "job-observation-failed",
         cause: error instanceof Error ? error : new Error(String(error)),
       };
     }
@@ -155,9 +172,10 @@ export function spawnWindowsJobChild(
   }
   try {
     if (!api.SetExtendedLimits(handle, 9, api.extendedLimits, api.extendedLimitsSize)) {
-      throw api.lastError("SetInformationJobObject(child)");
+      throw api.lastError("SetInformationJobObject(tooling)");
     }
     const { stdio: _stdio, signal: _signal, ...commandOptions } = options;
+    // Match spawn's synchronous input snapshot across the asynchronous Job admission.
     const commandEnv = { ...(options.env ?? process.env) };
     const launch: WindowsJobLaunch = {
       command,
@@ -172,20 +190,16 @@ export function spawnWindowsJobChild(
     if (!stdio.includes("ipc")) {
       stdio.push("ipc");
     }
-    const launched = spawn(
-      process.execPath,
-      [fileURLToPath(resolveWindowsJobEntrypointUrl()), name],
-      {
-        cwd: launch.options.cwd,
-        // Case-insensitive preloads must run only in the contained target.
-        env: Object.fromEntries(
-          Object.entries(commandEnv).filter(([key]) => key.toUpperCase() !== "NODE_OPTIONS"),
-        ),
-        stdio,
-        windowsHide: options.windowsHide,
-        signal: options.signal,
-      },
-    );
+    const launched = spawn(process.execPath, [fileURLToPath(launcher), name], {
+      cwd: launch.options.cwd,
+      // Windows environment keys are case-insensitive. Preloads belong inside the Job.
+      env: Object.fromEntries(
+        Object.entries(commandEnv).filter(([key]) => key.toUpperCase() !== "NODE_OPTIONS"),
+      ),
+      stdio,
+      windowsHide: options.windowsHide,
+      signal: options.signal,
+    });
     child = launched;
     const fail = (error: Error) => {
       ready.reject(error);

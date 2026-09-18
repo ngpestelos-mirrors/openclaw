@@ -1,6 +1,6 @@
 import { ChildProcess } from "node:child_process";
 import { afterEach, expect, it, vi } from "vitest";
-import { spawnWindowsJobChild } from "../../src/process/windows-job.ts";
+import { spawnWindowsJobChild } from "../../scripts/lib/managed-windows-job.mts";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", async (original) => ({

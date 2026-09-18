@@ -12,6 +12,7 @@ import { createPtyAdapter } from "./adapters/pty.js";
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "./cancellation-policy.js";
 import type {
   ManagedRun,
+  ProcessExtinctionResult,
   ProcessSupervisor,
   ProcessScopeCleanupPolicy,
   RunExit,
@@ -26,7 +27,7 @@ type OwnedRun = {
   terminationReason?: TerminationReason;
   cancel: (reason: TerminationReason) => void;
   pending?: Promise<ManagedRun>;
-  waitForExtinction?: () => Promise<void>;
+  waitForExtinction?: () => Promise<ProcessExtinctionResult>;
   cleanupOwners: ScopeCleanupOwner[];
 };
 
@@ -226,7 +227,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
 
     const settleConstructionResult = (
       reason: TerminationReason,
-      cleanup?: Promise<void>,
+      cleanup?: Promise<ProcessExtinctionResult>,
       output?: { stdout: string; stderr: string; lastOutputAtMs: number },
     ): ManagedRun => {
       const exit: RunExit = {
@@ -369,7 +370,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
     try {
       // Reserve the join before construction: a timeout result does not release
       // resources acquired later, or hide cleanup when readiness rejects after spawn.
-      const cleanup = createDeferredCore();
+      const cleanup = createDeferredCore<ProcessExtinctionResult>();
       owner.waitForExtinction = () => cleanup.promise;
       void cleanup.promise.catch(() => undefined);
       let constructionCleanup: Promise<void> | undefined;
@@ -449,7 +450,15 @@ export function createProcessSupervisor(): ProcessSupervisor & {
             // Child close can precede a descendant's private-input consumption.
             // Readiness failure is separate from the cleanup owner's outcome.
             await Promise.allSettled([ready]);
-            await (constructionCleanup ?? started.waitForExtinction?.() ?? started.wait());
+            if (constructionCleanup) {
+              await constructionCleanup;
+            }
+            if (started.waitForExtinction) {
+              return await started.waitForExtinction();
+            }
+            if (!constructionCleanup) {
+              await started.wait();
+            }
           },
           async () => {
             await constructionCleanup;
@@ -470,15 +479,16 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       const extinctionPromise = Promise.all([
         nativeExtinctionPromise,
         outputCompletion.promise,
-      ]).then(() => {
+      ]).then(([outcome]) => {
         if (outputError) {
           throw outputError;
         }
+        return outcome;
       });
       void extinctionPromise.then(
-        () => {
+        (outcome) => {
           ownedRuns.delete(owner);
-          cleanup.resolve();
+          cleanup.resolve(outcome);
         },
         (error: unknown) => {
           recordScopeCleanupFailure(owner, error);

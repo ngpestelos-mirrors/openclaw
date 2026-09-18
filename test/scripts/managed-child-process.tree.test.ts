@@ -18,7 +18,7 @@ vi.mock("node:child_process", async (original) => ({
   ...(await original<typeof import("node:child_process")>()),
   spawn: mocks.spawn,
 }));
-vi.mock("../../src/process/windows-job.ts", () => ({
+vi.mock("../../scripts/lib/managed-windows-job.mts", () => ({
   spawnWindowsJobChild: mocks.spawnWindowsJobChild,
 }));
 const dirs = useAutoCleanupTempDirTracker(afterEach);

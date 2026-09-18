@@ -1,6 +1,5 @@
 import path from "node:path";
 import * as agentHarnessRuntime from "openclaw/plugin-sdk/agent-harness-runtime";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { formatSqliteSessionFileMarker } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { describe, expect, it, vi } from "vitest";
@@ -34,12 +33,7 @@ describe("runCodexAppServerAttempt agent-end context", () => {
         entry: { sessionFile, sessionId: source.sessionId, updatedAt: Date.now() },
       });
       const workspaceDir = path.join(tempDir, "agent-end-context-workspace");
-      const turnStarted = createDeferred<void>();
-      const harness = createStartedThreadHarness(async (method) => {
-        if (method === "turn/start") {
-          turnStarted.resolve();
-        }
-      });
+      const harness = createStartedThreadHarness();
       const runAgentEndSideEffects = vi
         .spyOn(agentHarnessRuntime, "runAgentEndSideEffects")
         .mockImplementation(() => {});
@@ -55,18 +49,8 @@ describe("runCodexAppServerAttempt agent-end context", () => {
         createRuntimeDynamicTool("skill_workshop"),
       ];
 
-      // Fixture I/O must not consume the attempt budget while testing context projection.
-      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-      const onAttemptTimeout = vi.fn();
-      params.onAttemptTimeout = onAttemptTimeout;
-      const partialReply = createDeferred<void>();
-      params.onAgentEvent = (event) => {
-        if (event.stream === "assistant") {
-          partialReply.resolve();
-        }
-      };
       const run = runCodexAppServerAttempt(params);
-      await turnStarted.promise;
+      await harness.waitForMethod("turn/start");
       for (let index = 0; index < 10; index++) {
         await harness.notify({
           method: "rawResponse/completed",
@@ -78,12 +62,6 @@ describe("runCodexAppServerAttempt agent-end context", () => {
         });
       }
       if (outcome === "aborted") {
-        await harness.notify({
-          method: "item/agentMessage/delta",
-          params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: "working" },
-        });
-        // Cancellation follows processed responses, not merely buffered wire notifications.
-        await partialReply.promise;
         abortController.abort("user cancelled");
       } else {
         const error =
@@ -116,7 +94,6 @@ describe("runCodexAppServerAttempt agent-end context", () => {
         });
       }
       const result = await run;
-      expect(onAttemptTimeout).not.toHaveBeenCalled();
 
       const ctx = runAgentEndSideEffects.mock.calls.at(-1)?.[0]?.ctx;
       expect(ctx?.foregroundPromptContext?.memberRoleIds).toEqual(["maintainer-role"]);

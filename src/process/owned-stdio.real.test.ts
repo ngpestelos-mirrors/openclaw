@@ -73,7 +73,7 @@ process.stdin.once("data", () => {
       expect(pid).toBeGreaterThan(1);
       expect(() => process.kill(pid, 0)).not.toThrow();
       await closeOwnedStdioProcess(child, { force: true });
-      await expect(child.waitForExtinction!()).resolves.toBeUndefined();
+      await expect(child.waitForExtinction!()).resolves.toEqual({ status: "confirmed" });
       expect(() => process.kill(pid, 0)).toThrow();
     } finally {
       await closeOwnedStdioProcess(child, { force: true }).catch(() => undefined);
@@ -112,7 +112,7 @@ process.once("message", (message) => {
       await gate.promise;
       adapter.stdin!.write("interactive\n");
       await adapter.wait();
-      await adapter.waitForExtinction!();
+      await expect(adapter.waitForExtinction!()).resolves.toEqual({ status: "confirmed" });
       expect(output).toBe("openclaw-worker-start-v1\ninteractive\n");
     } finally {
       await closeOwnedStdioProcess(adapter, { force: true }).catch(() => undefined);

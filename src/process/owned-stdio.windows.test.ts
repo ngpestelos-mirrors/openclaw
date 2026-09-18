@@ -1,12 +1,11 @@
-import fs from "node:fs/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { runClaudeCliNodeCommand } from "../node-host/invoke-agent-cli-claude.js";
-import { closeOwnedStdioProcess, createOwnedStdioProcess } from "./owned-stdio.js";
 import { createStubChild } from "./supervisor/adapters/child.test-support.js";
 
 const native = vi.hoisted(() => ({
   spawn: vi.fn(),
+  koffiAvailable: true,
+  launcherAvailable: true,
   inspect: vi.fn<() => number[]>(),
   terminate: vi.fn(),
   close: vi.fn(() => true),
@@ -20,7 +19,12 @@ vi.mock("node:module", async (original) => {
   const createRequire = (...args: Parameters<typeof actual.createRequire>) =>
     new Proxy(actual.createRequire(...args), {
       apply: (target, receiver, argumentsList) =>
-        argumentsList[0] === "koffi" ? {} : Reflect.apply(target, receiver, argumentsList),
+        argumentsList[0] === "koffi"
+          ? (() => {
+              if (!native.koffiAvailable) throw new Error("Cannot find module koffi");
+              return {};
+            })()
+          : Reflect.apply(target, receiver, argumentsList),
     });
   return new Proxy(actual, {
     get: (target, property, receiver) =>
@@ -39,9 +43,27 @@ vi.mock("./supervisor/service-child-windows-job-native.ts", () => ({
     lastError: (operation: string) => new Error(operation),
   }),
 }));
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  return {
+    ...actual,
+    existsSync: (target: Parameters<typeof actual.existsSync>[0]) =>
+      String(target).includes("managed-windows-job-launcher")
+        ? native.launcherAvailable
+        : actual.existsSync(target),
+  };
+});
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+let createOwnedStdioProcess: typeof import("./owned-stdio.js").createOwnedStdioProcess;
+let closeOwnedStdioProcess: typeof import("./owned-stdio.js").closeOwnedStdioProcess;
+let createProcessSupervisor: typeof import("./supervisor/supervisor.js").createProcessSupervisor;
 let stub: ReturnType<typeof createStubChild>;
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
+  ({ createOwnedStdioProcess, closeOwnedStdioProcess } = await import("./owned-stdio.js"));
+  ({ createProcessSupervisor } = await import("./supervisor/supervisor.js"));
+  native.koffiAvailable = true;
+  native.launcherAvailable = true;
   Object.defineProperty(process, "platform", { value: "win32" });
   stub = createStubChild();
   native.inspect.mockReset().mockReturnValue([1234]);
@@ -97,7 +119,7 @@ it("joins the retained Windows Job after the root exits with descendants still h
     await observed.promise;
     expect(confirmed).not.toHaveBeenCalled();
     await closeOwnedStdioProcess(child, { force: true });
-    expect(confirmed).toHaveBeenCalledOnce();
+    expect(confirmed).toHaveBeenCalledWith({ status: "confirmed" });
     expect(native.terminate).toHaveBeenCalledOnce();
     expect(native.close).toHaveBeenCalledOnce();
   } finally {
@@ -143,60 +165,45 @@ it("publishes an empty Job's cleanup before the root completion", async () => {
   }
 });
 
-it("joins prompt-file cleanup once the Windows Job is empty", async () => {
-  const removing = createDeferred();
-  const release = createDeferred();
-  const removed = createDeferred();
-  const remove = fs.rm.bind(fs);
-  vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
-    if (!String(target).includes("openclaw-node-claude-prompt-")) {
-      return await remove(target, options);
-    }
-    removing.resolve();
-    await release.promise;
-    try {
-      await remove(target, options);
-    } finally {
-      removed.resolve();
-    }
-  });
-  stub.child.stdin!.once("finish", () => {
-    setImmediate(() => {
-      native.inspect.mockReturnValue([]);
-      stub.child.stdout?.emit("data", Buffer.from('{"type":"result"}\n'));
-      stub.child.stdout?.emit("end");
-      stub.child.stderr?.emit("end");
-      stub.emitExit(0);
-      stub.emitClose(0);
+it.each(["koffi", "launcher"] as const)(
+  "spawns without %s and reports unavailable Job certification",
+  async (missing) => {
+    native.koffiAvailable = missing !== "koffi";
+    native.launcherAvailable = missing !== "launcher";
+    const child = await createOwnedStdioProcess({
+      argv: [process.execPath, "fixture"],
+      exactEnv: true,
     });
-  });
-  const run = runClaudeCliNodeCommand({
-    client: { request: vi.fn().mockResolvedValue({}) },
-    frame: { id: "prompt-cleanup", nodeId: "fixture", command: "agent.cli.claude" },
-    request: {
-      argv: ["-p"],
-      stdin: "hello",
-      systemPrompt: "synthetic prompt",
-      idleTimeoutMs: 5_000,
-      timeoutMs: 5_000,
-    },
+    expect(native.spawn).toHaveBeenCalledWith(process.execPath, ["fixture"], expect.any(Object));
+    stub.emitExit(0);
+    stub.emitClose(0);
+    await expect(child.wait()).resolves.toEqual({ code: 0, signal: null });
+    await expect(child.waitForExtinction!()).resolves.toEqual({
+      status: "uncertain",
+      reason: "job-unavailable",
+    });
+    await expect(closeOwnedStdioProcess(child)).resolves.toBeUndefined();
+    expect(native.terminate).not.toHaveBeenCalled();
+    expect(native.close).not.toHaveBeenCalled();
+  },
+);
+
+it("preserves unavailable certification through a supervised exec session", async () => {
+  native.koffiAvailable = false;
+  const supervisor = createProcessSupervisor();
+  const run = await supervisor.spawn({
+    mode: "child",
     argv: [process.execPath, "fixture"],
-    cwd: undefined,
-    env: {},
-    timeoutMs: 5_000,
+    exactEnv: true,
   });
-  const settled = vi.fn();
-  void run.then(settled);
-  try {
-    await removing.promise;
-    await Promise.resolve();
-    expect(settled).not.toHaveBeenCalled();
-    release.resolve();
-    await expect(run).resolves.toMatchObject({ success: true, exitCode: 0 });
-    await removed.promise;
-  } finally {
-    release.resolve();
-    await run;
-    await removed.promise;
-  }
+  stub.child.stdout?.emit("end");
+  stub.child.stderr?.emit("end");
+  stub.emitExit(0);
+  stub.emitClose(0);
+  await expect(run.wait()).resolves.toMatchObject({ exitCode: 0, reason: "exit" });
+  await expect(run.waitForExtinction!()).resolves.toEqual({
+    status: "uncertain",
+    reason: "job-unavailable",
+  });
+  await supervisor.shutdown();
 });
