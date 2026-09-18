@@ -160,11 +160,11 @@ export async function prepareWorkspaceBuildGroup(
     reusablePluginGeneration?.preferBuiltPluginArtifacts ??
     options.preferBuiltPluginArtifacts === true;
   options.registryResources?.retainGeneration(reusablePluginGeneration);
-  const registryClaims = new Map<PluginRegistry, ReturnType<typeof retainPreparedPluginRegistry>>();
-  await using _registryClaims = {
+  await using registryCustody = {
+    claims: new Map<PluginRegistry, ReturnType<typeof retainPreparedPluginRegistry>>(),
     async [Symbol.asyncDispose]() {
       const results = await Promise.allSettled(
-        [...registryClaims.values()].map(async (release) => await release?.()),
+        [...this.claims.values()].map(async (release) => await release?.()),
       );
       const failures = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
@@ -180,8 +180,8 @@ export async function prepareWorkspaceBuildGroup(
     (registry) => {
       // A predecessor catalog can release its final lease during discovery. Take
       // construction custody at selection, including before async inspection loads.
-      if (!registryClaims.has(registry)) {
-        registryClaims.set(registry, retainPreparedPluginRegistry(registry));
+      if (!registryCustody.claims.has(registry)) {
+        registryCustody.claims.set(registry, retainPreparedPluginRegistry(registry));
       }
     },
     loadInboundPluginRegistry,

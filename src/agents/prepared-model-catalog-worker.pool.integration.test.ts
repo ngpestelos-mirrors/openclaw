@@ -664,10 +664,10 @@ describe("Gateway catalog worker pool", () => {
   }) => {
     const fixture = await createFleetFixture();
     await Promise.all(fixture.snapshots.map((snapshot) => loadCompletedFullCatalog(snapshot)));
-    const agentId = fixture.agentIds[0]!;
+    const predecessorAgentId = fixture.agentIds[0]!;
     const predecessor = await acquirePublishedPreparedModelRuntime({
-      agentId,
-      agentDir: fixture.entries[agentId]!.agentDir,
+      agentId: predecessorAgentId,
+      agentDir: fixture.entries[predecessorAgentId]!.agentDir,
       config: fixture.config,
     });
     const selected = createDeferredCore();
