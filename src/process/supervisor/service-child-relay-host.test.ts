@@ -620,7 +620,7 @@ it("retires a queued ordinary expiry when shutdown adopts the pending cleanup", 
   const { adapter, completeRoot, emit, closeControl, exitRelay, lineage } =
     await createRelay("linux");
   const now = vi.spyOn(performance, "now").mockReturnValue(10_000);
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
   try {
     const settled = vi.fn();
     const extinction = adapter.waitForExtinction();
@@ -628,10 +628,9 @@ it("retires a queued ordinary expiry when shutdown adopts the pending cleanup", 
     completeRoot();
     emit({ type: "closing", reason: "cancel" });
     lineage.end();
-    await nextTurn();
+    await vi.advanceTimersByTimeAsync(0);
     closeControl();
-    await nextTurn();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
+    await vi.advanceTimersByTimeAsync(0);
     now.mockReturnValue(15_000);
     vi.advanceTimersByTime(5_000);
     runWithProcessCleanupBudget({ deadline: 20_000, warn: vi.fn() }, () => adapter.kill("SIGTERM"));
@@ -858,6 +857,8 @@ it.each([
     if (leg === "kernel group") {
       relay.groupProbe.mockReturnValue(true);
     }
+    // Adding the fixed grace at this fractional reading loses sub-millisecond precision.
+    vi.spyOn(performance, "now").mockReturnValue(3192.0055);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       emit({ type: "closing", reason: "lineage-closed" });
@@ -920,16 +921,25 @@ it("bounds hard cancellation without any closing receipt or root result", async 
   }
 });
 
-it.each([-60_000, 60_000])(
-  "does not renew hard cleanup for repeated KILL, receipt, EOF or a %s ms wall-clock jump",
-  async (clockJump) => {
+it.each(
+  [-60_000, 60_000].flatMap((clockJump) => [
+    { clockJump, shutdown: false },
+    { clockJump, shutdown: true },
+  ]),
+)(
+  "does not renew hard cleanup for repeated KILL, receipt, EOF or a $clockJump ms wall-clock jump (shutdown=$shutdown)",
+  async ({ clockJump, shutdown }) => {
     const { adapter, emit, closeControl, cancellations, groupProbe } = await createRelay("linux");
+    vi.spyOn(performance, "now").mockReturnValue(3192.0055);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
       const settled = vi.fn();
       const outcomes = Promise.allSettled([adapter.wait(), adapter.waitForExtinction()]);
       void outcomes.then(settled);
-      adapter.kill("SIGKILL");
+      runWithProcessCleanupBudget(
+        shutdown ? { deadline: 3192.0055 + GRACEFUL_CANCEL_TIMEOUT_MS, warn: vi.fn() } : undefined,
+        () => adapter.kill("SIGKILL"),
+      );
       await vi.advanceTimersByTimeAsync(3_000);
       adapter.kill("SIGKILL");
       vi.setSystemTime(Date.now() + clockJump);

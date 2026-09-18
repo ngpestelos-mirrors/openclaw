@@ -27,7 +27,7 @@ export function createServiceChildCleanupDeadline(params: {
     startedAt ??= now;
     budget = shutdownBudget;
     deadline = budget?.deadline ?? startedAt + GRACEFUL_CANCEL_TIMEOUT_MS;
-    const remainingMs = Math.max(0, deadline - now);
+    const remainingMs = budget ? Math.max(0, deadline - now) : GRACEFUL_CANCEL_TIMEOUT_MS;
     if (budget) {
       // Leave time to observe native exit after escalation on a short stop budget.
       escalationTimer = setTimeout(
@@ -36,9 +36,10 @@ export function createServiceChildCleanupDeadline(params: {
       );
     }
     // A busy host can have native completion queued behind this timer.
+    // Timers truncate fractional delays; round up so expiry cannot run early.
     expiryTimer = setTimeout(() => {
       expiryPoll = setImmediate(params.expire);
-    }, remainingMs);
+    }, Math.ceil(remainingMs));
   };
   return {
     get at() {
