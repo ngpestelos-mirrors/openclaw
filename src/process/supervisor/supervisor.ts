@@ -373,9 +373,9 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       const cleanup = createDeferredCore<ProcessExtinctionResult>();
       owner.waitForExtinction = () => cleanup.promise;
       void cleanup.promise.catch(() => undefined);
-      let constructionCleanup: Promise<void> | undefined;
+      let constructionCleanup: Promise<ProcessExtinctionResult> | undefined;
       let ownedAdapter: SpawnProcessAdapter | undefined;
-      const onSpawnCleanup = (promise: Promise<void>) => {
+      const onSpawnCleanup = (promise: Promise<ProcessExtinctionResult>) => {
         constructionCleanup = promise;
         void promise.catch(() => undefined);
       };
@@ -450,18 +450,14 @@ export function createProcessSupervisor(): ProcessSupervisor & {
             // Child close can precede a descendant's private-input consumption.
             // Readiness failure is separate from the cleanup owner's outcome.
             await Promise.allSettled([ready]);
-            if (constructionCleanup) {
-              await constructionCleanup;
+            const nativeCleanup = constructionCleanup ?? started.waitForExtinction?.();
+            if (nativeCleanup) {
+              return await nativeCleanup;
             }
-            if (started.waitForExtinction) {
-              return await started.waitForExtinction();
-            }
-            if (!constructionCleanup) {
-              await started.wait();
-            }
+            await started.wait();
           },
           async () => {
-            await constructionCleanup;
+            return await constructionCleanup;
           },
         )
         .finally(() => {

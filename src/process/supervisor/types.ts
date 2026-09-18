@@ -66,7 +66,7 @@ export type ProcessAdapterConstruction = {
   beforeSpawn?: () => void;
   abortSignal?: AbortSignal;
   /** Publish resource cleanup before readiness or private-input delivery can fail. */
-  onSpawnCleanup?: (cleanup: Promise<void>) => void;
+  onSpawnCleanup?: (cleanup: Promise<ProcessExtinctionResult>) => void;
 };
 
 export type AwaitedStdoutConsumer = {

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -574,6 +575,65 @@ process.stdin.on("end", () => {
     const promptPath = result.stderr.match(/^prompt=(.+)$/mu)?.[1];
     expect(promptPath).toBeTruthy();
     await expect(fs.stat(promptPath ?? "")).rejects.toThrow();
+  });
+
+  it("joins prompt removal admitted by the process certifier before returning", async () => {
+    const executable = await executableScript('process.stdout.write(\'{"type":"result"}\\n\');');
+    const removing = createDeferred();
+    const release = createDeferred();
+    const removed = createDeferred();
+    const replies = client([]);
+    const gatedClient: NodeHostClient = {
+      async request<T>(method: string, params?: unknown): Promise<T> {
+        if (method === "node.invoke.progress") {
+          await removing.promise;
+        }
+        return replies.request<T>(method, params);
+      },
+    };
+    const remove = fs.rm.bind(fs);
+    const spy = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (!String(target).includes("openclaw-node-claude-prompt-")) {
+        return await remove(target, options);
+      }
+      removing.resolve();
+      await release.promise;
+      try {
+        await remove(target, options);
+      } finally {
+        removed.resolve();
+      }
+    });
+    try {
+      await withEnvAsync({ OPENCLAW_SERVICE_MARKER: "openclaw" }, async () => {
+        const run = runCommand(
+          executable,
+          {
+            argv: ["-p"],
+            systemPrompt: "synthetic prompt",
+            idleTimeoutMs: 5_000,
+            timeoutMs: 5_000,
+          },
+          { client: gatedClient },
+        );
+        const settled = vi.fn();
+        void run.then(settled, settled);
+        try {
+          await removing.promise;
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+          expect(settled).not.toHaveBeenCalled();
+        } finally {
+          release.resolve();
+          await expect(run).resolves.toMatchObject({ success: true });
+          await removed.promise;
+        }
+      });
+    } finally {
+      release.resolve();
+      spy.mockRestore();
+    }
   });
 
   it.runIf(process.platform !== "win32")(

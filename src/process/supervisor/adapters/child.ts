@@ -248,7 +248,7 @@ export async function createChildAdapter(
               return outcome;
             });
             void windowsCleanup.catch(() => {});
-            params.onSpawnCleanup?.(windowsCleanup.then(() => {}));
+            params.onSpawnCleanup?.(windowsCleanup);
             return owned.child;
           },
         }
@@ -710,7 +710,7 @@ export async function createChildAdapter(
     openStartGate,
   };
   if (!windowsCleanup) {
-    params.onSpawnCleanup?.(cleanup.promise);
+    params.onSpawnCleanup?.(adapter.waitForExtinction?.() ?? cleanup.promise);
   }
   const ready = (async () => {
     try {
