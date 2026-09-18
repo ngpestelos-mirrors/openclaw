@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { registerNodeSqliteDisposeCallback } from "../infra/kysely-sync-cache-state.js";
+import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import {
   assertSqliteSchemaContains,
@@ -12,6 +13,7 @@ import {
   assertSupportedStateSchemaVersion,
   readStateSchemaMigrationVersion,
 } from "./openclaw-state-db-schema-version.js";
+import type { DB } from "./openclaw-state-db.generated.js";
 import {
   getOpenClawStateRuntimeSchema,
   STATE_PERSISTENT_SCHEMA_COMPATIBILITY,
@@ -31,9 +33,14 @@ export function assertExistingOpenClawStateRuntimeSchema(
         `Existing shared-state database ${pathname} requires schema migration by its owning installation before this node can use it.`,
       );
     }
-    const metadata = database
-      .prepare("SELECT role, schema_version FROM schema_meta WHERE meta_key = 'primary' LIMIT 1")
-      .get();
+    const metadata = executeSqliteQueryTakeFirstSync(
+      database,
+      getNodeSqliteKysely<Pick<DB, "schema_meta">>(database)
+        .selectFrom("schema_meta")
+        .select(["role", "schema_version"])
+        .where("meta_key", "=", "primary")
+        .limit(1),
+    );
     if (metadata?.role !== "global" || metadata.schema_version !== version) {
       throw new Error(
         `Existing shared-state database ${pathname} has inconsistent ownership or schema metadata.`,
