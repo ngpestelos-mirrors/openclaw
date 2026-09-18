@@ -10,6 +10,8 @@ import {
 import { withConfigMutationLock } from "../../config/mutate.js";
 import { resolveStateDir } from "../../config/paths.js";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
+import type { GatewayServiceDefinitionBackup } from "../../daemon/service-definition-backup.js";
+import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
@@ -52,6 +54,7 @@ export async function rollbackFailedUpdate(params: {
   result: UpdateRunResult;
   previousRoot: string;
   packageTransaction?: PackageUpdateTransaction;
+  serviceDefinitionBackup?: GatewayServiceDefinitionBackup;
   rollbackBlockedReason?: "state-migrated-no-rollback" | "rollback-state-unverified";
   schemaVersions?: UpdateStateSchemaVersion[];
   candidateSchemaVersions?: OpenClawSchemaVersions;
@@ -388,6 +391,11 @@ export async function rollbackFailedUpdate(params: {
     // pre-activation verification authorizes restarting this schema-neutral restoration.
     let verdict = stopped.serviceUpdateVerdict ?? before?.serviceUpdateVerdict;
     const nodeRunner = before?.serviceNodeRunner ?? params.nodeRunner;
+    const definitionBackup = params.serviceDefinitionBackup;
+    if (definitionBackup) {
+      await withGatewayServiceOperationLock(recoveryEnv, () => definitionBackup.restore());
+    }
+    assertCurrent();
     if (verdict?.kind === "owned" && verdict.refreshDefinition) {
       await runUpdatedInstallGatewayCommand(
         {

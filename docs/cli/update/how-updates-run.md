@@ -403,6 +403,19 @@ Gateway handoff remain supported.
 
 #### Update validation and service definitions
 
+Before restarting a writable managed service, the updater uses the same service
+audit as Gateway status and Doctor to identify stale definition settings. It
+backs up recognized drift, rewrites through the updated installer, and records
+the changed keys and backup paths in update warnings. Unknown operator edits
+remain unchanged and produce a finding instead of an automatic rewrite.
+
+Rollback returns service-definition ownership to the serving release's installer.
+An update started by an older CLI can therefore regenerate that release's
+definition rather than restore identical file bytes; the previous installer
+preserves the operator settings it supports. Updates whose rollback is owned by
+the candidate also retain the service backup for restoration before reinstalling
+the previous release.
+
 With a local managed service and restart enabled, update validation precedes
 the stop as described above. The updater reports `Gateway: restarted and verified.`
 only after the restarted service passes verification. Plugin-owned readiness

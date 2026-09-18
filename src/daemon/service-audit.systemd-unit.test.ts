@@ -156,7 +156,7 @@ describe("auditGatewayServiceConfig systemd unit content", () => {
           unitName,
           "--no-page",
           "--property",
-          "After,Wants,RestartUSec,KillMode,LoadState,TimeoutStopUSec",
+          "After,Wants,RestartUSec,KillMode,LoadState,TimeoutStopUSec,TimeoutStartUSec",
         ],
         321,
       );
@@ -230,7 +230,7 @@ describe("auditGatewayServiceConfig systemd unit content", () => {
             unitName,
             "--no-page",
             "--property",
-            "After,Wants,RestartUSec,KillMode,LoadState,TimeoutStopUSec",
+            "After,Wants,RestartUSec,KillMode,LoadState,TimeoutStopUSec,TimeoutStartUSec",
           ],
           321,
         );

@@ -28,6 +28,8 @@ import { readDaemonRuntimePinForInstall } from "../../daemon/runtime-pin-state.j
 import { readEmbeddedGatewayToken } from "../../daemon/service-audit.js";
 import { mergeGatewayServiceEnv } from "../../daemon/service-env-merge.js";
 import { sanitizeServiceInspectionError } from "../../daemon/service-inspection-error.js";
+import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
+import { reconcileGatewayServiceDefinition } from "../../daemon/service-reconciliation.js";
 import {
   assertServiceDefinitionWritable,
   resolveManagedGatewayServiceCommand,
@@ -44,6 +46,7 @@ import {
   isLoopbackHost,
   resolveGatewayBindHost,
 } from "../../gateway/net.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
 import { hasErrnoCode, isMissingPathError } from "../../infra/errno.js";
 import {
   isDangerousHostEnvOverrideVarName,
@@ -481,22 +484,36 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
     warnings,
     emit,
     fail,
-    install: async () => {
-      await service.install({
-        runtimePinUpdate: {
-          expected: pinSnapshot,
-          pin: pinnedRuntimePath ? { runtime: runtimeRaw, path: pinnedRuntimePath } : undefined,
-        },
-        env: installEnv,
-        stdout,
-        warn,
-        programArguments,
-        workingDirectory,
-        environment,
-        environmentValueSources,
-        ...(opts.deferActivation ? { beforeLoad: waitForGatewayServiceLoad } : {}),
-      });
-    },
+    install: () =>
+      withGatewayServiceOperationLock(installEnv, (assertCurrent) =>
+        reconcileGatewayServiceDefinition({
+          env: installEnv,
+          command: existingServiceCommand,
+          expectedCommand: { programArguments, workingDirectory },
+          automatic:
+            isUpdateOwnedGatewayServiceCommand() ||
+            isTruthyEnvValue(process.env.OPENCLAW_UPDATE_IN_PROGRESS),
+          assertCurrent,
+          warn,
+          install: () =>
+            service.install({
+              runtimePinUpdate: {
+                expected: pinSnapshot,
+                pin: pinnedRuntimePath
+                  ? { runtime: runtimeRaw, path: pinnedRuntimePath }
+                  : undefined,
+              },
+              env: installEnv,
+              stdout,
+              warn,
+              programArguments,
+              workingDirectory,
+              environment,
+              environmentValueSources,
+              ...(opts.deferActivation ? { beforeLoad: waitForGatewayServiceLoad } : {}),
+            }),
+        }),
+      ),
   });
 }
 

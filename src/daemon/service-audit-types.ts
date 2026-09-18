@@ -1,17 +1,13 @@
-import type { GatewayServiceEnvironmentValueSource } from "./service-types.js";
+import type { GatewayServiceCommandConfig } from "./service-types.js";
 
-export type GatewayServiceCommand = {
-  programArguments: string[];
-  workingDirectory?: string;
-  environment?: Record<string, string>;
-  environmentValueSources?: Record<string, GatewayServiceEnvironmentValueSource>;
-  sourcePath?: string;
-} | null;
+export type GatewayServiceCommand = GatewayServiceCommandConfig | null;
 
 export type ServiceConfigIssue = {
   code: string;
   message: string;
   detail?: string;
   environmentKeys?: string[];
+  definitionKey?: string;
+  rewriteBlocked?: boolean;
   level?: "recommended" | "aggressive";
 };

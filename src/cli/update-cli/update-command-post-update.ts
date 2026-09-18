@@ -1,5 +1,6 @@
 import type { TriageFailureContext } from "../../commands/triage-prompt.js";
 import { readConfigFileSnapshot } from "../../config/config.js";
+import type { GatewayServiceDefinitionBackup } from "../../daemon/service-definition-backup.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   buildControlPlaneUpdateRestartHealthPendingResult,
@@ -86,6 +87,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
         : undefined,
     });
   let rollbackAttempted = false;
+  let serviceDefinitionBackup: GatewayServiceDefinitionBackup | undefined;
   let postVerificationRepairAttempted = false;
   let rollbackStopState: PreManagedServiceStop | undefined;
   // Rollback can replace the suspension owner.
@@ -173,6 +175,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
           result,
           previousRoot: params.root,
           packageTransaction: params.packageTransaction,
+          serviceDefinitionBackup,
           rollbackBlockedReason: params.rollbackBlockedReason,
           schemaVersions: params.schemaVersions,
           candidateSchemaVersions: params.candidateSchemaVersions,
@@ -524,6 +527,9 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
             resultWithPostUpdate = appendPluginUpdateWarnings(resultWithPostUpdate, warnings);
           },
           onVerified: recordVerifiedDowntime,
+          onDefinitionBackup: (backup) => {
+            serviceDefinitionBackup = backup;
+          },
         }),
       );
       if (restarted !== "failed" && restarted !== "restart-health-failed") {
@@ -626,10 +632,11 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
         stopped.windowsTaskAutoStartRecovery?.beginMutation();
         pendingRestartAtMs ??= stopped.stoppedAtMs;
       }));
-      const requiresInstallRootRefresh =
-        restartContext.serviceUpdateVerdict?.kind === "owned" &&
-        restartContext.serviceUpdateVerdict.requiresInstallRootRefresh;
-      if (resultWithPostUpdate.postUpdate?.plugins?.changed || requiresInstallRootRefresh) {
+      const requiresServiceRefresh =
+        restartContext.serviceDefinitionDrift ||
+        (restartContext.serviceUpdateVerdict?.kind === "owned" &&
+          restartContext.serviceUpdateVerdict.requiresInstallRootRefresh);
+      if (resultWithPostUpdate.postUpdate?.plugins?.changed || requiresServiceRefresh) {
         // Installation-only repair keeps the old Gateway serving; the native
         // installer owns replacement and rollback with its actual running state.
         // Convergence awaited package managers and plugin hooks. Revalidate the
@@ -645,13 +652,13 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
         );
         pendingRestartAtMs ??= Date.now();
         restartContext.restartScriptPath = null;
-        if (!params.serviceRuntimeRefreshRequired && !requiresInstallRootRefresh) {
+        if (!params.serviceRuntimeRefreshRequired && !requiresServiceRefresh) {
           restartContext.refreshGatewayServiceEnv = false;
         }
         await notifyRestart();
         await restoreWindowsAutoStart(resultWithPostUpdate);
         const reconciled = await restart();
-        if (requiresInstallRootRefresh && reconciled && resultWithPostUpdate.status === "skipped") {
+        if (requiresServiceRefresh && reconciled && resultWithPostUpdate.status === "skipped") {
           resultWithPostUpdate.status = "ok";
           delete resultWithPostUpdate.reason;
         }

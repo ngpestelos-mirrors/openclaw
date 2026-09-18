@@ -1,5 +1,6 @@
 // JSON/text response helpers for Gateway service lifecycle commands.
 import { Writable } from "node:stream";
+import type { GatewayServiceDefinitionPublication } from "../../daemon/service-stage.js";
 import type { GatewayService } from "../../daemon/service.js";
 import {
   isSystemdUnavailableDetail,
@@ -38,6 +39,7 @@ type DaemonActionResponse = {
   hints?: string[];
   hintItems?: DaemonHintItem[];
   warnings?: string[];
+  definitionPublication?: GatewayServiceDefinitionPublication;
   service?: {
     label: string;
     loaded: boolean;
@@ -230,7 +232,7 @@ export async function installDaemonServiceAndEmit(params: {
   warnings: string[];
   emit: (payload: Omit<DaemonActionResponse, "action">) => void;
   fail: (message: string, hints?: string[]) => void;
-  install: () => Promise<void>;
+  install: () => Promise<void | GatewayServiceDefinitionPublication>;
   /**
    * Runs only after the service has been written AND verified as loaded, but
    * before the success payload is emitted. Use this for post-success
@@ -239,8 +241,9 @@ export async function installDaemonServiceAndEmit(params: {
    */
   onVerified?: () => Promise<void>;
 }) {
+  let definitionPublication: void | GatewayServiceDefinitionPublication;
   try {
-    await params.install();
+    definitionPublication = await params.install();
   } catch (err) {
     params.fail(
       `${params.serviceNoun} install failed: ${String(err)}`,
@@ -280,5 +283,6 @@ export async function installDaemonServiceAndEmit(params: {
     result: "installed",
     service: buildDaemonServiceSnapshot(params.service, installed),
     warnings: params.warnings.length ? params.warnings : undefined,
+    ...(definitionPublication ? { definitionPublication } : {}),
   });
 }

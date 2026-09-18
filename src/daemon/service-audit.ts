@@ -1,16 +1,18 @@
 /** Audits installed daemon service definitions for drift and repair candidates. */
-import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { resolveInlineCommandMatch } from "../infra/shell-inline-command.js";
 import { POSIX_SHELL_WRAPPERS } from "../infra/shell-wrapper-resolution.js";
 import { parseTcpPort } from "../infra/tcp-port.js";
-import { resolveLaunchAgentPlistPath } from "./launchd.js";
+import { readServiceHeapExecArgv, resolveGatewayHeapNodeOptions } from "./gateway-heap.js";
+import { auditLaunchdDefinition } from "./service-audit-launchd.js";
 import { auditGatewayRuntime, SERVICE_RUNTIME_AUDIT_CODES } from "./service-audit-runtime.js";
+import { auditScheduledTaskDefinition } from "./service-audit-schtasks.js";
 import { auditSystemdUnit, SYSTEMD_SERVICE_AUDIT_CODES } from "./service-audit-systemd.js";
 import type { GatewayServiceCommand, ServiceConfigIssue } from "./service-audit-types.js";
 import { getMinimalServicePathPartsFromEnv, SERVICE_PROXY_ENV_KEYS } from "./service-env.js";
+import { resolveServiceEntrypointIndex } from "./service-layout.js";
 import {
   collectInlineManagedServiceEnvKeys,
   collectInlineServiceEnvKeys,
@@ -19,6 +21,7 @@ import {
   readEnvironmentValueSource,
 } from "./service-managed-env.js";
 import { isNonMinimalServicePathEntry, normalizeServicePathEntry } from "./service-path-policy.js";
+import { resolveManagedGatewayServiceCommand } from "./service-types.js";
 
 export type { GatewayServiceCommand, ServiceConfigIssue } from "./service-audit-types.js";
 
@@ -74,43 +77,18 @@ function isOpaquePosixShellInlineCommand(programArguments: string[]): boolean {
   );
 }
 
-async function auditLaunchdPlist(
-  env: Record<string, string | undefined>,
+function auditGatewayCommand(
+  command: GatewayServiceCommand,
   issues: ServiceConfigIssue[],
+  expected?: Pick<NonNullable<GatewayServiceCommand>, "programArguments" | "workingDirectory">,
+  platform = process.platform,
 ) {
-  const plistPath = resolveLaunchAgentPlistPath(env);
-  let content;
-  try {
-    content = await fs.readFile(plistPath, "utf8");
-  } catch {
+  if (!command) {
     return;
   }
-
-  const hasRunAtLoad = /<key>RunAtLoad<\/key>\s*<true\s*\/>/i.test(content);
-  const hasKeepAlive = /<key>KeepAlive<\/key>\s*<true\s*\/>/i.test(content);
-  if (!hasRunAtLoad) {
-    issues.push({
-      code: SERVICE_AUDIT_CODES.launchdRunAtLoad,
-      message: "LaunchAgent is missing RunAtLoad=true",
-      detail: plistPath,
-      level: "recommended",
-    });
-  }
-  if (!hasKeepAlive) {
-    issues.push({
-      code: SERVICE_AUDIT_CODES.launchdKeepAlive,
-      message: "LaunchAgent is missing KeepAlive=true",
-      detail: plistPath,
-      level: "recommended",
-    });
-  }
-}
-
-function auditGatewayCommand(programArguments: string[] | undefined, issues: ServiceConfigIssue[]) {
-  if (!programArguments || programArguments.length === 0) {
-    return;
-  }
+  const programArguments = command.programArguments;
   if (
+    programArguments.length &&
     !hasGatewaySubcommand(programArguments) &&
     !isOpaquePosixShellInlineCommand(programArguments)
   ) {
@@ -119,6 +97,39 @@ function auditGatewayCommand(programArguments: string[] | undefined, issues: Ser
       message: "Service command does not include the gateway subcommand",
       level: "aggressive",
     });
+  }
+  if (!expected) {
+    return;
+  }
+  const managed = resolveManagedGatewayServiceCommand(command) ?? command;
+  const currentArgs = serviceArgumentsToPreserve(managed.programArguments);
+  const expectedArgs = serviceArgumentsToPreserve(expected.programArguments);
+  let retained = 0;
+  for (const arg of expectedArgs ?? []) {
+    if (arg === currentArgs?.[retained]) {
+      retained++;
+    }
+  }
+  const removedArgs = !currentArgs || !expectedArgs || retained !== currentArgs.length;
+  const removedDirectory =
+    managed.workingDirectory !== undefined &&
+    (expected.workingDirectory === undefined ||
+      normalizeServicePathEntry(managed.workingDirectory, platform) !==
+        normalizeServicePathEntry(expected.workingDirectory, platform));
+  for (const key of [
+    removedArgs ? "ProgramArguments" : undefined,
+    removedDirectory ? "WorkingDirectory" : undefined,
+  ]) {
+    if (key) {
+      issues.push({
+        code: "gateway-command-edit",
+        definitionKey: key,
+        rewriteBlocked: true,
+        message: `Gateway service ${key} contains operator settings the installer would discard; the definition was preserved.`,
+        detail: command?.sourcePath,
+        level: "recommended",
+      });
+    }
   }
 }
 
@@ -405,9 +416,47 @@ export function checkTokenDrift(params: {
   return null;
 }
 
+// Compare only installer-preserved settings; executable, entrypoint, port and start-mode
+// selection remain with the install plan. Heap normalization stays with its existing owner.
+function serviceArgumentsToPreserve(argv: readonly string[]): string[] | undefined {
+  const entrypoint = resolveServiceEntrypointIndex(argv);
+  if (entrypoint === undefined) {
+    return undefined;
+  }
+  const nativeArgs = argv.slice(1, entrypoint);
+  const preserved: string[] = [];
+  for (let index = 0; index < nativeArgs.length; index++) {
+    const arg = nativeArgs[index]!;
+    const flag = arg.split("=")[0]!.replaceAll("_", "-");
+    const heap = resolveGatewayHeapNodeOptions(
+      arg.includes("=") ? arg : `${arg} ${nativeArgs[index + 1] ?? ""}`,
+    );
+    if (heap.startsWith(`${flag}=`)) {
+      index += arg.includes("=") ? 0 : 1;
+    } else {
+      preserved.push(arg);
+    }
+  }
+  const gatewayArgs = argv
+    .slice(entrypoint + 1)
+    .filter(
+      (arg, index, args) =>
+        arg !== "--allow-unconfigured" &&
+        arg !== "--port" &&
+        !arg.startsWith("--port=") &&
+        (args[index - 1] !== "--port" || arg.startsWith("--")),
+    );
+  // Repeated heap controls use the owner's last-value-wins semantics.
+  return [...preserved, ...gatewayArgs, ...readServiceHeapExecArgv(argv)];
+}
+
 export async function auditGatewayServiceConfig(params: {
   env: Record<string, string | undefined>;
   command: GatewayServiceCommand;
+  expectedCommand?: Pick<
+    NonNullable<GatewayServiceCommand>,
+    "programArguments" | "workingDirectory"
+  >;
   platform?: NodeJS.Platform;
   expectedGatewayToken?: string;
   expectedManagedServiceEnvKeys?: Iterable<string>;
@@ -418,7 +467,7 @@ export async function auditGatewayServiceConfig(params: {
   const issues: ServiceConfigIssue[] = [];
   const platform = params.platform ?? process.platform;
 
-  auditGatewayCommand(params.command?.programArguments, issues);
+  auditGatewayCommand(params.command, issues, params.expectedCommand, platform);
   auditGatewayServicePort({
     programArguments: params.command?.programArguments,
     issues,
@@ -438,9 +487,11 @@ export async function auditGatewayServiceConfig(params: {
   );
 
   if (platform === "linux") {
-    await auditSystemdUnit(params.env, issues, params.timeoutMs);
+    await auditSystemdUnit(params.env, issues, params.timeoutMs, params.command);
   } else if (platform === "darwin") {
-    await auditLaunchdPlist(params.env, issues);
+    await auditLaunchdDefinition(params.env, issues, params.timeoutMs);
+  } else if (platform === "win32" && params.command) {
+    await auditScheduledTaskDefinition(params.env, issues, params.timeoutMs);
   }
 
   const notes = runtimeNote ? { runtimeNote } : {};

@@ -1,8 +1,11 @@
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, it, vi, type Mock } from "vitest";
 import { GATEWAY_SERVICE_SELECTOR_ENV_KEYS } from "../../daemon/constants.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
+import * as systemdExec from "../../daemon/systemd-exec.js";
+import { buildSystemdUnit } from "../../daemon/systemd-unit.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { captureEnv } from "../../test-utils/env.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
@@ -190,20 +193,44 @@ export function registerServiceInstallationConvergenceTests(
     { drift: true, restart: true, pending: false },
     { drift: true, restart: false, pending: false },
     { drift: true, restart: true, pending: true },
+    { drift: "definition", restart: true, pending: false },
   ])(
     "reconciles an already-current service installation (drift=$drift, restart=$restart, pending=$pending)",
     async ({ drift, restart, pending }) => {
       const identity = createManagedServiceIdentityFixture(makeHome());
       try {
+        const definitionDrift = drift === "definition";
         const serviceUpdateVerdict = {
           kind: "owned" as const,
-          root: path.join(identity.home, drift ? "prefix-a" : "prefix-b"),
+          root: path.join(identity.home, drift === true ? "prefix-a" : "prefix-b"),
           fingerprint: "installed-command",
           refreshDefinition: true,
-          requiresInstallRootRefresh: drift,
+          requiresInstallRootRefresh: drift === true,
         };
         mocks.revalidateService.mockResolvedValue(serviceUpdateVerdict);
         mocks.readServiceState.mockResolvedValue(managedServiceState(process.env));
+        if (definitionDrift) {
+          vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+          vi.spyOn(systemdExec, "execSystemctlUser").mockResolvedValue({
+            code: 1,
+            stdout: "",
+            stderr: "fixture uses the on-disk unit",
+            termination: "exit",
+          });
+          const sourcePath = path.join(
+            identity.home,
+            ".config/systemd/user/openclaw-gateway.service",
+          );
+          const command = {
+            programArguments: [path.join(identity.home, "prefix-b/openclaw"), "gateway"],
+            environment: { PATH: "/usr/bin:/bin" },
+            sourcePath,
+            definitionPaths: [sourcePath],
+          };
+          await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+          await fs.writeFile(sourcePath, buildSystemdUnit(command).replace("KillMode=mixed\n", ""));
+          mocks.readServiceState.mockResolvedValue(managedServiceState(process.env, command));
+        }
         let originalRunning = true;
         mocks.stopService.mockImplementationOnce(async () => {
           originalRunning = false;
@@ -226,6 +253,18 @@ export function registerServiceInstallationConvergenceTests(
             coreAlreadyCurrent: true,
             shouldRestart: restart,
             mutationStarted: false,
+            ...(definitionDrift
+              ? {
+                  result: {
+                    status: "skipped",
+                    reason: "already-current",
+                    mode: "npm",
+                    root: serviceUpdateVerdict.root,
+                    steps: [],
+                    durationMs: 0,
+                  },
+                }
+              : {}),
             preManagedServiceStop: {
               stopped: false,
               inspected: true,
@@ -238,7 +277,7 @@ export function registerServiceInstallationConvergenceTests(
         );
         expect(mocks.restartService).toHaveBeenCalledTimes(drift && restart ? 1 : 0);
         expect(mocks.stopService).not.toHaveBeenCalled();
-        if (pending) {
+        if (pending || definitionDrift) {
           expect(mocks.printResult).toHaveBeenCalledWith(
             expect.objectContaining({ status: "ok" }),
             expect.anything(),

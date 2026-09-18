@@ -177,23 +177,7 @@ export async function beginDoctorMaintenance(params: {
     if (!before?.serviceEnv || !root) {
       return;
     }
-    if (!before.stopped) {
-      const verdict = before.serviceUpdateVerdict;
-      if (verdict?.kind === "owned" && verdict.requiresInstallRootRefresh) {
-        const { inspectGatewayServiceInstallationDrift } =
-          await import("../daemon/service-layout.js");
-        const drift = await inspectGatewayServiceInstallationDrift(
-          { packageRootReal: verdict.root },
-          root,
-        );
-        if (drift) {
-          const { formatGatewayServiceInstallationDrift } =
-            await import("../cli/daemon-cli/shared.js");
-          const message = `${formatGatewayServiceInstallationDrift(drift, undefined, env)} The service was already stopped; Doctor left its definition and stop state unchanged.`;
-          warnings.push(message);
-          params.runtime.log(message);
-        }
-      }
+    if (!before.stopped && before.serviceUpdateVerdict?.kind !== "owned") {
       return;
     }
     try {
@@ -248,7 +232,7 @@ export async function beginDoctorMaintenance(params: {
             preManagedServiceStop: before,
           }),
         );
-        if (installation.kind === "owned" && installation.requiresInstallRootRefresh) {
+        if (installation.kind === "owned") {
           const [{ maybeRepairGatewayServiceConfig }, { createDoctorPrompter }] = await Promise.all(
             [import("./doctor-gateway-services.js"), import("./doctor-prompter.js")],
           );
@@ -259,6 +243,7 @@ export async function beginDoctorMaintenance(params: {
               params.runtime,
               createDoctorPrompter({ runtime: params.runtime, options: params.options }),
               {
+                stageOnly: !before.stopped,
                 serviceMaintenance: {
                   managerUid: before.serviceManagerUid,
                   assertCurrent: assertMaintenanceCurrent,
@@ -279,12 +264,15 @@ export async function beginDoctorMaintenance(params: {
           );
           assertMaintenanceCurrent();
           if (repaired.kind === "owned" && !repaired.requiresInstallRootRefresh) {
-            return current;
+            if (!before.stopped || current.running) {
+              return current;
+            }
+          } else {
+            const message = `Gateway service still targets ${installation.root}; Doctor could not reconcile it with ${root}. The previous installation remains stopped because state compatibility is unverified. Run ${formatCliCommand("openclaw gateway install --force", env)} from the intended install.`;
+            warnings.push(message);
+            params.runtime.log(message);
+            return undefined;
           }
-          const message = `Gateway service still targets ${installation.root}; Doctor could not reconcile it with ${root}. The previous installation remains stopped because state compatibility is unverified. Run ${formatCliCommand("openclaw gateway install --force", env)} from the intended install.`;
-          warnings.push(message);
-          params.runtime.log(message);
-          return undefined;
         }
         assertMaintenanceCurrent();
         await settle(() =>
@@ -298,7 +286,7 @@ export async function beginDoctorMaintenance(params: {
         assertMaintenanceCurrent();
         return current;
       });
-      if (!state) {
+      if (!state || !before.stopped) {
         return;
       }
       const port = await resolveUpdatedGatewayRestartPort({

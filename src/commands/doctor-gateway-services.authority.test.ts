@@ -11,14 +11,20 @@ import {
   buildSystemdManagerPropertyOutput,
   buildSystemdUnitPropertyOutput,
 } from "../daemon/service.test-helpers.js";
-import { buildSystemdUnit } from "../daemon/systemd-unit.js";
+import { readSystemdEnvironmentFile } from "../daemon/systemd-service-files.js";
+import {
+  buildSystemdUnit,
+  parseSystemdEnvAssignments,
+  parseSystemdExecStart,
+} from "../daemon/systemd-unit.js";
+import { parseTcpPortFromArgs } from "../infra/tcp-port.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import type { DoctorPrompter } from "./doctor-prompter.js";
+import { createDoctorPrompter, type DoctorPrompter } from "./doctor-prompter.js";
 
 const edges = vi.hoisted(() => ({
   command: vi.fn<typeof import("../process/exec.js").runCommandWithTimeout>(),
@@ -73,7 +79,21 @@ describe.skipIf(process.platform === "win32")("Doctor native repair authority or
       tokenPresent = false,
       update = false,
       blockedTarget,
-    }: { tokenPresent?: boolean; update?: boolean; blockedTarget?: "installed" | "planned" } = {},
+      missingKillMode = false,
+      unknownOperatorDirective = false,
+      nonInteractive = false,
+      servicePort = 18789,
+      force = update,
+    }: {
+      tokenPresent?: boolean;
+      update?: boolean;
+      blockedTarget?: "installed" | "planned";
+      missingKillMode?: boolean;
+      unknownOperatorDirective?: boolean;
+      nonInteractive?: boolean;
+      servicePort?: number;
+      force?: boolean;
+    } = {},
   ) {
     state = await createOpenClawTestState({ prefix: "doctor-authority-" });
     const { root, home, stateDir, configPath } = state;
@@ -98,16 +118,26 @@ describe.skipIf(process.platform === "win32")("Doctor native repair authority or
       plugins: { enabled: false },
     };
     const originalConfig = `${JSON.stringify(cfg, null, 2)}\n`;
-    const programArguments = [wrapperPath, "gateway", "--port", "18789"];
+    const programArguments = [wrapperPath, "gateway", "--port", String(servicePort)];
     const environment = {
       HOME: home,
       OPENCLAW_STATE_DIR: installedStateDir,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WRAPPER: wrapperPath,
       OPENCLAW_GATEWAY_TOKEN: embeddedToken,
+      ...(missingKillMode ? { NODE_OPTIONS: "--max-old-space-size=8192" } : {}),
       PATH: "/usr/local/bin:/usr/bin:/bin",
     };
-    const originalUnit = buildSystemdUnit({ programArguments, environment });
+    let originalUnit = buildSystemdUnit({ programArguments, environment });
+    if (missingKillMode) {
+      originalUnit = originalUnit.replace("KillMode=mixed\n", "");
+    }
+    if (unknownOperatorDirective) {
+      originalUnit = originalUnit.replace(
+        "[Service]\n",
+        "[Service]\nExecStartPre=/operator/check-gateway\n",
+      );
+    }
     const originalEnvironment = "OPERATOR_FIXTURE=unchanged\n";
     await fs.writeFile(configPath, originalConfig, { mode: 0o600 });
     await fs.writeFile(unitPath, originalUnit, { mode: 0o644 });
@@ -222,8 +252,15 @@ describe.skipIf(process.platform === "win32")("Doctor native repair authority or
       } else if (binary === "systemctl" && args.includes("--property=UnitPath")) {
         stdout = `${systemUnits}\n`;
       } else if (binary === "systemctl" && args.includes("show")) {
-        stdout =
-          "After=network-online.target\nWants=network-online.target\nRestartUSec=5s\nKillMode=control-group\n";
+        const definition = await readFile(unitPath, "utf8");
+        stdout = [
+          "After=network-online.target",
+          "Wants=network-online.target",
+          "RestartUSec=5s",
+          `KillMode=${/^KillMode=(.*)$/mu.exec(definition)?.[1] ?? "control-group"}`,
+          `TimeoutStopUSec=${/^TimeoutStopSec=(.*)$/mu.exec(definition)?.[1] ?? "90"}s`,
+          `TimeoutStartUSec=${/^TimeoutStartSec=(.*)$/mu.exec(definition)?.[1] ?? "90"}s`,
+        ].join("\n");
       } else if (binary === "systemctl" && args.includes("status")) {
         stdout = "running\n";
       } else if (binary === "systemctl" && args.includes("is-enabled")) {
@@ -320,12 +357,49 @@ describe.skipIf(process.platform === "win32")("Doctor native repair authority or
             },
           });
         }
-        const result = await maybeRepairGatewayServiceConfig(cfg, "local", runtime, prompter);
+        const result = await maybeRepairGatewayServiceConfig(
+          cfg,
+          "local",
+          runtime,
+          nonInteractive
+            ? createDoctorPrompter({
+                runtime,
+                options: { repair: true, nonInteractive: true, force },
+              })
+            : prompter,
+        );
         const configBytes = await fs.readFile(configPath, "utf8");
         const persisted: OpenClawConfig = JSON.parse(configBytes);
         const diagnostics = [...edges.note.mock.calls.map(([message]) => message), ...errors].join(
           "\n",
         );
+        const installedUnit = await fs.readFile(unitPath, "utf8");
+        const unitDirectoryEntries = await fs.readdir(path.dirname(unitPath));
+        const unitBackups = await Promise.all(
+          unitDirectoryEntries
+            .filter((file) => file.startsWith("openclaw-gateway.service.reconcile-"))
+            .map(async (file) => {
+              const backupPath = path.join(path.dirname(unitPath), file);
+              return {
+                path: backupPath,
+                originalPreserved: (await fs.readFile(backupPath, "utf8")) === originalUnit,
+                mode: (await fs.stat(backupPath)).mode & 0o777,
+              };
+            }),
+        );
+        const installedEnvironment = {
+          ...Object.fromEntries(
+            installedUnit
+              .split("\n")
+              .filter((line) => line.startsWith("Environment="))
+              .flatMap((line) =>
+                parseSystemdEnvAssignments(line.slice("Environment=".length)).map(
+                  ({ key, value }) => [key, value],
+                ),
+              ),
+          ),
+          ...(await readSystemdEnvironmentFile(environmentPath)).environment,
+        };
         const observations = {
           capability,
           plannedCapability,
@@ -335,12 +409,18 @@ describe.skipIf(process.platform === "win32")("Doctor native repair authority or
           embeddedTokenPersisted: persisted.gateway?.auth?.token === embeddedToken,
           returnedTokenPreserved: result.gateway?.auth?.token === cfg.gateway?.auth?.token,
           returnedConfigPreserved: isDeepStrictEqual(result, JSON.parse(originalConfig)),
-          unitBytesPreserved: (await fs.readFile(unitPath, "utf8")) === originalUnit,
+          unitBytesPreserved: installedUnit === originalUnit,
+          unitHasMixedKillMode: /^KillMode=mixed$/mu.test(installedUnit),
+          installedPort: parseTcpPortFromArgs(
+            parseSystemdExecStart(/^ExecStart=(.*)$/mu.exec(installedUnit)?.[1] ?? ""),
+          ),
+          heapSettingPreserved: installedEnvironment.NODE_OPTIONS === environment.NODE_OPTIONS,
+          unitBackups,
           environmentBytesPreserved:
             (await fs.readFile(environmentPath, "utf8")) === originalEnvironment,
           installedEnvironmentBytesPreserved:
             (await fs.readFile(installedEnvironmentPath, "utf8")) === originalEnvironment,
-          unitDirectoryEntries: await fs.readdir(path.dirname(unitPath)),
+          unitDirectoryEntries,
           nativeActions,
         };
         expect(unexpectedProcesses).toEqual([]);
@@ -460,5 +540,45 @@ describe.skipIf(process.platform === "win32")("Doctor native repair authority or
       "openclaw-gateway.service",
       "openclaw-gateway.service.bak",
     ]);
+  });
+
+  it.each([false, true])(
+    "doctor --fix reconciles an older unit without prompting (update=%s)",
+    async (update) => {
+      const { observations, diagnostics, errors } = await runRepair("writable", {
+        missingKillMode: true,
+        nonInteractive: true,
+        servicePort: 19305,
+        update,
+        force: false,
+      });
+      expect(errors).toEqual([]);
+      expect(observations.unitHasMixedKillMode).toBe(true);
+      expect(observations.heapSettingPreserved).toBe(true);
+      expect(observations.installedPort).toBe(19305);
+      expect(observations.unitBackups).toEqual([
+        expect.objectContaining({ originalPreserved: true, mode: 0o600 }),
+      ]);
+      expect(diagnostics).toContain("Reconciled Gateway service definition: Service.KillMode");
+      expect(diagnostics).toContain(observations.unitBackups[0]!.path);
+      expect(observations.nativeActions).toEqual(
+        update ? [] : ["daemon-reload", "enable", "restart"],
+      );
+    },
+  );
+
+  it("doctor --fix preserves an unknown operator directive and names the blocked key", async () => {
+    const { observations, diagnostics, errors } = await runRepair("writable", {
+      missingKillMode: true,
+      unknownOperatorDirective: true,
+      nonInteractive: true,
+    });
+    expect(errors).toEqual([]);
+    expect(observations.unitBytesPreserved).toBe(true);
+    expect(observations.configBytesPreserved).toBe(true);
+    expect(observations.unitBackups).toEqual([]);
+    expect(observations.nativeActions).toEqual([]);
+    expect(diagnostics).toContain("Service.ExecStartPre cannot be reconciled automatically");
+    expect(diagnostics).not.toContain("Reconciled Gateway service definition:");
   });
 });

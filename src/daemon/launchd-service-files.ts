@@ -70,7 +70,7 @@ function buildLaunchAgentEnvironmentFile(entries: Array<[string, string]>): stri
   ].join("\n");
 }
 
-function buildLaunchAgentEnvironmentWrapper(): string {
+export function buildLaunchAgentEnvironmentWrapper(): string {
   return `#!/bin/sh
 set -eu
 env_file="$1"

@@ -121,8 +121,12 @@ describe("daemon install verification", () => {
 
   it("emits success only after the service-manager verification succeeds", async () => {
     const params = createInstallParams(vi.fn(async () => true));
+    const definitionPublication = {
+      files: [{ sourcePath: "/fixture/service", after: null }],
+      taskPolicySha256: null,
+    };
 
-    await installDaemonServiceAndEmit(params);
+    await installDaemonServiceAndEmit({ ...params, install: async () => definitionPublication });
 
     expect(params.fail).not.toHaveBeenCalled();
     expect(params.emit).toHaveBeenCalledWith(
@@ -130,6 +134,7 @@ describe("daemon install verification", () => {
         ok: true,
         result: "installed",
         service: expect.objectContaining({ loaded: true }),
+        definitionPublication,
       }),
     );
   });

@@ -26,6 +26,14 @@ configured. Source checkouts, deployment-owned overrides, and unavailable native
 inspection do not grant automatic installation repair authority; Doctor reports
 the mismatch and the next repair action.
 
+`openclaw doctor --fix` also repairs recognized service-definition drift, such as
+an older systemd unit missing `KillMode=mixed` or a Scheduled Task missing restart
+retries. It backs up the definition before using the normal installer and reports
+the changed keys and backup paths. Installer-supported environment, heap, and
+command settings survive the rewrite. Unknown edits and operator-owned drop-ins
+that conflict with the required settings stay unchanged; Doctor names the key
+and explains why the installer cannot repair it automatically.
+
 For legacy services or conflicting systemd scopes, run `openclaw doctor`
 interactively to review the findings and confirm supported cleanup. Cleanup
 reports what it removed or skipped; it does not guarantee a replacement service

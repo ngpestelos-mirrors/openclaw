@@ -7,6 +7,7 @@ import {
   checkShellCompletionStatus,
   ensureCompletionCacheExists,
 } from "../../commands/doctor-completion.js";
+import type { GatewayServiceDefinitionBackup } from "../../daemon/service-definition-backup.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { readGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
@@ -35,6 +36,7 @@ import {
   DEFINITION_DENIAL,
   GatewayRestartHealthError,
   isPackageManagerUpdateMode,
+  refreshUpdatedGatewayService,
   runUpdatedInstallGatewayCommand,
 } from "./update-command-service-command.js";
 import type { ManagedGatewayUpdateVerdict } from "./update-command-service-context-types.js";
@@ -236,6 +238,7 @@ export async function maybeRestartService(params: {
   onVerificationFailure?: (reason: string) => void;
   onPluginWarnings?: (warnings: readonly PluginUpdateWarning[]) => void;
   onVerified?: (verifiedAtMs: number) => void;
+  onDefinitionBackup?: (backup: GatewayServiceDefinitionBackup) => void;
 }): Promise<
   "ok" | "readiness-pending" | "reconciliation-pending" | "failed" | "restart-health-failed"
 > {
@@ -438,7 +441,17 @@ export async function maybeRestartService(params: {
       if (activation.refreshServiceEnv && activation.serviceInstallEnv !== null) {
         try {
           recordPhase("restarting");
-          await runUpdatedInstallGatewayCommand(activation, "install");
+          await refreshUpdatedGatewayService({
+            ...activation,
+            assertCurrent,
+            onDefinitionBackup: params.onDefinitionBackup,
+            onWarnings: (warnings) =>
+              recordServiceReconciliationWarning(
+                activation.result,
+                activation.serviceEnv,
+                warnings.join("\n"),
+              ),
+          });
           // Windows /Run can retain A even after the task script points at B.
           // Reconcile its process with an explicit restart before accepting health.
           if (

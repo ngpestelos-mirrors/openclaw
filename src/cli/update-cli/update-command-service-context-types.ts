@@ -36,6 +36,7 @@ export type PreManagedServiceStop = {
 };
 
 export type UpdateRestartParams = {
+  coreAlreadyCurrent?: boolean;
   result: UpdateRunResult;
   root: string;
   preManagedServiceStop?: PreManagedServiceStop;

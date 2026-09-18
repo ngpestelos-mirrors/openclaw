@@ -3,7 +3,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { buildLaunchAgentPlist } from "../../daemon/launchd-plist.js";
 import { decodeLaunchAgentPlistFixture } from "../../daemon/launchd-plist.test-support.js";
@@ -13,9 +14,13 @@ import {
   resolveLaunchAgentEnvWrapperPath,
 } from "../../daemon/launchd-service-files.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
+import { resolveSystemdUnitPath } from "../../daemon/systemd-service-files.js";
+import { buildSystemdUnit } from "../../daemon/systemd-unit.js";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
+import * as serviceTemp from "../../infra/tmp-openclaw-dir.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
 import { captureEnv } from "../../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import * as runtimeUtils from "../../utils.js";
 import { VERSION } from "../../version.js";
@@ -25,6 +30,7 @@ import * as startRepair from "../daemon-cli/start-repair.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { registerGenerationRecoveryTests } from "./update-command-generation.test-support.js";
 import { assertGatewayServiceManagementAllowedForUpdate } from "./update-command-service-plan.js";
+import { registerServiceDefinitionPublicationTests } from "./update-command-service-publication.test-support.js";
 import {
   createServiceActivationFixture,
   readyRecoveryHealth,
@@ -151,6 +157,9 @@ vi.mock("./update-command-service-command.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./update-command-service-command.js")>();
   return {
     ...actual,
+    refreshUpdatedGatewayService: (
+      params: Parameters<typeof actual.refreshUpdatedGatewayService>[0],
+    ) => actual.refreshUpdatedGatewayService({ ...params, opts: { json: params.opts.json } }),
     runUpdatedInstallGatewayCommand: (
       ...[params, action, preserve]: Parameters<typeof actual.runUpdatedInstallGatewayCommand>
     ) =>
@@ -230,6 +239,8 @@ vi.mock("../daemon-cli/lifecycle-audit.js", () => ({
   createGatewayLifecycleMutationAudit: vi.fn(),
 }));
 
+// One private temp root keeps native locks isolated and the lease store bounded.
+const serviceScratch = useAutoCleanupTempDirTracker(afterAll).make("update-service-scratch-");
 let root: string;
 let configPath: string;
 let run: NonNullable<UpdateCommandOptions["run"]>;
@@ -239,6 +250,7 @@ const writeConfig = (version: string) => writeRecoveryConfig(configPath, version
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.exit.mockReset();
+  vi.spyOn(serviceTemp, "resolvePreferredOpenClawTmpDir").mockReturnValue(serviceScratch);
   mockProcessPlatform("linux");
   ({ root, configPath, envSnapshot } = await createServiceActivationFixture());
   const runEnv = { ...process.env };
@@ -269,7 +281,7 @@ beforeEach(async () => {
   mocks.events = [];
   mocks.stopAllowances = [];
   mocks.capability.mockResolvedValue({ kind: "sealed", reason: "foreign-owner" });
-  mocks.command.mockResolvedValue({
+  const installedCommand = {
     programArguments: [
       process.execPath,
       path.join(root, "dist", "index.js"),
@@ -278,8 +290,10 @@ beforeEach(async () => {
       "19305",
     ],
     environment: { HOME: root },
-    sourcePath: "/etc/systemd/system/openclaw-gateway.service",
-  });
+    sourcePath: resolveSystemdUnitPath(process.env),
+  };
+  await fs.writeFile(installedCommand.sourcePath, buildSystemdUnit(installedCommand));
+  mocks.command.mockResolvedValue(installedCommand);
   mocks.child.mockReset().mockImplementation(async (args) => {
     if (!args.includes("restart")) {
       throw new Error("Unexpected subprocess in activation fixture");
@@ -301,6 +315,7 @@ beforeEach(async () => {
     .mockRejectedValue(new Error("Unexpected config snapshot during preserved activation"));
 });
 afterEach(async () => {
+  await cleanupSessionStateForTest({ stateDir: path.join(root, ".openclaw") });
   envSnapshot.restore();
   clearConfigCache();
   clearRuntimeConfigSnapshot();
@@ -309,6 +324,8 @@ afterEach(async () => {
 });
 
 describe("preserved update activation with real version guards", () => {
+  registerServiceDefinitionPublicationTests(() => ({ root, run, mocks }));
+
   registerRestartOutcomeTests(() => ({ root, run, mocks }));
 
   it.each([
@@ -931,7 +948,28 @@ describe("preserved update activation with real version guards", () => {
       expect(writeFile).toHaveBeenCalled();
     } else {
       expect(await snapshot()).toEqual(before);
-      expect(writeFile).not.toHaveBeenCalled();
+      if (scenario.startsWith("parent late")) {
+        const backupPaths: string[] = [];
+        for (const original of before.slice(0, 3)) {
+          const directory = path.dirname(original.file);
+          const backups = (await fs.readdir(directory)).filter(
+            (file) =>
+              file.startsWith(`${path.basename(original.file)}.reconcile-`) &&
+              file.endsWith(".bak"),
+          );
+          expect(backups).toHaveLength(1);
+          const backupPath = path.join(directory, backups[0]!);
+          backupPaths.push(backupPath);
+          expect(await fs.readFile(backupPath)).toEqual(original.bytes);
+          expect((await fs.stat(backupPath)).mode & 0o077).toBe(0);
+        }
+        expect(writeFile.mock.calls.map(([file]) => file)).toEqual(
+          expect.arrayContaining(backupPaths),
+        );
+        expect(writeFile).toHaveBeenCalledTimes(backupPaths.length);
+      } else {
+        expect(writeFile).not.toHaveBeenCalled();
+      }
       expect(chmod).not.toHaveBeenCalled();
       expect(rename).not.toHaveBeenCalled();
     }

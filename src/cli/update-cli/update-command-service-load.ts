@@ -29,6 +29,7 @@ export async function runGatewayInstallWithLoadBoundary(params: {
   signal?: AbortSignal;
   timeoutMs: number;
   boundary: UpdateServiceLoadBoundary;
+  onOutput?: (stdout: string) => void;
 }): Promise<"unverified"> {
   const controller = new AbortController();
   const signal = AbortSignal.any([
@@ -107,6 +108,7 @@ export async function runGatewayInstallWithLoadBoundary(params: {
         { cause: failure },
       );
     }
+    params.onOutput?.(result.stdout);
     return "unverified";
   } catch (cause) {
     controller.abort();

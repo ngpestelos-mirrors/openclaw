@@ -92,6 +92,7 @@ import {
 } from "./doctor/shared/update-phase.js";
 
 type GatewayServiceConfigRepairOptions = {
+  stageOnly?: boolean;
   allowConfigSizeDrop?: boolean;
   allowExecSecretRefs?: boolean;
   lastTouchedVersionOverride?: string;
@@ -529,9 +530,7 @@ export async function maybeRepairGatewayServiceConfig(
     ? await inspectGatewayServiceInstallationDrift(serviceLayout, expectedRoot)
     : undefined;
   const repairPort =
-    installationDrift &&
-    cfg.gateway?.port === undefined &&
-    !process.env.OPENCLAW_GATEWAY_PORT?.trim()
+    cfg.gateway?.port === undefined && !process.env.OPENCLAW_GATEWAY_PORT?.trim()
       ? (parseTcpPortFromArgs(command.programArguments) ?? port)
       : port;
   const expectedManagedServiceEnvKeys = readManagedServiceEnvKeysFromEnvironment(
@@ -540,6 +539,7 @@ export async function maybeRepairGatewayServiceConfig(
   const audit = await auditGatewayServiceConfig({
     env: process.env,
     command,
+    expectedCommand: expectedPlan,
     expectedGatewayToken,
     expectedManagedServiceEnvKeys,
     expectedServicePath: expectedPlan.environment.PATH,
@@ -659,6 +659,12 @@ export async function maybeRepairGatewayServiceConfig(
     ),
   );
   note(consolidatedLines.join("\n"), "Gateway service config");
+  const definitionKeys = audit.issues.flatMap((issue) =>
+    issue.definitionKey ? [issue.definitionKey] : [],
+  );
+  if (audit.issues.some((issue) => issue.rewriteBlocked)) {
+    return cfg;
+  }
   if (audit.issues.every((issue) => issue.code === SERVICE_AUDIT_CODES.gatewayRuntimeProbeFailed)) {
     return cfg;
   }
@@ -710,7 +716,12 @@ export async function maybeRepairGatewayServiceConfig(
     );
     return cfg;
   }
-  if (process.platform === "linux" && updateRepairMode && !prompter.shouldForce) {
+  if (
+    process.platform === "linux" &&
+    updateRepairMode &&
+    !prompter.shouldForce &&
+    (definitionKeys.length === 0 || needsAggressive)
+  ) {
     note(
       "Update-mode doctor detected gateway service drift but left the live systemd unit unchanged. Review the service file and run `openclaw gateway install --force` when you want OpenClaw to rewrite its managed unit; operator-owned drop-ins remain unchanged.",
       "Gateway service config",
@@ -734,7 +745,8 @@ export async function maybeRepairGatewayServiceConfig(
     : await prompter.confirmRuntimeRepair({
         message: repairMessage,
         initialValue: needsAggressive ? prompter.shouldForce : true,
-        requiresInteractiveConfirmation: !installationDrift,
+        requiresInteractiveConfirmation:
+          !installationDrift && (definitionKeys.length === 0 || needsAggressive),
       });
   if (!repair) {
     if (!emittedSourceCheckoutWarning) {
@@ -882,36 +894,43 @@ export async function maybeRepairGatewayServiceConfig(
   // Windows `install` activates the task/login item. Require both a running
   // gateway and parent authorization so `update --no-restart` stays non-disruptive.
   const repairService =
-    updateRepairMode && !updateRepairShouldInstall ? service.stage : service.install;
+    options.stageOnly || (updateRepairMode && !updateRepairShouldInstall)
+      ? service.stage
+      : service.install;
+  if (process.platform === "win32" && repairService === service.stage && definitionKeys.length) {
+    note(
+      `Scheduled Task ${definitionKeys.join(", ")} still differs: the task is stopped and its installer cannot replace native settings without activation. The existing task was preserved.`,
+      "Gateway service config",
+    );
+    return cfgForServiceInstall;
+  }
   try {
-    const install = () =>
-      repairService({
-        runtimePinUpdate: { expected: pinSnapshot, pin: pinSnapshot.pin },
-        env: serviceRepairEnv,
-        stdout: process.stdout,
-        warn: (message) => note(message, "Gateway"),
-        programArguments: updatedPlan.programArguments,
-        workingDirectory: updatedPlan.workingDirectory,
-        environment: updatedPlan.environment,
-        environmentValueSources: updatedPlan.environmentValueSources,
-        startupFallbackTakeoverRuntime,
-      });
+    await repairGatewayServiceInstallation({
+      service,
+      command,
+      activeRoot: installationDrift ? expectedRoot : undefined,
+      expectedCommand: updatedPlan,
+      maintenance: options.serviceMaintenance,
+      env: serviceRepairEnv,
+      updateRepairMode,
+      install: () =>
+        repairService({
+          runtimePinUpdate: { expected: pinSnapshot, pin: pinSnapshot.pin },
+          env: serviceRepairEnv,
+          stdout: process.stdout,
+          warn: (message) => note(message, "Gateway"),
+          programArguments: updatedPlan.programArguments,
+          workingDirectory: updatedPlan.workingDirectory,
+          environment: updatedPlan.environment,
+          environmentValueSources: updatedPlan.environmentValueSources,
+          startupFallbackTakeoverRuntime,
+        }),
+    });
     if (installationDrift && expectedRoot) {
-      await repairGatewayServiceInstallation({
-        service,
-        command,
-        activeRoot: expectedRoot,
-        maintenance: options.serviceMaintenance,
-        env: serviceRepairEnv,
-        install,
-        updateRepairMode,
-      });
       note(
         "Gateway service installation reconciled with the active CLI.",
         "Gateway service installation",
       );
-    } else {
-      await install();
     }
     if (
       updateRepairShouldInstall &&

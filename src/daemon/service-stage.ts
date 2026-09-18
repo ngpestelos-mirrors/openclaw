@@ -27,6 +27,20 @@ export const GatewayServiceStagedFilesSchema = z.strictObject({
     .max(16),
 });
 export type GatewayServiceStagedFiles = z.infer<typeof GatewayServiceStagedFilesSchema>;
+export const GatewayServiceDefinitionPublicationSchema = z.strictObject({
+  files: z
+    .array(
+      GatewayServiceStagedFilesSchema.shape.files.element
+        .omit({ before: true })
+        .extend({ after: fileState.nullable() }),
+    )
+    .min(1)
+    .max(16),
+  taskPolicySha256: fileState.shape.sha256.nullable(),
+});
+export type GatewayServiceDefinitionPublication = z.infer<
+  typeof GatewayServiceDefinitionPublicationSchema
+>;
 type GatewayServiceFileState = z.infer<typeof fileState>;
 
 /** Read one stable regular file; publication owners compare it to retained write facts. */

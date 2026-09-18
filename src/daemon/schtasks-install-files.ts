@@ -3,7 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { hasErrnoCode } from "../infra/errno.js";
 import { execSchtasks } from "./schtasks-exec.js";
-import { resolveTaskName, writeTaskXmlTempFile } from "./schtasks-layout.js";
+import {
+  parseScheduledTaskXmlEnabled,
+  resolveTaskName,
+  setScheduledTaskXmlEnabled,
+  writeTaskXmlTempFile,
+} from "./schtasks-layout.js";
 import { probeScheduledTaskExists } from "./schtasks-state-probe.js";
 import type { GatewayServiceEnv } from "./service-types.js";
 import { assertGatewayServiceUpdateCurrent } from "./service-update-authority.js";
@@ -22,7 +27,7 @@ async function publishTaskFile(file: TaskFile): Promise<void> {
   }
 }
 
-export async function backupScheduledTaskDefinition(env: GatewayServiceEnv, scriptPath: string) {
+export async function readScheduledTaskDefinition(env: GatewayServiceEnv): Promise<string | null> {
   const taskName = resolveTaskName(env);
   const query = await execSchtasks(["/Query", "/TN", taskName, "/XML"]);
   if (query.code !== 0) {
@@ -38,6 +43,46 @@ export async function backupScheduledTaskDefinition(env: GatewayServiceEnv, scri
   if (!/<Task[\s>]/u.test(xml)) {
     throw new Error(`Scheduled Task ${taskName} did not return a restorable XML definition.`);
   }
+  return xml;
+}
+
+export async function restoreScheduledTaskDefinition(params: {
+  env: GatewayServiceEnv;
+  xml: string;
+  backupPath: string;
+  preserveEnabled?: boolean;
+  beforeMutation?: () => Promise<void>;
+  assertCurrent?: () => void;
+}): Promise<void> {
+  const taskName = resolveTaskName(params.env);
+  const current = params.preserveEnabled ? await readScheduledTaskDefinition(params.env) : null;
+  const enabled = current === null ? null : parseScheduledTaskXmlEnabled(current);
+  if (params.preserveEnabled && enabled === null) {
+    throw new Error("Scheduled Task enabled state could not be preserved during restoration.");
+  }
+  const temporary = await writeTaskXmlTempFile(
+    enabled === null ? params.xml : setScheduledTaskXmlEnabled(params.xml, enabled),
+  );
+  try {
+    await params.beforeMutation?.();
+    if (params.preserveEnabled && (await readScheduledTaskDefinition(params.env)) !== current) {
+      throw new Error("Scheduled Task changed during restoration; preserved the newer definition.");
+    }
+    params.assertCurrent?.();
+    const restored = await execSchtasks(["/Create", "/F", "/TN", taskName, "/XML", temporary]);
+    if (restored.code !== 0) {
+      throw new Error(`Could not restore Scheduled Task ${taskName} from ${params.backupPath}.`);
+    }
+  } finally {
+    await fs.rm(path.dirname(temporary), { recursive: true, force: true });
+  }
+}
+
+export async function backupScheduledTaskDefinition(env: GatewayServiceEnv, scriptPath: string) {
+  const xml = await readScheduledTaskDefinition(env);
+  if (xml === null) {
+    return null;
+  }
   const backupPath = `${scriptPath}.task.xml.bak`;
   assertGatewayServiceUpdateCurrent();
   await fs.mkdir(path.dirname(backupPath), { recursive: true });
@@ -45,17 +90,7 @@ export async function backupScheduledTaskDefinition(env: GatewayServiceEnv, scri
     path: backupPath,
     contents: Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xml, "utf16le")]),
   });
-  return async () => {
-    const temporary = await writeTaskXmlTempFile(xml);
-    try {
-      const restored = await execSchtasks(["/Create", "/F", "/TN", taskName, "/XML", temporary]);
-      if (restored.code !== 0) {
-        throw new Error(`Could not restore Scheduled Task ${taskName} from ${backupPath}.`);
-      }
-    } finally {
-      await fs.rm(path.dirname(temporary), { recursive: true, force: true });
-    }
-  };
+  return async () => await restoreScheduledTaskDefinition({ env, xml, backupPath });
 }
 
 /** Capture every launcher before replacing any part of the runnable definition. */

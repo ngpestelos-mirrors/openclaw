@@ -216,6 +216,8 @@ function escapeXmlText(value: string): string {
 
 // XML is required to disable both battery-stop defaults (#59299); the remaining
 // fields mirror the former ONLOGON, least-privilege, single-instance CLI task.
+export const SCHEDULED_TASK_RESTART_POLICY = { Count: "3", Interval: "PT1M" } as const;
+
 export function buildScheduledTaskXml(params: {
   taskDescription: string;
   taskUser: string | null;
@@ -262,8 +264,8 @@ export function buildScheduledTaskXml(params: {
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <RestartOnFailure>
-      <Interval>PT1M</Interval>
-      <Count>3</Count>
+      <Interval>${SCHEDULED_TASK_RESTART_POLICY.Interval}</Interval>
+      <Count>${SCHEDULED_TASK_RESTART_POLICY.Count}</Count>
     </RestartOnFailure>
     <Priority>7</Priority>
   </Settings>
@@ -273,6 +275,31 @@ export function buildScheduledTaskXml(params: {
     </Exec>
   </Actions>
 </Task>`;
+}
+
+const TASK_SETTINGS_XML = /(<Settings(?:\s[^>]*)?>)([\s\S]*?)(<\/Settings>)/iu;
+const TASK_ENABLED_XML = /<Enabled>\s*(true|false)\s*<\/Enabled>/iu;
+
+export function parseScheduledTaskXmlEnabled(output: string): boolean | null {
+  const normalized = output.replace(/^\uFEFF/u, "").replaceAll(String.fromCharCode(0), "");
+  const settings = TASK_SETTINGS_XML.exec(normalized)?.[2];
+  if (settings === undefined) {
+    return null;
+  }
+  const enabled = TASK_ENABLED_XML.exec(settings)?.[1];
+  // Task Scheduler's schema defaults a missing Settings.Enabled value to true.
+  return enabled === undefined ? true : enabled.toLowerCase() === "true";
+}
+
+/** Keep native lifecycle state separate from the definition being restored. */
+export function setScheduledTaskXmlEnabled(xml: string, enabled: boolean): string {
+  if (parseScheduledTaskXmlEnabled(xml) === null) {
+    throw new Error("Scheduled Task XML did not expose its enabled state.");
+  }
+  return xml.replace(TASK_SETTINGS_XML, (_match, open: string, body: string, close: string) => {
+    const value = `<Enabled>${enabled}</Enabled>`;
+    return `${open}${TASK_ENABLED_XML.test(body) ? body.replace(TASK_ENABLED_XML, value) : `${value}${body}`}${close}`;
+  });
 }
 
 export async function writeTaskXmlTempFile(xml: string): Promise<string> {

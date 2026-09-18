@@ -1,9 +1,11 @@
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { note } from "../../packages/terminal-core/src/note.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { SERVICE_AUDIT_CODES } from "../daemon/service-audit.js";
 import { sanitizeServiceInspectionError } from "../daemon/service-inspection-error.js";
 import { withGatewayServiceOperationLock } from "../daemon/service-operation-lock.js";
+import { reconcileGatewayServiceDefinition } from "../daemon/service-reconciliation.js";
 import type { GatewayServiceCommandConfig } from "../daemon/service-types.js";
 import { readGatewayServiceState, type GatewayService } from "../daemon/service.js";
 import { isSystemdUnitActive, type SystemdUnitScope } from "../daemon/systemd.js";
@@ -72,19 +74,35 @@ export async function assertGatewayServiceInstallationRepairAllowed(
 }
 
 export async function repairGatewayServiceInstallation(
-  params: GatewayServiceInstallationRepair & {
+  params: Omit<GatewayServiceInstallationRepair, "activeRoot"> & {
+    activeRoot?: string;
+    expectedCommand: Pick<GatewayServiceCommandConfig, "programArguments" | "workingDirectory">;
     env: NodeJS.ProcessEnv;
     install: () => Promise<void>;
     updateRepairMode: boolean;
   },
 ): Promise<void> {
   await withGatewayServiceOperationLock(params.env, async (assertCurrent) => {
-    await assertGatewayServiceInstallationRepairAllowed(params);
-    assertCurrent();
-    await params.install();
+    if (params.activeRoot) {
+      await assertGatewayServiceInstallationRepairAllowed({
+        ...params,
+        activeRoot: params.activeRoot,
+      });
+    }
+    await reconcileGatewayServiceDefinition({
+      ...params,
+      automatic: true,
+      assertCurrent,
+      warn: (message) => note(message, "Gateway service config"),
+    });
     // Maintenance already stopped the old task. A standalone reinstall can leave
     // an existing Scheduled Task process alive after /Run accepts its new script.
-    if (process.platform === "win32" && !params.updateRepairMode && !params.maintenance) {
+    if (
+      params.activeRoot &&
+      process.platform === "win32" &&
+      !params.updateRepairMode &&
+      !params.maintenance
+    ) {
       await params.service.restart({ env: params.env, stdout: process.stdout, assertCurrent });
     }
   });

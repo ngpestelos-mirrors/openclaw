@@ -231,6 +231,10 @@ async function runInstallationCase(params: {
           events.push("stop");
           running = false;
         },
+        stage: async (plan) => {
+          events.push("stage");
+          command = { programArguments: plan.programArguments, environment: { HOME: home } };
+        },
         install: async (plan) => {
           expect(getOpenClawDatabaseMaintenanceScope()).toBeUndefined();
           events.push("install");
@@ -328,16 +332,11 @@ async function runInstallationCase(params: {
           }
         }
         if (initiallyStopped) {
-          expect(events).toEqual(["repair-state"]);
+          expect(events).toEqual(["repair-state", "stage"]);
           expect(running).toBe(false);
-          expect(command.programArguments[1]).toBe(path.join(oldRoot, "dist/index.js"));
-          expect(maintenance?.warnings).toEqual([expect.stringContaining("already stopped")]);
-          expect(runtime.log).toHaveBeenCalledWith(
-            expect.stringContaining(`${oldRoot} (2026.9.4)`),
-          );
-          expect(runtime.log).toHaveBeenCalledWith(
-            expect.stringContaining(`${mocks.activeRoot} (2026.9.17)`),
-          );
+          expect(command.programArguments[1]).toBe(path.join(mocks.activeRoot, "dist/index.js"));
+          expect(command.programArguments).toContain("19989");
+          expect(maintenance?.warnings).toEqual([]);
           expect(mocks.health).not.toHaveBeenCalled();
           return;
         }

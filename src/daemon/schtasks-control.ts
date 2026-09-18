@@ -5,6 +5,7 @@ import { resolveGatewayServiceProbeHosts } from "./gateway-service-probe-hosts.j
 import { formatLine } from "./output.js";
 import { execSchtasks } from "./schtasks-exec.js";
 import {
+  parseScheduledTaskXmlEnabled,
   readScheduledTaskCommand,
   resolveTaskName,
   resolveTaskScriptPath,
@@ -192,17 +193,6 @@ export async function runScheduledTaskOrThrow(params: {
   throw new Error(
     `Scheduled Task ${params.taskName} did not start within ${SCHEDULED_TASK_FALLBACK_TIMEOUT_MS / 1000}s after schtasks /Run; refusing a direct fallback because the queued task could still start.`,
   );
-}
-
-function parseScheduledTaskXmlEnabled(output: string): boolean | null {
-  const normalized = output.replace(/^\uFEFF/u, "").replaceAll(String.fromCharCode(0), "");
-  const settings = /<Settings(?:\s[^>]*)?>([\s\S]*?)<\/Settings>/iu.exec(normalized)?.[1];
-  if (settings === undefined) {
-    return null;
-  }
-  const enabled = /<Enabled>\s*(true|false)\s*<\/Enabled>/iu.exec(settings)?.[1];
-  // Task Scheduler's schema defaults a missing Settings.Enabled value to true.
-  return enabled === undefined ? true : enabled.toLowerCase() === "true";
 }
 
 async function changeScheduledTaskEnabledState(params: {
