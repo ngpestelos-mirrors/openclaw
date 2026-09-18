@@ -27,8 +27,14 @@ import {
   resolveNpmLifecyclePolicyGate,
   type ResolvedGlobalInstallTarget,
 } from "../../infra/update-global.js";
+import { createUpdatePreflightFailure } from "../../infra/update-preflight-details.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
+import {
+  describeUpdateInstallRoot,
+  resolveUnmanagedUpdateInstallReason,
+} from "../../infra/update-runner-install-surface.js";
+import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
@@ -66,6 +72,22 @@ import {
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
 
+/** A fresh profile must be initialized by an identified, schema-declaring target. */
+export async function resolveFreshUpdateMetadata(target: {
+  targetVersion: string | null;
+  packageTargetSchemaVersions?: OpenClawSchemaVersions;
+  refuseUpdate: RefuseUpdate;
+}) {
+  if (target.targetVersion && target.packageTargetSchemaVersions) {
+    return { version: target.targetVersion, schemaVersions: target.packageTargetSchemaVersions };
+  }
+  const failure = createUpdatePreflightFailure(
+    target.targetVersion ? "target-schema-metadata" : "target-registry-dist-tag",
+  );
+  await target.refuseUpdate("target-metadata-preflight", failure.message, failure.failureFacts);
+  return undefined;
+}
+
 export async function resolveUpdateCommandTarget(
   opts: UpdateCommandOptions,
   recoveryState: UpdateCommandRecoveryState,
@@ -90,10 +112,12 @@ export async function resolveUpdateCommandTarget(
       let { devTarget } = prepared;
       let root = discoveredRoot;
       let updateInstallKind = installKind;
+      let mode: UpdateRunResult["mode"] = installKind === "git" ? "git" : "unknown";
       const refuseUpdate: RefuseUpdate = async (reason, message, failureFacts, recoverySteps) => {
         const report = {
           root,
           installKind: updateInstallKind,
+          mode,
           reason,
           message,
           failureFacts,
@@ -106,6 +130,26 @@ export async function resolveUpdateCommandTarget(
         }
         return await reportPreMutationUpdateResult(report);
       };
+
+      if (installKind === "unknown") {
+        const servicePlan = await resolveManagedServicePackageUpdatePlan({ root, pkgOwnership });
+        const failure = createUpdatePreflightFailure(
+          "installation-unclassified",
+          `${await describeUpdateInstallRoot(root)} Service unit target: ${servicePlan.serviceUnitTarget ?? "not inspected"}.`,
+        );
+        throw new UnreportedUpdateAdmissionOutcome(
+          {
+            root,
+            installKind,
+            mode,
+            opts,
+            controlPlaneUpdateSentinelMeta,
+            reason: resolveUnmanagedUpdateInstallReason(),
+            ...failure,
+          },
+          { exitCode: 0 },
+        );
+      }
 
       if (requestedChannel === "extended-stable" && installKind === "git") {
         await refuseUpdate("unsupported_git_channel");
@@ -149,6 +193,7 @@ export async function resolveUpdateCommandTarget(
       const switchToPackage =
         requestedChannel !== null && requestedChannel !== "dev" && installKind === "git";
       updateInstallKind = switchToGit ? "git" : switchToPackage ? "package" : installKind;
+      mode = updateInstallKind === "git" ? "git" : "unknown";
       if (channel === "dev" && requestedChannel !== "dev" && !opts.sourceUpdate) {
         try {
           devTarget = readDevUpdateTarget();
@@ -185,6 +230,7 @@ export async function resolveUpdateCommandTarget(
       // The service's Node can differ even when its package root matches the shell.
       let managedServiceNodeRunner: string | undefined;
       let packageUpdateNodeRunner: string | undefined;
+      let serviceUnitTarget: string | undefined;
 
       if (updateInstallKind === "package") {
         const servicePlan =
@@ -192,6 +238,7 @@ export async function resolveUpdateCommandTarget(
           (await resolveManagedServicePackageUpdatePlan({ root, pkgOwnership }));
         await pkgOwnership.assertUnowned(servicePlan.rootRedirect?.root ?? root);
         managedServiceRootRedirect = servicePlan.rootRedirect;
+        serviceUnitTarget = servicePlan.serviceUnitTarget;
         managedServiceNodeRunner = servicePlan.nodeRunner;
         if (managedServiceRootRedirect) {
           root = managedServiceRootRedirect.root;
@@ -230,6 +277,7 @@ export async function resolveUpdateCommandTarget(
             installKind,
             timeoutMs: updateStepTimeoutMs,
             pkgOwnership,
+            serviceUnitTarget,
           }).catch(async (error: unknown) => {
             if (hasCommandProcessCleanupError(error)) {
               throw error;
@@ -242,11 +290,13 @@ export async function resolveUpdateCommandTarget(
               installKind,
               reason: error.reason,
               message: error.message,
+              failureFacts: error.failureFacts,
               opts,
               controlPlaneUpdateSentinelMeta,
             };
             throw new UnreportedUpdateAdmissionOutcome(report, { exitCode: 0 });
           });
+          mode = manager;
           packageInstallTarget = await resolveGlobalInstallTarget({
             manager,
             runCommand: runCommandWithTimeout,
@@ -368,10 +418,11 @@ export async function resolveUpdateCommandTarget(
             env: packageInstallEnv,
           });
           if (targetMetadata.error || targetMetadata.version !== targetVersion) {
-            await refuseUpdate(
-              "target-metadata-preflight",
-              `Update refused: could not inspect exact package target openclaw@${targetVersion}: ${targetMetadata.error ?? `registry returned version ${targetMetadata.version ?? "unknown"}`}.`,
+            const failure = createUpdatePreflightFailure(
+              targetMetadata.error ? "target-registry-metadata" : "target-version-resolution",
+              `Could not inspect exact package target openclaw@${targetVersion}: ${targetMetadata.error ?? `registry returned version ${targetMetadata.version ?? "unknown"}`}.`,
             );
+            await refuseUpdate("target-metadata-preflight", failure.message, failure.failureFacts);
             return undefined;
           }
           packageTargetSchemaVersions = targetMetadata.schemaVersions;
@@ -422,6 +473,7 @@ export async function resolveUpdateCommandTarget(
 
       return {
         root,
+        mode,
         updateInstallKind,
         refuseUpdate,
         configSnapshot,
