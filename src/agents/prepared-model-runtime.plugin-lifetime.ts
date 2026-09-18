@@ -140,6 +140,22 @@ function retainRegistry(registryView: PluginRegistry): (() => void | Promise<voi
   return lifetime.retain();
 }
 
+/** Construction borrows the same owner until the completed generation takes its own reference. */
+export function retainPreparedPluginRegistry(registry: PluginRegistry | undefined) {
+  if (!registry) {
+    return undefined;
+  }
+  registerPreparedPluginLifetime();
+  const release = retainRegistry(registry);
+  return release
+    ? {
+        async [Symbol.asyncDispose]() {
+          await release();
+        },
+      }
+    : undefined;
+}
+
 /** Construction registers the same final owner before an awaited inspection can finish. */
 export function registerPreparedPluginLifetime(): void {
   registerPreparedPluginRetirement(closePreparedPluginGenerations);
