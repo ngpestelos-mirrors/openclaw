@@ -25,7 +25,7 @@ import {
   resolveTrustedWindowsCmdExe,
   resolveWindowsCommandShim,
 } from "../../windows-command.js";
-import type { ManagedWindowsJob } from "../../windows-job.js";
+import { spawnWindowsJobChild, type ManagedWindowsJob } from "../../windows-job.js";
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "../cancellation-policy.js";
 import { createServiceChildRelayAdapter } from "../service-child-relay-host.js";
 import type {
@@ -219,12 +219,8 @@ export async function createChildAdapter(
   };
   let windowsJob: ManagedWindowsJob | undefined;
   let windowsCleanup: Promise<void> | undefined;
-  const spawnWindowsJobChild =
-    process.platform === "win32"
-      ? (await import("../../windows-job.js")).spawnWindowsJobChild
-      : undefined;
   const spawned = await spawnWithFallback({
-    ...(spawnWindowsJobChild
+    ...(process.platform === "win32"
       ? {
           spawnImpl: (command, args, spawnOptions) => {
             const owned = spawnWindowsJobChild(

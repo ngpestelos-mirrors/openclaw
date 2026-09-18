@@ -1,9 +1,8 @@
 import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { createDeferredCore } from "../shared/deferred.ts";
+import { createDeferredCore, type Deferred } from "../shared/deferred.ts";
 import { createWindowsJobBindings } from "./supervisor/service-child-windows-job-native.ts";
 import { resolveWindowsJobEntrypointUrl } from "./windows-job-entrypoint.ts";
 
@@ -66,7 +65,9 @@ export function spawnWindowsJobChild(
   let closed = false;
   let commandPid: number | undefined;
   let stopDeadline: number | undefined;
-  let certification: Promise<WindowsJobExtinction> | undefined;
+  let certification: Deferred<WindowsJobExtinction> | undefined;
+  let extinctionSettled = false;
+  let observationTimer: NodeJS.Timeout | undefined;
   const job: ManagedWindowsJob = {
     ready: ready.promise,
     get commandPid() {
@@ -86,15 +87,19 @@ export function spawnWindowsJobChild(
     stop: () => {
       stopped = true;
       stopDeadline ??= performance.now() + 4_000;
-      if (closed) {
-        return;
-      }
-      if (!api.TerminateJobObject(handle, 1)) {
-        throw api.lastError("TerminateJobObject(child)");
-      }
-      // The helper may still be starting outside the Job, but has not received user code.
-      if (!admitted) {
-        child?.kill("SIGKILL");
+      try {
+        if (closed) {
+          return;
+        }
+        if (!api.TerminateJobObject(handle, 1)) {
+          throw api.lastError("TerminateJobObject(child)");
+        }
+        // The helper may still be starting outside the Job, but has not received user code.
+        if (!admitted) {
+          child?.kill("SIGKILL");
+        }
+      } finally {
+        observeExtinction();
       }
     },
     close: () => {
@@ -107,35 +112,47 @@ export function spawnWindowsJobChild(
       }
     },
     certify: () => {
-      certification ??= (async (): Promise<WindowsJobExtinction> => {
-        try {
-          // An empty Job before launcher admission is not proof of completed ownership.
-          while (true) {
-            if (exited && job.inspect().length === 0) {
-              break;
-            }
-            if (stopDeadline !== undefined && performance.now() >= stopDeadline) {
-              throw new Error("Windows Job descendant extinction deadline expired");
-            }
-            await delay(25);
-          }
-          job.close();
-          return { status: "confirmed" };
-        } catch (error) {
-          try {
-            job.close();
-          } catch {
-            // Preserve the observation failure; never certify a failed native close.
-          }
-          return {
-            status: "uncertain",
-            cause: error instanceof Error ? error : new Error(String(error)),
-          };
-        }
-      })();
-      return certification;
+      if (!certification) {
+        certification = createDeferredCore<WindowsJobExtinction>();
+        observeExtinction();
+      }
+      return certification.promise;
     },
   };
+  function observeExtinction(): void {
+    if (!certification || extinctionSettled) {
+      return;
+    }
+    clearTimeout(observationTimer);
+    let outcome: WindowsJobExtinction;
+    try {
+      // An empty Job before launcher admission is not proof of completed ownership.
+      if (!exited || job.inspect().length !== 0) {
+        if (stopDeadline !== undefined && performance.now() >= stopDeadline) {
+          throw new Error("Windows Job descendant extinction deadline expired");
+        }
+        // Exit/close wake the observer immediately; only surviving members or cancellation poll.
+        if (exited || stopDeadline !== undefined) {
+          observationTimer = setTimeout(observeExtinction, 25);
+        }
+        return;
+      }
+      job.close();
+      outcome = { status: "confirmed" };
+    } catch (error) {
+      try {
+        job.close();
+      } catch {
+        // Preserve the observation failure; never certify a failed native close.
+      }
+      outcome = {
+        status: "uncertain",
+        cause: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
+    extinctionSettled = true;
+    certification.resolve(outcome);
+  }
   try {
     if (!api.SetExtendedLimits(handle, 9, api.extendedLimits, api.extendedLimitsSize)) {
       throw api.lastError("SetInformationJobObject(child)");
@@ -181,10 +198,12 @@ export function spawnWindowsJobChild(
     launched.on("error", fail);
     launched.once("exit", () => {
       exited = true;
+      observeExtinction();
       ready.reject(new Error("Windows Job launcher exited before command startup"));
     });
     launched.once("close", () => {
       exited = true;
+      observeExtinction();
       ready.reject(new Error("Windows Job launcher closed before command startup"));
     });
     launched.on("message", (message: unknown) => {
