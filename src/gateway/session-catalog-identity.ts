@@ -129,7 +129,7 @@ export function createSessionCatalogSourceActorProjector(
   let facts: Map<string, ReturnType<typeof readSourceProfileFacts>> | undefined;
   let attempted = false;
   return (actor) =>
-    projectSourceActor({ ...params, actor }, (id) => {
+    projectSourceActor({ ...params, actor }, (requestedId) => {
       if (!attempted) {
         attempted = true;
         try {
@@ -151,7 +151,7 @@ export function createSessionCatalogSourceActorProjector(
           // Nonterminal conversion/parse failures replay in the original scalar and actor-label order.
         }
       }
-      return facts?.get(id) ?? readSourceProfileFacts(id);
+      return facts?.get(requestedId) ?? readSourceProfileFacts(requestedId);
     });
 }
 

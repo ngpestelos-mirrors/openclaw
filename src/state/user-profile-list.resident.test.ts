@@ -94,6 +94,7 @@ describe("resident profile display and reference catalog", () => {
       if (!head.ok || !head.value) {
         throw new Error("missing merge head");
       }
+      const headProfileId = head.value;
       setDisplayName(first.id, "Current person", options);
       setUserProfileRole(first.id, "reader", options);
       expect(setAvatar(first.id, new Uint8Array([1, 2]), "image/png", options).ok).toBe(true);
@@ -115,7 +116,7 @@ describe("resident profile display and reference catalog", () => {
       }
       expect([
         ...getUserProfileDisplays([first.id, second.id, head.value, "missing"], options).values(),
-      ]).toEqual(Array.from({ length: 3 }, () => getUserProfileDisplay(head.value, options)));
+      ]).toEqual(Array.from({ length: 3 }, () => getUserProfileDisplay(headProfileId, options)));
       expect(native).not.toHaveBeenCalled();
     },
   );
