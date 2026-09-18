@@ -178,6 +178,7 @@ it("joins prompt-file cleanup once the Windows Job is empty", async () => {
       stdin: "hello",
       systemPrompt: "synthetic prompt",
       idleTimeoutMs: 5_000,
+      timeoutMs: 5_000,
     },
     argv: [process.execPath, "fixture"],
     cwd: undefined,

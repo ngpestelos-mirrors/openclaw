@@ -34,7 +34,7 @@ describe("runCodexAppServerAttempt agent-end context", () => {
         entry: { sessionFile, sessionId: source.sessionId, updatedAt: Date.now() },
       });
       const workspaceDir = path.join(tempDir, "agent-end-context-workspace");
-      const turnStarted = createDeferred();
+      const turnStarted = createDeferred<void>();
       const harness = createStartedThreadHarness(async (method) => {
         if (method === "turn/start") {
           turnStarted.resolve();
@@ -59,7 +59,7 @@ describe("runCodexAppServerAttempt agent-end context", () => {
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       const onAttemptTimeout = vi.fn();
       params.onAttemptTimeout = onAttemptTimeout;
-      const partialReply = createDeferred();
+      const partialReply = createDeferred<void>();
       params.onAgentEvent = (event) => {
         if (event.stream === "assistant") {
           partialReply.resolve();
