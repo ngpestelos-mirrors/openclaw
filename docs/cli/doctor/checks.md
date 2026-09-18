@@ -43,6 +43,7 @@ postures and maintenance modes documented on the other pages.
 
 ## Tool and channel policy
 
+- Doctor inspects active tool schemas once per run, sharing plugin registration across the fleet while checking each agent's tool factories, policy, and selected model. Failed plugin registrations and cleanup produce findings without hiding healthy agents' results. If a model needs live provider discovery, Doctor reports that its model-specific schema inspection was deferred; normal authenticated agent use performs that discovery. Lint and update validation retain their read-only catalog checks.
 - Doctor reports legacy image-inspection policy entries named `image`. `openclaw doctor --fix` rewrites supported config allow/deny surfaces and persisted automation `toolsAllow` entries to `view_image`; old-only wildcard patterns such as `image*` are preserved and gain an explicit `view_image`, while patterns that already cover both names remain unchanged. Runtime exposes only the canonical name.
 - On Linux, doctor warns when the user's crontab still runs the unmaintained legacy `~/.openclaw/bin/ensure-whatsapp.sh`, which can misreport `Gateway inactive` when cron lacks the systemd user-bus environment.
 - When WhatsApp is enabled, doctor can report Gateway pressure and detected local TUI clients. These observations do not identify the cause or connect a client to that Gateway. Inspect [Gateway diagnostics](/gateway/diagnostics) before deciding whether to close clients; Doctor does not stop them.

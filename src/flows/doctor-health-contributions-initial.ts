@@ -21,7 +21,6 @@ import {
   runSessionTranscriptsHealth,
   runStateIntegrityHealth,
 } from "./doctor-health-contribution-runners.state.js";
-import { runActiveToolSchemaWarningsHealth } from "./doctor-health-contribution-runners.workspace.js";
 import type {
   DoctorHealthContribution,
   DoctorHealthFlowContext,
@@ -296,14 +295,6 @@ export function resolveInitialDoctorHealthContributions(params: {
         }, "legacy doctor plugin registry contribution owns registry repairs"),
       },
       run: runPluginRegistryHealth,
-    }),
-    // Runtime tool discovery must follow plugin metadata repair; running it earlier
-    // scans each workspace again after the authoritative generation changes.
-    createDoctorHealthContribution({
-      id: "doctor:active-tool-schema-warnings",
-      label: "Active tool schema warnings",
-      updatePolicy: "standalone",
-      run: runActiveToolSchemaWarningsHealth,
     }),
     createDoctorHealthContribution({
       id: "doctor:ui-protocol-freshness",

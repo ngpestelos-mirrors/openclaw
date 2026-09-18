@@ -747,10 +747,6 @@ vi.mock("./doctor/shared/missing-configured-plugin-install.js", () => ({
   })),
 }));
 
-vi.mock("./doctor/shared/active-tool-schema-warnings.js", () => ({
-  collectActiveToolSchemaProjectionWarnings: vi.fn(async () => []),
-}));
-
 vi.mock("./doctor/shared/stale-oauth-profile-shadows.js", () => ({
   repairStaleOAuthProfileShadows: vi.fn(async () => ({
     changes: [],
@@ -2074,11 +2070,6 @@ describe("doctor config flow", () => {
     );
     expect(result.runWithPluginMetadataSnapshot).toEqual(expect.any(Function));
     expect(result.invalidatePluginMetadataSnapshot).toEqual(expect.any(Function));
-    expect(collectDoctorPreviewNotesParamsMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        runWithPluginMetadataSnapshot: result.runWithPluginMetadataSnapshot,
-      }),
-    );
   });
 
   it("exposes cleanup-refreshed plugin metadata to later Doctor scopes", async () => {
