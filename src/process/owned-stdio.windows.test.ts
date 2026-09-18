@@ -21,7 +21,9 @@ vi.mock("node:module", async (original) => {
       apply: (target, receiver, argumentsList) =>
         argumentsList[0] === "koffi"
           ? (() => {
-              if (!native.koffiAvailable) throw new Error("Cannot find module koffi");
+              if (!native.koffiAvailable) {
+                throw new Error("Cannot find module koffi");
+              }
               return {};
             })()
           : Reflect.apply(target, receiver, argumentsList),
