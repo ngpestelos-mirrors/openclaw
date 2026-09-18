@@ -1,5 +1,4 @@
 import type { PluginMetadataSnapshotScopeRunner } from "../plugins/current-plugin-metadata-snapshot.js";
-import type { CoreHealthCheckDeps } from "./doctor-core-checks.js";
 import type { HealthCheck, HealthCheckContext, HealthFinding } from "./health-checks.js";
 
 export async function collectRuntimeToolSchemaFindingsWithRuntime(
@@ -16,9 +15,9 @@ export async function collectRuntimeToolSchemaFindingsWithRuntime(
   });
 }
 
-export function createRuntimeToolSchemaCheck(
-  deps: Pick<CoreHealthCheckDeps, "collectRuntimeToolSchemaFindings">,
-): HealthCheck {
+export function createRuntimeToolSchemaCheck(deps: {
+  readonly collectRuntimeToolSchemaFindings: typeof collectRuntimeToolSchemaFindingsWithRuntime;
+}): HealthCheck {
   return {
     id: "core/doctor/runtime-tool-schemas",
     kind: "core",
