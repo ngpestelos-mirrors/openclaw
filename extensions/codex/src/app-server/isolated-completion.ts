@@ -1,7 +1,11 @@
 import type { AgentHarnessV2 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resolveCodexAppServerPreparedAuthHandoff } from "./auth-bridge.js";
 import { runBoundedCodexAppServerTurn, type CodexBoundedTurnOptions } from "./bounded-turn.js";
-import { readCodexPluginConfig, resolveCodexAppServerHomeScope } from "./config.js";
+import {
+  readCodexPluginConfig,
+  resolveCodexAppServerHomeScope,
+  resolveCodexAppServerRuntimeOptions,
+} from "./config.js";
 import { createAttributedCodexAssistantMessage } from "./event-projector-assistant-message.js";
 import { assertCodexPassiveTurnItems } from "./protocol-validators.js";
 
@@ -23,13 +27,18 @@ export async function runCodexIsolatedCompletion(
     throw new Error("Codex native isolated completion requires harness-owned authorization.");
   }
   const pluginConfig = readCodexPluginConfig(options.pluginConfig);
+  const privateStdio =
+    resolveCodexAppServerRuntimeOptions({ pluginConfig: options.pluginConfig }).start.transport ===
+    "stdio";
   const authRequirement = authorization.plan.modelRoute?.authRequirement;
   const authHandoff = await resolveCodexAppServerPreparedAuthHandoff({
     authRequirement,
     authProfileId: authorization.plan.forwardedAuthProfileId,
     authProfileStore: authorization.authProfileStore,
     agentDir: params.agentDir,
-    homeScope: resolveCodexAppServerHomeScope({ appServer: pluginConfig.appServer }),
+    homeScope: privateStdio
+      ? "agent"
+      : resolveCodexAppServerHomeScope({ appServer: pluginConfig.appServer }),
     config: params.config,
     subscriptionProfileRequiredError:
       "Prepared Codex subscription route requires a scoped native OAuth or token profile.",
@@ -57,11 +66,13 @@ export async function runCodexIsolatedCompletion(
     developerInstructions: params.systemPrompt,
     input: [{ type: "text", text: params.prompt, text_elements: [] }],
     requiredModalities: ["text"],
-    isolation: "configured-transport",
+    isolation: privateStdio ? "private-stdio" : "configured-transport",
     requireNoExternalCapabilities: true,
   });
   params.assertCurrent?.();
-  assertCodexPassiveTurnItems(result.items, params.prompt, "isolated completion");
+  assertCodexPassiveTurnItems(result.items, params.prompt, "isolated completion", {
+    allowManagedHookPrompts: result.managedHooksEnabled,
+  });
   return {
     assistant: createAttributedCodexAssistantMessage(
       {

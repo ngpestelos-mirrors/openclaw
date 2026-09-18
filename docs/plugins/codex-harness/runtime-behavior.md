@@ -68,6 +68,22 @@ Set `codexDynamicToolsLoading: "direct"` only when connecting to a custom
 Codex app-server that cannot search deferred dynamic tools or when
 debugging the full tool payload.
 
+## Background text completions
+
+With local stdio transport, Codex completions for memory narratives and session titles run in a
+fresh private Codex home and workspace. They retain the selected model and scoped
+authentication, with a read-only sandbox and no model-callable tools, apps, or MCP
+servers. Ordinary user and project hooks cannot enter that private process;
+administrator-managed hooks remain active.
+
+Private completions support directly executable launchers and Node script
+wrappers. Inline shell/eval commands and ambiguous launcher arguments fail with
+an isolation error; use a directly executable wrapper for those custom launches.
+
+Managed requirements that force a conflicting tool capability still reject the
+completion. Configured remote transports also reject managed hooks when their
+isolation cannot be verified.
+
 ## Image loader ownership
 
 For image-capable models with Codex native tools enabled, Codex owns
