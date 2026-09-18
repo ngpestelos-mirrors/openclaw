@@ -88,8 +88,9 @@ it("records deferred model preparation and continues with a healthy agent", asyn
         options: { deferProviderDynamicModelPreparation?: boolean },
       ) => {
         if (id === "deferred") {
-          if (!options.deferProviderDynamicModelPreparation)
+          if (!options.deferProviderDynamicModelPreparation) {
             throw new Error("live provider preparation must not start");
+          }
           return {
             error: "provider dynamic model preparation is deferred",
             deferred: "provider-dynamic-model",

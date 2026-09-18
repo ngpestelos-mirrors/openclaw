@@ -164,7 +164,7 @@ module.exports = { id, register(api) {
       observed
         .filter((row) => row.kind === "register")
         .map((row) => row.id)
-        .toSorted(),
+        .toSorted((left, right) => left.localeCompare(right)),
     ).toEqual(["failed-tool", "fleet-tool"]);
     expect(observed.filter((row) => row.kind === "factory")).toEqual([
       { id: "fleet-tool", kind: "factory", agentId: "alpha", workspaceDir: state.path("alpha") },
@@ -174,7 +174,7 @@ module.exports = { id, register(api) {
       observed
         .filter((row) => row.kind === "dispose")
         .map((row) => row.id)
-        .toSorted(),
+        .toSorted((left, right) => left.localeCompare(right)),
     ).toEqual(["failed-tool", "fleet-tool"]);
   });
 });
