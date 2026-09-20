@@ -19,6 +19,7 @@ import { bindPluginRegistryRuntime } from "./registry-runtime-binding.js";
 import { createEmptyPluginRegistry } from "./registry.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "./runtime.js";
 import type { PluginRuntime } from "./runtime/types.js";
+import * as sdkAlias from "./sdk-alias.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -76,9 +77,11 @@ it.each([
       deleteSession: vi.fn<PluginRuntime["subagent"]["deleteSession"]>(),
     },
   });
-  const loadPluginModule = vi.fn((_modulePath: string): unknown => {
-    throw new Error("borrowed facets must not load the broad runtime");
-  });
+  const resolveRuntimeModule = vi
+    .spyOn(sdkAlias, "resolvePluginRuntimeModulePathWithDiagnostics")
+    .mockImplementation(() => {
+      throw new Error("borrowed facets must not load the broad runtime");
+    });
   const createDonor = (owner: string) => {
     const facets = createFacets(owner);
     const reads = {
@@ -89,7 +92,6 @@ it.each([
     bindPluginRegistryRuntime(
       registry,
       createLazyPluginRuntime({
-        loadPluginModule,
         runtimeOptions: {
           get nodes() {
             return reads.nodes();
@@ -134,7 +136,7 @@ it.each([
     expect(loadAndActivateRootPluginRegistry(options)).toBe(registry);
     expect(resolveCompatibleRuntimePluginRegistry(options)).toBe(registry);
     expect(await read(registry)).toMatchObject(expected);
-    expect(loadPluginModule).not.toHaveBeenCalled();
+    expect(resolveRuntimeModule).not.toHaveBeenCalled();
     return;
   }
   let previous: ReturnType<typeof loadPluginRegistryHandle> | undefined;
@@ -158,5 +160,5 @@ it.each([
     }
     previous = registry;
   }
-  expect(loadPluginModule).not.toHaveBeenCalled();
+  expect(resolveRuntimeModule).not.toHaveBeenCalled();
 });

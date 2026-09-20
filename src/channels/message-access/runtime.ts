@@ -11,8 +11,8 @@ import type { PairingChannel } from "../../pairing/pairing-store.types.js";
 import { recordChannelIngressResolution } from "./admission-evidence.js";
 import { decideChannelIngress } from "./decision.js";
 import { resolveChannelIngressEffectiveAllowFromLists } from "./effective-allow-from.js";
-import { readChannelIngressHostOwner } from "./ingress-host-owner.js";
-import { prepareChannelParticipantInput } from "./participant-input.js";
+import type { ChannelIngressHostOwner } from "./ingress-host-owner.js";
+import type { ChannelParticipantInput } from "./participant-input.js";
 import {
   allReferencedAccessGroupNames,
   normalizeEffectiveEntries,
@@ -23,14 +23,13 @@ import {
   createIdentitySubject,
   defineStableChannelIngressIdentity,
 } from "./runtime-identity.js";
+import { routeFactsFromDescriptors, projectRouteAccess } from "./runtime-routes.js";
 import type {
   ChannelMessageIngressCommandInput,
   ChannelIngressCommandPresetInput,
   ChannelIngressEventPresetInput,
   ChannelIngressActivationAccess,
   ChannelIngressCommandAccess,
-  ChannelIngressRouteAccess,
-  ChannelIngressRouteDescriptor,
   ChannelIngressResolver,
   ChannelIngressResolverMessageParams,
   ChannelIngressSenderAccess,
@@ -47,21 +46,10 @@ import type {
   ChannelIngressEventInput,
   ChannelIngressPolicyInput,
   ChannelIngressStateInput,
-  RedactedIngressMatch,
   ResolvedIngressAllowlist,
-  RouteGateFacts,
-  RouteSenderPolicy,
 } from "./types.js";
 
-type RouteFactDefaults = {
-  id: string;
-  kind?: RouteGateFacts["kind"];
-  precedence?: number;
-  senderPolicy?: RouteSenderPolicy;
-  senderAllowFrom?: Array<string | number>;
-  senderAllowFromSource?: RouteGateFacts["senderAllowFromSource"];
-  match?: RedactedIngressMatch;
-};
+export { channelIngressRoutes } from "./runtime-routes.js";
 
 function shouldReadStore(params: {
   conversationKind: ChannelIngressStateInput["conversation"]["kind"];
@@ -208,8 +196,9 @@ function resolveResolverPolicy(params: {
  * Create a reusable ingress resolver for one channel account and identity
  * descriptor.
  */
-export function createChannelIngressResolver(
+function createChannelIngressResolverForOwner(
   base: CreateChannelIngressResolverParams,
+  owner?: ChannelIngressHostOwner,
 ): ChannelIngressResolver {
   const resolve = async (
     input: ChannelIngressResolverMessageParams,
@@ -220,39 +209,42 @@ export function createChannelIngressResolver(
       useAccessGroups: base.useAccessGroups,
       cfg: base.cfg,
     });
-    return await resolveChannelMessageIngress({
-      channelId: base.channelId,
-      accountId: base.accountId,
-      identity: base.identity,
-      subject: input.subject,
-      conversation: input.conversation,
-      contextBinding: input.contextBinding,
-      event: channelIngressEvent({
-        isGroup,
-        ...eventDefaults,
-        ...input.event,
-      }),
-      policy: resolveResolverPolicy({ base, input }),
-      allowFrom: input.allowFrom,
-      groupAllowFrom: input.groupAllowFrom,
-      route: input.route,
-      routeFacts: input.routeFacts,
-      accessGroups: base.accessGroups ?? base.cfg?.accessGroups,
-      accessGroupMembership: [
-        ...(base.accessGroupMembership ?? []),
-        ...(input.accessGroupMembership ?? []),
-      ],
-      resolveAccessGroupMembership: base.resolveAccessGroupMembership,
-      accessGroupMatchedAllowFromEntry: base.accessGroupMatchedAllowFromEntry,
-      providerMissingFallbackApplied: input.providerMissingFallbackApplied,
-      mentionFacts: input.mentionFacts,
-      readStoreAllowFrom: base.readStoreAllowFrom,
-      useDefaultPairingStore: base.useDefaultPairingStore,
-      command: resolveCommandInput({
-        command: input.command,
-        useAccessGroups,
-      }),
-    });
+    return await resolveChannelMessageIngressForOwner(
+      {
+        channelId: base.channelId,
+        accountId: base.accountId,
+        identity: base.identity,
+        subject: input.subject,
+        conversation: input.conversation,
+        contextBinding: input.contextBinding,
+        event: channelIngressEvent({
+          isGroup,
+          ...eventDefaults,
+          ...input.event,
+        }),
+        policy: resolveResolverPolicy({ base, input }),
+        allowFrom: input.allowFrom,
+        groupAllowFrom: input.groupAllowFrom,
+        route: input.route,
+        routeFacts: input.routeFacts,
+        accessGroups: base.accessGroups ?? base.cfg?.accessGroups,
+        accessGroupMembership: [
+          ...(base.accessGroupMembership ?? []),
+          ...(input.accessGroupMembership ?? []),
+        ],
+        resolveAccessGroupMembership: base.resolveAccessGroupMembership,
+        accessGroupMatchedAllowFromEntry: base.accessGroupMatchedAllowFromEntry,
+        providerMissingFallbackApplied: input.providerMissingFallbackApplied,
+        mentionFacts: input.mentionFacts,
+        readStoreAllowFrom: base.readStoreAllowFrom,
+        useDefaultPairingStore: base.useDefaultPairingStore,
+        command: resolveCommandInput({
+          command: input.command,
+          useAccessGroups,
+        }),
+      },
+      owner,
+    );
   };
   return {
     message: async (input) => await resolve(input),
@@ -265,6 +257,28 @@ export function createChannelIngressResolver(
   };
 }
 
+/** Public helpers evaluate policy without admitting a host participant. */
+export function createChannelIngressResolver(
+  base: CreateChannelIngressResolverParams,
+): ChannelIngressResolver {
+  return createChannelIngressResolverForOwner(base);
+}
+
+/** One trusted registry generation supplies the private owner to all ingress operations. */
+export function createHostChannelIngressRuntime(owner: ChannelIngressHostOwner) {
+  return Object.freeze({
+    createResolver: (base: CreateChannelIngressResolverParams) =>
+      createChannelIngressResolverForOwner(base, owner),
+    resolve: (params: ResolveChannelMessageIngressParams) =>
+      resolveChannelMessageIngressForOwner(params, owner),
+    resolveStable: (params: ResolveStableChannelMessageIngressParams) =>
+      createChannelIngressResolverForOwner(
+        { ...params, identity: defineStableChannelIngressIdentity(params.identity) },
+        owner,
+      ).message(params),
+  });
+}
+
 /**
  * Resolve one inbound event using a simple stable subject identity descriptor.
  */
@@ -275,163 +289,6 @@ export async function resolveStableChannelMessageIngress(
     ...params,
     identity: defineStableChannelIngressIdentity(params.identity),
   }).message(params);
-}
-
-function routeDescriptors(
-  route: ResolveChannelMessageIngressParams["route"],
-): ChannelIngressRouteDescriptor[] {
-  if (!route) {
-    return [];
-  }
-  if (Array.isArray(route)) {
-    return [...route];
-  }
-  return [route as ChannelIngressRouteDescriptor];
-}
-
-/**
- * Collect optional route descriptors while dropping false, null, and undefined
- * entries.
- */
-export function channelIngressRoutes(
-  ...routes: Array<ChannelIngressRouteDescriptor | false | null | undefined>
-): ChannelIngressRouteDescriptor[] {
-  return routes.filter((route): route is ChannelIngressRouteDescriptor => Boolean(route));
-}
-
-function routeDescriptorMatch(descriptor: ChannelIngressRouteDescriptor) {
-  const matched = descriptor.matched ?? descriptor.allowed ?? descriptor.enabled !== false;
-  return {
-    matched,
-    matchedEntryIds: matched && descriptor.matchId ? [descriptor.matchId] : [],
-  };
-}
-
-function routeFact(
-  params: RouteFactDefaults & Pick<RouteGateFacts, "gate" | "effect">,
-): RouteGateFacts {
-  return {
-    id: params.id,
-    kind: params.kind ?? "route",
-    gate: params.gate,
-    effect: params.effect,
-    precedence: params.precedence ?? 0,
-    senderPolicy: params.senderPolicy ?? "inherit",
-    senderAllowFrom: params.senderAllowFrom,
-    senderAllowFromSource: params.senderAllowFromSource,
-    match: params.match,
-  };
-}
-
-function routeFactDefaults(descriptor: ChannelIngressRouteDescriptor) {
-  return {
-    id: descriptor.id,
-    ...(descriptor.kind ? { kind: descriptor.kind } : {}),
-    ...(descriptor.precedence !== undefined ? { precedence: descriptor.precedence } : {}),
-    ...(descriptor.senderPolicy ? { senderPolicy: descriptor.senderPolicy } : {}),
-    ...(descriptor.senderAllowFrom != null
-      ? { senderAllowFrom: [...descriptor.senderAllowFrom] }
-      : {}),
-    ...(descriptor.senderAllowFromSource
-      ? { senderAllowFromSource: descriptor.senderAllowFromSource }
-      : {}),
-    match: routeDescriptorMatch(descriptor),
-  };
-}
-
-function routeFactsFromDescriptors(
-  route: ResolveChannelMessageIngressParams["route"],
-): RouteGateFacts[] {
-  return routeDescriptors(route).flatMap((descriptor) => {
-    if (descriptor.configured === false) {
-      return [];
-    }
-    const defaults = routeFactDefaults(descriptor);
-    if (descriptor.enabled === false) {
-      return [routeFact({ ...defaults, gate: "disabled", effect: "block-dispatch" })];
-    }
-    if (descriptor.allowed !== undefined) {
-      return [
-        routeFact({
-          ...defaults,
-          gate: descriptor.allowed ? "matched" : "not-matched",
-          effect: descriptor.allowed ? "allow" : "block-dispatch",
-        }),
-      ];
-    }
-    if (
-      descriptor.senderPolicy !== "deny-when-empty" &&
-      descriptor.senderAllowFrom == null &&
-      descriptor.senderAllowFromSource == null
-    ) {
-      return [];
-    }
-    return [
-      routeFact({
-        ...defaults,
-        kind: descriptor.senderPolicy === "deny-when-empty" ? defaults.kind : "routeSender",
-        gate: "matched",
-        effect: "allow",
-        senderPolicy:
-          descriptor.senderPolicy === "deny-when-empty" ? "deny-when-empty" : defaults.senderPolicy,
-      }),
-    ];
-  });
-}
-
-function routeDescriptorForGate(params: {
-  descriptors: readonly ChannelIngressRouteDescriptor[];
-  gate: AccessGraphGate;
-}): ChannelIngressRouteDescriptor | undefined {
-  const senderSuffix = ":sender";
-  const baseGateId = params.gate.id.endsWith(senderSuffix)
-    ? params.gate.id.slice(0, -senderSuffix.length)
-    : params.gate.id;
-  return params.descriptors.find(
-    (descriptor) => descriptor.id === params.gate.id || descriptor.id === baseGateId,
-  );
-}
-
-function projectRouteAccess(params: {
-  ingress: ResolvedChannelMessageIngress["ingress"];
-  route: ResolveChannelMessageIngressParams["route"];
-}): ChannelIngressRouteAccess {
-  const descriptors = routeDescriptors(params.route);
-  const routeBlock = params.ingress.graph.gates.find(
-    (entry) => entry.phase === "route" && entry.effect === "block-dispatch",
-  );
-  if (routeBlock) {
-    const descriptor = routeDescriptorForGate({ descriptors, gate: routeBlock });
-    return {
-      allowed: routeBlock.allowed,
-      reasonCode: routeBlock.reasonCode,
-      ...(descriptor?.blockReason ? { reason: descriptor.blockReason } : {}),
-      gate: routeBlock,
-    };
-  }
-  const routeSenderReplacement = descriptors.find(
-    (descriptor) => descriptor.senderPolicy === "replace" && descriptor.blockReason,
-  );
-  const senderBlock = params.ingress.graph.gates.find(
-    (entry) => entry.phase === "sender" && entry.effect === "block-dispatch",
-  );
-  if (routeSenderReplacement && senderBlock) {
-    return {
-      allowed: false,
-      reasonCode: senderBlock.reasonCode,
-      reason: routeSenderReplacement.blockReason,
-      gate: senderBlock,
-    };
-  }
-  const gate = params.ingress.graph.gates.find((entry) => entry.phase === "route");
-  if (gate) {
-    return {
-      allowed: gate.allowed,
-      reasonCode: gate.reasonCode,
-      gate,
-    };
-  }
-  return { allowed: true };
 }
 
 function projectSenderAccess(params: {
@@ -557,9 +414,20 @@ function appendAccessGroupMatchedEntry(params: {
 export async function resolveChannelMessageIngress(
   params: ResolveChannelMessageIngressParams,
 ): Promise<ResolvedChannelMessageIngress> {
+  return resolveChannelMessageIngressForOwner(params);
+}
+
+async function resolveChannelMessageIngressForOwner(
+  params: ResolveChannelMessageIngressParams,
+  owner?: ChannelIngressHostOwner,
+): Promise<ResolvedChannelMessageIngress> {
   const channelId = normalizeChannelId(params.channelId);
   const promptedAt = Date.now();
-  const participantOwner = readChannelIngressHostOwner(channelId);
+  const participantOwner = owner?.channelId === channelId && owner.isLive() ? owner : undefined;
+  const participantGatewayContext = participantOwner?.resolveGatewayContext?.();
+  const ownerIsCurrent = () =>
+    participantOwner?.isLive() === true &&
+    participantOwner.resolveGatewayContext?.() === participantGatewayContext;
   const participant = params.identity.resolveParticipant?.(params.subject);
   const senderId = params.subject.stableId == null ? undefined : String(params.subject.stableId);
   const participantBinding = params.contextBinding && { ...params.contextBinding };
@@ -679,13 +547,15 @@ export async function resolveChannelMessageIngress(
     commandAccess,
     activationAccess,
   };
+  let participantInput: ChannelParticipantInput | undefined;
   if (
     (participant || senderId) &&
     participantBinding &&
     participantOwner &&
+    ownerIsCurrent() &&
     ingress.admission === "dispatch"
   ) {
-    prepareChannelParticipantInput(result, {
+    participantInput = {
       identity: participant
         ? {
             type: "remote",
@@ -702,12 +572,25 @@ export async function resolveChannelMessageIngress(
             id: senderId!,
           },
       binding: participantBinding,
+      verifiedPrincipal:
+        subject.identifiers[0]?.authentication === "verified" &&
+        subject.identifiers[0]?.kind === "stable-id" &&
+        subject.identifiers[0]?.value
+          ? {
+              channelId,
+              accountId: params.accountId ?? "default",
+              senderId: subject.identifiers[0].value,
+            }
+          : undefined,
       promptedAt,
       owner: participantOwner,
-    });
+      gatewayContext: participantGatewayContext,
+    };
   }
   return recordChannelIngressResolution({
     result,
+    owner: ownerIsCurrent() ? participantOwner : undefined,
+    participantInput,
     channelId,
     accountId: params.accountId,
     rawPrincipalRef: params.subject.stableId,

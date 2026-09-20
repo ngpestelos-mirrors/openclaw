@@ -16,6 +16,7 @@ import {
   validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
+import { prepareGatewayContextBindingOwner } from "../plugins/runtime/gateway-context-binding.js";
 
 /** Operational lifecycle correlation. This is never identity or authorization evidence. */
 export type OperationalRunInstanceRef = Readonly<{
@@ -364,7 +365,7 @@ function admitPreparedAgentRun(params: {
     runId: params.facts.runId,
   });
   if (!isExecutionIdentityCollectionEnabled(params.cfg)) {
-    return Object.freeze({ operationalRunInstance });
+    return Object.freeze(prepareGatewayContextBindingOwner({ operationalRunInstance }));
   }
   const executionIdentityToken =
     recovery.token ??
@@ -372,7 +373,7 @@ function admitPreparedAgentRun(params: {
       ? createExecutionIdentityAdmissionToken(params.facts.runId)
       : undefined);
   if (!executionIdentityToken) {
-    return Object.freeze({ operationalRunInstance });
+    return Object.freeze(prepareGatewayContextBindingOwner({ operationalRunInstance }));
   }
 
   enqueueExecutionIdentityContextAtAdmission(params.facts, {
@@ -381,5 +382,7 @@ function admitPreparedAgentRun(params: {
     runtimeInstanceId: params.runtimeInstanceId,
     retryOnly: params.recovery?.retryOnly === true,
   });
-  return Object.freeze({ operationalRunInstance, executionIdentityToken });
+  return Object.freeze(
+    prepareGatewayContextBindingOwner({ operationalRunInstance, executionIdentityToken }),
+  );
 }

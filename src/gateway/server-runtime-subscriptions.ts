@@ -11,10 +11,7 @@ import { configureExecutionIdentityAdmissionSink } from "../audit/execution-iden
 import { configureMessageActionDecisionSink } from "../audit/message-action-decision.js";
 import { onTrustedMessageAuditEvent } from "../audit/message-audit-events.js";
 import { configureRuntimeActionDecisionSink } from "../audit/runtime-action-decision.js";
-import {
-  configureChannelAdmissionDecisionSink,
-  configureChannelAdmissionEvidenceCollection,
-} from "../channels/message-access/admission-evidence.js";
+import { createChannelAdmissionAudit } from "../channels/message-access/admission-evidence.js";
 import { getRuntimeConfig } from "../config/io.js";
 import {
   type AgentEventRuntimePayload,
@@ -121,12 +118,10 @@ export function startGatewayEventSubscriptions(params: {
   const clearExecutionDecisionWorkSink = configureExecutionDecisionWorkSink(
     auditRecorder.recordExecutionDecisionWork,
   );
-  const clearChannelAdmissionEvidenceCollection = configureChannelAdmissionEvidenceCollection(
-    isExecutionIdentityCollectionEnabled(runtimeConfig),
-  );
-  const clearChannelAdmissionDecisionSink = configureChannelAdmissionDecisionSink(
-    auditRecorder.recordExecutionDecision,
-  );
+  const channelAdmissionAudit = createChannelAdmissionAudit({
+    enabled: isExecutionIdentityCollectionEnabled(runtimeConfig),
+    decisionSink: auditRecorder.recordExecutionDecision,
+  });
   const clearMessageActionDecisionSink = configureMessageActionDecisionSink(
     auditRecorder.recordExecutionDecision,
   );
@@ -634,8 +629,7 @@ export function startGatewayEventSubscriptions(params: {
     unsubscribeMessageAuditEvents?.();
     clearExecutionDecisionWorkSink();
     clearExecutionIdentityAdmissionSink();
-    clearChannelAdmissionEvidenceCollection();
-    clearChannelAdmissionDecisionSink();
+    channelAdmissionAudit.close();
     clearMessageActionDecisionSink();
     clearRuntimeActionDecisionSink();
     // A missing-key terminal can still be resolving its persisted run mapping.
@@ -704,6 +698,7 @@ export function startGatewayEventSubscriptions(params: {
   const taskUnsub = startGatewayTaskSubscriptions(params);
 
   return {
+    channelAdmissionAudit,
     sessionActivitySummaries,
     sessionCompanion,
     sessionObserver,

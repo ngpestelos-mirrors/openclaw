@@ -16,9 +16,9 @@ import {
   type MediaPlaceholderTextFact,
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
-  createChannelIngressResolver,
   defineStableChannelIngressIdentity,
   type ChannelIngressIdentityDescriptor,
+  type ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
   buildChannelGroupsScopeTree,
@@ -37,10 +37,12 @@ import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { resolveIMessageDirectChatService } from "../chat-context.js";
 import { resolveIMessageConversationRoute } from "../conversation-route.js";
+import { resolveIMessageGroupSystemPrompt } from "../group-policy.js";
 import {
   isKnownFromMeIMessageMessageId,
   rememberIMessageReplyCache,
 } from "../monitor-reply-cache.js";
+import { getIMessageRuntime } from "../runtime.js";
 import {
   formatIMessageChatTarget,
   isAllowedIMessageReplyContextSender,
@@ -331,34 +333,9 @@ async function isKnownFromMeIMessageReactionTarget(params: {
   return false;
 }
 
-/**
- * Per-group `systemPrompt` resolution. Mirrors `resolveWhatsAppGroupSystemPrompt`
- * in `extensions/whatsapp/src/system-prompt.ts`:
- *
- * 1. If the matched per-`chat_id` entry exists AND defines `systemPrompt` (key
- *    is present, value is non-null), use it. Trim whitespace; if the trim
- *    leaves an empty string, return `undefined` and DO NOT fall through to the
- *    wildcard. This is how operators say "this specific group has no prompt"
- *    without inheriting from `groups["*"]`.
- * 2. Otherwise, return the wildcard `groups["*"].systemPrompt` (trimmed; empty
- *    after trim → `undefined`).
- */
-function resolveIMessageGroupSystemPrompt(params: {
-  groupConfig: unknown;
-  defaultConfig: unknown;
-}): string | undefined {
-  const specific = params.groupConfig as { systemPrompt?: string | null } | undefined;
-  if (specific != null && specific.systemPrompt != null) {
-    return specific.systemPrompt.trim() || undefined;
-  }
-  const wildcard = (params.defaultConfig as { systemPrompt?: string | null } | undefined)
-    ?.systemPrompt;
-  return wildcard != null ? wildcard.trim() || undefined : undefined;
-}
-
 type IMessageInboundDispatchDecision = {
   kind: "dispatch";
-  channelIngress?: Awaited<ReturnType<ReturnType<typeof createChannelIngressResolver>["message"]>>;
+  channelIngress?: ResolvedChannelMessageIngress;
   isGroup: boolean;
   chatId?: number;
   chatGuid?: string;
@@ -558,47 +535,49 @@ export async function resolveIMessageInboundDecision(params: {
     sender,
     chatId,
   });
-  const accessDecision = await createChannelIngressResolver({
-    channelId: "imessage",
-    accountId: params.accountId,
-    identity: imessageIngressIdentity,
-    cfg: params.cfg,
-    readStoreAllowFrom: async () => params.storeAllowFrom,
-  }).message({
-    subject: {
-      stableId: sender,
-      aliases: {
-        ...(chatId != null ? { "imessage-chat-id": String(chatId) } : {}),
-        ...(chatGuid ? { "imessage-chat-guid": chatGuid } : {}),
-        ...(chatIdentifier ? { "imessage-chat-identifier": chatIdentifier } : {}),
+  const accessDecision = await getIMessageRuntime()
+    .channel.inbound.ingress.createResolver({
+      channelId: "imessage",
+      accountId: params.accountId,
+      identity: imessageIngressIdentity,
+      cfg: params.cfg,
+      readStoreAllowFrom: async () => params.storeAllowFrom,
+    })
+    .message({
+      subject: {
+        stableId: sender,
+        aliases: {
+          ...(chatId != null ? { "imessage-chat-id": String(chatId) } : {}),
+          ...(chatGuid ? { "imessage-chat-guid": chatGuid } : {}),
+          ...(chatIdentifier ? { "imessage-chat-identifier": chatIdentifier } : {}),
+        },
       },
-    },
-    conversation: {
-      kind: isGroup ? "group" : "direct",
-      id: isGroup
-        ? String(chatId ?? chatGuid ?? chatIdentifier ?? "unknown")
-        : normalizeIMessageHandle(sender),
-    },
-    ...(reactionContext
-      ? {}
-      : {
-          contextBinding: {
-            agentId: route.agentId,
-            sessionKey: route.sessionKey,
-            inboundEventKind: "user_request",
-          },
-        }),
-    dmPolicy: normalizeDmPolicy(params.dmPolicy),
-    groupPolicy: normalizeGroupPolicy(params.groupPolicy),
-    policy: { groupAllowFromFallbackToAllowFrom: false },
-    allowFrom: params.allowFrom,
-    groupAllowFrom: groupAllowFromForAccess,
-    command: {
-      allowTextCommands: isGroup,
-      hasControlCommand: hasControlCommandInMessage,
-      directGroupAllowFrom: "effective",
-    },
-  });
+      conversation: {
+        kind: isGroup ? "group" : "direct",
+        id: isGroup
+          ? String(chatId ?? chatGuid ?? chatIdentifier ?? "unknown")
+          : normalizeIMessageHandle(sender),
+      },
+      ...(reactionContext
+        ? {}
+        : {
+            contextBinding: {
+              agentId: route.agentId,
+              sessionKey: route.sessionKey,
+              inboundEventKind: "user_request",
+            },
+          }),
+      dmPolicy: normalizeDmPolicy(params.dmPolicy),
+      groupPolicy: normalizeGroupPolicy(params.groupPolicy),
+      policy: { groupAllowFromFallbackToAllowFrom: false },
+      allowFrom: params.allowFrom,
+      groupAllowFrom: groupAllowFromForAccess,
+      command: {
+        allowTextCommands: isGroup,
+        hasControlCommand: hasControlCommandInMessage,
+        directGroupAllowFrom: "effective",
+      },
+    });
   const { commandAccess, senderAccess } = accessDecision;
   const effectiveGroupAllowFrom = senderAccess.effectiveGroupAllowFrom;
 

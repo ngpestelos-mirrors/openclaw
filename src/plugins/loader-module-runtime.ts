@@ -1,6 +1,7 @@
 import { toSafeImportPath } from "../shared/import-specifier.js";
 import { VERSION } from "../version.js";
 import { runPluginRegistration } from "./api-lifecycle.js";
+import { tryNativeRequireModule } from "./native-module-require.js";
 import { getPluginCache, withPluginCache } from "./plugin-cache.js";
 import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
 import { getPluginInstance, getPluginValueInstance } from "./plugin-instance-scope.js";
@@ -20,6 +21,7 @@ import type {
 import {
   type PluginRuntimeModuleResolution,
   type PluginSdkResolutionPreference,
+  preparePluginLoaderAliases,
   resolvePluginRuntimeModulePathWithDiagnostics,
 } from "./sdk-alias.js";
 import type { OpenClawPluginDefinition } from "./types.js";
@@ -187,7 +189,6 @@ export function createLazyPluginRuntime(params: {
   devSourceRoot?: string | null;
   pluginSdkResolution?: PluginSdkResolutionPreference;
   runtimeOptions?: CreatePluginRuntimeOptions;
-  loadPluginModule: ReturnType<typeof createPluginModuleLoader>;
 }): PluginRuntime {
   const cache = getPluginCache();
   type RuntimeModule = {
@@ -212,11 +213,23 @@ export function createLazyPluginRuntime(params: {
     }
     const resolvedPath = resolution.resolvedPath;
     runtimeModule = withPluginCache(cache, () =>
-      withProfile(
-        { source: resolvedPath },
-        "runtime-module",
-        () => params.loadPluginModule(resolvedPath) as RuntimeModule,
-      ),
+      withProfile({ source: resolvedPath }, "runtime-module", () => {
+        const native = tryNativeRequireModule(resolvedPath, {
+          allowWindows: true,
+          aliasMap: preparePluginLoaderAliases({
+            modulePath: resolvedPath,
+            moduleUrl: import.meta.url,
+            devSourceRoot: params.devSourceRoot,
+            pluginSdkResolution: params.pluginSdkResolution,
+          }).resolveAlias,
+        });
+        if (!native.ok) {
+          throw new Error(
+            `Unable to load host plugin runtime natively: ${resolvedPath}. Use a supported native TypeScript loader for a source host, or rebuild the host runtime.`,
+          );
+        }
+        return native.moduleExport as RuntimeModule;
+      }),
     );
     return runtimeModule;
   };

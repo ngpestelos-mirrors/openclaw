@@ -1,7 +1,10 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { VERSION } from "../version.js";
 import { createLazyPluginRuntime } from "./loader-module-runtime.js";
 import type { PluginRuntime } from "./runtime/types.js";
+import * as sdkAlias from "./sdk-alias.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 it("keeps version and injected instance surfaces independent of the broad runtime module", () => {
   const gateway = {} as PluginRuntime["gateway"];
@@ -10,11 +13,12 @@ it("keeps version and injected instance surfaces independent of the broad runtim
   };
   const nodes = {} as PluginRuntime["nodes"];
   const subagent = {} as PluginRuntime["subagent"];
-  const loadPluginModule = vi.fn((_modulePath: string): unknown => {
-    throw new Error("broad runtime should stay lazy");
-  });
+  const resolveRuntimeModule = vi
+    .spyOn(sdkAlias, "resolvePluginRuntimeModulePathWithDiagnostics")
+    .mockImplementation(() => {
+      throw new Error("broad runtime should stay lazy");
+    });
   const runtime = createLazyPluginRuntime({
-    loadPluginModule,
     runtimeOptions: { gateway, hooks, nodes, subagent },
   });
 
@@ -65,8 +69,8 @@ it("keeps version and injected instance surfaces independent of the broad runtim
     expect(Reflect.get(runtime, key, null)).toBe(instance);
     expect(Reflect.get(runtime, key, undefined)).toBe(instance);
   }
-  expect(loadPluginModule).not.toHaveBeenCalled();
+  expect(resolveRuntimeModule).not.toHaveBeenCalled();
   // Object.prototype names are not declared runtime metadata.
   expect(() => Reflect.has(runtime, "toString")).toThrow("broad runtime should stay lazy");
-  expect(loadPluginModule).toHaveBeenCalledTimes(1);
+  expect(resolveRuntimeModule).toHaveBeenCalledTimes(1);
 });

@@ -35,6 +35,8 @@ describe("authenticated request mutation custody", () => {
     "generation rotated",
     "selection mismatch",
     "opaque generation reader",
+    "copied generation reader",
+    "reminted generation reader",
   ] as const)("retains the admitted authority for %s", async (scenario) => {
     const generation: SharedGatewaySessionGenerationState = {
       current: "generation-a",
@@ -56,6 +58,23 @@ describe("authenticated request mutation custody", () => {
     const release = createDeferredCore();
     const persisted = vi.fn();
     const grantProfileReads = vi.fn();
+    const compatibilityReader =
+      scenario === "opaque generation reader" ||
+      scenario === "copied generation reader" ||
+      scenario === "reminted generation reader";
+    const generationReader = createRequiredSharedGatewaySessionGenerationReader(generation);
+    const unboundReader = () => generation.current;
+    if (scenario === "reminted generation reader") {
+      for (const key of Object.getOwnPropertySymbols(generationReader)) {
+        const value = Object.getOwnPropertyDescriptor(generationReader, key)?.value;
+        const Issuer = value.constructor;
+        if (typeof Issuer === "function") {
+          Object.defineProperty(unboundReader, key, {
+            value: new Issuer(unboundReader, generation),
+          });
+        }
+      }
+    }
     let inGrant = false;
     let grantError: unknown;
     vi.mocked(readUserProfileIdentity).mockImplementation((profile) => {
@@ -67,29 +86,60 @@ describe("authenticated request mutation custody", () => {
     });
     const harness = createDispatchTestHarness({
       getRequiredSharedGatewaySessionGeneration:
-        scenario === "opaque generation reader"
-          ? () => generation.current
-          : createRequiredSharedGatewaySessionGenerationReader(generation),
+        scenario === "copied generation reader"
+          ? Object.defineProperties(
+              () => generation.current,
+              Object.getOwnPropertyDescriptors(generationReader),
+            )
+          : compatibilityReader
+            ? unboundReader
+            : generationReader,
       buildRequestContext: () => createDirectChatContext(),
       extraHandlers: {
         "test.mutation-custody": async (options) => {
           const authority = readGatewayRequestMutationAuthority(options);
-          expect(authority.family).toBe(
-            scenario === "opaque generation reader" ? "native-compatibility" : "worker",
-          );
+          expect(authority.family).toBe(compatibilityReader ? "native-compatibility" : "worker");
           entered.resolve();
           await release.promise;
           try {
-            if (scenario === "opaque generation reader") {
+            if (compatibilityReader) {
               authority.assertCurrent();
             } else {
               if (authority.family !== "worker") {
                 throw new Error("WS request lost its worker custody before handler invocation");
               }
-              // A copied options object cannot acquire the invocation's private grant.
-              expect(readGatewayRequestMutationAuthority({ ...options }).family).toBe(
-                "native-compatibility",
-              );
+              const forged = { ...options };
+              const reminted = { ...options };
+              const forgedReader = vi.fn(() => authority);
+              for (const key of Object.getOwnPropertySymbols(options)) {
+                const value = Object.getOwnPropertyDescriptor(options, key)?.value;
+                const Issuer = value.constructor;
+                if (typeof Issuer === "function") {
+                  Object.defineProperty(reminted, key, {
+                    value: new Issuer(reminted, authority),
+                    configurable: true,
+                  });
+                }
+                Object.defineProperty(forged, key, {
+                  value: Object.assign(Object.create(Object.getPrototypeOf(value)), {
+                    read: forgedReader,
+                  }),
+                  configurable: true,
+                });
+              }
+              // Neither ordinary copies nor copied private descriptors transfer invocation custody.
+              for (const copy of [
+                { ...options },
+                Object.assign(Object.create(options), options),
+                Object.defineProperties({}, Object.getOwnPropertyDescriptors(options)),
+                forged,
+                reminted,
+              ]) {
+                expect(readGatewayRequestMutationAuthority(copy).family).toBe(
+                  "native-compatibility",
+                );
+              }
+              expect(forgedReader).not.toHaveBeenCalled();
               inGrant = true;
               authority.assertWorkerCurrent();
               expect(authority.expectedProfileBinding).toBeDefined();
@@ -128,7 +178,7 @@ describe("authenticated request mutation custody", () => {
         connection.abort();
       } else if (scenario === "client invalidated") {
         client.invalidated = true;
-      } else if (scenario === "generation rotated" || scenario === "opaque generation reader") {
+      } else if (scenario === "generation rotated" || compatibilityReader) {
         generation.current = "generation-b";
       }
     } finally {

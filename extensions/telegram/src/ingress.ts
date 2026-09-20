@@ -1,6 +1,5 @@
 import type { Message } from "grammy/types";
 import {
-  createChannelIngressResolver,
   defineStableChannelIngressIdentity,
   type ChannelIngressEventInput,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
@@ -8,6 +7,7 @@ import { resolveCommandAuthorization } from "openclaw/plugin-sdk/command-auth-na
 import type { DmPolicy, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { normalizeAllowFrom, type NormalizedAllowFrom } from "./bot-access.js";
 import { isTelegramCommandsAllowFromConfigured } from "./bot/helpers.js";
+import { getTelegramRuntime } from "./runtime.js";
 
 const TELEGRAM_CHANNEL_ID = "telegram";
 
@@ -28,7 +28,7 @@ export function createTelegramIngressResolver(params: {
   accountId?: string;
   cfg?: Pick<OpenClawConfig, "accessGroups" | "commands">;
 }) {
-  return createChannelIngressResolver({
+  return getTelegramRuntime().channel.inbound.ingress.createResolver({
     channelId: TELEGRAM_CHANNEL_ID,
     accountId: params.accountId ?? "default",
     identity: telegramIngressIdentity,

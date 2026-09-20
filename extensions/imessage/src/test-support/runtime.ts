@@ -1,6 +1,7 @@
 // Imessage plugin module implements runtime behavior.
 import fs from "node:fs";
 import path from "node:path";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type {
   OpenKeyedStoreOptions,
   PluginStateSyncKeyedStore,
@@ -66,7 +67,7 @@ export function installIMessageStateRuntimeForTest(): void {
           options,
         )) as PluginRuntime["state"]["openSyncKeyedStore"],
     },
-    channel: {},
+    channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
   } as PluginRuntime);
   createIMessagePluginStateSyncStoreForTest({
     namespace: "imessage.reply-cache",
@@ -113,7 +114,7 @@ export async function loadFreshIMessageReplyCacheForTest(options?: {
           storeOptions,
         )) as PluginRuntime["state"]["openSyncKeyedStore"],
     },
-    channel: {},
+    channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
   } as PluginRuntime);
   createIMessagePluginStateSyncStoreForTest({
     namespace: "imessage.reply-cache",
@@ -147,6 +148,6 @@ export function installIMessageFailingStateRuntimeForTest(): void {
         throw new Error("test plugin-state failure");
       }) as PluginRuntime["state"]["openSyncKeyedStore"],
     },
-    channel: {},
+    channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
   } as PluginRuntime);
 }

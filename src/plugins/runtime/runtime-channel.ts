@@ -44,6 +44,11 @@ import {
   resolveInboundMentionDecision,
 } from "../../channels/mention-gating.js";
 import {
+  createChannelIngressResolver,
+  resolveChannelMessageIngress,
+  resolveStableChannelMessageIngress,
+} from "../../channels/message-access/runtime.js";
+import {
   setChannelConversationBindingIdleTimeoutBySessionKey,
   setChannelConversationBindingMaxAgeBySessionKey,
 } from "../../channels/plugins/conversation-bindings.js";
@@ -114,6 +119,11 @@ export function createRuntimeChannel(options?: {
         : {}),
     });
   const inboundRuntime = {
+    ingress: {
+      createResolver: createChannelIngressResolver,
+      resolve: resolveChannelMessageIngress,
+      resolveStable: resolveStableChannelMessageIngress,
+    },
     buildContext: buildChannelInboundEventContext,
     run: runChannelTurn,
     runPreparedReply: runPreparedChannelTurn,

@@ -5,6 +5,7 @@ import {
   implicitMentionKindWhen,
   resolveInboundMentionDecision,
 } from "openclaw/plugin-sdk/channel-mention-gating";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import type {
   OpenAsyncKeyedStoreOptions,
@@ -146,6 +147,7 @@ export function installMatrixMonitorTestRuntime(
     cfg: options.cfg,
     stateDir: options.stateDir,
     channel: {
+      inbound: createPluginRuntimeMock().channel.inbound,
       mentions: {
         buildMentionRegexes: () => [],
         matchesMentionPatterns:

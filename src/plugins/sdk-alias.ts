@@ -114,7 +114,8 @@ function resolvePluginLoaderJitiNativeModules(): string[] {
 }
 
 function normalizeJitiAliasTargetPath(targetPath: string): string {
-  return process.platform === "win32" ? targetPath.replace(/\\/g, "/") : targetPath;
+  const canonicalPath = pluginCacheRealpathSync(targetPath) ?? targetPath;
+  return process.platform === "win32" ? canonicalPath.replace(/\\/g, "/") : canonicalPath;
 }
 
 function resolveLoaderModulePath(params: LoaderModuleResolveParams = {}): string {
@@ -420,7 +421,10 @@ function resolvePluginSdkAliasCandidateOrder(params: {
   }
   const normalizedModulePath = params.modulePath.replace(/\\/g, "/");
   const isDistRuntime = /\/dist(?:-runtime)?\//.test(normalizedModulePath);
-  return isDistRuntime || params.isProduction ? ["dist", "src"] : ["src", "dist"];
+  const isSourceRuntime = normalizedModulePath.includes("/src/");
+  return isDistRuntime || (!isSourceRuntime && params.isProduction)
+    ? ["dist", "src"]
+    : ["src", "dist"];
 }
 
 const PLUGIN_SDK_PACKAGE_NAMES = ["openclaw/plugin-sdk", "@openclaw/plugin-sdk"] as const;
@@ -1222,6 +1226,14 @@ export function preparePluginLoaderAliases(
   params: LoaderModuleResolveParams & { modulePath: string },
 ) {
   const modulePath = path.resolve(params.modulePath);
+  let hostModulePath = modulePath;
+  if (params.moduleUrl) {
+    try {
+      hostModulePath = fileURLToPath(params.moduleUrl);
+    } catch {
+      // Invalid optional host hints follow the package-root resolver's fallback.
+    }
+  }
   const captured = { ...params, modulePath, devSourceRoot: resolveDevSourceRootParam(params) };
   const packageRoot = resolveLoaderPluginSdkPackageRoot(captured);
   const ownerPackageRoot = packageRoot
@@ -1230,7 +1242,7 @@ export function preparePluginLoaderAliases(
   const context: PluginLoaderAliasContext = {
     packageRoot,
     orderedKinds: resolvePluginSdkAliasCandidateOrder({
-      modulePath,
+      modulePath: hostModulePath,
       isProduction: process.env.NODE_ENV === "production",
       pluginSdkResolution: params.pluginSdkResolution,
     }),
@@ -1277,7 +1289,10 @@ export function preparePluginLoaderAliases(
     // stable for the loader lifecycle. Key the captured authority, not raw hints.
     cacheKey,
     sdkRoots: packageRoot
-      ? context.orderedKinds.map((kind) => path.join(packageRoot, kind, "plugin-sdk"))
+      ? context.orderedKinds.map((kind) => {
+          const root = path.join(packageRoot, kind, "plugin-sdk");
+          return pluginCacheRealpathSync(root) ?? root;
+        })
       : [],
     getAliasMap,
     getSourceTransformAliasMap,
@@ -1452,37 +1467,6 @@ export function buildPluginLoaderJitiOptions(
         }
       : {}),
   };
-}
-
-function isBundledPluginDistModulePath(modulePath: string): boolean {
-  return modulePath.replace(/\\/g, "/").includes("/dist/extensions/");
-}
-
-function shouldPreferNativeModuleLoad(modulePath: string): boolean {
-  switch (normalizeLowercaseStringOrEmpty(path.extname(modulePath))) {
-    case ".js":
-    case ".mjs":
-    case ".cjs":
-    case ".json":
-      return true;
-    default:
-      return false;
-  }
-}
-
-export function resolvePluginLoaderTryNative(
-  modulePath: string,
-  options?: {
-    preferBuiltDist?: boolean;
-  },
-): boolean {
-  if (isBundledPluginDistModulePath(modulePath)) {
-    return shouldPreferNativeModuleLoad(modulePath);
-  }
-  return (
-    shouldPreferNativeModuleLoad(modulePath) ||
-    (options?.preferBuiltDist === true && modulePath.includes(`${path.sep}dist${path.sep}`))
-  );
 }
 
 export function createPluginLoaderModuleCacheKey(params: {

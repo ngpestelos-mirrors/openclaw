@@ -1,4 +1,3 @@
-import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { readGatewayDeviceRevocationGuard } from "../device-revocation.js";
 import type { ExpectedProfileBinding } from "../expected-profile.js";
 import {
@@ -26,10 +25,35 @@ type RequestMutationAuthorityBase = {
 export type GatewayRequestMutationAuthority = RequestMutationAuthorityBase &
   ({ family: "worker"; assertWorkerCurrent: () => void } | { family: "native-compatibility" });
 
-const requestMutationAuthorities = resolveGlobalSingleton(
-  Symbol.for("openclaw.gatewayRequestMutationAuthorities"),
-  () => new WeakMap<object, GatewayRequestMutationAuthority>(),
-);
+const requestMutationAuthorityKey = Symbol("gatewayRequestMutationAuthority");
+
+class RequestMutationAuthorityBinding {
+  readonly #owner: object;
+  readonly #authority: GatewayRequestMutationAuthority;
+
+  constructor(owner: object, authority: GatewayRequestMutationAuthority) {
+    this.#owner = owner;
+    this.#authority = authority;
+    Object.setPrototypeOf(this, null);
+    Object.freeze(this);
+  }
+
+  static read(value: unknown, owner: object): GatewayRequestMutationAuthority | undefined {
+    return typeof value === "object" && value !== null && #owner in value && value.#owner === owner
+      ? value.#authority
+      : undefined;
+  }
+}
+
+function bindRequestMutationAuthority(
+  options: object,
+  authority: GatewayRequestMutationAuthority,
+): void {
+  Object.defineProperty(options, requestMutationAuthorityKey, {
+    value: new RequestMutationAuthorityBinding(options, authority),
+    configurable: true,
+  });
+}
 
 function assertRequestAuthorityCurrent(options: RequestMutationOptions): void {
   options.signal?.throwIfAborted();
@@ -43,7 +67,11 @@ function assertRequestAuthorityCurrent(options: RequestMutationOptions): void {
 export function readGatewayRequestMutationAuthority(
   options: RequestMutationOptions,
 ): GatewayRequestMutationAuthority {
-  const retained = requestMutationAuthorities.get(options);
+  const binding: unknown = Object.getOwnPropertyDescriptor(
+    options,
+    requestMutationAuthorityKey,
+  )?.value;
+  const retained = RequestMutationAuthorityBinding.read(binding, options);
   if (retained) {
     return retained;
   }
@@ -53,7 +81,7 @@ export function readGatewayRequestMutationAuthority(
     family: "native-compatibility",
     assertCurrent: () => assertRequestAuthorityCurrent(captured),
   };
-  requestMutationAuthorities.set(options, compatibility);
+  bindRequestMutationAuthority(options, compatibility);
   return compatibility;
 }
 
@@ -101,7 +129,7 @@ export function bindWebSocketRequestMutationAuthority<T extends GatewayRequestOp
       throw new Error("Gateway requester authority changed");
     }
   };
-  requestMutationAuthorities.set(options, {
+  bindRequestMutationAuthority(options, {
     family: "worker",
     assertCurrent: () => {
       assertWorkerCurrent();
@@ -152,7 +180,7 @@ export function bindGatewayRequestHandlerMutationAuthority<T extends GatewayRequ
           },
         }
       : { family: "native-compatibility", assertCurrent, expectedProfileBinding };
-  requestMutationAuthorities.set(handler, authority);
+  bindRequestMutationAuthority(handler, authority);
   return handler;
 }
 

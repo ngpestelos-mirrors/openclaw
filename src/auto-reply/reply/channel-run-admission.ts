@@ -40,7 +40,7 @@ export function consumeChannelRunAdmission(evidence: ChannelAdmissionEvidence | 
     onAdmitted: (context) => {
       const token = context.executionIdentityToken;
       if (token && admission.decisionCoverage && admission.identifierAuthentication) {
-        recordChannelAdmissionDecision({
+        recordChannelAdmissionDecision(evidence, {
           contextId: token.contextId,
           executionId: token.executionId,
           runId: token.runId,
@@ -61,6 +61,7 @@ export function prepareChannelRunAdmission(params: {
   ingressKind: ExecutionIdentityAdmissionFacts["ingress"]["kind"];
   boundary: string;
   evidence?: ChannelAdmissionEvidence;
+  assertSourceCurrent?: () => void;
   onAdmitted?: (context: AdmittedRunContext) => void;
 }): PreparedAgentRunAdmission {
   const operationalRunInstance = createOperationalRunInstanceRef(params.runId);
@@ -68,7 +69,13 @@ export function prepareChannelRunAdmission(params: {
   let closed = false;
   return Object.freeze({
     operationalRunInstance,
-    assertSourceCurrent: () => prepared?.assertSourceCurrent(),
+    assertSourceCurrent: () => {
+      if (prepared) {
+        prepared.assertSourceCurrent();
+      } else {
+        params.assertSourceCurrent?.();
+      }
+    },
     admit: (runtimeKind, runtimeInstanceId) => {
       if (closed) {
         return Promise.reject(new Error("prepared execution context is already closed"));
@@ -77,6 +84,7 @@ export function prepareChannelRunAdmission(params: {
         const channelAdmission = consumeChannelRunAdmission(params.evidence);
         prepared = prepareAgentRunAdmission({
           cfg: params.cfg,
+          assertSourceCurrent: params.assertSourceCurrent,
           operationalRunInstance,
           facts: {
             runId: params.runId,

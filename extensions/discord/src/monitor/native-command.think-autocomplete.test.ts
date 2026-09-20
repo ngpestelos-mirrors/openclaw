@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   createEmptyPluginRegistry,
   setActivePluginRegistry,
+  useBundledProviderPolicyArtifactsForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
   clearSessionStoreCacheForTest,
@@ -13,6 +14,7 @@ import {
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType, type AutocompleteInteraction } from "../internal/discord.js";
+import { installDiscordIngressTestRuntime } from "../test-support/ingress-runtime.js";
 import { createNoopThreadBindingManager } from "./thread-bindings.js";
 
 type ConversationRuntimeModule = typeof import("openclaw/plugin-sdk/conversation-binding-runtime");
@@ -485,3 +487,7 @@ describe("discord native /think autocomplete", () => {
     expect(values).not.toContain("xhigh");
   });
 });
+
+installDiscordIngressTestRuntime();
+
+useBundledProviderPolicyArtifactsForTest(["openai", "anthropic"]);

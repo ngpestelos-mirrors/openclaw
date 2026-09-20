@@ -702,4 +702,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["themes.get", "themes", "operator.read", "2026.9"],
   ["themes.set", "themes", "operator.write", "2026.9"],
   ["themes.import", "themes", "operator.write", "2026.9"],
+  ["users.linkChannelIdentity", "users", "operator.admin", "2026.9"],
+  ["users.unlinkChannelIdentity", "users", "operator.admin", "2026.9"],
+  ["users.listChannelIdentities", "users", "operator.admin", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

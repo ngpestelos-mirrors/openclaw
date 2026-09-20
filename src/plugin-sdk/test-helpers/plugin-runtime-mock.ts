@@ -9,6 +9,11 @@ import {
   removeAckReactionHandleAfterReply,
   shouldAckReaction,
 } from "../../channels/ack-reactions.js";
+import {
+  createChannelIngressResolver,
+  resolveChannelMessageIngress,
+  resolveStableChannelMessageIngress,
+} from "../../channels/message-access/runtime.js";
 import { createChannelReplyPipeline } from "../../channels/message/reply-pipeline.js";
 import { resolveSessionEntryResetFreshness } from "../../config/sessions/entry-freshness.js";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
@@ -24,6 +29,7 @@ import {
   type PluginRuntimeMockOverrides,
 } from "./plugin-runtime-mock-overrides.js";
 import { createPluginModelRuntimeMock } from "./plugin-runtime-model-mock.js";
+import { createPluginStateRuntimeMock } from "./plugin-runtime-state-mock.js";
 import { createPluginTasksRuntimeMock } from "./plugin-runtime-tasks-mock.js";
 
 type InboundDebounceFlush = ReturnType<InboundDebounceCreateParams<unknown>["onFlush"]>;
@@ -457,6 +463,11 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
     resolveEntryResetFreshness: vi.fn(resolveSessionEntryResetFreshness),
   };
   const inboundRuntime = {
+    ingress: {
+      createResolver: createChannelIngressResolver,
+      resolve: resolveChannelMessageIngress,
+      resolveStable: resolveStableChannelMessageIngress,
+    },
     run: runChannelTurnMock,
     dispatch: dispatchChannelTurnPlanMock,
     dispatchReply: dispatchAssembledChannelTurnMock,
@@ -930,28 +941,7 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
         debug: vi.fn(),
       })),
     },
-    state: {
-      resolveStateDir: vi.fn(() => "/tmp/openclaw"),
-      openBlobStore: createGenericMock<PluginRuntime["state"]["openBlobStore"]>(() => {
-        throw new Error("openBlobStore mock is not configured");
-      }),
-      openKeyedStore: createGenericMock<PluginRuntime["state"]["openKeyedStore"]>(() => {
-        throw new Error("openKeyedStore mock is not configured");
-      }),
-      openSyncKeyedStore: createGenericMock<PluginRuntime["state"]["openSyncKeyedStore"]>(() => {
-        throw new Error("openSyncKeyedStore mock is not configured");
-      }),
-      openChannelIngressQueue: createGenericMock<PluginRuntime["state"]["openChannelIngressQueue"]>(
-        () => {
-          throw new Error("openChannelIngressQueue mock is not configured");
-        },
-      ),
-      openChannelIngressDrain: createGenericMock<PluginRuntime["state"]["openChannelIngressDrain"]>(
-        () => {
-          throw new Error("openChannelIngressDrain mock is not configured");
-        },
-      ),
-    },
+    state: createPluginStateRuntimeMock(),
     tasks: createPluginTasksRuntimeMock(),
     subagent: {
       complete: vi.fn(),

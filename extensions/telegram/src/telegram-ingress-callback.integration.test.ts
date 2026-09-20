@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { Message } from "grammy/types";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -74,7 +75,7 @@ it.each(["none", "middleware", "handler"] as const)(
             options,
           )) as TelegramRuntime["state"]["openKeyedStore"],
       },
-      channel: {},
+      channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
     } as TelegramRuntime);
 
     const requests: Array<{ method: string; payload: Record<string, unknown> }> = [];

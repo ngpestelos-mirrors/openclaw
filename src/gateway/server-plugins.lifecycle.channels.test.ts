@@ -36,6 +36,25 @@ installGatewayTestHooks({ scope: "suite" });
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 installInstanceBindingConfigIo();
 
+async function useGatewayGraphPluginRuntime(): Promise<void> {
+  // Keep the real lazy runtime on this server fixture's mocked Vitest graph.
+  const runtimeModule = await import("../plugins/runtime/index.js");
+  const nativeModule = await import("../plugins/native-module-require.js");
+  const nativeLoad = nativeModule.tryNativeRequireModule;
+  const runtimePaths = new Set([
+    path.resolve("src/plugins/runtime/index.ts"),
+    path.resolve("dist/plugins/runtime/index.js"),
+  ]);
+  const runtimeLoader = vi
+    .spyOn(nativeModule, "tryNativeRequireModule")
+    .mockImplementation((modulePath, options) =>
+      runtimePaths.has(modulePath)
+        ? { ok: true, moduleExport: runtimeModule }
+        : nativeLoad(modulePath, options),
+    );
+  onTestFinished(() => runtimeLoader.mockRestore());
+}
+
 // A real plugin registry replacement must own accounts before their first route exists.
 describe("Gateway plugin replacement channel ownership", () => {
   const channelId = "reload-webhook";
@@ -163,15 +182,7 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
       await fs.writeFile(configPath, JSON.stringify(config));
       const port = await getFreePort();
       const hotReloadRecovery = vi.fn(() => ({ status: "emitted" as const }));
-      const runtimeModule = await import("../plugins/runtime/index.js");
-      const loaderModule = await import("../plugins/loader-module-runtime.js");
-      const createLazyRuntime = loaderModule.createLazyPluginRuntime;
-      const runtimeLoader = vi
-        .spyOn(loaderModule, "createLazyPluginRuntime")
-        .mockImplementation((params) =>
-          createLazyRuntime({ ...params, loadPluginModule: () => runtimeModule }),
-        );
-      onTestFinished(() => runtimeLoader.mockRestore());
+      await useGatewayGraphPluginRuntime();
       server = await startTestGatewayServer(port, {
         auth: { mode: "none" },
         controlUiEnabled: false,
@@ -341,16 +352,7 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     const hotReloadRecovery = vi.fn(() => ({
       status: "emitted" as const,
     }));
-    // Use the real runtime in Vitest's graph; native loading evaluates its mocked graph again.
-    const runtimeModule = await import("../plugins/runtime/index.js");
-    const loaderModule = await import("../plugins/loader-module-runtime.js");
-    const createLazyRuntime = loaderModule.createLazyPluginRuntime;
-    const runtimeLoader = vi
-      .spyOn(loaderModule, "createLazyPluginRuntime")
-      .mockImplementation((params) =>
-        createLazyRuntime({ ...params, loadPluginModule: () => runtimeModule }),
-      );
-    onTestFinished(() => runtimeLoader.mockRestore());
+    await useGatewayGraphPluginRuntime();
     server = await startTestGatewayServer(port, {
       auth: { mode: "none" },
       controlUiEnabled: false,

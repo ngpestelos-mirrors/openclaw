@@ -414,6 +414,7 @@ describe("startGatewayEventSubscriptions", () => {
     unsubs = startGatewayEventSubscriptions(createParams());
 
     const evidence = createChannelParticipantAdmissionEvidence({
+      audit: unsubs.channelAdmissionAudit,
       channelId: "test",
       participantId: "person-1",
     });
@@ -423,10 +424,27 @@ describe("startGatewayEventSubscriptions", () => {
     expect(consumeChannelAdmissionEvidence(evidence)).toMatchObject({ ingressState: "unknown" });
     expect(
       createChannelParticipantAdmissionEvidence({
+        audit: unsubs.channelAdmissionAudit,
         channelId: "test",
         participantId: "person-2",
       }),
     ).toBeUndefined();
+
+    unsubs.heartbeatUnsub();
+    unsubs.transcriptUnsub();
+    unsubs.lifecycleUnsub();
+    await unsubs.taskUnsub();
+    unsubs = startGatewayEventSubscriptions(createParams());
+    expect(
+      consumeChannelAdmissionEvidence(
+        createChannelParticipantAdmissionEvidence({
+          audit: unsubs.channelAdmissionAudit,
+          channelId: "test",
+          participantId: "person-2",
+        }),
+      ),
+    ).toMatchObject({ ingressState: "present", invoker: { state: "present" } });
+    expect(consumeChannelAdmissionEvidence(evidence)).toMatchObject({ ingressState: "unknown" });
   });
 
   it("keeps retention maintenance but creates no producers when audit.enabled is false", async () => {

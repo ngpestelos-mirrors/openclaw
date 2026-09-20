@@ -8,7 +8,7 @@ import {
 } from "../../agents/tool-policy.js";
 import {
   compareChannelAdmissionParticipants,
-  configureChannelAdmissionEvidenceCollection,
+  createChannelAdmissionAudit,
   consumeChannelAdmissionEvidence,
 } from "../../channels/message-access/admission-evidence.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
@@ -176,8 +176,8 @@ describe("followup prompt metadata carrier", () => {
   });
 
   it("keeps participant evidence out of sender-scoped collect routing", () => {
-    const clearCollection = configureChannelAdmissionEvidenceCollection(true);
-    evidenceCleanups.add(clearCollection);
+    const audit = createChannelAdmissionAudit({ enabled: true });
+    evidenceCleanups.add(() => audit.close());
     const runs = ["person-1", "person-2"].map((senderId) => {
       const item = createQueueTestRun({
         prompt: `from ${senderId}`,
@@ -185,6 +185,7 @@ describe("followup prompt metadata carrier", () => {
         originatingTo: "channel:A",
       });
       item.channelAdmissionEvidence = createChannelParticipantAdmissionEvidence({
+        audit,
         channelId: "slack",
         accountId: "default",
         participantId: senderId,
@@ -203,8 +204,8 @@ describe("followup prompt metadata carrier", () => {
     );
   });
   it("keeps collected prompt bytes and ordered facts stable across deferred admission", async () => {
-    const clearCollection = configureChannelAdmissionEvidenceCollection(true);
-    evidenceCleanups.add(clearCollection);
+    const audit = createChannelAdmissionAudit({ enabled: true });
+    evidenceCleanups.add(() => audit.close());
     const key = `prompt-media-collect-${Date.now()}`;
     queueKeys.add(key);
     const settings: QueueSettings = { mode: "collect", debounceMs: 0 };
@@ -237,6 +238,7 @@ describe("followup prompt metadata carrier", () => {
         { name: sharedSkillName, path: "/tmp/skills/shared/SKILL.md" },
       ];
       run.channelAdmissionEvidence = createChannelParticipantAdmissionEvidence({
+        audit,
         channelId: "test",
         participantId: "person-1",
       });
@@ -360,8 +362,8 @@ describe("followup prompt metadata carrier", () => {
   );
 
   it("removes sender authority when collected evidence identifies mixed participants", async () => {
-    const clearCollection = configureChannelAdmissionEvidenceCollection(true);
-    evidenceCleanups.add(clearCollection);
+    const audit = createChannelAdmissionAudit({ enabled: true });
+    evidenceCleanups.add(() => audit.close());
     const key = `prompt-metadata-mixed-${Date.now()}`;
     queueKeys.add(key);
     const done = createDeferred();
@@ -381,6 +383,7 @@ describe("followup prompt metadata carrier", () => {
         { name: skillName, path: `/tmp/skills/${skillName}/SKILL.md` },
       ];
       run.channelAdmissionEvidence = createChannelParticipantAdmissionEvidence({
+        audit,
         channelId: "test",
         participantId,
       });
@@ -425,8 +428,8 @@ describe("followup prompt metadata carrier", () => {
   });
 
   it("preserves facts when an overflow source is rebuilt for retry", () => {
-    const clearCollection = configureChannelAdmissionEvidenceCollection(true);
-    evidenceCleanups.add(clearCollection);
+    const audit = createChannelAdmissionAudit({ enabled: true });
+    evidenceCleanups.add(() => audit.close());
     const source = createQueueTestRun({
       prompt: "[media attached: /tmp/retry.png (image/png)]\nretry me",
     });
@@ -436,6 +439,7 @@ describe("followup prompt metadata carrier", () => {
     source.media = [{ path: "/tmp/retry.png", contentType: "image/png" }];
     source.explicitSkillSelections = [{ name: "retry", path: "/tmp/skills/retry/SKILL.md" }];
     source.channelAdmissionEvidence = createChannelParticipantAdmissionEvidence({
+      audit,
       channelId: "test",
       participantId: "person-1",
     });
