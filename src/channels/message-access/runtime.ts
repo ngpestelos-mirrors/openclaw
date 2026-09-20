@@ -11,8 +11,7 @@ import type { PairingChannel } from "../../pairing/pairing-store.types.js";
 import { recordChannelIngressResolution } from "./admission-evidence.js";
 import { decideChannelIngress } from "./decision.js";
 import { resolveChannelIngressEffectiveAllowFromLists } from "./effective-allow-from.js";
-import type { ChannelIngressHostOwner } from "./ingress-host-owner.js";
-import type { ChannelParticipantInput } from "./participant-input.js";
+import type { ChannelIngressHostOwner, ChannelParticipantInput } from "./ingress-host-owner.js";
 import {
   allReferencedAccessGroupNames,
   normalizeEffectiveEntries,

@@ -1,10 +1,7 @@
 import { resolveCommandOwner } from "../../auto-reply/command-auth.js";
 import { bindCommandOwnerAuthority } from "../../auto-reply/command-owner-authority.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
-import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
-import type { GatewayContextResolver } from "../../gateway/server-methods/types.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
-import type { UserChannelIdentity } from "../../state/user-channel-identities.js";
 import { takeChannelParticipantInput } from "./admission-evidence.js";
 import type { ChannelIngressHostOwner } from "./ingress-host-owner.js";
 import type {
@@ -12,14 +9,6 @@ import type {
   ResolvedChannelMessageIngress,
 } from "./runtime-types.js";
 
-export type ChannelParticipantInput = {
-  identity: Extract<SessionParticipantIdentity, { type: "remote" | "observation" }>;
-  binding: ChannelIngressContextBinding;
-  promptedAt: number;
-  owner: ChannelIngressHostOwner;
-  gatewayContext: ReturnType<GatewayContextResolver>;
-  verifiedPrincipal?: UserChannelIdentity;
-};
 export function bindChannelParticipantInput(params: {
   context: MsgContext;
   channelId: string;

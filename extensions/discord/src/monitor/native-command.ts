@@ -1,6 +1,5 @@
 import { ApplicationCommandOptionType } from "discord-api-types/v10";
 import { loadPreparedModelCatalog, resolveAgentDir } from "openclaw/plugin-sdk/agent-runtime";
-import { resolveCommandAuthorization } from "openclaw/plugin-sdk/command-auth-native";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { buildPairingReply } from "openclaw/plugin-sdk/conversation-runtime";
 import { isDangerousNameMatchingEnabled } from "openclaw/plugin-sdk/dangerous-name-runtime";
@@ -27,7 +26,6 @@ import {
   resolveDiscordAccountDmPolicy,
   resolveDiscordMaxLinesPerMessage,
 } from "../accounts.js";
-import { resolveDiscordCommandOwnerAllowFrom } from "../command-owners.js";
 import {
   Button,
   Command,
@@ -54,6 +52,7 @@ import {
   resolveDiscordGuildNativeCommandAuthorized,
   resolveDiscordNativeAutocompleteAuthorized,
   resolveDiscordNativeCommandChannelAccessContext,
+  createDiscordNativeCommandAuthority,
   resolveDiscordNativeGroupDmAccess,
 } from "./native-command-auth.js";
 import {
@@ -343,7 +342,6 @@ async function dispatchDiscordCommandInteraction(params: {
       cfg,
       accountId,
     }) ?? [];
-  const commandOwnerAllowFrom = resolveDiscordCommandOwnerAllowFrom(cfg);
   const { ownerAllowList: discordOwnerAllowList, ownerAllowed: discordOwnerOk } =
     resolveDiscordOwnerAccess({
       allowFrom: configuredDmAllowFrom,
@@ -354,7 +352,6 @@ async function dispatchDiscordCommandInteraction(params: {
       },
       allowNameMatching,
     });
-  const commandOwnerAllowAll = commandOwnerAllowFrom?.includes("*") === true;
   const ownerAllowListConfigured = discordOwnerAllowList != null;
   const ownerOk = discordOwnerOk;
   const { commandsAllowFromAccess, guildInfo, channelConfig } =
@@ -388,7 +385,7 @@ async function dispatchDiscordCommandInteraction(params: {
       conversationId: rawChannelId || "unknown",
       parentConversationId: threadParentId,
       threadBinding: isThreadChannel ? threadBindings.getByThreadId(rawChannelId) : undefined,
-      enforceConfiguredBindingReadiness: !shouldBypassConfiguredAcpEnsure(commandName),
+      enforceConfiguredBindingReadiness: false,
     }));
   const canBypassConfiguredAcpGuildGuards = async () => {
     if (!interaction.guild || !shouldBypassConfiguredAcpGuildGuards(commandName)) {
@@ -551,28 +548,32 @@ async function dispatchDiscordCommandInteraction(params: {
     await respond("Access policy changed. Try this interaction again.", { ephemeral: true });
     return { accepted: false };
   }
-  const senderIsCommandOwner = () => {
-    if (policy?.isCurrent() === false) {
-      return false;
-    }
-    return (
-      resolveDiscordOwnerAccess({
-        allowFrom: commandOwnerAllowFrom,
-        sender,
-        allowNameMatching,
-      }).ownerAllowed ||
-      resolveCommandAuthorization({ ctx: ctxPayload, cfg, commandAuthorized }).senderIsOwner
-    );
-  };
-  const commandOwnerAccessAllowed = senderIsCommandOwner() || commandOwnerAllowAll;
+  const authority = createDiscordNativeCommandAuthority({
+    cfg,
+    ctx: ctxPayload,
+    commandAuthorized,
+    sender,
+    allowNameMatching,
+    isPolicyCurrent: policy?.isCurrent,
+    accountId,
+    guildId: interaction.guild?.id,
+    commandName,
+    pluginCommand: params.pluginCommandDispatch.kind === "plugin",
+  });
+  if (!authority.isAllowed()) {
+    await respond("You are not authorized to use this command.", { ephemeral: true });
+    return { accepted: false };
+  }
 
-  if (
-    commandOwnerAllowFrom &&
-    !commandOwnerAccessAllowed &&
-    !commandsAllowFromAccess.allowed &&
-    commandName !== "status" &&
-    params.pluginCommandDispatch.kind !== "plugin"
-  ) {
+  if (routeState.configuredBinding && !shouldBypassConfiguredAcpEnsure(commandName)) {
+    routeState.bindingReadiness = await nativeCommandRuntime.ensureConfiguredBindingRouteReady({
+      cfg,
+      bindingResolution: routeState.configuredBinding,
+      assertActive: authority.assertActive,
+    });
+  }
+
+  if (!authority.isAllowed()) {
     await respond("You are not authorized to use this command.", { ephemeral: true });
     return { accepted: false };
   }
@@ -590,6 +591,7 @@ async function dispatchDiscordCommandInteraction(params: {
         cfg,
         accountId,
         threadBindings,
+        preparedRoute: routeState.bindingReadiness?.ok === false ? null : effectiveRoute,
       })
     : null;
   // Native /think must not wait on provider discovery; persisted rows retain its metadata.
@@ -682,7 +684,7 @@ async function dispatchDiscordCommandInteraction(params: {
       channel: "discord",
       channelId,
       isAuthorizedSender: commandAuthorized,
-      senderIsOwner: senderIsCommandOwner(),
+      senderIsOwner: authority.senderIsOwner(),
       agentId: pluginCommandAgentId,
       sessionKey: effectiveRoute.sessionKey,
       authProfileId: targetSessionEntry?.authProfileOverride,
@@ -760,7 +762,7 @@ async function dispatchDiscordCommandInteraction(params: {
     commandTargetSessionKey,
     channel: "discord",
     senderId: sender.id,
-    senderIsOwner: senderIsCommandOwner(),
+    senderIsOwner: authority.senderIsOwner(),
     isAuthorizedSender: commandAuthorized,
     isGroup: isGuild || isGroupDm,
     defaultGroupActivation: () =>

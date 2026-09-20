@@ -268,6 +268,7 @@ export class AcpSessionManager {
   }
 
   async setSessionConfigOption(params: {
+    assertActive?: () => void;
     cfg: OpenClawConfig;
     sessionKey: string;
     agentId?: string;
@@ -281,6 +282,7 @@ export class AcpSessionManager {
 
     return await this.withSessionActor(target, async (isCurrentActor) => {
       return await runSetManagerSessionConfigOption({
+        assertActive: params.assertActive,
         cfg: params.cfg,
         ...target,
         key,

@@ -7,6 +7,7 @@ import {
   resetPluginRuntimeStateForTest,
   setActivePluginRegistry,
 } from "../runtime.js";
+import { prepareGatewayContextBindingOwner } from "./gateway-context-binding-owner.js";
 import type { PluginRuntimeGatewayRequestScope } from "./gateway-request-scope.test-fixtures.js";
 
 const TEST_SCOPE: PluginRuntimeGatewayRequestScope = {
@@ -73,8 +74,11 @@ describe("gateway request scope", () => {
 
   it("keeps Gateway routing bound to the exact owner across wrappers and cleanup", async () => {
     const runtimeScope = await importGatewayRequestScopeModule();
-    const owner = {};
+    const owner = Object.freeze(prepareGatewayContextBindingOwner({}));
     const resolver = vi.fn(() => TEST_SCOPE.context!);
+    const copiedPreparation = Object.defineProperties({}, Object.getOwnPropertyDescriptors(owner));
+    expect(() => runtimeScope.bindGatewayContextResolver(copiedPreparation, resolver)).toThrow();
+    expect(runtimeScope.clearGatewayContextResolver(copiedPreparation)).toBe(false);
     runtimeScope.bindGatewayContextResolver(owner, resolver);
     const shared = runtimeScope.getSharedGatewayContextResolver([owner]);
     const forged = {};
@@ -112,7 +116,6 @@ describe("gateway request scope", () => {
     }
     expect(forgedReader).not.toHaveBeenCalled();
 
-    Object.freeze(owner);
     expect(runtimeScope.clearGatewayContextResolver(owner)).toBe(true);
     expect(runtimeScope.clearGatewayContextResolver(owner)).toBe(false);
     expect(runtimeScope.getGatewayContextResolver(owner)).toBeUndefined();

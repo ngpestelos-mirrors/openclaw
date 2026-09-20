@@ -54,7 +54,10 @@ import {
 import { MANAGED_HANDOFF_NATIVE_SCOPE_SOURCE } from "./update-managed-service-handoff-native-scope-source.js";
 import { MANAGED_HANDOFF_RUNTIME_ENTRY } from "./update-managed-service-handoff-runtime-assets.js";
 import { stageManagedHandoffRuntime } from "./update-managed-service-handoff-runtime.js";
-import { resolveManagedUpdateRequester } from "./update-requester-authority.js";
+import {
+  resolveManagedUpdateRequester,
+  type UpdateRequester,
+} from "./update-requester-authority.js";
 import type { UpdateRestartSentinelMeta } from "./update-restart-sentinel-payload.js";
 import { recordUpdateRunStep } from "./update-run-ledger.js";
 import { readCurrentGitUpdateRecovery } from "./update-runner-git-recovery.js";
@@ -1887,13 +1890,7 @@ function resolveManagedServiceCliArgv(
 }
 
 export function formatManagedServiceUpdateCommand(
-  params?: {
-    timeoutMs?: number;
-    channel?: UpdateChannel;
-    tag?: string;
-    acceptCapabilities?: boolean;
-    reapplyLocalOverrides?: boolean;
-  },
+  params?: Omit<Parameters<typeof resolveUpdateCliArgv>[0], "execPath" | "argv1">,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   return formatCliCommand(
@@ -1924,7 +1921,7 @@ type ManagedServiceUpdateHandoffParams = {
   acceptCapabilities?: boolean;
   reapplyLocalOverrides?: boolean;
   meta: UpdateRestartSentinelMeta;
-  requester?: { channel?: string; accountId?: string; senderId?: string };
+  requester?: UpdateRequester;
   handoffId?: string;
   supervisor?: RespawnSupervisor | null;
   env?: NodeJS.ProcessEnv;

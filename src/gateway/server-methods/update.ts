@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { validateUpdateRunParams } from "../../../packages/gateway-protocol/src/index.js";
-import { isConfiguredCommandOwner } from "../../auto-reply/command-auth.js";
+import { resolveCommandOwner } from "../../auto-reply/command-auth.js";
 import { formatCommandOwnerHint } from "../../commands/doctor-command-owner.js";
 import { isRestartEnabled } from "../../config/commands.flags.js";
 import { extractDeliveryInfo } from "../../config/sessions.js";
@@ -123,6 +123,14 @@ export const updateHandlers: GatewayRequestHandlers = {
           : "api";
     const getConfig = context.getRuntimeConfig;
     const config = getConfig();
+    const requester = params.requester
+      ? {
+          ...params.requester,
+          ...(requesterChannel && !isInternalMessageChannel(requesterChannel)
+            ? { authorizationSource: resolveCommandOwner(config, params.requester) ?? "" }
+            : {}),
+        }
+      : undefined;
     const noticeTarget = resolveUpdateRunNoticeTarget({
       cfg: config,
       sessionKey,
@@ -135,7 +143,7 @@ export const updateHandlers: GatewayRequestHandlers = {
     }
     const origin = {
       doctorHint: formatDoctorNonInteractiveHint(),
-      ...(params.requester ? { requester: params.requester } : {}),
+      ...(requester ? { requester } : {}),
       ...(sessionKey ? { sessionKey } : {}),
       ...(deliveryContext
         ? {
@@ -182,18 +190,19 @@ export const updateHandlers: GatewayRequestHandlers = {
     let ownsUpdateOutcome = false;
     let adoptedCampaignId: string | undefined;
     const refuseUnauthorizedChatUpdate = () => {
-      const requester = params.requester;
       // Chat update authority is revocable; internal or channel-less requesters
       // retain the operator authority established at admission.
       if (!requester?.channel || isInternalMessageChannel(requester.channel)) {
         return false;
       }
       const currentConfig = getConfig();
-      const reason = !isConfiguredCommandOwner(currentConfig, requester)
-        ? "owner_required"
-        : !isRestartEnabled(currentConfig)
-          ? "restart-disabled"
-          : undefined;
+      const reason =
+        !requester.authorizationSource ||
+        resolveCommandOwner(currentConfig, requester) !== requester.authorizationSource
+          ? "owner_required"
+          : !isRestartEnabled(currentConfig)
+            ? "restart-disabled"
+            : undefined;
       if (!reason) {
         return false;
       }
@@ -426,7 +435,7 @@ export const updateHandlers: GatewayRequestHandlers = {
                 }
                 await notify(current, current.phase === "requested" ? "parking" : "activating");
               },
-              requester: params.requester,
+              requester,
               root: installRoot,
               timeoutMs,
               restartDrainTimeoutMs: resolveGatewayRestartDeferralTimeoutMs(),

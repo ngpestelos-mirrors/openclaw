@@ -174,6 +174,7 @@ export async function resolveDiscordNativeChoiceContext(params: {
   cfg: OpenClawConfig;
   accountId: string;
   threadBindings: ThreadBindingManager;
+  preparedRoute?: ResolvedAgentRoute | null;
 }): Promise<{
   provider?: string;
   model?: string;
@@ -181,17 +182,20 @@ export async function resolveDiscordNativeChoiceContext(params: {
   agentId: string;
 } | null> {
   try {
-    const resolved = await resolveDiscordModelPickerRouteState({
-      interaction: params.interaction,
-      cfg: params.cfg,
-      accountId: params.accountId,
-      threadBindings: params.threadBindings,
-      enforceConfiguredBindingReadiness: true,
-    });
-    if (resolved.bindingReadiness && !resolved.bindingReadiness.ok) {
+    let route = params.preparedRoute;
+    if (route === undefined) {
+      const resolved = await resolveDiscordModelPickerRouteState({
+        interaction: params.interaction,
+        cfg: params.cfg,
+        accountId: params.accountId,
+        threadBindings: params.threadBindings,
+        enforceConfiguredBindingReadiness: true,
+      });
+      route = resolved.bindingReadiness?.ok === false ? null : resolved.effectiveRoute;
+    }
+    if (!route) {
       return null;
     }
-    const route = resolved.effectiveRoute;
     const fallback = resolveDefaultModelForAgent({
       cfg: params.cfg,
       agentId: route.agentId,

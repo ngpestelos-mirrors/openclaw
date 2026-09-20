@@ -97,11 +97,12 @@ export async function runSetManagerSessionRuntimeMode(
 
 /** Applies a backend config-option control and persists the inferred runtime option patch. */
 export async function runSetManagerSessionConfigOption(
-  params: RuntimeOptionCommandContext & { key: string; value: string },
+  params: RuntimeOptionCommandContext & { assertActive?: () => void; key: string; value: string },
 ): Promise<AcpSessionRuntimeOptions> {
   if (!params.isCurrentActor()) {
     throw createSupersededActorError(params.sessionKey);
   }
+  params.assertActive?.();
   const resolution = params.resolveSession({
     cfg: params.cfg,
     sessionKey: params.sessionKey,
@@ -109,12 +110,14 @@ export async function runSetManagerSessionConfigOption(
   });
   const resolvedMeta = requireReadySessionMeta(resolution);
   const { runtime, handle, meta } = await params.ensureRuntimeHandle({
+    assertActive: params.assertActive,
     cfg: params.cfg,
     sessionKey: params.sessionKey,
     agentId: params.agentId,
     meta: resolvedMeta,
     isCurrentActor: params.isCurrentActor,
   });
+  params.assertActive?.();
   const inferredPatch = inferRuntimeOptionPatchFromConfigOption(params.key, params.value);
   const capabilities = await resolveManagerRuntimeCapabilities({
     runtime,
@@ -144,6 +147,7 @@ export async function runSetManagerSessionConfigOption(
     );
   }
 
+  params.assertActive?.();
   const result = await withAcpRuntimeErrorBoundary({
     run: async () =>
       await runtime.setConfigOption!({

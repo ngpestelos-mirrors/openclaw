@@ -38,6 +38,7 @@ import {
 
 /** Returns a reusable cached handle or initializes a fresh runtime session for the metadata. */
 export async function ensureManagerRuntimeHandle(params: {
+  assertActive?: () => void;
   cfg: OpenClawConfig;
   sessionKey: string;
   agentId: string;
@@ -52,6 +53,7 @@ export async function ensureManagerRuntimeHandle(params: {
   if (!isCurrentActor()) {
     throw createSupersededActorError(params.sessionKey);
   }
+  params.assertActive?.();
   const agent =
     normalizeText(params.meta.agent) || resolveAcpAgentFromSessionKey(params.sessionKey, "main");
   const mode = params.meta.mode;
@@ -96,6 +98,7 @@ export async function ensureManagerRuntimeHandle(params: {
     if (!isCurrentActor()) {
       throw createSupersededActorError(params.sessionKey);
     }
+    params.assertActive?.();
     if (reusable) {
       if (!isCurrentActor()) {
         throw createSupersededActorError(params.sessionKey);
@@ -107,6 +110,7 @@ export async function ensureManagerRuntimeHandle(params: {
       };
     }
     await params.runtimeHandles.close({
+      assertActive: params.assertActive,
       sessionKey: params.sessionKey,
       agentId: params.agentId,
       reason: "runtime-handle-replaced",
@@ -133,6 +137,7 @@ export async function ensureManagerRuntimeHandle(params: {
     previousIdentity != null &&
     !identityHasStableSessionId(previousIdentity);
   const ensureSession = async (resumeSessionId?: string) => {
+    params.assertActive?.();
     const ensured = await withAcpRuntimeErrorBoundary({
       run: async () =>
         await runtime.ensureSession({
@@ -166,6 +171,7 @@ export async function ensureManagerRuntimeHandle(params: {
     if (!isCurrentActor()) {
       throw createSupersededActorError(params.sessionKey);
     }
+    params.assertActive?.();
     await runtime.prepareFreshSession?.({
       persistedHandle,
       sessionKey: params.sessionKey,
@@ -187,6 +193,7 @@ export async function ensureManagerRuntimeHandle(params: {
       if (!isCurrentActor()) {
         throw acpError;
       }
+      params.assertActive?.();
       if (isAcpOwnerRepairRequired(acpError) || acpError.code !== "ACP_SESSION_INIT_FAILED") {
         throw acpError;
       }

@@ -44,7 +44,7 @@ import {
   getGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
 } from "../../agents/tools/gateway-caller-context.js";
-import { isConfiguredCommandOwner } from "../../auto-reply/command-auth.js";
+import { resolveCommandOwner } from "../../auto-reply/command-auth.js";
 import {
   clearRuntimeConfigSnapshot,
   getRuntimeConfig,
@@ -243,10 +243,10 @@ async function withSuccessor<T>(admin: boolean | "channel-owner", run: Requester
           managementEntitlement: {
             source: "channel-owner" as const,
             isCurrent: () =>
-              isConfiguredCommandOwner(getRuntimeConfig(), {
+              resolveCommandOwner(getRuntimeConfig(), {
                 channel: "discord",
                 senderId: "owner-1",
-              }),
+              }) === "configured-owner",
           },
         }
       : admission(originalRunId, requester);

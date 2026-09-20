@@ -1,11 +1,17 @@
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { setIMessageRuntime } from "../runtime.js";
 import {
   buildIMessageInboundContext,
   resolveIMessageInboundDecision,
 } from "./inbound-processing.js";
 
 describe("buildIMessageInboundContext direct reply route", () => {
+  beforeEach(() => {
+    setIMessageRuntime(createPluginRuntimeMock());
+  });
+
   it("uses the exact chat GUID when no numeric chat ID is available", async () => {
     const cfg = {} as OpenClawConfig;
     const message = {

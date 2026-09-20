@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { updateFailureSchema, type TriageUpdateFailure } from "../commands/triage-update.js";
+import type { UpdateRequester } from "./update-requester-authority.js";
 
 export const updateRepairBudgetSchema = z.object({
   maxTurns: z.number().int().nonnegative().default(3),
@@ -57,7 +58,12 @@ export const updateRepairParentMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("start"),
     runId: text.optional(),
     requester: z
-      .object({ channel: text.optional(), accountId: text.optional(), senderId: text.optional() })
+      .object({
+        channel: text.optional(),
+        accountId: text.optional(),
+        senderId: text.optional(),
+        authorizationSource: text.optional(),
+      })
       .optional(),
     target: z.object({
       stateDir: z.string(),
@@ -97,7 +103,7 @@ export type UpdateRepairParams = {
   admissionEnv?: NodeJS.ProcessEnv;
   nodeRunner?: string;
   runId?: string;
-  requester?: { channel?: string; accountId?: string; senderId?: string };
+  requester?: UpdateRequester;
   context: TriageUpdateFailure & {
     phase: "validating" | "verifying";
     beforeVersion?: string;

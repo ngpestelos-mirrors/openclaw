@@ -5,6 +5,8 @@ import {
 } from "openclaw/plugin-sdk/command-auth-native";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { isDangerousNameMatchingEnabled } from "openclaw/plugin-sdk/dangerous-name-runtime";
+import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import { getRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { resolveOpenProviderRuntimeGroupPolicy } from "openclaw/plugin-sdk/runtime-group-policy";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveDiscordAccountAllowFrom, resolveDiscordAccountDmPolicy } from "../accounts.js";
@@ -27,6 +29,77 @@ import type { DiscordBuildInboundContext, DiscordConfig } from "./native-command
 import { resolveDiscordNativeInteractionChannelContext } from "./native-interaction-channel-context.js";
 import { resolveDiscordSenderIdentity } from "./sender-identity.js";
 import type { ThreadBindingManager } from "./thread-bindings.js";
+
+function resolveDiscordNativeCommandOwner(params: {
+  cfg: OpenClawConfig;
+  ctx: MsgContext;
+  commandAuthorized: boolean;
+  sender: { id: string; name?: string; tag?: string };
+  allowNameMatching: boolean;
+  isPolicyCurrent?: () => boolean;
+}): boolean {
+  return (
+    params.isPolicyCurrent?.() !== false &&
+    (resolveDiscordOwnerAccess({
+      allowFrom: resolveDiscordCommandOwnerAllowFrom(params.cfg),
+      sender: params.sender,
+      allowNameMatching: params.allowNameMatching,
+    }).ownerAllowed ||
+      resolveCommandAuthorization(params).senderIsOwner)
+  );
+}
+
+export function createDiscordNativeCommandAuthority(
+  params: Parameters<typeof resolveDiscordNativeCommandOwner>[0] & {
+    accountId: string;
+    guildId?: string;
+    commandName: string;
+    pluginCommand: boolean;
+  },
+) {
+  const assertAdmittedOwner = resolveCommandAuthorization(params).assertOwnerCurrent;
+  const readAuthorization = () => {
+    const cfg = getRuntimeConfigSnapshot() ?? params.cfg;
+    const senderIsOwner = resolveDiscordNativeCommandOwner({ ...params, cfg });
+    const owners = resolveDiscordCommandOwnerAllowFrom(cfg);
+    const commands = resolveDiscordNativeCommandAllowlistAccess({
+      cfg,
+      accountId: params.accountId,
+      sender: params.sender,
+      chatType: params.ctx.ChatType === "direct" ? "direct" : "channel",
+      guildId: params.guildId,
+    });
+    return {
+      senderIsOwner,
+      allowed:
+        (!commands.configured || commands.allowed) &&
+        (!owners ||
+          owners.includes("*") ||
+          senderIsOwner ||
+          commands.allowed ||
+          params.commandName === "status" ||
+          params.pluginCommand),
+    };
+  };
+  const assertActive = () => {
+    assertAdmittedOwner?.();
+    if (params.isPolicyCurrent?.() === false || !readAuthorization().allowed) {
+      throw new Error("Discord command authority changed; send a new request.");
+    }
+  };
+  return {
+    assertActive,
+    senderIsOwner: () => readAuthorization().senderIsOwner,
+    isAllowed: () => {
+      try {
+        assertActive();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
 
 function resolveDiscordNativeCommandAllowlistAccess(params: {
   cfg: OpenClawConfig;

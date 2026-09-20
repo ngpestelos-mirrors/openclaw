@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-contract.js";
 import {
   resolveUserChannelIdentity,
   type UserChannelIdentity,
@@ -10,11 +11,12 @@ import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.j
 export function resolveChannelOperatorAdmin(
   cfg: OpenClawConfig,
   identity: UserChannelIdentity,
+  stateOptions: OpenClawStateDatabaseOptions = {},
 ): string | undefined {
   if (!cfg.gateway?.auth?.identityScopes) {
     return undefined;
   }
-  const linked = resolveUserChannelIdentity(identity);
+  const linked = resolveUserChannelIdentity(identity, stateOptions);
   if (!linked) {
     return undefined;
   }

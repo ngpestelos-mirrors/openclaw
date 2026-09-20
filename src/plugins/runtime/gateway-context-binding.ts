@@ -1,4 +1,8 @@
 import type { GatewayContextResolver } from "../../gateway/server-methods/types.js";
+import {
+  getGatewayContextBindingSlot,
+  prepareGatewayContextBindingOwner,
+} from "./gateway-context-binding-owner.js";
 
 const gatewayContextBindingKey = Symbol("gatewayContextBinding");
 const gatewayContextLifetimeKey = Symbol("gatewayContextLifetime");
@@ -46,18 +50,10 @@ class GatewayContextLifetime {
 }
 
 function getGatewayContextBinding(owner: object): GatewayContextBinding | undefined {
-  const binding: unknown = Object.getOwnPropertyDescriptor(owner, gatewayContextBindingKey)?.value;
+  const slot = getGatewayContextBindingSlot(owner);
+  const binding: unknown =
+    slot && Object.getOwnPropertyDescriptor(slot, gatewayContextBindingKey)?.value;
   return GatewayContextBinding.read(binding, owner);
-}
-
-/** Install the private mutable binding before an owner freezes its public context. */
-export function prepareGatewayContextBindingOwner<T extends object>(owner: T): T {
-  if (!getGatewayContextBinding(owner)) {
-    Object.defineProperty(owner, gatewayContextBindingKey, {
-      value: new GatewayContextBinding(owner),
-    });
-  }
-  return owner;
 }
 
 export function getGatewayContextLifetime(resolver: GatewayContextResolver): AbortController {
@@ -81,7 +77,14 @@ export function bindGatewayContextResolver(
 ): void {
   if (resolver) {
     prepareGatewayContextBindingOwner(owner);
-    GatewayContextBinding.set(getGatewayContextBinding(owner)!, resolver);
+    let binding = getGatewayContextBinding(owner);
+    if (!binding) {
+      const slot = getGatewayContextBindingSlot(owner)!;
+      binding = new GatewayContextBinding(owner);
+      Object.defineProperty(slot, gatewayContextBindingKey, { value: binding });
+      Object.freeze(slot);
+    }
+    GatewayContextBinding.set(binding, resolver);
   }
 }
 

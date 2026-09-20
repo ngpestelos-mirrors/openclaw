@@ -9,7 +9,7 @@ import {
   runWithCronCreatorAuthorityCapability,
 } from "../../agents/cron-creator-authority-context.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
-import { isConfiguredCommandOwner } from "../../auto-reply/command-auth.js";
+import { resolveCommandOwner } from "../../auto-reply/command-auth.js";
 import {
   clearRuntimeConfigSnapshot,
   getRuntimeConfig,
@@ -103,10 +103,10 @@ async function withAgentManagement<T>(
         {
           source: "channel-owner",
           isCurrent: () =>
-            isConfiguredCommandOwner(getRuntimeConfig(), {
+            resolveCommandOwner(getRuntimeConfig(), {
               channel: "discord",
               senderId: "owner-1",
-            }),
+            }) === "configured-owner",
         },
       ),
       "current management capability",

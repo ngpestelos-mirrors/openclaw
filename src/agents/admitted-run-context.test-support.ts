@@ -1,5 +1,5 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { prepareGatewayContextBindingOwner } from "../plugins/runtime/gateway-context-binding.js";
+import { prepareGatewayContextBindingOwner } from "../plugins/runtime/gateway-context-binding-owner.js";
 import type { AdmittedRunContext, PreparedAgentRunAdmission } from "./admitted-run-context.js";
 import { createOperationalRunInstanceRef } from "./admitted-run-context.js";
 

@@ -140,6 +140,7 @@ export const vitestWorkerBuildEntries = {
   // Candidate finalization runs the real mandatory post-plugin readiness surface.
   "extensions/memory-core/doctor-health-api": "extensions/memory-core/doctor-health-api.ts",
   "test-support/anthropic-preparation": "test/scripts/anthropic-preparation-probe.ts",
+  "test-support/provider-hook-scope": "test/scripts/provider-hook-scope.test-support.ts",
   // Exercise native writes through the existing plugin facade in the private graph.
   "plugin-sdk/file-access-runtime": "src/plugin-sdk/file-access-runtime.ts",
 };

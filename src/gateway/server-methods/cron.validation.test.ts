@@ -13,7 +13,7 @@ import {
 } from "../../agents/cron-creator-authority-context.js";
 import { updateCronJobFromAgentTool } from "../../agents/tools/cron-tool-write.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
-import { isConfiguredCommandOwner } from "../../auto-reply/command-auth.js";
+import { resolveCommandOwner } from "../../auto-reply/command-auth.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import {
   applyLegacyCronStoreRepair,
@@ -547,10 +547,10 @@ describe("cron method validation", () => {
           ? {
               source,
               isCurrent: () =>
-                isConfiguredCommandOwner(getRuntimeConfig(), {
+                resolveCommandOwner(getRuntimeConfig(), {
                   channel: "discord",
                   senderId: "owner-1",
-                }),
+                }) === "configured-owner",
             }
           : { source },
       );

@@ -16,12 +16,16 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveChannelOperatorAdmin } from "../gateway/channel-operator-authority.js";
 import { normalizeAccountId } from "../routing/account-id.js";
 import { resolveChannelAccountEntry } from "../routing/account-lookup.js";
+import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-contract.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
   isInternalMessageChannel,
   normalizeMessageChannel,
 } from "../utils/message-channel.js";
-import { getCommandOwnerAuthority } from "./command-owner-authority.js";
+import {
+  captureCommandOwnerAssertion,
+  getCommandOwnerAuthority,
+} from "./command-owner-authority.js";
 import { getCommandSenderAuthority } from "./command-sender-authority.js";
 import { shouldUseFromAsSenderFallback } from "./sender-identity.js";
 import type { MsgContext } from "./templating.js";
@@ -31,6 +35,8 @@ export type CommandAuthorization = {
   ownerList: string[];
   senderId?: string;
   senderIsOwner: boolean;
+  /** Rechecks the host-admitted owner capability after awaited work, when one is present. */
+  assertOwnerCurrent?: () => void;
   isAuthorizedSender: boolean;
   from?: string;
   to?: string;
@@ -546,6 +552,7 @@ function resolveCommandAuthorizationState(params: CommandAuthorizationParams): {
     Array.isArray(ctx.GatewayClientScopes) &&
     ctx.GatewayClientScopes.includes("operator.admin");
   const ownerAllowlistConfigured = ownerState.explicitOwners.length > 0;
+  const assertOwnerCurrent = captureCommandOwnerAssertion(ctx);
   const senderIsOwner =
     senderIsOwnerByIdentity ||
     senderIsOwnerByScope ||
@@ -577,6 +584,7 @@ function resolveCommandAuthorizationState(params: CommandAuthorizationParams): {
       ownerList: ownerState.explicitOwners,
       senderId: senderId || undefined,
       senderIsOwner,
+      ...(assertOwnerCurrent ? { assertOwnerCurrent } : {}),
       isAuthorizedSender: access === "commands",
       from: from || undefined,
       to: to || undefined,
@@ -591,18 +599,11 @@ export function resolveCommandAuthorization(
   return resolveCommandAuthorizationState(params).authorization;
 }
 
-/** Recheck admitted sender identity against current owner grants and Team roles. */
-export function isConfiguredCommandOwner(
-  cfg: OpenClawConfig,
-  requester: { channel?: string; accountId?: string; senderId?: string },
-): boolean {
-  return resolveCommandOwner(cfg, requester) !== undefined;
-}
-
 /** Bind the authorization source so an admitted turn cannot borrow a reassigned profile. */
 export function resolveCommandOwner(
   cfg: OpenClawConfig,
   requester: { channel?: string; accountId?: string; senderId?: string },
+  stateOptions: OpenClawStateDatabaseOptions = {},
 ): string | undefined {
   const providerId = normalizeAnyChannelId(requester.channel) ?? requester.channel;
   const plugin = providerId ? getLoadedChannelPluginForRead(providerId) : undefined;
@@ -618,11 +619,15 @@ export function resolveCommandOwner(
   if (!providerId || !requester.senderId) {
     return undefined;
   }
-  const profileId = resolveChannelOperatorAdmin(cfg, {
-    channelId: providerId,
-    accountId: normalizeAccountId(requester.accountId),
-    senderId: requester.senderId,
-  });
+  const profileId = resolveChannelOperatorAdmin(
+    cfg,
+    {
+      channelId: providerId,
+      accountId: normalizeAccountId(requester.accountId),
+      senderId: requester.senderId,
+    },
+    stateOptions,
+  );
   return profileId ? `profile:${profileId}` : undefined;
 }
 

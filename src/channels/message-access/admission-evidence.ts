@@ -15,8 +15,7 @@ import {
   contextHandoffMatches,
   type ChannelIngressResolutionScope,
 } from "./admission-evidence-scope-key.js";
-import type { ChannelIngressHostOwner } from "./ingress-host-owner.js";
-import type { ChannelParticipantInput } from "./participant-input.js";
+import type { ChannelIngressHostOwner, ChannelParticipantInput } from "./ingress-host-owner.js";
 import type {
   ChannelIngressContextBinding,
   ResolvedChannelMessageIngress,

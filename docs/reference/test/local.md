@@ -104,6 +104,12 @@ existing temporary directories, Node or Vitest caches, or other global caches. S
 validators; it does not require `TSX_DISABLE_CACHE` in the invoking shell. Raw
 external `tsx` and `node --import tsx` invocations outside these launchers are unchanged.
 
+Node Vitest workers also preload `scripts/tsx.mjs` once per worker. Vitest still
+owns test module mocks, while native plugin SDK imports use Node's source module
+graph with TypeScript syntax and `.js`-to-`.ts` resolution. Bun uses its native
+TypeScript loader. This keeps source-host tests from relying on Jiti to evaluate
+another copy of the host SDK.
+
 Parallel project runs on macOS and Linux reuse filesystem transforms within
 exclusive worker slots, with separate directories for each Vitest configuration.
 A slot stays owned through preflight, retries, and verified child/group completion;

@@ -1,5 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { isConfiguredCommandOwner } from "../auto-reply/command-auth.js";
+import { resolveCommandOwner } from "../auto-reply/command-auth.js";
 import { createAccountActionGate } from "../channels/plugins/account-action-gate.js";
 import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
 import { getChannelPlugin } from "../channels/plugins/index.js";
@@ -55,6 +55,35 @@ function isUpdateNoticeSendEnabled(cfg: OpenClawConfig, route: SessionDeliveryRo
   })("sendMessage");
 }
 
+function isUpdateNoticeOwner(cfg: OpenClawConfig, route: SessionDeliveryRoute): boolean {
+  const owner = resolveCommandOwner(cfg, { ...route, senderId: route.to });
+  if (owner === "configured-owner") {
+    return true;
+  }
+  if (route.chatType !== "direct") {
+    return false;
+  }
+  const plugin = getChannelPlugin(route.channel);
+  const targetKind = plugin?.messaging?.inferTargetChatType?.({ to: route.to });
+  if (targetKind && targetKind !== "direct") {
+    return false;
+  }
+  if (owner) {
+    return true;
+  }
+  // Only a channel-proven direct recipient can be translated into a sender identity.
+  if (targetKind !== "direct" || !plugin?.config.formatAllowFrom) {
+    return false;
+  }
+  const target = plugin.messaging?.normalizeTarget?.(route.to) ?? route.to;
+  const senderIds = plugin.config.formatAllowFrom({
+    cfg,
+    accountId: route.accountId,
+    allowFrom: [target],
+  });
+  return senderIds.some((senderId) => resolveCommandOwner(cfg, { ...route, senderId }));
+}
+
 export function authorizeUpdateRunNoticeTarget(
   cfg: OpenClawConfig,
   target: NoticeTarget,
@@ -65,8 +94,7 @@ export function authorizeUpdateRunNoticeTarget(
       reason: `update lifecycle notices are disabled by ${target.route.channel} actions.sendMessage policy`,
     };
   }
-  return target.kind === "route" &&
-    !isConfiguredCommandOwner(cfg, { ...target.route, senderId: target.route.to })
+  return target.kind === "route" && !isUpdateNoticeOwner(cfg, target.route)
     ? { kind: "none", reason: "target is not a configured command owner" }
     : target;
 }

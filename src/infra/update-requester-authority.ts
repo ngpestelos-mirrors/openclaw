@@ -1,7 +1,13 @@
 import { isInternalMessageChannel } from "../utils/message-channel.js";
 import { resolveInstallationTarget } from "./installation-target-context.js";
 
-export type UpdateRequester = { channel?: string; accountId?: string; senderId?: string };
+export type UpdateRequester = {
+  channel?: string;
+  accountId?: string;
+  senderId?: string;
+  /** Captured by the original admission; private handoffs preserve it without granting authority. */
+  authorizationSource?: string;
+};
 export type UpdateRequesterAuthority = Readonly<{
   requester: Readonly<UpdateRequester>;
   /** False means revoked; unavailable policy throws so the run records its actual failure. */
@@ -29,12 +35,15 @@ export async function createManagedUpdateRequesterAuthority(
   requester: UpdateRequester,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<UpdateRequesterAuthority> {
+  // Released drivers knew only configured owners. They must not acquire a newly linked profile
+  // when an installed runtime later reconstructs their authority.
+  const authorizationSource = requester.authorizationSource ?? "configured-owner";
   const admittedRequester = Object.freeze({ ...requester });
   try {
     const authorityEnv = { ...env };
     const target = resolveInstallationTarget(authorityEnv);
     const [
-      { isConfiguredCommandOwner },
+      { resolveCommandOwner },
       { readCurrentConfigForPolicyCheck },
       { ensureCliPluginRegistryLoaded },
     ] = await Promise.all([
@@ -55,7 +64,9 @@ export async function createManagedUpdateRequesterAuthority(
     });
     return Object.freeze({
       requester: admittedRequester,
-      isCurrent: () => isConfiguredCommandOwner(readCurrentConfig(), admittedRequester),
+      isCurrent: () =>
+        resolveCommandOwner(readCurrentConfig(), admittedRequester, { env: authorityEnv }) ===
+        authorizationSource,
     });
   } catch (error) {
     // Admission and worker startup precede run failure reporting. Surface failed

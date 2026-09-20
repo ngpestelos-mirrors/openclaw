@@ -43,6 +43,21 @@ type MatrixTestRuntimeOptions = {
   stateDir?: string;
 };
 
+type MatrixNoticeCall = [roomId: string, payload: { body?: string }];
+type MatrixNoticeSendMock = { mock: { calls: MatrixNoticeCall[] } };
+
+export function getSentNoticeBody(sendMessage: MatrixNoticeSendMock, index = 0): string {
+  return getSentNoticeBodyFromCall(sendMessage.mock.calls[index]);
+}
+
+export function getSentNoticeBodyFromCall(call: MatrixNoticeCall | undefined): string {
+  return call?.[1].body ?? "";
+}
+
+export function getSentNoticeBodies(sendMessage: MatrixNoticeSendMock): string[] {
+  return sendMessage.mock.calls.map(getSentNoticeBodyFromCall);
+}
+
 type MatrixRuntimeStub = {
   config: Pick<PluginRuntime["config"], "current" | "mutateConfigFile" | "replaceConfigFile">;
   channel?: PluginRuntime["channel"];

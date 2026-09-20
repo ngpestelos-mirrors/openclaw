@@ -9,8 +9,10 @@ describe("database-worker test routing registry", () => {
     expect(new Set(databaseWorkerCoreTestFiles).size).toBe(databaseWorkerCoreTestFiles.length);
   });
 
-  it("keeps wizard recovery on the forked database-worker route exactly once", () => {
-    const file = "src/wizard/setup.inference-recovery.integration.test.ts";
+  it.each([
+    "src/wizard/setup.inference-recovery.integration.test.ts",
+    "src/channels/message-access/discord-native-acp-owner.test.ts",
+  ])("keeps %s on the forked database-worker route exactly once", (file) => {
     expect(databaseWorkerCoreTestFiles.filter((entry) => entry === file)).toEqual([file]);
     expect(isDatabaseWorkerCoreTestFile(file)).toBe(true);
   });
