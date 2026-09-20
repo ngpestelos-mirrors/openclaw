@@ -126,7 +126,6 @@ describe("task maintenance ACP cleanup authority", () => {
         runId: "terminal-acp-cleanup-authority",
         task: "Completed parent-owned ACP task",
         status: "succeeded",
-        endedAt: Date.now(),
         cleanupAfter: Date.now() + 86_400_000,
         notifyPolicy: "silent",
       });

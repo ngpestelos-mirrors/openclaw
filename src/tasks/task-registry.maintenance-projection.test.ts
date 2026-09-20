@@ -235,7 +235,6 @@ describe("task maintenance session metadata", () => {
         runId: "maintenance-expired-sibling",
         status: "succeeded",
         lastEventAt: now - 60_000,
-        endedAt: now - 60_000,
         cleanupAfter: now - 1,
         notifyPolicy: "silent",
       });
