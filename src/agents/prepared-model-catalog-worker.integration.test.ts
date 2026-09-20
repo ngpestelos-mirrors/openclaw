@@ -693,6 +693,7 @@ describe("prepared model catalog worker boundary", () => {
       removed.projected.authStore?.profiles[`${DURABLE_AUTH_PROVIDER_ID}:default`],
     ).toBeUndefined();
     fixture.supersede();
+    await waitForWorkers({ requireCreated: true });
     expect(getPreparedModelFullCatalogAuth(fullCatalog)?.authStore).toBe(fullAuth.authStore);
   });
 

@@ -29,6 +29,7 @@ import {
 import { nodeHostConfigRuntimeEntrypoint } from "../../src/node-host/config-runtime.test-support.ts";
 import {
   mcpProviderCatalogEntrypoint,
+  mcpPluginToolsServeEntrypoint,
   publishedSdkBridgeEntrypoints,
 } from "../../src/plugins/loader-sdk-bridge-artifacts.test-support.ts";
 import { pluginRuntimeRetentionEntrypoint } from "../../src/plugins/runtime-retention-entrypoint.test-support.ts";
@@ -96,6 +97,7 @@ export const vitestWorkerBuildEntries = {
     ...Object.values(bashOutputSpillEntrypoints),
     ...publishedSdkBridgeEntrypoints,
     mcpProviderCatalogEntrypoint,
+    mcpPluginToolsServeEntrypoint,
     pluginRuntimeRetentionEntrypoint,
     ...groqSetupSdkEntrypoints,
     ...Object.values(cliRecoveryEntrypoints),

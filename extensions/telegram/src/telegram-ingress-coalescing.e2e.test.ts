@@ -20,10 +20,19 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelegramBotDeps } from "./bot-deps.js";
+import {
+  holdTelegramMediaTimeouts,
+  resolveFlushTimerForDelay,
+} from "./bot-media-timers.test-support.js";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
 import { runTelegramChannelInboundEventWithHarness } from "./bot.test-helpers.js";
 import type { TelegramTransport } from "./fetch.js";
 import type { TelegramRuntime } from "./runtime.types.js";
+import {
+  photoUpdate,
+  forwardedTextUpdate,
+  textUpdate,
+} from "./telegram-ingress-coalescing.test-support.js";
 
 const downstreamTurns = vi.hoisted(() =>
   vi.fn(async (_ctx: MsgContext, _abortSignal?: AbortSignal) => ({
@@ -98,61 +107,6 @@ const processingOutcome = await import("./bot-processing-outcome.js");
 const cfg = {
   channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
 } as OpenClawConfig;
-
-function photoUpdate(params: { updateId: number; messageId: number; caption?: string }) {
-  return {
-    update_id: params.updateId,
-    message: {
-      message_id: params.messageId,
-      date: 1_736_380_800 + params.messageId,
-      chat: { id: 111, type: "private" as const, first_name: "Ada" },
-      from: { id: 111, is_bot: false, first_name: "Ada" },
-      media_group_id: "album-115325",
-      ...(params.caption ? { caption: params.caption } : {}),
-      photo: [
-        {
-          file_id: `photo-${params.messageId}`,
-          file_unique_id: `unique-${params.messageId}`,
-          width: 100,
-          height: 100,
-          file_size: 4,
-        },
-      ],
-    },
-  };
-}
-
-function forwardedTextUpdate(params: { updateId: number; messageId: number; text: string }) {
-  return {
-    update_id: params.updateId,
-    message: {
-      message_id: params.messageId,
-      date: 1_736_380_800 + params.messageId,
-      chat: { id: 111, type: "private" as const, first_name: "Ada" },
-      from: { id: 111, is_bot: false, first_name: "Ada" },
-      // forward_origin puts the entry on the forward debounce lane (80ms window).
-      forward_origin: {
-        type: "user" as const,
-        date: 1_736_300_000,
-        sender_user: { id: 555, is_bot: false, first_name: "Origin" },
-      },
-      text: params.text,
-    },
-  };
-}
-
-function textUpdate(params: { updateId: number; messageId: number; text: string }) {
-  return {
-    update_id: params.updateId,
-    message: {
-      message_id: params.messageId,
-      date: 1_736_380_800 + params.messageId,
-      chat: { id: 111, type: "private" as const, first_name: "Ada" },
-      from: { id: 111, is_bot: false, first_name: "Ada" },
-      text: params.text,
-    },
-  };
-}
 
 function createBotApiTransport() {
   let getFileCall = 0;
@@ -343,20 +297,31 @@ describe("Telegram durable ingress coalescing", () => {
   }
 
   it("coalesces album members admitted a few milliseconds apart", async () => {
+    const albumTimers = holdTelegramMediaTimeouts(40);
     const { monitor, telegramTransport } = await createMonitor();
     const first = photoUpdate({ updateId: 101, messageId: 1, caption: "Two photo album" });
     const second = photoUpdate({ updateId: 102, messageId: 2 });
     monitor.start();
 
-    await monitor.admit(first);
-    await new Promise((resolve) => {
-      setTimeout(resolve, 5);
-    });
-    await monitor.admit(second);
-    await assertAlbumTurnAndTombstones({ spoolDir, updateIds: [101, 102], monitor });
-
-    await monitor.stop();
-    await telegramTransport.close();
+    try {
+      await monitor.admit(first);
+      await monitor.waitForIdle();
+      await new Promise((resolve) => {
+        setTimeout(resolve, 5);
+      });
+      await monitor.admit(second);
+      await monitor.waitForIdle();
+      const flush = resolveFlushTimerForDelay(albumTimers, 40);
+      if (!flush) {
+        throw new Error("Expected the admitted album's flush timer");
+      }
+      flush();
+      await assertAlbumTurnAndTombstones({ spoolDir, updateIds: [101, 102], monitor });
+    } finally {
+      albumTimers.mockRestore();
+      await monitor.stop();
+      await telegramTransport.close();
+    }
   });
 
   it("coalesces an album replayed from a durable restart backlog", async () => {
@@ -715,19 +680,16 @@ describe("Telegram durable ingress coalescing", () => {
     const { monitor, telegramTransport } = await createMonitor({ onRuntimeError: runtimeError });
 
     monitor.start();
-    await vi.waitFor(async () => {
-      expect(await queue.listFailed?.({ limit: "all" })).toEqual([
-        expect.objectContaining({ id: poisonId, reason: "session-start-conflict-retry-limit" }),
-      ]);
-    });
-    await vi.waitFor(async () => {
-      expect(await queue.listPending({ limit: "all" })).toEqual([]);
-      expect(
-        downstreamTurns.mock.calls.some(([turn]) =>
-          (turn.BodyForAgent ?? turn.Body ?? "").includes("after"),
-        ),
-      ).toBe(true);
-    });
+    await monitor.waitForIdle();
+    expect(await queue.listFailed?.({ limit: "all" })).toEqual([
+      expect.objectContaining({ id: poisonId, reason: "session-start-conflict-retry-limit" }),
+    ]);
+    expect(await queue.listPending({ limit: "all" })).toEqual([]);
+    expect(
+      downstreamTurns.mock.calls.some(([turn]) =>
+        (turn.BodyForAgent ?? turn.Body ?? "").includes("after"),
+      ),
+    ).toBe(true);
 
     await monitor.stop();
     await telegramTransport.close();

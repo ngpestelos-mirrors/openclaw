@@ -29,6 +29,7 @@ import {
   getGatewayContextLifetime,
   withPluginRuntimeGatewayRequestScope,
 } from "./runtime/gateway-request-scope.js";
+import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import { startPluginServices, type PluginServicesHandle } from "./services.js";
 import { createPluginRecord } from "./status.test-helpers.js";
@@ -40,7 +41,9 @@ afterEach(async () => {
   handles.clear();
 });
 
-async function startFixture(options: { stop?: () => Promise<void>; bound?: boolean } = {}) {
+async function startFixture(
+  options: { stop?: () => Promise<void>; gateway?: "bound" | "unbound" | "absent" } = {},
+) {
   const registry = createEmptyPluginRegistry();
   const record = createPluginRecord({ id: "files" });
   registry.plugins.push(record);
@@ -57,7 +60,9 @@ async function startFixture(options: { stop?: () => Promise<void>; bound?: boole
   } as unknown as GatewayRequestContext;
   const resolveContext = () => context;
   const subagent = {} as PluginRuntime["subagent"];
-  if (options.bound !== false) {
+  if (options.gateway === "unbound") {
+    bindPluginRegistryRuntime(registry, createPluginRuntime());
+  } else if (options.gateway !== "absent") {
     bindGatewayContextResolver(subagent, resolveContext);
     bindPluginRegistryRuntime(registry, { subagent } as PluginRuntime);
   }
@@ -173,9 +178,24 @@ describe("service-owned node invocation", () => {
     },
   );
 
-  it("omits node access outside a Gateway host", async () => {
-    expect((await startFixture({ bound: false })).serviceContext.invokeNode).toBeUndefined();
-  });
+  it.each(["absent", "unbound"] as const)(
+    "omits node access for an %s host under a foreign Gateway scope",
+    async (gateway) => {
+      const foreign = await startFixture();
+      await withPluginRuntimeGatewayRequestScope(
+        {
+          context: foreign.context,
+          resolveGatewayContext: foreign.resolveContext,
+          isWebchatConnect: () => false,
+        },
+        async () => {
+          const { serviceContext } = await startFixture({ gateway });
+          expect(serviceContext.invokeNode).toBeUndefined();
+          expect(serviceContext.openNodeDuplex).toBeUndefined();
+        },
+      );
+    },
+  );
 
   it("rejects core and other-plugin commands", async () => {
     const fixture = await startFixture();

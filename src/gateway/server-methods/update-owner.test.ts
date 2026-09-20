@@ -152,13 +152,23 @@ describe("update.run current owner authority", () => {
     expect(listUpdateRuns()).toEqual([
       expect.objectContaining({
         origin: expect.objectContaining({
-          requester: { channel: "slack", accountId: "primary", senderId: "owner" },
+          requester: {
+            channel: "slack",
+            accountId: "primary",
+            senderId: "owner",
+            authorizationSource: "configured-owner",
+          },
         }),
       }),
     ]);
     expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        requester: { channel: "slack", accountId: "primary", senderId: "owner" },
+        requester: {
+          channel: "slack",
+          accountId: "primary",
+          senderId: "owner",
+          authorizationSource: "configured-owner",
+        },
       }),
     );
   });
@@ -191,7 +201,12 @@ describe("update.run current owner authority", () => {
         expect(result.details).toMatchObject({ ok: true, handoff: { status: "started" } });
         expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledWith(
           expect.objectContaining({
-            requester: { channel, accountId: "primary", senderId: "owner" },
+            requester: {
+              channel,
+              accountId: "primary",
+              senderId: "owner",
+              authorizationSource: "configured-owner",
+            },
           }),
         );
         expect(guidance).toContain("only on an explicit owner request");

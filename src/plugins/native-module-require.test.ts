@@ -164,17 +164,17 @@ describe("tryNativeRequireJavaScriptModule", () => {
     expect(nativeEsmGraphProbe.stdout.trim()).toBe("adapter");
   });
 
-  it("uses source transform only when native JavaScript-to-TypeScript lookup needs it", () => {
+  it("uses the configured native loader for JavaScript-to-TypeScript lookup", () => {
     const dir = tempDirs.make("openclaw-native-require-");
     const modulePath = path.join(dir, "plugin.cjs");
-    fs.writeFileSync(modulePath, 'require("./helper.js");\n', "utf8");
+    fs.writeFileSync(modulePath, 'module.exports = require("./helper.js");\n', "utf8");
     fs.writeFileSync(path.join(dir, "helper.ts"), "export const loaded = true;\n", "utf8");
 
     const result = tryNativeRequireJavaScriptModule(modulePath, {
       allowWindows: true,
       fallbackOnNativeError: true,
     });
-    expect(result).toEqual(process.versions.bun ? { ok: true, moduleExport: {} } : { ok: false });
+    expect(result).toMatchObject({ ok: true, moduleExport: { loaded: true } });
   });
 
   it("propagates real module evaluation errors instead of falling back", () => {

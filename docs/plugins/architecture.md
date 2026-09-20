@@ -331,6 +331,11 @@ again by the plugin transformer. Plugin reloads may create new instances of the
 plugin's private code, while existing and replacement plugins share host SDK
 identity and authority.
 
+Captured packages also retain a link to the selected host installation so child
+workers and processes can import its public SDK. These separate isolates use the
+installation's normal package exports; they do not inherit the parent's source
+aliases or authority. Capture disposal removes the link, never the host package.
+
 Managed TypeScript filename metadata (`import.meta.url`, `import.meta.filename`,
 `import.meta.dirname`, `__filename`, and `__dirname`) identifies the captured
 source so relative asset reads stay within that generation. Node executes compiled

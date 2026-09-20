@@ -106,7 +106,10 @@ describe("plugin module generation SDK identity", () => {
           name: "openclaw",
           type: "module",
           bin: { openclaw: "./openclaw.mjs" },
-          exports: { "./plugin-sdk/identity": "./dist/plugin-sdk/identity.js" },
+          exports: {
+            "./plugin-sdk/identity": "./dist/plugin-sdk/identity.js",
+            "./plugin-sdk/identity-peer": "./dist/plugin-sdk/identity-peer.js",
+          },
         }),
       );
       for (const [tree, extension] of [
@@ -114,6 +117,7 @@ describe("plugin module generation SDK identity", () => {
         ["dist", "js"],
       ]) {
         write(host, `${tree}/plugin-sdk/identity.${extension}`, 'export * from "./owner.js";');
+        write(host, `${tree}/plugin-sdk/identity-peer.${extension}`, 'export * from "./owner.js";');
         write(
           host,
           `${tree}/plugin-sdk/owner.${extension}`,
@@ -125,13 +129,29 @@ describe("plugin module generation SDK identity", () => {
       }
       fs.symlinkSync(host, hostLink, process.platform === "win32" ? "junction" : "dir");
       const plugin = path.join(root, "plugin");
+      const captures = path.join(root, "captures");
+      fs.mkdirSync(captures);
       write(plugin, "package.json", JSON.stringify({ name: "fixture", type: "module" }));
       write(
         plugin,
         "eager.ts",
         `export * from 'openclaw/plugin-sdk/identity';
          export const generation = {};
+         export const workerUrl = () => new URL('./worker.mjs', import.meta.url).href;
          export const resolveSdk = () => import.meta.resolve('openclaw/plugin-sdk/identity');`,
+      );
+      write(
+        plugin,
+        "worker.mjs",
+        `import { parentPort } from 'node:worker_threads';
+         import { identity, bind } from 'openclaw/plugin-sdk/identity';
+         import { identity as peer, read } from 'openclaw/plugin-sdk/identity-peer';
+         const token = {};
+         bind(token, 'worker-issued');
+         parentPort.postMessage({
+           tree: identity.tree, same: identity === peer, binding: read(token),
+           url: import.meta.resolve('openclaw/plugin-sdk/identity'),
+         });`,
       );
       write(
         plugin,
@@ -143,23 +163,38 @@ describe("plugin module generation SDK identity", () => {
         root,
         "probe.mts",
         `import assert from 'node:assert/strict';
+         import fs from 'node:fs';
+         import { once } from 'node:events';
          import Module from 'node:module';
          import path from 'node:path';
          import { pathToFileURL } from 'node:url';
+         import { Worker } from 'node:worker_threads';
          ${legacyLoader ? 'Object.defineProperty(Module, "registerHooks", { value: undefined, configurable: true });' : ""}
          const { bindPluginInstanceModuleLoader } = await import(${JSON.stringify(moduleUrl("src/plugins/plugin-instance-module-loader.ts"))});
          const { PluginInstance } = await import(${JSON.stringify(moduleUrl("src/plugins/plugin-instance.ts"))});
+         const { withPluginSourceCaptureDirectory } = await import(${JSON.stringify(moduleUrl("src/plugins/plugin-package-metadata-capture.ts"))});
          const { createPluginCache, withPluginCache, adoptProcessPluginCache } = await import(${JSON.stringify(moduleUrl("src/plugins/plugin-cache.ts"))});
          const host = await import(${JSON.stringify(pathToFileURL(path.join(host, preference, "plugin-sdk", `identity.${preference === "src" ? "ts" : "js"}`)).href)});
          const instances = [];
+         const captures = ${JSON.stringify(captures)};
+         const assertWorker = async (api) => {
+           const worker = new Worker(new URL(api.workerUrl()), { execArgv: [] });
+           try {
+             const [result] = await once(worker, 'message');
+             assert.deepEqual(result, {
+               tree: 'dist', same: true, binding: 'worker-issued',
+               url: ${JSON.stringify(pathToFileURL(path.join(host, "dist/plugin-sdk/identity.js")).href)},
+             });
+           } finally { await worker.terminate(); }
+         };
          const load = () => {
            const instance = new PluginInstance('generation-fixture');
            instances.push(instance);
-           withPluginCache(createPluginCache(), () => bindPluginInstanceModuleLoader({
+           withPluginSourceCaptureDirectory(captures, () => withPluginCache(createPluginCache(), () => bindPluginInstanceModuleLoader({
              instance, origin: 'config', rootDir: ${JSON.stringify(plugin)},
              source: ${JSON.stringify(path.join(plugin, "eager.ts"))},
              devSourceRoot: ${JSON.stringify(hostLink)}, pluginSdkResolution: ${JSON.stringify(preference)},
-           }));
+           })));
            return { instance, api: instance.loadModule(${JSON.stringify(path.join(plugin, "eager.ts"))}) };
          };
          try {
@@ -168,6 +203,7 @@ describe("plugin module generation SDK identity", () => {
            const first = load();
            assert.equal(first.api.identity, host.identity);
            assert.equal(first.api.read(token), 'host-issued');
+           await assertWorker(first.api);
            const sdkUrl = first.api.resolveSdk();
            const lazy = first.instance.loadModule(${JSON.stringify(path.join(plugin, "lazy.ts"))});
            adoptProcessPluginCache(createPluginCache());
@@ -182,10 +218,22 @@ describe("plugin module generation SDK identity", () => {
            assert.throws(() => first.api.resolveSdk(), /reloaded or disabled/);
            assert.throws(() => lazy.readSdk(), /reloaded or disabled/);
            assert.equal(second.api.read(token), 'plugin-written');
+           await assertWorker(second.api);
+           const recovery = withPluginSourceCaptureDirectory(captures, () => second.instance.captureModuleLoaderRecovery());
+           await second.instance.dispose();
+           fs.rmSync(${JSON.stringify(plugin)}, { recursive: true });
+           const restored = new PluginInstance('generation-fixture');
+           instances.push(restored);
+           try {
+             withPluginSourceCaptureDirectory(captures, () => recovery.bind(restored));
+           } finally { recovery.dispose(); }
+           await assertWorker(restored.loadModule(${JSON.stringify(path.join(plugin, "eager.ts"))}));
            console.log('shared host identity');
          } finally {
            for (const instance of instances.reverse()) await instance.dispose();
-         }`,
+         }
+         assert.deepEqual(fs.readdirSync(captures), []);
+         assert.equal(fs.existsSync(${JSON.stringify(path.join(host, "dist/plugin-sdk/identity.js"))}), true);`,
       );
       const { stdout } = await execute(process.execPath, [
         "--import",

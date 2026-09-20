@@ -580,6 +580,7 @@ describe("loadBundledEntryExportSync", () => {
 
   it("loads packaged telegram setup sidecars from dist-facing api modules", () => {
     const tempRoot = tempDirs.make("openclaw-channel-entry-contract-");
+    fs.writeFileSync(path.join(tempRoot, "package.json"), '{"type":"module"}\n');
 
     const pluginRoot = path.join(tempRoot, "dist", "extensions", "telegram");
     fs.mkdirSync(pluginRoot, { recursive: true });

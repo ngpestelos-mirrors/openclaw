@@ -5,6 +5,7 @@ import type { SavedRemoteMedia } from "openclaw/plugin-sdk/media-runtime";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { holdTelegramMediaTimeouts } from "./bot-media-timers.test-support.js";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
 import { setTelegramPluginStateRuntimeForTests } from "./runtime-state.test-support.js";
 import {
@@ -238,7 +239,7 @@ describe("createTelegramBot media-group skip warning (#55216)", () => {
       throw new MediaFetchError("fetch_failed", `Failed to fetch media from ${url}`);
     });
 
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
       const handler = getChannelPostHandler();
       const baseMessageId = await queueChannelPostAlbum(handler, {
@@ -279,7 +280,7 @@ describe("createTelegramBot media-group skip warning (#55216)", () => {
       throw new MediaFetchError("fetch_failed", `Failed to fetch media from ${urlOf(args)}`);
     });
 
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
       const handler = getChannelPostHandler();
       await queueChannelPostAlbum(handler, {
@@ -319,7 +320,7 @@ describe("createTelegramBot media-group skip warning (#55216)", () => {
       throw new MediaFetchError("fetch_failed", `Failed to fetch media from ${url}`);
     });
 
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
       const handler = getChannelPostHandler();
       await queueChannelPostAlbum(handler, {

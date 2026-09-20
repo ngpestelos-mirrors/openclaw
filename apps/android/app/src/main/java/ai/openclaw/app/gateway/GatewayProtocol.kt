@@ -968,6 +968,9 @@ enum class GatewayMethod(
   ThemesGet("themes.get"),
   ThemesSet("themes.set"),
   ThemesImport("themes.import"),
+  UsersLinkChannelIdentity("users.linkChannelIdentity"),
+  UsersUnlinkChannelIdentity("users.unlinkChannelIdentity"),
+  UsersListChannelIdentities("users.listChannelIdentities"),
 }
 
 enum class GatewayEvent(
