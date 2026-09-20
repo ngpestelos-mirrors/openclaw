@@ -125,6 +125,11 @@ describe("test runtime prerequisites", () => {
       "runtime",
     ],
     [
+      "native catalog worker capture custody",
+      ["src/agents/prepared-model-catalog-worker.custody.integration.test.ts"],
+      "runtime",
+    ],
+    [
       "native Google Meet SDK",
       ["extensions/google-meet/src/transports/chrome-startup.test.ts"],
       "runtime",
@@ -316,6 +321,7 @@ describe("test runtime prerequisites", () => {
       [
         "agent-command-local.test.ts",
         "simple-completion-runtime.plugin-scope.test.ts",
+        "prepared-model-catalog-worker.custody.integration.test.ts",
         "prepared-model-catalog-worker.integration.test.ts",
         "runtime-plugins.context-engine.integration.test.ts",
       ],
@@ -326,6 +332,7 @@ describe("test runtime prerequisites", () => {
       [
         "agent-command-local.test.ts",
         "simple-completion-runtime.plugin-scope.test.ts",
+        "prepared-model-catalog-worker.custody.integration.test.ts",
         "prepared-model-catalog-worker.integration.test.ts",
         "runtime-plugins.context-engine.integration.test.ts",
       ],
