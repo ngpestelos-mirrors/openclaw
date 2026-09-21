@@ -95,20 +95,25 @@ describe("node-host runtime worker supervisor lifetime", () => {
       expect.arrayContaining([...NODE_WORKER_PRIVATE_COMMANDS]),
     );
     const capacitySnapshots: Array<{ total: number; available: number }> = [];
+    const initialCapacityPublished = createDeferred();
+    const store = new NodeWorkerLaunchStore(new NodeWorkerJournalWorker({ env: fixture.env }));
     const runtime = prepared.start({
       client: { request },
-      onRunnerCapacityChanged: (capacity) => capacitySnapshots.push(capacity),
+      onRunnerCapacityChanged: (capacity) => {
+        capacitySnapshots.push(capacity);
+        if (capacity.available === capacity.total) {
+          initialCapacityPublished.resolve();
+        }
+      },
     });
-    await vi.waitFor(() =>
+    try {
+      await initialCapacityPublished.promise;
       expect(capacitySnapshots).toEqual([
         { total: 2, available: 0 },
         { total: 2, available: 2 },
-      ]),
-    );
-    runtime.updateGatewayConnection({ url: "ws://127.0.0.1:18789" });
-    const store = new NodeWorkerLaunchStore(new NodeWorkerJournalWorker({ env: fixture.env }));
+      ]);
+      runtime.updateGatewayConnection({ url: "ws://127.0.0.1:18789" });
 
-    try {
       const launching = runtime.invoke({
         id: "invoke-launch",
         nodeId: "node-1",
@@ -117,7 +122,7 @@ describe("node-host runtime worker supervisor lifetime", () => {
       });
       // The journal becomes running before startup settles. Hold the completed
       // launch response so cancellation exercises the admitted worker's lifetime.
-      await vi.waitFor(() => launchResponseEntered.promise);
+      await launchResponseEntered.promise;
       expect((await store.get(input.launchId))?.state).toBe("running");
 
       runtime.cancel("invoke-launch");
