@@ -6,7 +6,6 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as fsSafe from "../infra/fs-safe.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
-import * as tempPaths from "../plugin-sdk/temp-path.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { MediaAttachmentCache } from "./attachments.js";
 import { resolveMediaAttachmentLocalRoots } from "./runner.attachments.js";
@@ -290,11 +289,11 @@ describe("media understanding attachment cache", () => {
   );
 
   it.each([
-    { fileName: "photo.png", extension: ".png" },
-    { fileName: "photo.a:b", extension: ".b" },
+    { fileName: "photo.png", extension: ".png", removeBeforeCleanup: false },
+    { fileName: "photo.a:b", extension: ".b", removeBeforeCleanup: true },
   ])(
     "restages $fileName with a safe suffix after cache cleanup",
-    async ({ fileName, extension }) => {
+    async ({ fileName, extension, removeBeforeCleanup }) => {
       await withTestDir({ prefix: "openclaw-media-cache-restage-" }, async (base) => {
         vi.mocked(resolvePreferredOpenClawTmpDir).mockReturnValue(base);
         readRemoteMediaBufferMock.mockResolvedValue({ buffer: PNG_1X1, fileName });
@@ -305,6 +304,9 @@ describe("media understanding attachment cache", () => {
         try {
           const first = await cache.getPath(request);
           expect(path.extname(first)).toBe(extension);
+          if (removeBeforeCleanup) {
+            await fs.unlink(first);
+          }
           await cache.cleanup();
           await expect(fs.stat(first)).rejects.toMatchObject({ code: "ENOENT" });
           expect(await fs.readdir(base)).toEqual([]);
@@ -447,48 +449,52 @@ describe("media understanding attachment cache", () => {
       await expect(
         cache.getPath({ attachmentIndex: 0, maxBytes: 1024, timeoutMs: 1_000 }),
       ).rejects.toBe(writeError);
-      expect(await fs.readdir(base, { recursive: true })).toHaveLength(1);
+      expect(await fs.readdir(base)).toEqual([]);
       await cache.cleanup();
 
       expect(await fs.readdir(base)).toEqual([]);
     });
   });
 
-  it("retries workspace creation and does not surface cleanup failures", async () => {
-    await withTestDir({ prefix: "openclaw-media-cache-workspace-failure-" }, async (base) => {
-      vi.mocked(resolvePreferredOpenClawTmpDir).mockReturnValue(base);
-      readRemoteMediaBufferMock.mockResolvedValue({ buffer: PNG_1X1, fileName: "photo.png" });
-      const createWorkspace = tempPaths.tempWorkspace;
-      const createError = Object.assign(new Error("disk full"), { code: "ENOSPC" });
-      vi.spyOn(tempPaths, "tempWorkspace")
-        .mockRejectedValueOnce(createError)
-        .mockImplementationOnce(async (options) => {
-          const workspace = await createWorkspace(options);
-          return {
-            ...workspace,
-            cleanup: async () => {
-              await workspace.cleanup();
-              throw new Error("synthetic cleanup failure");
-            },
-          };
-        });
-      const cache = new MediaAttachmentCache([{ index: 0, url: "https://example.com/photo.png" }]);
-      const request = { attachmentIndex: 0, maxBytes: 1024, timeoutMs: 1_000 };
-      try {
-        await expect(cache.getPath(request)).rejects.toBe(createError);
-        const staged = await cache.getPath(request);
-        await expect(fs.readFile(staged)).resolves.toEqual(PNG_1X1);
-        await expect(cache.cleanup()).resolves.toBeUndefined();
-        expect(await fs.readdir(base)).toEqual([]);
-        const restaged = await cache.getPath(request);
-        expect(restaged).not.toBe(staged);
-        await expect(fs.readFile(restaged)).resolves.toEqual(PNG_1X1);
-        expect(readRemoteMediaBufferMock).toHaveBeenCalledTimes(1);
-      } finally {
-        await cache.cleanup();
-      }
-    });
-  });
+  it.skipIf(process.platform === "win32")(
+    "stages in a selector-approved fallback root and preserves unrelated files",
+    async () => {
+      await withTestDir({ prefix: "openclaw-media-cache-fallback-root-" }, async (base) => {
+        const preferredDir = path.join(base, "preferred-is-a-file");
+        const fallbackParent = path.join(base, "shared-tmp");
+        await fs.writeFile(preferredDir, "unavailable preferred directory");
+        await fs.mkdir(fallbackParent);
+        await fs.chmod(fallbackParent, 0o770);
+        const actual = await vi.importActual<typeof import("../infra/tmp-openclaw-dir.js")>(
+          "../infra/tmp-openclaw-dir.js",
+        );
+        vi.mocked(resolvePreferredOpenClawTmpDir).mockImplementation(() =>
+          actual.resolvePreferredOpenClawTmpDir({ preferredDir, tmpdir: () => fallbackParent }),
+        );
+        const selectedRoot = resolvePreferredOpenClawTmpDir();
+        await fs.writeFile(path.join(selectedRoot, "unrelated.txt"), "keep");
+        readRemoteMediaBufferMock.mockResolvedValue({ buffer: PNG_1X1, fileName: "photo.png" });
+        const cache = new MediaAttachmentCache(
+          [{ index: 0, url: "https://example.com/photo.png" }],
+          { includeDefaultLocalPathRoots: false },
+        );
+        try {
+          const staged = await cache.getPath({
+            attachmentIndex: 0,
+            maxBytes: 1024,
+            timeoutMs: 1_000,
+          });
+          expect(path.dirname(staged)).toBe(selectedRoot);
+          await expect(fs.readFile(staged)).resolves.toEqual(PNG_1X1);
+        } finally {
+          await cache.cleanup();
+        }
+        expect(await fs.readdir(selectedRoot)).toEqual(["unrelated.txt"]);
+        expect((await fs.stat(selectedRoot)).mode & 0o777).toBe(0o700);
+        expect((await fs.stat(fallbackParent)).mode & 0o777).toBe(0o770);
+      });
+    },
+  );
 
   it("keeps a successful concurrent path when another staging attempt fails", async () => {
     await withTestDir({ prefix: "openclaw-media-cache-concurrent-" }, async (base) => {
@@ -534,21 +540,57 @@ describe("media understanding attachment cache", () => {
         await writeFile(file, PNG_1X1.subarray(0, 4));
         throw writeError;
       });
-      vi.spyOn(fs, "unlink").mockRejectedValueOnce(cleanupError);
+      const unlink = vi.spyOn(fs, "unlink").mockRejectedValueOnce(cleanupError);
       const cache = new MediaAttachmentCache([{ index: 0, url: "https://example.com/photo.png" }]);
       const request = { attachmentIndex: 0, maxBytes: 1024, timeoutMs: 1_000 };
 
       await expect(cache.getPath(request)).rejects.toBe(writeError);
-      expect(await fs.readdir(base, { recursive: true })).toHaveLength(2);
+      expect(await fs.readdir(base)).toHaveLength(1);
 
       const staged = await cache.getPath(request);
       await expect(fs.readFile(staged)).resolves.toEqual(PNG_1X1);
       expect(await cache.getPath(request)).toBe(staged);
       expect(writeFileSpy).toHaveBeenCalledTimes(2);
-      expect(await fs.readdir(base, { recursive: true })).toHaveLength(3);
+      expect(await fs.readdir(base)).toHaveLength(2);
+
+      unlink.mockRejectedValueOnce(cleanupError);
+      await cache.cleanup();
+      expect(await fs.readdir(base)).toHaveLength(1);
 
       await cache.cleanup();
+      expect(await fs.readdir(base)).toEqual([]);
+    });
+  });
 
+  it("retains files staged after cleanup takes its snapshot", async () => {
+    await withTestDir({ prefix: "openclaw-media-cache-cleanup-snapshot-" }, async (base) => {
+      vi.mocked(resolvePreferredOpenClawTmpDir).mockReturnValue(base);
+      readRemoteMediaBufferMock.mockResolvedValue({ buffer: PNG_1X1, fileName: "photo.png" });
+      const cache = new MediaAttachmentCache([{ index: 0, url: "https://example.com/photo.png" }]);
+      const request = { attachmentIndex: 0, maxBytes: 1024, timeoutMs: 1_000 };
+      const first = await cache.getPath(request);
+      const started = createDeferred();
+      const finish = createDeferred();
+      const unlink = fs.unlink.bind(fs);
+      vi.spyOn(fs, "unlink").mockImplementationOnce(async (file) => {
+        started.resolve();
+        await finish.promise;
+        await unlink(file);
+      });
+      const cleaning = cache.cleanup();
+      try {
+        await started.promise;
+        const second = await cache.getPath(request);
+        expect(second).not.toBe(first);
+        finish.resolve();
+        await cleaning;
+        await expect(fs.readFile(second)).resolves.toEqual(PNG_1X1);
+        expect(await cache.getPath(request)).toBe(second);
+      } finally {
+        finish.resolve();
+        await cleaning;
+        await cache.cleanup();
+      }
       expect(await fs.readdir(base)).toEqual([]);
     });
   });

@@ -83,9 +83,7 @@ describe("media understanding attachment URL fallback", () => {
           maxBytes: 1024,
           timeoutMs: 1000,
         });
-        expect(path.dirname(path.dirname(result))).toBe(
-          await fs.realpath(resolvePreferredOpenClawTmpDir()),
-        );
+        expect(path.dirname(result)).toBe(resolvePreferredOpenClawTmpDir());
         expect(path.extname(result)).toBe(".jpg");
         await expect(fs.readFile(result, "utf8")).resolves.toBe("fallback-buffer");
         expect(readRemoteMediaBufferMock).toHaveBeenCalledTimes(1);

@@ -15,6 +15,7 @@ import { MediaUnderstandingSkipError } from "../../packages/media-understanding-
 import { resolveStateDir } from "../config/paths.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { isAbortError } from "../infra/abort-signal.js";
+import { hasErrnoCode } from "../infra/errno.js";
 import { readFileHandleBounded } from "../infra/fs-safe-advanced.js";
 import { FsSafeError, openLocalFileSafely, type OpenResult } from "../infra/fs-safe.js";
 import type { SsrFPolicy } from "../infra/net/ssrf.js";
@@ -29,12 +30,7 @@ import {
   normalizeMediaReferenceSource,
   resolveInboundMediaReference,
 } from "../media/media-reference.js";
-import {
-  buildRandomTempFilePath,
-  resolvePreferredOpenClawTmpDir,
-  tempWorkspace,
-} from "../plugin-sdk/temp-path.js";
-import { createLazyPromiseLoader } from "../shared/lazy-promise.js";
+import { buildRandomTempFilePath } from "../plugin-sdk/temp-path.js";
 import { normalizeAttachmentPath } from "./attachments.normalize.js";
 import type { MediaAttachment } from "./types.js";
 
@@ -139,14 +135,12 @@ export type MediaAttachmentCacheOptions = {
  */
 export class MediaAttachmentCache {
   private readonly entries = new Map<number, AttachmentCacheEntry>();
+  private readonly stagedPaths = new Set<string>();
   private readonly attachments: MediaAttachment[];
   private readonly localPathRoots: readonly string[];
   private readonly ssrfPolicy: SsrFPolicy | undefined;
   private readonly fallbackWorkspaceDir?: string;
   private canonicalLocalPathRoots?: Promise<readonly string[]>;
-  private readonly stagingWorkspace = createLazyPromiseLoader(() =>
-    tempWorkspace({ rootDir: resolvePreferredOpenClawTmpDir(), prefix: "openclaw-media" }),
-  );
 
   constructor(attachments: MediaAttachment[], options?: MediaAttachmentCacheOptions) {
     this.attachments = attachments;
@@ -391,16 +385,15 @@ export class MediaAttachmentCache {
     }
 
     const bufferResult = await this.getBuffer(params);
-    const workspace = await this.stagingWorkspace.load();
     const extension = path.extname(bufferResult.fileName || "") || "";
     const tmpPath = buildRandomTempFilePath({
       prefix: "openclaw-media",
       extension,
-      tmpDir: workspace.dir,
     });
+    this.stagedPaths.add(tmpPath);
     await fs.writeFile(tmpPath, bufferResult.buffer).catch(async (error: unknown) => {
-      // A failed attempt cannot remove another borrower's file; the workspace owns leftovers.
-      await fs.unlink(tmpPath).catch(() => {});
+      // A failed attempt cannot remove another borrower's file; retain failed removals for cleanup.
+      await this.removeStagedPath(tmpPath);
       throw error;
     });
     entry.tempPath = tmpPath;
@@ -409,12 +402,22 @@ export class MediaAttachmentCache {
 
   /** Removes temporary files created by `getPath`; callers should run this after provider use. */
   async cleanup(): Promise<void> {
-    const workspace = this.stagingWorkspace.peek();
-    this.stagingWorkspace.clear();
+    const paths = [...this.stagedPaths];
     for (const entry of this.entries.values()) {
       entry.tempPath = undefined;
     }
-    await workspace?.then((value) => value.cleanup()).catch(() => {});
+    await Promise.all(paths.map((tmpPath) => this.removeStagedPath(tmpPath)));
+  }
+
+  private async removeStagedPath(tmpPath: string): Promise<void> {
+    try {
+      await fs.unlink(tmpPath);
+    } catch (error) {
+      if (!hasErrnoCode(error, "ENOENT")) {
+        return;
+      }
+    }
+    this.stagedPaths.delete(tmpPath);
   }
 
   /** Drops this cache's bytes after terminal file processing; earlier borrowers keep ownership. */
