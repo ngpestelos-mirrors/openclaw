@@ -67,6 +67,7 @@ import {
   isSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
 } from "../../sessions/session-lifecycle-admission.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import {
   beginAgentDeletionJournal,
   removeAgentDeletionJournal,
@@ -109,7 +110,11 @@ import {
 import { subagentRuns } from "../subagents/registry/subagent-registry-memory.js";
 import { registerHarnessCompletionRecoveryCases } from "./main-session-harness-completion.test-harness.js";
 import * as recoveryOwnerRelease from "./main-session-recovery-owner-release.js";
-import { createRecoveryRuntimeFixture } from "./main-session-recovery-runtime.test-support.js";
+import {
+  createRecoveryRuntimeFixture,
+  mainSessionEntry,
+  runningSessionEntry,
+} from "./main-session-recovery-runtime.test-support.js";
 import {
   claimMainSessionRecoveryOwner,
   commitMainSessionRecovery,
@@ -258,26 +263,6 @@ async function writeStore(
   store: Record<string, SessionEntryFixture>,
 ): Promise<void> {
   await writeStorePath(path.join(sessionsDir, "sessions.json"), store);
-}
-
-function mainSessionEntry(overrides: SessionEntryFixture = {}): SessionEntry {
-  return createSessionEntry({
-    sessionId: "main-session",
-    permissionMode: "guarded",
-    updatedAt: Date.now() - 10_000,
-    status: "running",
-    abortedLastRun: true,
-    ...overrides,
-  });
-}
-
-function runningSessionEntry(sessionId: string, overrides: SessionEntryFixture = {}): SessionEntry {
-  return createSessionEntry({
-    sessionId,
-    updatedAt: Date.now() - 10_000,
-    status: "running",
-    ...overrides,
-  });
 }
 
 function activeRestartRun(
@@ -3872,7 +3857,7 @@ describe("main-session-restart-recovery", () => {
     }
   });
 
-  it("waits for startup release while preserving the registration cutoff", async () => {
+  it("waits for startup release while preserving the registration cutoff", async (ctx) => {
     const sessionsDir = await makeSessionsDir();
     const storePath = path.join(sessionsDir, "sessions.json");
     const releaseStartup = createDeferred();
@@ -3887,12 +3872,25 @@ describe("main-session-restart-recovery", () => {
       { role: "toolResult", content: "done" },
     ]);
 
+    const recoveryCommitted = createDeferred();
+    const stopObserving = sessionChanges.subscribe((change) => {
+      if ("all" in change || change.sessionKey !== "agent:main:main") {
+        return;
+      }
+      const entry = loadSessionEntry({ sessionKey: change.sessionKey, storePath });
+      if (entry?.sessionId === "pre-start-session" && entry.abortedLastRun === false) {
+        recoveryCommitted.resolve();
+      }
+    });
+    ctx.onTestFinished(stopObserving);
+
     const recovery = scheduleRestartAbortedMainSessionRecovery({
       getConfig: () => ({}),
       delayMs: 0,
       stateDir: tmpDir,
       waitForStart: () => releaseStartup.promise,
     });
+    ctx.onTestFinished(() => recovery.stop());
     await Promise.resolve();
     expect(callGateway).not.toHaveBeenCalled();
 
@@ -3910,7 +3908,9 @@ describe("main-session-restart-recovery", () => {
     ]);
 
     releaseStartup.resolve();
-    await waitForFast(() => expect(callGateway).toHaveBeenCalledOnce());
+    // Dispatch observation precedes durable recovery admission; stop revokes that write.
+    await recoveryCommitted.promise;
+    expect(callGateway).toHaveBeenCalledOnce();
     await recovery.stop();
 
     const store = readStore(storePath);
