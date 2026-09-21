@@ -465,6 +465,45 @@ describe.runIf(browserMode)("Web Awesome dropdown lifecycle", () => {
     expect(document.activeElement).toBe(f.outside);
   });
 
+  it("preserves a row focused as the popup becomes usable", async () => {
+    const f = await fixture();
+    const shown = new Promise<void>((resolve) => {
+      f.dropdown.addEventListener("wa-after-show", () => resolve(), { once: true });
+    });
+    f.dropdown.open = true;
+    await f.dropdown.updateComplete;
+    await f.popup.updateComplete;
+    f.parent.focus();
+    expect(document.activeElement).toBe(f.parent);
+
+    await shown;
+    expect(document.activeElement).toBe(f.parent);
+  });
+
+  it.each(["search editor", "submenu row"] as const)(
+    "preserves %s focus while the root dropdown finishes opening",
+    async (target) => {
+      const f = await fixture();
+      const search = document.createElement("input");
+      search.type = "search";
+      search.slot = "submenu";
+      f.parent.prepend(search);
+      const focused = target === "search editor" ? search : f.nested;
+      const shown = new Promise<void>((resolve) => {
+        f.dropdown.addEventListener("wa-after-show", () => resolve(), { once: true });
+      });
+
+      await duringAnimation(f, "show", async () => {
+        await f.parent.openSubmenu();
+        focused.focus();
+        expect(document.activeElement).toBe(focused);
+      });
+
+      await shown;
+      expect(document.activeElement).toBe(focused);
+    },
+  );
+
   it("preserves keyboard selection made during the dropdown opening animation", async () => {
     const { userEvent } = await import("vitest/browser");
     const f = await fixture();
