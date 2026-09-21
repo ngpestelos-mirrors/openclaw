@@ -235,7 +235,9 @@ async function prepareBackingSessionFactsForTasks(
   now: number,
 ): Promise<void> {
   for (const task of tasks) {
-    shouldMarkLost(task, now, context);
+    if (task.runtime === "subagent" || task.runtime === "cli") {
+      shouldMarkLost(task, now, context);
+    }
   }
   await prepareBackingSessionFacts(context);
 }
