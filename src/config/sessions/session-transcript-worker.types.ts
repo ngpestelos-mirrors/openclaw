@@ -31,6 +31,7 @@ import type {
   SessionTranscriptReadScope,
   SessionTranscriptRuntimeTarget,
 } from "./session-accessor.types.js";
+import type { SessionBackingFacts, SessionBackingFactsScope } from "./session-backing-facts.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import type {
   SessionHistoryWorkerRequest,
@@ -133,6 +134,17 @@ export type SessionUsageCacheWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+export type SessionBackingFactsWorkerInput = {
+  kind: "session-backing-facts";
+  database: { agentId: string; path: string };
+  scope: SessionBackingFactsScope;
+  continuation?: CanonicalSessionReaderContinuation;
+};
+export type SessionBackingFactsWorkerResult = {
+  kind: "session-backing-facts";
+  facts: SessionBackingFacts;
+};
+
 export type SessionEntryListWorkerInput = {
   kind: "session-entry-list";
   database: { agentId: string; path: string };
@@ -176,6 +188,7 @@ export type SessionTranscriptWorkerValues = {
   "session-row-presence": boolean;
   "session-members": SessionMember[];
   "session-entry-list": SessionEntryListWorkerResult;
+  "session-backing-facts": SessionBackingFactsWorkerResult;
   "session-target-inventory": SessionStoreTargetInventoryResult;
   "session-identity-evidence": SessionIdentityEvidenceWorkerResult;
   "usage-cache": SessionCostUsageCacheReadResult;

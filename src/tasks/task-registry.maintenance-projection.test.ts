@@ -6,7 +6,10 @@ import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js"
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
-import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabaseByPathAsync,
+  openOpenClawAgentDatabase,
+} from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -520,6 +523,7 @@ describe("task maintenance session metadata", () => {
             {
               sessionId: `${agentId}-${suffix}`,
               updatedAt: staleAt,
+              ...(suffix === "unrelated" ? { label: "maintenance-unrelated-row" } : {}),
               skillsSnapshot: { prompt: "maintenance-proof-saved-prompt".repeat(1024), skills: [] },
               ...(suffix === "wedged"
                 ? { subagentRecovery: { wedgedAt: staleAt, wedgedReason: "Recovery tombstoned" } }
@@ -539,6 +543,9 @@ describe("task maintenance session metadata", () => {
       );
       const parse = vi.spyOn(JSON, "parse");
       expect(previewTaskRegistryMaintenance().reconciled).toBe(2);
+      expect(
+        parse.mock.calls.filter(([json]) => json.includes("maintenance-unrelated-row")),
+      ).toHaveLength(0);
       expect(reconcileInspectableTasks().map(({ status, error }) => ({ status, error }))).toEqual(
         expect.arrayContaining([
           { status: "running", error: undefined },
@@ -557,29 +564,80 @@ describe("task maintenance session metadata", () => {
       ).toBe(0);
     });
   });
-  it("keeps warm corrupt-row handling while reconciling healthy siblings", async () => {
-    await withMaintenanceState("openclaw-task-maintenance-corruption-", async () => {
+  it.each(["warm", "cold"] as const)(
+    "keeps %s corrupt-row admission while reconciling healthy siblings",
+    async (admission) => {
+      await withMaintenanceState("openclaw-task-maintenance-corruption-", async () => {
+        resetTaskRegistryForTests({ persist: false });
+        const staleAt = Date.now() - 45 * 60_000;
+        const tasks = ["healthy", "corrupt"].map((suffix) => {
+          const sessionKey = `agent:main:subagent:${suffix}`;
+          replaceSessionEntrySync({ sessionKey }, { sessionId: suffix, updatedAt: staleAt });
+          return createTaskFixture("subagent", {
+            task: `Check ${suffix}`,
+            runId: `maintenance-${suffix}`,
+            childSessionKey: sessionKey,
+            lastEventAt: staleAt,
+            notifyPolicy: "silent",
+          });
+        });
+        expect(previewTaskRegistryMaintenance().reconciled).toBe(0);
+        // Existing warm listings skip malformed rows; exact reads intentionally throw.
+        openOpenClawAgentDatabase({ agentId: "main" })
+          .db.prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
+          .run("{", "agent:main:subagent:corrupt");
+        if (admission === "cold") {
+          await closeOpenClawAgentDatabaseByPathAsync(
+            openOpenClawAgentDatabase({ agentId: "main" }).path,
+          );
+          expect(() => previewTaskRegistryMaintenance()).toThrow(/canonical|repair/i);
+          await expect(runTaskRegistryMaintenance()).rejects.toThrow(/canonical|repair/i);
+          expect(tasks.map((task) => getTaskById(task.taskId)?.status)).toEqual([
+            "running",
+            "running",
+          ]);
+          return;
+        }
+        expect(previewTaskRegistryMaintenance().reconciled).toBe(1);
+        expect(await runTaskRegistryMaintenance()).toMatchObject({ reconciled: 1 });
+        expect(tasks.map((task) => getTaskById(task.taskId)?.status)).toEqual(["running", "lost"]);
+      });
+    },
+  );
+
+  it("rejects delivery-canonical drift in an unrequested warm sibling", async () => {
+    await withMaintenanceState("openclaw-task-maintenance-canonical-sibling-", async () => {
       resetTaskRegistryForTests({ persist: false });
       const staleAt = Date.now() - 45 * 60_000;
-      const tasks = ["healthy", "corrupt"].map((suffix) => {
-        const sessionKey = `agent:main:subagent:${suffix}`;
-        replaceSessionEntrySync({ sessionKey }, { sessionId: suffix, updatedAt: staleAt });
-        return createTaskFixture("subagent", {
-          task: `Check ${suffix}`,
-          runId: `maintenance-${suffix}`,
-          childSessionKey: sessionKey,
-          lastEventAt: staleAt,
-          notifyPolicy: "silent",
-        });
+      const sibling = "agent:main:matrix:channel:!room:example.org";
+      replaceSessionEntrySync(
+        { sessionKey: sibling },
+        { sessionId: "sibling", updatedAt: staleAt },
+      );
+      const task = createTaskFixture("subagent", {
+        task: "Missing child",
+        childSessionKey: "agent:main:subagent:missing",
+        lastEventAt: staleAt,
+        notifyPolicy: "silent",
       });
-      expect(previewTaskRegistryMaintenance().reconciled).toBe(0);
-      // Existing warm listings skip malformed rows; exact reads intentionally throw.
+      expect(previewTaskRegistryMaintenance().reconciled).toBe(1);
       openOpenClawAgentDatabase({ agentId: "main" })
         .db.prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
-        .run("{", "agent:main:subagent:corrupt");
-      expect(previewTaskRegistryMaintenance().reconciled).toBe(1);
-      expect(await runTaskRegistryMaintenance()).toMatchObject({ reconciled: 1 });
-      expect(tasks.map((task) => getTaskById(task.taskId)?.status)).toEqual(["running", "lost"]);
+        .run(
+          JSON.stringify({
+            sessionId: "sibling",
+            updatedAt: staleAt,
+            delivery: {
+              kind: "external",
+              route: { channel: "matrix", target: { to: "!Room:example.org" } },
+              context: { channel: "matrix", to: "!Room:example.org" },
+            },
+          }),
+          sibling,
+        );
+      expect(() => previewTaskRegistryMaintenance()).toThrow(/non-canonical persisted row/);
+      await expect(runTaskRegistryMaintenance()).rejects.toThrow(/non-canonical persisted row/);
+      expect(getTaskById(task.taskId)?.status).toBe("running");
     });
   });
 

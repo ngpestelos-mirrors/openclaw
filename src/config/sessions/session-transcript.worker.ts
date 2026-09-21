@@ -17,6 +17,7 @@ import type {
   SessionBranchSummaryWorkerInput,
   SessionEntryWorkerInput,
   SessionEntryListWorkerInput,
+  SessionBackingFactsWorkerInput,
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
@@ -92,6 +93,7 @@ serveWorkerTasks(
       | SessionModelContextWorkerInput
       | SessionEntryWorkerInput
       | SessionEntryListWorkerInput
+      | SessionBackingFactsWorkerInput
       | SessionTargetInventoryWorkerInput
       | SessionIdentityEvidenceWorkerInput
       | SessionTranscriptHistoryWorkerInput
@@ -178,6 +180,16 @@ serveWorkerTasks(
                 );
             return { kind: "session-identity-evidence" as const, evidence };
           })),
+        };
+      }
+      if (request.kind === "session-backing-facts") {
+        const { readSessionBackingFacts } = await import("./session-backing-facts.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => ({
+            kind: "session-backing-facts" as const,
+            facts: readSessionBackingFacts(request.scope, request.continuation),
+          }))),
         };
       }
       if (request.kind === "session-entry-list") {

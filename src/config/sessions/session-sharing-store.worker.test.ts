@@ -19,8 +19,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { patchSessionEntryCore, upsertSessionEntryCore } from "./session-accessor.js";
-import { addSessionMember } from "./session-sharing-store.js";
-import { listSessionMembersInWorker } from "./session-transcript-worker-runtime.js";
+import { addSessionMember, listSessionMembersInWorker } from "./session-sharing-store.js";
 
 it("reads complete current member rows without executing SQLite on the caller", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {

@@ -31,6 +31,7 @@ import type {
 } from "./session-store-target-inventory.js";
 import type {
   SessionEntryListWorkerInput,
+  SessionBackingFactsWorkerInput,
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
@@ -51,6 +52,7 @@ export const historyPages = new WorkerTaskPool<
   | SessionRowPresenceWorkerInput
   | SessionMembersWorkerInput
   | SessionEntryListWorkerInput
+  | SessionBackingFactsWorkerInput
   | SessionTargetInventoryWorkerInput
   | SessionIdentityEvidenceWorkerInput
   | SessionUsageCacheWorkerInput
@@ -62,6 +64,7 @@ export const historyPages = new WorkerTaskPool<
     | "session-row-presence"
     | "session-members"
     | "session-entry-list"
+    | "session-backing-facts"
     | "session-target-inventory"
     | "session-identity-evidence"
     | "usage-cache"
@@ -371,6 +374,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             | "session-row-presence"
             | "session-members"
             | "session-entry-list"
+            | "session-backing-facts"
             | "session-target-inventory"
             | "session-identity-evidence"
             | "usage-cache"

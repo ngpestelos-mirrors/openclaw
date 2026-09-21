@@ -24,7 +24,6 @@ import {
   sessionHistoryCleanupError,
   unwrapSessionTranscriptWorkerReply,
 } from "./session-history-worker-errors.js";
-import { listSessionMembers } from "./session-sharing-store.js";
 import type { SessionMember } from "./session-sharing-store.kernel.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import type { SessionStoreTargetInventoryResult } from "./session-store-target-inventory.js";
@@ -53,7 +52,9 @@ import type {
   SessionRowPresenceWorkerInput,
   SessionMembersWorkerInput,
   SessionEntryListWorkerInput,
+  SessionBackingFactsWorkerInput,
   SessionEntryListWorkerResult,
+  SessionBackingFactsWorkerResult,
   SessionIdentityEvidenceWorkerInput,
   SessionIdentityEvidenceWorkerResult,
   SessionUsageCacheWorkerInput,
@@ -81,6 +82,9 @@ export type SessionHistoryWorkerDatabase = {
   readIdentityEvidence: (
     input: Omit<SessionIdentityEvidenceWorkerInput, "kind" | "database">,
   ) => Promise<SessionIdentityEvidenceResult[]>;
+  readBackingFacts: (
+    input: Omit<SessionBackingFactsWorkerInput, "kind" | "database">,
+  ) => Promise<SessionBackingFactsWorkerResult["facts"]>;
   readEntries: (
     scope: SessionEntryListWorkerInput["scope"],
   ) => Promise<SessionEntryListWorkerResult["entries"]>;
@@ -140,24 +144,6 @@ export function prepareSessionEntryPresenceRead(input: SessionAccessScope): Read
   };
 }
 
-/** Full membership evidence shares the existing read-only agent database worker. */
-export async function listSessionMembersInWorker(
-  input: SessionAccessScope,
-): Promise<SessionMember[]> {
-  const env = { ...(input.env ?? process.env) };
-  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
-  const resolved = resolveSqliteScope({ ...input, env });
-  const options = toDatabaseOptions(resolved);
-  const databasePath = resolveOpenClawAgentSqlitePath(options);
-  if (isIncognitoOpenClawAgentSqlitePath(databasePath, options)) {
-    // Incognito SQLite exists only in this process and keeps its native owner.
-    return listSessionMembers({ ...input, env });
-  }
-  return await withSessionHistoryWorkerDatabase(options, (owner) =>
-    owner.readMembers({ sessionKey: resolved.sessionKey, env }),
-  );
-}
-
 /** Single and batch reads synchronously retain the same lane-aware database owner. */
 function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOptions) {
   const owned = acquireHistoryDatabaseResource(options);
@@ -186,6 +172,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
         | Omit<SessionRowPresenceWorkerInput, "database">
         | Omit<SessionMembersWorkerInput, "database">
         | Omit<SessionEntryListWorkerInput, "database">
+        | Omit<SessionBackingFactsWorkerInput, "database">
         | Omit<SessionIdentityEvidenceWorkerInput, "database">
         | Omit<SessionTranscriptSearchWorkerInput, "database">
         | Omit<SessionUsageCacheWorkerInput, "database">,
@@ -198,6 +185,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           | boolean
           | SessionMember[]
           | SessionEntryListWorkerResult
+          | SessionBackingFactsWorkerResult
           | SessionStoreTargetInventoryResult
           | SessionIdentityEvidenceWorkerResult
           | SessionTranscriptSearchWorkerResult
@@ -226,6 +214,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             | "session-row-presence"
             | "session-members"
             | "session-entry-list"
+            | "session-backing-facts"
             | "session-target-inventory"
             | "session-identity-evidence"
             | "usage-cache"
@@ -275,6 +264,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             value.kind === "session-preview" ||
             value.kind === "session-title-fields" ||
             value.kind === "session-entry-list" ||
+            value.kind === "session-backing-facts" ||
             value.kind === "session-target-inventory" ||
             value.kind === "session-target-registry-required" ||
             value.kind === "session-identity-evidence" ||
@@ -358,6 +348,23 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
               );
             }
             return value;
+          },
+        ),
+      readBackingFacts: async (input) =>
+        await runRequest(
+          () => ({ kind: "session-backing-facts", ...input }),
+          JSON.stringify(input.scope).length * 2,
+          (value) => {
+            if (
+              typeof value === "boolean" ||
+              Array.isArray(value) ||
+              value.kind !== "session-backing-facts"
+            ) {
+              throw new Error(
+                "Session history worker returned another result instead of backing facts",
+              );
+            }
+            return value.facts;
           },
         ),
       readEntries: async (scope) =>

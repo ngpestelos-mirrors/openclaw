@@ -6,9 +6,12 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   runOpenClawAgentWriteTransaction,
+  isIncognitoOpenClawAgentSqlitePath,
+  resolveOpenClawAgentSqlitePath,
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import { resolveStateDir } from "../state-dir.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryInstanceId } from "./session-accessor.sqlite-entry-identity.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
@@ -145,4 +148,24 @@ export function removeSessionMember(
     sessionChanges.emit({ agentId, storePath: database.path, sessionKey }, database.db);
     return { identityId: row.identity_id, addedBy: row.added_by, addedAt: row.added_at };
   }, options);
+}
+
+/** Full membership evidence shares the existing read-only agent database worker. */
+export async function listSessionMembersInWorker(
+  input: SessionAccessScope,
+): Promise<SessionMember[]> {
+  const env = { ...(input.env ?? process.env) };
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  const resolved = resolveSqliteScope({ ...input, env });
+  const options = toDatabaseOptions(resolved);
+  const databasePath = resolveOpenClawAgentSqlitePath(options);
+  if (isIncognitoOpenClawAgentSqlitePath(databasePath, options)) {
+    // Incognito SQLite exists only in this process and keeps its native owner.
+    return listSessionMembers({ ...input, env });
+  }
+  const { withSessionHistoryWorkerDatabase } =
+    await import("./session-transcript-worker-runtime.js");
+  return await withSessionHistoryWorkerDatabase(options, (owner) =>
+    owner.readMembers({ sessionKey: resolved.sessionKey, env }),
+  );
 }
