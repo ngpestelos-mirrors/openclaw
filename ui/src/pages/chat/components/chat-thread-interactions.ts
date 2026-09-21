@@ -69,6 +69,7 @@ export type ChatThreadState = {
   asyncQuestionRevision: number;
   asyncQuestionScope?: string;
   asyncQuestionGeneration?: number;
+  asyncQuestionPresentation?: AsyncQuestionPresentation;
   turnRecapWatch: TurnRecapWatch | null;
   searchOpen: boolean;
   searchQuery: string;
