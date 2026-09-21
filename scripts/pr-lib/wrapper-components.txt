@@ -459,6 +459,7 @@ src/config/validation.types.ts
 src/config/value-tree.ts
 src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
+src/config/write-authority.ts
 src/config/write-lock.ts
 src/config/zod-schema.agent-defaults-base.ts
 src/config/zod-schema.agent-defaults.ts
