@@ -3352,7 +3352,6 @@ src/shared/transcript-only-openclaw-assistant.ts	4
 src/shared/worker-bundle-archive.ts	1
 src/skills/lifecycle/clawhub-install-core.ts	2
 src/skills/lifecycle/clawhub-store.ts	12
-src/skills/lifecycle/install-download.ts	4
 src/skills/lifecycle/upload-store.ts	1
 src/skills/lifecycle/workspace-skill-write.ts	1
 src/skills/loading/config.ts	1

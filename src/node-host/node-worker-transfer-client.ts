@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import type { ClientRequest, IncomingMessage } from "node:http";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
+import { finished, pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { CloudflareAccessCredentials } from "../../packages/gateway-client/src/cloudflare-access.js";
@@ -22,7 +21,7 @@ import { parseWorkspaceManifest } from "../gateway/worker-environments/workspace
 import { absoluteEntryMatches } from "../gateway/worker-environments/workspace-reconcile-fs.js";
 import { workerWorkspaceTransferPaths } from "../gateway/worker-environments/workspace-result-staging.js";
 import { REMOTE_WORKSPACE_MANIFEST_JS } from "../gateway/worker-environments/workspace-sync-scripts.js";
-import { root as fsRoot, FsSafeError } from "../infra/fs-safe.js";
+import { root as fsRoot, FsSafeError, type Root } from "../infra/fs-safe.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { tempWorkspace } from "../infra/private-temp-workspace.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -169,47 +168,47 @@ async function downloadBuffer(params: NodeWorkerTransferHttpRequest, maxBytes: n
 
 async function downloadFile(params: {
   request: NodeWorkerTransferHttpRequest;
-  destination: string;
+  root: Root;
+  relativePath: string;
   expectedBytes?: number;
   expectedSha256?: string;
+  mode?: number;
 }): Promise<void> {
   const response = await openNodeWorkerTransferHttpRequest(params.request);
-  await requireOk(response);
-  const output = fs.createWriteStream(params.destination, {
-    flags: "wx",
-    mode: 0o600,
-  });
-  const hash = createHash("sha256");
-  let bytes = 0;
+  const settled = finished(response, { cleanup: true }).catch(() => {});
   try {
-    for await (const value of response) {
-      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-      bytes += chunk.byteLength;
-      if (
-        bytes > (params.expectedBytes ?? MAX_WORKSPACE_INVENTORY_TOTAL_BYTES) ||
-        bytes > MAX_WORKSPACE_INVENTORY_TOTAL_BYTES
-      ) {
-        throw new Error("workspace transfer download exceeded its byte limit");
-      }
-      hash.update(chunk);
-      if (!output.write(chunk)) {
-        await once(output, "drain");
-      }
-    }
-    const finished = once(output, "finish");
-    output.end();
-    await finished;
-  } catch (error) {
-    output.destroy();
-    await fsp.rm(params.destination, { force: true });
-    throw error;
-  }
-  if (
-    (params.expectedBytes !== undefined && bytes !== params.expectedBytes) ||
-    (params.expectedSha256 !== undefined && hash.digest("hex") !== params.expectedSha256)
-  ) {
-    await fsp.rm(params.destination, { force: true });
-    throw new Error("workspace transfer blob failed integrity validation");
+    await requireOk(response);
+    await params.root.create(
+      workspacePath(params.root.rootReal, params.relativePath),
+      (async function* () {
+        const hash = createHash("sha256");
+        let bytes = 0;
+        for await (const value of response) {
+          const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+          bytes += chunk.byteLength;
+          hash.update(chunk);
+          yield chunk;
+        }
+        // Reject invalid content before the completed file is published.
+        if (
+          (params.expectedBytes !== undefined && bytes !== params.expectedBytes) ||
+          (params.expectedSha256 !== undefined && hash.digest("hex") !== params.expectedSha256)
+        ) {
+          throw new Error("workspace transfer blob failed integrity validation");
+        }
+      })(),
+      {
+        mkdir: false,
+        mode: params.mode ?? 0o600,
+        durable: false,
+        maxBytes: Math.min(params.expectedBytes ?? Infinity, MAX_WORKSPACE_INVENTORY_TOTAL_BYTES),
+        signal: params.request.signal,
+      },
+    );
+  } finally {
+    // Path admission can fail before the response iterator starts.
+    response.destroy();
+    await settled;
   }
 }
 
@@ -298,6 +297,7 @@ async function downloadWorkspace(params: WorkspaceTransferOperation<"download">)
   });
   const staging = stagingWorkspace.dir;
   try {
+    const stagingRoot = await fsRoot(staging);
     // The accepted manifest owns raw path eligibility on every platform.
     const published = await runWorkspaceCommand({
       workspaceDir: staging,
@@ -348,7 +348,8 @@ async function downloadWorkspace(params: WorkspaceTransferOperation<"download">)
               ),
               method: "GET",
             },
-            destination: packPath,
+            root: stagingRoot,
+            relativePath: ".openclaw-base.pack",
           });
           packDownloadMs = performance.now() - packStartedAt;
         }
@@ -417,11 +418,12 @@ async function downloadWorkspace(params: WorkspaceTransferOperation<"download">)
             routePath: nodeWorkspaceTransferBlobPath(params.environmentId, entry.sha256),
             method: "GET",
           },
-          destination,
+          root: stagingRoot,
+          relativePath: entry.path,
           expectedBytes: entry.size,
           expectedSha256: entry.sha256,
+          mode: entry.mode,
         });
-        await fsp.chmod(destination, entry.mode);
       }
     });
     const blobApplyMs = performance.now() - blobApplyStartedAt;
@@ -459,7 +461,7 @@ async function downloadWorkspace(params: WorkspaceTransferOperation<"download">)
     }
     if (attachmentEntries) {
       params.signal?.throwIfAborted();
-      const [root, sourceRoot] = await Promise.all([fsRoot(params.workspaceDir), fsRoot(staging)]);
+      const root = await fsRoot(params.workspaceDir);
       for (const directory of stagedInputs) {
         params.signal?.throwIfAborted();
         await ensureStagedInputDirectory(params.workspaceDir, directory, params.signal);
@@ -470,7 +472,7 @@ async function downloadWorkspace(params: WorkspaceTransferOperation<"download">)
           // Cancellation may follow publication. Keep published files and prior-turn edits.
           await root.copyIn(
             entry.path,
-            { root: sourceRoot, relativePath: workspacePath(sourceRoot.rootReal, entry.path) },
+            { root: stagingRoot, relativePath: workspacePath(stagingRoot.rootReal, entry.path) },
             {
               overwrite: false,
               mode: 0o600,
