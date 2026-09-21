@@ -35,8 +35,11 @@ import {
 } from "./session-accessor.sqlite-entry-cache.js";
 import { recordSessionParticipant } from "./session-accessor.sqlite-participants.js";
 import { updateSessionGroupCategoriesInWorker } from "./session-group-categories.js";
-import { addSessionMember, removeSessionMember } from "./session-sharing-store.js";
-import { listSessionMembersInWorker } from "./session-transcript-worker-runtime.js";
+import {
+  addSessionMember,
+  listSessionMembersInWorker,
+  removeSessionMember,
+} from "./session-sharing-store.js";
 
 it("reads complete current member rows without executing SQLite on the caller", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {

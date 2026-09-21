@@ -25,7 +25,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { sessionCreatorProfileId } from "../../config/sessions/session-entry-provenance.js";
 import { resolveSessionPublicShare } from "../../config/sessions/session-public-share.js";
-import { listSessionMembersInWorker } from "../../config/sessions/session-transcript-worker-runtime.js";
+import { listSessionMembersInWorker } from "../../config/sessions/session-sharing-store.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
