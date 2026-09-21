@@ -12,7 +12,6 @@ import { t } from "../../i18n/index.ts";
 import { registerModelControlsEnglish } from "../../i18n/locales/en-model-controls.ts";
 import { buildQualifiedChatModelValue } from "../../lib/chat/model-ref.ts";
 import {
-  isChatFastModeProviderSupported,
   chatModelUnavailableMessage,
   normalizeChatFastModeInput,
 } from "../../lib/chat/model-select-state.ts";
@@ -93,11 +92,12 @@ export class NewSessionModelControl {
 
   constructor(
     private readonly notify: () => void,
-    private readonly onSelectionChange: (selection: {
-      model: string;
-      agentRuntime?: string;
-      thinkingLevel: string;
-    }) => void = () => undefined,
+    private readonly onSelectionChange: (
+      selection: Pick<
+        NewSessionPreference,
+        "model" | "agentRuntime" | "thinkingLevel" | "fastMode"
+      >,
+    ) => void = () => undefined,
     private readonly onCatalogTargetSelect: (catalogId: string) => void = () => undefined,
   ) {
     this.catalogTargets = new CatalogTargetDiscovery(notify);
@@ -242,11 +242,14 @@ export class NewSessionModelControl {
         if (
           !this.draftAccount &&
           this.pendingSelectionGeneration === this.selectionGeneration &&
-          (this.pendingPreference?.model || this.pendingPreference?.thinkingLevel)
+          (this.pendingPreference?.model ||
+            this.pendingPreference?.thinkingLevel ||
+            this.pendingPreference?.fastMode !== undefined)
         ) {
           this.selected = this.pendingPreference.model ?? "";
           this.agentRuntime = this.pendingPreference.agentRuntime;
           this.thinkingLevel = this.pendingPreference.thinkingLevel ?? "";
+          this.fastMode = this.pendingPreference.fastMode;
         }
         this.restoringPreference = false;
         this.updateMetadataState({ ...this.metadataState, status: "error" });
@@ -392,7 +395,10 @@ export class NewSessionModelControl {
     this.pendingAgent = options.agent;
     this.pendingSelectionGeneration = selectionGeneration;
     this.restoringPreference = Boolean(
-      !this.draftAccount && (options.preference?.model || options.preference?.thinkingLevel),
+      !this.draftAccount &&
+      (options.preference?.model ||
+        options.preference?.thinkingLevel ||
+        options.preference?.fastMode !== undefined),
     );
     if (this.metadataRequest) {
       this.notify();
@@ -496,6 +502,7 @@ export class NewSessionModelControl {
       model: preference.model ?? "",
       agentRuntime: preference.agentRuntime,
       thinkingLevel: preference.thinkingLevel ?? "",
+      fastMode: preference.fastMode,
       agent: this.pendingAgent,
       defaults: this.pendingContext?.sessions.state.result?.defaults,
       catalog: this.catalog,
@@ -503,13 +510,19 @@ export class NewSessionModelControl {
     this.selected = selection.model;
     this.agentRuntime = selection.agentRuntime;
     this.thinkingLevel = selection.thinkingLevel;
+    this.fastMode = selection.fastMode;
     if (selection.repaired) {
-      this.onSelectionChange({
-        model: selection.model,
-        ...(preference.agentRuntime ? { agentRuntime: this.agentRuntime ?? "" } : {}),
-        thinkingLevel: selection.thinkingLevel,
-      });
+      this.persistSelection(preference.agentRuntime ? (this.agentRuntime ?? "") : undefined);
     }
+  }
+
+  private persistSelection(agentRuntime = this.agentRuntime) {
+    this.onSelectionChange({
+      model: this.selected,
+      ...(agentRuntime !== undefined ? { agentRuntime } : {}),
+      thinkingLevel: this.thinkingLevel,
+      fastMode: this.fastMode,
+    });
   }
 
   resolveAgentRuntime(
@@ -653,6 +666,7 @@ export class NewSessionModelControl {
           model: value,
           agentRuntime: agentRuntime ?? undefined,
           thinkingLevel: this.thinkingLevel,
+          fastMode: this.fastMode,
           agent: options.agent,
           defaults: options.context?.sessions.state.result?.defaults,
           catalog: this.catalog,
@@ -683,14 +697,8 @@ export class NewSessionModelControl {
         }
         this.contextWindow = "";
         this.thinkingLevel = selection.thinkingLevel;
-        this.fastMode = isChatFastModeProviderSupported(target?.provider)
-          ? this.fastMode
-          : undefined;
-        this.onSelectionChange({
-          model: selection.model,
-          ...(runtimeChanged || this.agentRuntime ? { agentRuntime: this.agentRuntime ?? "" } : {}),
-          thinkingLevel: this.thinkingLevel,
-        });
+        this.fastMode = selection.fastMode;
+        this.persistSelection(runtimeChanged ? (this.agentRuntime ?? "") : undefined);
       },
       onModelPickerTargetSelect: (groupId, catalogId) => {
         if (groupId === "cliAgents") {
@@ -706,16 +714,13 @@ export class NewSessionModelControl {
         this.selectionGeneration += 1;
         this.restoringPreference = false;
         this.thinkingLevel = value;
-        this.onSelectionChange({
-          model: this.selected,
-          ...(this.agentRuntime ? { agentRuntime: this.agentRuntime } : {}),
-          thinkingLevel: this.thinkingLevel,
-        });
+        this.persistSelection();
       },
       onFastModeSelect: (value) => {
         this.selectionGeneration += 1;
         this.restoringPreference = false;
         this.fastMode = normalizeChatFastModeInput(value);
+        this.persistSelection();
         this.notify();
       },
       onContextWindowSelect: (value) => {
