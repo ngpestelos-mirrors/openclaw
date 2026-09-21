@@ -1,5 +1,6 @@
 import path from "node:path";
 import { gatewayOriginScope } from "@openclaw/gateway-client/browser";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import {
@@ -75,9 +76,12 @@ suite.define(() => {
             after: preferenceWrites,
           });
           preferenceWrites += 1;
-          expect(request.params).toMatchObject({ entries: { [preferenceKey]: selection } });
-          const written = request.params?.entries as Record<string, unknown>;
-          entries = { ...entries, ...written };
+          const params = request.params;
+          if (!isRecord(params) || !isRecord(params.entries)) {
+            throw new Error("Expected preference-write entries");
+          }
+          expect(params).toMatchObject({ entries: { [preferenceKey]: selection } });
+          entries = { ...entries, ...params.entries };
           await gateway.setMethodResponse("users.prefs.get", { status: "ok", entries });
         }
       };
