@@ -1,9 +1,4 @@
-import {
-  readAuthProfileRows,
-  SHARED_AUTH_STORE_STATE_KEY,
-} from "../agents/auth-profiles/sqlite-json.js";
-import { isMissingDatabasePath } from "../agents/auth-profiles/sqlite-read-pool.js";
-import type { AuthProfileRowRead } from "../agents/auth-profiles/types.js";
+import { executeSharedAuthProfileReadCommand } from "../agents/auth-profiles/shared-state-read.worker.js";
 import {
   readNativeHookRelayBridgeSnapshotFromDatabase,
   listNativeHookRelayBridgeSnapshotsInDatabase,
@@ -39,6 +34,10 @@ import {
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
+import {
+  executeOperatorApprovalCommand,
+  isOperatorApprovalCommand,
+} from "../gateway/operator-approval-store.worker.js";
 import { registerSessionGroupInDatabase } from "../gateway/session-group-registration.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import * as deliveryQueue from "../infra/delivery-queue.worker.js";
@@ -111,7 +110,6 @@ import {
 } from "./agent-provenance.kernel.js";
 import { ensureAgentProvenanceSchema } from "./agent-provenance.schema.js";
 import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
-import { readConfigMachineState } from "./config-machine-state.js";
 import { isOnboardingRecommendationWriteCommand } from "./onboarding-recommendations.contract.js";
 import { executeOnboardingRecommendationCommand } from "./onboarding-recommendations.kernel.js";
 import { executeAgentDatabaseCleanupCommand } from "./openclaw-agent-execution-cleanup.worker.js";
@@ -130,7 +128,6 @@ import type {
   OpenClawStateWorkerInspectionOperations,
   OpenClawStateWorkerCleanupOperations,
 } from "./openclaw-state-worker-contract.js";
-import { readUserModelAuthProfile } from "./user-model-accounts.js";
 import { executeUserPreferenceCommand } from "./user-preferences.worker.js";
 import { executeUserProfileCommand } from "./user-profiles.worker.js";
 
@@ -149,12 +146,15 @@ export function executeSharedStateCommand(
   open: () => OpenClawStateDatabase,
   hasNativeDatabase: boolean,
 ): Operations[keyof Operations]["output"] {
-  if (command.type === "execApprovals.commitAuthorizations") {
-    return commitExecAuthorizationsInWorker(command.input, {
+  if (command.type === "execApprovals.commitAuthorizations" || isOperatorApprovalCommand(command)) {
+    const databaseOptions = {
       database: open(),
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
-    });
+    };
+    return command.type === "execApprovals.commitAuthorizations"
+      ? commitExecAuthorizationsInWorker(command.input, databaseOptions)
+      : executeOperatorApprovalCommand(command, databaseOptions);
   }
   if (command.type === "agentDatabases.releaseExitedLease") {
     return executeAgentDatabaseCleanupCommand(
@@ -178,40 +178,7 @@ export function executeSharedStateCommand(
     command.type === "authProfiles.sharedOwnership" ||
     command.type === "authProfiles.personal"
   ) {
-    const read = () => {
-      const options = {
-        path: context.databasePath,
-        env: getSqliteWorkerStateContext().environment,
-      };
-      if (command.type === "authProfiles.sharedOwnership") {
-        return readConfigMachineState(SHARED_AUTH_STORE_STATE_KEY, options);
-      }
-      if (command.type === "authProfiles.personal") {
-        return readUserModelAuthProfile(command.input.profileId, options);
-      }
-      const missing: AuthProfileRowRead = {
-        store: { status: "missing", reason: "database" },
-        state: { status: "missing", reason: "database" },
-        cacheable: false,
-      };
-      try {
-        return (
-          withExistingOpenClawStateDatabaseReadOnly(
-            ({ db }) => readAuthProfileRows(db, context.databasePath, "shared-state"),
-            options,
-          ) ?? missing
-        );
-      } catch {
-        return isMissingDatabasePath(context.databasePath)
-          ? missing
-          : {
-              store: { status: "unreadable" as const },
-              state: { status: "unreadable" as const },
-              cacheable: false,
-            };
-      }
-    };
-    return command.input.artifactPreserving ? withArtifactPreservingStateReads(read) : read();
+    return executeSharedAuthProfileReadCommand(command, context);
   }
   if (command.type === "promotions.markNotified" || command.type === "promotions.recordClaim") {
     return executePromotionCommand(

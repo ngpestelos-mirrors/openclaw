@@ -11,6 +11,7 @@ import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/work
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { listTerminalOperatorApprovalsInDatabase } from "../gateway/operator-approval-store.kernel.js";
 import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outbound/current-conversation-bindings.kernel.js";
@@ -108,6 +109,7 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         (input.command.input.includeRunId === undefined ||
           typeof input.command.input.includeRunId === "string")) ||
       input.command.type === "fleet.list" ||
+      (input.command.type === "operatorApprovals.history" && isRecord(input.command.input)) ||
       input.command.type === "nodeHost.config" ||
       (input.command.type === "onboardingRecommendations.read" &&
         typeof input.command.configKey === "string") ||
@@ -258,6 +260,14 @@ serveOwnedWorkerTasks(
                     value: tableExists(db, "skill_library_entries")
                       ? selectSkillLibraryRevisionManifestsBatch(db, command.input)
                       : undefined,
+                  };
+                }
+                if (command.type === "operatorApprovals.history") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    history: listTerminalOperatorApprovalsInDatabase(command.input, db),
                   };
                 }
                 if (command.type === "onboardingRecommendations.read") {

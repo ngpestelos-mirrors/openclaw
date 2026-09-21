@@ -11,6 +11,10 @@ import type {
 } from "../audit/execution-identity-inspection.types.js";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type {
+  ListTerminalOperatorApprovalsInput,
+  ListTerminalOperatorApprovalsResult,
+} from "../gateway/operator-approval-store.types.js";
+import type {
   WorkerPlacementConflictBinding,
   WorkerSessionPlacementReadResult,
 } from "../gateway/worker-environments/placement-read-projection.types.js";
@@ -53,6 +57,10 @@ export type OpenClawStateReadAuthority = {
 
 export type OpenClawStateReadCommand =
   | { type: "conversationBindings.inspect"; conversation: ConversationRef }
+  | {
+      type: "operatorApprovals.history";
+      input: ListTerminalOperatorApprovalsInput;
+    }
   | PluginBlobReadCommand
   | { type: "exec-approvals.read" }
   | {
@@ -96,6 +104,12 @@ export type OpenClawStateReadReply = (
       type: "conversationBindings.inspect";
       sourceAdmitted: true;
       record: SessionBindingRecord | null;
+    }
+  | {
+      ok: true;
+      type: "operatorApprovals.history";
+      sourceAdmitted: true;
+      history: ListTerminalOperatorApprovalsResult;
     }
   | PluginBlobReadReply
   | {
