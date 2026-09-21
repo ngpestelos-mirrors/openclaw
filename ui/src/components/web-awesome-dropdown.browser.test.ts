@@ -323,22 +323,28 @@ describe.runIf(browserMode)("Web Awesome dropdown lifecycle", () => {
     let starts = 0;
     let observed: { pending: boolean; starts: number } | undefined;
     f.menu.addEventListener("animationstart", () => starts++);
-    const observer = new MutationObserver(() => {
+    const animationName = f.menu.style.animationName;
+    const getAnimations = f.menu.getAnimations.bind(f.menu);
+    // Create the real CSS animation at its first sample so it cannot start in an earlier frame.
+    f.menu.style.animationName = "none";
+    const sample = vi.spyOn(f.menu, "getAnimations").mockImplementation((options) => {
       if (!f.menu.classList.contains("show")) {
-        return;
+        return getAnimations(options);
       }
-      observer.disconnect();
-      // Queue behind the helper's first frame, before the pending CSS animation starts.
-      requestAnimationFrame(() => {
+      sample.mockRestore();
+      f.menu.style.animationName = animationName;
+      const animations = getAnimations(options);
+      // The owner captures native finished promises before this cancellation microtask.
+      queueMicrotask(() => {
         observed = {
-          pending: f.menu.getAnimations().some((animation) => animation.pending),
+          pending: animations.some((animation) => animation.pending),
           starts,
         };
         f.dropdown.open = false;
         f.outside.focus();
       });
+      return animations;
     });
-    observer.observe(f.menu, { attributes: true, attributeFilter: ["class"] });
     try {
       f.dropdown.open = true;
       await expect.poll(() => observed).toEqual({ pending: true, starts: 0 });
@@ -347,7 +353,8 @@ describe.runIf(browserMode)("Web Awesome dropdown lifecycle", () => {
       expect(document.activeElement).toBe(f.outside);
       await open(f);
     } finally {
-      observer.disconnect();
+      sample.mockRestore();
+      f.menu.style.animationName = animationName;
     }
   });
 

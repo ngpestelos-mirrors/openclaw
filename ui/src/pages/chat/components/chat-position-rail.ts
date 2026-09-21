@@ -407,6 +407,8 @@ class ChatPositionRailDirective extends AsyncDirective {
       this.markerElements.get(this.activeId ?? "")?.setAttribute("aria-current", "false");
       this.activeId = activeId;
       this.markerElements.get(activeId ?? "")?.setAttribute("aria-current", "true");
+      // Native Tab can arrive before the scheduled layout frame.
+      this.syncTabStop();
       if (!this.followingResize) {
         this.followActive = true;
       }

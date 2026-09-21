@@ -39,6 +39,7 @@ describe("conversation position rail", () => {
     "end",
     "focus",
     "focus-resize",
+    "visibility-tab-stop",
     "pointer",
     "reader",
   ] as const;
@@ -245,6 +246,22 @@ describe("conversation position rail", () => {
           await flush();
           expect(document.activeElement).toBe(marker(79));
           expect(marks.scrollTop).toBe(720);
+        } else if (scenario === "visibility-tab-stop") {
+          const tabStops = () => [...marks.querySelectorAll('[tabindex="0"]')];
+          const bubble = root.querySelector(".chat-bubble")!;
+          marker(79).focus();
+          activeMessage.mockReturnValue("message-76");
+          publishVisibility(bubble);
+          expect(marker(76).getAttribute("aria-current")).toBe("true");
+          expect(document.activeElement).toBe(marker(79));
+          expect(tabStops()).toEqual([marker(79)]);
+
+          marker(79).blur();
+          activeMessage.mockReturnValue("message-75");
+          publishVisibility(bubble);
+          // Native Tab can run before the next layout frame after visibility publication.
+          expect(marker(75).getAttribute("aria-current")).toBe("true");
+          expect(tabStops()).toEqual([marker(75)]);
         } else if (scenario === "pointer") {
           marker(60).dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
           marker(60).focus();
