@@ -53,6 +53,7 @@ import {
   resetSessionEntryLifecycle,
 } from "./session-accessor.js";
 import * as sessionLifecycleState from "./session-accessor.sqlite-lifecycle-state.js";
+import * as archivePruningOwner from "./session-history-archive-pruning.js";
 import {
   createSessionHistoryBudgetFixture,
   joinSessionHistoryBudgetSweeps,
@@ -135,7 +136,10 @@ describe("SQLite historical session disk budget", () => {
         afterWrite: { mode: "auto" },
       });
       const owner = database();
-      const checkpoint = vi.spyOn(owner.walMaintenance, "checkpoint");
+      const checkpoint = vi.spyOn(
+        archivePruningOwner,
+        "pruneAllSessionTranscriptArchivesToHighWater",
+      );
       const admission = prepareSystemAgentRunAdmission({}, "maintenance-lifetime", "main", "setup");
       const assertActive = resolveAdmittedRunActiveAssertion(await admission.admit("embedded"))!;
       const target = { canonicalKey: sessionKey, storeKeys: [sessionKey] };
@@ -289,11 +293,16 @@ describe("SQLite historical session disk budget", () => {
       const highWaterBytes = before.totalBytes - reclaimBytes;
 
       let reclamationWorkers = 0;
-      type ArchiveReply = { type: string; operationId?: number; settled?: boolean };
+      type ArchiveReply = {
+        type: string;
+        operationId?: number;
+        settled?: boolean;
+        result?: { kind: string };
+      };
       const archiveReplies: Array<{ worker: Worker; message: ArchiveReply }> = [];
       const observeWorker = (worker: Worker) => {
         worker.on("message", (message: ArchiveReply | null | undefined) => {
-          if (message?.type === "reclaimed") {
+          if (message?.type === "reclaimed" && message.result?.kind === "history-eviction") {
             reclamationWorkers += 1;
           }
           if (message?.type === "done" || message?.type === "published") {
