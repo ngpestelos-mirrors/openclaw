@@ -29,7 +29,12 @@ import {
   normalizeMediaReferenceSource,
   resolveInboundMediaReference,
 } from "../media/media-reference.js";
-import { buildRandomTempFilePath } from "../plugin-sdk/temp-path.js";
+import {
+  buildRandomTempFilePath,
+  resolvePreferredOpenClawTmpDir,
+  tempWorkspace,
+} from "../plugin-sdk/temp-path.js";
+import { createLazyPromiseLoader } from "../shared/lazy-promise.js";
 import { normalizeAttachmentPath } from "./attachments.normalize.js";
 import type { MediaAttachment } from "./types.js";
 
@@ -41,11 +46,6 @@ type MediaBufferResult = {
   size: number;
   /** Set only when bytes came from an approved local read under the root policy. */
   localPath?: string;
-};
-
-type MediaPathResult = {
-  path: string;
-  cleanup?: () => Promise<void> | void;
 };
 
 const REMOTE_MEDIA_FETCH_RETRY: MediaFetchRetryOptions = {
@@ -61,7 +61,6 @@ type AttachmentCacheEntry = {
   statSize?: number;
   bufferResult?: MediaBufferResult;
   tempPath?: string;
-  tempCleanup?: () => Promise<void>;
   localResolutionAttempted?: boolean;
   storeAliasAttempted?: boolean;
   lastLocalError?: MediaUnderstandingSkipError;
@@ -145,6 +144,9 @@ export class MediaAttachmentCache {
   private readonly ssrfPolicy: SsrFPolicy | undefined;
   private readonly fallbackWorkspaceDir?: string;
   private canonicalLocalPathRoots?: Promise<readonly string[]>;
+  private readonly stagingWorkspace = createLazyPromiseLoader(() =>
+    tempWorkspace({ rootDir: resolvePreferredOpenClawTmpDir(), prefix: "openclaw-media" }),
+  );
 
   constructor(attachments: MediaAttachment[], options?: MediaAttachmentCacheOptions) {
     this.attachments = attachments;
@@ -177,7 +179,10 @@ export class MediaAttachmentCache {
       return entry.bufferResult;
     }
 
-    if (entry.resolvedPath) {
+    do {
+      if (!entry.resolvedPath) {
+        continue;
+      }
       try {
         const local = await this.readEntryLocalBuffer(entry, params);
         if (local) {
@@ -188,20 +193,7 @@ export class MediaAttachmentCache {
           throw err;
         }
       }
-    }
-
-    if (await this.activateStoreAlias(entry)) {
-      try {
-        const local = await this.readEntryLocalBuffer(entry, params);
-        if (local) {
-          return local;
-        }
-      } catch (err) {
-        if (!this.recordRecoverableLocalError(entry, err)) {
-          throw err;
-        }
-      }
-    }
+    } while (await this.activateStoreAlias(entry));
 
     if (!url) {
       throw (
@@ -363,29 +355,12 @@ export class MediaAttachmentCache {
     attachmentIndex: number;
     maxBytes: number;
     timeoutMs: number;
-  }): Promise<MediaPathResult> {
+  }): Promise<string> {
     const entry = await this.ensureEntry(params.attachmentIndex);
-    if (entry.resolvedPath) {
-      try {
-        await (await this.prepareLocalFile(entry))?.handle.close().catch(() => {});
-        const size = entry.statSize;
-        if (entry.resolvedPath && size !== undefined && size > params.maxBytes) {
-          throw new MediaUnderstandingSkipError(
-            "maxBytes",
-            `Attachment ${params.attachmentIndex + 1} exceeds maxBytes ${params.maxBytes}`,
-          );
-        }
-      } catch (err) {
-        if (!this.recordRecoverableLocalError(entry, err)) {
-          throw err;
-        }
+    do {
+      if (!entry.resolvedPath) {
+        continue;
       }
-      if (entry.resolvedPath) {
-        return { path: entry.resolvedPath };
-      }
-    }
-
-    if (await this.activateStoreAlias(entry)) {
       try {
         await (await this.prepareLocalFile(entry))?.handle.close().catch(() => {});
         const size = entry.statSize;
@@ -396,14 +371,14 @@ export class MediaAttachmentCache {
               `Attachment ${params.attachmentIndex + 1} exceeds maxBytes ${params.maxBytes}`,
             );
           }
-          return { path: entry.resolvedPath };
+          return entry.resolvedPath;
         }
       } catch (err) {
         if (!this.recordRecoverableLocalError(entry, err)) {
           throw err;
         }
       }
-    }
+    } while (await this.activateStoreAlias(entry));
 
     if (entry.tempPath) {
       if (entry.bufferResult && entry.bufferResult.size > params.maxBytes) {
@@ -412,43 +387,34 @@ export class MediaAttachmentCache {
           `Attachment ${params.attachmentIndex + 1} exceeds maxBytes ${params.maxBytes}`,
         );
       }
-      return { path: entry.tempPath, cleanup: entry.tempCleanup };
+      return entry.tempPath;
     }
 
     const bufferResult = await this.getBuffer(params);
+    const workspace = await this.stagingWorkspace.load();
     const extension = path.extname(bufferResult.fileName || "") || "";
     const tmpPath = buildRandomTempFilePath({
       prefix: "openclaw-media",
       extension,
+      tmpDir: workspace.dir,
     });
-    // Keep failed staging owned when model fallback retries the same attachment.
-    const previousCleanup = entry.tempCleanup;
-    entry.tempCleanup = async () => {
-      // Returned cleanup callbacks may outlive a restaged file; invalidate only their path.
-      if (entry.tempPath === tmpPath) {
-        entry.tempPath = undefined;
-      }
-      await previousCleanup?.();
-      await fs.unlink(tmpPath).catch(() => {});
-    };
     await fs.writeFile(tmpPath, bufferResult.buffer).catch(async (error: unknown) => {
-      await entry.tempCleanup?.();
+      // A failed attempt cannot remove another borrower's file; the workspace owns leftovers.
+      await fs.unlink(tmpPath).catch(() => {});
       throw error;
     });
     entry.tempPath = tmpPath;
-    return { path: tmpPath, cleanup: entry.tempCleanup };
+    return tmpPath;
   }
 
   /** Removes temporary files created by `getPath`; callers should run this after provider use. */
   async cleanup(): Promise<void> {
-    const cleanups: Promise<void>[] = [];
+    const workspace = this.stagingWorkspace.peek();
+    this.stagingWorkspace.clear();
     for (const entry of this.entries.values()) {
-      if (entry.tempCleanup) {
-        cleanups.push(entry.tempCleanup());
-        entry.tempCleanup = undefined;
-      }
+      entry.tempPath = undefined;
     }
-    await Promise.all(cleanups);
+    await workspace?.then((value) => value.cleanup()).catch(() => {});
   }
 
   /** Drops this cache's bytes after terminal file processing; earlier borrowers keep ownership. */
