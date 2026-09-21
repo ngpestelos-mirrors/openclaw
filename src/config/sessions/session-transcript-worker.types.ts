@@ -36,6 +36,7 @@ import type {
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
 } from "./session-history-types.js";
+import type { SessionMembershipFacts } from "./session-membership-facts.types.js";
 import type { SessionMember } from "./session-sharing-store.kernel.js";
 import type {
   SessionStoreTargetInventoryRequest,
@@ -126,6 +127,13 @@ export type SessionMembersWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+export type SessionMembershipFactsWorkerInput = {
+  kind: "session-membership-facts";
+  database: { agentId: string; path: string };
+  sessionKeys?: readonly string[];
+  env: NodeJS.ProcessEnv;
+};
+
 export type SessionUsageCacheWorkerInput = {
   kind: "usage-cache";
   database: { agentId: string; path: string };
@@ -175,6 +183,7 @@ export type SessionTranscriptWorkerValues = {
   "session-title-fields": SessionTitleFieldsWorkerResult;
   "session-row-presence": boolean;
   "session-members": SessionMember[];
+  "session-membership-facts": SessionMembershipFacts;
   "session-entry-list": SessionEntryListWorkerResult;
   "session-target-inventory": SessionStoreTargetInventoryResult;
   "session-identity-evidence": SessionIdentityEvidenceWorkerResult;

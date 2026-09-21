@@ -24,6 +24,7 @@ import {
   sessionHistoryCleanupError,
   unwrapSessionTranscriptWorkerReply,
 } from "./session-history-worker-errors.js";
+import type { SessionMembershipFacts } from "./session-membership-facts.types.js";
 import { listSessionMembers } from "./session-sharing-store.js";
 import type { SessionMember } from "./session-sharing-store.kernel.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
@@ -52,6 +53,7 @@ import type {
   SessionTitleFieldsWorkerResult,
   SessionRowPresenceWorkerInput,
   SessionMembersWorkerInput,
+  SessionMembershipFactsWorkerInput,
   SessionEntryListWorkerInput,
   SessionEntryListWorkerResult,
   SessionIdentityEvidenceWorkerInput,
@@ -87,6 +89,9 @@ export type SessionHistoryWorkerDatabase = {
   readMembers: (
     input: Omit<SessionMembersWorkerInput, "kind" | "database">,
   ) => Promise<SessionMember[]>;
+  readMembershipFacts: (
+    input: Omit<SessionMembershipFactsWorkerInput, "kind" | "database">,
+  ) => Promise<SessionMembershipFacts>;
   readUsageCache: (
     input: Omit<SessionUsageCacheWorkerInput, "kind" | "database">,
   ) => Promise<SessionCostUsageCacheReadResult>;
@@ -185,6 +190,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
         | Omit<SessionTitleFieldsWorkerInput, "database">
         | Omit<SessionRowPresenceWorkerInput, "database">
         | Omit<SessionMembersWorkerInput, "database">
+        | Omit<SessionMembershipFactsWorkerInput, "database">
         | Omit<SessionEntryListWorkerInput, "database">
         | Omit<SessionIdentityEvidenceWorkerInput, "database">
         | Omit<SessionTranscriptSearchWorkerInput, "database">
@@ -197,6 +203,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           | SessionTitleFieldsWorkerResult
           | boolean
           | SessionMember[]
+          | SessionMembershipFacts
           | SessionEntryListWorkerResult
           | SessionStoreTargetInventoryResult
           | SessionIdentityEvidenceWorkerResult
@@ -225,6 +232,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             | "session-title-fields"
             | "session-row-presence"
             | "session-members"
+            | "session-membership-facts"
             | "session-entry-list"
             | "session-target-inventory"
             | "session-identity-evidence"
@@ -274,6 +282,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             Array.isArray(value) ||
             value.kind === "session-preview" ||
             value.kind === "session-title-fields" ||
+            value.kind === "session-membership-facts" ||
             value.kind === "session-entry-list" ||
             value.kind === "session-target-inventory" ||
             value.kind === "session-target-registry-required" ||
@@ -331,6 +340,23 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             ) {
               throw new Error(
                 "Session history worker returned another result instead of usage cache",
+              );
+            }
+            return value;
+          },
+        ),
+      readMembershipFacts: async (input) =>
+        await runRequest(
+          () => ({ kind: "session-membership-facts", ...input }),
+          JSON.stringify(input).length * 2,
+          (value) => {
+            if (
+              typeof value === "boolean" ||
+              Array.isArray(value) ||
+              value.kind !== "session-membership-facts"
+            ) {
+              throw new Error(
+                "Session history worker returned another result instead of membership facts",
               );
             }
             return value;
