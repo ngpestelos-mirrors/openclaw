@@ -111,6 +111,7 @@ import {
   applyHttpImageContentSecurityPolicy,
   sendHttpImageResponse,
 } from "./http-image-response.js";
+import type { GatewayHttpRequestAuthOptions } from "./http-request-authority.js";
 import { authorizeControlUiReadRequestOrReply } from "./http-utils.js";
 import { isTerminalConfigEnabled } from "./terminal/enabled.js";
 
@@ -529,14 +530,10 @@ async function resolveAssistantMediaAvailability(
 export async function handleControlUiAssistantMediaRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  opts?: {
+  opts?: Partial<GatewayHttpRequestAuthOptions> & {
     basePath?: string;
     config?: OpenClawConfig;
     agentId?: string;
-    auth?: ResolvedGatewayAuth;
-    trustedProxies?: string[];
-    allowRealIpFallback?: boolean;
-    rateLimiter?: AuthRateLimiter;
   },
 ): Promise<boolean> {
   const urlRaw = req.url;
@@ -571,12 +568,10 @@ export async function handleControlUiAssistantMediaRequest(
   const requestAuth =
     isMetaRequest || !ticketCandidate
       ? await authorizeControlUiReadRequestOrReply({
+          ...opts,
           req,
           res,
-          auth: opts?.auth,
-          trustedProxies: opts?.trustedProxies,
-          allowRealIpFallback: opts?.allowRealIpFallback,
-          rateLimiter: opts?.rateLimiter,
+          cfg: opts?.cfg ?? opts?.config,
           allowQueryToken: !explicitAllow,
         })
       : undefined;
@@ -624,6 +619,7 @@ export async function handleControlUiAssistantMediaRequest(
     // A global access epoch changes on ordinary session activity, so it cannot revoke tickets.
     const current = resolveAssistantMediaPolicy({ ...policyParams, reader: policy.reader });
     if (
+      requestAuth?.hasCurrentClientAuthority?.() === false ||
       !current ||
       current.session?.sessionKey !== policy.session?.sessionKey ||
       current.session?.agentId !== policy.session?.agentId ||

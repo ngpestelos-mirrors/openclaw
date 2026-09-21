@@ -2,8 +2,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeMessageChannel } from "../utils/message-channel.js";
-import type { AuthRateLimiter } from "./auth-rate-limit.js";
-import type { ResolvedGatewayAuth } from "./auth.js";
 import {
   readJsonBodyOrError,
   sendJson,
@@ -11,9 +9,13 @@ import {
   watchClientDisconnect,
 } from "./http-common.js";
 import {
+  assertGatewayHttpRequestCurrent,
+  type GatewayHttpRequestAuthOptions,
+} from "./http-request-authority.js";
+import {
   authorizeScopedGatewayHttpRequestOrReply,
   getHeader,
-  resolveOpenAiCompatibleHttpOperatorScopes,
+  resolveSharedSecretHttpOperatorScopes,
   resolveOpenAiCompatibleHttpSenderIsOwner,
 } from "./http-utils.js";
 import { invokeGatewayTool, type ToolsInvokeInput } from "./tools-invoke-shared.js";
@@ -24,12 +26,8 @@ const DEFAULT_BODY_BYTES = 2 * 1024 * 1024;
 export async function handleToolsInvokeHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  opts: {
-    auth: ResolvedGatewayAuth;
+  opts: GatewayHttpRequestAuthOptions & {
     maxBodyBytes?: number;
-    trustedProxies?: string[];
-    allowRealIpFallback?: boolean;
-    rateLimiter?: AuthRateLimiter;
   },
 ): Promise<boolean> {
   let url: URL;
@@ -53,14 +51,11 @@ export async function handleToolsInvokeHttpRequest(
   // the OpenAI-compatible APIs: token/password bearer auth is full operator
   // access for the gateway, not a narrower per-request scope boundary.
   const authResult = await authorizeScopedGatewayHttpRequestOrReply({
+    ...opts,
     req,
     res,
-    auth: opts.auth,
-    trustedProxies: opts.trustedProxies,
-    allowRealIpFallback: opts.allowRealIpFallback,
-    rateLimiter: opts.rateLimiter,
     operatorMethod: "agent",
-    resolveOperatorScopes: resolveOpenAiCompatibleHttpOperatorScopes,
+    resolveOperatorScopes: resolveSharedSecretHttpOperatorScopes,
   });
   if (!authResult) {
     return true;
@@ -81,6 +76,7 @@ export async function handleToolsInvokeHttpRequest(
     if (bodyUnknown === undefined || abortController.signal.aborted) {
       return true;
     }
+    await requestAuth.revalidate?.();
     const body = (bodyUnknown ?? {}) as ToolsInvokeInput;
 
     // Resolve message channel/account hints (optional headers) for policy inheritance.
@@ -105,6 +101,7 @@ export async function handleToolsInvokeHttpRequest(
       conversationReadOrigin: "direct-operator",
       toolCallIdPrefix: "http",
       signal: abortController.signal,
+      assertInvocationCurrent: () => assertGatewayHttpRequestCurrent(requestAuth),
     });
     if (abortController.signal.aborted) {
       return true;
@@ -113,6 +110,10 @@ export async function handleToolsInvokeHttpRequest(
       sendJson(res, outcome.status, { ok: true, result: outcome.result });
     } else {
       sendJson(res, outcome.status, { ok: false, error: outcome.error });
+    }
+  } catch (error) {
+    if (!res.writableEnded) {
+      throw error;
     }
   } finally {
     stopWatchingDisconnect();

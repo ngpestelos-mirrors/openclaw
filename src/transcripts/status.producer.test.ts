@@ -14,7 +14,6 @@ import { createTranscriptsAutoStartService } from "./auto-start.js";
 import * as transcriptCapture from "./capture.js";
 import { activeSessions, readTranscriptCaptureSnapshot, startTranscripts } from "./capture.js";
 import { readConfiguredTranscriptStarts } from "./configured-start-status.js";
-import * as providerRegistry from "./provider-registry.js";
 import type { TranscriptStartRequest } from "./provider-types.js";
 import { readTranscriptLibraryStatus } from "./status.js";
 import {
@@ -153,7 +152,7 @@ describe("configured transcript source provenance", () => {
         setRuntimeConfigSnapshot(candidate, candidate);
         current = candidate;
       };
-      vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(undefined);
+      f.setProviders([]);
       const start = vi.fn(f.provider.start!);
       f.provider.start = start;
       const service = createTranscriptsAutoStartService(
@@ -186,7 +185,7 @@ describe("configured transcript source provenance", () => {
           expect(start).not.toHaveBeenCalled();
           expect(await f.store.listSessionEntries()).toHaveLength(0);
         }
-        vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(f.provider);
+        f.setProviders([f.provider]);
         await vi.advanceTimersByTimeAsync(5_000);
         await vi.waitFor(async () => expect((await f.read()).active).toHaveLength(1));
         expect(start).toHaveBeenCalledTimes(1);
@@ -219,7 +218,7 @@ describe("configured transcript source provenance", () => {
     };
     const f = fixture({ transcripts: { autoStart: [source] } });
     let current = f.ctx.config;
-    vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(undefined);
+    f.setProviders([]);
     const start = vi.fn(f.provider.start!);
     f.provider.start = start;
     const service = createTranscriptsAutoStartService(f.ctx, () => current);
@@ -230,7 +229,7 @@ describe("configured transcript source provenance", () => {
       );
       expect((await f.read()).configuredSources[0]?.startDiagnostic).toBe("retrying");
       current = { transcripts: { autoStart: [{ ...source, ...changed, title: "Ineligible" }] } };
-      vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(f.provider);
+      f.setProviders([f.provider]);
       await vi.advanceTimersByTimeAsync(5_000);
       await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
       const request = start.mock.calls[0]![0];
@@ -283,7 +282,7 @@ describe("configured transcript source provenance", () => {
         })),
       },
     });
-    vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(undefined);
+    f.setProviders([]);
     const service = createTranscriptsAutoStartService(f.ctx);
     try {
       await service.start().settled;
@@ -580,7 +579,7 @@ describe("configured transcript source provenance", () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const entry = { ...room, sessionId: "daily" };
     const f = fixture({ transcripts: { autoStart: [entry, entry] } });
-    vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(undefined);
+    f.setProviders([]);
     const start = vi.fn(f.provider.start!);
     f.provider.start = start;
     const service = createTranscriptsAutoStartService(f.ctx);
@@ -596,7 +595,7 @@ describe("configured transcript source provenance", () => {
         "retrying",
       ]);
       expect(await f.store.listSessionEntries()).toHaveLength(0);
-      vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(f.provider);
+      f.setProviders([f.provider]);
       await vi.advanceTimersByTimeAsync(5_000);
       await vi.waitFor(() =>
         expect(
@@ -636,9 +635,7 @@ describe("configured transcript source provenance", () => {
     const delayedStart = vi.fn(f.provider.start!);
     f.provider.start = start;
     const delayedProvider = { ...f.provider, id: delayedId, start: delayedStart };
-    vi.mocked(providerRegistry.getTranscriptSourceProvider).mockImplementation((id) =>
-      id === room.providerId ? f.provider : undefined,
-    );
+    f.setProviders([f.provider]);
     const service = createTranscriptsAutoStartService(f.ctx);
     try {
       let settled = false;
@@ -666,9 +663,7 @@ describe("configured transcript source provenance", () => {
       const notes = await f.store.readSummary(session);
       expect(notes.summary?.transcript).toEqual(["Saved before the duplicate retry"]);
       const revision = await f.store.readSummaryInputRevision(session);
-      vi.mocked(providerRegistry.getTranscriptSourceProvider).mockImplementation((id) =>
-        id === delayedId ? delayedProvider : f.provider,
-      );
+      f.setProviders([f.provider, delayedProvider]);
       await vi.advanceTimersByTimeAsync(5_000);
       await vi.waitFor(() =>
         expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(1)?.diagnostic).toBe(

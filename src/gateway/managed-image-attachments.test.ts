@@ -69,7 +69,7 @@ type PlaybackModeForSourceResolver = (
 ) => ReturnType<(typeof import("../media/playback-transcode.js"))["resolvePlaybackModeForSource"]>;
 
 const authorizeGatewayHttpRequestOrReplyMock = vi.fn();
-const resolveOpenAiCompatibleHttpOperatorScopesMock = vi.fn();
+const resolveSharedSecretHttpOperatorScopesMock = vi.fn();
 const resolveOpenAiCompatibleHttpSenderIsOwnerMock = vi.fn();
 const loadSessionEntryMock = vi.fn();
 const readSessionMessagesMock = vi.fn();
@@ -121,7 +121,7 @@ vi.mock("../config/config.js", () => ({
 
 vi.mock("./http-utils.js", () => ({
   authorizeGatewayHttpRequestOrReply: authorizeGatewayHttpRequestOrReplyMock,
-  resolveOpenAiCompatibleHttpOperatorScopes: resolveOpenAiCompatibleHttpOperatorScopesMock,
+  resolveSharedSecretHttpOperatorScopes: resolveSharedSecretHttpOperatorScopesMock,
   resolveOpenAiCompatibleHttpSenderIsOwner: resolveOpenAiCompatibleHttpSenderIsOwnerMock,
 }));
 
@@ -301,7 +301,7 @@ function useManagedImageState(prefix: string, bindState: (stateDir: string) => v
     resetMocks: (stateDir) => {
       vi.clearAllMocks();
       authorizeGatewayHttpRequestOrReplyMock.mockReset();
-      resolveOpenAiCompatibleHttpOperatorScopesMock.mockReset();
+      resolveSharedSecretHttpOperatorScopesMock.mockReset();
       resolveOpenAiCompatibleHttpSenderIsOwnerMock.mockReset();
       loadSessionEntryMock.mockReset();
       readSessionMessagesMock.mockReset();
@@ -332,7 +332,7 @@ async function requestManagedImage(params: {
     }
     return { ok: true, ...params.authResponse };
   });
-  resolveOpenAiCompatibleHttpOperatorScopesMock.mockReturnValue(params.scopes ?? ["operator.read"]);
+  resolveSharedSecretHttpOperatorScopesMock.mockReturnValue(params.scopes ?? ["operator.read"]);
   resolveOpenAiCompatibleHttpSenderIsOwnerMock.mockImplementation((_req, requestAuth) => {
     if (requestAuth.authMethod === "token" || requestAuth.authMethod === "password") {
       return true;
@@ -922,7 +922,7 @@ describe("handleManagedOutgoingImageHttpRequest", () => {
       body: Buffer.from("caff-original"),
     });
     authorizeGatewayHttpRequestOrReplyMock.mockResolvedValue({ ok: true, authMethod: "token" });
-    resolveOpenAiCompatibleHttpOperatorScopesMock.mockReturnValue(["operator.read"]);
+    resolveSharedSecretHttpOperatorScopesMock.mockReturnValue(["operator.read"]);
     resolveOpenAiCompatibleHttpSenderIsOwnerMock.mockReturnValue(true);
     loadSessionEntryMock.mockReturnValue({
       storePath: path.join(stateDir, "gateway-sessions.json"),

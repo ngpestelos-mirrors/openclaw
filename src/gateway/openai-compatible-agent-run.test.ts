@@ -1,5 +1,58 @@
-import { describe, expect, it } from "vitest";
-import { readOpenAiHttpRunTerminal } from "./openai-compatible-agent-run.js";
+import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
+import { agentCommandFromGatewayIngress } from "../commands/agent.js";
+import {
+  readOpenAiHttpRunTerminal,
+  runOpenAiCompatibleAgentCommand,
+} from "./openai-compatible-agent-run.js";
+
+vi.mock("../commands/agent.js", () => ({ agentCommandFromGatewayIngress: vi.fn() }));
+
+describe("OpenAI-compatible command admission", () => {
+  it.each([false, true])(
+    "keeps authority until custody transfers (already admitted=%s)",
+    async (alreadyAdmitted) => {
+      const prepared = createDeferred();
+      const proceed = createDeferred();
+      const executed = vi.fn();
+      let current = true;
+      vi.mocked(agentCommandFromGatewayIngress).mockImplementationOnce(async (opts) => {
+        const context = {
+          operationalRunInstance: { runId: "http-run", instanceId: "http-instance" },
+        };
+        if (alreadyAdmitted) {
+          await opts.onAdmittedRunContext?.(context);
+        }
+        prepared.resolve();
+        await proceed.promise;
+        opts.assertSourceCurrent?.();
+        if (!alreadyAdmitted) {
+          await opts.onAdmittedRunContext?.(context);
+        }
+        executed();
+        return { payloads: [{ text: "settled", mediaUrl: null }], meta: { durationMs: 0 } };
+      });
+      const pending = runOpenAiCompatibleAgentCommand({
+        message: "probe",
+        sessionKey: "agent:main:main",
+        runId: "http-run",
+        messageChannel: "webchat",
+        senderIsOwner: true,
+        hasCurrentClientAuthority: () => current,
+      });
+      await prepared.promise;
+      current = false;
+      proceed.resolve();
+      if (alreadyAdmitted) {
+        await expect(pending).resolves.toMatchObject({ payloads: [{ text: "settled" }] });
+        expect(executed).toHaveBeenCalledOnce();
+      } else {
+        await expect(pending).rejects.toThrow("Gateway requester authority changed");
+        expect(executed).not.toHaveBeenCalled();
+      }
+    },
+  );
+});
 
 describe("OpenAI-compatible agent run terminal metadata", () => {
   it.each([undefined, null, "invalid", [], { pendingToolCalls: "invalid" }])(

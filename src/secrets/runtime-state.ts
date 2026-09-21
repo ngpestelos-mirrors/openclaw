@@ -1,6 +1,9 @@
-/** Holds active secrets runtime snapshots, refresh context, and cleanup hooks. */
+/** Holds active secrets runtime snapshots and their refresh lifecycle. */
 import { isDeepStrictEqual } from "node:util";
-import { AuthProfileMigrationRequiredError } from "../agents/auth-profiles/legacy-source-diagnostic.js";
+import {
+  AuthProfileMigrationRequiredError,
+  clearAuthProfileMigrationDiagnostics,
+} from "../agents/auth-profiles/legacy-source-diagnostic.js";
 import {
   getRuntimeAuthProfileStoreCredentialMutationToken,
   getRuntimeAuthProfileStoreProfileSetMutationToken,
@@ -45,6 +48,7 @@ import {
   type DegradedSecretOwner,
   type SecretOwnerRefState,
 } from "./runtime-degraded-state.js";
+import { clearProviderAuthRuntimeSnapshotActivation } from "./runtime-provider-auth-activation.js";
 import type { SecretResolverWarning } from "./runtime-shared.js";
 import {
   clearActiveRuntimeWebToolsMetadata,
@@ -165,7 +169,6 @@ let activeSnapshotLineageAuthMutations: Record<
   }
 > = {};
 let activeRefreshContext: SecretsRuntimeRefreshContext | null = null;
-const clearHooks = new Set<() => void>();
 const preparedSnapshotRefreshContext = new WeakMap<
   PreparedSecretsRuntimeSnapshot,
   SecretsRuntimeRefreshContext
@@ -205,45 +208,6 @@ function cloneSecretsRuntimeRefreshContext(
   return cloned;
 }
 
-function cloneDegradedSecretOwner(owner: DegradedSecretOwner): DegradedSecretOwner {
-  const cloned: DegradedSecretOwner = {
-    ownerKind: owner.ownerKind,
-    ownerId: owner.ownerId,
-    state: owner.state,
-    paths: [...owner.paths],
-    refKeys: [...owner.refKeys],
-    reason: owner.reason,
-  };
-  if (owner.degradationState) {
-    cloned.degradationState = owner.degradationState;
-  }
-  if (owner.providerFailures) {
-    cloned.providerFailures = owner.providerFailures.map((failure) => ({ ...failure }));
-  }
-  if (owner.refFailureReason) {
-    cloned.refFailureReason = owner.refFailureReason;
-  }
-  return cloned;
-}
-
-function cloneSecretOwnerRefState(owner: SecretOwnerRefState): SecretOwnerRefState {
-  const cloned: SecretOwnerRefState = {
-    ownerKind: owner.ownerKind,
-    ownerId: owner.ownerId,
-    refKeys: [...owner.refKeys],
-  };
-  if (owner.contractDigest) {
-    cloned.contractDigest = owner.contractDigest;
-  }
-  if (owner.resolvedValues) {
-    cloned.resolvedValues = owner.resolvedValues.map((entry) => ({
-      refKey: entry.refKey,
-      value: structuredClone(entry.value),
-    }));
-  }
-  return cloned;
-}
-
 function cloneSnapshot(snapshot: PreparedSecretsRuntimeSnapshot): PreparedSecretsRuntimeSnapshot {
   return {
     sourceConfig: cloneConfigWithResolutionFacts(snapshot.sourceConfig),
@@ -252,8 +216,8 @@ function cloneSnapshot(snapshot: PreparedSecretsRuntimeSnapshot): PreparedSecret
     authStoreCredentialsRevision: snapshot.authStoreCredentialsRevision,
     authStoreSnapshotsRevision: snapshot.authStoreSnapshotsRevision,
     warnings: snapshot.warnings.map((warning) => ({ ...warning })),
-    degradedOwners: (snapshot.degradedOwners ?? []).map(cloneDegradedSecretOwner),
-    secretOwners: (snapshot.secretOwners ?? []).map(cloneSecretOwnerRefState),
+    degradedOwners: structuredClone(snapshot.degradedOwners ?? []),
+    secretOwners: structuredClone(snapshot.secretOwners ?? []),
     webTools: structuredClone(snapshot.webTools),
   };
 }
@@ -953,13 +917,6 @@ export function getActiveSecretsRuntimeEnvState(): NodeJS.ProcessEnv {
 }
 
 /**
- * Registers cleanup hooks that run whenever the active secrets runtime snapshot is cleared.
- */
-export function registerSecretsRuntimeStateClearHook(clearHook: () => void): void {
-  clearHooks.add(clearHook);
-}
-
-/**
  * Atomically activates a prepared secrets snapshot across config, auth-store, and web-tool state.
  */
 export function activateSecretsRuntimeSnapshotState(params: {
@@ -1258,7 +1215,7 @@ export function getActiveSecretsRuntimeConfigSnapshot():
 /**
  * Returns current auth stores, preferring live auth-store snapshots over activation-time clones.
  */
-export function getLiveSecretsRuntimeAuthStores(): PreparedSecretsRuntimeSnapshot["authStores"] {
+function getLiveSecretsRuntimeAuthStores(): PreparedSecretsRuntimeSnapshot["authStores"] {
   if (!activeSnapshot) {
     return [];
   }
@@ -1284,8 +1241,7 @@ export function clearSecretsRuntimeSnapshotState(): void {
   setRuntimeConfigSnapshotRefreshHandler(null);
   clearRuntimeConfigSnapshot();
   clearRuntimeAuthProfileStoreSnapshots();
-  for (const clearHook of clearHooks) {
-    clearHook();
-  }
+  clearAuthProfileMigrationDiagnostics();
+  clearProviderAuthRuntimeSnapshotActivation();
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

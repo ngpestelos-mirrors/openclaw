@@ -16,7 +16,6 @@ import {
 } from "../state/openclaw-state-db.js";
 import { startTranscripts } from "./capture.js";
 import { clearTranscriptCapturesForTest } from "./capture.test-support.js";
-import * as providerRegistry from "./provider-registry.js";
 import type { TranscriptSourceProvider } from "./provider-types.js";
 import { readTranscriptLibraryStatus } from "./status.js";
 import { TranscriptsStore } from "./store.js";
@@ -67,10 +66,15 @@ export function useTranscriptStatusFixture() {
       start: async ({ session }) => ({ ok: true, session }),
       stop: async ({ sessionId }) => ({ ok: true, sessionId }),
     };
-    vi.spyOn(providerRegistry, "getTranscriptSourceProvider").mockReturnValue(provider);
-    vi.spyOn(providerRegistry, "listTranscriptSourceProviders").mockReturnValue([provider]);
     const registry = createEmptyPluginRegistry();
-    registry.transcriptSourceProviders.push({ pluginId: "fixture", source: "fixture", provider });
+    const setProviders = (providers: readonly TranscriptSourceProvider[]) => {
+      registry.transcriptSourceProviders = providers.map((sourceProvider) => ({
+        pluginId: "fixture",
+        source: "fixture",
+        provider: sourceProvider,
+      }));
+    };
+    setProviders([provider]);
     setActivePluginRegistry(registry);
     const ctx = { config, stateDir, agentId: "main", logger: { warn: vi.fn() } };
     const tool = createTranscriptsTool({ ...ctx, caller: { kind: "operator", source: "local" } });
@@ -78,6 +82,7 @@ export function useTranscriptStatusFixture() {
       ctx,
       store,
       provider,
+      setProviders,
       tool,
       read: () => readTranscriptLibraryStatus(store, config),
       start: (rawParams: Record<string, unknown>, configuredLifecycle?: true) =>

@@ -1,13 +1,12 @@
 // Gateway HTTP endpoint helpers.
 // Wraps common POST JSON method, auth, scope, and body handling.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AuthRateLimiter } from "./auth-rate-limit.js";
-import type { ResolvedGatewayAuth } from "./auth.js";
 import {
   readJsonBodyOrError,
   sendMethodNotAllowed,
   sendMissingScopeForbidden,
 } from "./http-common.js";
+import type { GatewayHttpRequestAuthOptions } from "./http-request-authority.js";
 import {
   authorizeGatewayHttpRequestOrReply,
   type AuthorizedGatewayHttpRequest,
@@ -19,13 +18,9 @@ import { authorizeOperatorScopesForMethod } from "./method-scopes.js";
 export async function handleGatewayPostJsonEndpoint(
   req: IncomingMessage,
   res: ServerResponse,
-  opts: {
+  opts: GatewayHttpRequestAuthOptions & {
     pathname: string;
-    auth: ResolvedGatewayAuth;
     maxBodyBytes: number;
-    trustedProxies?: string[];
-    allowRealIpFallback?: boolean;
-    rateLimiter?: AuthRateLimiter;
     requiredOperatorMethod?: "chat.send" | (string & Record<never, never>);
     resolveOperatorScopes?: (
       req: IncomingMessage,
@@ -44,12 +39,9 @@ export async function handleGatewayPostJsonEndpoint(
   }
 
   const requestAuth = await authorizeGatewayHttpRequestOrReply({
+    ...opts,
     req,
     res,
-    auth: opts.auth,
-    trustedProxies: opts.trustedProxies,
-    allowRealIpFallback: opts.allowRealIpFallback,
-    rateLimiter: opts.rateLimiter,
   });
   if (!requestAuth) {
     return undefined;
@@ -72,6 +64,14 @@ export async function handleGatewayPostJsonEndpoint(
   const body = await readJsonBodyOrError(req, res, opts.maxBodyBytes);
   if (body === undefined) {
     return undefined;
+  }
+  try {
+    await requestAuth.revalidate?.();
+  } catch (error) {
+    if (res.writableEnded) {
+      return undefined;
+    }
+    throw error;
   }
 
   return { body, requestAuth };

@@ -75,8 +75,11 @@ export function bindControlUiPluginCookieRequestAuthority(
     auth: ResolvedGatewayAuth;
     getResolvedAuth?: () => ResolvedGatewayAuth;
     trustedProxies?: string[];
+    hasCurrentClientAuthority: () => boolean;
   },
 ) {
+  const hasCurrentClientAuthority = () =>
+    !params.res.writableEnded && !params.res.destroyed && params.hasCurrentClientAuthority();
   const revalidate = async () => {
     if (params.res.writableEnded || params.res.destroyed) {
       throw new Error("HTTP request authority expired");
@@ -94,6 +97,7 @@ export function bindControlUiPluginCookieRequestAuthority(
     // Prepared data used the admitted policy, not just its operator scopes. A
     // policy change requires a fresh request before that data can be disclosed.
     if (
+      !hasCurrentClientAuthority() ||
       !isDeepStrictEqual(
         current?.requestAuth.operatorRolePolicy,
         cookieAuth.requestAuth.operatorRolePolicy,
@@ -119,6 +123,10 @@ export function bindControlUiPluginCookieRequestAuthority(
   };
   return {
     ...cookieAuth,
-    requestAuth: { ...cookieAuth.requestAuth, revalidate },
+    requestAuth: {
+      ...cookieAuth.requestAuth,
+      hasCurrentClientAuthority,
+      revalidate,
+    },
   };
 }

@@ -95,6 +95,12 @@ must name an existing definition, and applies to profiles without a valid
 assigned role. Omitting `gateway.roles` entirely leaves solo and shared-secret
 deployments unchanged.
 
+With live configuration reload enabled, edits to `gateway.roles` and
+`gateway.auth.identityScopes` apply without restarting the Gateway. Existing
+Gateway clients reconnect to receive the current scope ceiling. Pending
+handshakes and mutations recheck the policy before acquiring authority;
+already-admitted runs retain their normal completion and cancellation lifecycle.
+
 When roles are configured, identity-authenticated operator connections do not
 receive reusable device or bootstrap tokens: those tokens are not bound to a
 person and could bypass the role ceiling. Device-token or bootstrap-token

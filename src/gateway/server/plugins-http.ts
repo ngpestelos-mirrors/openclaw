@@ -90,6 +90,9 @@ async function withPluginRouteRuntimeScope<T>(
   scope: PluginRouteRuntimeScope,
   run: () => Promise<T>,
 ): Promise<T> {
+  if (scope.hasCurrentClientAuthority?.() === false) {
+    throw new Error("HTTP request authority expired");
+  }
   // HTTP clients are not in the connected-client set. Keep their prepared role/aliases
   // current across handler and projection awaits, using the same publication owner.
   const client = scope.client;
@@ -162,6 +165,9 @@ function createPluginRouteRuntimeScope(params: {
     pluginRegistry: params.registry,
     ...(params.route.auth === "gateway" && params.gatewayRequestAuth?.revalidate
       ? { revalidate: params.gatewayRequestAuth.revalidate }
+      : {}),
+    ...(params.route.auth === "gateway" && params.gatewayRequestAuth?.hasCurrentClientAuthority
+      ? { hasCurrentClientAuthority: params.gatewayRequestAuth.hasCurrentClientAuthority }
       : {}),
     ...(params.gatewayRequestContext ? { context: params.gatewayRequestContext } : {}),
     client: runtimeClient,
