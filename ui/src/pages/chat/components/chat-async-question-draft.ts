@@ -3,7 +3,7 @@ import type {
   DurableQuestionDraft,
 } from "../../../lib/chat/composer-draft-store.runtime.ts";
 import { nextDraftRevision } from "../../../lib/chat/outbox-store-draft-state.ts";
-import type { AsyncQuestionDraft } from "./chat-async-question.ts";
+import type { AsyncQuestionDraft } from "./chat-async-question.types.ts";
 
 // Presentation owns these drafts; this adapter only snapshots them into the
 // existing composer store, whose authenticated scope and CAS fence every write.
@@ -29,6 +29,7 @@ const store = () => import("../../../lib/chat/composer-draft-store.runtime.ts");
 function snapshot(session: AsyncQuestionDraftSession): DurableQuestionDraft[] {
   return [...session.drafts].flatMap(([itemId, draft]) =>
     !session.resolved.has(itemId) &&
+    draft.status !== "skipped" &&
     draft.signature &&
     (draft.edited || draft.reopenedAfterBoundary)
       ? [

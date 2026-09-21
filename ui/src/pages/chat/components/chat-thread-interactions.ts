@@ -37,7 +37,7 @@ import type { LinkFaviconFetcher } from "../link-favicon-loader.ts";
 import type { ChatRunUiStatus } from "../run-lifecycle.ts";
 import type { RealtimeTalkConversationEntry } from "../talk/conversation.ts";
 import type { CompactionStatus, RunOutputUsage } from "../tool-stream-contract.ts";
-import type { AsyncQuestionDraft, AsyncQuestionPresentation } from "./chat-async-question.ts";
+import type { AsyncQuestionDraft, AsyncQuestionPresentation } from "./chat-async-question.types.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
 import { resolveChatContextCopy, usesNativeContextMenu } from "./chat-context-copy.ts";

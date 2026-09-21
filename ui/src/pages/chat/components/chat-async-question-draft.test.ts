@@ -188,6 +188,39 @@ it("does not turn a reopened but untouched question into an edited draft on relo
   expect(current.asyncQuestionDrafts.get(question.itemId)?.edited).toBe(false);
 });
 
+it("retires a skipped answer instead of recovering it as a protected draft after reload", async () => {
+  let stored = { revision: 10, writeId: "saved", questionDrafts: [saved] };
+  storage.read.mockImplementation(async () => ({ status: "found", draft: stored }));
+  storage.write.mockImplementation(async (_scope, draft, options) => {
+    stored = { ...draft, writeId: options.writeId };
+    return { status: "persisted" };
+  });
+  const current = state();
+  const presentation = createAsyncQuestionPresentation(current, props);
+  await settled(current);
+
+  await createAsyncQuestionPanelProps(question, presentation, {}).onSkip?.();
+  await settled(current);
+
+  expect(stored.questionDrafts).toEqual([]);
+  expect(props.onAsyncQuestionSubmit).not.toHaveBeenCalled();
+  const remounted = state();
+  const laterProps = {
+    ...props,
+    messages: [
+      ...props.messages,
+      { role: "user", content: "Continue with the default", __openclaw: { id: "next", seq: 2 } },
+      { role: "assistant", content: "Done", phase: "final_answer", stopReason: "stop" },
+    ],
+  };
+  createAsyncQuestionPresentation(remounted, laterProps);
+  await settled(remounted);
+  const recovered = createAsyncQuestionPresentation(remounted, laterProps);
+  expect(recovered.pending).toEqual([]);
+  expect(recovered.archived.has(question.itemId)).toBe(true);
+  expect(recovered.drafts.get(question.itemId)?.edited).not.toBe(true);
+});
+
 it.each(["storage-failed", "conflict"])(
   "does not retry identical failed retirement on each render (%s)",
   async (status) => {

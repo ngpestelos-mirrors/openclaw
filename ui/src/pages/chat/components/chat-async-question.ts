@@ -21,36 +21,13 @@ import {
   restoreAsyncQuestionDrafts,
   type AsyncQuestionDraftSession,
 } from "./chat-async-question-draft.ts";
+import type {
+  AsyncQuestionDraft,
+  AsyncQuestionPresentation,
+  AsyncQuestions,
+} from "./chat-async-question.types.ts";
 import { questionDraftValues } from "./chat-question-answer-controls.ts";
 import type { QuestionPanelOptions, QuestionPanelProps } from "./chat-question-card.ts";
-
-export type AsyncQuestions = {
-  itemId: string;
-  sourceMessageId?: string;
-  questions: { title: string; options?: string[] }[];
-};
-
-export type AsyncQuestionDraft = {
-  answers: Map<string, QuestionDraft>;
-  edited?: boolean;
-  signature?: string;
-  status?: "submitting" | "submitted" | "skipped";
-  error?: string;
-  reopenedAfterBoundary?: string;
-};
-
-export type AsyncQuestionPresentation = {
-  scope: string;
-  pending: AsyncQuestions[];
-  archived: ReadonlyMap<string, string>;
-  historyKey: string;
-  drafts: Map<string, AsyncQuestionDraft>;
-  resolved: ReadonlyMap<string, AsyncQuestionDraft>;
-  onChange: () => void;
-  storageError?: string;
-  reopen: (itemId: string) => void;
-  submit?: (message: string) => Promise<boolean>;
-};
 
 function terminalOutcome(message: unknown): "successful" | "settled" | null {
   const record = asNullableRecord(message);

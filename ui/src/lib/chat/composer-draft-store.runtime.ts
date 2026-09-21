@@ -112,6 +112,7 @@ function isQuestionDraft(value: unknown): value is DurableQuestionDraft {
   if (!value || typeof value !== "object") {
     return false;
   }
+  // SAFETY: Only validation reads this view; all draft fields and nested answers are checked below.
   const draft = value as Partial<DurableQuestionDraft>;
   return (
     typeof draft.itemId === "string" &&
