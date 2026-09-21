@@ -22,7 +22,6 @@ import {
   sqlitePrimaryResultCode,
 } from "./sqlite-error-diagnostics.js";
 import { discardSqliteTransactionState } from "./sqlite-post-commit.js";
-import { captureSqliteReaderOwner, withSqliteReaderOwner } from "./sqlite-reader-lifecycle.js";
 
 const DEFAULT_SLOW_BUSY_WAIT_MS = 1_000;
 const DEFAULT_SLOW_TRANSACTION_HOLD_MS = 1_000;
@@ -348,26 +347,12 @@ function beginTransaction(
   options: SqliteTransactionOptions | undefined,
   mode: SqliteTransactionMode,
 ): void {
-  const begin = () =>
-    execTimedTransactionStep({
-      db,
-      options,
-      sql: mode === "immediate" ? "BEGIN IMMEDIATE" : "BEGIN",
-      step: "begin",
-    });
-  if (!options?.operationLabel) {
-    begin();
-    return;
-  }
-  const inherited = captureSqliteReaderOwner();
-  withSqliteReaderOwner(
-    {
-      ...inherited,
-      operation: options.operationLabel,
-      ownerKind: inherited?.ownerKind ?? (isMainThread ? "main" : "worker"),
-    },
-    begin,
-  );
+  execTimedTransactionStep({
+    db,
+    options,
+    sql: mode === "immediate" ? "BEGIN IMMEDIATE" : "BEGIN",
+    step: "begin",
+  });
 }
 
 function commitImmediateTransaction(

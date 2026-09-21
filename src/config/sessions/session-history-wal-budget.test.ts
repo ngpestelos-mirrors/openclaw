@@ -3,6 +3,7 @@ import { channel } from "node:diagnostics_channel";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { getNodeSqliteKysely, iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { withSqliteReaderOwner } from "../../infra/sqlite-reader-lifecycle.js";
 import { publishSqliteWalCheckpointHealth } from "../../infra/sqlite-wal-checkpoint.js";
@@ -46,7 +47,7 @@ afterEach(async () => {
   await state?.cleanup();
 });
 
-it.each(["transaction", "statement"] as const)(
+it.each(["transaction", "iterator"] as const)(
   "defers WAL-only pressure without deleting archives, names the %s, and resumes after checkpoint recovery",
   async (kind) => {
     state = await createOpenClawTestState({
@@ -80,20 +81,43 @@ it.each(["transaction", "statement"] as const)(
       maxDiskBytes: initial.totalBytes + 1024,
       highWaterBytes: initial.totalBytes,
     });
-    const reader = openNodeSqliteDatabase(database.path, { readOnly: true });
-    let iterator: ReturnType<ReturnType<typeof reader.prepare>["iterate"]> | undefined;
     const operation = `fixture.session-catalog.${kind}`;
+    const reader = withSqliteReaderOwner({ operation, ownerKind: "main" }, () =>
+      openNodeSqliteDatabase(database.path, { readOnly: true }),
+    );
+    let releaseIterator: (() => void) | undefined;
     withSqliteReaderOwner({ operation, ownerKind: "main" }, () => {
       if (kind === "transaction") {
         reader.exec("BEGIN");
         reader.prepare("SELECT count(*) FROM session_transcript_archives").get();
       } else {
-        iterator = reader.prepare("SELECT session_id FROM session_transcript_archives").iterate();
+        const iterator = iterateSqliteQuerySync(
+          reader,
+          getNodeSqliteKysely<{ session_transcript_archives: { session_id: string } }>(reader)
+            .selectFrom("session_transcript_archives")
+            .select("session_id"),
+        );
         iterator.next();
+        releaseIterator = () => {
+          iterator.return?.();
+        };
       }
     });
+    const readerFacts =
+      kind === "iterator"
+        ? { activeReaders: expect.arrayContaining([expect.objectContaining({ operation, kind })]) }
+        : {
+            readerDiagnostics: expect.arrayContaining([
+              expect.objectContaining({
+                nativeStatements: "unobserved",
+                connections: expect.arrayContaining([
+                  expect.objectContaining({ operation, transactionOpen: true }),
+                ]),
+              }),
+            ]),
+          };
     const release = () => {
-      iterator?.return?.();
+      releaseIterator?.();
       if (reader.isTransaction) {
         reader.exec("ROLLBACK");
       }
@@ -139,7 +163,7 @@ it.each(["transaction", "statement"] as const)(
         walBytesAfter: before.databaseWalBytes,
         checkpoint: {
           state: "blocked",
-          activeReaders: expect.arrayContaining([expect.objectContaining({ operation, kind })]),
+          ...readerFacts,
         },
       });
       expect(diagnostics).toEqual([
@@ -182,9 +206,7 @@ it.each(["transaction", "statement"] as const)(
         "session history disk budget deferred until a completed WAL checkpoint is observed",
         expect.objectContaining({
           reason: "checkpoint-incomplete",
-          checkpoint: expect.objectContaining({
-            activeReaders: expect.arrayContaining([expect.objectContaining({ operation })]),
-          }),
+          checkpoint: expect.objectContaining(readerFacts),
         }),
       );
       expect(

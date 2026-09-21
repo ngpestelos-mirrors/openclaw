@@ -347,11 +347,12 @@ or a budget change alone does not retry pruning. Normal periodic checkpointing
 continues, and subsequent activity can resume cleanup after recovery.
 
 Look for `session history disk budget deferred until a completed WAL checkpoint is observed`
-in the Gateway log. Its checkpoint fields include bounded active-reader operation
-names, connection IDs, thread IDs, and statement or transaction kinds. These are
-observed readers in the reporting threads, not proof that a particular reader holds
-the blocking SQLite read mark. Other workers and processes can remain unidentified.
-No transcript contents, SQL text, or bound values are included.
+in the Gateway log. Its checkpoint fields include bounded operation names for
+explicitly tracked readers, connection and thread IDs, and open-transaction flags.
+Collecting these facts does not keep connections open or change worker retirement.
+They do not prove which connection holds the blocking SQLite read mark. Raw native
+statements outside explicit reader tracking, other workers, and other processes
+can remain unidentified. No transcript contents, SQL text, or bound values are included.
 
 If you previously used DM isolation and later returned `session.dmScope` to
 `main`, preview stale peer-keyed DM rows with

@@ -7,7 +7,9 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { getNodeSqliteKysely, iterateSqliteQuerySync } from "./kysely-sync.js";
 import { openNodeSqliteDatabase, requireNodeSqlite } from "./node-sqlite.js";
 import {
+  assertNoActiveSqliteReaders,
   readSqliteReaderDiagnosticsForPath,
+  retainSqliteReader,
   withSqliteReaderOwner,
 } from "./sqlite-reader-lifecycle.js";
 import { runSqliteDeferredTransactionSync } from "./sqlite-transaction.js";
@@ -184,9 +186,8 @@ describe("SQLite WAL checkpoint observations", () => {
       expect(() => reader.next()).toThrow(RangeError);
       expect(db.isTransaction).toBe(false);
       expect(maintenance.inspectIdle?.()).toBe("retire");
-      expect(maintenance.health?.activeReaders).toEqual([
-        expect.objectContaining({ kind: "statement" }),
-      ]);
+      expect(maintenance.health?.activeReaders).toEqual([]);
+      expect(() => assertNoActiveSqliteReaders(db, "native idle probe")).not.toThrow();
       reader.return?.();
       expect(maintenance.inspectIdle?.()).toBe("healthy");
       expect(readSqliteReaderDiagnosticsForPath(databasePath).activeReaders).toEqual([]);
@@ -210,101 +211,74 @@ describe("SQLite WAL checkpoint observations", () => {
     }
   });
 
-  it.each(["transaction", "native iterator", "Kysely iterator"])(
-    "reports a named %s without claiming it is the blocking owner",
-    (kind) => {
-      const databasePath = path.join(
-        tempDirs.make("openclaw-sqlite-reader-owner-"),
-        "state.sqlite",
-      );
-      const writer = openNodeSqliteDatabase(databasePath);
-      const reader = openNodeSqliteDatabase(databasePath);
-      let releaseReader: (() => void) | undefined;
-      const maintenance = configureSqliteWalMaintenance(writer, {
-        checkpointIntervalMs: 0,
-        checkpointMode: "PASSIVE",
-        databasePath,
-      });
-      try {
-        writer.exec(`
-        PRAGMA journal_mode = WAL;
-        CREATE TABLE events (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
-        INSERT INTO events (value) VALUES ('before-reader');
-        PRAGMA wal_checkpoint(TRUNCATE);
-      `);
-        const held = withSqliteReaderOwner(
-          { operation: "fixture.blocked-read", ownerKind: "main" },
-          () => {
-            if (kind === "transaction") {
-              reader.exec("BEGIN");
-              reader.prepare("SELECT COUNT(*) FROM events").get();
-              return { start: () => {}, release: () => reader.exec("ROLLBACK") };
-            }
-            const iterator =
-              kind === "native iterator"
-                ? reader.prepare("SELECT value FROM events").iterate()
-                : iterateSqliteQuerySync(
-                    reader,
-                    getNodeSqliteKysely<{ events: { value: string } }>(reader)
-                      .selectFrom("events")
-                      .select("value"),
-                  );
-            return {
-              start: () => iterator.next(),
-              release: () => {
-                iterator.return?.();
-              },
-            };
-          },
-        );
-        releaseReader = held.release;
-        held.start();
-        writer.prepare("INSERT INTO events (value) VALUES (?)").run("after-reader");
-
-        expect(maintenance.checkpoint()).toBe(false);
-        expect(maintenance.health).toMatchObject({
-          state: "blocked",
-          activeReaders: [
-            expect.objectContaining({
-              operation: "fixture.blocked-read",
-              ownerKind: "main",
-              kind: kind === "transaction" ? "transaction" : "statement",
-              connectionId: expect.any(Number),
-              threadId,
-            }),
-          ],
-          readerDiagnostics: [
-            expect.objectContaining({
-              scope: "current-thread",
-              blockingOwner: "unknown",
-              threadId,
-              connectionCount: 2,
-              readerCount: 1,
-            }),
-          ],
-        });
-        expect(JSON.stringify(maintenance.health)).not.toContain("SELECT");
-        releaseReader();
-        releaseReader = undefined;
-        expect(maintenance.checkpoint()).toBe(true);
-        expect(maintenance.health?.activeReaders).toBeUndefined();
-        expect(readSqliteReaderDiagnosticsForPath(databasePath).activeReaders).toEqual([]);
-      } finally {
-        releaseReader?.();
-        if (reader.isTransaction) {
-          reader.exec("ROLLBACK");
-        }
-        maintenance.close();
-        reader.close();
-        writer.close();
-      }
-    },
-  );
-
-  it("publishes recorded completion after a named transaction releases and replaces relayed local observations", () => {
-    const databasePath = path.join(tempDirs.make("openclaw-wal-reader-event-"), "state.sqlite");
+  it("reports a named Kysely reader without claiming it is the blocking owner", () => {
+    const databasePath = path.join(tempDirs.make("openclaw-sqlite-reader-owner-"), "state.sqlite");
     const writer = openNodeSqliteDatabase(databasePath);
     const reader = openNodeSqliteDatabase(databasePath);
+    const maintenance = configureSqliteWalMaintenance(writer, {
+      checkpointIntervalMs: 0,
+      checkpointMode: "PASSIVE",
+      databasePath,
+    });
+    writer.exec(
+      "CREATE TABLE events(value TEXT); INSERT INTO events VALUES ('before-reader'); PRAGMA wal_checkpoint(TRUNCATE)",
+    );
+    const held = withSqliteReaderOwner(
+      { operation: "fixture.blocked-read", ownerKind: "main" },
+      () =>
+        iterateSqliteQuerySync(
+          reader,
+          getNodeSqliteKysely<{ events: { value: string } }>(reader)
+            .selectFrom("events")
+            .select("value"),
+        ),
+    );
+    try {
+      held.next();
+      writer.prepare("INSERT INTO events (value) VALUES (?)").run("after-reader");
+      expect(maintenance.checkpoint()).toBe(false);
+      expect(maintenance.health).toMatchObject({
+        state: "blocked",
+        activeReaders: [
+          expect.objectContaining({
+            operation: "fixture.blocked-read",
+            ownerKind: "main",
+            kind: "iterator",
+            connectionId: expect.any(Number),
+            threadId,
+          }),
+        ],
+        readerDiagnostics: [
+          expect.objectContaining({
+            scope: "current-thread",
+            blockingOwner: "unknown",
+            nativeStatements: "unobserved",
+            threadId,
+            connectionCount: 2,
+            readerCount: 1,
+          }),
+        ],
+      });
+      expect(JSON.stringify(maintenance.health)).not.toContain("SELECT");
+      held.return?.();
+      expect(maintenance.checkpoint()).toBe(true);
+      expect(maintenance.health?.activeReaders).toBeUndefined();
+      expect(readSqliteReaderDiagnosticsForPath(databasePath).activeReaders).toEqual([]);
+    } finally {
+      held.return?.();
+      reader.close();
+      maintenance.close();
+      writer.close();
+    }
+  });
+
+  it("observes native transaction state without claiming custody and publishes checkpoint completion", () => {
+    const databasePath = path.join(tempDirs.make("openclaw-wal-reader-event-"), "state.sqlite");
+    const writer = openNodeSqliteDatabase(databasePath);
+    const reader = withSqliteReaderOwner(
+      { operation: "fixture.open-reader", ownerKind: "main" },
+      () => openNodeSqliteDatabase(databasePath),
+    );
     const maintenance = configureSqliteWalMaintenance(writer, {
       databasePath,
       checkpointIntervalMs: 0,
@@ -325,14 +299,19 @@ describe("SQLite WAL checkpoint observations", () => {
           reader.prepare("SELECT value FROM events").get();
           writer.exec("INSERT INTO events VALUES ('after');");
           expect(maintenance.checkpoint()).toBe(false);
-          expect(maintenance.health?.activeReaders).toEqual([
+          expect(maintenance.health?.activeReaders).toEqual([]);
+          expect(maintenance.health?.readerDiagnostics?.[0]?.connections).toContainEqual(
             expect.objectContaining({
-              operation: "fixture.named-transaction",
-              kind: "transaction",
+              operation: "fixture.open-reader",
+              transactionOpen: true,
+              trackedReaders: 0,
             }),
-          ]);
+          );
+          expect(() =>
+            assertNoActiveSqliteReaders(reader, "native transaction probe"),
+          ).not.toThrow();
           const observed = publishSqliteWalCheckpointHealth(databasePath, maintenance.health!);
-          expect(observed.activeReaders).toHaveLength(1);
+          expect(observed.activeReaders).toHaveLength(0);
           expect(observed.readerDiagnostics).toHaveLength(1);
         },
         { operationLabel: "fixture.named-transaction" },
@@ -352,6 +331,7 @@ describe("SQLite WAL checkpoint observations", () => {
     const databasePath = path.join(tempDirs.make("openclaw-wal-reader-bound-"), "state.sqlite");
     const writer = openNodeSqliteDatabase(databasePath);
     const readers: Array<ReturnType<typeof openNodeSqliteDatabase>> = [];
+    const releaseReaders: Array<() => void> = [];
     const maintenance = configureSqliteWalMaintenance(writer, {
       databasePath,
       checkpointIntervalMs: 0,
@@ -363,8 +343,16 @@ describe("SQLite WAL checkpoint observations", () => {
         withSqliteReaderOwner({ operation: `fixture.reader-${index}`, ownerKind: "main" }, () => {
           const reader = openNodeSqliteDatabase(databasePath);
           readers.push(reader);
-          reader.exec("BEGIN");
-          reader.prepare("SELECT value FROM events").get();
+          const iterator = iterateSqliteQuerySync(
+            reader,
+            getNodeSqliteKysely<{ events: { value: string } }>(reader)
+              .selectFrom("events")
+              .select("value"),
+          );
+          releaseReaders.push(() => {
+            iterator.return?.();
+          });
+          iterator.next();
         });
       }
       writer.exec("INSERT INTO events VALUES ('after');");
@@ -375,6 +363,9 @@ describe("SQLite WAL checkpoint observations", () => {
       ]);
       expect(maintenance.health?.readerDiagnostics?.[0]?.connections).toHaveLength(8);
     } finally {
+      for (const release of releaseReaders) {
+        release();
+      }
       for (const reader of readers) {
         reader.close();
       }
@@ -383,46 +374,23 @@ describe("SQLite WAL checkpoint observations", () => {
     }
   });
 
-  it("keeps reopened reader evidence when obsolete native statements fail", () => {
-    const databasePath = path.join(tempDirs.make("openclaw-wal-reader-reopen-"), "state.sqlite");
-    const writer = openNodeSqliteDatabase(databasePath);
-    const reader = openNodeSqliteDatabase(databasePath, { open: false });
-    const maintenance = configureSqliteWalMaintenance(writer, {
-      databasePath,
-      checkpointIntervalMs: 0,
-      busyTimeoutMs: 0,
-    });
+  it("does not settle explicit reader custody when forgetting closed connection metadata", () => {
+    const databasePath = path.join(tempDirs.make("openclaw-reader-custody-"), "state.sqlite");
+    const database = openNodeSqliteDatabase(databasePath);
+    const owned = retainSqliteReader(database, "fixture.owned-reader");
     try {
-      writer.exec("CREATE TABLE events(value TEXT); INSERT INTO events VALUES ('before');");
-      expect(reader.isOpen).toBe(false);
-      reader.open();
-      const obsoleteStatement = reader.prepare("SELECT value FROM events");
-      obsoleteStatement.iterate().next();
-      const unusedObsolete = reader.prepare("SELECT value FROM events").iterate();
-      reader.close();
-      reader.open();
-      const currentStatement = withSqliteReaderOwner(
-        { operation: "fixture.reopened-reader", ownerKind: "main" },
-        () => reader.prepare("SELECT value FROM events"),
+      database.close();
+      expect(readSqliteReaderDiagnosticsForPath(databasePath).connectionCount).toBe(0);
+      expect(() => assertNoActiveSqliteReaders(database, "fixture")).toThrow(
+        "fixture.owned-reader",
       );
-      const invalidated = currentStatement.iterate();
-      const current = currentStatement.iterate();
-      current.next();
-      expect(() => obsoleteStatement.get()).toThrow();
-      expect(() => unusedObsolete.next()).toThrow();
-      expect(() => invalidated.next()).toThrow();
-      writer.exec("INSERT INTO events VALUES ('after');");
-      expect(maintenance.checkpoint()).toBe(false);
-      expect(maintenance.health?.activeReaders).toEqual([
-        expect.objectContaining({ operation: "fixture.reopened-reader", kind: "statement" }),
-      ]);
-      current.return?.();
-      expect(maintenance.checkpoint()).toBe(true);
-      expect(readSqliteReaderDiagnosticsForPath(databasePath).activeReaders).toEqual([]);
+      owned.release();
+      expect(() => assertNoActiveSqliteReaders(database, "fixture")).not.toThrow();
     } finally {
-      reader.close();
-      maintenance.close();
-      writer.close();
+      owned.release();
+      if (database.isOpen) {
+        database.close();
+      }
     }
   });
 });

@@ -68,8 +68,10 @@ export function reclaimSqliteWalFreePages(
   const freePages = () => {
     const startedAt = performance.now();
     try {
-      // sqlite-allow-raw -- Physical page accounting belongs to the WAL owner.
-      return Number(database.prepare("PRAGMA freelist_count").get()?.freelist_count ?? 0);
+      return Number(
+        // sqlite-allow-raw -- Physical page accounting belongs to the WAL owner.
+        database.prepare("PRAGMA freelist_count").get()?.freelist_count ?? 0,
+      );
     } finally {
       result.queryMs += performance.now() - startedAt;
     }

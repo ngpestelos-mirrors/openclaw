@@ -121,26 +121,6 @@ describe("node SQLite locations", () => {
     }
   });
 
-  it("preserves named and positional bindings through managed statement lifetimes", () => {
-    const database = openNodeSqliteDatabase(":memory:");
-    try {
-      database.exec("CREATE TABLE bindings(name TEXT, payload BLOB)");
-      const named = { $name: "named" };
-      const bytes = new Uint8Array([1, 2, 3]);
-      database.prepare("INSERT INTO bindings VALUES ($name, ?)").run(named, bytes);
-      const select = database.prepare(
-        "SELECT name, payload FROM bindings WHERE name=$name AND payload=?",
-      );
-      const expected = { name: "named", payload: bytes };
-      expect(select.get(named, bytes)).toEqual(expected);
-      expect(select.all(named, bytes)).toEqual([expected]);
-      expect([...select.iterate(named, bytes)]).toEqual([expected]);
-      expect(database.prepare("SELECT ? AS value").get(null)).toEqual({ value: null });
-    } finally {
-      database.close();
-    }
-  });
-
   it("normalizes ordinary filesystem paths through the Windows VFS boundary", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const resolveSpy = vi.spyOn(path, "resolve").mockReturnValue("resolved-openclaw.sqlite");

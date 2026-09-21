@@ -17,11 +17,7 @@ import {
   kyselyByDatabase,
   queryErrorHandlerByDatabase,
 } from "./kysely-sync-cache-state.js";
-import {
-  captureSqliteReaderOwner,
-  retainSqliteReader,
-  withSqliteReaderOwner,
-} from "./sqlite-reader-lifecycle.js";
+import { captureSqliteReaderOwner, retainSqliteReader } from "./sqlite-reader-lifecycle.js";
 
 // Node 24.20 and 26.6 fixed all() column counts after statement reprepare (nodejs/node#64219).
 const nodeVersion = parseNodeReleaseVersion(process.versions.node);
@@ -236,9 +232,7 @@ export function iterateSqliteQuerySync<Row>(
     try {
       // Iterators keep statement state across yields. A private statement prevents
       // nested iteration of identical SQL from resetting an earlier iterator.
-      const statement = owner
-        ? withSqliteReaderOwner(owner, () => db.prepare(compiledQuery.sql))
-        : db.prepare(compiledQuery.sql);
+      const statement = db.prepare(compiledQuery.sql);
       if (!SelectQueryNode.is(compiledQuery.query) && statement.columns().length === 0) {
         return;
       }
