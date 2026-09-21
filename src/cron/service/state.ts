@@ -190,6 +190,7 @@ export type CronServiceDeps = {
   ) => number | undefined;
   runIsolatedAgentJob: (params: {
     job: CronJob;
+    admissionSource?: AdmittedRunContext["admissionSource"];
     message: string;
     abortSignal?: AbortSignal;
     onExecutionStarted?: (info?: CronAgentExecutionStarted) => void;
