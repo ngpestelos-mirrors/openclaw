@@ -62,8 +62,13 @@ registerChatMessageMetadataEnglish();
 
 export type ChatThreadState = {
   asyncQuestionDrafts: Map<string, AsyncQuestionDraft>;
+  asyncQuestionSessions?: Map<
+    string,
+    import("./chat-async-question-draft.ts").AsyncQuestionDraftSession
+  >;
   asyncQuestionRevision: number;
   asyncQuestionScope?: string;
+  asyncQuestionGeneration?: number;
   turnRecapWatch: TurnRecapWatch | null;
   searchOpen: boolean;
   searchQuery: string;
@@ -265,6 +270,15 @@ export function resetTranscriptSession(paneId: string, owner?: ParentNode): void
 
 export function resetThreadPresentation(paneId?: string, owner?: ParentNode) {
   dismissThreadPortals(paneId, owner);
+  const retiring = paneId ? [transcriptStates.get(paneId)] : transcriptStates.values();
+  for (const state of retiring) {
+    if (state) {
+      // Retire captured card callbacks before removing the pane lookup. Already
+      // captured writes may finish, but late send completions cannot invent new edits.
+      state.asyncQuestionGeneration = (state.asyncQuestionGeneration ?? 0) + 1;
+      state.asyncQuestionDrafts = new Map();
+    }
+  }
   if (paneId) {
     transcriptStates.delete(paneId);
     resetChatThreadState(paneId);

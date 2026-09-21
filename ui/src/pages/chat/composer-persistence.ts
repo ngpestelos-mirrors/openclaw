@@ -641,6 +641,11 @@ export class ChatComposerPersistence {
     return this.ready;
   }
 
+  get durableScope() {
+    const state = this.getState();
+    return state ? this.resolveDurableScope(state) : null;
+  }
+
   get draftRevision(): number {
     return this.latestDraftRevision;
   }
