@@ -492,6 +492,7 @@ describe("chat transcript controller", () => {
           requestUpdate: vi.fn(),
           updateComplete: Promise.resolve(true),
         },
+        () => `retired-end-index-${nativeGrowth}`,
         { canFollowEnd: () => false },
       );
       const content = numberedContentRows(12);
@@ -620,6 +621,7 @@ describe("chat transcript controller", () => {
           requestUpdate: vi.fn(),
           updateComplete: Promise.resolve(true),
         },
+        () => `height-resize-${locked}`,
         {
           onViewportResize,
           canFollowEnd: () => !policy.chatFollowLocked,
@@ -735,7 +737,7 @@ describe("chat transcript controller", () => {
         requestUpdate: vi.fn(),
         updateComplete: Promise.resolve(true),
       });
-      const transcript = new ChatTranscriptController(host);
+      const transcript = new ChatTranscriptController(host, () => `disclosure-${interrupt}`);
       const rows: TestContentRow[] = [
         {
           kind: "content",
@@ -819,6 +821,7 @@ describe("chat transcript controller", () => {
             requestUpdate: () => undefined,
             updateComplete: Promise.resolve(true),
           },
+          () => `typing-distance-${distance}-${followEnabled}`,
           { canFollowEnd: () => followEnabled },
         ),
       );

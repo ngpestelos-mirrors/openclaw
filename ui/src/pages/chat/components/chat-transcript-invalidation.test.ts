@@ -306,7 +306,7 @@ describe("chat transcript invalidation", () => {
       const transcript = createTestTranscript();
       const props = threadProps("pane-offscreen-history", sessionKey, messages);
       const project = () =>
-        transcript.renderSession(props.paneId, sessionKey, (session) => {
+        transcript.renderSession(sessionKey, (session) => {
           projectChatTranscript(props, session);
           return html``;
         });
