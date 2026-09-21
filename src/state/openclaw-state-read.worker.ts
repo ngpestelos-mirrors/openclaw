@@ -11,6 +11,7 @@ import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/work
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { hasWorkerEnvironmentSessionAttachment } from "../gateway/worker-environments/session-attachment-store.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
@@ -87,6 +88,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
           typeof input.command.input.executionId === "string")) ||
       (input.command.type === "workspace.snapshot" &&
         typeof input.command.workspaceDir === "string") ||
+      (input.command.type === "workerEnvironments.hasSessionAttachment" &&
+        typeof input.command.environmentId === "string") ||
       (input.command.type === "updateRuns.get" && typeof input.command.runId === "string") ||
       (input.command.type === "updateRuns.list" &&
         isRecord(input.command.input) &&
@@ -284,6 +287,14 @@ serveOwnedWorkerTasks(
                       workspaceDir: command.workspaceDir,
                       database: { db, path: input.databasePath },
                     }),
+                  };
+                }
+                if (command.type === "workerEnvironments.hasSessionAttachment") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    attached: hasWorkerEnvironmentSessionAttachment(db, command.environmentId),
                   };
                 }
                 if (command.type === "userProfiles.reconcile") {
