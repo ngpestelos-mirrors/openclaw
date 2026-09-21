@@ -17,6 +17,8 @@ import type {
   SessionBranchSummaryWorkerInput,
   SessionEntryWorkerInput,
   SessionEntryListWorkerInput,
+  SessionExactEntriesWorkerInput,
+  SessionStoreTargetWorkerInput,
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
@@ -93,6 +95,8 @@ serveWorkerTasks(
       | SessionModelContextWorkerInput
       | SessionEntryWorkerInput
       | SessionEntryListWorkerInput
+      | SessionExactEntriesWorkerInput
+      | SessionStoreTargetWorkerInput
       | SessionTargetInventoryWorkerInput
       | SessionIdentityEvidenceWorkerInput
       | SessionTranscriptHistoryWorkerInput
@@ -147,6 +151,20 @@ serveWorkerTasks(
               env: cloneEnvWithPlatformSemantics(request.params.env ?? process.env),
             }),
           }))),
+        };
+      }
+      if (request.kind === "session-store-target") {
+        const { readSessionStoreTarget } = await import("./session-store-target-inventory.js");
+        return { ok: true, value: readSessionStoreTarget(request.request) };
+      }
+      if (request.kind === "session-exact-entries") {
+        const { readExactSessionEntriesWithLifecycle } =
+          await import("./session-entry-read.worker.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () =>
+            readExactSessionEntriesWithLifecycle(request),
+          )),
         };
       }
       if (request.kind === "session-target-inventory") {
