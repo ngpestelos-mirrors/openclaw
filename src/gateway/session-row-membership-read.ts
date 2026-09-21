@@ -1,7 +1,7 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import type { createSessionMembershipProjection } from "./session-membership-projection.js";
-import { withPreparedSessionRows, type SessionRowReadView } from "./session-row-prepared-read.js";
+import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import { readSessionRowEntry as readStoredSessionRowEntry } from "./session-row-projection-materialize.js";
 import type * as records from "./session-row-projection-record.js";
 
@@ -54,26 +54,20 @@ export function createSessionRowMembershipReadAccess(params: {
     },
     hasMembership: (storePath: string, key: string, identity: string) =>
       membership.membership(storePath, key)?.includes(identity) ?? false,
-    async withPreparedExactRows<T>(
+    needsExactMembershipPreparation(
+      this: void,
       queries: (config: OpenClawConfig) => readonly records.Lookup[],
-      consume: (read: SessionRowReadView) => T,
-    ): ReturnType<typeof withPreparedSessionRows<T>> {
-      const needsExactPreparation = () => {
-        if (params.topologyDirty()) {
-          return true;
-        }
-        return queries(params.owner().state.cfg).some((query) => {
-          if (isIncognitoSessionKey(query.key)) {
-            return false;
-          }
-          const row = params.lookup(query);
-          return row !== undefined && !membership.ready(row.storeTarget.storePath, row.key);
-        });
-      };
-      while (params.isActive() && needsExactPreparation()) {
-        await prepareMembership();
+    ) {
+      if (params.topologyDirty()) {
+        return true;
       }
-      return withPreparedSessionRows(params.owner(), params.isActive, queries, consume);
+      return queries(params.owner().state.cfg).some((query) => {
+        if (isIncognitoSessionKey(query.key)) {
+          return false;
+        }
+        const row = params.lookup(query);
+        return row !== undefined && !membership.ready(row.storeTarget.storePath, row.key);
+      });
     },
   };
 }

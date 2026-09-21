@@ -188,6 +188,7 @@ const ownerRoutedUnitTestPatterns = [
   "src/agents/agent-harness-completion-ownership.test.ts",
   "src/agents/agent-command.compaction-rotation.test.ts",
   "src/agents/agent-command.embedded-maintenance.test.ts",
+  "src/agents/tool-surface-plan.provider-catalog.integration.test.ts",
   "src/agents/embedded-agent-runner/run.incomplete-turn.*.test.ts",
   "src/agents/embedded-agent-runner/run/attempt.abort-race.test.ts",
   "src/agents/embedded-agent-runner/run/attempt.settled-turn-finalization-context.test.ts",

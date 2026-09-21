@@ -199,6 +199,17 @@ export function present(
   return row;
 }
 
+/** The wire snapshot and lifecycle identity come from the same materialized record. */
+export function snapshot(
+  row: MaterializedRow | undefined,
+  context: SessionListRowContext,
+  options: SnapshotOptions,
+) {
+  return row
+    ? { row: present(row, context, options), lifecycleRunId: row.entry.lifecycleRunId }
+    : { row: null };
+}
+
 function updateIndex(
   map: Map<string, Set<string>>,
   key: string | undefined,

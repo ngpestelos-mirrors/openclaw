@@ -711,8 +711,11 @@ const { mockUpdateStateSnapshotWorker } =
 const { runGatewayUpdate } = await import("../infra/update-runner.js");
 const { createUpdateRun, getUpdateRun, listUpdateRuns } =
   await import("../infra/update-run-ledger.js");
-const { openOpenClawStateDatabase, closeOpenClawStateDatabaseForTest } =
-  await import("../state/openclaw-state-db.js");
+const {
+  openOpenClawStateDatabase,
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} = await import("../state/openclaw-state-db.js");
 // Real recovery dependencies need the initialized runtime and child-process mocks.
 const { runUpdateFailureTriage } = await import("../infra/update-triage.js");
 const { resolveOpenClawPackageRoot, resolveOpenClawPackageRootSync } =
@@ -1831,16 +1834,13 @@ describe("update-cli", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     process.exitCode = undefined;
+    // Relocated stores can retain workers whose coordinator lives in this temporary home.
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await tempHome?.restore();
     tempHome = undefined;
-    if (tempDirsToCleanup.size === 0) {
-      return;
-    }
     await Promise.allSettled(
-      [...tempDirsToCleanup].map(async (dir) => {
-        await fs.rm(dir, { recursive: true, force: true });
-      }),
+      [...tempDirsToCleanup].map((dir) => fs.rm(dir, { recursive: true, force: true })),
     );
     tempDirsToCleanup.clear();
   });
