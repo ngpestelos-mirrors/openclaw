@@ -131,12 +131,24 @@ module.exports = { id: "search-fixture", register(api) {
       expect(fs.existsSync(filename)).toBe(true);
       readers.forEach((reader) => reader.release());
       const outcomes = await calls;
-      expect(outcomes.map((result) => result.status)).toEqual(
-        Array(50).fill(kind === "timed-out" ? "rejected" : "fulfilled"),
-      );
-      for (const outcome of outcomes) {
-        if (outcome.status === "rejected") {
-          expect(outcome.reason).toMatchObject({ name: "PluginInstanceUnavailableError" });
+      for (const [index, outcome] of outcomes.entries()) {
+        expect(outcome.status).toBe("fulfilled");
+        if (outcome.status !== "fulfilled") {
+          throw outcome.reason;
+        }
+        expect(outcome.value.details).toMatchObject(
+          kind === "timed-out"
+            ? { kind: "error", provider: "fixture-search", error: "provider_error" }
+            : {
+                kind: "results",
+                provider: "fixture-search",
+                query: `query-${index}`,
+                count: 1,
+                results: [{ url: "https://example.com/" }],
+              },
+        );
+        if (kind === "timed-out") {
+          expect(outcome.value.details).not.toHaveProperty("results");
         }
       }
       await retirement;

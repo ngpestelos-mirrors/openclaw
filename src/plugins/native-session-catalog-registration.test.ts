@@ -10,6 +10,7 @@ import { SessionCatalogListLifetime } from "../gateway/server-methods/session-ca
 import { listSessionCatalogProvider } from "../gateway/server-methods/session-catalog-provider-access.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
+import { PluginInstanceDrainTimeoutError } from "./plugin-instance-error.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
 import { createPluginRegistry } from "./registry.js";
 import { withPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
@@ -352,6 +353,7 @@ describe("registered native catalog access", () => {
               {},
             )
           : Promise.resolve([]);
+      let physical: Promise<void> | undefined;
       try {
         if (phase === "queued") {
           first.resolve({ done: false });
@@ -361,11 +363,25 @@ describe("registered native catalog access", () => {
           expect(close).toHaveBeenCalledOnce();
         }
         vi.useFakeTimers();
-        const disposal = state.dispose();
+        const disposal = state.instance.dispose();
         await vi.advanceTimersByTimeAsync(5_050);
+        const [timeout] = (await disposal).errors;
+        expect(timeout).toBeInstanceOf(PluginInstanceDrainTimeoutError);
+        if (!(timeout instanceof PluginInstanceDrainTimeoutError)) {
+          throw new Error("Expected catalog retirement deadline");
+        }
+        expect(timeout.forcedRetirement).toEqual({ activeCallCount: 0, retainedConsumerCount: 1 });
+        let physicallySettled = false;
+        physical = timeout.settled.then(() => {
+          physicallySettled = true;
+        });
+        void physical.catch(() => {});
         expect(cleanup).not.toHaveBeenCalled();
-        expect(state.instance.lifecycle.signal.aborted).toBe(false);
+        expect(state.instance.lifecycle.signal.aborted).toBe(true);
         expect(state.instance.hasRetainedConsumers).toBe(true);
+        expect(() => state.instance.run(() => undefined)).toThrow("reloaded or disabled");
+        await Promise.resolve();
+        expect(physicallySettled).toBe(false);
         if (phase === "queued") {
           const retirement = new Error("catalog owner retired");
           owner.abort(retirement);
@@ -375,7 +391,8 @@ describe("registered native catalog access", () => {
         expect(next).toHaveBeenCalledOnce();
         expect(published).not.toHaveBeenCalled();
         publication.resolve();
-        await disposal;
+        await physical;
+        expect(physicallySettled).toBe(true);
         expect(published).toHaveBeenCalledOnce();
         expect(cleanup).toHaveBeenCalledOnce();
         expect(state.instance.hasRetainedConsumers).toBe(false);
@@ -385,7 +402,7 @@ describe("registered native catalog access", () => {
         first.resolve({ done: false });
         blockers.resolve([]);
         publication.resolve();
-        await Promise.allSettled([...active, pending, successor]);
+        await Promise.allSettled([...active, pending, successor, physical]);
         lifetime.finishListing();
       }
     },
