@@ -53,6 +53,7 @@ const {
   agentDelta,
   turnCompleted,
   sideParams,
+  platformPreparedRuntimeAuth,
   TEST_HOST_CAPABILITIES,
   useSideQuestionTestSetup,
   extractRelayIdFromThreadConfig,
@@ -172,32 +173,6 @@ function nativeCommandItem(
     exitCode: status === "completed" ? 0 : null,
     durationMs,
   };
-}
-
-function platformPreparedRuntimeAuth(resolvedApiKey?: string) {
-  return {
-    plan: {
-      providerForAuth: "openai",
-      authProfileProviderForAuth: "openai",
-      selectedAuthMode: "api-key",
-      modelRoute: {
-        provider: "openai",
-        modelId: "gpt-5.6",
-        api: "openai-responses",
-        baseUrl: "https://api.openai.com/v1",
-        authRequirement: "api-key",
-        requestTransportOverrides: "none",
-      },
-    },
-    authProfileStore: {
-      version: 1 as const,
-      profiles: {},
-      order: { openai: [] },
-    },
-    authStorage: {} as never,
-    modelRegistry: {} as never,
-    ...(resolvedApiKey ? { resolvedApiKey } : {}),
-  } satisfies Parameters<typeof runCodexAppServerSideQuestion>[0]["preparedRuntimeAuth"];
 }
 
 useProviderToolSchemaRuntimeForTest(["openai", "codex", "lmstudio"]);
