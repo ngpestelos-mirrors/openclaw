@@ -3,12 +3,23 @@ import { configureAiTransportHost } from "../host.js";
 import type { AssistantMessage, Context, Model, ToolCall } from "../types.js";
 import { streamGoogleInteractions, streamSimpleGoogleInteractions } from "./google-interactions.js";
 
-const completedSse = (params?: { status?: string; usage?: Record<string, number> }): string =>
+const completedSse = (params?: {
+  status?: string;
+  usage?: Record<string, number> | null;
+}): string =>
   `data: ${JSON.stringify({
     event_type: "interaction.completed",
     interaction: {
       status: params?.status ?? "completed",
-      usage: params?.usage ?? { total_input_tokens: 1, total_output_tokens: 1, total_tokens: 2 },
+      ...(params?.usage === null
+        ? {}
+        : {
+            usage: params?.usage ?? {
+              total_input_tokens: 1,
+              total_output_tokens: 1,
+              total_tokens: 2,
+            },
+          }),
     },
   })}\n\n`;
 
@@ -420,6 +431,52 @@ describe("google-interactions provider", () => {
     });
   });
 
+  it("retains cumulative step-stop usage when completion omits usage", async () => {
+    const cumulativeUsage = {
+      total_input_tokens: 100,
+      total_cached_tokens: 40,
+      total_output_tokens: 20,
+      total_thought_tokens: 30,
+      total_tool_use_tokens: 5,
+      total_tokens: 155,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            new TextEncoder().encode(
+              `data: ${JSON.stringify({ event_type: "step.stop", usage: cumulativeUsage })}\n\n` +
+                completedSse({ usage: null }) +
+                "data: [DONE]\n\n",
+            ),
+            { status: 200, headers: { "Content-Type": "text/event-stream" } },
+          ),
+      ),
+    );
+
+    const model = {
+      ...makeInteractionsModel(),
+      cost: { input: 1, output: 2, cacheRead: 0.25, cacheWrite: 0 },
+    };
+    const result = await streamGoogleInteractions(model, basicContext, {
+      apiKey: "test-api-key",
+    }).result();
+
+    expect(result.usage).toMatchObject({
+      input: 65,
+      output: 50,
+      cacheRead: 40,
+      totalTokens: 155,
+      cost: {
+        input: 0.000065,
+        output: 0.0001,
+        cacheRead: 0.00001,
+        total: 0.000175,
+      },
+    });
+  });
+
   it.each([
     {
       modelId: "gemini-2.5-flash",
@@ -430,6 +487,11 @@ describe("google-interactions provider", () => {
       modelId: "gemini-3-flash-preview",
       reasoning: "off" as const,
       expected: { thinking_level: "minimal", thinking_summaries: "none" },
+    },
+    {
+      modelId: "gemini-3-flash-preview",
+      reasoning: "adaptive" as never,
+      expected: { thinking_summaries: "auto" },
     },
   ])(
     "maps $modelId reasoning=$reasoning into the request",
@@ -455,7 +517,7 @@ describe("google-interactions provider", () => {
         { apiKey: "test-api-key", reasoning },
       ).result();
 
-      expect(requestBody?.generation_config).toMatchObject(expected);
+      expect(requestBody?.generation_config).toEqual(expected);
     },
   );
 });

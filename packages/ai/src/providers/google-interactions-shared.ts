@@ -154,6 +154,7 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
     let currentToolCall: ToolCall | null = null;
     let currentToolArgs = "";
     let latestThoughtSignature: string | undefined;
+    let latestUsage: Record<string, unknown> | undefined;
 
     const endCurrentBlock = () => {
       if (currentBlockType === "text") {
@@ -447,11 +448,12 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
             });
           }
         } else if (eventType === "step.stop") {
+          latestUsage = asOptionalRecord(event.usage) ?? latestUsage;
           endCurrentBlock();
         } else if (eventType === "interaction.completed" || eventType === "interaction.complete") {
           sawCompletion = true;
           const interaction = asOptionalRecord(event.interaction) ?? event;
-          const usage = asRecord(interaction.usage);
+          const usage = asOptionalRecord(interaction.usage) ?? latestUsage ?? {};
           const promptTokens = Number(usage.total_input_tokens ?? 0);
           const cacheRead = Number(usage.total_cached_tokens ?? 0);
           const candidatesTokens = Number(usage.total_output_tokens ?? 0);
