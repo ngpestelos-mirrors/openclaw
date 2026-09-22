@@ -46,6 +46,7 @@ import {
 const tempDirs = createFixtureLifetime();
 afterAll(() => tempDirs.cleanup());
 const DOCTOR_CHILD_TIMEOUT_MS = 60_000;
+let unmanagedRollbackRuntimeRoot: string | undefined;
 
 describe("Doctor CLI migration refusal", () => {
   it.each(["index.js", "entry.js"])(
@@ -452,10 +453,24 @@ it.each([
         }
         const originals = [agentPath, sharedPath, state.configPath];
         const bytes = originals.map((file) => fs.readFileSync(file));
-        let runtimeRoot = createBuiltRuntime(state.root, undefined, { copyDirectories: true });
-        let managedRoot = runtimeRoot;
         const malformedHandoff = mode.startsWith("managed pnpm ");
-        if (mode === "valid managed pnpm" || malformedHandoff) {
+        const managed =
+          mode === "valid managed v1" ||
+          mode === "valid managed pnpm" ||
+          malformedHandoff ||
+          mode === "managed handoff mismatch" ||
+          mode === "managed handoff missing";
+        const relocatesRuntime = mode === "valid managed pnpm" || malformedHandoff;
+        // Managed handoff authority includes the install path, so keep those packages private.
+        let runtimeRoot = managed
+          ? createBuiltRuntime(state.root, undefined, { copyDirectories: true })
+          : (unmanagedRollbackRuntimeRoot ??= createBuiltRuntime(
+              fs.realpathSync(tempDirs.createTempDir("openclaw-doctor-rollback-runtime-")),
+              undefined,
+              { copyDirectories: true },
+            ));
+        let managedRoot = runtimeRoot;
+        if (relocatesRuntime) {
           const project = state.path("pnpm", "global", "5");
           const previous = path.join(
             project,
@@ -541,12 +556,6 @@ it.each([
           finishUpdateRun(run.runId, { status: "failed", reason: "fixture-parent-stopped" });
         }
         const beforeResume = getUpdateRun(run.runId);
-        const managed =
-          mode === "valid managed v1" ||
-          mode === "valid managed pnpm" ||
-          malformedHandoff ||
-          mode === "managed handoff mismatch" ||
-          mode === "managed handoff missing";
         const success =
           mode === "valid" || mode === "valid managed v1" || mode === "valid managed pnpm";
         const metaPath = state.path("handoff-meta.json");
