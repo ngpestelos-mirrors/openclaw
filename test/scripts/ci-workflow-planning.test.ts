@@ -202,7 +202,8 @@ function runCiManifestFixture(options: {
   runNode?: boolean;
   historicalReader?: boolean;
   toolingOwnerSelection?: boolean;
-  runnerBackend?: "blacksmith" | "github" | "hybrid";
+  runnerBackend?: "blacksmith" | "github" | "hybrid" | "runson";
+  nodeRunnerBackend?: "blacksmith" | "github" | "hybrid" | "runson";
   runnerProfile?: "blacksmith" | "github" | "hybrid";
   targetHostedRunnerProfileContract?: boolean;
   uiE2eProjectsCapability?: boolean;
@@ -249,19 +250,30 @@ function runCiManifestFixture(options: {
           }];
           export const createNodeTestShardBundles = (options = {}) => {
             console.log("node-test-plan-options:" + JSON.stringify(options));
+            const runson = options.runnerBackend === "runson";
             return [{
-              checkName: "bundled-node-plan",
-              configs: ["test/vitest/bundled.config.ts"],
-              includePatterns: options.changedPaths,
+              checkName: runson ? "checks-node-changed-runson-cron" : "bundled-node-plan",
+              ...(runson ? {
+                groups: [{
+                  configs: ["test/vitest/vitest.cron.config.ts"],
+                  includePatterns: ["src/cron/schedule.test.ts"],
+                  env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+                  shard_name: "core-runtime-cron-parallel-core",
+                }],
+              } : {
+                configs: ["test/vitest/bundled.config.ts"],
+                includePatterns: options.changedPaths,
+              }),
               env: {
+                ...(runson ? { OPENCLAW_VITEST_MAX_WORKERS: "2" } : {}),
                 OPENCLAW_CI_TEST_COMPACT_MODE: options.compactMode ?? "full",
                 OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: String(options.compactNodeJobCap ?? ""),
                 OPENCLAW_CI_TEST_RUNNER_BACKEND: options.runnerBackend ?? "",
                 OPENCLAW_CI_TEST_PROOF_TIER: String(options.includeProofTests),
               },
               requiresDist: false,
-              runner: "ubuntu-24.04",
-              shardName: "bundled-node-plan",
+              runner: runson ? "runson-c8i-8xlarge" : "ubuntu-24.04",
+              shardName: runson ? "changed-runson-cron" : "bundled-node-plan",
             }];
           };
         `
@@ -600,6 +612,7 @@ function runCiManifestFixture(options: {
         OPENCLAW_CI_HEAD_REPOSITORY: options.repository ?? "openclaw/openclaw",
         OPENCLAW_CI_RUNNER_BACKEND: options.runnerBackend ?? options.runnerProfile ?? "",
         OPENCLAW_CI_RUNNER_PROFILE: options.runnerProfile ?? options.runnerBackend ?? "blacksmith",
+        OPENCLAW_CI_NODE_RUNNER_BACKEND: options.nodeRunnerBackend ?? "",
         OPENCLAW_CI_RUN_SKILLS_PYTHON: "true",
         OPENCLAW_CI_RUN_WINDOWS: "true",
         OPENCLAW_CI_WORKFLOW_REVISION: "b".repeat(40),
@@ -657,6 +670,9 @@ function runRunnerProfileFixture(options: {
   headRepository?: string;
   repository?: string;
   runAttempt?: number;
+  requestedProfile?: "default" | "runson";
+  runsonDispatch?: boolean;
+  targetSupportsRunson?: boolean;
   targetSupportsContract: boolean;
 }) {
   const root = mkdtempSync(path.join(tmpdir(), "openclaw-ci-runner-profile-"));
@@ -665,7 +681,10 @@ function runRunnerProfileFixture(options: {
     mkdirSync(path.dirname(workflowPath), { recursive: true });
     writeFileSync(
       workflowPath,
-      options.targetSupportsContract ? "hosted-runner-profile-contract-v1\n" : "name: legacy\n",
+      [
+        options.targetSupportsContract ? "hosted-runner-profile-contract-v1" : "name: legacy",
+        ...(options.targetSupportsRunson ? ["runson-runner-profile-contract-v1"] : []),
+      ].join("\n"),
       "utf8",
     );
     const outputPath = path.join(root, "profile.out");
@@ -687,6 +706,8 @@ function runRunnerProfileFixture(options: {
         GITHUB_REPOSITORY: options.repository ?? "openclaw/openclaw",
         HEAD_REPOSITORY: options.headRepository ?? options.repository ?? "openclaw/openclaw",
         GITHUB_RUN_ATTEMPT: String(options.runAttempt ?? 1),
+        REQUESTED_RUNNER_PROFILE: options.requestedProfile ?? "default",
+        RUNSON_DISPATCH: String(options.runsonDispatch ?? false),
       },
     });
     const outputs = Object.fromEntries(
@@ -1568,6 +1589,7 @@ describe("ci workflow guards", () => {
             })
           : value;
       const rows: string[] = [];
+      const hostedLabels = new Set(["ubuntu-24.04", "windows-2025", "macos-15", "xcode-27"]);
       for (const [name, job] of Object.entries(readCiWorkflow().jobs)) {
         const definition = job as {
           if?: string;
@@ -1601,13 +1623,48 @@ describe("ci workflow guards", () => {
           }
         }
         for (const row of selectedRows) {
-          if (!String(evaluate(definition["runs-on"], row)).startsWith("blacksmith-")) {
+          if (hostedLabels.has(String(evaluate(definition["runs-on"], row)))) {
             rows.push(name);
           }
         }
       }
       return rows;
     }
+
+    it("counts hosted qualification controls and preflight without counting the AWS cron row", () => {
+      const common = {
+        bundledPlanner: true,
+        historicalCompatibility: false,
+        runnerBackend: "runson" as const,
+        runnerProfile: "hybrid" as const,
+        nodeRunnerBackend: "runson" as const,
+        changedPaths: [".github/workflows/ci.yml"],
+      };
+      const ordinary = runCiManifestFixture({ ...common, eventName: "pull_request" });
+      const qualification = runCiManifestFixture({
+        ...common,
+        eventName: "workflow_dispatch",
+        releaseGate: true,
+        scopeEnv: { OPENCLAW_CI_AUTHOR_ASSOCIATION: "", OPENCLAW_CI_HEAD_REPOSITORY: "" },
+      });
+      expect(ordinary.status, ordinary.output).toBe(0);
+      expect(qualification.status, qualification.output).toBe(0);
+      const actual = emittedHostedRows(
+        { ...qualification.outputs, node_runner_backend: "runson" },
+        {
+          eventName: "workflow_dispatch",
+          releaseGate: true,
+          runnerBackend: "runson",
+          runnerProfile: "hybrid",
+        },
+      );
+      expect(actual.filter((job) => job === "checks-node-core-test-nondist-shard")).toHaveLength(1);
+      expect(actual).toContain("preflight");
+      expect(Number(qualification.outputs.hybrid_hosted_base_rows)).toBe(
+        Number(ordinary.outputs.hybrid_hosted_base_rows) + 2,
+      );
+      expect(Number(qualification.outputs.hybrid_hosted_total_rows)).toBe(actual.length);
+    });
 
     function manifestWithHostedNodeRows(
       count: number,
@@ -3036,7 +3093,12 @@ describe("ci workflow guards", () => {
   );
 
   it("resolves one event-aware logical runner profile without changing physical routing", () => {
-    const scenarios = [
+    const scenarios: {
+      expected: string;
+      expectedNode?: string;
+      name: string;
+      options: Parameters<typeof runRunnerProfileFixture>[0];
+    }[] = [
       {
         expected: "github",
         name: "current manual dispatch ignores configured Blacksmith",
@@ -3122,12 +3184,52 @@ describe("ci workflow guards", () => {
           targetSupportsContract: true,
         },
       },
+      ...[
+        { name: "trusted canonical PR", expected: "hybrid", expectedNode: "runson" },
+        { name: "PR retry", expected: "hybrid", expectedNode: "hybrid", runAttempt: 2 },
+        { name: "returning-contributor fork", expected: "github", headRepository: "fork/openclaw" },
+        { name: "untrusted author", expected: "github", authorAssociation: "NONE" },
+        { name: "noncanonical repository", expected: "github", repository: "fork/openclaw" },
+        { name: "push", expected: "hybrid", eventName: "push" as const },
+        { name: "ordinary dispatch", expected: "github", eventName: "workflow_dispatch" as const },
+        { name: "target without RunsOn contract", expected: "hybrid", targetSupportsRunson: false },
+        {
+          name: "validated exact-head dispatch override",
+          expected: "hybrid",
+          expectedNode: "runson",
+          configuredProfile: "hybrid",
+          eventName: "workflow_dispatch" as const,
+          requestedProfile: "runson" as const,
+          runsonDispatch: true,
+        },
+        {
+          name: "validated dispatch retry",
+          expected: "github",
+          eventName: "workflow_dispatch" as const,
+          requestedProfile: "runson" as const,
+          runsonDispatch: true,
+          runAttempt: 2,
+        },
+      ].map(({ name, expected, expectedNode, ...overrides }) => ({
+        name: `RunsOn ${name}`,
+        expected,
+        expectedNode,
+        options: {
+          configuredProfile: "runson",
+          authorAssociation: "CONTRIBUTOR",
+          eventName: "pull_request" as const,
+          targetSupportsContract: true,
+          targetSupportsRunson: true,
+          ...overrides,
+        },
+      })),
     ];
 
-    for (const { expected, name, options } of scenarios) {
+    for (const { expected, expectedNode = expected, name, options } of scenarios) {
       const result = runRunnerProfileFixture(options);
       expect(result.status, `${name}: ${result.output}`).toBe(0);
       expect(result.outputs.runner_profile, name).toBe(expected);
+      expect(result.outputs.node_runner_backend, name).toBe(expectedNode);
       expect(result.outputs.hosted_runner_profile_contract, name).toBe(
         String(options.targetSupportsContract),
       );
@@ -3140,12 +3242,15 @@ describe("ci workflow guards", () => {
     });
     expect(invalid.status).toBe(1);
     expect(invalid.output).toContain(
-      "OPENCLAW_CI_RUNNER_BACKEND must be github, hybrid, or blacksmith",
+      "OPENCLAW_CI_RUNNER_BACKEND must be github, hybrid, blacksmith, or runson",
     );
 
     const workflow = readCiWorkflow();
     expect(workflow.jobs.preflight.outputs.runner_profile).toBe(
       "${{ steps.runner_profile.outputs.runner_profile }}",
+    );
+    expect(workflow.jobs.preflight.outputs.node_runner_backend).toBe(
+      "${{ steps.runner_profile.outputs.node_runner_backend }}",
     );
     expect(workflow.jobs.preflight["runs-on"]).toContain("vars.OPENCLAW_CI_RUNNER_BACKEND");
 
@@ -3166,6 +3271,155 @@ describe("ci workflow guards", () => {
         expectDefined(dispatchManifest.outputs.qa_smoke_ci_matrix, "dispatch QA smoke matrix"),
       ).include,
     ).toHaveLength(6);
+  });
+
+  it("admits RunsOn dispatches only for a maintainer's open exact-head canonical PR", () => {
+    const step = expectDefined(
+      readCiWorkflow().jobs.preflight.steps.find(
+        (candidate: WorkflowStep) => candidate.name === "Validate RunsOn qualification dispatch",
+      ),
+      "RunsOn dispatch validation",
+    );
+    const sha = "a".repeat(40);
+    const scenarios = [
+      { name: "admin", permission: "admin", admitted: true },
+      { name: "maintainer", permission: "maintain", admitted: true },
+      { name: "writer", permission: "write", admitted: true },
+      { name: "reader", permission: "read", admitted: false },
+      { name: "closed PR", prState: "closed", admitted: false },
+      { name: "moved PR head", prHead: "b".repeat(40), admitted: false },
+      { name: "fork PR", prRepository: "fork/openclaw", admitted: false },
+      { name: "different workflow revision", workflowRevision: "b".repeat(40), admitted: false },
+      { name: "ordinary dispatch", releaseGate: false, admitted: false },
+      { name: "noncanonical repository", repository: "fork/openclaw", admitted: false },
+      { name: "permission API failure", apiFailure: "permission", admitted: false },
+      { name: "PR API failure", apiFailure: "pr", admitted: false },
+    ];
+    const root = tempDirs.make("openclaw-runson-dispatch-");
+    const bin = path.join(root, "bin");
+    mkdirSync(bin);
+    writeExecutable(path.join(bin, "gh"), [
+      "#!/bin/sh",
+      '[ "$1" = api ] || exit 64',
+      'case "$2" in',
+      "  repos/openclaw/openclaw/collaborators/maintainer/permission)",
+      '    [ "$MOCK_API_FAILURE" != permission ] || exit 1',
+      '    printf "%s\\n" "$MOCK_PERMISSION" ;;',
+      "  repos/openclaw/openclaw/pulls/123)",
+      '    [ "$MOCK_API_FAILURE" != pr ] || exit 1',
+      '    printf "%s\\n" "$MOCK_PR" ;;',
+      "  *) exit 64 ;;",
+      "esac",
+    ]);
+    for (const scenario of scenarios) {
+      const output = path.join(root, "output");
+      writeFileSync(output, "");
+      const result = runWorkflowShellScript(expectDefined(step.run, "dispatch script"), {
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+          GITHUB_ACTOR: "maintainer",
+          GITHUB_REPOSITORY: scenario.repository ?? "openclaw/openclaw",
+          GITHUB_OUTPUT: output,
+          RUNNER_TEMP: root,
+          RELEASE_GATE: String(scenario.releaseGate ?? true),
+          PULL_REQUEST_NUMBER: "123",
+          TARGET_REF: sha,
+          WORKFLOW_REVISION: scenario.workflowRevision ?? sha,
+          MOCK_PERMISSION: scenario.permission ?? "write",
+          MOCK_API_FAILURE: scenario.apiFailure ?? "",
+          MOCK_PR: JSON.stringify({
+            state: scenario.prState ?? "open",
+            head: scenario.prHead ?? sha,
+            repository: scenario.prRepository ?? "openclaw/openclaw",
+          }),
+        },
+      });
+      expect(result.status === 0, `${scenario.name}: ${result.stderr}`).toBe(scenario.admitted);
+      expect(readWorkflowOutputs(output), scenario.name).toEqual(
+        scenario.admitted ? { eligible: "true" } : {},
+      );
+    }
+  });
+
+  it("passes RunsOn only to the Node planner and keeps qualification dispatches PR-shaped", () => {
+    const fixture = {
+      bundledPlanner: true,
+      eventName: "workflow_dispatch" as const,
+      historicalCompatibility: false,
+      releaseGate: true,
+      runnerBackend: "hybrid" as const,
+      runnerProfile: "hybrid" as const,
+      nodeRunnerBackend: "runson" as const,
+      changedPaths: [".github/workflows/ci.yml"],
+    };
+    const manifest = runCiManifestFixture({
+      ...fixture,
+      scopeEnv: { OPENCLAW_CI_AUTHOR_ASSOCIATION: "", OPENCLAW_CI_HEAD_REPOSITORY: "" },
+    });
+    expect(manifest.status, manifest.output).toBe(0);
+    expect(Number(manifest.outputs.hybrid_hosted_base_rows)).toBeGreaterThan(0);
+    const options = JSON.parse(
+      expectDefined(manifest.output.match(/node-test-plan-options:(.+)/u)?.[1], "Node options"),
+    );
+    expect(options).toMatchObject({
+      compact: true,
+      compactMode: "pull-request",
+      runnerBackend: "runson",
+      includeReleaseOnlyToolingShards: false,
+      includeProofTests: false,
+    });
+    expect(options.compactNodeJobCap).toBeLessThanOrEqual(130);
+    const rows = JSON.parse(
+      expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "qualification Node rows"),
+    ).include as Record<string, unknown>[];
+    const cron = expectDefined(
+      rows.find((row) => row.runner === "runson-c8i-8xlarge"),
+      "RunsOn cron row",
+    );
+    expect(cron.env).toMatchObject({ OPENCLAW_VITEST_MAX_WORKERS: "2" });
+    for (const [provider, runner] of [
+      ["blacksmith", "blacksmith-32vcpu-ubuntu-2404"],
+      ["github", "ubuntu-24.04"],
+    ] as const) {
+      expect(
+        rows.find((row) => row.check_name === `checks-node-runson-cron-${provider}-control`),
+      ).toEqual({
+        ...cron,
+        check_name: `checks-node-runson-cron-${provider}-control`,
+        shard_name: `runson-cron-${provider}-control`,
+        runner,
+      });
+    }
+    const ordinaryPr = runCiManifestFixture({
+      ...fixture,
+      eventName: "pull_request",
+      releaseGate: false,
+    });
+    expect(ordinaryPr.status, ordinaryPr.output).toBe(0);
+    const ordinaryRows = JSON.parse(
+      expectDefined(ordinaryPr.outputs.checks_node_core_nondist_matrix, "ordinary PR Node rows"),
+    ).include as Record<string, unknown>[];
+    expect(rows).toHaveLength(ordinaryRows.length + 2);
+    expect(ordinaryRows.some((row) => row.runner === "runson-c8i-8xlarge")).toBe(true);
+    expect(ordinaryRows.some((row) => String(row.check_name).endsWith("-control"))).toBe(false);
+    const fastRows = JSON.parse(
+      expectDefined(manifest.outputs.checks_fast_core_matrix, "qualification fast checks"),
+    ).include as { task: string }[];
+    expect(fastRows.some((row) => row.task.startsWith("release-lint-"))).toBe(false);
+    const noCron = runCiManifestFixture({ ...fixture, nodeTestShards: [] });
+    expect(noCron.status).not.toBe(0);
+    expect(noCron.output).toContain("RunsOn qualification requires selected cron tests");
+    const step = readCiWorkflow().jobs.preflight.steps.find(
+      (candidate: WorkflowStep) => candidate.name === "Build CI manifest",
+    );
+    expect(step.env.OPENCLAW_CI_RUNNER_PROFILE).toBe(
+      "${{ steps.runner_profile.outputs.runner_profile }}",
+    );
+    expect(step.env.OPENCLAW_CI_NODE_RUNNER_BACKEND).toBe(
+      "${{ steps.runner_profile.outputs.node_runner_backend }}",
+    );
   });
 
   it("uses bundled Node shards and telemetry-backed runner sizes", () => {
@@ -3206,7 +3460,7 @@ describe("ci workflow guards", () => {
       }
     }
     expect(workflow.jobs["build-artifacts"]["timeout-minutes"]).toBe(
-      "${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}",
+      "${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (contains(fromJSON('[\"hybrid\",\"runson\"]'), vars.OPENCLAW_CI_RUNNER_BACKEND) && github.run_attempt > 1) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}",
     );
     // PR events validate the artifact build on hosted runners (landing gate
     // stays satisfiable during Blacksmith outages); Testbox leases are
@@ -7439,6 +7693,15 @@ describe("ci workflow guards", () => {
       },
     },
     {
+      label: "RunsOn qualification retains PR compatibility scope",
+      context: {
+        releaseGate: true,
+        runnerProfile: "hybrid",
+        preflightOutputs: { node_runner_backend: "runson" },
+      },
+      expected: { "checks-node-compat": false },
+    },
+    {
       label: "manual Node 22 without artifacts",
       context: { preflightOutputs: { run_build_artifacts: "false" } },
       expected: { "checks-node-compat": false },
@@ -7559,7 +7822,7 @@ describe("ci workflow guards", () => {
 
     expect(compatibilityJob.name).toBe("checks-node-compat-node24");
     expect(compatibilityJob.if).toBe(
-      "needs.preflight.outputs.run_build_artifacts == 'true' && github.event_name == 'workflow_dispatch'",
+      "needs.preflight.outputs.run_build_artifacts == 'true' && github.event_name == 'workflow_dispatch' && needs.preflight.outputs.node_runner_backend != 'runson'",
     );
     expect(fullReleaseDispatch.env.CHILD_WORKFLOW_KIND).toBe("ci");
     expect(fullReleaseDispatch.run).toContain('dispatch_child ci.yml "$dispatch_run_name"');

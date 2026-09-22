@@ -1073,7 +1073,11 @@ NODE
     expect(changedScopeStep.run).toContain(
       'node scripts/ci-changed-scope.mjs --base "$BASE" --head "$HEAD_SHA"',
     );
-    expect(workflow.jobs.preflight.permissions).toEqual({ contents: "read", actions: "read" });
+    expect(workflow.jobs.preflight.permissions).toEqual({
+      contents: "read",
+      actions: "read",
+      "pull-requests": "read",
+    });
     expect(workflow.jobs.preflight.outputs.run_ios_screenshots).toBe(
       "${{ steps.changed_scope.outputs.run_ios_screenshots }}",
     );
@@ -1084,9 +1088,71 @@ NODE
     expect(workflowSource).toContain(
       "OPENCLAW_CI_RUN_IOS_BUILD: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.run_ios_build || 'false' }}",
     );
-    expect(workflowSource).toContain(
-      "OPENCLAW_CI_RUN_ANDROID: ${{ github.event_name == 'workflow_dispatch' && (inputs.release_gate || inputs.include_android) && 'true' || steps.changed_scope.outputs.run_android || 'false' }}",
-    );
+    const manifestEnv = preflightSteps.find(
+      (step: WorkflowStep) => step.name === "Build CI manifest",
+    ).env;
+    for (const [
+      requestedRunnerBackend,
+      isReleaseGate,
+      includeAndroid,
+      changedAndroid,
+      expected,
+    ] of [
+      ["runson", true, false, false, false],
+      ["runson", true, false, true, true],
+      ["runson", true, true, false, true],
+      ["default", true, false, false, true],
+      ["default", false, false, false, false],
+      ["default", false, true, false, true],
+    ] as const) {
+      expect(
+        evaluateWorkflowExpression(manifestEnv.OPENCLAW_CI_RUN_ANDROID, {
+          eventName: "workflow_dispatch",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+          requestedRunnerBackend,
+          releaseGate: isReleaseGate,
+          includeAndroid,
+          steps: {
+            runner_profile: {
+              outputs: {
+                runner_profile: "hybrid",
+                node_runner_backend: requestedRunnerBackend === "runson" ? "runson" : "hybrid",
+              },
+            },
+            changed_scope: { outputs: { run_android: String(changedAndroid) } },
+          },
+        }),
+        JSON.stringify({ requestedRunnerBackend, isReleaseGate, includeAndroid, changedAndroid }),
+      ).toBe(String(expected));
+    }
+    for (const [environmentKey, scopeKey] of [
+      ["OPENCLAW_CI_RUN_WINDOWS", "run_windows"],
+      ["OPENCLAW_CI_RUN_SKILLS_PYTHON", "run_skills_python"],
+      ["OPENCLAW_CI_RUN_CONTROL_UI_I18N", "run_control_ui_i18n"],
+      ["OPENCLAW_CI_RUN_UI_TESTS", "run_ui_tests"],
+      ["OPENCLAW_CI_RUN_NATIVE_I18N", "run_native_i18n"],
+    ] as const) {
+      for (const nodeRunnerBackend of ["runson", "hybrid"]) {
+        for (const selected of [false, true]) {
+          expect(
+            evaluateWorkflowExpression(manifestEnv[environmentKey], {
+              eventName: "workflow_dispatch",
+              releaseGate: true,
+              repository: "openclaw/openclaw",
+              runAttempt: 1,
+              steps: {
+                runner_profile: {
+                  outputs: { runner_profile: "hybrid", node_runner_backend: nodeRunnerBackend },
+                },
+                changed_scope: { outputs: { [scopeKey]: String(selected) } },
+              },
+            }),
+            `${environmentKey}/${nodeRunnerBackend}/${selected}`,
+          ).toBe(String(nodeRunnerBackend === "runson" ? selected : true));
+        }
+      }
+    }
 
     for (const [jobName, job] of Object.entries(workflow.jobs)) {
       const runsOn = (job as { "runs-on"?: unknown })["runs-on"];
@@ -3078,7 +3144,7 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
     expect(source).toContain('task: useCompatibleAndroidCi ? "build-play-compat" : "build-play"');
     expect(androidJob.name).toBe("${{ matrix.check_name || 'android' }}");
     expect(runStep.env.CI_RUNNER_BACKEND).toContain(
-      "vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1",
+      'contains(fromJSON(\'["hybrid","runson"]\'), vars.OPENCLAW_CI_RUNNER_BACKEND) && github.run_attempt > 1',
     );
     expect(blacksmithBuild.match(/^\s*\.\/gradlew\b/gmu)).toHaveLength(1);
     expect(blacksmithTasks).toEqual([
@@ -3520,6 +3586,12 @@ setImmediate(() => {
           expectedHybridFirstAttemptRunners[jobName as keyof typeof expectedHostedRunners],
         ],
         ["hybrid retry", { runnerBackend: "hybrid", runAttempt: 2 }, hostedRunner],
+        [
+          "RunsOn ordinary rows retain hybrid routing",
+          { runnerBackend: "runson" },
+          expectedHybridFirstAttemptRunners[jobName as keyof typeof expectedHostedRunners],
+        ],
+        ["RunsOn retry", { runnerBackend: "runson", runAttempt: 2 }, hostedRunner],
         [
           "explicit Blacksmith matches default",
           { runnerBackend: "blacksmith" },
@@ -4147,7 +4219,9 @@ setImmediate(() => {
     expect(preflightRestore?.step.if).toContain("github.ref == 'refs/heads/main'");
     expect(preflightRestore?.step.if).toContain("github.event_name == 'pull_request'");
     expect(preflightRestore?.step.if).toContain("vars.OPENCLAW_CI_RUNNER_BACKEND != 'github'");
-    expect(preflightRestore?.step.if).toContain("vars.OPENCLAW_CI_RUNNER_BACKEND != 'hybrid'");
+    expect(preflightRestore?.step.if).toContain(
+      '!contains(fromJSON(\'["hybrid","runson"]\'), vars.OPENCLAW_CI_RUNNER_BACKEND)',
+    );
     const consumers = dependencySetups.filter(({ jobName }) => jobName !== "preflight");
     expect(consumers.map(({ jobName }) => jobName).toSorted()).toEqual([
       "build-artifacts",
@@ -8263,13 +8337,15 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(manifestStep.env.OPENCLAW_CI_RUNNER_PROFILE).toBe(
       "${{ steps.runner_profile.outputs.runner_profile }}",
     );
-    expect(manifestStep.run).toContain("runnerBackend: runnerProfile");
+    expect(manifestStep.run).toContain("runnerBackend: nodeRunnerBackend");
     expect(checkShardStep.env.RUNNER_PROFILE).toBe("${{ needs.preflight.outputs.runner_profile }}");
     expect(checkShardStep.env.HOSTED_RUNNER_STRIPES).toContain(
       "needs.preflight.outputs.hosted_runner_profile_contract == 'true'",
     );
     expect(checkShardRun).toContain('if [ "$HOSTED_RUNNER_STRIPES" = "true" ]; then');
-    expect(checkShardStep.env.RELEASE_GATE).toBe("${{ inputs.release_gate && 'true' || 'false' }}");
+    expect(checkShardStep.env.RELEASE_GATE).toBe(
+      "${{ inputs.release_gate && needs.preflight.outputs.node_runner_backend != 'runson' && 'true' || 'false' }}",
+    );
     expect(checkShardRun).toContain("lint_args=(--only=extensions --only=scripts --threads=1)");
     expect(checkShardRun).toContain('if [ "$RELEASE_GATE" = "true" ]; then');
     expect(checkShardRun).toContain("lint_args=(--only=scripts --threads=1)");
@@ -8339,8 +8415,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       goEnv = {},
       expectedGoEnv = goEnv,
       lane,
+      nodeRunnerBackend,
       profile,
       releaseGate = false,
+      runAttempt = 1,
       stripe = 1,
     }: {
       capability: boolean;
@@ -8351,8 +8429,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       goEnv?: GoEnv;
       expectedGoEnv?: GoEnv;
       lane: "check" | "core";
+      nodeRunnerBackend?: "runson";
       profile: "blacksmith" | "github" | "hybrid";
       releaseGate?: boolean;
+      runAttempt?: number;
       stripe?: number;
     }) => {
       const root = tempDirs.make("openclaw-hosted-lint-owner-");
@@ -8380,18 +8460,18 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         "#!/usr/bin/env bash",
         `printf '${cpuCount}\\n'`,
       ]);
+      const expressionContext = {
+        eventName,
+        frozenTarget,
+        matrix: { stripe },
+        releaseGate,
+        repository: "openclaw/openclaw",
+        runnerProfile: profile,
+        runAttempt,
+        preflightOutputs: { node_runner_backend: nodeRunnerBackend ?? "" },
+      };
       const coreRun = coreLintStep.run.replace(/\$\{\{[\s\S]*?\}\}/gu, (expression: string) =>
-        String(
-          evaluateWorkflowExpression(expression, {
-            eventName,
-            frozenTarget,
-            matrix: { stripe },
-            releaseGate,
-            repository: "openclaw/openclaw",
-            runnerProfile: profile,
-            runAttempt: 1,
-          }),
-        ),
+        String(evaluateWorkflowExpression(expression, expressionContext)),
       );
       const stepEnv = lane === "check" ? checkShardStep.env : coreLintStep.env;
       const result = spawnSync("bash", ["-c", lane === "check" ? checkShardRun : coreRun], {
@@ -8415,7 +8495,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           LINT_GO_ENV: goEnvPath,
           OPENCLAW_LOCAL_CHECK: "0",
           PATH: `${binDir}:${process.env.PATH ?? ""}`,
-          RELEASE_GATE: releaseGate ? "true" : "false",
+          RELEASE_GATE: String(evaluateWorkflowExpression(stepEnv.RELEASE_GATE, expressionContext)),
           RUN_CONTROL_UI_I18N: "false",
           RUNNER_PROFILE: profile,
           RUN_UI_TESTS: "false",
@@ -8475,6 +8555,47 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       { releaseGate: true },
     ]) {
       expect(coreLintRows(context)).toEqual([1, 2, 3, 4, 5]);
+    }
+    for (const runAttempt of [1, 2]) {
+      const rows = coreLintRows({
+        eventName: "workflow_dispatch",
+        releaseGate: true,
+        runAttempt,
+        preflightOutputs: { node_runner_backend: "runson" },
+      });
+      expect(rows).toEqual([1, 2]);
+      expect(
+        rows.flatMap((stripe) =>
+          runLintOwner({
+            capability: true,
+            eventName: "workflow_dispatch",
+            lane: "core",
+            nodeRunnerBackend: "runson",
+            profile: "hybrid",
+            releaseGate: true,
+            runAttempt,
+            stripe,
+          }),
+        ),
+      ).toEqual(
+        [1, 2, 3, 4, 5].map(
+          (stripe) =>
+            `node --import tsx scripts/run-oxlint-shards.mts --only=core --split-core --core-stripe=${stripe}/5 --threads=1`,
+        ),
+      );
+      expect(
+        runLintOwner({
+          capability: true,
+          eventName: "workflow_dispatch",
+          lane: "check",
+          nodeRunnerBackend: "runson",
+          profile: "hybrid",
+          releaseGate: true,
+          runAttempt,
+        }),
+      ).toEqual([
+        "node --import tsx scripts/run-oxlint-shards.mts --only=extensions --only=scripts --threads=1",
+      ]);
     }
     expect(
       runLintOwner({
@@ -9584,6 +9705,180 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     }
   });
 
+  it("routes admitted RunsOn rows with unique Spot labels and portable cache readers", () => {
+    const job = readCiWorkflow().jobs["checks-node-core-test-nondist-shard"];
+    const context = {
+      eventName: "pull_request",
+      repository: "openclaw/openclaw",
+      headRepository: "openclaw/openclaw",
+      authorAssociation: "CONTRIBUTOR",
+      runAttempt: 1,
+      runId: 123,
+      runnerBackend: "runson",
+      runnerProfile: "hybrid",
+      runnerEnvironment: "self-hosted",
+      preflightOutputs: { node_runner_backend: "runson" },
+      matrix: { runner: "runson-c8i-8xlarge", check_name: "cron-1" },
+    } as const;
+    const label = evaluateWorkflowExpression(job["runs-on"], context);
+    expect(label).toBe(
+      "runs-on=123-cron-1/family=c8i.8xlarge/cpu=32/ram=64/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
+    );
+    expect(
+      evaluateWorkflowExpression(job["runs-on"], {
+        ...context,
+        matrix: { ...context.matrix, check_name: "cron-2" },
+      }),
+    ).not.toBe(label);
+    for (const overrides of [
+      { runAttempt: 2 },
+      { preflightOutputs: { node_runner_backend: "hybrid" } },
+      {
+        headRepository: "fork/openclaw",
+        preflightOutputs: { node_runner_backend: "github" },
+      },
+    ]) {
+      expect(evaluateWorkflowExpression(job["runs-on"], { ...context, ...overrides })).toBe(
+        "ubuntu-24.04",
+      );
+    }
+    const dispatch = { ...context, eventName: "workflow_dispatch" as const, releaseGate: true };
+    expect(evaluateWorkflowExpression(job["runs-on"], dispatch)).toBe(label);
+    expect(
+      evaluateWorkflowExpression(job["runs-on"], {
+        ...dispatch,
+        matrix: { runner: "blacksmith-32vcpu-ubuntu-2404", check_name: "ordinary-node" },
+      }),
+    ).toBe("blacksmith-32vcpu-ubuntu-2404");
+    for (const [name, matrix, expected, hosted] of [
+      ["build-artifacts", {}, "blacksmith-16vcpu-ubuntu-2404", "ubuntu-24.04"],
+      ["checks-ui", {}, "blacksmith-8vcpu-ubuntu-2404", "ubuntu-24.04"],
+      ["checks-ui-e2e", { task: "control-ui" }, "blacksmith-16vcpu-ubuntu-2404", "ubuntu-24.04"],
+      ["checks-windows", {}, "blacksmith-16vcpu-windows-2025", "windows-2025"],
+      [
+        "check-shard",
+        { task: "test-types", runner: "blacksmith-16vcpu-ubuntu-2404" },
+        "blacksmith-16vcpu-ubuntu-2404",
+        "ubuntu-24.04",
+      ],
+      ["check-test-types-hosted-core-shard", {}, "blacksmith-16vcpu-ubuntu-2404", "ubuntu-24.04"],
+      [
+        "check-additional-shard",
+        { group: "extension-package-boundary", runner: "blacksmith-16vcpu-ubuntu-2404" },
+        "blacksmith-16vcpu-ubuntu-2404",
+        "ubuntu-24.04",
+      ],
+    ] as const) {
+      const expression = readCiWorkflow().jobs[name]["runs-on"];
+      expect(evaluateWorkflowExpression(expression, { ...context, matrix }), `${name} PR`).toBe(
+        expected,
+      );
+      expect(evaluateWorkflowExpression(expression, { ...dispatch, matrix }), `${name} proof`).toBe(
+        expected,
+      );
+      for (const overrides of [
+        { runAttempt: 2 },
+        { preflightOutputs: { node_runner_backend: "hybrid" } },
+      ]) {
+        expect(
+          evaluateWorkflowExpression(expression, { ...dispatch, matrix, ...overrides }),
+          `${name} manual/retry fallback`,
+        ).toBe(hosted);
+      }
+    }
+    const setup = expectDefined(
+      job.steps.find((step: WorkflowStep) => step.name === "Setup Node environment"),
+      "Node setup",
+    );
+    expect(evaluateWorkflowExpression(setup.with["dependency-cache"], context)).toBe("false");
+    expect(
+      evaluateWorkflowExpression(setup.with["dependency-cache"], {
+        ...context,
+        matrix: { runner: "blacksmith-32vcpu-ubuntu-2404" },
+      }),
+    ).toBe("true");
+    for (const [overrides, expected] of [
+      [{}, "true"],
+      [{ runAttempt: 2 }, "false"],
+      [{ preflightOutputs: { node_runner_backend: "hybrid" } }, "false"],
+    ] as const) {
+      expect(
+        evaluateWorkflowExpression(setup.with["dependency-cache"], {
+          ...dispatch,
+          matrix: { runner: "blacksmith-32vcpu-ubuntu-2404" },
+          ...overrides,
+        }),
+      ).toBe(expected);
+    }
+    expect(setup.with).toMatchObject({ "vitest-fs-cache": "true", "node-compile-cache": "true" });
+    const resources = expectDefined(
+      job.steps.find((step: WorkflowStep) => step.name === "Configure Node test resources"),
+      "Node resources",
+    );
+    for (const matrix of [
+      context.matrix,
+      {
+        runner: "blacksmith-32vcpu-ubuntu-2404",
+        check_name: "checks-node-runson-cron-blacksmith-control",
+      },
+      {
+        runner: "ubuntu-24.04",
+        check_name: "checks-node-runson-cron-github-control",
+      },
+    ]) {
+      const comparison = { ...context, matrix, env: { NODE_VERSION: "24.19.0" } };
+      expect(evaluateWorkflowExpression(setup.with["node-version"], comparison)).toBe("24.19.0");
+      expect(evaluateWorkflowExpression(resources.env.RUNSON_JOB, comparison)).toBe("true");
+    }
+    const initialize = expectDefined(
+      job.steps.find((step: WorkflowStep) => step.name === "Initialize RunsOn"),
+      "RunsOn initialization",
+    );
+    expect(evaluateWorkflowExpression(`\${{ ${initialize.if} }}`, context)).toBe(true);
+    expect(
+      evaluateWorkflowExpression(`\${{ ${initialize.if} }}`, {
+        ...context,
+        runnerEnvironment: "github-hosted",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps RunsOn Node workers bounded without invoking the Blacksmith scheduler", () => {
+    const step = expectDefined(
+      readCiWorkflow().jobs["checks-node-core-test-nondist-shard"].steps.find(
+        (candidate: WorkflowStep) => candidate.name === "Configure Node test resources",
+      ),
+      "Node resources",
+    );
+    const root = tempDirs.make("runson-node-workers-");
+    const bin = path.join(root, "bin");
+    mkdirSync(bin);
+    writeExecutable(path.join(bin, "nproc"), ["#!/bin/sh", 'printf "%s\\n" "$FIXTURE_CORES"']);
+    writeExecutable(path.join(bin, "node"), ["#!/bin/sh", "exit 64"]);
+    for (const [cores, workers] of [
+      [32, 2],
+      [1, 1],
+    ]) {
+      const output = path.join(root, "github-env");
+      writeFileSync(output, "");
+      const result = runWorkflowShellScript(expectDefined(step.run, "resource script"), {
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+          GITHUB_ENV: output,
+          FIXTURE_CORES: String(cores),
+          RUNSON_JOB: "true",
+          RUNNER_ENVIRONMENT: "self-hosted",
+          FROZEN_TARGET: "false",
+          SHARD_PLAN_CONCURRENCY: "1",
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(readWorkflowOutputs(output)).toEqual({ OPENCLAW_VITEST_MAX_WORKERS: String(workers) });
+    }
+  });
+
   it("clamps Node test workers to the detected core count", () => {
     const workflow = readCiWorkflow();
     const nodeTestJob = workflow.jobs["checks-node-core-test-nondist-shard"];
@@ -9599,7 +9894,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(resourceStep.env.FROZEN_TARGET).toBe("${{ needs.preflight.outputs.frozen_target }}");
     expect(resourceStep.env.RUNNER_ENVIRONMENT).toBe("${{ runner.environment }}");
     expect(resourceStep.run).toContain(
-      '[[ "$RUNNER_ENVIRONMENT" == "self-hosted" && "$FROZEN_TARGET" != "true" && "$SHARD_PLAN_CONCURRENCY" == "1" ]]',
+      '[[ "$RUNSON_JOB" != "true" && "$RUNNER_ENVIRONMENT" == "self-hosted" && "$FROZEN_TARGET" != "true" && "$SHARD_PLAN_CONCURRENCY" == "1" ]]',
     );
     expect(resourceStep.run).toContain("isConstrainedCiCheckHost({");
     expect(resourceStep.run).toContain(

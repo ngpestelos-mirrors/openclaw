@@ -3682,6 +3682,122 @@ export function createSelectedNodeTestShardBundles(
   ];
 }
 
+// These complete selector generations ran serially for 842s and 701s in
+// 35688659765. Changed selectors need fresh evidence before this exception applies.
+const RUNSON_SERIAL_TAIL_PAIRS = [
+  {
+    config: "test/vitest/vitest.cli-process.config.ts",
+    timingKeys: [
+      "agentic-cli-process#selector-54-f7826a9ef2c4#generation-8e36d2d43531#part-6-of-7#include-14-4eac8c23d157",
+      "agentic-cli-process#selector-54-f7826a9ef2c4#generation-8e36d2d43531#part-7-of-7#include-15-d305c0ae5c0a",
+    ],
+  },
+  {
+    config: "test/vitest/vitest.tooling.config.ts",
+    timingKeys: [
+      "core-tooling-6#selector-79-8962b2387129#generation-1f9a356acb92#part-2-of-2#include-78-7a0f52a33d72",
+      "core-tooling-8#selector-42-d01b820346c9#generation-7b6f7f3a2425#part-2-of-2#include-41-a1c886e94c53",
+    ],
+  },
+];
+
+function routeRunsOnJobs(
+  jobs: CompactNodeTestShard[],
+  compactNodeJobCap: number,
+): CompactNodeTestShard[] {
+  const cronGroups: NodeTestShardGroup[] = [];
+  const cronTimeouts: number[] = [];
+  const routed = jobs.flatMap((job) => {
+    if (
+      job.planConcurrency === 1 &&
+      job.runner === DEFAULT_NODE_TEST_RUNNER &&
+      !job.requiresDist &&
+      !job.pretestBuildMode &&
+      job.groups.length === 2 &&
+      RUNSON_SERIAL_TAIL_PAIRS.some(({ config, timingKeys }) =>
+        timingKeys.every((key) =>
+          job.groups.some(
+            (group) =>
+              group.timing_key === key && group.configs.length === 1 && group.configs[0] === config,
+          ),
+        ),
+      )
+    ) {
+      // Retain each parent's ordering estimate; this placement exception does
+      // not replace the pricing owner or claim a measured per-child prediction.
+      return job.groups.map((group, index) => ({
+        ...job,
+        checkName: index === 0 ? job.checkName : `${job.checkName}-tail`,
+        shardName: index === 0 ? job.shardName : `${job.shardName}-tail`,
+        groups: [group],
+      }));
+    }
+    if (
+      job.requiresDist ||
+      job.pretestBuildMode ||
+      (job.env?.OPENCLAW_VITEST_MAX_WORKERS !== undefined &&
+        job.env.OPENCLAW_VITEST_MAX_WORKERS !== "2") ||
+      Object.keys(job.env ?? {}).some((key) => key !== "OPENCLAW_VITEST_MAX_WORKERS")
+    ) {
+      return [job];
+    }
+    const retained = job.groups.filter((group) => {
+      if (
+        !/^core-runtime-cron-parallel-(?:core|isolated-agent|service)(?:-hosted-\d+)?$/u.test(
+          group.shard_name,
+        ) ||
+        group.requiresDist ||
+        group.pretestBuildMode ||
+        group.configs.length !== 1 ||
+        group.configs[0] !== "test/vitest/vitest.cron.config.ts" ||
+        !group.includePatterns?.length ||
+        group.includePatterns.some((file) => !file.startsWith("src/cron/")) ||
+        (group.env?.OPENCLAW_VITEST_MAX_WORKERS !== undefined &&
+          group.env.OPENCLAW_VITEST_MAX_WORKERS !== "2") ||
+        (group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined &&
+          job.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined &&
+          job.planConcurrency !== 2)
+      ) {
+        return true;
+      }
+      cronGroups.push(group);
+      // The matrix's existing default is 60 minutes; extraction cannot extend
+      // any contributing job's execution deadline.
+      cronTimeouts.push(job.timeoutMinutes ?? 60);
+      return false;
+    });
+    return retained.length === job.groups.length
+      ? [job]
+      : retained.length
+        ? [{ ...job, groups: retained }]
+        : [];
+  });
+  if (cronGroups.length > 0) {
+    routed.push({
+      checkName: "checks-node-runson-cron",
+      shardName: "runson-cron",
+      runner: "runson-c8i-8xlarge",
+      groups: cronGroups,
+      requiresDist: false,
+      planConcurrency: 1,
+      timeoutMinutes: Math.min(...cronTimeouts),
+      // Extraction must not turn a packed child's two-worker allowance into
+      // the larger host default. Keep its selectors and group policy intact.
+      env: { ...PINNED_COMPACT_GROUP_ENV },
+    });
+  }
+  const jobCap = Math.min(
+    COMPACT_NODE_TEST_JOB_CAP,
+    compactNodeJobCap + routed.filter((job) => job.requiresDist).length,
+  );
+  if (routed.length > jobCap) {
+    throw new Error(
+      `compact runson node test plan exceeds ${jobCap} jobs (${routed.length} planned)`,
+    );
+  }
+  return routed.toSorted((a, b) => a.checkName.localeCompare(b.checkName));
+}
+
 function createCompactNodeTestShardBundles(
   sourceShards: readonly NodeTestShard[],
   options: NodeTestPlanOptions,
@@ -3691,6 +3807,22 @@ function createCompactNodeTestShardBundles(
   hostedToolingTailBudgets?: ReadonlyMap<string, number>,
   hostedToolingTailDonation?: HostedToolingTailDonation,
 ): CompactNodeTestShard[] {
+  if (options.runnerBackend === "runson") {
+    // Hybrid owns placement; the opt-in profile offloads cron and separates
+    // measured tails after worker and artifact admission has settled.
+    return routeRunsOnJobs(
+      createCompactNodeTestShardBundles(
+        sourceShards,
+        { ...options, runnerBackend: "hybrid" },
+        compactMode,
+        selectedToolingFiles,
+        splitHostedToolingTails,
+        hostedToolingTailBudgets,
+        hostedToolingTailDonation,
+      ),
+      options.compactNodeJobCap ?? COMPACT_NODE_TEST_JOB_CAP,
+    );
+  }
   const compactNodeJobCap = options.compactNodeJobCap ?? COMPACT_NODE_TEST_JOB_CAP;
   if (!Number.isSafeInteger(compactNodeJobCap) || compactNodeJobCap < 1) {
     throw new Error("compact Node job cap must be a positive integer");

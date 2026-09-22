@@ -500,6 +500,137 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     defaultShards = createNodeTestShards();
   });
 
+  it.each(["push", "pull-request"] as const)(
+    "retains child policies while routing RunsOn and splitting measured tails in %s plans",
+    (compactMode) => {
+      const hybrid = getCommittedCompactPlan(compactMode, "hybrid");
+      const runson = getCommittedCompactPlan(compactMode, "runson");
+      const routed = runson.filter((job) => job.runner === "runson-c8i-8xlarge");
+      expect(routed).toHaveLength(1);
+      expect(routed[0]).toMatchObject({
+        planConcurrency: 1,
+        requiresDist: false,
+        env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+      });
+      expect(routed[0]!.pretestBuildMode).toBeUndefined();
+      const cronGroups = routed[0]!.groups;
+      expect(cronGroups.map((group) => group.shard_name).toSorted()).toEqual([
+        "core-runtime-cron-parallel-core",
+        "core-runtime-cron-parallel-isolated-agent",
+        "core-runtime-cron-parallel-service",
+      ]);
+      const cronNames = new Set(cronGroups.map((group) => group.shard_name));
+      const previousCronJobs = hybrid.filter((job) =>
+        job.groups.some((group) => cronNames.has(group.shard_name)),
+      );
+      expect(routed[0]!.timeoutMinutes).toBe(
+        Math.min(...previousCronJobs.map((job) => job.timeoutMinutes ?? 60)),
+      );
+      const orderedGroups = (jobs: CompactNodeTestShard[]) =>
+        jobs
+          .flatMap((job) => job.groups)
+          .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name));
+      // Coverage and the complete executor contract survive the provider move.
+      expect(orderedGroups(runson)).toEqual(orderedGroups(hybrid));
+      const tailPairs = [
+        ["agentic-cli-process-hosted-6", "agentic-cli-process-hosted-7"],
+        ["core-tooling-6-hosted-2", "core-tooling-8-hosted-2"],
+      ];
+      expect(
+        runson
+          .filter((job) => job.checkName.endsWith("-tail"))
+          .map((job) => job.groups.map((group) => group.shard_name)),
+      ).toEqual(
+        compactMode === "push"
+          ? [["agentic-cli-process-hosted-7"]]
+          : [["agentic-cli-process-hosted-7"], ["core-tooling-8-hosted-2"]],
+      );
+      expect(runson.filter((job) => job.runner !== "runson-c8i-8xlarge")).toEqual(
+        hybrid
+          .flatMap((job) => {
+            const groups = job.groups.filter((group) => !cronNames.has(group.shard_name));
+            if (
+              groups.length === 2 &&
+              tailPairs.some((pair) => groups.every((group) => pair.includes(group.shard_name)))
+            ) {
+              // Inventory changes expire the measured selector exception. Keep
+              // this expectation visible until the replacement has native proof.
+              return [
+                { ...job, groups: [groups[0]!] },
+                {
+                  ...job,
+                  checkName: `${job.checkName}-tail`,
+                  shardName: `${job.shardName}-tail`,
+                  groups: [groups[1]!],
+                },
+              ];
+            }
+            return groups.length ? [{ ...job, groups }] : [];
+          })
+          .toSorted((a, b) => a.checkName.localeCompare(b.checkName)),
+      );
+      expect(runson.length).toBeLessThanOrEqual(90);
+      expect(
+        createNodeTestShardBundles({
+          includeReleaseOnlyPluginShards: false,
+          compactMode,
+          runnerBackend: "hybrid",
+        }),
+      ).toEqual(hybrid);
+    },
+  );
+
+  it("counts RunsOn and tail rows against the compact cap", () => {
+    const options = {
+      includeReleaseOnlyPluginShards: false,
+      compactMode: "pull-request" as const,
+    };
+    const hybrid = getCommittedCompactPlan(options.compactMode, "hybrid");
+    const compactNodeJobCap = hybrid.filter((job) => !job.requiresDist).length;
+    expect(() =>
+      createNodeTestShardBundles({ ...options, runnerBackend: "hybrid", compactNodeJobCap }),
+    ).not.toThrow();
+    expect(() =>
+      createNodeTestShardBundles({ ...options, runnerBackend: "runson", compactNodeJobCap }),
+    ).toThrow(`compact runson node test plan exceeds ${hybrid.length} jobs`);
+  });
+
+  it("keeps precise RunsOn targets and their canonical child policies", () => {
+    const cronTarget = "src/cron/validate-timestamp.test.ts";
+    const siblingTarget = "src/cli/update-dry-run-state.process.test.ts";
+    const targets = [cronTarget, siblingTarget];
+    const hybrid = expectDefined(
+      createSelectedNodeTestShardBundles(targets, { runnerBackend: "hybrid" }),
+      "precise hybrid plan",
+    );
+    const runson = expectDefined(
+      createSelectedNodeTestShardBundles(targets, { runnerBackend: "runson" }),
+      "precise RunsOn plan",
+    );
+    const orderedGroups = (jobs: CompactNodeTestShard[]) =>
+      jobs
+        .flatMap((job) => job.groups)
+        .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name));
+    expect(orderedGroups(runson)).toEqual(orderedGroups(hybrid));
+    expect(
+      orderedGroups(runson)
+        .flatMap((group) => group.includePatterns ?? [])
+        .toSorted(),
+    ).toEqual(targets.toSorted());
+    expect(runson.filter((job) => job.runner === "runson-c8i-8xlarge")).toMatchObject([
+      { groups: [{ includePatterns: [cronTarget] }], planConcurrency: 1 },
+    ]);
+    expect(
+      runson.find((job) =>
+        job.groups.some((group) => group.includePatterns?.includes(siblingTarget)),
+      )?.runner,
+    ).toBe(
+      hybrid.find((job) =>
+        job.groups.some((group) => group.includePatterns?.includes(siblingTarget)),
+      )?.runner,
+    );
+  });
+
   it("discovers only tooling files for a cold precise tooling plan", () => {
     const result = spawnNodeEvalSync(`
       import fs from "node:fs";
