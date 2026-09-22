@@ -79,6 +79,7 @@ type PackageDoctorOptions = {
         changes: UpdateDoctorConfigChange[];
         assertCurrent: () => void;
         assertBoundChildCurrent: () => void;
+        onStateHandoff?: () => void;
       }
     | undefined;
 };
@@ -92,6 +93,7 @@ export function preparePackageDoctorContext(params: {
   changes: UpdateDoctorConfigChange[];
   assertCurrent: () => void;
   assertBoundChildCurrent: () => void;
+  onStateHandoff?: () => void;
 }) {
   params.assertCurrent();
   if (!params.capable) {
@@ -108,6 +110,7 @@ export function preparePackageDoctorContext(params: {
     changes: params.changes,
     assertCurrent: params.assertCurrent,
     assertBoundChildCurrent: params.assertBoundChildCurrent,
+    onStateHandoff: params.onStateHandoff,
   };
 }
 
