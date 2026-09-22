@@ -148,8 +148,13 @@ describe("owned plugin inspections", () => {
           capturedInstanceDisposal: true,
         },
       ] as const
-    ).flatMap((fixture) =>
-      [false, true].map((closedReleaseScope) => ({ ...fixture, closedReleaseScope })),
+    ).flatMap(({ capturedDisposal, disposalFailure, capturedInstanceDisposal }) =>
+      [false, true].map((closedReleaseScope) => ({
+        capturedDisposal,
+        disposalFailure,
+        capturedInstanceDisposal,
+        closedReleaseScope,
+      })),
     ),
   )(
     "keeps registration cleanup captured by $capturedDisposal after its caller closes (instance: $capturedInstanceDisposal, closed release scope: $closedReleaseScope)",
