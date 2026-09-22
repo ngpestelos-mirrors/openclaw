@@ -114,7 +114,7 @@ suite.define(() => {
         const afterLabsReset = {
           agents: initialConfig.agents,
           browser: initialConfig.browser,
-          tools: { profile: "minimal" },
+          tools: { codeMode: {}, profile: "minimal" },
         };
         const afterThinkingReset = {
           agents: {

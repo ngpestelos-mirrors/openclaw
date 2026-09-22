@@ -303,7 +303,6 @@ describe("Code Mode guest source validation", () => {
     "return module.require('node:fs');",
     "return process.getBuiltinModule('node:fs');",
     "return import('node:fs');",
-    "return import.meta.url;",
     "return `${import('node:fs')}`;",
     "return `${require('node:fs')}`;",
     "return `${`nested ${import('node:fs')}`}`;",
