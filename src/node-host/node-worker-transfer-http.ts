@@ -167,7 +167,7 @@ export async function withNodeWorkerTransferHttpRequest<T>(
   const writerSignal = params.signal
     ? AbortSignal.any([params.signal, stopWriter.signal])
     : stopWriter.signal;
-  let receivedResponse = false;
+  let receivedResponse: IncomingMessage | undefined;
   let responseAccepted = false;
   let bodyCompleted = false;
   let writtenBytes = 0;
@@ -178,7 +178,7 @@ export async function withNodeWorkerTransferHttpRequest<T>(
       ? writtenBytes === declaredBytes
       : bodyCompleted;
   const onResponse = (response: IncomingMessage) => {
-    receivedResponse = true;
+    receivedResponse = response;
     responseReady.resolve(response);
   };
   const onError = (error: Error) => {
@@ -239,8 +239,11 @@ export async function withNodeWorkerTransferHttpRequest<T>(
     () => ({ ok: true as const }),
     (error: unknown) => {
       stopWriter.abort(error);
-      if (!receivedResponse) {
-        request.destroy(error instanceof Error ? error : new Error(String(error)));
+      // Keep complete responses readable so server diagnostics can still win.
+      if (!receivedResponse?.complete) {
+        const cause = error instanceof Error ? error : new Error(String(error));
+        receivedResponse?.destroy(cause);
+        request.destroy(cause);
       }
       return { ok: false as const, error };
     },

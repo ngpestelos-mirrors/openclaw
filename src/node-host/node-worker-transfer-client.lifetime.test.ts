@@ -152,160 +152,191 @@ describe("node worker upload HTTP lifetime", () => {
     }
   });
 
-  it.each(["rejection", "early success", "writer failure", "cancellation"] as const)(
-    "settles the upload writer before cleanup after %s",
-    async (mode) => {
-      const f = await uploadFixture(mode === "writer failure" ? "" : "captured result\n");
-      const readStarted = createDeferred();
-      const releaseRead = createDeferred();
-      const readSettled = createDeferred();
-      const controller = new AbortController();
-      const readInterruption = new Error("controlled staged read interruption");
-      const lateRequestErrors: Error[] = [];
-      const requests: Array<{
-        outgoing: http.ClientRequest;
-        closed: boolean;
-        initialErrorListeners: ReturnType<http.ClientRequest["listeners"]>;
-      }> = [];
-      let responseConsumed = false;
-      let snapshotPresentWhenReadSettled = false;
-      let readClosed = false;
-      let stagedPath = "";
-      let readSignal: AbortSignal | undefined;
-      const onReadAbort = () => releaseRead.resolve();
-      const open = fs.open.bind(fs);
-      const openSpy = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-        const handle = await open(...args);
-        const [filePath, flags] = args;
-        if (
-          typeof filePath === "string" &&
-          path.basename(path.dirname(filePath)).startsWith("worker-workspace-upload-") &&
-          path.basename(filePath) === "0" &&
-          typeof flags === "number" &&
-          (flags & (fsSync.constants.O_WRONLY | fsSync.constants.O_RDWR)) === 0
-        ) {
-          stagedPath = filePath;
-          const createReadStream = handle.createReadStream.bind(handle);
-          vi.spyOn(handle, "createReadStream").mockImplementation((options) => {
-            readSignal = options?.signal;
-            readSignal?.addEventListener("abort", onReadAbort, { once: true });
-            if (readSignal?.aborted) {
-              releaseRead.resolve();
-            }
-            return createReadStream(options);
-          });
-          const read = handle.read.bind(handle);
-          vi.spyOn(handle, "read").mockImplementation(async (...readArgs) => {
-            await read(...readArgs);
-            readStarted.resolve();
-            try {
-              await releaseRead.promise;
-              snapshotPresentWhenReadSettled = await fs.stat(filePath).then(
-                (stats) => stats.isFile(),
-                () => false,
-              );
-              throw readInterruption;
-            } finally {
-              readSettled.resolve();
-            }
-          });
-          const close = handle.close.bind(handle);
-          vi.spyOn(handle, "close").mockImplementation(async () => {
-            await close();
-            readClosed = true;
-          });
-        }
-        return handle;
-      });
-      const server = createHttpServer((_request, response) => {
-        void readStarted.promise.then(() => {
-          if (mode === "cancellation") {
-            controller.abort(new Error("controlled upload cancellation"));
-            return;
+  it.each([
+    "rejection",
+    "early success",
+    "writer failure",
+    "writer failure after headers",
+    "cancellation",
+  ] as const)("settles the upload writer before cleanup after %s", async (mode) => {
+    const f = await uploadFixture(mode === "writer failure" ? "" : "captured result\n");
+    const readStarted = createDeferred();
+    const releaseRead = createDeferred();
+    const readSettled = createDeferred();
+    const writerAborted = createDeferred();
+    const controller = new AbortController();
+    const readInterruption = new Error("controlled staged read interruption");
+    const lateRequestErrors: Error[] = [];
+    const requests: Array<{
+      outgoing: http.ClientRequest;
+      closed: boolean;
+      initialErrorListeners: ReturnType<http.ClientRequest["listeners"]>;
+    }> = [];
+    let responseConsumed = false;
+    let snapshotPresentWhenReadSettled = false;
+    let readClosed = false;
+    let stagedPath = "";
+    let readSignal: AbortSignal | undefined;
+    let heldResponse: http.ServerResponse | undefined;
+    let rejected: Promise<void> | undefined;
+    const onReadAbort = () => {
+      releaseRead.resolve();
+      writerAborted.resolve();
+    };
+    const open = fs.open.bind(fs);
+    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      const [filePath, flags] = args;
+      if (
+        typeof filePath === "string" &&
+        path.basename(path.dirname(filePath)).startsWith("worker-workspace-upload-") &&
+        path.basename(filePath) === "0" &&
+        typeof flags === "number" &&
+        (flags & (fsSync.constants.O_WRONLY | fsSync.constants.O_RDWR)) === 0
+      ) {
+        stagedPath = filePath;
+        const createReadStream = handle.createReadStream.bind(handle);
+        vi.spyOn(handle, "createReadStream").mockImplementation((options) => {
+          readSignal = options?.signal;
+          readSignal?.addEventListener("abort", onReadAbort, { once: true });
+          if (readSignal?.aborted) {
+            releaseRead.resolve();
           }
-          response.writeHead(mode === "rejection" ? 413 : 200, {
-            "content-type": "application/json",
-          });
-          response.end(
-            JSON.stringify(
-              mode === "rejection"
-                ? { error: "workspace_transfer_limit" }
-                : { manifestRef: f.currentRef },
-            ),
-          );
+          return createReadStream(options);
         });
-      });
-      const gatewayUrl = await listen(server);
-      const request = http.request.bind(http);
-      const requestSpy = vi.spyOn(http, "request").mockImplementation(((
-        url: string | URL,
-        options: RequestOptions,
-      ) => {
-        const outgoing = request(url, options);
-        const observed = {
-          outgoing,
-          closed: false,
-          initialErrorListeners: outgoing.listeners("error"),
-        };
-        requests.push(observed);
-        outgoing.once("close", () => {
-          observed.closed = true;
+        const read = handle.read.bind(handle);
+        vi.spyOn(handle, "read").mockImplementation(async (...readArgs) => {
+          await read(...readArgs);
+          readStarted.resolve();
+          try {
+            await releaseRead.promise;
+            snapshotPresentWhenReadSettled = await fs.stat(filePath).then(
+              (stats) => stats.isFile(),
+              () => false,
+            );
+            throw readInterruption;
+          } finally {
+            readSettled.resolve();
+          }
         });
-        outgoing.on(errorMonitor, (error: Error) => lateRequestErrors.push(error));
-        outgoing.once("response", (response) => {
-          response.once("end", () => {
-            responseConsumed = true;
-            if (mode === "writer failure") {
-              releaseRead.resolve();
-            }
-          });
-        });
-        return outgoing;
-      }) as typeof http.request);
-      try {
-        const operation = f
-          .upload(gatewayUrl, mode === "cancellation" ? controller.signal : undefined)
-          .finally(() => releaseRead.resolve());
-        await expect(operation).rejects.toMatchObject(
-          mode === "rejection"
-            ? {
-                message: "workspace-transfer-limit: gateway rejected workspace transfer caps",
-              }
-            : {
-                message: "workspace-transfer-failed: transfer did not complete",
-                stage: mode === "cancellation" ? "reconcile" : "acknowledgement",
-                ...(mode === "writer failure" ? { cause: readInterruption } : {}),
-              },
-        );
-        await readSettled.promise;
-        expect(snapshotPresentWhenReadSettled).toBe(true);
-        expect(readClosed).toBe(true);
-        await expect(fs.stat(stagedPath)).rejects.toMatchObject({ code: "ENOENT" });
-        expect(responseConsumed).toBe(mode !== "cancellation");
-        for (const observed of requests) {
-          expect(observed.closed).toBe(true);
-          expect(
-            observed.outgoing
-              .listeners("error")
-              .filter((listener) => !observed.initialErrorListeners.includes(listener)),
-          ).toEqual([]);
-        }
-        if (mode !== "cancellation") {
-          expect(lateRequestErrors).toEqual([]);
-        }
-      } finally {
-        releaseRead.resolve();
-        if (stagedPath) {
-          await readSettled.promise;
-        }
-        readSignal?.removeEventListener("abort", onReadAbort);
-        openSpy.mockRestore();
-        requestSpy.mockRestore();
-        server.closeAllConnections();
-        await new Promise<void>((resolve) => {
-          server.close(() => resolve());
+        const close = handle.close.bind(handle);
+        vi.spyOn(handle, "close").mockImplementation(async () => {
+          await close();
+          readClosed = true;
         });
       }
-    },
-  );
+      return handle;
+    });
+    const server = createHttpServer((_request, response) => {
+      void readStarted.promise.then(() => {
+        if (mode === "cancellation") {
+          controller.abort(new Error("controlled upload cancellation"));
+          return;
+        }
+        response.writeHead(mode === "rejection" ? 413 : 200, {
+          "content-type": "application/json",
+        });
+        if (mode === "writer failure after headers") {
+          heldResponse = response;
+          response.flushHeaders();
+          return;
+        }
+        response.end(
+          JSON.stringify(
+            mode === "rejection"
+              ? { error: "workspace_transfer_limit" }
+              : { manifestRef: f.currentRef },
+          ),
+        );
+      });
+    });
+    const gatewayUrl = await listen(server);
+    const request = http.request.bind(http);
+    const requestSpy = vi.spyOn(http, "request").mockImplementation(((
+      url: string | URL,
+      options: RequestOptions,
+    ) => {
+      const outgoing = request(url, options);
+      const observed = {
+        outgoing,
+        closed: false,
+        initialErrorListeners: outgoing.listeners("error"),
+      };
+      requests.push(observed);
+      outgoing.once("close", () => {
+        observed.closed = true;
+      });
+      outgoing.on(errorMonitor, (error: Error) => lateRequestErrors.push(error));
+      outgoing.once("response", (response) => {
+        if (mode === "writer failure after headers") {
+          releaseRead.resolve();
+        }
+        response.once("end", () => {
+          responseConsumed = true;
+          if (mode === "writer failure") {
+            releaseRead.resolve();
+          }
+        });
+      });
+      return outgoing;
+    }) as typeof http.request);
+    try {
+      const operation = f
+        .upload(gatewayUrl, mode === "cancellation" ? controller.signal : undefined)
+        .finally(() => releaseRead.resolve());
+      rejected = expect(operation).rejects.toMatchObject(
+        mode === "rejection"
+          ? {
+              message: "workspace-transfer-limit: gateway rejected workspace transfer caps",
+            }
+          : {
+              message: "workspace-transfer-failed: transfer did not complete",
+              stage: mode === "cancellation" ? "reconcile" : "acknowledgement",
+              ...(mode === "writer failure" || mode === "writer failure after headers"
+                ? { cause: readInterruption }
+                : {}),
+            },
+      );
+      if (mode === "writer failure after headers") {
+        await writerAborted.promise;
+        expect(readSignal?.reason).toBe(readInterruption);
+        expect(requests[0]?.outgoing.destroyed).toBe(true);
+      }
+      await rejected;
+      await readSettled.promise;
+      expect(snapshotPresentWhenReadSettled).toBe(true);
+      expect(readClosed).toBe(true);
+      await expect(fs.stat(stagedPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(responseConsumed).toBe(
+        mode !== "cancellation" && mode !== "writer failure after headers",
+      );
+      for (const observed of requests) {
+        expect(observed.closed).toBe(true);
+        expect(
+          observed.outgoing
+            .listeners("error")
+            .filter((listener) => !observed.initialErrorListeners.includes(listener)),
+        ).toEqual([]);
+      }
+      if (mode === "writer failure after headers") {
+        expect(lateRequestErrors).toEqual([readInterruption]);
+      } else if (mode !== "cancellation") {
+        expect(lateRequestErrors).toEqual([]);
+      }
+    } finally {
+      heldResponse?.end(JSON.stringify({ manifestRef: f.currentRef }));
+      releaseRead.resolve();
+      await rejected?.catch(() => {});
+      if (stagedPath) {
+        await readSettled.promise;
+      }
+      readSignal?.removeEventListener("abort", onReadAbort);
+      openSpy.mockRestore();
+      requestSpy.mockRestore();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    }
+  });
 });
