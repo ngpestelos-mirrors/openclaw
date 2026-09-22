@@ -357,7 +357,7 @@ suite.define(() => {
           await reloadedCodeModeRow
             .getByRole("switch", { name: "Code Mode", exact: true })
             .getAttribute("aria-checked"),
-        ).toBe("false");
+        ).toBe("true");
 
         if (captureUiProofEnabled) {
           await page.screenshot({

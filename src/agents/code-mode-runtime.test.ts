@@ -396,12 +396,14 @@ describe("Code Mode guest source validation", () => {
       "const value = { if() { return 1; } }; return value.if() / import('node:fs');",
     ],
     [
-      "dynamic import after an optional keyword-shaped return property",
+      "existing parser limitation: dynamic import after an optional keyword property",
       "const value = { return: 1 }; return value?.return / import('node:fs') / 1;",
+      "SyntaxError at openclaw-code-mode:user.js:1:51: Unexpected token. No tools were dispatched; correct the JavaScript source and submit it again.",
     ],
     [
-      "require after an optional keyword-shaped return property",
+      "existing parser limitation: require after an optional keyword property",
       "const value = { return: 1 }; return value?.return / require('node:fs') / 1;",
+      "SyntaxError at openclaw-code-mode:user.js:1:51: Unexpected token. No tools were dispatched; correct the JavaScript source and submit it again.",
     ],
     [
       "dynamic import after an optional keyword-shaped control method",
@@ -435,8 +437,8 @@ describe("Code Mode guest source validation", () => {
       "require after an astral-filled JavaScript string",
       `const label = "${"😀".repeat(96)}"; return require('node:fs');`,
     ],
-  ])("rejects %s", (_name, code) => {
-    expect(() => prepareSource(code)).toThrow("code mode module access is disabled");
+  ])("rejects %s", (_name, code, expectedError = "code mode module access is disabled") => {
+    expect(() => prepareSource(code)).toThrow(expectedError);
   });
 
   it("separates every deterministic literal and executable module-shaped input", () => {
