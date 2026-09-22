@@ -90,6 +90,74 @@ describe("approval fixture request ownership", () => {
     },
   );
 
+  it("does not expose a registered approval before publication", async (testContext) => {
+    const fixture = createTestApprovalFixture<PluginApprovalRequestPayload>(testContext, {
+      approvalKind: "plugin",
+    });
+    const { manager } = fixture;
+    const registered = createDeferredCore<string>();
+    let registeredId: string | undefined;
+    const release = createDeferredCore();
+    const published = createDeferredCore();
+    const register = manager.register.bind(manager);
+    const held = vi.spyOn(manager, "register").mockImplementationOnce(async (record, timeout) => {
+      const result = await register(record, timeout);
+      registeredId = record.id;
+      registered.resolve(record.id);
+      await release.promise;
+      return result;
+    });
+    setDangerousDemoCommandRegistry([createApprovalRequestPolicy()]);
+    const { context } = createContext({
+      pluginApprovalManager: manager,
+      getApprovalClientConnIds: createApprovalClientLookup([createOperatorClient()]),
+    });
+    const publication = vi.mocked(context.broadcastToConnIds);
+    publication.mockImplementation((event) => {
+      if (event === "plugin.approval.requested") {
+        published.resolve();
+      }
+    });
+    await fixture.run(async () => {
+      vi.useFakeTimers();
+      const pending = fixture.track(invokeDemoPolicy(context, createOperatorClient()));
+      try {
+        const id = await Promise.race([
+          registered.promise,
+          pending.then(() => {
+            throw new Error("Approval request completed before registration");
+          }),
+        ]);
+        const readiness = Promise.allSettled([
+          expectSinglePendingApproval(manager, context, () => pending).then((result) => {
+            expect(publication).toHaveBeenCalled();
+            return result;
+          }),
+        ]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(publication).not.toHaveBeenCalled();
+        release.resolve();
+        const [result] = await readiness;
+        if (result.status === "rejected") {
+          throw result.reason;
+        }
+        expect(result.value.record.id).toBe(id);
+      } finally {
+        release.resolve();
+        try {
+          if (registeredId !== undefined) {
+            await Promise.race([published.promise, pending]);
+            expect(await manager.resolve(registeredId, "deny")).toBe(true);
+          }
+          await pending;
+        } finally {
+          vi.useRealTimers();
+          held.mockRestore();
+        }
+      }
+    });
+  });
+
   it("waits for the real RPC accepted tuple after held registration", async (testContext) => {
     const fixture = createTestApprovalFixture(testContext);
     const { manager } = fixture;
