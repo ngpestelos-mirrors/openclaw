@@ -165,6 +165,7 @@ describe("Matrix account state Doctor migration", () => {
     "repairs active account state without opening token-root archives",
     () =>
       lifetime.run(async () => {
+        let bodyFailure: { error: unknown } | undefined;
         try {
           const stateDir = lifetime.createTempDir("openclaw-matrix-doctor-");
           const storageRootDir = path.join(
@@ -250,9 +251,22 @@ describe("Matrix account state Doctor migration", () => {
 
           const reopenedStore = await SqliteBackedMatrixSyncStore.create(storageRootDir);
           await expect(reopenedStore.getSavedSyncToken()).resolves.toBe("cursor-after-repair");
+        } catch (error) {
+          bodyFailure = { error };
+          throw error;
         } finally {
           // Join database work before removal, retaining the fixture if cleanup cannot be verified.
-          await lifetime.verifyCleanup(resetMatrixTestStores);
+          try {
+            await lifetime.verifyCleanup(resetMatrixTestStores);
+          } catch (cleanupError) {
+            if (bodyFailure) {
+              throw new AggregateError(
+                [bodyFailure.error, cleanupError],
+                "Matrix Doctor fixture and cleanup failed",
+              );
+            }
+            throw cleanupError;
+          }
         }
       }),
     getCliProcessTestTimeout(MATRIX_DOCTOR_CHILD_TIMEOUT_MS),
