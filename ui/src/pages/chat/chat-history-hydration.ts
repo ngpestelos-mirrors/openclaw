@@ -13,7 +13,6 @@ import {
 import { isSessionRunActive } from "../../lib/session-run-state.ts";
 import { requestSharedHistory } from "./chat-history-request.ts";
 import {
-  type ChatHistoryRunObservation,
   type ObservedChatHistoryResult,
   isHistoryCursor,
   resolveChatHistoryPagination,
@@ -51,6 +50,7 @@ import {
   recordControlUiPerformanceEvent,
   roundedControlUiDurationMs,
 } from "./performance.ts";
+import type { ChatHistoryRunObservation } from "./run-lifecycle.ts";
 import { applySessionMessagePayload } from "./session-message-apply.ts";
 import { rolloverChatStream } from "./stream-causal-boundary.ts";
 import {

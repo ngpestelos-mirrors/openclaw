@@ -15,7 +15,6 @@ import {
 import {
   type ChatHistoryResult,
   type ChatHistoryObservation,
-  type ChatHistoryRunObservation,
   type ObservedChatHistoryResponse,
   type ChatHistoryDeltaResult,
   type ChatHistoryResetResult,
@@ -30,6 +29,7 @@ import {
   acceptsHistoryResult,
 } from "./chat-history-state.ts";
 import type { ChatHistorySessions, ChatState } from "./chat-state-contract.ts";
+import type { ChatHistoryRunObservation } from "./run-lifecycle.ts";
 import type { ChatSessionSnapshot } from "./session-message-cache.ts";
 
 export const CHAT_HISTORY_REQUEST_LIMIT = 80;
