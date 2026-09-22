@@ -8854,6 +8854,13 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
                 } else {
                   expect(included.length).toBeGreaterThan(1000);
                   expect(included.filter((file: string) => nodeFiles.includes(file))).toEqual([]);
+                  if (uiGroups[0]?.includePatterns) {
+                    expect(included.toSorted()).toEqual(
+                      uiGroups[0].includePatterns
+                        .filter((file) => !nodeFiles.includes(file))
+                        .toSorted(),
+                    );
+                  }
                 }
               } else {
                 expect(includeFile).toBeUndefined();
