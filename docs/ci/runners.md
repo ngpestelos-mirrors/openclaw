@@ -196,7 +196,10 @@ Blacksmith class, preserving child contracts, workers and deadlines. Together
 these changes take broad-PR Node rows from 101 to 104 and compact rows from
 63 to 66, within unchanged caps. The hybrid profile is unchanged. No NVMe,
 sticky disk, warm pool, or test-inventory change is enabled.
-Record exact-head Spot job and complete workflow measurements in the qualification PR.
+The exact-head comparison passed cron on Spot, Blacksmith, and GitHub in
+396, 432, and 672 seconds, respectively. Both native workflows still failed
+and exceeded fifteen minutes; see the
+[measured routing costs and remaining qualification gaps](/ci/routing-costs#runson-remains-unqualified).
 
 The repository backend value `runson` admits this route only on the first
 attempt of a canonical, trusted same-repository PR. The repository variable
@@ -226,7 +229,7 @@ login from the operator, though the expired operator SSO session prevents curren
 administrative, selected-AZ price, and teardown verification. The public AWS feed
 supplies a regional Spot reference without authentication: $0.6586/hour for this
 type in `us-east-1`, fetched September 22, 2026, at 06:02:13 UTC. See the
-[price source, timestamp, and illustrative costs](/ci/routing-costs#runson-remains-unqualified).
+[price source, timestamp, and measured allocation estimate](/ci/routing-costs#runson-remains-unqualified).
 No interactive login is part of qualification.
 
 `spot=true` retains the provider's automatic on-demand fallback when Spot
