@@ -128,6 +128,7 @@ function authorizeGatewayMethod(
         registeredScope,
         scopes,
         resolveSessionMethodScope(method, params),
+        method,
       )
     : authorizeOperatorScopesForMethod(method, scopes, params);
   if (!scopeAuth.allowed) {
