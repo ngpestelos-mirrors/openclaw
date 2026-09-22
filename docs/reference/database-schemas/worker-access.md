@@ -68,6 +68,38 @@ including after a failed request. After an unsettled native exit, the shared-sta
 cleanup worker releases the exact retained lease. Retirement joins lease deletion and cleanup
 store close, keeping those writes off the host connection used by live snapshots.
 
+Physical page reclamation releases the session writer permit between vacuum units,
+so queued foreground writers receive their FIFO turn before the next unit. Each
+connection starts with eight-page units and adjusts toward a 25 ms hold target,
+capped at 512 pages. Periodic and cold reclamation retain their existing total
+page budgets. Archive selection, file
+removal, and row deletion retain their existing shared permit, with disk pressure
+rechecked after admission. Page limits do not bound checkpoint copying or storage
+latency. Slow transaction diagnostics include commit and rollback time on both
+the main thread and workers, naming the database and operation when supplied.
+
+Watched human-turn signals and upstream observations use the shared-state writer,
+including their watcher probe and pruning. Producers await settlement and recheck
+current session authority; upstream observations compare the captured source in
+the committing transaction. Goal events share that recording command. Synchronous
+creation, compaction, terminal-event, watch, reset, and deletion callbacks remain
+separate migration work.
+
+Task state-change notification preparation awaits the existing task and flow
+projections, joining accepted event and acknowledgement writes before selecting
+delivery facts. Missing-owner outcomes use the notification writer without
+advancing a delivery watermark. Native cancellation, terminal delivery, and other
+synchronous task mutation APIs retain their current owners.
+
+Durable session entry replacement reads its detached snapshot in the history
+worker and commits through the existing agent database executor. The transaction
+rereads comparison bytes and current rows, and the host rechecks caller authority
+at admission and commit. Committed receipts invalidate retained entry projections
+and publish sharing facts before observers. Missing databases are prepared by the
+same worker owner. Incognito stores, already executing workers, Doctor maintenance,
+and prepared native deletion rollback closures retain their synchronous kernels.
+Schemas, retained bytes, configuration, and update behavior are unchanged.
+
 ## Migrate a caller
 
 1. Trace the registered request, event, or timer through the store owner. Check

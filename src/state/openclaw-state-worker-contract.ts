@@ -58,10 +58,7 @@ import type {
   ProjectRegistryRecord,
 } from "../projects/project-registry.kernel.js";
 import type { SecretStoreExpiryCutoffs } from "../secrets/store/secret-store-expiry.kernel.js";
-import type {
-  SessionStateEventInput,
-  SessionStateNotice,
-} from "../sessions/session-state-events.kernel.js";
+import type { SessionStateWorkerOperations } from "../sessions/session-state-events.worker.js";
 import type { SessionUpstreamLink } from "../sessions/session-upstream-links.kernel.js";
 import type { DeviceAuthEntry } from "../shared/device-auth.js";
 import type { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
@@ -85,7 +82,8 @@ import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; identityKey: string };
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
+export type OpenClawStateWorkerOperations = SessionStateWorkerOperations &
+  McpOAuthReadOperations &
   CurrentConversationBindingWorkerOperations &
   McpOAuthWriteOperations &
   WebPushWorkerOperations &
@@ -175,11 +173,6 @@ export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
     "secrets.purge": { input: SecretStoreExpiryCutoffs; output: number };
     "promotions.markNotified": { input: { slugs: string[]; now: number }; output: true };
     "promotions.recordClaim": { input: PreparedPromotionClaim; output: void };
-    "sessionState.recordGoalChange": {
-      input: { event: SessionStateEventInput & { kind: "goal_changed" }; now: number };
-      output: SessionStateNotice[];
-    };
-    "sessionState.prune": { input: { now: number }; output: void };
     "managedImages.read": { input: { attachmentId: string }; output: ManagedImageRecord | null };
     "managedImages.entries": { input: { sessionKey?: string }; output: ManagedImageRecordEntry[] };
     "managedImages.originalMediaIds": { input: undefined; output: string[] };

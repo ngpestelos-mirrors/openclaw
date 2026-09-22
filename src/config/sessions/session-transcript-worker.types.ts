@@ -25,6 +25,10 @@ import type {
   SessionModelContextLimits,
 } from "./session-accessor.sqlite-model-context.js";
 import type {
+  SessionEntryReplacementSelection,
+  SessionEntryReplacementState,
+} from "./session-accessor.sqlite-replacement-state.js";
+import type {
   SessionAccessScope,
   SessionEntryListScope,
   SessionEntrySummary,
@@ -158,7 +162,8 @@ export type SessionExactEntriesWorkerInput = {
   env: NodeJS.ProcessEnv;
   sessionKeys: readonly string[];
   lifecycleSessionKey?: string;
-  projection?: "full" | "backing" | "sharing";
+  projection?: "full" | "backing" | "sharing" | "replacement";
+  replacementSelection?: SessionEntryReplacementSelection;
   continuation?: CanonicalSessionReaderContinuation;
 };
 
@@ -166,6 +171,7 @@ export type SessionExactEntriesWorkerResult = {
   kind: "session-exact-entries";
   entries: SessionEntrySummary[];
   lifecycleTimestamps: SessionLifecycleTimestamps;
+  replacement?: SessionEntryReplacementState & { databaseIdentity: string };
   sharing?: {
     source: { agentId: string; path: string };
     databaseIdentity: string;

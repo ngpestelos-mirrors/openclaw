@@ -198,7 +198,7 @@ test.each(["current", "revoked-after-open", "revoked-during-open"] as const)(
       () => {},
     );
     try {
-      await generation.runExisting(source, async () => "opened");
+      await generation.run(source, async () => "opened");
       expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
       const transferred = getOpenClawAgentDatabaseValidationForTransfer(database);
       expect(Boolean(transferred)).toBe(proof !== "revoked-during-open");

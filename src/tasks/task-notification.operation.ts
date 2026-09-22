@@ -4,7 +4,7 @@ import {
   prepareTaskRecordUpdate,
   type TaskRecordTransitionReceipt,
 } from "./task-registry-transition.operation.js";
-import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
+import type { TaskDeliveryState, TaskDeliveryStatus, TaskRecord } from "./task-registry.types.js";
 
 export type TaskNotificationTarget = Readonly<
   Pick<TaskRecord, "taskId" | "runtime" | "ownerKey" | "scopeKind" | "runId" | "childSessionKey">
@@ -13,8 +13,11 @@ export type TaskNotificationTarget = Readonly<
 export type TaskStateNotificationAcknowledgement = {
   taskId: string;
   expectedTask: TaskNotificationTarget;
-  eventAt: number;
-};
+} & ({ eventAt: number; missingOwner?: never } | { missingOwner: true; eventAt?: never });
+
+export function resolveMissingOwnerDeliveryStatus(task: TaskRecord): TaskDeliveryStatus {
+  return task.scopeKind === "system" ? "not_applicable" : "parent_missing";
+}
 
 export function captureTaskNotificationTarget(task: TaskRecord): TaskNotificationTarget {
   // Lifecycle timestamps may normalize while transport waits; the task's run scope stays fixed.
@@ -77,22 +80,27 @@ export function acknowledgeTaskStateNotification(
 ): TaskRecordTransitionReceipt | null {
   let selected: boolean | undefined;
   let receipt: TaskRecordTransitionReceipt | null = null;
-  writeTaskNotificationStage(operations, "watermark", (assertCurrent) => {
-    const current = operations.readCurrent();
-    selected = matchesTaskNotificationTarget(current.task, input.expectedTask);
-    if (!selected) {
-      return;
-    }
-    const requesterOrigin = normalizeDeliveryContext(current.deliveryState?.requesterOrigin);
-    const deliveryState: TaskDeliveryState = {
-      taskId: input.taskId,
-      ...(requesterOrigin ? { requesterOrigin } : {}),
-      lastNotifiedEventAt: Math.max(current.deliveryState?.lastNotifiedEventAt ?? 0, input.eventAt),
-    };
-    assertCurrent();
-    operations.upsertDelivery(deliveryState);
-    operations.deferCommit(() => operations.onCommitted(null));
-  });
+  if (!input.missingOwner) {
+    writeTaskNotificationStage(operations, "watermark", (assertCurrent) => {
+      const current = operations.readCurrent();
+      selected = matchesTaskNotificationTarget(current.task, input.expectedTask);
+      if (!selected) {
+        return;
+      }
+      const requesterOrigin = normalizeDeliveryContext(current.deliveryState?.requesterOrigin);
+      const deliveryState: TaskDeliveryState = {
+        taskId: input.taskId,
+        ...(requesterOrigin ? { requesterOrigin } : {}),
+        lastNotifiedEventAt: Math.max(
+          current.deliveryState?.lastNotifiedEventAt ?? 0,
+          input.eventAt,
+        ),
+      };
+      assertCurrent();
+      operations.upsertDelivery(deliveryState);
+      operations.deferCommit(() => operations.onCommitted(null));
+    });
+  }
   if (selected === false) {
     return null;
   }
@@ -102,7 +110,16 @@ export function acknowledgeTaskStateNotification(
       return;
     }
     const now = Date.now();
-    const updated = prepareTaskRecordUpdate(current.task, { lastEventAt: now }, now);
+    const updated = prepareTaskRecordUpdate(
+      current.task,
+      {
+        lastEventAt: now,
+        ...(input.missingOwner
+          ? { deliveryStatus: resolveMissingOwnerDeliveryStatus(current.task) }
+          : {}),
+      },
+      now,
+    );
     assertCurrent();
     if (updated.persisted) {
       operations.upsertTask(updated.task, current.deliveryState);

@@ -7,6 +7,7 @@ import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db
 import { resolveSessionLifecycleTimestamps } from "./lifecycle.js";
 import { readExactSessionEntryCandidatesInDatabase } from "./session-accessor.sqlite-entry-cache.js";
 import { readTranscriptHeaderFromDatabase } from "./session-accessor.sqlite-read.js";
+import { readSessionEntryReplacementState } from "./session-accessor.sqlite-replacement-read.js";
 import { readSessionBackingFactsInDatabase } from "./session-backing-facts.js";
 import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
 import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
@@ -34,6 +35,24 @@ export function readExactSessionEntriesWithLifecycle(
         : withSqlitePostCommitPublications(database.db, () =>
             runSqliteDeferredTransactionSync(database.db, () => {
               assertCanonicalSqliteSessionKeysCurrent(database);
+              if (request.projection === "replacement") {
+                const identity = readOpenClawAgentDatabaseIdentity(database).identity;
+                if (typeof identity !== "string" || !request.replacementSelection) {
+                  throw new Error(
+                    "Session replacement snapshot requires its durable owner and selection",
+                  );
+                }
+                const replacement = readSessionEntryReplacementState(
+                  database,
+                  request.replacementSelection,
+                );
+                return {
+                  kind: "session-exact-entries" as const,
+                  entries: replacement.entries,
+                  lifecycleTimestamps: {},
+                  replacement: { ...replacement, databaseIdentity: identity },
+                };
+              }
               const selected = expectDefined(
                 readExactSessionEntryCandidatesInDatabase(
                   database,

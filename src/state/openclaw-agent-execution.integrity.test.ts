@@ -26,6 +26,7 @@ import {
 } from "./openclaw-agent-db.js";
 import type { AgentDatabaseRequestExecutionSource } from "./openclaw-agent-execution-contract.js";
 import { createAgentDatabaseNativeGeneration } from "./openclaw-agent-execution-native.js";
+import * as verification from "./openclaw-database-verify.js";
 import {
   clearOpenClawAgentIntegrityVerification,
   resolveQuarantineStorePath,
@@ -97,6 +98,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 
 it.each([
   "verified",
+  "prepared-existing",
   "invalidated",
   "failed",
   "revoked-before-grant",
@@ -180,21 +182,30 @@ it.each([
       store.close();
     }
   }
+  const quickCheck = vi.spyOn(verification, "requestOpenClawAgentDatabaseQuickCheck");
   try {
     if (proof === "failed") {
-      await expect(generation.runExisting(source, async () => "opened")).rejects.toThrow(
+      await expect(generation.run(source, async () => "opened")).rejects.toThrow(
         "OpenClaw agent database claim is no longer current",
       );
       expect(getOpenClawAgentDatabaseValidation(database)).toBeUndefined();
       expect(Array.from(new Int32Array(counter.checks))).toEqual([0, 0]);
       return;
     }
-    await expect(generation.runExisting(source, async () => "opened")).resolves.toBe("opened");
+    await expect(
+      generation.run(source, async () => "opened", undefined, proof === "prepared-existing"),
+    ).resolves.toBe("opened");
+    if (proof === "prepared-existing") {
+      expect(quickCheck).toHaveBeenCalledOnce();
+    }
     expect(Array.from(new Int32Array(counter.checks))).toEqual(
-      proof === "verified" || proof === "closed-host" ? [0, 0] : [1, 1],
+      proof === "verified" || proof === "prepared-existing" || proof === "closed-host"
+        ? [0, 0]
+        : [1, 1],
     );
     expect(revokedBeforeGrant).toBe(proof === "revoked-before-grant");
   } finally {
+    quickCheck.mockRestore();
     try {
       await generation.close();
     } finally {

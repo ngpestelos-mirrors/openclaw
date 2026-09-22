@@ -42,6 +42,7 @@ vi.mock("./task-registry-state.js", () => ({
   taskDeliveryStates: storage.delivery,
   tasksWithPendingDelivery: storage.pending,
   ensureTaskRegistryReady: storage.ensureReady,
+  ensureTaskRegistryReadyAsync: storage.ensureReady,
   withTaskRegistryMutation: <T>(operation: () => T) => operation(),
   getTasksByRunId: (runId: string) =>
     [...storage.tasks.values()].filter((task) => task.runId === runId),

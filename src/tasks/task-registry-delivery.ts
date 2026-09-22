@@ -19,13 +19,11 @@ import {
 } from "./task-executor-policy.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { getTaskFlowById } from "./task-flow-runtime-internal.js";
-import {
-  captureTaskNotificationMutationOwner,
-  settleNotificationMutationAfterPreparationFailure,
-} from "./task-notification-mutation.async.js";
+import { captureTaskNotificationMutationOwner } from "./task-notification-mutation.async.js";
 import {
   captureTaskNotificationTarget,
   matchesTaskNotificationTarget,
+  resolveMissingOwnerDeliveryStatus,
   type TaskNotificationTarget,
 } from "./task-notification.operation.js";
 import { runTaskDeliveryWithDetachedAdmission } from "./task-registry-delivery-admission.js";
@@ -41,12 +39,7 @@ import {
   tasks,
   tasksWithPendingDelivery,
 } from "./task-registry-state.js";
-import type {
-  TaskDeliveryState,
-  TaskDeliveryStatus,
-  TaskEventRecord,
-  TaskRecord,
-} from "./task-registry.types.js";
+import type { TaskDeliveryState, TaskEventRecord, TaskRecord } from "./task-registry.types.js";
 import { resolveTaskSessionAgentId } from "./task-session-identity.js";
 
 type NotificationMutationOwner = ReturnType<typeof captureTaskNotificationMutationOwner>;
@@ -134,10 +127,6 @@ function canDeliverParentReviewTaskToThreadOrigin(
     channelSupportsThreadDelivery(origin?.channel) &&
     canDeliverToRequesterOrigin(origin),
   );
-}
-
-function resolveMissingOwnerDeliveryStatus(task: TaskRecord): TaskDeliveryStatus {
-  return task.scopeKind === "system" ? "not_applicable" : "parent_missing";
 }
 
 function queueTaskSystemEvent(
@@ -522,12 +511,15 @@ type TaskStateChangeDelivery = {
   queued: false | Promise<TaskRecord | null>;
   acknowledge: () => Promise<TaskRecord | null>;
 };
-type PreparedTaskStateChangeDelivery = { result: TaskRecord | null } | TaskStateChangeDelivery;
+type PreparedTaskStateChangeDelivery =
+  | { result: TaskRecord | null | Promise<TaskRecord | null> }
+  | TaskStateChangeDelivery;
 
 function prepareTaskStateChangeDelivery(
   expectedTask: TaskNotificationTarget,
   latestEvent: TaskEventRecord | undefined,
   mutation: NotificationMutationOwner,
+  readFlow: Parameters<typeof resolveTaskDeliveryOwner>[1],
 ): PreparedTaskStateChangeDelivery {
   const { taskId } = expectedTask;
   const current = tasks.get(taskId);
@@ -547,14 +539,11 @@ function prepareTaskStateChangeDelivery(
     return { result: cloneTaskRecord(current) };
   }
   try {
-    const owner = resolveTaskDeliveryOwner(current);
+    const owner = resolveTaskDeliveryOwner(current, readFlow);
     const ownerSessionKey = owner.sessionKey?.trim();
     if (!ownerSessionKey) {
       return {
-        result: updateTask(taskId, {
-          deliveryStatus: resolveMissingOwnerDeliveryStatus(current),
-          lastEventAt: Date.now(),
-        }),
+        result: mutation.markMissingOwner(current),
       };
     }
     const acknowledge = mutation.bindStateChange(current, event.at);
@@ -587,27 +576,10 @@ async function maybeDeliverTaskStateChangeUpdateUnderAdmission(
   assertCurrent: () => void,
 ): Promise<TaskRecord | null> {
   const { taskId } = expectedTask;
-  const mutation = captureTaskNotificationMutationOwner(assertCurrent);
-  let pendingMutation: Promise<TaskRecord | null> | undefined;
-  let initial: PreparedTaskStateChangeDelivery;
-  try {
-    initial = await mutation.prepare(() =>
-      withTaskRegistryMutation(
-        () => {
-          ensureTaskRegistryReady();
-          const prepared = prepareTaskStateChangeDelivery(expectedTask, latestEvent, mutation);
-          if (!("result" in prepared) && prepared.queued) {
-            pendingMutation = prepared.queued;
-          }
-          return prepared;
-        },
-        () => ({ result: null }),
-      ),
-    );
-  } catch (error) {
-    await settleNotificationMutationAfterPreparationFailure(pendingMutation, error);
-    throw error;
-  }
+  const mutation = captureTaskNotificationMutationOwner(assertCurrent, taskId);
+  const initial = await mutation.prepare((readFlow) =>
+    prepareTaskStateChangeDelivery(expectedTask, latestEvent, mutation, readFlow),
+  );
   if ("result" in initial) {
     return initial.result;
   }
@@ -616,79 +588,42 @@ async function maybeDeliverTaskStateChangeUpdateUnderAdmission(
       return await initial.queued;
     }
     const { sendMessage } = await loadTaskRegistryDeliveryRuntime();
-    const invocation: {
-      send?: { facts: TaskStateChangeDelivery; pending: ReturnType<typeof sendMessage> };
-      cleanupFailure?: { error: unknown };
-    } = {};
-    let immediate: TaskRecord | null | undefined;
-    try {
-      immediate = await mutation.prepare(() =>
-        withTaskRegistryMutation(
-          () => {
-            assertCurrent();
-            const fresh = prepareTaskStateChangeDelivery(expectedTask, latestEvent, mutation);
-            if ("result" in fresh) {
-              return fresh.result;
-            }
-            if (fresh.queued) {
-              pendingMutation = fresh.queued;
-              return undefined;
-            }
-            const { current, latestEvent: event, owner, ownerSessionKey, eventText } = fresh;
-            const requesterAgentId = owner.agentId;
-            const idempotencyKey = resolveTaskStateChangeIdempotencyKey({
-              task: current,
-              latestEvent: event,
-              owner,
-            });
-            invocation.send = {
-              facts: fresh,
-              pending: sendMessage({
-                channel: owner.requesterOrigin?.channel,
-                to: owner.requesterOrigin?.to ?? "",
-                accountId: owner.requesterOrigin?.accountId,
-                threadId: owner.requesterOrigin?.threadId,
-                content: eventText,
-                agentId: requesterAgentId,
-                idempotencyKey,
-                mirror: { sessionKey: ownerSessionKey, agentId: requesterAgentId, idempotencyKey },
-              }),
-            };
-            return undefined;
-          },
-          () => null,
-        ),
-      );
-    } catch (error) {
-      if (!invocation.send) {
-        await settleNotificationMutationAfterPreparationFailure(pendingMutation, error);
-        throw error;
+    const prepared = await mutation.prepare((readFlow) => {
+      const fresh = prepareTaskStateChangeDelivery(expectedTask, latestEvent, mutation, readFlow);
+      if ("result" in fresh) {
+        return fresh;
       }
-      invocation.cleanupFailure = { error };
-    }
-    if (!invocation.send) {
-      return pendingMutation ? await pendingMutation : (immediate ?? null);
-    }
-    const { current, owner, acknowledge } = invocation.send.facts;
-    const sendResult = await invocation.send.pending.catch((error: unknown) => {
-      if (invocation.cleanupFailure) {
-        throw new AggregateError(
-          [invocation.cleanupFailure.error, error],
-          "Task state-change delivery and coordinator cleanup failed",
-          { cause: invocation.cleanupFailure.error },
-        );
+      if (fresh.queued) {
+        return { result: fresh.queued };
       }
-      throw error;
-    });
-    if (invocation.cleanupFailure) {
-      taskRegistryLog.warn(
-        "Background task state change settled after coordinator cleanup failed",
-        {
-          taskId,
-          error: invocation.cleanupFailure.error,
+      const { current, latestEvent: event, owner, ownerSessionKey, eventText } = fresh;
+      const requesterAgentId = owner.agentId;
+      const idempotencyKey = resolveTaskStateChangeIdempotencyKey({
+        task: current,
+        latestEvent: event,
+        owner,
+      });
+      return {
+        send: {
+          facts: fresh,
+          pending: sendMessage({
+            channel: owner.requesterOrigin?.channel,
+            to: owner.requesterOrigin?.to ?? "",
+            accountId: owner.requesterOrigin?.accountId,
+            threadId: owner.requesterOrigin?.threadId,
+            content: eventText,
+            agentId: requesterAgentId,
+            idempotencyKey,
+            mirror: { sessionKey: ownerSessionKey, agentId: requesterAgentId, idempotencyKey },
+          }),
         },
-      );
+      };
+    });
+    if ("result" in prepared) {
+      return prepared.result;
     }
+    const { current, owner, acknowledge } = prepared.send.facts;
+    const sendResult = await prepared.send.pending;
     if (sendResult.deliveryStatus === "suppressed") {
       if (sendResult.suppressionReason !== "adapter_returned_no_identity") {
         throw new Error(
@@ -714,7 +649,7 @@ async function maybeDeliverTaskStateChangeUpdateUnderAdmission(
       return current ? cloneTaskRecord(current) : null;
     };
     try {
-      return await mutation.prepare(() => withTaskRegistryMutation(readCurrent, readCurrent));
+      return await mutation.prepare(readCurrent);
     } catch {
       return readCurrent();
     }

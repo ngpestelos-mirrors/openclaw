@@ -1,9 +1,18 @@
 import { captureTaskMutationContext } from "./task-executor-mutation-effects.async.js";
 import type { TaskMutationContext } from "./task-executor.types.js";
+import {
+  prepareTaskFlowRegistryRead,
+  type TaskFlowRegistryRead,
+} from "./task-flow-runtime-internal.js";
 import type { TaskInitialWorkerCommand } from "./task-initial-worker.types.js";
 import { captureTaskNotificationTarget } from "./task-notification.operation.js";
+import { captureTaskRegistryReadFence } from "./task-registry-listener-state.js";
 import { cloneTaskRecord } from "./task-registry-records.js";
-import { assertTaskRegistryOwnerCurrent } from "./task-registry-state.js";
+import {
+  assertTaskRegistryOwnerCurrent,
+  prepareTaskRegistryProjectionAsync,
+  tasks,
+} from "./task-registry-state.js";
 import type { TaskRegistryStore } from "./task-registry.store.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
@@ -23,7 +32,10 @@ function pendingFor(mutation: TaskMutationContext) {
 }
 
 /** Retain the original notification store through transport and mutation settlement. */
-export function captureTaskNotificationMutationOwner(assertDeliveryCurrent: () => void) {
+export function captureTaskNotificationMutationOwner(
+  assertDeliveryCurrent: () => void,
+  taskId: string,
+) {
   const mutation = captureTaskMutationContext();
   const assertCurrent = () => {
     assertDeliveryCurrent();
@@ -44,7 +56,7 @@ export function captureTaskNotificationMutationOwner(assertDeliveryCurrent: () =
     }
     const owned = pending;
     const databases = byDatabase;
-    // Register custody before native preparation releases; start storage on the next microtask.
+    // Register custody before another notification prepares; start storage on the next microtask.
     const operation = Promise.resolve().then(async () => {
       assertCurrent();
       const { settleTaskRecordTransitionAsync } =
@@ -62,18 +74,40 @@ export function captureTaskNotificationMutationOwner(assertDeliveryCurrent: () =
     return settlement;
   };
   return {
-    async prepare<T>(consume: () => T): Promise<T> {
+    async prepare<T>(
+      consume: (readFlow: TaskFlowRegistryRead["getTaskFlowById"]) => T,
+    ): Promise<T> {
+      assertCurrent();
+      await captureTaskRegistryReadFence(mutation.context.admission);
       assertCurrent();
       for (;;) {
         const pending = pendingFor(mutation);
         if (pending?.size) {
-          // Native preparation cannot hold the coordinator while a notification needs host admission.
           await Promise.allSettled(pending);
           assertCurrent();
           continue;
         }
+        await prepareTaskRegistryProjectionAsync(mutation.context, mutation.store);
+        assertCurrent();
         assertTaskRegistryOwnerCurrent(mutation.context, mutation.store);
-        return consume();
+        const parentFlowId = tasks.get(taskId)?.parentFlowId;
+        const flows = parentFlowId
+          ? await prepareTaskFlowRegistryRead(mutation.context)
+          : undefined;
+        if (parentFlowId) {
+          assertCurrent();
+          await prepareTaskRegistryProjectionAsync(mutation.context, mutation.store);
+          assertCurrent();
+        }
+        if (
+          parentFlowId !== tasks.get(taskId)?.parentFlowId ||
+          (parentFlowId && !flows) ||
+          pendingFor(mutation)?.size
+        ) {
+          continue;
+        }
+        flows?.assertCurrent();
+        return consume((flowId) => flows?.getTaskFlowById(flowId));
       }
     },
     bindStateChange: (task: TaskRecord, eventAt: number) => {
@@ -90,22 +124,14 @@ export function captureTaskNotificationMutationOwner(assertDeliveryCurrent: () =
         return acknowledgement;
       };
     },
+    markMissingOwner: (task: TaskRecord) =>
+      startMutation({
+        type: "tasks.acknowledgeStateChange",
+        input: {
+          taskId: task.taskId,
+          expectedTask: captureTaskNotificationTarget(task),
+          missingOwner: true,
+        },
+      }),
   };
-}
-
-export async function settleNotificationMutationAfterPreparationFailure(
-  pending: Promise<TaskRecord | null> | undefined,
-  preparationError: unknown,
-): Promise<void> {
-  if (!pending) {
-    return;
-  }
-  const [settlement] = await Promise.allSettled([pending]);
-  if (settlement.status === "rejected") {
-    throw new AggregateError(
-      [preparationError, settlement.reason],
-      "Task notification preparation and persistence failed",
-      { cause: preparationError },
-    );
-  }
 }
