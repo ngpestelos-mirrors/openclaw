@@ -28,6 +28,7 @@ import type { VitestWorkerRun } from "./lib/vitest-worker-run.mts";
 // CI admits at most two plans only when the actual host has room. Each plan
 // keeps inner test-projects parallelism 1; runner labels cannot establish capacity.
 const PLAN_CONCURRENCY = 2;
+const FS_MODULE_CACHE_ROOT_ENV_KEY = "OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT";
 const FS_MODULE_CACHE_PATH_ENV_KEY = "OPENCLAW_VITEST_FS_MODULE_CACHE_PATH";
 const FS_MODULE_CACHE_WRITER_ENV_KEY = "OPENCLAW_VITEST_FS_MODULE_CACHE_WRITER";
 const NODE_COMPILE_CACHE_PATH_ENV_KEY = "NODE_COMPILE_CACHE";
@@ -166,7 +167,8 @@ export function buildChildEnv(
   index: number,
   options: { serial?: boolean; cacheSlot?: number; runtime?: "node" | "bun" } = {},
 ) {
-  const persistentCacheRoot = baseEnv[FS_MODULE_CACHE_PATH_ENV_KEY]?.trim();
+  const configuredCacheRoot = baseEnv[FS_MODULE_CACHE_ROOT_ENV_KEY]?.trim();
+  const persistentCacheRoot = configuredCacheRoot || baseEnv[FS_MODULE_CACHE_PATH_ENV_KEY]?.trim();
   const cachePrefix = options.runtime === "bun" ? "vitest-cache-bun" : "vitest-cache";
   const cacheDirectory = persistentCacheRoot
     ? `${cachePrefix}-${options.cacheSlot ?? index}`
@@ -175,10 +177,16 @@ export function buildChildEnv(
       : `${cachePrefix}-${index}`;
   // Persistent worker slots let serial plans reuse transforms without concurrent
   // writers. Scratch caches stay per-plan; group overrides still apply last.
-  const childEnv = prepareChildEnv(entry, {
+  const cacheEnv: NodeJS.ProcessEnv = {
     ...baseEnv,
-    [FS_MODULE_CACHE_PATH_ENV_KEY]: join(persistentCacheRoot || scratchDir, cacheDirectory),
-  });
+    [FS_MODULE_CACHE_ROOT_ENV_KEY]: join(persistentCacheRoot || scratchDir, cacheDirectory),
+  };
+  // Legacy shard callers supplied the archive root through PATH. With ROOT,
+  // PATH instead belongs to a caller that explicitly selected a final leaf.
+  if (!configuredCacheRoot) {
+    delete cacheEnv[FS_MODULE_CACHE_PATH_ENV_KEY];
+  }
+  const childEnv = prepareChildEnv(entry, cacheEnv);
   if (options.runtime) {
     childEnv.OPENCLAW_VITEST_RUNTIME = options.runtime;
   }
@@ -247,22 +255,23 @@ export function clonePersistentCacheSlots(root: string | undefined, concurrency:
   if (!root || concurrency <= 1) {
     return 0;
   }
-  const seed = join(root, "vitest-cache-0");
-  if (!existsSync(seed)) {
-    return 0;
-  }
-
   let clonedSlots = 0;
-  for (let cacheSlot = 1; cacheSlot < concurrency; cacheSlot += 1) {
-    const destination = join(root, `vitest-cache-${cacheSlot}`);
-    rmSync(destination, { force: true, recursive: true });
-    // Clone before workers start. Reflinks make the common Linux path cheap;
-    // unsupported filesystems transparently fall back to a regular copy.
-    cpSync(seed, destination, {
-      mode: constants.COPYFILE_FICLONE,
-      recursive: true,
-    });
-    clonedSlots += 1;
+  for (const prefix of ["vitest-cache", "vitest-cache-bun"]) {
+    const seed = join(root, `${prefix}-0`);
+    if (!existsSync(seed)) {
+      continue;
+    }
+    for (let cacheSlot = 1; cacheSlot < concurrency; cacheSlot += 1) {
+      const destination = join(root, `${prefix}-${cacheSlot}`);
+      rmSync(destination, { force: true, recursive: true });
+      // Clone before workers start. Reflinks make the common Linux path cheap;
+      // unsupported filesystems transparently fall back to a regular copy.
+      cpSync(seed, destination, {
+        mode: constants.COPYFILE_FICLONE,
+        recursive: true,
+      });
+      clonedSlots += 1;
+    }
   }
   return clonedSlots;
 }
@@ -519,7 +528,8 @@ export async function runShardPlans(plans: ShardPlan[], options: RunShardOptions
     };
   });
   const scratchDir = options.scratchDir ?? mkdtempSync(join(tmpdir(), "openclaw-node-shard-"));
-  const persistentCacheRoot = baseEnv[FS_MODULE_CACHE_PATH_ENV_KEY]?.trim();
+  const persistentCacheRoot =
+    baseEnv[FS_MODULE_CACHE_ROOT_ENV_KEY]?.trim() || baseEnv[FS_MODULE_CACHE_PATH_ENV_KEY]?.trim();
   const nodeCompileCacheRoot = baseEnv[NODE_COMPILE_CACHE_PATH_ENV_KEY]?.trim();
   const clonedCacheSlots = clonePersistentCacheSlots(persistentCacheRoot, concurrency);
   if (clonedCacheSlots > 0) {

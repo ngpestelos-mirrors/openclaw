@@ -168,7 +168,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
         concurrency: 1,
         env: {
           OPENCLAW_CI_TEST_RUNTIME_POLICY: policy,
-          OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: persistentRoot,
+          OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT: persistentRoot,
           OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--maxWorkers=1"]',
         },
         scratchDir: makeScratchDir(),
@@ -179,7 +179,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
             label,
             runtime: env.OPENCLAW_VITEST_RUNTIME,
             args,
-            cache: env.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH,
+            cache: env.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT,
           });
           if (label.endsWith("eligible")) {
             expect(JSON.parse(readFileSync(env.OPENCLAW_VITEST_INCLUDE_FILE!, "utf8"))).toEqual([
@@ -239,7 +239,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
       "bun",
     ]);
     expect(
-      new Set(runChild.mock.calls.map(([, env]) => env.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH)).size,
+      new Set(runChild.mock.calls.map(([, env]) => env.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT)).size,
     ).toBe(2);
   });
 
@@ -255,9 +255,13 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     expect(runChild).not.toHaveBeenCalled();
   });
 
-  it.each(["bun-compatible", "dual"] as const)(
-    "runs every unit-fast file while keeping failures and Bun skips on Node under %s",
-    async (policy) => {
+  it.each([
+    { policy: "bun-compatible", vitestArgs: [] },
+    { policy: "dual", vitestArgs: [] },
+    { policy: "dual", vitestArgs: ["--testNamePattern=(?!)", "--maxWorkers=1"] },
+  ] as const)(
+    "preserves runtime inventories under $policy with $vitestArgs",
+    async ({ policy, vitestArgs }) => {
       const skippedOnBun = "src/process/spawn-broker/cleanup.test.ts";
       const v8HeapTest = "src/infra/worker-task-pool.memory.test.ts";
       const nodeHistoryBenchmark = "test/scripts/bench-session-history.test.ts";
@@ -268,7 +272,12 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
         v8HeapTest,
         nodeHistoryBenchmark,
       ];
-      const shard = { configs: [bunConfig], includePatterns, shard_name: "partition" };
+      const shard = {
+        configs: [bunConfig],
+        includePatterns,
+        shard_name: "partition",
+        env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: JSON.stringify(vitestArgs) },
+      };
       const seen: Array<{
         runtime: string | undefined;
         includes: string[];
@@ -286,7 +295,10 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
             env: { OPENCLAW_CI_TEST_RUNTIME_POLICY: policy },
             scratchDir: makeScratchDir(),
             runChild: async (args, env, label, timing) => {
-              expect(args).toEqual([bunConfig]);
+              expect(args).toEqual([
+                bunConfig,
+                ...(vitestArgs.length ? ["--", ...vitestArgs] : []),
+              ]);
               seen.push({
                 runtime: env.OPENCLAW_VITEST_RUNTIME,
                 includes: JSON.parse(readFileSync(env.OPENCLAW_VITEST_INCLUDE_FILE!, "utf8")),
@@ -372,6 +384,16 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     { env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--project=another-project"]' } },
     { env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--config=another.config.ts"]' } },
     { env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--testNamePattern=one case"]' } },
+    {
+      env: {
+        OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--testNamePattern=(?!)","--project=other"]',
+      },
+    },
+    {
+      env: {
+        OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--testNamePattern=(?!)","--testNamePattern=one"]',
+      },
+    },
     { env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: "invalid" } },
     { env: { OPENCLAW_VITEST_INCLUDE_FILE: "external.json" } },
     { configs: [bunConfig, "test/vitest/vitest.unit-fast-fake-timers.config.ts"] },
@@ -495,9 +517,10 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     expect(childEnv.IGNORED).toBeUndefined();
     expect(childEnv.OPENCLAW_VITEST_SHARD_NAME).toBe("g");
     expect(childEnv.OPENCLAW_TEST_PROJECTS_PARALLEL).toBe("1");
-    expect(childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH).toBe(
+    expect(childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT).toBe(
       path.join(scratchDir, "vitest-cache-3"),
     );
+    expect(childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH).toBeUndefined();
     expect(childEnv.OPENCLAW_VITEST_INCLUDE_FILE).toBe(
       path.join(scratchDir, "node-test-include-3.json"),
     );
@@ -512,6 +535,21 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
       0,
     );
     expect(bare.OPENCLAW_VITEST_INCLUDE_FILE).toBeUndefined();
+
+    const explicit = buildChildEnv(
+      { kind: "group", name: "explicit", plan: { configs: ["cfg.ts"] } },
+      {
+        OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT: scratchDir,
+        OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: "caller-leaf",
+      },
+      scratchDir,
+      0,
+      { runtime: "bun" },
+    );
+    expect(explicit.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT).toBe(
+      path.join(scratchDir, "vitest-cache-bun-0"),
+    );
+    expect(explicit.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH).toBe("caller-leaf");
   });
 
   it.each([
@@ -676,7 +714,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
             await Promise.resolve();
             seen.push({
               args,
-              cache: childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH,
+              cache: childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT,
               label,
               workers: childEnv.OPENCLAW_VITEST_MAX_WORKERS,
             });
@@ -853,7 +891,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
           env: { ...env, OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: persistentRoot },
           scratchDir: makeScratchDir(),
           runChild: async (_args, childEnv) => {
-            seen.push(childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH ?? "");
+            seen.push(childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT ?? "");
             return 0;
           },
         },
@@ -916,7 +954,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
         ) => {
           seen.push({
             args,
-            cache: childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH,
+            cache: childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT,
             label,
             includeFile: childEnv.OPENCLAW_VITEST_INCLUDE_FILE,
           });
@@ -1026,9 +1064,9 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
       }),
       {
         concurrency: 2,
-        env: { OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: persistentRoot },
+        env: { OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT: persistentRoot },
         runChild: async (_args: string[], childEnv: Record<string, string | undefined>) => {
-          const cache = childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH ?? "";
+          const cache = childEnv.OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT ?? "";
           if (activeCaches.has(cache)) {
             sharedWriter = true;
           }
@@ -1050,22 +1088,34 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     ]);
   });
 
-  it("clones a restored persistent seed into every concurrent cache slot", () => {
+  it.each([
+    { prefixes: ["vitest-cache"] },
+    { prefixes: ["vitest-cache-bun"] },
+    { prefixes: ["vitest-cache", "vitest-cache-bun"] },
+  ])("clones restored runtime seeds into isolated concurrent slots: $prefixes", ({ prefixes }) => {
     const persistentRoot = makeScratchDir();
-    const seed = path.join(persistentRoot, "vitest-cache-0");
-    mkdirSync(seed, { recursive: true });
-    writeFileSync(path.join(seed, "transform"), "cached", "utf8");
-    const staleSlot = path.join(persistentRoot, "vitest-cache-1");
-    mkdirSync(staleSlot, { recursive: true });
-    writeFileSync(path.join(staleSlot, "stale"), "old", "utf8");
-
-    expect(clonePersistentCacheSlots(persistentRoot, 3)).toBe(2);
-    for (const cacheSlot of [1, 2]) {
-      expect(
-        readFileSync(path.join(persistentRoot, `vitest-cache-${cacheSlot}`, "transform"), "utf8"),
-      ).toBe("cached");
+    for (const prefix of prefixes) {
+      const seed = path.join(persistentRoot, `${prefix}-0`);
+      mkdirSync(seed, { recursive: true });
+      writeFileSync(path.join(seed, "transform"), prefix, "utf8");
+      const staleSlot = path.join(persistentRoot, `${prefix}-1`);
+      mkdirSync(staleSlot, { recursive: true });
+      writeFileSync(path.join(staleSlot, "stale"), "old", "utf8");
     }
-    expect(existsSync(path.join(staleSlot, "stale"))).toBe(false);
+
+    expect(clonePersistentCacheSlots(persistentRoot, 3)).toBe(prefixes.length * 2);
+    for (const prefix of prefixes) {
+      for (const cacheSlot of [1, 2]) {
+        expect(
+          readFileSync(path.join(persistentRoot, `${prefix}-${cacheSlot}`, "transform"), "utf8"),
+        ).toBe(prefix);
+      }
+      expect(existsSync(path.join(persistentRoot, `${prefix}-1`, "stale"))).toBe(false);
+      writeFileSync(path.join(persistentRoot, `${prefix}-1`, "transform"), "changed", "utf8");
+      expect(readFileSync(path.join(persistentRoot, `${prefix}-0`, "transform"), "utf8")).toBe(
+        prefix,
+      );
+    }
   });
 
   it("prunes oldest transform entries while preserving Vitest metadata", () => {
@@ -1106,7 +1156,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
       runShardPlans(plans, {
         concurrency: 1,
         env: {
-          OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: persistentRoot,
+          OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT: persistentRoot,
           OPENCLAW_VITEST_FS_MODULE_CACHE_WRITER: writer,
         },
         fsModuleCacheMaxBytes: 0,

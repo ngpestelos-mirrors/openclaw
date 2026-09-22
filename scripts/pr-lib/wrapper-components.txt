@@ -125,6 +125,7 @@ scripts/lib/test-selector-source-facts.mts
 scripts/lib/tsdown-declaration-boundary.mts
 scripts/lib/tsx-cli-shim.mjs
 scripts/lib/vitest-build-prerequisites.mts
+scripts/lib/vitest-cache-slots.mts
 scripts/lib/vitest-cli-mode.mts
 scripts/lib/vitest-cli.mts
 scripts/lib/vitest-home-selection.mts

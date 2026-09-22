@@ -5232,7 +5232,7 @@ server.listen(0, "127.0.0.1", () => {
                 "!**/node_modules/**",
                 "!.ci-harness/**",
               ]);
-              const prefix = `openclaw/openclaw-vitest-fs-v3-protected-${os}-X64-node-24.x-${generation}-`;
+              const prefix = `openclaw/openclaw-vitest-fs-v4-protected-${os}-X64-node-24.x-${generation}-`;
               expect(cacheInputs).toEqual({
                 path: "/var/tmp/openclaw-vitest-fs-cache",
                 key: `${prefix}10-2`,
@@ -5367,11 +5367,11 @@ server.listen(0, "127.0.0.1", () => {
     expect(readerStep.if).toContain("inputs.restore-test-caches == 'true'");
     expect(readerStep.if).toContain("runner.os != 'Windows'");
     expect(readerStep.if).not.toMatch(/runner\.(?:environment|labels|name)/u);
-    expect(readerStep.with.key).toContain("vitest-fs-v3-protected-");
+    expect(readerStep.with.key).toContain("vitest-fs-v4-protected-");
     expect(readerStep.with.key).toContain("github.run_id");
     expect(readerStep.with.key).toContain("github.run_attempt");
     expect(configureStep.if).toContain("inputs.restore-test-caches == 'true'");
-    expect(configureStep.run).toContain("OPENCLAW_VITEST_FS_MODULE_CACHE_PATH=$cache_root");
+    expect(configureStep.run).toContain("OPENCLAW_VITEST_FS_MODULE_CACHE_ROOT=$cache_root");
     expect(configureStep.run).toContain(".openclaw-transform-generation");
     expect(configureStep.run).not.toContain("protected Vitest transform seed");
     expect(configureStep.env.CACHE_WRITER).toBe("0");
