@@ -99,6 +99,32 @@ it.each(["assistant", "managed", "omitted"] as const)(
   },
 );
 
+it("admits on focus without replacing the pending control or opening an empty preview", async () => {
+  const metadata = createDeferred<Response>();
+  const fetch = vi.fn(() => metadata.promise);
+  vi.stubGlobal("fetch", fetch);
+  const onOpenImage = vi.fn<NonNullable<ImageRenderOptions["onOpenImage"]>>();
+  draw([{ url: `/tmp/${crypto.randomUUID()}.png` }], { onOpenImage });
+  const button = container.querySelector<HTMLButtonElement>(".chat-message-image-button")!;
+  expect(button.disabled).toBe(false);
+  expect(button.getAttribute("aria-disabled")).toBe("true");
+  expect(fetch).not.toHaveBeenCalled();
+
+  button.focus();
+  expect(fetch).toHaveBeenCalledOnce();
+  button.click();
+  expect(onOpenImage).not.toHaveBeenCalled();
+  expect(container.querySelector("button")).toBe(button);
+
+  metadata.resolve(Response.json({ available: true }));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(container.querySelector("button")).toBe(button);
+  expect(document.activeElement).toBe(button);
+  expect(button.hasAttribute("aria-disabled")).toBe(false);
+  button.click();
+  expect(onOpenImage).toHaveBeenCalledOnce();
+});
+
 it("lets explicit gallery navigation load an offscreen neighbor", async () => {
   const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`;
   const fetch = vi.fn(async () => imageResponse());

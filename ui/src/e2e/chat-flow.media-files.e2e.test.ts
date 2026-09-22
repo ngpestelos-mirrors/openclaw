@@ -610,6 +610,11 @@ suite.define(() => {
     try {
       await page.goto(`${suite.server.baseUrl}chat`);
       await gateway.waitForRequest("chat.startup");
+      const frames = page.locator(".chat-image-frame");
+      await expect.poll(() => frames.count()).toBe(64);
+      for (const frame of await frames.all()) {
+        await frame.scrollIntoViewIfNeeded();
+      }
       await expect.poll(async () => (await readBlobProof()).created.length).toBe(64);
       await expect
         .poll(() =>

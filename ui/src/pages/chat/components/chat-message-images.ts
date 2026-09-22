@@ -67,12 +67,18 @@ class MessageImageResourceDirective extends AsyncDirective {
     }
     const presentationKey = this.presentationKey;
     this.stopObserving = observeChatAttachmentViewport(element, () => {
-      if (!this.isConnected || presentationKey !== this.presentationKey || this.admitted) {
-        return;
+      if (presentationKey === this.presentationKey) {
+        this.admit();
       }
-      this.admitted = true;
-      this.refreshImage();
     });
+  };
+  private readonly admit = () => {
+    if (this.isConnected && !this.admitted) {
+      this.admitted = true;
+      this.stopObserving?.();
+      this.stopObserving = undefined;
+      this.refreshImage();
+    }
   };
   // Resource updates stay in this part; row ResizeObserver owns layout changes.
   private readonly refreshImage = () => {
@@ -279,7 +285,7 @@ class MessageImageResourceDirective extends AsyncDirective {
 
   private renderImageElement(
     img: ImageBlock,
-    previewUrl: string,
+    previewUrl: string | undefined,
     opts: ImageRenderOptions | undefined,
   ) {
     const title = img.alt?.trim() || t("chat.imageLightbox.untitled");
@@ -290,30 +296,41 @@ class MessageImageResourceDirective extends AsyncDirective {
           type="button"
           class="chat-message-image-button"
           aria-label=${t("chat.imageLightbox.open", { title })}
+          aria-disabled=${previewUrl ? nothing : "true"}
+          @focus=${this.admit}
           @click=${(event: MouseEvent) => {
             event.stopPropagation();
-            openMessageImage(img, previewUrl, opts);
+            if (previewUrl) {
+              openMessageImage(img, previewUrl, opts);
+            } else {
+              this.admit();
+            }
           }}
         >
-          <img
-            @load=${(event: Event) => this.onSettled(event, img)}
-            @error=${(event: Event) => this.onSettled(event, img)}
-            src=${previewUrl}
-            alt=${title}
-            referrerpolicy="no-referrer"
-            class="chat-message-image"
-            width=${img.width ?? nothing}
-            height=${img.height ?? nothing}
-          />
+          ${
+            previewUrl
+              ? html`<img
+                  @load=${(event: Event) => this.onSettled(event, img)}
+                  @error=${(event: Event) => this.onSettled(event, img)}
+                  src=${previewUrl}
+                  alt=${title}
+                  referrerpolicy="no-referrer"
+                  class="chat-message-image"
+                  width=${img.width ?? nothing}
+                  height=${img.height ?? nothing}
+                />`
+              : html`<span class="chat-image-skeleton skeleton" aria-hidden="true"></span>`
+          }
         </button>
         ${
-          this.managed
+          this.managed && previewUrl
             ? renderChatImageActions(title, () =>
                 loadManagedImageBlob(img.url, opts, img.artifactId),
               )
             : nothing
         }
       `,
+      previewUrl ? undefined : "loading",
     );
   }
 
@@ -353,11 +370,7 @@ class MessageImageResourceDirective extends AsyncDirective {
 
   private renderImagePlaceholder(image: ImageBlock, reason?: string) {
     if (reason === undefined) {
-      return this.renderImageFrame(
-        image,
-        html`<span class="chat-image-skeleton skeleton" aria-hidden="true"></span>`,
-        "loading",
-      );
+      return this.renderImageElement(image, undefined, this.options);
     }
     return this.renderImageFrame(
       image,
