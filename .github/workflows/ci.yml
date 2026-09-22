@@ -155,6 +155,8 @@ jobs:
       strict_control_ui_i18n: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.strict_control_ui_i18n }}
       run_ui_tests: ${{ steps.manifest.outputs.run_ui_tests }}
       ui_test_runtime_policy: ${{ steps.manifest.outputs.ui_test_runtime_policy }}
+      ui_test_groups_gzip_base64: ${{ steps.manifest.outputs.ui_test_groups_gzip_base64 }}
+      ui_e2e_test_groups_gzip_base64: ${{ steps.manifest.outputs.ui_e2e_test_groups_gzip_base64 }}
       run_control_ui_performance: ${{ steps.manifest.outputs.run_control_ui_performance }}
       run_ui_e2e: ${{ steps.manifest.outputs.run_ui_e2e }}
       ui_e2e_matrix: ${{ steps.manifest.outputs.ui_e2e_matrix }}
@@ -1765,8 +1767,17 @@ jobs:
           // projected runner contract; older targets keep their flat fields or
           // projected legacy groups because their shard runner predates the codec.
           const nodeTestGroupsCodecPath = "./scripts/lib/ci-node-test-groups-codec.mts";
+          const uiTestGroups = runUiTests &&
+            typeof nodeTestPlan.createUiTestShardGroups === "function"
+              ? nodeTestPlan.createUiTestShardGroups({
+                  includeReleaseOnlyTests:
+                    (eventName === "workflow_dispatch" && !releaseGate) ||
+                    !isCanonicalRepository || compatibilityTarget || changedPaths === null,
+                  changedPaths: changedPaths ?? [],
+                })
+              : null;
           const nodeTestGroupsCodec =
-            rawNodeTestShards.length > 0 &&
+            (rawNodeTestShards.length > 0 || uiTestGroups !== null) &&
             existsSync(nodeTestGroupsCodecPath)
               ? await importTargetPlan(nodeTestGroupsCodecPath)
               : null;
@@ -1980,6 +1991,8 @@ jobs:
             run_control_ui_i18n: runControlUiI18n,
             run_ui_tests: runUiTests,
             ui_test_runtime_policy: uiTestRuntimePolicy,
+            ui_test_groups_gzip_base64: uiTestGroups ? encodeNodeTestGroups(uiTestGroups.ui) : "",
+            ui_e2e_test_groups_gzip_base64: uiTestGroups ? encodeNodeTestGroups(uiTestGroups.e2e) : "",
             run_control_ui_performance: runControlUiPerformance,
             run_ui_e2e: runUiE2e,
             ui_e2e_matrix: createMatrix(Array.from({ length: uiE2eJobCount }, (_, index) => {
@@ -2907,6 +2920,7 @@ jobs:
           OPENCLAW_CI_TEST_RUNTIME_POLICY: ${{ needs.preflight.outputs.ui_test_runtime_policy }}
           OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: ${{ github.workspace }}/.artifacts/control-ui-e2e-timeouts/ui-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           OPENCLAW_NODE_TEST_CONFIGS_JSON: '["ui/vitest.config.ts"]'
+          OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: ${{ needs.preflight.outputs.ui_test_groups_gzip_base64 }}
           OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: "1"
           OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: ${{ format('["--maxWorkers", "3", "--reporter=verbose", "--reporter=github-actions", "--reporter=./scripts/lib/vitest-resource-reporter.mts"{0}]', needs.preflight.outputs.frozen_target != 'true' && format(', "--shard={0}/3"', matrix.shard) || '') }}
         run: |
@@ -2970,7 +2984,23 @@ jobs:
           OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: .artifacts/control-ui-e2e-timeouts/shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           VITEST_SHARD_INDEX: ${{ matrix.shard }}
           VITEST_SHARD_COUNT: ${{ matrix.vitest_shard_count }}
+          OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: ${{ needs.preflight.outputs.ui_e2e_test_groups_gzip_base64 }}
         run: |
+          if [[ -n "${OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64:-}" ]]; then
+            OPENCLAW_VITEST_INCLUDE_FILE="$(node --import tsx --input-type=module <<'NODE'
+          import { writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          import { decodeNodeTestGroups } from "./scripts/lib/ci-node-test-groups-codec.mts";
+          const [group] = decodeNodeTestGroups(process.env.OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64);
+          if (group.includePatterns) {
+            const includeFile = join(process.env.RUNNER_TEMP, "ui-e2e-include.json");
+            writeFileSync(includeFile, JSON.stringify(group.includePatterns));
+            process.stdout.write(includeFile);
+          }
+          NODE
+          )"
+            export OPENCLAW_VITEST_INCLUDE_FILE
+          fi
           node scripts/run-vitest.mjs run \
             --config test/vitest/vitest.ui-e2e.config.ts \
             --configLoader runner \
