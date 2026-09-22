@@ -3,10 +3,12 @@ import { EventEmitter } from "node:events";
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/request-error.ts";
 import { PROTOCOL_VERSION } from "../../../packages/gateway-protocol/src/version.js";
 import { createAdmittedRunOperatorAuthority } from "../../../src/agents/admitted-run-context.js";
+import type { AgentQuestionDispatcher } from "../../../src/agents/harness/gateway-question-dispatch.js";
 import { createAskUserTool } from "../../../src/agents/tools/ask-user-tool.js";
 import { upsertSessionEntryCore } from "../../../src/config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../src/config/types.openclaw.js";
 import { createAgentRuntimeApprovalAuthorityValidator } from "../../../src/gateway/agent-runtime-identity-token.js";
+import type { OperatorScope } from "../../../src/gateway/operator-scopes.js";
 import { QuestionManager } from "../../../src/gateway/question-manager.js";
 import { createGatewayBroadcaster } from "../../../src/gateway/server-broadcast.js";
 import { createDirectChatContext } from "../../../src/gateway/server-chat.agent-events.test-helpers.js";
@@ -29,7 +31,7 @@ import { ensureProfileForEmail } from "../../../src/state/user-profiles.js";
 
 export const guestQuestionSessionKey = "agent:main:guest-question-proof";
 export const guestQuestionPrompt = "Which format should I use for your summary?";
-export const guestQuestionScopes = ["operator.sessions.write"];
+export const guestQuestionScopes: OperatorScope[] = ["operator.sessions.write"];
 
 type RpcResult = { ok: boolean; payload: unknown; error: Parameters<RespondFn>[2] };
 
@@ -62,8 +64,8 @@ export async function createGuestQuestionFixture(deliver: (frame: unknown) => Pr
     runId,
   });
   const manager = new QuestionManager();
-  const unregister = registerAgentRunDelegatedAuthorityClosedHandler(() =>
-    manager.cancelClosedAuthorities(),
+  const unregister = registerAgentRunDelegatedAuthorityClosedHandler((authority) =>
+    manager.cancelClosedAuthorities(authority.operationalRunInstance),
   );
   const frames: unknown[] = [];
   let delivery = Promise.resolve();
@@ -179,24 +181,25 @@ export async function createGuestQuestionFixture(deliver: (frame: unknown) => Pr
       await flushEvents();
       return response.promise;
     });
+  const gatewayCall: AgentQuestionDispatcher = {
+    version: 2,
+    async call({ method, params, signal, authority }) {
+      signal?.throwIfAborted();
+      if (authority.kind === "source-bound") {
+        authority.assertCurrent();
+      }
+      const result = await request(runtime, method, params, signal);
+      if (!result.ok) {
+        throw new GatewayClientRequestError(result.error ?? { message: "question RPC failed" });
+      }
+      return result.payload;
+    },
+  };
   const tool = createAskUserTool({
     agentId: "main",
     sessionKey: guestQuestionSessionKey,
     runId,
-    gatewayCall: {
-      version: 2,
-      async call({ method, params, signal, authority }) {
-        signal?.throwIfAborted();
-        if (authority.kind === "source-bound") {
-          authority.assertCurrent();
-        }
-        const result = await request(runtime, method, params, signal);
-        if (!result.ok) {
-          throw new GatewayClientRequestError(result.error ?? { message: "question RPC failed" });
-        }
-        return result.payload;
-      },
-    },
+    gatewayCall,
   });
   return {
     profileId: profile.id,

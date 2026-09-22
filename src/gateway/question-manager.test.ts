@@ -214,7 +214,7 @@ describe("QuestionManager", () => {
       questions,
       timeoutMs: 10_000,
       onResolved,
-      ownRunAccess: { canAccess: () => true, release: releaseOwnRunAccess },
+      ownRunAccess: { canSelect: () => true, canAccess: () => true, release: releaseOwnRunAccess },
       registerHumanInputWait: () => releaseHumanInputWait,
     });
     const waiting = manager.waitAnswer(record.id, 5_000);
@@ -240,7 +240,7 @@ describe("QuestionManager", () => {
       questions,
       timeoutMs: 10_000,
       onResolved,
-      ownRunAccess: { canAccess: () => true, release: releaseOwnRunAccess },
+      ownRunAccess: { canSelect: () => true, canAccess: () => true, release: releaseOwnRunAccess },
       registerHumanInputWait: () => releaseHumanInputWait,
     });
     manager.close();
@@ -404,7 +404,11 @@ describe("QuestionManager", () => {
     const record = manager.request({
       questions,
       timeoutMs: 10_000,
-      ownRunAccess: { canAccess: () => accessActive, release: releaseOwnRunAccess },
+      ownRunAccess: {
+        canSelect: () => accessActive,
+        canAccess: () => accessActive,
+        release: releaseOwnRunAccess,
+      },
     });
     manager.resolve(record.id, answers);
 
@@ -419,6 +423,20 @@ describe("QuestionManager", () => {
     expect(releaseOwnRunAccess).toHaveBeenCalledOnce();
     manager.close();
     expect(releaseOwnRunAccess).toHaveBeenCalledOnce();
+  });
+
+  it("retains authority sweeping for legacy requesters without a run selector", () => {
+    let active = true;
+    const resolved = vi.fn();
+    const record = manager.request({
+      questions,
+      timeoutMs: 10_000,
+      isRequesterActive: () => active,
+      onResolved: resolved,
+    });
+    active = false;
+    manager.cancelClosedAuthorities({ instanceId: "other-instance", runId: "other-run" });
+    expect(resolved).toHaveBeenCalledWith({ id: record.id, status: "cancelled" });
   });
 });
 

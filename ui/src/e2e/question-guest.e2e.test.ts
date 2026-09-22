@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { withOpenClawTestState } from "../../../src/test-utils/openclaw-test-state.js";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
-import type { ControlUiMockGateway } from "../test-helpers/control-ui-e2e-contract.ts";
+import type { MockGatewayWindow } from "../test-helpers/control-ui-e2e-contract.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
   controlUiSessionUrl,
@@ -19,6 +19,12 @@ import {
   guestQuestionSessionKey,
 } from "./question-guest.test-support.ts";
 
+declare global {
+  interface Window {
+    dispatchGuestQuestion: Awaited<ReturnType<typeof createGuestQuestionFixture>>["request"];
+  }
+}
+
 const suite = createControlUiE2eSuite({
   name: "Guest ordinary question lifecycle",
   startServerBeforeBrowser: true,
@@ -29,13 +35,7 @@ const capture = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
 async function releaseQuestionBridge(page: Page, gateway: MockGatewayControls) {
   await gateway.waitForRequest("connect");
   await page.evaluate(() => {
-    const owner = window as Window & {
-      openclawControlUiE2eGateway?: ControlUiMockGateway;
-      dispatchGuestQuestion: (
-        method: string,
-        params: unknown,
-      ) => Promise<{ ok: boolean; payload?: unknown; error?: unknown }>;
-    };
+    const owner: MockGatewayWindow = window;
     if (!owner.openclawControlUiE2eGateway) {
       throw new Error("question browser fixture is not installed");
     }

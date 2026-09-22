@@ -11,6 +11,12 @@ import {
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
+import {
+  getActiveGatewayRootWorkCount,
+  markGatewayRestartDraining,
+  resetGatewayWorkAdmission,
+  tryBeginGatewaySuspendAdmission,
+} from "../../process/gateway-work-admission.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { invalidateOperatorRolePolicy } from "../operator-role-policy.js";
@@ -205,6 +211,75 @@ async function withOwnRunQuestion(
 }
 
 describe("own-run question admission", () => {
+  it.each(["suspension", "restart drain"] as const)(
+    "keeps foreign question IDs outside retained roots during %s",
+    async (mode) => {
+      try {
+        await withOwnRunQuestion(async (f) => {
+          const id = await f.request();
+          const foreign = questionPeer(
+            ensureProfileForEmail("foreign-drain@example.test"),
+            "foreign",
+          );
+          expect(getActiveGatewayRootWorkCount()).toBe(1);
+          const read = vi.spyOn(manager, "get");
+          const suspension =
+            mode === "suspension" ? tryBeginGatewaySuspendAdmission(() => {}) : undefined;
+          if (mode === "suspension") {
+            expect(suspension?.drain()).toBe(true);
+          } else {
+            markGatewayRestartDraining();
+          }
+          try {
+            for (const method of ["question.get", "question.resolve"]) {
+              expect(
+                await f.call(
+                  method,
+                  { id, ...(method === "question.resolve" ? { answers } : {}) },
+                  foreign.client,
+                ),
+              ).toMatchObject([false, undefined, { code: "UNAVAILABLE" }]);
+              await expect(
+                callQuestionRpc(
+                  method,
+                  { id, ...(method === "question.resolve" ? { answers } : {}) },
+                  {
+                    cfg: f.cfg,
+                    client: f.browser.client,
+                    registered: true,
+                    hasCurrentClientAuthority: () => false,
+                  },
+                ),
+              ).rejects.toThrow("Gateway requester authority changed");
+            }
+            expect(
+              read,
+              "foreign or revoked requests must be rejected before liveness is read",
+            ).not.toHaveBeenCalled();
+            expect(getActiveGatewayRootWorkCount()).toBe(1);
+
+            expect(await f.call("question.get", { id })).toMatchObject([
+              true,
+              { question: { id, status: "pending" } },
+              undefined,
+            ]);
+            expect(await f.call("question.resolve", { id, answers })).toEqual([
+              true,
+              { status: "answered", answers },
+              undefined,
+            ]);
+            expect(getActiveGatewayRootWorkCount()).toBe(0);
+          } finally {
+            read.mockRestore();
+            suspension?.release();
+          }
+        });
+      } finally {
+        resetGatewayWorkAdmission();
+      }
+    },
+  );
+
   it("recovers an ordinary question after reconnect and retains an accepted answer after run close", async () => {
     await withOwnRunQuestion(async (f) => {
       const id = await f.request();
@@ -309,9 +384,30 @@ describe("own-run question admission", () => {
         "foreign recipients must not probe the retained session's filesystem identity",
       ).toBe(0);
       f.clients.add(f.browser.client);
+      const unrelated = claimAgentRunDelegatedAuthority({
+        instanceId: "unrelated-run",
+        runId: "unrelated-run",
+      });
+      retainedReads = 0;
+      releaseAgentRunDelegatedAuthority(unrelated);
+      expect(retainedReads, "closing an unrelated run must not probe the question's session").toBe(
+        0,
+      );
+      retainedReads = 0;
+      manager.cancelClosedAuthorities({ instanceId: "older-instance", runId: requestParams.runId });
+      expect(retainedReads, "reused run IDs must retain their exact operational instance").toBe(0);
+      manager.cancelClosedAuthorities({ runId: "unrelated-worker-run" });
+      expect(retainedReads, "an unrelated worker run must not probe the question's session").toBe(
+        0,
+      );
       for (const peer of peers) {
+        retainedReads = 0;
         expect((await f.call("question.list", {}, peer.client))[1]).toEqual({ questions: [] });
+        expect(retainedReads, "a foreign question list must not inspect the retained session").toBe(
+          0,
+        );
         for (const method of ["question.get", "question.waitAnswer", "question.resolve"]) {
+          retainedReads = 0;
           expect(
             await f.call(
               method,
@@ -319,10 +415,15 @@ describe("own-run question admission", () => {
               peer.client,
             ),
           ).toMatchObject([false, undefined, { details: { reason: "QUESTION_NOT_FOUND" } }]);
+          expect(retainedReads, "foreign keyed reads must not probe the retained session").toBe(0);
         }
         expect(peer.socket.send).not.toHaveBeenCalled();
       }
-      expect((await f.call("question.resolve", { id, answers }))[0]).toBe(true);
+      expect(await f.call("question.resolve", { id, answers })).toEqual([
+        true,
+        { status: "answered", answers },
+        undefined,
+      ]);
       for (const peer of peers) {
         expect(peer.socket.send).not.toHaveBeenCalled();
       }
@@ -450,6 +551,58 @@ describe("own-run question admission", () => {
         expect((await f.call("question.get", { id }))[1]).toMatchObject({
           question: { id, status: "answered", answers },
         });
+      });
+    },
+  );
+
+  it.each(["answer", "cancel"] as const)(
+    "refuses to %s from a revoked request while the original question remains active",
+    async (action) => {
+      await withOwnRunQuestion(async (f) => {
+        const id = await f.request();
+        const observer = { ...f.browser.client, connId: "revoked-observer" };
+        await expect(
+          callQuestionRpc(
+            "question.resolve",
+            {
+              id,
+              ...(action === "answer" ? { answers } : { cancel: true }),
+            },
+            {
+              cfg: f.cfg,
+              client: observer,
+              registered: true,
+              hasCurrentClientAuthority: () => false,
+            },
+          ),
+        ).rejects.toThrow("Gateway requester authority changed");
+        expect(manager.get(id)?.status).toBe("pending");
+      });
+    },
+  );
+
+  it.each(["question.get", "question.list", "question.waitAnswer"] as const)(
+    "fences a revoked %s before reading the question owner",
+    async (method) => {
+      await withOwnRunQuestion(async (f) => {
+        const id = await f.request();
+        const read = vi.spyOn(manager, "get").mockImplementation(() => {
+          throw new Error("revoked request reached question state");
+        });
+        try {
+          await expect(
+            callQuestionRpc(method, method === "question.list" ? {} : { id }, {
+              cfg: f.cfg,
+              client: f.browser.client,
+              registered: true,
+              hasCurrentClientAuthority: () => false,
+            }),
+          ).rejects.toThrow("Gateway requester authority changed");
+          expect(read).not.toHaveBeenCalled();
+        } finally {
+          read.mockRestore();
+        }
+        expect(manager.get(id)?.status).toBe("pending");
       });
     },
   );

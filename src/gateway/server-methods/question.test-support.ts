@@ -53,8 +53,8 @@ export function installQuestionTestHooks() {
         },
       },
     } as GatewayClient;
-    unregisterAuthorityClosed = registerAgentRunDelegatedAuthorityClosedHandler(() =>
-      manager.cancelClosedAuthorities(),
+    unregisterAuthorityClosed = registerAgentRunDelegatedAuthorityClosedHandler((authority) =>
+      manager.cancelClosedAuthorities(authority.operationalRunInstance),
     );
     broadcast = vi.fn<GatewayBroadcastFn>();
     reloadSecrets = vi.fn<SecretStoreReload>().mockResolvedValue({ warningCount: 0 });
