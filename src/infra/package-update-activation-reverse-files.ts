@@ -163,7 +163,27 @@ function assertReverseParent(file: string, identity: string) {
   }
 }
 export function assertReverseParents(resource: PackageActivationReverseResource) {
-  assertReverseParent(resource.live, resource.parentIdentity);
+  let source = resource.live;
+  if (
+    resource.role === "state" &&
+    resource.before.kind === "missing" &&
+    resource.after.kind === "missing" &&
+    !resource.move
+  ) {
+    // Unchanged absence creates no directory or inode. Retain the capture's
+    // nearest existing ancestor; a newly created closer parent must not match.
+    for (;;) {
+      const parent = path.dirname(source);
+      if (fs.lstatSync(parent, { throwIfNoEntry: false })) {
+        break;
+      }
+      if (parent === source) {
+        throw new Error("Reverse resource parent changed.");
+      }
+      source = parent;
+    }
+  }
+  assertReverseParent(source, resource.parentIdentity);
   if (resource.move) {
     assertReverseParent(resource.move.staged, resource.move.stagedParentIdentity);
     assertReverseParent(resource.move.displaced, resource.move.displacedParentIdentity);
@@ -175,6 +195,7 @@ export function assertReverseParents(resource: PackageActivationReverseResource)
       throw new Error("Reverse publication requires same-device renames.");
     }
   }
+  return path.dirname(source);
 }
 
 /** Make newly staged inode contents and their names durable before the journal
@@ -215,8 +236,8 @@ export async function syncPackageReverseInputs(
   // A name is durable only when every ancestor entry is durable. The filesystem
   // root is the established anchor; caller-created intermediate dirs are not.
   const parents = new Set<string>();
-  const includeParents = (file: string) => {
-    for (let directory = path.dirname(file); ; directory = path.dirname(directory)) {
+  const includeParents = (file: string, firstDirectory = path.dirname(file)) => {
+    for (let directory = firstDirectory; ; directory = path.dirname(directory)) {
       parents.add(directory);
       if (directory === path.dirname(directory)) {
         break;
@@ -234,7 +255,7 @@ export async function syncPackageReverseInputs(
     includeParents(file);
   }
   for (const resource of resources) {
-    assertReverseParents(resource);
+    const liveParent = assertReverseParents(resource);
     // Unchanged directory contents have their own exhaustive resource records;
     // do not traverse excluded subtrees or synchronize them by implication.
     if (!resource.move && resource.after.kind === "directory") {
@@ -249,12 +270,15 @@ export async function syncPackageReverseInputs(
       resource.live,
       ...(resource.move ? [resource.move.staged, resource.move.displaced] : []),
     ]) {
-      includeParents(file);
+      includeParents(file, file === resource.live ? liveParent : undefined);
     }
   }
   for (const directory of [...parents].toSorted((a, b) => b.length - a.length)) {
     assertCurrent();
     requireDirectorySync(await syncDirectory(directory), "Reverse durable ancestry");
     assertCurrent();
+  }
+  for (const resource of resources) {
+    assertReverseParents(resource);
   }
 }

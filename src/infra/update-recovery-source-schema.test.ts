@@ -2,9 +2,16 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import * as durability from "./directory-durability.js";
+import {
+  assertReverseParents,
+  syncPackageReverseInputs,
+} from "./package-update-activation-reverse-files.js";
 import {
   readUpdateRecoverySourceAttestation,
+  matchesUpdateRecoverySourceImage,
   assertUpdateRecoverySourceAttestationCurrent,
 } from "./update-recovery-source-attestation.js";
 import { captureUpdateRecoverySourceInventory } from "./update-recovery-source-image.js";
@@ -180,3 +187,76 @@ it("round-trips complete physical inventory and refuses unknown, duplicate, omit
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+afterEach(() => vi.restoreAllMocks());
+
+it.each(["binding", "durability", "awaited-parent-change"] as const)(
+  "preserves nested absence and rejects changed ancestry at %s",
+  async (edge) => {
+    const root = tempDirs.make("source-absence-");
+    const sourcePath = path.join(root, "never-created", "nested", "agent.sqlite");
+    const assertCurrent = () => {};
+    const inventory = await captureUpdateRecoverySourceInventory({
+      runId: "run",
+      operationId: "op",
+      assertCurrent,
+      resources: [{ sourcePath, kind: "missing", sqlite: true }],
+    });
+    const captured = inventory.resources[0]!;
+    expect(captured.ancestor.path).toBe(root);
+    const resource = {
+      role: "state" as const,
+      live: sourcePath,
+      parentIdentity: captured.ancestor.identity,
+      before: { kind: "missing" as const },
+      after: { kind: "missing" as const },
+      move: null,
+    };
+    if (edge === "binding") {
+      expect(
+        matchesUpdateRecoverySourceImage(resource.before, captured, resource.parentIdentity),
+      ).toBe(true);
+      expect(
+        matchesUpdateRecoverySourceImage(
+          resource.before,
+          {
+            ...captured,
+            ancestor: { ...captured.ancestor, path: path.join(root, "unrelated") },
+          },
+          resource.parentIdentity,
+        ),
+      ).toBe(false);
+      expect(matchesUpdateRecoverySourceImage(resource.before, captured, "1:2")).toBe(false);
+    } else if (edge === "durability") {
+      await syncPackageReverseInputs([resource], assertCurrent, [], []);
+    } else {
+      // A real directory sync yields before the nearest parent changes.
+      const syncDirectory = durability.syncDirectory;
+      vi.spyOn(durability, "syncDirectory").mockImplementation(async (directory) => {
+        const result = await syncDirectory(directory);
+        if (directory === root) {
+          fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+        }
+        return result;
+      });
+      await expect(syncPackageReverseInputs([resource], assertCurrent, [], [])).rejects.toThrow(
+        "parent changed",
+      );
+      expect(fs.existsSync(sourcePath)).toBe(false);
+      return;
+    }
+    expect(fs.readdirSync(root)).toEqual([]);
+    expect(() => assertReverseParents(resource)).not.toThrow();
+    expect(() => assertReverseParents({ ...resource, parentIdentity: "1:2" })).toThrow(
+      "parent changed",
+    );
+    // Even when the resource remains absent, a closer ancestor invalidates capture.
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    expect(() => assertReverseParents(resource)).toThrow("parent changed");
+    await expect(syncPackageReverseInputs([resource], assertCurrent, [], [])).rejects.toThrow(
+      "parent changed",
+    );
+    expect(fs.existsSync(sourcePath)).toBe(false);
+  },
+);

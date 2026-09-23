@@ -147,8 +147,15 @@ export function matchesUpdateRecoverySourceImage(
   parentIdentity: string,
 ) {
   const { image } = resource;
+  const relativeParent = path.relative(resource.ancestor.path, path.dirname(resource.sourcePath));
+  const missingAncestor =
+    image.kind === "missing" &&
+    before.kind === "missing" &&
+    !path.isAbsolute(relativeParent) &&
+    relativeParent !== ".." &&
+    !relativeParent.startsWith(`..${path.sep}`);
   if (
-    resource.ancestor.path !== path.dirname(resource.sourcePath) ||
+    (!missingAncestor && resource.ancestor.path !== path.dirname(resource.sourcePath)) ||
     resource.ancestor.identity !== parentIdentity
   ) {
     return false;
