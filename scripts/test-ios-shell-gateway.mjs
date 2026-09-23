@@ -15,8 +15,22 @@
 // OpenClawUITests/ChatCatalogUITests/testGuestModelPolicyRetiresOpenChoices.
 // Forward OPENCLAW_IOS_GUEST_MODEL_POLICY_PROOF=1, OPENCLAW_IOS_LIVE_SETUP_CODE,
 // and OPENCLAW_IOS_MODEL_POLICY_FIXTURE_URL=http://127.0.0.1:19876 via TEST_RUNNER_.
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
+const attachmentMode = process.argv.includes("--attachments");
+const attachmentMessage = attachmentMode
+  ? JSON.parse(
+      readFileSync(
+        new URL("../apps/ios/Tests/Fixtures/managed-document-message.json", import.meta.url),
+        "utf8",
+      ),
+    )
+  : null;
+const documentBytes = Buffer.from("name,value\nproof,1\n");
+const document = attachmentMessage?.content.at(-1).attachment;
+let documentDenied = false;
+let documentDownloads = 0;
 const requests = [];
 const guestModelPolicy = process.argv.includes("--guest-model-policy");
 const guestScopes = ["operator.sessions.write"];
@@ -46,7 +60,7 @@ const approval = {
     host: "gateway",
   },
 };
-const sessions = Array.from({ length: 205 }, (_, i) => ({
+const sessions = Array.from({ length: attachmentMode ? 1 : 205 }, (_, i) => ({
   key: i === 0 ? "agent:main:main" : `agent:main:navigation-${i}`,
   displayName: i === 0 ? "Navigation proof" : `Synthetic session ${i}`,
   label: i === 0 ? "Navigation proof" : `Synthetic session ${i}`,
@@ -75,6 +89,7 @@ const methods = [
   "models.list",
   "sessions.preview",
   "chat.send",
+  ...(attachmentMode ? ["artifacts.download"] : []),
 ];
 
 function policyCatalog() {
@@ -189,7 +204,26 @@ const server = createServer((req, res) => {
   if (handlePolicyControl(req, res)) {
     return;
   }
-  if (req.url === "/approval") {
+  const url = new URL(req.url, "http://127.0.0.1");
+  if (attachmentMode && url.pathname === document.url) {
+    if (documentDenied || url.searchParams.get("mediaTicket") !== "synthetic-document-ticket") {
+      res.writeHead(410);
+      res.end(JSON.stringify({ error: "Synthetic document expired" }));
+      return;
+    }
+    documentDownloads++;
+    res.writeHead(200, {
+      "content-type": "text/csv",
+      "content-length": documentBytes.length,
+      "content-disposition": 'attachment; filename="report.csv"',
+    });
+    res.end(documentBytes);
+    return;
+  }
+  if (attachmentMode && url.pathname === "/attachment-denied") {
+    documentDenied = true;
+    res.end(JSON.stringify({ documentDenied }));
+  } else if (req.url === "/approval") {
     let count = 0;
     for (const ws of wss.clients) {
       if (ws.readyState === WebSocket.OPEN && ws.proofRole === "operator") {
@@ -211,7 +245,9 @@ const server = createServer((req, res) => {
     partial = false;
     res.end(JSON.stringify({ partial }));
   } else {
-    res.end(JSON.stringify({ requests, connections: wss.clients.size, partial }));
+    res.end(
+      JSON.stringify({ requests, connections: wss.clients.size, partial, documentDownloads }),
+    );
   }
 });
 const wss = new WebSocketServer({ server });
@@ -235,7 +271,9 @@ wss.on("connection", (ws) => {
       offset: params.offset,
       limit: params.limit,
       role: params.role,
-      ...(guestModelPolicy ? { sessionKey: params.sessionKey, key: params.key } : {}),
+      sessionKey: params.sessionKey,
+      artifactId: params.artifactId,
+      ...(guestModelPolicy ? { key: params.key } : {}),
     });
     const reply = (payload) =>
       ws.send(JSON.stringify({ type: "res", id: req.id, ok: true, payload }));
@@ -392,7 +430,31 @@ wss.on("connection", (ws) => {
                   provider: "fixture",
                 },
               ]
-            : [],
+            : attachmentMode
+              ? [attachmentMessage]
+              : [],
+        });
+        break;
+      case "artifacts.download":
+        if (
+          !attachmentMode ||
+          params.artifactId !== document.artifactId ||
+          !["main", "agent:main:main"].includes(params.sessionKey)
+        ) {
+          fail("Unexpected artifact scope");
+          break;
+        }
+        reply({
+          artifact: {
+            id: document.artifactId,
+            type: "file",
+            title: document.label,
+            mimeType: document.mimeType,
+            sizeBytes: documentBytes.length,
+            download: { mode: "url" },
+          },
+          url: document.url + "?mediaTicket=synthetic-document-ticket",
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
         });
         break;
       case "voicewake.get":
@@ -472,7 +534,7 @@ const tick = setInterval(() => {
 server.listen(19876, "127.0.0.1", () =>
   console.log("Synthetic Gateway listening on loopback:19876"),
 );
-process.on("SIGINT", () => {
+function stop() {
   clearInterval(tick);
   for (const res of policyWaiters) {
     res.destroy();
@@ -484,4 +546,6 @@ process.on("SIGINT", () => {
   }
   wss.close();
   server.close();
-});
+}
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);

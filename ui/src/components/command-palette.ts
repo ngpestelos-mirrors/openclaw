@@ -149,7 +149,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
       (gateway) =>
         gateway.subscribeEvents((event) => {
           const invalidation = modelCatalogEventInvalidation(event);
-          if (this.context?.gateway === gateway && invalidation) {
+          if (this.context?.gateway === gateway && (event.event === "cron" || invalidation)) {
             if (invalidation === "clear") {
               this.clearCatalogSearch();
             }

@@ -15,6 +15,7 @@ import { createLazyCoreHandlers } from "./server-methods/lazy-core-handlers.js";
 import { readGatewayRequestMutationAuthority } from "./server-methods/session-mutation-guards.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
 import type { GatewayRequestHandler } from "./server-methods/types.js";
+import * as sessionGroupCatalog from "./session-group-catalog.js";
 import { talkModeHandlers } from "./talk/handlers/mode.js";
 
 function createPendingProfileClient() {
@@ -74,8 +75,12 @@ describe("Gateway pending-profile authorization", () => {
     ["models.list", READ_SCOPE, READ_SCOPE],
     ["models.list", READ_SCOPE, SESSION_READ_SCOPE],
     ["models.list", SESSION_READ_SCOPE, READ_SCOPE],
+    ["sessions.groups.list", SESSION_READ_SCOPE, SESSION_READ_SCOPE],
+    ["sessions.groups.list", READ_SCOPE, READ_SCOPE],
+    ["sessions.groups.list", READ_SCOPE, SESSION_READ_SCOPE],
+    ["sessions.groups.list", SESSION_READ_SCOPE, READ_SCOPE],
   ])(
-    "retains %s admission while a profile attaches (%s -> %s)",
+    "retains %s admission through awaited preparation (%s -> %s)",
     async (method, initial, current) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const profile = ensureProfileForEmail("catalog-reader@example.test");
@@ -88,21 +93,39 @@ describe("Gateway pending-profile authorization", () => {
           admittedScopes.push(readGatewayRequestMutationAuthority(options).sessionScope);
           options.respond(true, { ok: true });
         });
+        const identity = {
+          profileId: profile.id,
+          displayName: null,
+          hasAvatar: false,
+          updatedAt: profile.updatedAt,
+        };
+        const groupRead = method === "sessions.groups.list";
+        const ensureCatalog = sessionGroupCatalog.ensureSessionGroupCatalog;
+        using catalogPreparation = groupRead
+          ? vi
+              .spyOn(sessionGroupCatalog, "ensureSessionGroupCatalog")
+              .mockImplementation(async (env) => {
+                await ensureCatalog(env);
+                entered.resolve();
+                await release.promise;
+              })
+          : undefined;
+        if (groupRead) {
+          client.authenticatedUserProfile = identity;
+        }
         client.authenticatedGitHubIdentitySync = vi.fn(async () => {
           entered.resolve();
           await release.promise;
-          client.authenticatedUserProfile = {
-            profileId: profile.id,
-            displayName: null,
-            hasAvatar: false,
-            updatedAt: profile.updatedAt,
-          };
+          client.authenticatedUserProfile = identity;
           return { profileId: profile.id, updatedAt: profile.updatedAt };
         });
         const pending = dispatchPendingProfileMethod({ client, method, handler });
         try {
           await Promise.race([entered.promise, pending]);
-          expect(client.authenticatedGitHubIdentitySync).toHaveBeenCalledOnce();
+          expect(client.authenticatedGitHubIdentitySync).toHaveBeenCalledTimes(groupRead ? 0 : 1);
+          if (groupRead) {
+            expect(catalogPreparation).toHaveBeenCalledOnce();
+          }
           expect(handler).not.toHaveBeenCalled();
           client.connect.scopes = [current];
         } finally {

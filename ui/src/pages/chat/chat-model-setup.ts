@@ -32,19 +32,24 @@ export function resolveChatModelSetup(
     : state.catalogInitialized === false
       ? undefined
       : (state.activeSession?.model ?? state.agentModel);
+  const modelSetupRequired = requiresChatModelSetup(state);
+  const modelUnavailableBanner = chatModelUnavailableBanner(
+    model,
+    policy?.restricted ? undefined : state.activeSession?.modelProvider,
+    state.chatModelCatalog,
+    state.onSetup,
+    {
+      retired: state.catalogRetired === true,
+      error: state.catalogError,
+      modelSelectionPolicy: policy,
+    },
+  );
   return {
-    modelSetupRequired: requiresChatModelSetup(state),
-    modelUnavailableBanner: chatModelUnavailableBanner(
-      model,
-      policy?.restricted ? undefined : state.activeSession?.modelProvider,
-      state.chatModelCatalog,
-      state.onSetup,
-      {
-        retired: state.catalogRetired === true,
-        error: state.catalogError,
-        modelSelectionPolicy: policy,
-      },
-    ),
+    modelSetupRequired,
+    modelUnavailableBanner,
+    requiredReason: modelSetupRequired
+      ? t("modelSetup.required.body")
+      : modelUnavailableBanner?.text,
   };
 }
 

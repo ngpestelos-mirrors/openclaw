@@ -127,7 +127,6 @@ export {
   allowedSessionVisibilities,
   authorizeIncognitoSessionTarget,
   authorizeResolvedSessionMutation,
-  authorizeSessionSharing,
   authorizeSessionSharingTarget,
   canAccessIncognitoSession,
   canManageSessionSharing,
@@ -554,10 +553,14 @@ export function resolveSessionMutationAuthorization(params: {
         if (!current) {
           return;
         }
+        const policyConfig = params.context.getCommittedRuntimeConfig?.() ?? currentCfg;
+        const visibilityAuthorized =
+          VISIBILITY_AUTHORIZED_METHODS.has(params.method) &&
+          (operatorSessionCap(params.client, policyConfig) ?? "write") === "write";
         const error =
           (authorizesAgentRun
             ? authorizeSessionAgentRun({
-                cfg: params.context.getCommittedRuntimeConfig?.() ?? currentCfg,
+                cfg: policyConfig,
                 client: params.client,
                 target: current,
               })
@@ -567,10 +570,7 @@ export function resolveSessionMutationAuthorization(params: {
             sessionKey: targetRef.sessionKey,
             target: current,
           }) ??
-          authorizeTargetAccess(
-            params.context.getCommittedRuntimeConfig?.() ?? currentCfg,
-            current,
-          );
+          (visibilityAuthorized ? null : authorizeTargetAccess(policyConfig, current));
         if (error) {
           throw new SessionMutationAuthorizationChangedError(error);
         }

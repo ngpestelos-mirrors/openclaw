@@ -1,3 +1,6 @@
+import { isProxy } from "node:util/types";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
 import {
   GATEWAY_EVENT_DEVICE_PAIR_CHANGED,
   GATEWAY_EVENT_NODE_RUNNER_INVENTORY_CHANGED,
@@ -11,14 +14,18 @@ import {
   READ_SCOPE,
   SESSION_READ_SCOPE,
   TALK_SCOPE,
+  WRITE_SCOPE,
 } from "./operator-scopes.js";
+import type { GatewayPluginEventScope } from "./server-broadcast-types.js";
+import type { GatewayWsClient } from "./server/ws-types.js";
 
 // Pairing scope is for device-pairing handshakes only; chat transcript events
 // require operator-level session access. Pairing-scoped and node-role clients
 // must not passively receive chat-class broadcasts.
-export const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
+const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
   agent: [SESSION_READ_SCOPE],
   chat: [SESSION_READ_SCOPE],
+  // This keyless, redacted invalidation tells session readers to refresh their own projection.
   "chat.metadata.changed": [SESSION_READ_SCOPE],
   "board.changed": [READ_SCOPE],
   "board.command": [READ_SCOPE],
@@ -88,3 +95,88 @@ export const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
   "terminal.exit": [ADMIN_SCOPE],
   "portal.changed": [READ_SCOPE],
 };
+
+const SESSION_CATALOG_INVALIDATIONS = new Set(["delete", "groups", "sharing", "profile-identity"]);
+
+export function isSessionReadInvalidation(
+  event: string,
+  payload: unknown,
+  targeted: boolean,
+): boolean {
+  if (isProxy(payload) || !isRecord(payload)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(payload);
+  if ((prototype !== null && prototype !== Object.prototype) || "toJSON" in payload) {
+    return false;
+  }
+  const fields = Object.entries(Object.getOwnPropertyDescriptors(payload));
+  // Hidden/deleted rows send subscribed readers only a signal to repeat an authorized read.
+  return (
+    event === "sessions.changed" &&
+    targeted &&
+    Object.hasOwn(payload, "reason") &&
+    fields.every(
+      ([key, field]) =>
+        "value" in field &&
+        ((key === "reason" && SESSION_CATALOG_INVALIDATIONS.has(field.value)) ||
+          (key === "ts" && typeof field.value === "number" && Number.isFinite(field.value))),
+    )
+  );
+}
+
+export function modelMetadataInvalidationFragment(payload: unknown): string | undefined {
+  if (isProxy(payload) || !isRecord(payload)) {
+    return undefined;
+  }
+  const prototype = Object.getPrototypeOf(payload);
+  if ((prototype !== null && prototype !== Object.prototype) || "toJSON" in payload) {
+    return undefined;
+  }
+  const keys = Reflect.ownKeys(payload);
+  if (keys.length === 0) {
+    return ',"payload":{}';
+  }
+  if (keys.length !== 1 || keys[0] !== "modelSelectionChanged") {
+    return undefined;
+  }
+  const field = Object.getOwnPropertyDescriptor(payload, "modelSelectionChanged");
+  return field?.value === true && field.enumerable
+    ? ',"payload":{"modelSelectionChanged":true}'
+    : undefined;
+}
+
+export function hasEventScope(
+  client: GatewayWsClient,
+  event: string,
+  explicitPluginScope?: GatewayPluginEventScope,
+  ownRunQuestion = false,
+  hasSessionReadContext?: () => boolean,
+): boolean {
+  if (client.connectionKind === "worker") {
+    return false;
+  }
+  const role = client.connect.role ?? "operator";
+  const scopes = Array.isArray(client.connect.scopes) ? client.connect.scopes : [];
+  const required = EVENT_SCOPE_GUARDS[event];
+  const pluginScope =
+    explicitPluginScope || (!required && event.startsWith("plugin.") ? WRITE_SCOPE : undefined);
+  if (pluginScope) {
+    return role === "operator" && operatorScopeSatisfied(pluginScope, scopes);
+  }
+  if (!required) {
+    return false;
+  }
+  return (
+    required.length === 0 ||
+    (role === "operator" &&
+      (required.some(
+        (scope) =>
+          operatorScopeSatisfied(scope, scopes) &&
+          (scope !== SESSION_READ_SCOPE ||
+            operatorScopeSatisfied(READ_SCOPE, scopes) ||
+            hasSessionReadContext?.() === true),
+      ) ||
+        (ownRunQuestion && operatorScopeSatisfied("operator.sessions.write", scopes))))
+  );
+}

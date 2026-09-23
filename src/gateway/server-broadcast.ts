@@ -14,8 +14,12 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { queuePluginSessionsChanged } from "../plugins/gateway-events.js";
 import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
 import { isBrowserCopilotClient } from "../utils/message-channel.js";
-import { ADMIN_SCOPE, READ_SCOPE, SESSION_READ_SCOPE, WRITE_SCOPE } from "./operator-scopes.js";
-import { EVENT_SCOPE_GUARDS } from "./server-broadcast-scopes.js";
+import { ADMIN_SCOPE, QUESTIONS_SCOPE, READ_SCOPE, WRITE_SCOPE } from "./operator-scopes.js";
+import {
+  hasEventScope,
+  isSessionReadInvalidation,
+  modelMetadataInvalidationFragment,
+} from "./server-broadcast-scopes.js";
 import type {
   GatewayBroadcastFn,
   GatewayBroadcastOpts,
@@ -46,35 +50,47 @@ const SESSION_SUBSCRIPTION_EVENTS = new Set([
   "session.tool",
 ]);
 
-const SESSION_CATALOG_INVALIDATIONS = new Set(["delete", "groups", "sharing", "profile-identity"]);
+type MessageStringEncoding = {
+  values: Map<string, unknown>;
+  capture: boolean;
+};
 
-function isSessionReadInvalidation(event: string, payload: unknown, targeted: boolean): boolean {
-  if (isProxy(payload) || !isRecord(payload)) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(payload);
-  if ((prototype !== null && prototype !== Object.prototype) || "toJSON" in payload) {
-    return false;
-  }
-  const fields = Object.entries(Object.getOwnPropertyDescriptors(payload));
-  // Hidden/deleted rows send subscribed readers only a signal to repeat an authorized read.
-  return (
-    event === "sessions.changed" &&
-    targeted &&
-    Object.hasOwn(payload, "reason") &&
-    fields.every(
-      ([key, field]) =>
-        "value" in field &&
-        ((key === "reason" && SESSION_CATALOG_INVALIDATIONS.has(field.value)) ||
-          (key === "ts" && typeof field.value === "number" && Number.isFinite(field.value))),
-    )
-  );
-}
+const rawJSON = "rawJSON" in JSON && typeof JSON.rawJSON === "function" ? JSON.rawJSON : undefined;
 
-function serializeFrameField(name: "payload" | "stateVersion", value: unknown): string {
+function serializeFrameField(
+  name: "payload" | "stateVersion",
+  value: unknown,
+  messageStrings?: MessageStringEncoding,
+): string {
   // Keep the wrapper for toJSON's property key and reuse its serialized field.
   // Only splice wrappers that still start with that field after inherited toJSON.
-  const fieldJSON = JSON.stringify({ [name]: value });
+  const field = { [name]: value };
+  let payload: unknown;
+  const messageObjects = messageStrings ? new WeakSet<object>() : undefined;
+  const fieldJSON = JSON.stringify(
+    field,
+    messageStrings &&
+      function (this: object, key: string, current: unknown): unknown {
+        if (this === field) {
+          payload = current;
+        } else if ((this === payload && key === "message") || messageObjects!.has(this)) {
+          if (typeof current === "string" && current.length >= 1024) {
+            const encoded = messageStrings.values.get(current);
+            if (encoded !== undefined) {
+              return encoded;
+            }
+            if (messageStrings.capture) {
+              const prepared = rawJSON!(JSON.stringify(current));
+              messageStrings.values.set(current, prepared);
+              return prepared;
+            }
+          } else if (current !== null && typeof current === "object") {
+            messageObjects!.add(current);
+          }
+        }
+        return current;
+      },
+  );
   return fieldJSON.startsWith(`{"${name}":`) ? `,${fieldJSON.slice(1, -1)}` : "";
 }
 
@@ -106,60 +122,6 @@ function resolveBroadcastSessionScope(
     sessionKeys: explicit?.length ? explicit : sessionKey ? [sessionKey] : [],
     ...(agentId ? { agentId } : {}),
   };
-}
-
-function hasEventScope(
-  client: GatewayWsClient,
-  event: string,
-  explicitPluginScope: GatewayPluginEventScope | undefined,
-  hasSessionReadContext: () => boolean,
-): boolean {
-  if (client.connectionKind === "worker") {
-    return false;
-  }
-  const role = client.connect.role ?? "operator";
-  const scopes = Array.isArray(client.connect.scopes) ? client.connect.scopes : [];
-  const required = EVENT_SCOPE_GUARDS[event];
-  const pluginScope =
-    explicitPluginScope || (!required && event.startsWith("plugin.") ? WRITE_SCOPE : undefined);
-  if (pluginScope) {
-    return role === "operator" && operatorScopeSatisfied(pluginScope, scopes);
-  }
-  if (!required) {
-    return false;
-  }
-  return (
-    required.length === 0 ||
-    (role === "operator" &&
-      required.some(
-        (scope) =>
-          operatorScopeSatisfied(scope, scopes) &&
-          (scope !== SESSION_READ_SCOPE ||
-            operatorScopeSatisfied(READ_SCOPE, scopes) ||
-            hasSessionReadContext()),
-      ))
-  );
-}
-
-function modelMetadataInvalidationFragment(payload: unknown): string | undefined {
-  if (isProxy(payload) || !isRecord(payload)) {
-    return undefined;
-  }
-  const prototype = Object.getPrototypeOf(payload);
-  if ((prototype !== null && prototype !== Object.prototype) || "toJSON" in payload) {
-    return undefined;
-  }
-  const keys = Reflect.ownKeys(payload);
-  if (keys.length === 0) {
-    return ',"payload":{}';
-  }
-  if (keys.length !== 1 || keys[0] !== "modelSelectionChanged") {
-    return undefined;
-  }
-  const field = Object.getOwnPropertyDescriptor(payload, "modelSelectionChanged");
-  return field?.value === true && field.enumerable
-    ? ',"payload":{"modelSelectionChanged":true}'
-    : undefined;
 }
 
 type FrameFields = {
@@ -380,6 +342,15 @@ export function createGatewayBroadcaster(params: {
       : targetConnIds
         ? params.clients.getByConnectionIds(targetConnIds)
         : params.clients;
+    // Reuse immutable string encodings, never recipient rows or mutable message objects.
+    // Only the first serialized projection populates this fanout-local cache.
+    const messageStrings: MessageStringEncoding | undefined =
+      rawJSON &&
+      event === "session.message" &&
+      !retained &&
+      (targetConnIds?.size ?? params.clients.size) > 1
+        ? { values: new Map(), capture: true }
+        : undefined;
     for (const c of recipients) {
       // Closing nodes remain discoverable until their owner drains admitted lifecycle work.
       if (
@@ -390,7 +361,14 @@ export function createGatewayBroadcaster(params: {
       ) {
         continue;
       }
-      if (!hasEventScope(c, event, explicitPluginScope, hasSessionReadContext)) {
+      const questionRecipient =
+        event === "question.requested" || event === "question.resolved"
+          ? opts?.questionRecipient
+          : undefined;
+      const ownRunQuestion =
+        questionRecipient !== undefined &&
+        !operatorScopeSatisfied(QUESTIONS_SCOPE, c.connect.scopes ?? []);
+      if (!hasEventScope(c, event, explicitPluginScope, ownRunQuestion, hasSessionReadContext)) {
         continue;
       }
       if (
@@ -398,6 +376,9 @@ export function createGatewayBroadcaster(params: {
         !operatorScopeSatisfied(READ_SCOPE, c.connect.scopes ?? []) &&
         metadataInvalidation === undefined
       ) {
+        continue;
+      }
+      if (questionRecipient && !isCurrent(() => questionRecipient(c))) {
         continue;
       }
       const requiresSessionSubscription =
@@ -434,6 +415,8 @@ export function createGatewayBroadcaster(params: {
         }
       }
       if (
+        // The question owner consumes prepared sharing and original-source facts together.
+        !questionRecipient &&
         sessionKeys.length > 0 &&
         params.canReceiveSessionEvent &&
         !params.canReceiveSessionEvent(c, sessionKeys, agentId, event, payload)
@@ -622,7 +605,14 @@ export function createGatewayBroadcaster(params: {
           if (projected === undefined) {
             continue;
           }
-          payloadFragment = serializeFrameField("payload", projected);
+          payloadFragment = serializeFrameField(
+            "payload",
+            projected,
+            messageStrings?.capture || messageStrings?.values.size ? messageStrings : undefined,
+          );
+          if (messageStrings) {
+            messageStrings.capture = false;
+          }
         }
         // A drained write can refresh the recipient; cache only the profile at this send.
         const recipientProfileId =

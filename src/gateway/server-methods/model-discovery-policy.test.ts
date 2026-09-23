@@ -95,7 +95,13 @@ function createFixture(
   const readChatMetadata = vi.fn(async () => ({ models: catalog, swarmEnabled: false }));
   const context = createDirectChatContext({ ...catalogContext, readChatMetadata });
   const request = async (
-    method: "models.list" | "chat.metadata" | "chat.startup" | "agents.list" | "sessions.list",
+    method:
+      | "models.list"
+      | "chat.metadata"
+      | "chat.startup"
+      | "agents.list"
+      | "sessions.list"
+      | "sessions.patch",
     params: Record<string, unknown>,
   ) => {
     const respond = vi.fn<RespondFn>();
@@ -112,6 +118,54 @@ function createFixture(
 }
 
 describe("operator model discovery at registered reads", () => {
+  it.each([
+    { policy: { allow: [] }, defaultModel: null, acceptsReset: false },
+    {
+      policy: { deny: ["example/restricted-*"] },
+      defaultModel: "example/fallback",
+      acceptsReset: true,
+    },
+  ])("keeps registered Default resets aligned with $defaultModel", async (expected) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const f = createFixture();
+      expectDefined(f.cfg.agents?.defaults, "agent defaults").model = {
+        primary: "example/restricted-model",
+        fallbacks: ["example/fallback"],
+      };
+      f.role.modelPolicy = expected.policy;
+      await state.writeConfig(f.cfg);
+      const scope = { agentId: "main", sessionKey: "agent:main:model-default" };
+      await upsertSessionEntryCore(scope, {
+        sessionId: "model-default",
+        updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: f.person.id },
+        providerOverride: "example",
+        modelOverride: "restricted-model",
+        modelOverrideSource: "user",
+      });
+      const saved = expectDefined(loadSessionEntry(scope), "saved session");
+      f.context.readPreparedGatewayModelCatalog = async () => ({ entries: catalog });
+      await initializeSessionReadContext(f.context);
+
+      const models = await f.request("models.list", { agentId: "main" });
+      expect(models.mock.calls).toHaveLength(1);
+      expect(models.mock.calls[0]?.[0]).toBe(true);
+      expect(models.mock.calls[0]?.[1]).toMatchObject({
+        modelSelectionPolicy: { restricted: true, defaultModel: expected.defaultModel },
+      });
+      const reset = await f.request("sessions.patch", { key: scope.sessionKey, model: null });
+      expect(reset.mock.calls).toHaveLength(1);
+      expect(reset.mock.calls[0]?.[0]).toBe(expected.acceptsReset);
+      const after = expectDefined(loadSessionEntry(scope), "reset session");
+      if (expected.acceptsReset) {
+        expect(after.modelOverride).toBeUndefined();
+      } else {
+        expect(reset.mock.calls[0]?.[2]).toMatchObject({ code: "FORBIDDEN" });
+        expect(after).toEqual(saved);
+      }
+    });
+  });
+
   it("filters every catalog view and metadata, while preserving Staff and permitted custom choices", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const diagnostics = {

@@ -465,7 +465,7 @@ describe("invocation-owned session mutations", () => {
         },
       });
       const target = resolveSessionSharingTarget({ cfg, ...scope })!;
-      addSessionMember(
+      await addSessionMember(
         { ...scope, storePath: target.storePath },
         {
           identityId: client.authenticatedUserProfile!.profileId,

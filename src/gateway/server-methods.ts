@@ -23,6 +23,7 @@ import {
   withPluginRuntimeRegistryScope,
 } from "../plugins/runtime/gateway-request-scope.js";
 import {
+  getGatewayRestartDrainSignal,
   getGatewaySuspendAdmissionPhase,
   isGatewayRestartDraining,
   tryBeginGatewayPreparedRestartRootWorkAdmission,
@@ -58,6 +59,7 @@ import {
   resolveGatewayOperatorRoleActor,
 } from "./operator-role-policy.js";
 import { isOperatorScope } from "./operator-scopes.js";
+import { canSelectQuestion } from "./question-access.js";
 import { isRoleAuthorizedForMethod, parseGatewayRole } from "./role-policy.js";
 import { coreGatewayHandlers } from "./server-methods/core-handlers.js";
 import { authorizeAuthenticatedProfileForMethod } from "./server-methods/gateway-client-identity.js";
@@ -146,6 +148,7 @@ function authorizeGatewayMethod(
         registeredScope,
         scopes,
         resolveSessionMethodScope(method, params),
+        method,
       )
     : authorizeOperatorScopesForMethod(method, scopes, params);
   if (!scopeAuth.allowed) {
@@ -215,7 +218,10 @@ function runGatewayPendingWorkContinuation<T>(params: {
     return null;
   }
   if (params.method === "question.resolve" || params.method === "question.get") {
-    return params.context.questionManager?.runPendingContinuation(request.id, params.run) ?? null;
+    const questionManager = params.context.questionManager;
+    return questionManager && canSelectQuestion(questionManager, request.id, params.client)
+      ? questionManager.runPendingContinuation(request.id, params.run)
+      : null;
   }
   const manager =
     params.method === "exec.approval.resolve"
@@ -320,13 +326,6 @@ export async function authorizeGatewayRequestPreDispatch(params: {
     if (profileError) {
       return { error: profileError };
     }
-    const currentAuthorization = authorizeMethod();
-    if (currentAuthorization.error) {
-      return { error: currentAuthorization.error };
-    }
-    if (currentAuthorization.sessionScope !== scopeAuthorization.sessionScope) {
-      return { error: errorShape(ErrorCodes.FORBIDDEN, "Gateway requester authority changed") };
-    }
     try {
       params.expectedProfileBinding?.assertCurrent();
     } catch (error) {
@@ -349,6 +348,17 @@ export async function authorizeGatewayRequestPreDispatch(params: {
           },
         ),
       };
+    }
+    if (params.method.startsWith("sessions.groups.")) {
+      const { ensureSessionGroupCatalog } = await import("./session-group-catalog.js");
+      await ensureSessionGroupCatalog();
+      const groupProjection = getSessionRowProjection(params.context);
+      if (groupProjection) {
+        do {
+          await groupProjection.prepareMembership();
+        } while (groupProjection.needsMembershipPreparation());
+      }
+      params.expectedProfileBinding?.assertCurrent();
     }
     const projection =
       params.method === "sessions.describe" && !isGatewayAdmin(params.client)
@@ -396,6 +406,13 @@ export async function authorizeGatewayRequestPreDispatch(params: {
           details: { code: "PAIRING_CHANGED" },
         }),
       };
+    }
+    const currentAuthorization = authorizeMethod();
+    if (currentAuthorization.error) {
+      return { error: currentAuthorization.error };
+    }
+    if (currentAuthorization.sessionScope !== scopeAuthorization.sessionScope) {
+      return { error: errorShape(ErrorCodes.FORBIDDEN, "Gateway requester authority changed") };
     }
     return {
       error: null,
@@ -494,7 +511,11 @@ export async function runWithGatewayRequestEnvelope<T>(
       }),
     );
   }
-  if (!rootWorkAdmission && !SUSPEND_CONTROL_METHODS.has(method)) {
+  const restartProgressRead =
+    method === "update.runs.get" &&
+    getGatewayRestartDrainSignal().aborted &&
+    getGatewaySuspendAdmissionPhase() === "accepting";
+  if (!rootWorkAdmission && !SUSPEND_CONTROL_METHODS.has(method) && !restartProgressRead) {
     const restartDraining = isGatewayRestartDraining();
     return await options.reject(
       errorShape(
@@ -695,6 +716,11 @@ export async function handleGatewayRequest(
         ? diagnostics.runHandler(() => preparedHandler(handlerOptions))
         : preparedHandler(handlerOptions);
     };
+    if (req.method === "question.get" || req.method === "question.resolve") {
+      // Draining admission consults the pending owner before handler entry.
+      requestMutationAuthority.assertCurrent();
+      profileBinding?.assertCurrent();
+    }
     await runWithGatewayRequestEnvelope(req.method, client, invokeHandler, {
       context,
       isWebchatConnect,

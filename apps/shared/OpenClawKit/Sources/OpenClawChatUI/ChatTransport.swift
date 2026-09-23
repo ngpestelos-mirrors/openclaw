@@ -756,9 +756,15 @@ public enum OpenClawChatMediaKind: String, Sendable {
     case image
     case audio
     case video
+    case file
 
-    public var mimeTypePrefix: String {
-        "\(rawValue)/"
+    public var acceptHeader: String {
+        self == .file ? "*/*" : "\(rawValue)/*"
+    }
+
+    public func acceptsMIMEType(_ mimeType: String) -> Bool {
+        // Files are exported, never rendered. The Gateway owns document admission.
+        self == .file ? !mimeType.isEmpty : mimeType.hasPrefix("\(rawValue)/")
     }
 
     public func acceptsManagedArtifactID(_ artifactID: String) -> Bool {
@@ -766,7 +772,7 @@ public enum OpenClawChatMediaKind: String, Sendable {
         return switch self {
         case .image:
             normalized.hasPrefix("artifact_managed_image_")
-        case .audio, .video:
+        case .audio, .video, .file:
             normalized.hasPrefix("artifact_managed_media_")
         }
     }
