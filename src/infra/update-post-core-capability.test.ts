@@ -4,7 +4,10 @@ import { expect, it } from "vitest";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
-import { POST_CORE_EXECUTOR_CAPABILITY } from "./update-post-core-capability.js";
+import {
+  POST_CORE_EXECUTOR_CAPABILITY,
+  POST_CORE_MUTATION_PROTOCOL,
+} from "./update-post-core-capability.js";
 
 it("advertises the post-core executor through the actual compiled worker check", async () => {
   await withTestDir({ prefix: "post-core-capability-" }, async (root) => {
@@ -29,6 +32,7 @@ it("advertises the post-core executor through the actual compiled worker check",
     expect(JSON.parse(check.stdout)).toMatchObject({
       executorDelegation: "pid-start-v1",
       postCoreExecutor: POST_CORE_EXECUTOR_CAPABILITY,
+      mutationProtocol: POST_CORE_MUTATION_PROTOCOL,
     });
   });
 });

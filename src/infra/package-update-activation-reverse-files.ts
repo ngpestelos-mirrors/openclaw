@@ -151,7 +151,7 @@ export async function assertPackageReverseImage(
     throw new Error(`Reverse resource preimage/postimage changed: ${file}`);
   }
 }
-export function assertReverseParent(file: string, identity: string) {
+function assertReverseParent(file: string, identity: string) {
   const parent = path.dirname(file);
   const stat = fs.lstatSync(parent, { bigint: true });
   if (

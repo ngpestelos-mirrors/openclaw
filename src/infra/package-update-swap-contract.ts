@@ -14,7 +14,7 @@ import type { NpmGlobalPrefixLayout } from "./update-npm-prefix.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery-types.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
-export type UpdatePublishedStateGeneration = Readonly<
+type UpdatePublishedStateGeneration = Readonly<
   Pick<
     PackageActivationReverseBinding,
     "operationId" | "runId" | "baseline" | "candidate" | "prepared" | "target"
