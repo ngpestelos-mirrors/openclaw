@@ -7,6 +7,7 @@ import {
   admitDiagnosticPrivateData,
   projectDiagnosticEventContent,
 } from "./diagnostic-content-admission.js";
+import type { DiagnosticEventPrivateData } from "./diagnostic-content-types.js";
 import {
   isInternalDiagnosticEventInterested,
   resetInternalDiagnosticEventListenerPresence,
@@ -51,6 +52,12 @@ import {
 } from "./diagnostic-trace-propagation.js";
 import { isBlockedObjectKey } from "./prototype-keys.js";
 
+export type {
+  DiagnosticModelCallContent,
+  DiagnosticToolCallContent,
+  DiagnosticSkillUsagePrivateData,
+  DiagnosticEventPrivateData,
+} from "./diagnostic-content-types.js";
 export type { DiagnosticMemoryUsage } from "./diagnostic-process-types.js";
 
 export type DiagnosticSessionState = "idle" | "processing" | "waiting";
@@ -939,30 +946,6 @@ type InternalDiagnosticEventMetadata = DiagnosticEventMetadata &
     // only the non-SDK core emitter can set this semantic authority.
     [CORE_SEMANTIC_RUN_PROGRESS_METADATA_KEY]?: boolean;
   }>;
-
-export type DiagnosticModelCallContent = Readonly<{
-  inputMessages?: unknown;
-  outputMessages?: unknown;
-  systemPrompt?: string;
-  toolDefinitions?: unknown;
-}>;
-
-export type DiagnosticToolCallContent = Readonly<{
-  toolInput?: unknown;
-  toolOutput?: unknown;
-}>;
-
-export type DiagnosticSkillUsagePrivateData = Readonly<{
-  skillFile: string;
-}>;
-
-export type DiagnosticEventPrivateData = Readonly<{
-  /** Raw failure text for trusted diagnostics exporters; never part of the public event payload. */
-  errorMessage?: string;
-  modelContent?: DiagnosticModelCallContent;
-  skillUsage?: DiagnosticSkillUsagePrivateData;
-  toolContent?: DiagnosticToolCallContent;
-}>;
 
 type DiagnosticEventListener = (
   evt: DiagnosticEventPayload,

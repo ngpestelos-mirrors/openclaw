@@ -1,11 +1,13 @@
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
-import type {
-  DiagnosticEventInput,
-  DiagnosticEventPrivateData,
-  DiagnosticSecurityEvent,
-} from "./diagnostic-events.js";
+import type { DiagnosticEventPrivateData } from "./diagnostic-content-types.js";
 
-type DiagnosticContentEvent = DiagnosticEventInput | Omit<DiagnosticSecurityEvent, "seq" | "ts">;
+type DiagnosticContentEvent = {
+  type: string;
+  sessionKey?: string;
+  deniedReason?: string;
+  detector?: string;
+  action?: string;
+};
 
 function isPrivateEvent(event: DiagnosticContentEvent): boolean {
   return "sessionKey" in event && isIncognitoSessionKey(event.sessionKey);
@@ -16,7 +18,9 @@ export function projectDiagnosticEventContent<T extends DiagnosticContentEvent>(
   if (!isPrivateEvent(event)) {
     return event;
   }
+  // SAFETY: Every own payload field is copied below except optional content; required status fields remain.
   const projected = {} as T & Record<string, unknown>;
+  // SAFETY: Diagnostic inputs are payload objects; keys below come only from this object.
   const fields = event as Record<string, unknown>;
   for (const key of Object.keys(event)) {
     if (
@@ -56,6 +60,7 @@ export function admitDiagnosticPrivateData(
     return privateData;
   }
   // Only host object-identity provenance may assign plugin attribution.
+  // SAFETY: The copy preserves typed payload fields while permitting removal of undeclared attribution.
   const sanitized = { ...privateData } as Record<string, unknown>;
   delete sanitized.hostPluginId;
   return sanitized;
