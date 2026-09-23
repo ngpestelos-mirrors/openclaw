@@ -385,6 +385,38 @@ describe("google-interactions provider", () => {
     ]);
   });
 
+  it("preserves unsafe integers in initial streamed tool call arguments", async () => {
+    const ssePayload = [
+      'data: {"event_type":"step.start","step":{"type":"function_call","id":"call_exec_1","name":"exec","arguments":{"target":9223372036854775807}}}\n\n',
+      'data: {"event_type":"step.stop"}\n\n',
+      completedSse({ status: "requires_action" }),
+      "data: [DONE]\n\n",
+    ].join("");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new TextEncoder().encode(ssePayload), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+      ),
+    );
+
+    const result = await streamGoogleInteractions(makeInteractionsModel(), basicContext, {
+      apiKey: "test-key",
+    }).result();
+
+    expect(result.content).toEqual([
+      {
+        type: "toolCall",
+        id: "call_exec_1",
+        name: "exec",
+        arguments: { target: "9223372036854775807" },
+      },
+    ]);
+  });
+
   it("rejects malformed streamed tool call arguments", async () => {
     const encoder = new TextEncoder();
     const ssePayload = [

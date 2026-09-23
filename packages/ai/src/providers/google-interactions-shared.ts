@@ -12,6 +12,7 @@ import { getEnvApiKey } from "../env-api-keys.js";
 import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.js";
 import { calculateCost } from "../model-utils.js";
 import { buildGuardedModelFetch } from "../transports/host-policy.js";
+import { parseJsonPreservingUnsafeIntegers } from "../transports/json-unsafe-integers.js";
 import {
   assignTransportErrorDetails,
   notifyProviderHttpResponse,
@@ -230,7 +231,7 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
 
         let event: Record<string, unknown>;
         try {
-          event = asRecord(JSON.parse(dataStr));
+          event = asRecord(parseJsonPreservingUnsafeIntegers(dataStr));
         } catch {
           continue;
         }
