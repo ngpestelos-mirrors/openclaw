@@ -24,7 +24,7 @@ import { describeModelProviderAuth } from "../../lib/model-provider-auth-label.t
 import type { ModelProviderRowMessage } from "./config-mutation.ts";
 import { modelCatalogRef, type DefaultModelSelection, type ModelPickerEntry } from "./data.ts";
 
-type DefaultModelsViewProps = {
+export type DefaultModelsViewProps = {
   models: ModelPickerEntry[];
   decisionModels: DecisionModelEntry[];
   selection: DefaultModelSelection;

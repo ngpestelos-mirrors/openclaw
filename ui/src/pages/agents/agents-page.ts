@@ -405,7 +405,7 @@ class AgentsPage
   }
 
   private syncCurrentAgentFiles(agents = this.context.agents) {
-    const agentId = this.resolveSelectedAgentId();
+    const agentId = this.agentsSelectedId;
     if (!agentId || this.agentsPanel !== "files") {
       return;
     }
@@ -506,10 +506,6 @@ class AgentsPage
     );
   }
 
-  private resolveSelectedAgentId() {
-    return this.agentsSelectedId;
-  }
-
   private chatAgentId() {
     return (
       parseAgentSessionKey(this.sessionKey)?.agentId ??
@@ -556,7 +552,7 @@ class AgentsPage
       (!sources.agents || this.context.agents === sources.agents) &&
       (!sources.agentIdentity || this.context.agentIdentity === sources.agentIdentity) &&
       (!sources.sessions || this.context.sessions === sources.sessions) &&
-      (!agentId || this.resolveSelectedAgentId() === agentId)
+      (!agentId || this.agentsSelectedId === agentId)
     );
   }
 
@@ -590,7 +586,7 @@ class AgentsPage
     if (!this.routeData) {
       return;
     }
-    const agentId = this.resolveSelectedAgentId();
+    const agentId = this.agentsSelectedId;
     if (!agentId) {
       return;
     }
@@ -684,7 +680,7 @@ class AgentsPage
 
   private ensureModelCatalog(options: { refresh?: boolean } = {}) {
     const client = this.client;
-    const agentId = this.resolveSelectedAgentId();
+    const agentId = this.agentsSelectedId;
     if (!client || !this.connected || !agentId) {
       return;
     }
@@ -832,7 +828,7 @@ class AgentsPage
       return;
     }
     const client = this.client;
-    const agentId = this.resolveSelectedAgentId();
+    const agentId = this.agentsSelectedId;
     if (!client || !agentId || this.identitySaving) {
       return;
     }
@@ -888,7 +884,7 @@ class AgentsPage
   }
 
   private toolsPath(agentId: string, ensure: boolean) {
-    if (agentId !== this.resolveSelectedAgentId()) {
+    if (agentId !== this.agentsSelectedId) {
       return null;
     }
     const target = this.context.runtimeConfig.agentEntry(agentId, { ensure });
@@ -976,27 +972,17 @@ class AgentsPage
   }
 
   private saveSelectedAgentFile(agentId: string, name: string, content: string) {
-    if (
-      agentId !== this.resolveSelectedAgentId() ||
-      !this.canCall("agents.files.set", "operator.admin")
-    ) {
+    if (agentId !== this.agentsSelectedId || !this.canCall("agents.files.set", "operator.admin")) {
       return;
     }
     void saveAgentFile(this, agentId, name, content);
   }
 
   private overwriteSelectedAgentFile(agentId: string, name: string, content: string) {
-    if (
-      agentId !== this.resolveSelectedAgentId() ||
-      !this.canCall("agents.files.set", "operator.admin")
-    ) {
+    if (agentId !== this.agentsSelectedId || !this.canCall("agents.files.set", "operator.admin")) {
       return;
     }
     void overwriteAgentFile(this, agentId, name, content);
-  }
-
-  private reloadConfig() {
-    void this.context.runtimeConfig.discardDraft({ reloadOnly: true });
   }
 
   private clearAgentSkills(agentId: string) {
@@ -1041,7 +1027,7 @@ class AgentsPage
   override render() {
     const configState = this.context.runtimeConfig.state;
     const agentsState = this.context.agents.state;
-    const selectedAgentId = this.resolveSelectedAgentId();
+    const selectedAgentId = this.agentsSelectedId;
     const access = {
       canCreateAgent: this.canCall("openclaw.chat", "operator.admin"),
       canPatchConfig: this.canCall("config.patch", "operator.admin"),
@@ -1110,13 +1096,13 @@ class AgentsPage
               }
             },
             onFileDraftChange: (name, content) => {
-              if (selectedAgentId !== this.resolveSelectedAgentId()) {
+              if (selectedAgentId !== this.agentsSelectedId) {
                 return;
               }
               this.agentFileDrafts = { ...this.agentFileDrafts, [name]: content };
             },
             onFileReset: (name) => {
-              if (selectedAgentId === this.resolveSelectedAgentId()) {
+              if (selectedAgentId === this.agentsSelectedId) {
                 resetAgentFile(this, name);
               }
             },
@@ -1179,11 +1165,12 @@ class AgentsPage
                 this.context.runtimeConfig.removeFormValue([...path, "deny"]);
               }
             },
-            onConfigReload: () => this.reloadConfig(),
+            onConfigReload: () =>
+              void this.context.runtimeConfig.discardDraft({ reloadOnly: true }),
             onConfigSave: () => this.saveAgentConfig(),
             onIdentityFieldChange: (field, value) => {
               if (
-                selectedAgentId === this.resolveSelectedAgentId() &&
+                selectedAgentId === this.agentsSelectedId &&
                 this.canCall("agents.update", "operator.admin")
               ) {
                 setIdentityDraftField(this, field, value);
@@ -1191,7 +1178,7 @@ class AgentsPage
             },
             onIdentityAvatarSelect: (file) => {
               if (
-                selectedAgentId === this.resolveSelectedAgentId() &&
+                selectedAgentId === this.agentsSelectedId &&
                 this.canCall("agents.update", "operator.admin")
               ) {
                 selectIdentityAvatar(this, file);
@@ -1216,7 +1203,7 @@ class AgentsPage
             },
             onAgentSkillToggle: (agentId, skillName, enabled) => {
               if (
-                agentId !== this.resolveSelectedAgentId() ||
+                agentId !== this.agentsSelectedId ||
                 !this.canCall("config.set", "operator.admin")
               ) {
                 return;
@@ -1244,7 +1231,7 @@ class AgentsPage
             onAgentSkillsClear: (agentId) => this.clearAgentSkills(agentId),
             onAgentSkillsDisableAll: (agentId) => {
               if (
-                agentId !== this.resolveSelectedAgentId() ||
+                agentId !== this.agentsSelectedId ||
                 !this.canCall("config.set", "operator.admin")
               ) {
                 return;
@@ -1257,8 +1244,7 @@ class AgentsPage
             ...createAgentModelActions({
               getRuntimeConfig: () => this.context.runtimeConfig,
               canUpdate: (agentId) =>
-                agentId === this.resolveSelectedAgentId() &&
-                this.canCall("config.set", "operator.admin"),
+                agentId === this.agentsSelectedId && this.canCall("config.set", "operator.admin"),
               onPrimaryChanged: () => void refreshVisibleToolsEffectiveForCurrentSession(this),
             }),
             // Availability facts (provider keys added/removed, new models) go

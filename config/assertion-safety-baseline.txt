@@ -3609,7 +3609,6 @@ ui/src/pages/channels/view.nostr-profile-form.ts	4
 ui/src/pages/channels/view.nostr.ts	5
 ui/src/pages/channels/view.ts	9
 ui/src/pages/chat/chat-avatar.ts	4
-ui/src/pages/chat/chat-command-executor.ts	1
 ui/src/pages/chat/chat-composer-capability-host.ts	4
 ui/src/pages/chat/chat-gateway.ts	1
 ui/src/pages/chat/chat-history-retry.ts	1
