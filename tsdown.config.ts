@@ -980,11 +980,9 @@ const configs: UserConfig[] = [
   workerDeployBuildConfig({
     "worker/sqlite-store.worker": "src/worker/worker-deploy-sqlite-store.ts",
   }),
-  ...createManagedHandoffBuildConfigs().map((config) => ({
-    ...config,
-    name: TSDOWN_UNIFIED_CONFIG_GROUP,
-    env,
-  })),
+  ...createManagedHandoffBuildConfigs().map((config) =>
+    Object.assign(config, { name: TSDOWN_UNIFIED_CONFIG_GROUP, env }),
+  ),
   nodeBuildConfig(
     {
       name: TSDOWN_UNIFIED_CONFIG_GROUP,
