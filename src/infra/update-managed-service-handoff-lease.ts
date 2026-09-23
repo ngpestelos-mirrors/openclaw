@@ -290,7 +290,8 @@ export function createManagedHandoffLeaseStore(
   }
   const acquire = createManagedHandoffOriginalAcquisition({
     options,
-    logger,
+    acquirePinnedOriginal: (pinnedOptions, root, owner, action) =>
+      createManagedHandoffLeaseStore(pinnedOptions, logger).acquire(root, owner, action),
     withDatabase,
     processIdentity,
     read,
@@ -559,14 +560,13 @@ export function createManagedHandoffLeaseStore(
     const action = lease.action;
     const executorClosed =
       lease.executor.pid === process.pid || processState(lease.executor) === "dead";
-    const closed = localHelper
+    return localHelper
       ? action.kind === "update"
         ? executorClosed
         : action.lifetime.kind === "foreground"
           ? ["reserved", "closed"].includes(action.phase) && executorClosed
           : nativeClosed(action.lifetime)
       : reclaimable(lease);
-    return closed;
   }
   function releaseAll(leases: ManagedHandoffLease[]) {
     if (

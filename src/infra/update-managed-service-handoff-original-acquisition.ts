@@ -1,15 +1,14 @@
-import type { SqliteTransactionOptions } from "./sqlite-transaction.js";
 import {
   captureManagedUpdateLeaseDatabaseIdentity,
   type createManagedHandoffLeaseDatabase,
   type ManagedUpdateLeaseDatabaseIdentity,
 } from "./update-managed-service-handoff-database.js";
-import {
+import type {
   createManagedHandoffLeaseStore,
-  type ManagedHandoffLease,
-  type ManagedHandoffParent,
-  type BorrowedLegacyHandoffParent,
-  type LeaseAcquisition,
+  ManagedHandoffLease,
+  ManagedHandoffParent,
+  BorrowedLegacyHandoffParent,
+  LeaseAcquisition,
 } from "./update-managed-service-handoff-lease.js";
 import type { createManagedHandoffProcessIdentityReader } from "./update-managed-service-handoff-process.js";
 import type { createManagedHandoffLeaseRows } from "./update-managed-service-handoff-rows.js";
@@ -22,7 +21,12 @@ import {
 /** Cancellation-aware acquisition uses the original receiver admission transaction. */
 export function createManagedHandoffOriginalAcquisition(deps: {
   options: NonNullable<Parameters<typeof createManagedHandoffLeaseStore>[0]>;
-  logger?: SqliteTransactionOptions["logger"];
+  acquirePinnedOriginal: (
+    pinnedOptions: NonNullable<Parameters<typeof createManagedHandoffLeaseStore>[0]>,
+    root: string,
+    owner: string,
+    action: ManagedHandoffLeaseAction,
+  ) => LeaseAcquisition;
   withDatabase: ReturnType<typeof createManagedHandoffLeaseDatabase>;
   processIdentity: ReturnType<typeof createManagedHandoffProcessIdentityReader>["processIdentity"];
   read: ReturnType<typeof createManagedHandoffLeaseRows>["read"];
@@ -46,8 +50,15 @@ export function createManagedHandoffOriginalAcquisition(deps: {
   legacyParent?: BorrowedLegacyHandoffParent,
   originalParent?: ManagedHandoffParent,
 ) => LeaseAcquisition {
-  const { options, logger, withDatabase, processIdentity, read, admit, originalUpdateAdmissions } =
-    deps;
+  const {
+    options,
+    acquirePinnedOriginal,
+    withDatabase,
+    processIdentity,
+    read,
+    admit,
+    originalUpdateAdmissions,
+  } = deps;
   const { databasePath } = options;
   function acquire(
     root: string,
@@ -73,14 +84,12 @@ export function createManagedHandoffOriginalAcquisition(deps: {
     if (originalUpdateOwner && !options.existingIdentity) {
       return withDatabase(true, () => {
         const existingIdentity = captureManagedUpdateLeaseDatabaseIdentity(databasePath);
-        return createManagedHandoffLeaseStore(
-          {
-            ...options,
-            databasePath: existingIdentity.databasePath,
-            existingIdentity,
-          },
-          logger,
-        ).acquire(root, owner, action, false, undefined, originalParent);
+        return acquirePinnedOriginal(
+          { ...options, databasePath: existingIdentity.databasePath, existingIdentity },
+          root,
+          owner,
+          action,
+        );
       });
     }
     const helper = processIdentity();
