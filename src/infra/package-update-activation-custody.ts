@@ -10,7 +10,7 @@ import {
   type PackageActivationRecord,
 } from "./package-update-activation-journal.js";
 
-function identityOrAbsent(file: string, directory: boolean) {
+export function packageActivationIdentityOrAbsent(file: string, directory: boolean | "launcher") {
   try {
     return packageActivationIdentity(file, directory);
   } catch (error) {
@@ -49,8 +49,8 @@ export function inspectPackageActivationCustody(anchor: string, record: PackageA
     ) {
       throw new Error("Package preparation source parent changed.");
     }
-    const source = identityOrAbsent(entry.source, entry.name !== "helper");
-    const target = identityOrAbsent(destination, entry.name !== "helper");
+    const source = packageActivationIdentityOrAbsent(entry.source, entry.name !== "helper");
+    const target = packageActivationIdentityOrAbsent(destination, entry.name !== "helper");
     // First use publishes the complete control directory in one rename; its
     // helper is already resident, unlike every later journal-owned transfer.
     const resident = entry.name === "helper" && entry.source === destination;

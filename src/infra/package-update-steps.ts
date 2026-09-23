@@ -15,6 +15,7 @@ import type { LocalPackageOverridesResult } from "./package-local-overrides.js";
 import { readPackageVersionIfPresent } from "./package-update-integrity.js";
 import type { PackageUpdateStepRunner } from "./package-update-lifecycle.js";
 import {
+  createStagedPackageInstall,
   discardPackageUpdateStage,
   resolveNpmUpdateLifecyclePolicy,
   runPackageUpdateLifecycle,
@@ -61,7 +62,6 @@ import { prepareNativePackageStage } from "./update-native-package-stage.js";
 import {
   readPackageManagerProbeValue,
   resolveNpmGlobalPrefixLayoutFromGlobalRoot,
-  resolveNpmGlobalPrefixLayoutFromPrefix,
 } from "./update-npm-prefix.js";
 import type { UpdateRecovery } from "./update-recovery.js";
 import { isFailedUpdateStep } from "./update-run-step.js";
@@ -209,35 +209,6 @@ function resolveNativeInstallSpecFromCwd(
   // Native pnpm needs a package name; source links must follow atomic file replacements.
   const protocol = manager === "bun" || /\.(?:tgz|tar\.gz|tar)$/iu.test(target) ? "file" : "link";
   return `${aliasPrefix}${protocol}:${target}`;
-}
-
-async function createStagedPackageInstall(
-  installTarget: ResolvedGlobalInstallTarget,
-  packageName: string,
-): Promise<StagedPackageInstall> {
-  const targetLayout = resolveNpmGlobalPrefixLayoutFromGlobalRoot(installTarget.globalRoot, {
-    allowDirectNodeModulesRoot: installTarget.directNodeModulesRoot === true,
-  });
-  if (!targetLayout) {
-    throw new Error(
-      `The ${installTarget.manager} global install layout cannot prepare the update. Reinstall with ${installTarget.manager} into its default global layout, then retry the update.`,
-    );
-  }
-  await fs.mkdir(targetLayout.globalRoot, { recursive: true });
-  // Active stages must stay outside cleanupGlobalRenameDirs' disposable ".openclaw-" namespace.
-  const prefix = await fs.mkdtemp(path.join(targetLayout.globalRoot, ".openclaw.update-stage-"));
-  const layout = resolveNpmGlobalPrefixLayoutFromPrefix(prefix);
-  return {
-    prefix,
-    layout,
-    packageRoot: path.join(layout.globalRoot, packageName),
-    installTarget: {
-      manager: "npm",
-      command: installTarget.command,
-      globalRoot: layout.globalRoot,
-      packageRoot: path.join(layout.globalRoot, packageName),
-    },
-  };
 }
 
 async function findPackedTarball(packDir: string): Promise<string | null> {

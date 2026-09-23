@@ -185,6 +185,7 @@ import {
 } from "./mock-openai-input.js";
 import { attachQaMockResponsesWebSocketServer } from "./mock-openai-responses-websocket.js";
 import {
+  createTerminalRequesterSettleGate,
   readMockSubagentSpawnFailure,
   resolveMockSubagentFanoutAdmission,
   resolveMockSubagentHandoff,
@@ -333,51 +334,6 @@ const QA_TELEGRAM_VISIBLE_PARTIAL_FAILURE_MARKER = "TELEGRAM-VISIBLE-PARTIAL-BEF
 const QA_REPEATED_REQUEST_RESPONSE_PAUSE_MS = 80_000;
 const QA_REPEATED_REQUEST_STALLED_RESPONSE_PAUSE_MS = 180_000;
 const QA_REPEATED_REQUEST_STALL_ATTEMPT = 5;
-
-type TerminalRequesterSettleGate = {
-  markSettled: (caseName: string, childSessionKey: string) => void;
-  waitUntilSettled: (caseName: string, childSessionKey: string) => Promise<void>;
-};
-
-function createTerminalRequesterSettleGate(): TerminalRequesterSettleGate {
-  const settledChildren = new Set<string>();
-  const waiterPromises = new Map<string, Promise<void>>();
-  const waiters = new Map<string, () => void>();
-  const childKey = (caseName: string, childSessionKey: string) => `${caseName}\n${childSessionKey}`;
-  return {
-    markSettled(caseName, childSessionKey) {
-      const key = childKey(caseName, childSessionKey);
-      settledChildren.add(key);
-      waiters.get(key)?.();
-    },
-    async waitUntilSettled(caseName, childSessionKey) {
-      const key = childKey(caseName, childSessionKey);
-      if (settledChildren.has(key)) {
-        return;
-      }
-      const existing = waiterPromises.get(key);
-      if (existing) {
-        return await existing;
-      }
-      const promise = new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          waiters.delete(key);
-          waiterPromises.delete(key);
-          reject(new Error(`terminal requester did not settle: ${caseName} (${childSessionKey})`));
-        }, 30_000);
-        const finish = () => {
-          clearTimeout(timeout);
-          waiters.delete(key);
-          waiterPromises.delete(key);
-          resolve();
-        };
-        waiters.set(key, finish);
-      });
-      waiterPromises.set(key, promise);
-      await promise;
-    },
-  };
-}
 
 function resolveQaRuntimeSessionId(input: ResponsesInputItem[], body: Record<string, unknown>) {
   return /\bRuntime:\s*[^\n]*\bsessionId=([^\s|]+)/u.exec(extractAllRequestTexts(input, body))?.[1];

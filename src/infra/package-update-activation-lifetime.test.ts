@@ -1,23 +1,16 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.ts";
 import {
   assertReliabilityForcedExit,
   waitForReliabilityWorkerExit,
 } from "../../scripts/lib/sqlite-reliability-process.js";
-import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
-import {
-  installPrivateUpdateHandoffStore,
-  writePrivateUpdateHandoffChildGuard,
-} from "../../test/helpers/private-update-handoff-store.js";
-import { stopChildProcess } from "../../test/helpers/stop-child-process.js";
 import {
   captureUpdateCommandExecutorAuthority,
   withUpdateCommandExecutor,
@@ -29,10 +22,8 @@ import {
   resolvePackageActivationControl,
   resolvePackageActivationHelper,
   resolvePackageActivationJournalPath,
-  encodePackageActivationLauncher,
 } from "./package-update-activation-journal.js";
-import { preparePackageActivationJournal } from "./package-update-activation-prepare.js";
-import { packageActivationRuntimeEntrypoint } from "./package-update-activation-runtime-assets.js";
+import { createPackageActivationLifetimeFixture } from "./package-update-activation-lifetime.test-support.js";
 import {
   readPackageActivationStatus,
   readPackageActivationReceipt,
@@ -42,27 +33,14 @@ import {
 import { createPackageIntegrityReader } from "./package-update-integrity.js";
 import { swapStagedPackageInstall } from "./package-update-swap.js";
 import { createPackageSwapFixture } from "./package-update-swap.test-support.js";
-import * as runtimeWorker from "./runtime-worker-url.js";
 
-const lifetime = createFixtureLifetime();
-const resolveRuntimeWorkerUrl = runtimeWorker.resolveRuntimeWorkerUrl;
+const fixtures = createPackageActivationLifetimeFixture();
+const { lifetime, setup, prepare, spawnChild, stopChild, killUncommittedWrite } = fixtures;
 let root: string;
-let databasePath: string;
 let assertDatabasePath: (path: string) => void;
 let childGuardEnv: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
 beforeEach(() => {
-  root = fs.realpathSync(lifetime.createTempDir("activation-lifetime-"));
-  const tmp = path.join(root, "private-tmp");
-  fs.mkdirSync(tmp, { mode: 0o700 });
-  ({ databasePath, assertDatabasePath } = installPrivateUpdateHandoffStore(tmp));
-  childGuardEnv = writePrivateUpdateHandoffChildGuard(databasePath, tmp);
-  const helper = path.join(root, "sealed.mjs");
-  fs.writeFileSync(helper, "// inert sealed helper bytes\n");
-  vi.spyOn(runtimeWorker, "resolveRuntimeWorkerUrl").mockImplementation((entry) =>
-    entry.sourceWorkerName === "package-update-activation-sealed"
-      ? pathToFileURL(helper)
-      : resolveRuntimeWorkerUrl(entry),
-  );
+  ({ root, assertDatabasePath, childGuardEnv } = setup());
 });
 afterEach(async () => {
   try {
@@ -72,49 +50,13 @@ afterEach(async () => {
   }
 });
 
-async function prepare(cut?: (anchor: string) => void, onCustody?: (retained: boolean) => void) {
-  const f = await createPackageSwapFixture(root);
-  const anchor = resolvePackageActivationAnchor(f.packageRoot);
-  const previous = await createPackageIntegrityReader().tree(f.packageRoot);
-  await withUpdateCommandExecutor(randomUUID(), async (executor) => {
-    const fence = await executor.enter(f.packageRoot);
-    cut?.(anchor);
-    await preparePackageActivationJournal({
-      options: { fence, nodeRunner: process.execPath, onPrepared: () => {} },
-      liveRoot: f.packageRoot,
-      stageRoot: f.params.stage.packageRoot,
-      launcherRoot: f.params.stage.layout.binDir,
-      binDir: path.dirname(f.launcher),
-      previous,
-      onCustody,
-      launchers: [
-        {
-          name: "openclaw",
-          previous: encodePackageActivationLauncher(
-            await createPackageIntegrityReader().launcher(f.launcher),
-          ),
-        },
-      ],
-    });
-  });
-  return {
-    ...f,
-    anchor,
-    operationId: openPackageActivationJournal(anchor).read().descriptor.operationId,
-  };
-}
-
 describe.skipIf(process.platform === "win32")(
   "package activation custody and surviving completion",
   () => {
     it("keeps automatic retirement resumable after the previous package is removed", async () => {
       const f = await createPackageSwapFixture(root);
       const anchor = resolvePackageActivationAnchor(f.packageRoot);
-      await fsp.mkdir(path.join(f.params.stage.packageRoot, "dist/infra"), { recursive: true });
-      await fsp.writeFile(
-        path.join(f.params.stage.packageRoot, "dist/infra/update-migrated-finalize.worker.js"),
-        'console.log(JSON.stringify({ postCoreExecutor: "fd3-pid-start-v1" }));\n',
-      );
+      await fixtures.writePostCoreCapability(f.params.stage.packageRoot);
       const failure = new Error("retirement acknowledgement lost");
       const removeAnchor = fsp.rmdir.bind(fsp);
       let interrupted = false;
@@ -183,38 +125,7 @@ describe.skipIf(process.platform === "win32")(
     it("recovers the original operation after a killed uncommitted journal write", async () => {
       const fixture = await prepare();
       const journalPath = resolvePackageActivationJournalPath(fixture.anchor);
-      const setup = new DatabaseSync(journalPath);
-      try {
-        setup.exec(`
-          PRAGMA journal_mode = DELETE;
-          PRAGMA synchronous = FULL;
-          CREATE TABLE pressure (id INTEGER PRIMARY KEY, value TEXT NOT NULL, payload BLOB NOT NULL) STRICT;
-          WITH RECURSIVE rows(id) AS (
-            SELECT 1 UNION ALL SELECT id + 1 FROM rows WHERE id < 256
-          )
-          INSERT INTO pressure SELECT id, 'committed', zeroblob(8192) FROM rows;
-        `);
-      } finally {
-        setup.close();
-      }
-      const killed = spawnSync(
-        process.execPath,
-        [
-          "--input-type=module",
-          "-e",
-          `import { DatabaseSync } from 'node:sqlite';
-           const database = new DatabaseSync(process.argv[1]);
-           database.exec("PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA cache_size = 2; PRAGMA cache_spill = ON; BEGIN IMMEDIATE; UPDATE package_activation SET phase = 'publication-complete'; UPDATE pressure SET value = 'uncommitted';");
-           process.kill(process.pid, 'SIGKILL');`,
-          journalPath,
-        ],
-        {
-          env: childGuardEnv({ ...process.env, HOME: root, USERPROFILE: root }),
-          encoding: "utf8",
-          timeout: 10_000,
-          killSignal: "SIGKILL",
-        },
-      );
+      const killed = killUncommittedWrite(journalPath);
       expect(killed.error, killed.stderr).toBeUndefined();
       assertReliabilityForcedExit(
         { code: killed.status, signal: killed.signal },
@@ -242,11 +153,7 @@ describe.skipIf(process.platform === "win32")(
     it("preserves local overrides from the activation-owned displaced tree", async () => {
       const f = await createPackageSwapFixture(root);
       await fsp.mkdir(path.join(f.packageRoot, "dist"), { recursive: true });
-      await fsp.mkdir(path.join(f.params.stage.packageRoot, "dist/infra"), { recursive: true });
-      await fsp.writeFile(
-        path.join(f.params.stage.packageRoot, "dist/infra/update-migrated-finalize.worker.js"),
-        'console.log(JSON.stringify({ postCoreExecutor: "fd3-pid-start-v1" }));\n',
-      );
+      await fixtures.writePostCoreCapability(f.params.stage.packageRoot);
       const edited = path.join(f.packageRoot, "dist/local.js");
       await fsp.writeFile(edited, "upstream\n");
       await writePackageDistInventory(f.packageRoot);
@@ -358,25 +265,7 @@ describe.skipIf(process.platform === "win32")(
           );
           assertDatabasePath(authority.databasePath);
           const anchor = resolvePackageActivationAnchor(fixture.packageRoot);
-          const child = spawn(
-            process.execPath,
-            [
-              ...runtimeWorker.resolveRuntimeWorkerArgv(
-                resolveRuntimeWorkerUrl({
-                  ...packageActivationRuntimeEntrypoint,
-                  sourceWorkerName: "package-update-activation.process.test-support",
-                  distWorkerPath: "infra/package-update-activation.process.test-support.js",
-                }),
-              ),
-              cut,
-              root,
-              JSON.stringify(authority),
-            ],
-            {
-              stdio: ["ignore", "pipe", "pipe"],
-              env: childGuardEnv({ ...process.env, HOME: root, USERPROFILE: root }),
-            },
-          );
+          const child = spawnChild([cut, root, JSON.stringify(authority)]);
           const closed = once(child, "close");
           void closed.catch(() => {});
           let stdout = "";
@@ -471,10 +360,7 @@ describe.skipIf(process.platform === "win32")(
             }
           } finally {
             signal.removeEventListener("abort", abort);
-            await lifetime.verifyCleanup(async () => {
-              await stopChildProcess(child, 5_000);
-              await closed;
-            });
+            await stopChild(child, closed);
           }
         }),
     );
@@ -504,26 +390,12 @@ describe.skipIf(process.platform === "win32")(
           const identity = fs.statSync(journalPath, { bigint: true });
           const previousPackage = fs.readFileSync(path.join(f.packageRoot, "package.json"));
           const previousLauncher = fs.readFileSync(f.launcher);
-          const child = spawn(
-            process.execPath,
-            [
-              ...runtimeWorker.resolveRuntimeWorkerArgv(
-                resolveRuntimeWorkerUrl({
-                  ...packageActivationRuntimeEntrypoint,
-                  sourceWorkerName: "package-update-activation.process.test-support",
-                  distWorkerPath: "infra/package-update-activation.process.test-support.js",
-                }),
-              ),
-              cut,
-              root,
-              JSON.stringify(before.descriptor.authority),
-              JSON.stringify(before),
-            ],
-            {
-              stdio: ["ignore", "pipe", "pipe"],
-              env: childGuardEnv({ ...process.env, HOME: root, USERPROFILE: root }),
-            },
-          );
+          const child = spawnChild([
+            cut,
+            root,
+            JSON.stringify(before.descriptor.authority),
+            JSON.stringify(before),
+          ]);
           const closed = once(child, "close");
           void closed.catch(() => {});
           let stdout = "";
@@ -547,15 +419,7 @@ describe.skipIf(process.platform === "win32")(
             signal.throwIfAborted();
             assertReliabilityForcedExit(exit, `later journal ${cut}: ${stderr}`);
             expect(JSON.parse(stdout.trim())).toEqual({ cut, pid: child.pid });
-            const snapshot = () =>
-              fs
-                .readdirSync(resolvePackageActivationControl(f.anchor))
-                .toSorted()
-                .map((name) => {
-                  const file = path.join(resolvePackageActivationControl(f.anchor), name);
-                  const stat = fs.lstatSync(file);
-                  return { name, ino: stat.ino, mode: stat.mode, bytes: fs.readFileSync(file) };
-                });
+            const snapshot = () => fixtures.snapshotControl(f.anchor);
             const afterDeath = snapshot();
             // Read-only observation must not play back a hot journal or clear sidecars.
             // A native refusal is a failure here, not implicit repair or an alternate pass.
@@ -631,10 +495,7 @@ describe.skipIf(process.platform === "win32")(
             );
           } finally {
             signal.removeEventListener("abort", abort);
-            await lifetime.verifyCleanup(async () => {
-              await stopChildProcess(child, 5_000);
-              await closed;
-            });
+            await stopChild(child, closed);
           }
         }),
     );

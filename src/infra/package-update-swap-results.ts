@@ -52,6 +52,15 @@ export function createPackageSwapResults(
   return {
     warnings,
     step,
+    invalidLayout(activePackageRoot: string | null): StagedPackageSwapResult {
+      return {
+        status: "failed",
+        activePackageRoot,
+        step: step(1, null, "cannot resolve npm global prefix layout"),
+        postVerifyStep: null,
+        packageRollbackVerified: false,
+      };
+    },
     verificationFailed(
       activePackageRoot: string | null,
       packageRollbackVerified: boolean,

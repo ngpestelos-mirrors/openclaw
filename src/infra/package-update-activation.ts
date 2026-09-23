@@ -10,6 +10,7 @@ import {
 import { hasErrnoCode } from "./errors.js";
 import {
   completePackageActivationCustody,
+  packageActivationIdentityOrAbsent as entryIdentity,
   inspectPackageActivationCustody,
 } from "./package-update-activation-custody.js";
 import {
@@ -122,7 +123,9 @@ function createPublicationOwner(
   journal: PackageActivationJournal,
   assertion: () => void,
   initial = journal.read(),
-  assertJournalCurrent: (expected: PackageActivationRecord) => void = journal.assertCurrent,
+  assertJournalCurrent: (expected: PackageActivationRecord) => void = journal.assertCurrent.bind(
+    journal,
+  ),
 ) {
   let record = initial;
   const descriptor = record.descriptor;
@@ -165,16 +168,6 @@ function createPublicationOwner(
     }
     if (entries.some((name) => !allowed.includes(name))) {
       throw new Error("Unknown package recovery artifacts require operator inspection.");
-    }
-  };
-  const entryIdentity = (file: string, directory: boolean | "launcher") => {
-    try {
-      return packageActivationIdentity(file, directory);
-    } catch (error) {
-      if (hasErrnoCode(error, "ENOENT")) {
-        return null;
-      }
-      throw error;
     }
   };
   const selectedLauncherIdentity = (
