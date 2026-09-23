@@ -431,6 +431,29 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
                 });
               }
             }
+          } else if (step?.type === "model_output") {
+            endCurrentBlock();
+            currentBlockType = "text";
+            currentBlockIndex = output.content.length;
+            const initialText = Array.isArray(step.content)
+              ? step.content
+                  .map((content) => readStringField(asOptionalRecord(content), "text") ?? "")
+                  .join("")
+              : "";
+            output.content.push({ type: "text", text: initialText });
+            stream.push({
+              type: "text_start",
+              contentIndex: currentBlockIndex,
+              partial: output,
+            });
+            if (initialText) {
+              stream.push({
+                type: "text_delta",
+                contentIndex: currentBlockIndex,
+                delta: initialText,
+                partial: output,
+              });
+            }
           } else if (step?.type === "function_call") {
             endCurrentBlock();
             currentBlockType = "toolCall";

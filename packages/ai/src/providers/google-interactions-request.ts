@@ -5,7 +5,11 @@ import { transformProviderMessages as transformMessages } from "../provider-tran
 import type { Context, Model } from "../types.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { stripSystemPromptCacheBoundary } from "../utils/system-prompt-cache-boundary.js";
-import type { GoogleApiType, GoogleProviderOptions } from "./google-shared.js";
+import {
+  buildGoogleInteractionsSimpleThinking,
+  type GoogleApiType,
+  type GoogleProviderOptions,
+} from "./google-shared.js";
 
 const DEFAULT_GOOGLE_API_BASE_URL = "https://generativelanguage.googleapis.com";
 
@@ -94,6 +98,7 @@ type GoogleInteractionsStep =
       call_id: string;
       name: string;
       result: unknown;
+      is_error: boolean;
     };
 
 export type GoogleInteractionsRequestBody = {
@@ -135,31 +140,6 @@ function convertToolResultContent(content: Context["messages"][number]["content"
   });
 }
 
-function normalizeModelStepOrdering(steps: GoogleInteractionsStep[]): GoogleInteractionsStep[] {
-  const normalized: GoogleInteractionsStep[] = [];
-  let modelSegment: GoogleInteractionsStep[] = [];
-  const flush = () => {
-    if (modelSegment.length === 0) {
-      return;
-    }
-    normalized.push(
-      ...modelSegment.filter((step) => step.type === "thought"),
-      ...modelSegment.filter((step) => step.type !== "thought"),
-    );
-    modelSegment = [];
-  };
-  for (const step of steps) {
-    if (step.type === "user_input" || step.type === "function_result") {
-      flush();
-      normalized.push(step);
-    } else {
-      modelSegment.push(step);
-    }
-  }
-  flush();
-  return normalized;
-}
-
 function convertMessages<T extends GoogleApiType>(
   model: Model<T>,
   context: Context,
@@ -195,6 +175,7 @@ function convertMessages<T extends GoogleApiType>(
         call_id: message.toolCallId,
         name: message.toolName || "tool",
         result: convertToolResultContent(message.content),
+        is_error: message.isError,
       });
       continue;
     }
@@ -261,7 +242,7 @@ function convertMessages<T extends GoogleApiType>(
     flushText();
   }
 
-  return normalizeModelStepOrdering(steps);
+  return steps;
 }
 
 export function buildGoogleInteractionsParams<T extends GoogleApiType>(
@@ -293,8 +274,13 @@ export function buildGoogleInteractionsParams<T extends GoogleApiType>(
   }
   if (options.thinking) {
     generationConfig.thinking_summaries = options.thinking.enabled ? "auto" : "none";
-    if (options.thinking.level) {
-      generationConfig.thinking_level = options.thinking.level.toLowerCase();
+    const thinkingLevel =
+      options.thinking.level ??
+      (options.thinking.enabled
+        ? undefined
+        : buildGoogleInteractionsSimpleThinking(model, { reasoning: "off" }).level);
+    if (thinkingLevel) {
+      generationConfig.thinking_level = thinkingLevel.toLowerCase();
     }
   }
   if (options.toolChoice) {

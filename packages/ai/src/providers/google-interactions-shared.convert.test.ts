@@ -46,8 +46,9 @@ function toolResult(
   toolCallId: string,
   toolName: string,
   content: ToolResultMessage["content"],
+  isError = false,
 ): ToolResultMessage {
-  return { role: "toolResult", toolCallId, toolName, content, isError: false, timestamp: 0 };
+  return { role: "toolResult", toolCallId, toolName, content, isError, timestamp: 0 };
 }
 
 describe("buildGoogleInteractionsParams", () => {
@@ -154,8 +155,31 @@ describe("buildGoogleInteractionsParams", () => {
         call_id: "call_123",
         name: "getWeather",
         result: [{ type: "text", text: JSON.stringify({ temp: "20C" }) }],
+        is_error: false,
       },
     ]);
+  });
+
+  it("preserves tool result failures in function_result steps", () => {
+    const params = buildGoogleInteractionsParams(
+      model,
+      {
+        messages: [
+          user("Use a tool"),
+          assistant([{ type: "toolCall", id: "call_failed", name: "lookup", arguments: {} }]),
+          toolResult("call_failed", "lookup", [{ type: "text", text: "lookup failed" }], true),
+        ],
+      },
+      {},
+    );
+
+    expect(params.input.at(-1)).toEqual({
+      type: "function_result",
+      call_id: "call_failed",
+      name: "lookup",
+      result: [{ type: "text", text: "lookup failed" }],
+      is_error: true,
+    });
   });
 
   it("recirculates thinking blocks with thought signatures as thought steps", () => {
@@ -197,6 +221,38 @@ describe("buildGoogleInteractionsParams", () => {
     ]);
   });
 
+  it("preserves chronological model step order in stateless replay", () => {
+    const params = buildGoogleInteractionsParams(
+      model,
+      {
+        messages: [
+          user("Solve this"),
+          assistant([
+            { type: "text", text: "First result" },
+            {
+              type: "thinking",
+              thinking: "Then reason",
+              thinkingSignature: "sig_ordered_thought==",
+            },
+            { type: "text", text: "Second result" },
+          ]),
+        ],
+      },
+      {},
+    );
+
+    expect(params.input).toEqual([
+      { type: "user_input", content: [{ type: "text", text: "Solve this" }] },
+      { type: "model_output", content: [{ type: "text", text: "First result" }] },
+      {
+        type: "thought",
+        signature: "sig_ordered_thought==",
+        summary: [{ type: "text", text: "Then reason" }],
+      },
+      { type: "model_output", content: [{ type: "text", text: "Second result" }] },
+    ]);
+  });
+
   it("emits thought signatures in separate thought steps and not on function_call steps", () => {
     const context: Context = {
       messages: [
@@ -235,6 +291,7 @@ describe("buildGoogleInteractionsParams", () => {
         call_id: "call_123",
         name: "getWeather",
         result: [{ type: "text", text: "No result provided" }],
+        is_error: true,
       },
     ]);
   });
@@ -282,6 +339,7 @@ describe("buildGoogleInteractionsParams", () => {
         call_id: "call_123",
         name: "getWeather",
         result: [{ type: "text", text: "No result provided" }],
+        is_error: true,
       },
     ]);
   });
@@ -319,6 +377,7 @@ describe("buildGoogleInteractionsParams", () => {
         call_id: "call_calc",
         name: "calculator",
         result: [{ type: "text", text: "No result provided" }],
+        is_error: true,
       },
     ]);
   });
@@ -363,6 +422,19 @@ describe("buildGoogleInteractionsParams", () => {
       expect(params.generation_config?.tool_choice).toBe(toolChoice);
     },
   );
+
+  it("applies the model's minimum supported reasoning when direct options disable thinking", () => {
+    const params = buildGoogleInteractionsParams(
+      { ...model, reasoning: true },
+      { messages: [user("Answer briefly")] },
+      { thinking: { enabled: false } },
+    );
+
+    expect(params.generation_config).toEqual({
+      thinking_level: "minimal",
+      thinking_summaries: "none",
+    });
+  });
 
   it("strips incompatible thought signatures and repairs missing tool results before conversion", () => {
     const params = buildGoogleInteractionsParams(
@@ -409,6 +481,7 @@ describe("buildGoogleInteractionsParams", () => {
         call_id: "call_legacy",
         name: "lookup",
         result: [{ type: "text", text: "No result provided" }],
+        is_error: true,
       },
     ]);
     expect(JSON.stringify(params.input)).not.toContain("incompatible-signature");
@@ -458,6 +531,7 @@ describe("buildGoogleInteractionsParams", () => {
         type: "function_result",
         call_id: "call_read_1",
         name: "read",
+        is_error: false,
         result: [
           { type: "text", text: "Read image file" },
           {

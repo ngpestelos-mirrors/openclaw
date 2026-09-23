@@ -280,6 +280,32 @@ describe("google-interactions provider", () => {
     expect(toolCall?.thoughtSignature).toBeUndefined();
   });
 
+  it("preserves model output text from step.start before appending text deltas", async () => {
+    const ssePayload = [
+      'data: {"event_type":"step.start","step":{"type":"model_output","content":[{"type":"text","text":"Hello"}]}}\n\n',
+      'data: {"event_type":"step.delta","delta":{"type":"text","text":" world"}}\n\n',
+      'data: {"event_type":"step.stop"}\n\n',
+      completedSse(),
+      "data: [DONE]\n\n",
+    ].join("");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new TextEncoder().encode(ssePayload), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+      ),
+    );
+
+    const result = await streamGoogleInteractions(makeInteractionsModel(), basicContext, {
+      apiKey: "test-key",
+    }).result();
+
+    expect(result.content).toEqual([{ type: "text", text: "Hello world" }]);
+  });
+
   it("accumulates tool call arguments streamed across arguments_delta events", async () => {
     const encoder = new TextEncoder();
     const ssePayload = [
