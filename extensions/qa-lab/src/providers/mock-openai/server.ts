@@ -107,6 +107,7 @@ import {
   type MockScenarioState,
   sourceDiscoveryReadPathForProvider,
   subagentHandoffTaskForProvider,
+  subagentFanoutTaskForProvider,
   MOCK_OPENAI_DEBUG_REQUEST_LIMIT,
   readBody,
   parseJsonObjectBody,
@@ -184,12 +185,7 @@ import {
   parseToolOutputJson,
 } from "./mock-openai-input.js";
 import { attachQaMockResponsesWebSocketServer } from "./mock-openai-responses-websocket.js";
-import {
-  createTerminalRequesterSettleGate,
-  readMockSubagentSpawnFailure,
-  resolveMockSubagentFanoutAdmission,
-  resolveMockSubagentHandoff,
-} from "./mock-openai-subagent-completion.js";
+import { resolveMockSubagentHandoff } from "./mock-openai-subagent-completion.js";
 import {
   QA_CODE_MODE_TARGET_MARKER,
   stringifyScenarioToolOutput,
@@ -334,6 +330,51 @@ const QA_TELEGRAM_VISIBLE_PARTIAL_FAILURE_MARKER = "TELEGRAM-VISIBLE-PARTIAL-BEF
 const QA_REPEATED_REQUEST_RESPONSE_PAUSE_MS = 80_000;
 const QA_REPEATED_REQUEST_STALLED_RESPONSE_PAUSE_MS = 180_000;
 const QA_REPEATED_REQUEST_STALL_ATTEMPT = 5;
+
+type TerminalRequesterSettleGate = {
+  markSettled: (caseName: string, childSessionKey: string) => void;
+  waitUntilSettled: (caseName: string, childSessionKey: string) => Promise<void>;
+};
+
+function createTerminalRequesterSettleGate(): TerminalRequesterSettleGate {
+  const settledChildren = new Set<string>();
+  const waiterPromises = new Map<string, Promise<void>>();
+  const waiters = new Map<string, () => void>();
+  const childKey = (caseName: string, childSessionKey: string) => `${caseName}\n${childSessionKey}`;
+  return {
+    markSettled(caseName, childSessionKey) {
+      const key = childKey(caseName, childSessionKey);
+      settledChildren.add(key);
+      waiters.get(key)?.();
+    },
+    async waitUntilSettled(caseName, childSessionKey) {
+      const key = childKey(caseName, childSessionKey);
+      if (settledChildren.has(key)) {
+        return;
+      }
+      const existing = waiterPromises.get(key);
+      if (existing) {
+        return await existing;
+      }
+      const promise = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          waiters.delete(key);
+          waiterPromises.delete(key);
+          reject(new Error(`terminal requester did not settle: ${caseName} (${childSessionKey})`));
+        }, 30_000);
+        const finish = () => {
+          clearTimeout(timeout);
+          waiters.delete(key);
+          waiterPromises.delete(key);
+          resolve();
+        };
+        waiters.set(key, finish);
+      });
+      waiterPromises.set(key, promise);
+      await promise;
+    },
+  };
+}
 
 function resolveQaRuntimeSessionId(input: ResponsesInputItem[], body: Record<string, unknown>) {
   return /\bRuntime:\s*[^\n]*\bsessionId=([^\s|]+)/u.exec(extractAllRequestTexts(input, body))?.[1];
@@ -859,13 +900,6 @@ async function buildResponsesPayload(
   }
   const terminalCompletionCase = terminalTurn?.caseName;
   const current = terminalTurn?.text ?? "";
-  const spawnFailure =
-    terminalCompletionCase && completedToolName === "sessions_spawn"
-      ? readMockSubagentSpawnFailure(toolOutput)
-      : undefined;
-  if (spawnFailure) {
-    return buildAssistantEvents(spawnFailure);
-  }
   if (terminalCompletionCase && terminalTurn?.kind === "settled") {
     return buildAssistantEvents("NO_REPLY");
   }
@@ -1051,7 +1085,7 @@ async function buildResponsesPayload(
     if (!hasCompletedToolOutput) {
       return buildToolCallEventsWithArgs("read", { path: "qa-failed-terminal-missing-file.txt" });
     }
-    if (!hasToolErrorOutput(toolJson, toolOutput || rawToolOutput)) {
+    if (!hasToolErrorOutput(parseToolOutputJson(rawToolOutput), rawToolOutput)) {
       return buildAssistantEvents("BUG-TOOL-DID-NOT-FAIL");
     }
     const marker = exactMarkerDirective ?? exactReplyDirective ?? "QA-FAILED-TOOL-FINALIZED-OK";
@@ -1892,20 +1926,23 @@ async function buildResponsesPayload(
   if (isSubagentFanoutPrompt && scenarioState.subagentFanoutPhase === 3) {
     return buildAssistantEvents("subagent-1: ok\nsubagent-2: ok");
   }
-  const fanoutAdmission = isSubagentFanoutPrompt
-    ? resolveMockSubagentFanoutAdmission({
-        state: scenarioState,
-        toolOutput,
-        hasCompletedToolOutput,
-        completedSpawn: completedToolName === "sessions_spawn",
-        canSpawn: canCallSessionsSpawn,
-        providerVariant,
-      })
-    : undefined;
-  if (fanoutAdmission) {
-    return "text" in fanoutAdmission
-      ? buildAssistantEvents(fanoutAdmission.text)
-      : buildToolCallEventsWithArgs(fanoutAdmission.tool, fanoutAdmission.args);
+  if (canCallSessionsSpawn && isSubagentFanoutPrompt) {
+    if (!hasCompletedToolOutput && scenarioState.subagentFanoutPhase === 0) {
+      scenarioState.subagentFanoutPhase = 1;
+      return buildToolCallEventsWithArgs("sessions_spawn", {
+        task: subagentFanoutTaskForProvider(providerVariant, "alpha"),
+        label: "qa-fanout-alpha",
+        thread: false,
+      });
+    }
+    if (hasCompletedToolOutput && scenarioState.subagentFanoutPhase === 1) {
+      scenarioState.subagentFanoutPhase = 2;
+      return buildToolCallEventsWithArgs("sessions_spawn", {
+        task: subagentFanoutTaskForProvider(providerVariant, "beta"),
+        label: "qa-fanout-beta",
+        thread: false,
+      });
+    }
   }
   if (scenarioState.subagentFanoutPhase === 2) {
     if (/\bALPHA-OK\b/i.test(allInputText)) {

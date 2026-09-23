@@ -277,10 +277,7 @@ describe("mock scenario tool routing", () => {
       call,
       makeToolOutputWithCallId(
         String(call.call_id),
-        catalogResult("sessions_spawn", {
-          status: "accepted",
-          childSessionKey: "agent:qa:subagent:private-second",
-        }),
+        catalogResult("sessions_spawn", { status: "accepted" }),
       ),
     );
     expect(outputText(await request())).toBe("NO_REPLY");

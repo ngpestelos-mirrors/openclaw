@@ -4,7 +4,6 @@ import {
   expectNonStreamingResponsesJson,
   getJson,
   makeToolOutputWithCallId,
-  outputItems,
   outputText,
   requireRecord,
   outputToolArgs,
@@ -333,11 +332,8 @@ describe("mock terminal subagents through structured Tool Search", () => {
       if (receiptCase.unwrap) {
         expect(outputText(reply)).toBe("Failed to delegate: Child admission denied");
       } else {
-        expect(outputText(reply)).toBe(
-          "Failed to delegate: spawn was not accepted with a child session key",
-        );
+        expect(outputToolCall(reply, "sessions_yield")).toBeDefined();
       }
-      expect(outputItems(reply).some((item) => item.type === "function_call")).toBe(false);
     } finally {
       await server.stop();
     }

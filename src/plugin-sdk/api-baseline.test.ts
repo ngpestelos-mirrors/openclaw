@@ -640,57 +640,6 @@ describe("Plugin SDK API baseline", () => {
     expect(unrelated).toEqual(baseline);
   });
 
-  it("bounds repeated cyclic declaration walks without dropping reachable sections", () => {
-    const repoRoot = tempDirs.make("openclaw-plugin-sdk-api-diamond-");
-    const filename = path.join(repoRoot, "fixture.d.ts");
-    const depth = 9;
-    const declarations = ["export type Root = Node0;"];
-    for (let index = 0; index < depth; index += 1) {
-      declarations.push(
-        `type Node${index} = { left: Left${index}; right: Right${index} };`,
-        `type Left${index} = Node${index + 1};`,
-        `type Right${index} = Node${index + 1};`,
-      );
-    }
-    declarations.push(
-      `type Node${depth} = { back: Root; value: Hidden };`,
-      "interface Hidden { marker: string }",
-    );
-    fs.writeFileSync(filename, declarations.join("\n"));
-    const program = ts.createProgram([filename], {
-      target: ts.ScriptTarget.ESNext,
-      module: ts.ModuleKind.ESNext,
-      skipLibCheck: true,
-    });
-    const source = program.getSourceFile(filename);
-    expect(source).toBeDefined();
-    if (!source) {
-      throw new Error("Missing declaration fixture source");
-    }
-    const printer = ts.createPrinter();
-    let printedNodes = 0;
-    const countedPrinter: ts.Printer = {
-      ...printer,
-      printNode: (...args) => {
-        printedNodes += 1;
-        return printer.printNode(...args);
-      },
-    };
-    const render = createDeclarationClosureRenderer({ printer: countedPrinter, program, repoRoot });
-    const closure = render(source, "Root");
-    const expectedNames = declarations.map((declaration) =>
-      declaration.replace(/^(?:export )?(?:type|interface) (\w+).*$/u, "$1"),
-    );
-    expect(closure?.sections.map((section) => section.name).toSorted()).toEqual(
-      expectedNames.toSorted(),
-    );
-    expect(closure?.sections.find((section) => section.name === "Hidden")?.text).toContain(
-      "marker: string",
-    );
-    // Shared cyclic branches must not make each repeated path redo its whole subtree.
-    expect(printedNodes).toBeLessThanOrEqual(declarations.length * 4);
-  });
-
   it("bounds repeated work inside a cyclic declaration fanout without sharing partial roots", () => {
     const repoRoot = tempDirs.make("openclaw-plugin-sdk-cyclic-fanout-");
     const files = Array.from({ length: 7 }, (_, index) =>

@@ -19,12 +19,6 @@ import {
   extractGatewayMessageText,
 } from "./gateway-log-sentinel.js";
 import { liveTurnTimeoutMs } from "./suite-runtime-agent-common.js";
-import {
-  readAssistantToolCalls,
-  readNestedToolActivityResult,
-  readWaitingCodeModeRunId,
-  readQaDeferredToolResult,
-} from "./suite-runtime-agent-tool-evidence.js";
 import type {
   QaRawSessionStoreEntry,
   QaSkillStatusEntry,
@@ -58,6 +52,7 @@ const SESSION_STORE_FTS_SETTLE_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] a
 const MAX_COMPACTION_SUMMARIES = 16;
 const MAX_SUCCESSFUL_TOOL_CALL_EVENTS = 64;
 const SESSION_RESET_RECALL_CUTOFF = Symbol.for("openclaw.memory.sessionResetRecallCutoff");
+const NESTED_TOOL_ACTIVITY_CUSTOM_TYPE = "openclaw.nested-tool.v1";
 
 type QaSessionTranscriptSummary = {
   assistantMirrors?: Array<{ identity: string; text: string }>;
@@ -101,6 +96,54 @@ function readSessionTranscriptEventMessage(event: unknown) {
   return isRecord(event) && isRecord(event.message) ? event.message : undefined;
 }
 
+/** Code Mode runs the target inside exec; its nested activity row is the transcript evidence naming the target tool. */
+function readNestedToolActivityResult(message: Record<string, unknown>) {
+  if (message.role !== "custom" || message.customType !== NESTED_TOOL_ACTIVITY_CUSTOM_TYPE) {
+    return undefined;
+  }
+  const details = isRecord(message.details) ? message.details : undefined;
+  const toolCallId = readNonEmptyString(details?.toolCallId);
+  const toolName = readNonEmptyString(details?.toolName);
+  if (!toolCallId || !toolName || typeof details?.isError !== "boolean") {
+    return undefined;
+  }
+  return { toolCallId, toolName, isError: details.isError, timestamp: details.timestamp };
+}
+
+function readAssistantToolCalls(message: Record<string, unknown>): Array<{
+  arguments?: unknown;
+  id?: string;
+  name: string;
+}> {
+  if (!Array.isArray(message.content)) {
+    return [];
+  }
+  return message.content.flatMap((block) => {
+    if (!isRecord(block)) {
+      return [];
+    }
+    const type = readNonEmptyString(block.type);
+    if (type !== "toolCall" && type !== "toolUse" && type !== "tool_use") {
+      return [];
+    }
+    const name = readNonEmptyString(block.name);
+    return name
+      ? [
+          {
+            arguments: block.arguments ?? block.input,
+            id: readNonEmptyString(block.id),
+            name,
+          },
+        ]
+      : [];
+  });
+}
+
+function readWaitingCodeModeRunId(message: Record<string, unknown>) {
+  const details = isRecord(message.details) ? message.details : undefined;
+  return details?.status === "waiting" ? readNonEmptyString(details.runId) : undefined;
+}
+
 function summarizeSessionTranscriptEvents(
   events: unknown[],
   sessionKey: string,
@@ -112,16 +155,12 @@ function summarizeSessionTranscriptEvents(
   const assistantToolCallCounts: Record<string, number> = {};
   const completedToolCallCounts: Record<string, number> = {};
   const compactionSummaries: string[] = [];
-  const sourceDeliveryCallIds = new Set<string>();
   const currentSourceToolDeliveries: Array<{ toolName: string; threadId?: string }> = [];
   const successfulToolCallCounts: Record<string, number> = {};
   const successfulToolCallEvents: NonNullable<
     QaSessionTranscriptSummary["successfulToolCallEvents"]
   > = [];
-  const assistantToolCallsByCallId = new Map<
-    string,
-    ReturnType<typeof readAssistantToolCalls>[number]
-  >();
+  const assistantToolNamesByCallId = new Map<string, string>();
   const codeModeExecCallIds = new Set<string>();
   const codeModeRunIds = new Set<string>();
   const completedToolCallIds = new Set<string>();
@@ -164,78 +203,44 @@ function summarizeSessionTranscriptEvents(
       const details = isRecord(message.details) ? message.details : undefined;
       if (nestedToolResult && toolCallId && toolName) {
         assistantToolCallCounts[toolName] = (assistantToolCallCounts[toolName] ?? 0) + 1;
-        assistantToolCallsByCallId.set(toolCallId, { id: toolCallId, name: toolName });
+        assistantToolNamesByCallId.set(toolCallId, toolName);
       }
-      const call = toolCallId ? assistantToolCallsByCallId.get(toolCallId) : undefined;
-      const correlated = call?.name === toolName;
-      const dispatched =
-        correlated && toolName === "tool_call" && isRecord(call?.arguments)
-          ? readQaDeferredToolResult(call.arguments.id, details)
-          : undefined;
-      const deliveryDetails = dispatched
-        ? isRecord(dispatched.result.details)
-          ? dispatched.result.details
-          : undefined
-        : details;
-      const deliveryToolName = dispatched?.name ?? toolName;
-      if (
-        deliveryToolName &&
-        deliveryDetails?.sourceReplyRoute === "current-source" &&
-        (!toolCallId || !sourceDeliveryCallIds.has(toolCallId))
-      ) {
-        if (toolCallId) {
-          sourceDeliveryCallIds.add(toolCallId);
-        }
-        const receipt = isRecord(deliveryDetails.receipt) ? deliveryDetails.receipt : undefined;
+      if (toolName && details?.sourceReplyRoute === "current-source") {
+        const receipt = isRecord(details.receipt) ? details.receipt : undefined;
         const threadId = readNonEmptyString(receipt?.threadId);
         currentSourceToolDeliveries.push({
-          toolName: deliveryToolName,
+          toolName,
           ...(threadId ? { threadId } : {}),
         });
       }
-      if (toolCallId && toolName && correlated && !completedToolCallIds.has(toolCallId)) {
+      if (
+        toolCallId &&
+        toolName &&
+        assistantToolNamesByCallId.get(toolCallId) === toolName &&
+        !completedToolCallIds.has(toolCallId)
+      ) {
         completedToolCallIds.add(toolCallId);
         completedToolCallCounts[toolName] = (completedToolCallCounts[toolName] ?? 0) + 1;
-        if (dispatched && dispatched.name !== toolName) {
-          assistantToolCallCounts[dispatched.name] =
-            (assistantToolCallCounts[dispatched.name] ?? 0) + 1;
-          completedToolCallCounts[dispatched.name] =
-            (completedToolCallCounts[dispatched.name] ?? 0) + 1;
-          scanner.recordMessage({
-            role: "assistant",
-            content: [
-              {
-                type: "toolCall",
-                name: dispatched.name,
-                arguments: isRecord(call?.arguments) ? call.arguments.args : undefined,
-              },
-            ],
-          });
-        }
       }
       if (
         toolCallId &&
         toolName &&
         isError === false &&
-        correlated &&
+        assistantToolNamesByCallId.get(toolCallId) === toolName &&
         !successfulToolCallIds.has(toolCallId)
       ) {
         successfulToolCallIds.add(toolCallId);
-        const names = [
-          toolName,
-          ...(dispatched && !dispatched.failed && dispatched.name !== toolName
-            ? [dispatched.name]
-            : []),
-        ];
-        for (const name of names) {
-          successfulToolCallCounts[name] = (successfulToolCallCounts[name] ?? 0) + 1;
-          if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
-            // Keep owner-authenticated result chronology bounded for long-lived QA sessions.
-            if (successfulToolCallEvents.length === MAX_SUCCESSFUL_TOOL_CALL_EVENTS) {
-              successfulToolCallEvents.shift();
-            }
-            successfulToolCallEvents.push({ name, timestamp, toolCallId });
+        successfulToolCallCounts[toolName] = (successfulToolCallCounts[toolName] ?? 0) + 1;
+        if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+          // Keep owner-authenticated result chronology bounded for long-lived QA sessions.
+          if (successfulToolCallEvents.length === MAX_SUCCESSFUL_TOOL_CALL_EVENTS) {
+            successfulToolCallEvents.shift();
           }
+          successfulToolCallEvents.push({
+            name: toolName,
+            timestamp,
+            toolCallId,
+          });
         }
       }
       if (
@@ -276,7 +281,7 @@ function summarizeSessionTranscriptEvents(
     for (const toolCall of assistantToolCalls) {
       assistantToolCallCounts[toolCall.name] = (assistantToolCallCounts[toolCall.name] ?? 0) + 1;
       if (toolCall.id) {
-        assistantToolCallsByCallId.set(toolCall.id, toolCall);
+        assistantToolNamesByCallId.set(toolCall.id, toolCall.name);
         if (
           pendingCodeModeExecNeedle &&
           toolCall.name === "exec" &&

@@ -58,10 +58,8 @@ async function composition(mode) {
     path.join(root, "dist/entry.js"),
     `
     const http=require('node:http');
-    const server=http.createServer((req,res)=>{res.end('{}')});
-    server.listen(0,'127.0.0.1',()=>{
-      process.stdout.write('gateway-listening:'+server.address().port+'\\n');
-    });
+    const port=Number(process.argv[process.argv.indexOf('--port')+1]);
+    http.createServer((req,res)=>{res.end('{}')}).listen(port,'127.0.0.1');
     if(${JSON.stringify(mode)}==='late') process.once('SIGTERM',()=>{
       const fs=require('node:fs'); const root=${JSON.stringify(root)};
       const exitWhenReleased=()=>{if(fs.existsSync(root+'/release-stop')) process.exit(0)};
@@ -133,6 +131,12 @@ sys.exit(record.main())
   `,
     { mode: 0o755 },
   );
+  const net = await import("node:net");
+  const listener = net.createServer();
+  listener.listen(0, "127.0.0.1");
+  await once(listener, "listening");
+  const gatewayPort = listener.address().port;
+  await new Promise((resolve) => listener.close(resolve));
   childProcess.spawn = (command, argv, options) => {
     const child = originalSpawn(command, argv, options);
     children.push({ child, command, argv, options });
@@ -148,16 +152,7 @@ sys.exit(record.main())
     }
     if (argv.some((value) => String(value).endsWith("user-record.py")))
       child.once("exit", () => observe("recorder-terminated"));
-    let output = "";
     child.stdout?.on("data", (data) => {
-      if (argv.includes("dist/entry.js")) {
-        output += data.toString();
-        const listening = /gateway-listening:(\d+)\n/u.exec(output);
-        if (listening && child.fixturePort === undefined) {
-          child.fixturePort = Number(listening[1]);
-          child.emit("fixture-listening", child.fixturePort);
-        }
-      }
       if (data.toString().includes("fixture blocked")) observe("mock-wait");
       if (data.toString().includes("recorder done")) observe("recorder-exit");
     });
@@ -172,16 +167,6 @@ sys.exit(record.main())
   let getMeCount = 0;
   globalThis.fetch = async (url, init = {}) => {
     const parsed = new URL(url);
-    // The child owns its port for the entire listening lifetime. Reserving and
-    // releasing a parent socket lets another parallel fixture claim that port.
-    if (parsed.hostname === "127.0.0.1" && parsed.port === "0") {
-      const child = children.findLast((entry) => entry.argv.includes("dist/entry.js"))?.child;
-      assert.ok(child, "readiness requires the current gateway child");
-      const port =
-        child.fixturePort ?? (await once(child, "fixture-listening", { signal: init.signal }))[0];
-      parsed.port = String(port);
-      return await originalFetch(parsed, init);
-    }
     if (parsed.hostname !== "api.telegram.org") return await originalFetch(url, init);
     const method = parsed.pathname.split("/").at(-1);
     if (method === "getMe" && ++getMeCount === 2 && mode === "body") {
@@ -261,7 +246,7 @@ sys.exit(record.main())
       backend: "mock",
       dm: true,
       chat: "",
-      gatewayPort: 0,
+      gatewayPort,
       mockPort: 1,
       sourceGateway: false,
       preSend: [],

@@ -287,8 +287,7 @@ it("preserves eligible preflight release until a healthy auxiliary descendant dr
   const ready = path.join(root, "draining");
   const proceed = path.join(root, "finish-drain");
   const descendant = `const fs=require('node:fs');process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(ready)},'draining');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(proceed)})){clearInterval(timer);process.exit(0)}},10)});setInterval(()=>{},1000);process.send('ready');`;
-  // The fixture must await admitted stdin before it can exit and start descendant cleanup.
-  const program = `require('node:fs').readFileSync(0,'utf8');const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','ignore','ignore','ipc']});child.once('message',()=>{child.disconnect();child.unref()});`;
+  const program = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','ignore','ignore','ipc']});child.once('message',()=>{child.disconnect();child.unref()});`;
   await withUpdateCommandExecutor(randomUUID(), async (executor) => {
     const fence = await executor.enter(root, { serviceRoot, preflight: true });
     const pending = withUpdateCommandExecutorChild(

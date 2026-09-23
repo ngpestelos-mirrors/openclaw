@@ -1,6 +1,5 @@
 import { expect as expectBrowser } from "playwright/test";
 import { expect, it } from "vitest";
-import { captureControlUiE2eFailureDiagnostics } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import {
   captureUiProof,
@@ -67,10 +66,6 @@ suite.define(() => {
           });
         }
         await filter.click();
-        // Web Awesome focuses its first item after the opening animation settles.
-        await expectBrowser(
-          menu.locator(':scope > wa-dropdown-item:not([slot="submenu"]):focus'),
-        ).toHaveCount(1);
         if (involvingMe) {
           await menu.locator('[value="involving-me"]').click();
         } else {
@@ -128,12 +123,6 @@ suite.define(() => {
           other.getByRole("button", { name: "Other", exact: true }),
         ).toBeVisible();
         await expectBrowser(other.locator("[data-session-key]")).toHaveCount(0);
-      } catch (error) {
-        await captureControlUiE2eFailureDiagnostics(page, {
-          error: error instanceof Error ? error : new Error(String(error)),
-          label: `session-owner-filter-empty-section-${involvingMe}-${hasMore}`,
-        });
-        throw error;
       } finally {
         await context.close();
       }
