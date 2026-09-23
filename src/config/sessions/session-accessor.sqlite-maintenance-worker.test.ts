@@ -453,7 +453,8 @@ it("adopts age facts before synchronous publication reentry", async () => {
     const policy = resolveMaintenanceConfigFromInput({
       mode: "enforce",
       maxEntries: 100,
-      pruneAfter: "1d",
+      // Keep recent rows fresh across both Worker passes; only the explicit backdate ages one.
+      pruneAfter: "1h",
     });
     replaceSessionEntrySync(active, { sessionId: "active", updatedAt: Date.now() });
     replaceSessionEntrySync(victim, { sessionId: "victim", updatedAt: Date.now() });
@@ -487,6 +488,7 @@ it("adopts age facts before synchronous publication reentry", async () => {
       });
       await completed;
       expect(observed).toEqual([{ before: true, after: false }]);
+      expect(loadSessionEntry(active)?.archivedAt).toBeUndefined();
       expect(loadSessionEntry(victim)?.archivedAt).toEqual(expect.any(Number));
       expect(loadSessionEntry(stale)?.archivedAt).toEqual(expect.any(Number));
     } finally {

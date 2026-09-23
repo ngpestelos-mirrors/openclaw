@@ -92,10 +92,14 @@ export async function copyPackagePathEntry(
   source: string,
   destination: string,
   assertCurrent = () => {},
+  beforePublish?: (staged: string) => void,
 ): Promise<{ ownershipPreserved: boolean }> {
   const stat = await fs.lstat(source);
   assertCurrent();
   if (stat.isDirectory()) {
+    if (beforePublish) {
+      throw new Error("Journal-owned launcher publication requires a file or symlink.");
+    }
     await removePackagePath(destination, assertCurrent);
     assertCurrent();
     await fs.cp(source, destination, { recursive: true, force: true, preserveTimestamps: false });
@@ -142,6 +146,8 @@ export async function copyPackagePathEntry(
       assertCurrent();
       await fs.chmod(staged, stat.mode);
     }
+    assertCurrent();
+    beforePublish?.(staged);
     assertCurrent();
     await fs.rename(staged, destination);
   } finally {

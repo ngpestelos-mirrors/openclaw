@@ -5448,6 +5448,7 @@ describe("ci workflow guards", () => {
     { cpus: 8, slots: 2 },
     { cpus: 32, slots: 5 },
     { cpus: 2, slots: 1, fail: "1/4" },
+    { cpus: 8, slots: 2, fail: "1/4" },
   ])("bounds frozen legacy startup corpus admission: %j", (scenario) => {
     const steps: WorkflowStep[] = readCiWorkflow().jobs["checks-fast-core"].steps;
     const step = steps.find((candidate) => candidate.name === "Check startup corpus");

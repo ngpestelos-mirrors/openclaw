@@ -107,7 +107,6 @@ import {
   type MockScenarioState,
   sourceDiscoveryReadPathForProvider,
   subagentHandoffTaskForProvider,
-  subagentFanoutTaskForProvider,
   MOCK_OPENAI_DEBUG_REQUEST_LIMIT,
   readBody,
   parseJsonObjectBody,
@@ -185,7 +184,11 @@ import {
   parseToolOutputJson,
 } from "./mock-openai-input.js";
 import { attachQaMockResponsesWebSocketServer } from "./mock-openai-responses-websocket.js";
-import { resolveMockSubagentHandoff } from "./mock-openai-subagent-completion.js";
+import {
+  readMockSubagentSpawnFailure,
+  resolveMockSubagentFanoutAdmission,
+  resolveMockSubagentHandoff,
+} from "./mock-openai-subagent-completion.js";
 import {
   QA_CODE_MODE_TARGET_MARKER,
   stringifyScenarioToolOutput,
@@ -900,6 +903,13 @@ async function buildResponsesPayload(
   }
   const terminalCompletionCase = terminalTurn?.caseName;
   const current = terminalTurn?.text ?? "";
+  const spawnFailure =
+    terminalCompletionCase && completedToolName === "sessions_spawn"
+      ? readMockSubagentSpawnFailure(toolOutput)
+      : undefined;
+  if (spawnFailure) {
+    return buildAssistantEvents(spawnFailure);
+  }
   if (terminalCompletionCase && terminalTurn?.kind === "settled") {
     return buildAssistantEvents("NO_REPLY");
   }
@@ -1926,23 +1936,20 @@ async function buildResponsesPayload(
   if (isSubagentFanoutPrompt && scenarioState.subagentFanoutPhase === 3) {
     return buildAssistantEvents("subagent-1: ok\nsubagent-2: ok");
   }
-  if (canCallSessionsSpawn && isSubagentFanoutPrompt) {
-    if (!hasCompletedToolOutput && scenarioState.subagentFanoutPhase === 0) {
-      scenarioState.subagentFanoutPhase = 1;
-      return buildToolCallEventsWithArgs("sessions_spawn", {
-        task: subagentFanoutTaskForProvider(providerVariant, "alpha"),
-        label: "qa-fanout-alpha",
-        thread: false,
-      });
-    }
-    if (hasCompletedToolOutput && scenarioState.subagentFanoutPhase === 1) {
-      scenarioState.subagentFanoutPhase = 2;
-      return buildToolCallEventsWithArgs("sessions_spawn", {
-        task: subagentFanoutTaskForProvider(providerVariant, "beta"),
-        label: "qa-fanout-beta",
-        thread: false,
-      });
-    }
+  const fanoutAdmission = isSubagentFanoutPrompt
+    ? resolveMockSubagentFanoutAdmission({
+        state: scenarioState,
+        toolOutput,
+        hasCompletedToolOutput,
+        completedSpawn: completedToolName === "sessions_spawn",
+        canSpawn: canCallSessionsSpawn,
+        providerVariant,
+      })
+    : undefined;
+  if (fanoutAdmission) {
+    return "text" in fanoutAdmission
+      ? buildAssistantEvents(fanoutAdmission.text)
+      : buildToolCallEventsWithArgs(fanoutAdmission.tool, fanoutAdmission.args);
   }
   if (scenarioState.subagentFanoutPhase === 2) {
     if (/\bALPHA-OK\b/i.test(allInputText)) {

@@ -478,21 +478,37 @@ function createStalledReadinessFetch(phase: "headers" | "body") {
 }
 
 describe("openclaw test instance", () => {
-  it("reserves its idle port through refusal, CLI work, and stopped restarts", async () => {
+  it("reserves its idle port through refusal, CLI work, and stopped restarts", async ({
+    signal,
+  }) => {
     const { instance, readAttempts } = await createFakeGateway("unrelated,cli,ready,ready");
+    // This case owns port lifetime, not native bootstrap latency. Keep startup
+    // policy time fixed as in the neighboring refusal/ordering fixtures.
+    const startGateway = async () => {
+      signal.throwIfAborted();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+      const restoreClock = () => clock.mockRestore();
+      signal.addEventListener("abort", restoreClock, { once: true });
+      try {
+        await instance.startGateway();
+      } finally {
+        restoreClock();
+        signal.removeEventListener("abort", restoreClock);
+      }
+    };
     const reserved = {
       created: await isPortReserved(instance.port),
       refused: false,
       stopped: false,
     };
-    await expect(instance.startGateway()).rejects.toThrow("unrelated startup failure");
+    await expect(startGateway()).rejects.toThrow("unrelated startup failure");
     expect(instance.child).toBeUndefined();
     reserved.refused = await isPortReserved(instance.port);
     await expect(instance.cli(["0"])).resolves.toMatchObject({ code: 0, signal: null });
-    await instance.startGateway();
+    await startGateway();
     await instance.stopGateway();
     reserved.stopped = await isPortReserved(instance.port);
-    await instance.startGateway();
+    await startGateway();
     const attempts = await readAttempts();
     expect(attempts).toHaveLength(4);
     expect(

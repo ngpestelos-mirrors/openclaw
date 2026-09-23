@@ -27,6 +27,7 @@ import {
   runPnpmPreflightProbe,
   validatePnpmIsolatedUpdate,
 } from "./package-update-manager-preflight.js";
+import type { PackageActivationOptions } from "./package-update-swap-contract.js";
 import {
   PackageUpdateActivationError,
   removePackageUpdatePath,
@@ -65,6 +66,7 @@ import {
 import type { UpdateRecovery } from "./update-recovery.js";
 import { isFailedUpdateStep } from "./update-run-step.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
+export { markPackagePostInstallDoctorAdvisory } from "./package-update-verification-step.js";
 export type { PackageUpdateTransaction } from "./package-update-swap.js";
 
 type PackageUpdateStepsResult = {
@@ -415,7 +417,9 @@ export async function runGlobalPackageUpdateSteps(params: {
   validateCandidate?: (packageRoot: string) => Promise<UpdateStepResult[]>;
   beforeActivate?: () => Promise<void>;
   assertCurrent?: () => void;
+  reserveInstallSlot?: (root: string) => void;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
+  activation?: PackageActivationOptions;
   expectedGitCheckout?: GitRuntimeIdentity;
   activateGitRoot?: string;
   localOverrides?: { reapply: boolean; env?: NodeJS.ProcessEnv };
@@ -434,7 +438,11 @@ export async function runGlobalPackageUpdateSteps(params: {
   let packageRollbackVerified: boolean | undefined;
   const steps: UpdateStepResult[] = [];
   const cleanupStage = async (): Promise<UpdateStepResult | null> => {
-    if (!stagedInstall || stagedInstall === uncertainLifecycleStage) {
+    if (
+      !stagedInstall ||
+      stagedInstall === uncertainLifecycleStage ||
+      stagedInstall.activationCustody
+    ) {
       return null;
     }
     const cleanup = await discardPackageUpdateStage({
@@ -881,10 +889,12 @@ export async function runGlobalPackageUpdateSteps(params: {
         postVerifyStep: params.postVerifyStep,
         beforeActivate: params.beforeActivate,
         assertCurrent: params.assertCurrent,
+        reserveInstallSlot: params.reserveInstallSlot,
         onLiveMutation: () => {
           liveTreeMutated = true;
         },
         onTransaction: params.onTransaction,
+        activation: params.activation,
         localOverrides: params.expectedGitCheckout ? undefined : params.localOverrides,
         onLocalOverrides: (result) => {
           localOverrides = result;

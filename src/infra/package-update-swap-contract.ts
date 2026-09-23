@@ -4,7 +4,15 @@ import type { PackagePostInstallVerifier } from "./package-update-verification-s
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
 import type { NativePackageStage } from "./update-native-package-stage.js";
 import type { NpmGlobalPrefixLayout } from "./update-npm-prefix.js";
+import type { UpdateRecoveryFence } from "./update-run-recovery-types.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
+
+export type PackageActivationOptions = {
+  fence: UpdateRecoveryFence;
+  nodeRunner: string;
+  onPrepared: (command: string) => void;
+  onUnavailable?: (message: string) => void;
+};
 
 /** The orchestrator owns schema safety and service verification before confirming or restoring. */
 export type PackageUpdateTransaction = {
@@ -35,6 +43,7 @@ export type StagedPackageInstall = {
   packageRoot: string;
   installTarget: ResolvedGlobalInstallTarget;
   native?: NativePackageStage;
+  activationCustody?: boolean;
 };
 
 export type StagedPackageSwapParams = {
@@ -44,9 +53,11 @@ export type StagedPackageSwapParams = {
   postVerifyStep?: PackagePostInstallVerifier;
   beforeActivate?: () => Promise<void>;
   assertCurrent?: () => void;
+  reserveInstallSlot?: (root: string) => void;
   onLiveMutation?: () => void;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
   timeoutMs?: number;
+  activation?: PackageActivationOptions;
   localOverrides?: { reapply: boolean; env?: NodeJS.ProcessEnv };
   onLocalOverrides?: (result: LocalPackageOverridesResult) => void;
 };
