@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -10,12 +9,20 @@ import {
 } from "../commands/backup-verify-manifest.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
-import { pinDirectory, sha256File } from "./directory-durability.js";
-import { hasErrnoCode } from "./errno.js";
+import { pinDirectory } from "./directory-durability.js";
 import { formatErrorMessage } from "./errors.js";
 import { sameFileMutationFingerprint } from "./file-descriptor.js";
 import { root as safeRoot } from "./fs-safe.js";
 import { UPDATE_CAPTURE_PRIVACY_MARKER } from "./update-capture-privacy-marker.js";
+import {
+  backupStore,
+  canonicalEntryPath,
+  captureDirectory,
+  digest,
+  fileDigest,
+  MAX_MANIFEST_BYTES,
+  statOrMissing,
+} from "./update-recovery-backup-files.js";
 import { updateRecoveryCaptureStateSchema } from "./update-recovery-receipt-schema.js";
 import { getUpdateRunAsync } from "./update-run-reader.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
@@ -51,54 +58,6 @@ const outcomeSchema = z
 type Outcome = z.infer<typeof outcomeSchema>;
 const recordedOutcomeSchema = updateRecoveryTerminalOutcomeSchema;
 
-async function statOrMissing(pathname: string) {
-  try {
-    return await fs.lstat(pathname);
-  } catch (error) {
-    if (hasErrnoCode(error, "ENOENT")) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-async function fileDigest(pathname: string): Promise<{ size: number; sha256: string }> {
-  const source = await (
-    await safeRoot(path.dirname(pathname))
-  ).open(path.basename(pathname), { symlinks: "reject", hardlinks: "reject" });
-  try {
-    const before = await source.handle.stat({ bigint: true });
-    const hashed = await sha256File(source.handle);
-    if (!sameFileMutationFingerprint(before, await source.handle.stat({ bigint: true }))) {
-      throw new Error(`Update recovery payload changed while reading: ${pathname}`);
-    }
-    return { size: hashed.bytes, sha256: hashed.digest };
-  } finally {
-    await source.handle.close();
-  }
-}
-
-function canonicalEntryPath(pathname: string): string {
-  const absolute = path.resolve(pathname);
-  return path.join(
-    resolvePathViaExistingAncestorSync(path.dirname(absolute)),
-    path.basename(absolute),
-  );
-}
-
-const MAX_MANIFEST_BYTES = 128 * 1024 * 1024;
-
-function digest(value: string | Buffer): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function backupStore(stateDir = resolveStateDir()): string {
-  return `${resolvePathViaExistingAncestorSync(stateDir)}.update-captures`;
-}
-
-function captureDirectory(runId: string, stateDir?: string): string {
-  return path.join(backupStore(stateDir), runId);
-}
 const MAX_UPDATE_RECOVERY_OUTCOME_BYTES = 16 * 1024;
 type RecordedOutcome = z.infer<typeof recordedOutcomeSchema>;
 
