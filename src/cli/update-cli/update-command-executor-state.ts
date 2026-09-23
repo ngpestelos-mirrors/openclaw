@@ -15,6 +15,7 @@ export const admittedAuthorities = new WeakMap<
     assertPublicationCurrent?: () => void;
     currentStores?: () => UpdateInitialStoreTransport;
     managedHandoff: boolean;
+    requestManagedCancellation?: (cause: Error) => Promise<void>;
   }
 >();
 export const admittedRunIds = new WeakMap<UpdateRecoveryFence, string>();

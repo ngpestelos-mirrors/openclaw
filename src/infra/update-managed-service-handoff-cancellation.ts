@@ -1,5 +1,6 @@
 import type { DatabaseSync as HandoffDatabase } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
+import { isChildProcessTreeAlive } from "../process/child-process-tree.js";
 import { executeSqliteQuerySync } from "./kysely-sync.js";
 import {
   createManagedHandoffLeaseDatabase,
@@ -12,15 +13,17 @@ import type {
   ManagedHandoffLease,
   ManagedHandoffParent,
 } from "./update-managed-service-handoff-lease.js";
+import {
+  readManagedHandoffOriginalAdmission,
+  readOriginalUpdateDependents,
+  type ManagedHandoffOriginalAdmission,
+} from "./update-managed-service-handoff-original-owner.js";
 import type { createManagedHandoffProcessIdentityReader } from "./update-managed-service-handoff-process.js";
 import { parseManagedHandoffLeasePayload } from "./update-managed-service-handoff-schema.js";
 
 type CancellationDependencies = {
   existingIdentity?: ManagedUpdateLeaseDatabaseIdentity;
-  originalUpdateAdmissions: WeakMap<
-    ManagedHandoffLease,
-    { database: ManagedUpdateLeaseDatabaseIdentity; original: ManagedHandoffLease }
-  >;
+  originalUpdateAdmissions: WeakMap<ManagedHandoffLease, ManagedHandoffOriginalAdmission>;
   withDatabase: ReturnType<typeof createManagedHandoffLeaseDatabase>;
   transact: <Result>(db: HandoffDatabase, operation: () => Result) => Result;
   mutationCurrent: (lease: ManagedHandoffParent, db: HandoffDatabase) => boolean;
@@ -62,37 +65,41 @@ export function createManagedHandoffCancellation(deps: CancellationDependencies)
       release: (paired?: ManagedHandoffLease[]) => boolean;
     }
   >();
-  function cancelUpdate(lease: ManagedHandoffLease, retained?: ManagedHandoffLease) {
-    const admission = originalUpdateAdmissions.get(lease);
-    const admitted = admission?.database;
+  function cancelUpdate(original: ManagedHandoffLease, requestedRetained?: ManagedHandoffLease) {
+    const admission = readManagedHandoffOriginalAdmission(
+      original,
+      originalUpdateAdmissions,
+      existingIdentity,
+      processState,
+    );
     if (
-      !admitted ||
-      !isDeepStrictEqual(admission?.original, lease) ||
-      !existingIdentity ||
-      admitted.databasePath !== existingIdentity.databasePath ||
-      admitted.databaseIdentity !== existingIdentity.databaseIdentity ||
-      admitted.parentIdentity !== existingIdentity.parentIdentity ||
-      lease.version !== 2 ||
-      lease.mutationOriginal ||
-      lease.action.kind !== "update" ||
-      lease.action.mutationProtocol !== "original-cancellation-v1" ||
-      lease.key.includes("/.openclaw-update-child-") ||
-      lease.helper.pid !== process.pid ||
-      !isDeepStrictEqual(lease.helper, lease.executor) ||
-      processState(lease.helper) !== "live" ||
-      (retained &&
-        (retained.key === lease.key ||
-          retained.key.includes("/.openclaw-update-child-") ||
-          retained.version !== 2 ||
-          retained.mutationOriginal ||
-          retained.action.kind !== "update" ||
-          retained.helper.pid !== process.pid ||
-          !isDeepStrictEqual(retained.helper, retained.executor) ||
-          processState(retained.helper) !== "live"))
+      !admission ||
+      (admission.retained &&
+        requestedRetained &&
+        !isDeepStrictEqual(admission.retained.original, requestedRetained)) ||
+      (admission.child && requestedRetained && !admission.retained)
     ) {
       return null;
     }
-    const previous = cancellations.get(lease);
+    const lease = admission.current;
+    const retained = admission.retained?.current ?? requestedRetained;
+    // Direct-original callers keep their synchronous paired cancellation path.
+    // A bound helper can revoke only the pair captured at its own acquisition.
+    if (
+      !admission.retained &&
+      retained &&
+      (retained.key === lease.key ||
+        retained.key.includes("/.openclaw-update-child-") ||
+        retained.version !== 2 ||
+        retained.mutationOriginal ||
+        retained.action.kind !== "update" ||
+        retained.helper.pid !== process.pid ||
+        !isDeepStrictEqual(retained.helper, retained.executor) ||
+        processState(retained.helper) !== "live")
+    ) {
+      return null;
+    }
+    const previous = cancellations.get(original);
     if (previous) {
       return withDatabase(true, (db) =>
         transact(
@@ -151,28 +158,28 @@ export function createManagedHandoffCancellation(deps: CancellationDependencies)
         ) {
           return null;
         }
-        const transition = (original: ManagedHandoffLease) => {
+        const transition = (currentRow: ManagedHandoffLease) => {
           const payload = JSON.stringify({
             version: 4,
-            helper: original.helper,
-            executor: original.executor,
-            action: original.action,
+            helper: currentRow.helper,
+            executor: currentRow.executor,
+            action: currentRow.action,
             cancellation: {
-              key: original.key,
-              owner: original.owner,
-              payload: original.payload,
-              updatedAt: original.updatedAt,
+              key: currentRow.key,
+              owner: currentRow.owner,
+              payload: currentRow.payload,
+              updatedAt: currentRow.updatedAt,
             },
           });
           if (!parseManagedHandoffLeasePayload(payload)) {
             throw new Error("Original cancellation payload is invalid");
           }
-          const updatedAt = Math.max(Date.now(), original.updatedAt + 1);
-          if (!updateRow(db, original, { payload_json: payload, updated_at: updatedAt })) {
+          const updatedAt = Math.max(Date.now(), currentRow.updatedAt + 1);
+          if (!updateRow(db, currentRow, { payload_json: payload, updated_at: updatedAt })) {
             throw new Error("Original cancellation generation changed");
           }
-          return handle(original.key, {
-            owner: original.owner,
+          return handle(currentRow.key, {
+            owner: currentRow.owner,
             payload_json: payload,
             updated_at: updatedAt,
           });
@@ -199,6 +206,15 @@ export function createManagedHandoffCancellation(deps: CancellationDependencies)
           transact(db, () => {
             if (
               processState(lease.helper) !== "live" ||
+              (admission.child &&
+                (!admission.child.closed ||
+                  processState(lease.executor) !== "dead" ||
+                  (process.platform !== "win32" && isChildProcessTreeAlive(lease.executor)))) ||
+              [lease, ...(retained ? [retained] : [])].some((parent) =>
+                readOriginalUpdateDependents(parent, db).some(
+                  (key) => !paired.some((item) => item.key === key),
+                ),
+              ) ||
               new Set([...generations, ...paired].map((item) => item.key)).size !==
                 generations.length + paired.length ||
               paired.some(
@@ -211,7 +227,9 @@ export function createManagedHandoffCancellation(deps: CancellationDependencies)
                     updatedAt: lease.updatedAt,
                   }) ||
                   !canRelease(item) ||
-                  !storedCurrent(item, db),
+                  !storedCurrent(item, db) ||
+                  descendants(db, item).length > 0 ||
+                  readOriginalUpdateDependents(item, db).length > 0,
               ) ||
               generations.some(
                 (generation) =>
@@ -236,7 +254,7 @@ export function createManagedHandoffCancellation(deps: CancellationDependencies)
           }),
         ),
     };
-    cancellations.set(lease, successor);
+    cancellations.set(original, successor);
     return successor;
   }
   return cancelUpdate;

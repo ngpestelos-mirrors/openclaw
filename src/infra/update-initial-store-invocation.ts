@@ -92,6 +92,7 @@ export async function publishUpdateInitialStoreGeneration(
     typeof import("./update-recovery-generation-consumer.js").publishUpdateRecoveryGeneration
   >[0],
   onRetired: () => void,
+  beforeRetire?: () => Promise<void>,
 ) {
   const scope = invocation.getStore();
   const lexical = currentUpdateInitialStoreAdmission();
@@ -135,6 +136,12 @@ export async function publishUpdateInitialStoreGeneration(
   }
   const { publishUpdateRecoveryGeneration } =
     await import("./update-recovery-generation-consumer.js");
+  // The helper's physical readers must join before the provider can cause an
+  // inode transition. The synchronous close callback below remains synchronous.
+  await beforeRetire?.();
+  assertAuthority();
+  initial.assertCurrent();
+  lexical?.assertCurrent();
   const result = await publishUpdateRecoveryGeneration({
     ...captured,
     initialStores: {
@@ -146,21 +153,21 @@ export async function publishUpdateInitialStoreGeneration(
       },
     },
   });
-  try {
-    if (scope) {
-      if (!scope.active || scope.admission !== lexical) {
-        throw new Error("Publication outlived its original invocation.");
+  return {
+    ...result,
+    commitInvocation() {
+      assertAuthority();
+      result.admission.assertCurrent();
+      if (scope) {
+        if (!scope.active || scope.admission !== lexical || !scope.publishing) {
+          throw new Error("Publication outlived its original invocation.");
+        }
+        // Reopen only after the executor and its helper select the verified result.
+        scope.admission = admitUpdateInitialStores(result.admission.selection);
+        scope.publishing = false;
       }
-      // The terminal caller outlives executor settlement and owns its own guard.
-      // Its input is the verified publication result, never an observed inode.
-      scope.admission = admitUpdateInitialStores(result.admission.selection);
-      scope.publishing = false;
-    }
-    return result;
-  } catch (error) {
-    result.admission.close();
-    throw error;
-  }
+    },
+  };
 }
 
 /** Original executor's forward package transition. The provider is selected here
@@ -175,6 +182,7 @@ export async function publishUpdateInitialPackageGeneration(params: {
   operationId: string;
   assertCurrent: () => void;
   onRetired: () => void;
+  beforeRetire?: () => Promise<void>;
 }) {
   const scope = invocation.getStore();
   const lexical = currentUpdateInitialStoreAdmission();
@@ -184,6 +192,7 @@ export async function publishUpdateInitialPackageGeneration(params: {
   const operationId = params.operationId;
   const assertCurrent = params.assertCurrent.bind(params);
   const onRetired = params.onRetired.bind(params);
+  const beforeRetire = params.beforeRetire?.bind(params);
   initial.assertCurrent();
   lexical?.assertCurrent();
   if (lexical && !isDeepStrictEqual(lexical.selection, initial.selection)) {
@@ -214,6 +223,11 @@ export async function publishUpdateInitialPackageGeneration(params: {
   }
   const owner = createPublicationOwner(anchor, journal, assertCurrent, record);
   await owner.preflight("repair");
+  assertCurrent();
+  initial.assertCurrent();
+  lexical?.assertCurrent();
+  journal.assertCurrent(record);
+  await beforeRetire?.();
   assertCurrent();
   initial.assertCurrent();
   lexical?.assertCurrent();

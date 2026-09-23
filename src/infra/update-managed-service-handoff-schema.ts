@@ -123,7 +123,8 @@ const cancellingPayloadSchema = z
         JSON.stringify(original.helper) === JSON.stringify(value.helper) &&
         JSON.stringify(original.executor) === JSON.stringify(value.executor) &&
         JSON.stringify(original.action) === JSON.stringify(value.action) &&
-        JSON.stringify(value.helper) === JSON.stringify(value.executor)
+        (JSON.stringify(value.helper) === JSON.stringify(value.executor) ||
+          original.action.mutationProtocol === "original-cancellation-v1")
       );
     } catch {
       return false;
@@ -147,8 +148,7 @@ const currentPayloadSchema = z
       const original = originalUpdateSchema.parse(JSON.parse(value.mutationOriginal.payload));
       return (
         !value.mutationOriginal.key.includes("/.openclaw-update-child-") &&
-        original.action.mutationProtocol === "original-cancellation-v1" &&
-        JSON.stringify(original.helper) === JSON.stringify(original.executor)
+        original.action.mutationProtocol === "original-cancellation-v1"
       );
     } catch {
       return false;

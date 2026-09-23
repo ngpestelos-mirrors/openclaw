@@ -43,6 +43,24 @@ export function requestUpdateCommandExecutorCancellation(
   cancel(runId, cause);
 }
 
+/** Managed child closes its effects synchronously, then awaits only committed
+ * native revocation. Final helper settlement must not be awaited by its own child. */
+export function requestManagedUpdateCommandExecutorRevocation(
+  fence: UpdateRecoveryFence,
+  runId: string,
+  cause: Error,
+): Promise<void> {
+  const admitted = admittedAuthorities.get(fence);
+  if (
+    !admitted?.managedHandoff ||
+    admittedRunIds.get(fence) !== runId ||
+    !admitted.requestManagedCancellation
+  ) {
+    throw new UpdateCommandRecoveryPendingError("Revocation requires its admitted helper route.");
+  }
+  return admitted.requestManagedCancellation(cause);
+}
+
 export function captureUpdateCommandExecutorAuthority(
   fence: UpdateRecoveryFence,
   runId?: string,

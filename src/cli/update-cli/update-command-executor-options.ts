@@ -1,14 +1,30 @@
 import path from "node:path";
-import type { UpdateInitialStoreTransport } from "../../infra/update-initial-store-transport.js";
+import type {
+  UpdateInitialStoreTransport,
+  UpdateManagedGenerationIssuer,
+} from "../../infra/update-initial-store-transport.js";
+import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import type { LegacyUpdateExecutorParent } from "./update-command-executor-legacy.js";
 import type { ManagedUpdateLeaseAuthority } from "./update-command-executor-state.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 
-export type UpdateCommandExecutorOptions = { initialStores?: UpdateInitialStoreTransport } & (
+export type UpdateCommandExecutorOptions = {
+  initialStores?: UpdateInitialStoreTransport;
+  /** Existing helper control owner; native bound-child admission is still mandatory. */
+  managedGeneration?: UpdateManagedGenerationIssuer;
+} & (
   | {
       /** Location only: direct admission must still acquire its own live owner. */
       directOriginal: { databasePath: string };
+      existingAuthority?: never;
+      legacyManagedParent?: never;
+      legacyPackageParent?: never;
+      legacyPackageHandoff?: never;
+    }
+  | {
+      managedGeneration: UpdateManagedGenerationIssuer;
+      directOriginal?: never;
       existingAuthority?: never;
       legacyManagedParent?: never;
       legacyPackageParent?: never;
@@ -61,4 +77,17 @@ export function captureUpdateCommandDirectLocation(options?: UpdateCommandExecut
     throw new UpdateCommandRecoveryPendingError("Invalid direct original custody location.");
   }
   return directDatabasePath;
+}
+
+export function resolveUpdateCommandRetainedRoot(
+  root: string | undefined,
+  key: string,
+  recovering: boolean,
+) {
+  const requested = root ? resolveUpdateInstallRoot(root) : undefined;
+  const distinct = requested === key ? undefined : requested;
+  if (recovering && distinct) {
+    throw new UpdateCommandRecoveryPendingError("Recovery cannot acquire a new service root.");
+  }
+  return distinct;
 }
