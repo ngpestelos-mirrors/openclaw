@@ -2,8 +2,114 @@
 import { createHash } from "node:crypto";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { QA_LAB_WEB_SEARCH_DENIED_INPUT_QUERY } from "../../qa-web-search-provider.js";
-import type { MockToolCallItem, StreamEvent } from "./mock-openai-contracts.js";
+import { readQaDeferredToolResult } from "../../suite-runtime-agent-tool-evidence.js";
+import type { MockToolCallItem, ResponsesInputItem, StreamEvent } from "./mock-openai-contracts.js";
+import { hasToolDefinition } from "./mock-openai-directives.js";
+import {
+  extractAllRequestTexts,
+  extractInstructionsText,
+  extractToolOutput,
+  extractToolOutputCallId,
+  parseToolOutputJson,
+} from "./mock-openai-input.js";
 import { MockResponseStream } from "./mock-openai-stream.js";
+
+export function hasDeferredScenarioTool(body: Record<string, unknown>, name: string) {
+  if (!hasToolDefinition(body, "tool_call")) {
+    return false;
+  }
+  const lines = extractInstructionsText(body).split("\n");
+  const heading = lines.findLastIndex((line) =>
+    line.startsWith("Available deferred-schema tools:"),
+  );
+  // Only the latest canonical catalog declares capabilities. Mentions in prose,
+  // descriptions, or an earlier superseded catalog cannot make a tool callable.
+  if (heading < 0 || lines[heading] !== "Available deferred-schema tools:") {
+    return false;
+  }
+  for (const line of lines.slice(heading + 1)) {
+    if (!line.startsWith("- ")) {
+      break;
+    }
+    const entry = line.slice(2);
+    if (entry === name || entry.startsWith(`${name}:`) || entry.startsWith(`${name} (`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resolveCurrentToolDeclarationSurface(
+  body: Record<string, unknown>,
+  input: ResponsesInputItem[],
+) {
+  const additionalTools = input.flatMap((item) =>
+    item.type === "additional_tools" && item.role === "developer" && Array.isArray(item.tools)
+      ? item.tools
+      : [],
+  );
+  return {
+    ...body,
+    // Current request instructions supersede inherited developer catalogs.
+    // Responses without that field carry their catalog in developer input.
+    instructions:
+      typeof body.instructions === "string"
+        ? body.instructions
+        : extractAllRequestTexts(
+            input.filter((item) => item.role === "developer" || item.role === "system"),
+            {},
+          ),
+    tools: [...(Array.isArray(body.tools) ? body.tools : []), ...additionalTools],
+  };
+}
+
+export function findToolCallByCallId(input: ResponsesInputItem[], callId: string) {
+  return input.toReversed().find((item) => {
+    const type = item.type;
+    return (type === "function_call" || type === "custom_tool_call") && item.call_id === callId;
+  });
+}
+
+export function parseToolCallArguments(toolCall: ResponsesInputItem) {
+  if (typeof toolCall.arguments !== "string") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(toolCall.arguments) as unknown;
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function extractScenarioToolOutput(input: ResponsesInputItem[]) {
+  const raw = extractToolOutput(input);
+  const call = findToolCallByCallId(input, extractToolOutputCallId(input));
+  if (call?.name !== "tool_call") {
+    return raw;
+  }
+  const args = parseToolCallArguments(call);
+  const envelope = parseToolOutputJson(raw);
+  // Correlate the dispatcher receipt before exposing its unchanged target content.
+  const receipt = readQaDeferredToolResult(args?.id, envelope);
+  if (!receipt) {
+    return raw;
+  }
+  const output = extractToolOutput([
+    { type: "function_call_output", output: receipt.result.content },
+  ]);
+  if (!receipt.failed) {
+    return output;
+  }
+  const details = isRecord(receipt.result.details) ? receipt.result.details : undefined;
+  const error = details?.error ?? parseToolOutputJson(output)?.error;
+  return JSON.stringify({
+    status: "error",
+    error: typeof error === "string" ? error : "Deferred tool result reported failure",
+  });
+}
 
 let mockFunctionCallSequence = 0;
 

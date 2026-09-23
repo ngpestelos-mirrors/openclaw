@@ -19,6 +19,11 @@ import {
   extractGatewayMessageText,
 } from "./gateway-log-sentinel.js";
 import { liveTurnTimeoutMs } from "./suite-runtime-agent-common.js";
+import {
+  readAssistantToolCalls,
+  readWaitingCodeModeRunId,
+  readQaDeferredToolResult,
+} from "./suite-runtime-agent-tool-evidence.js";
 import type {
   QaRawSessionStoreEntry,
   QaSkillStatusEntry,
@@ -95,40 +100,6 @@ function readSessionTranscriptEventMessage(event: unknown) {
   return isRecord(event) && isRecord(event.message) ? event.message : undefined;
 }
 
-function readAssistantToolCalls(message: Record<string, unknown>): Array<{
-  arguments?: unknown;
-  id?: string;
-  name: string;
-}> {
-  if (!Array.isArray(message.content)) {
-    return [];
-  }
-  return message.content.flatMap((block) => {
-    if (!isRecord(block)) {
-      return [];
-    }
-    const type = readNonEmptyString(block.type);
-    if (type !== "toolCall" && type !== "toolUse" && type !== "tool_use") {
-      return [];
-    }
-    const name = readNonEmptyString(block.name);
-    return name
-      ? [
-          {
-            arguments: block.arguments ?? block.input,
-            id: readNonEmptyString(block.id),
-            name,
-          },
-        ]
-      : [];
-  });
-}
-
-function readWaitingCodeModeRunId(message: Record<string, unknown>) {
-  const details = isRecord(message.details) ? message.details : undefined;
-  return details?.status === "waiting" ? readNonEmptyString(details.runId) : undefined;
-}
-
 function summarizeSessionTranscriptEvents(
   events: unknown[],
   sessionKey: string,
@@ -140,12 +111,16 @@ function summarizeSessionTranscriptEvents(
   const assistantToolCallCounts: Record<string, number> = {};
   const completedToolCallCounts: Record<string, number> = {};
   const compactionSummaries: string[] = [];
+  const sourceDeliveryCallIds = new Set<string>();
   const currentSourceToolDeliveries: Array<{ toolName: string; threadId?: string }> = [];
   const successfulToolCallCounts: Record<string, number> = {};
   const successfulToolCallEvents: NonNullable<
     QaSessionTranscriptSummary["successfulToolCallEvents"]
   > = [];
-  const assistantToolNamesByCallId = new Map<string, string>();
+  const assistantToolCallsByCallId = new Map<
+    string,
+    ReturnType<typeof readAssistantToolCalls>[number]
+  >();
   const codeModeExecCallIds = new Set<string>();
   const codeModeRunIds = new Set<string>();
   const completedToolCallIds = new Set<string>();
@@ -183,42 +158,76 @@ function summarizeSessionTranscriptEvents(
       const toolCallId = readNonEmptyString(message.toolCallId);
       const toolName = readNonEmptyString(message.toolName);
       const details = isRecord(message.details) ? message.details : undefined;
-      if (toolName && details?.sourceReplyRoute === "current-source") {
-        const receipt = isRecord(details.receipt) ? details.receipt : undefined;
+      const call = toolCallId ? assistantToolCallsByCallId.get(toolCallId) : undefined;
+      const correlated = call?.name === toolName;
+      const dispatched =
+        correlated && toolName === "tool_call" && isRecord(call?.arguments)
+          ? readQaDeferredToolResult(call.arguments.id, details)
+          : undefined;
+      const deliveryDetails = dispatched
+        ? isRecord(dispatched.result.details)
+          ? dispatched.result.details
+          : undefined
+        : details;
+      const deliveryToolName = dispatched?.name ?? toolName;
+      if (
+        deliveryToolName &&
+        deliveryDetails?.sourceReplyRoute === "current-source" &&
+        (!toolCallId || !sourceDeliveryCallIds.has(toolCallId))
+      ) {
+        if (toolCallId) {
+          sourceDeliveryCallIds.add(toolCallId);
+        }
+        const receipt = isRecord(deliveryDetails.receipt) ? deliveryDetails.receipt : undefined;
         const threadId = readNonEmptyString(receipt?.threadId);
         currentSourceToolDeliveries.push({
-          toolName,
+          toolName: deliveryToolName,
           ...(threadId ? { threadId } : {}),
         });
       }
-      if (
-        toolCallId &&
-        toolName &&
-        assistantToolNamesByCallId.get(toolCallId) === toolName &&
-        !completedToolCallIds.has(toolCallId)
-      ) {
+      if (toolCallId && toolName && correlated && !completedToolCallIds.has(toolCallId)) {
         completedToolCallIds.add(toolCallId);
         completedToolCallCounts[toolName] = (completedToolCallCounts[toolName] ?? 0) + 1;
+        if (dispatched && dispatched.name !== toolName) {
+          assistantToolCallCounts[dispatched.name] =
+            (assistantToolCallCounts[dispatched.name] ?? 0) + 1;
+          completedToolCallCounts[dispatched.name] =
+            (completedToolCallCounts[dispatched.name] ?? 0) + 1;
+          scanner.recordMessage({
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                name: dispatched.name,
+                arguments: isRecord(call?.arguments) ? call.arguments.args : undefined,
+              },
+            ],
+          });
+        }
       }
       if (
         toolCallId &&
         toolName &&
         message.isError === false &&
-        assistantToolNamesByCallId.get(toolCallId) === toolName &&
+        correlated &&
         !successfulToolCallIds.has(toolCallId)
       ) {
         successfulToolCallIds.add(toolCallId);
-        successfulToolCallCounts[toolName] = (successfulToolCallCounts[toolName] ?? 0) + 1;
-        if (typeof message.timestamp === "number" && Number.isFinite(message.timestamp)) {
-          // Keep owner-authenticated result chronology bounded for long-lived QA sessions.
-          if (successfulToolCallEvents.length === MAX_SUCCESSFUL_TOOL_CALL_EVENTS) {
-            successfulToolCallEvents.shift();
+        const names = [
+          toolName,
+          ...(dispatched && !dispatched.failed && dispatched.name !== toolName
+            ? [dispatched.name]
+            : []),
+        ];
+        for (const name of names) {
+          successfulToolCallCounts[name] = (successfulToolCallCounts[name] ?? 0) + 1;
+          if (typeof message.timestamp === "number" && Number.isFinite(message.timestamp)) {
+            // Keep owner-authenticated result chronology bounded for long-lived QA sessions.
+            if (successfulToolCallEvents.length === MAX_SUCCESSFUL_TOOL_CALL_EVENTS) {
+              successfulToolCallEvents.shift();
+            }
+            successfulToolCallEvents.push({ name, timestamp: message.timestamp, toolCallId });
           }
-          successfulToolCallEvents.push({
-            name: toolName,
-            timestamp: message.timestamp,
-            toolCallId,
-          });
         }
       }
       if (
@@ -259,7 +268,7 @@ function summarizeSessionTranscriptEvents(
     for (const toolCall of assistantToolCalls) {
       assistantToolCallCounts[toolCall.name] = (assistantToolCallCounts[toolCall.name] ?? 0) + 1;
       if (toolCall.id) {
-        assistantToolNamesByCallId.set(toolCall.id, toolCall.name);
+        assistantToolCallsByCallId.set(toolCall.id, toolCall);
         if (
           pendingCodeModeExecNeedle &&
           toolCall.name === "exec" &&

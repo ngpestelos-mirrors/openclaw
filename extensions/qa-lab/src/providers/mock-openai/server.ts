@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { format as formatUrl } from "node:url";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   closeQaHttpServer,
@@ -107,7 +108,6 @@ import {
   type MockScenarioState,
   sourceDiscoveryReadPathForProvider,
   subagentHandoffTaskForProvider,
-  subagentFanoutTaskForProvider,
   MOCK_OPENAI_DEBUG_REQUEST_LIMIT,
   readBody,
   parseJsonObjectBody,
@@ -187,9 +187,18 @@ import {
   parseToolOutputJson,
 } from "./mock-openai-input.js";
 import { attachQaMockResponsesWebSocketServer } from "./mock-openai-responses-websocket.js";
-import { resolveMockSubagentHandoff } from "./mock-openai-subagent-completion.js";
+import {
+  readMockSubagentSpawnFailure,
+  resolveMockSubagentFanoutAdmission,
+  resolveMockSubagentHandoff,
+} from "./mock-openai-subagent-completion.js";
 import {
   readTargetFromPrompt,
+  hasDeferredScenarioTool,
+  resolveCurrentToolDeclarationSurface,
+  findToolCallByCallId,
+  parseToolCallArguments,
+  extractScenarioToolOutput,
   execCommandFromToolProgressPrompt,
   buildCustomToolCallEventsWithInput,
   buildToolCallEventsWithArgs as buildRawToolCallEventsWithArgs,
@@ -404,42 +413,12 @@ function hasCodeModeExecSurface(body: Record<string, unknown>) {
   return resolveCodeModeExecSurface(body) !== null;
 }
 
-function resolveCurrentToolDeclarationSurface(
-  body: Record<string, unknown>,
-  input: ResponsesInputItem[],
-) {
-  const additionalTools = input.flatMap((item) =>
-    item.type === "additional_tools" && item.role === "developer" && Array.isArray(item.tools)
-      ? item.tools
-      : [],
+function hasCallableScenarioTool(body: Record<string, unknown>, name: string) {
+  return (
+    hasToolDefinition(body, name) ||
+    hasCodeModeExecSurface(body) ||
+    hasDeferredScenarioTool(body, name)
   );
-  return additionalTools.length === 0
-    ? body
-    : {
-        ...body,
-        tools: [...(Array.isArray(body.tools) ? body.tools : []), ...additionalTools],
-      };
-}
-
-function findToolCallByCallId(input: ResponsesInputItem[], callId: string) {
-  return input.toReversed().find((item) => {
-    const type = item.type;
-    return (type === "function_call" || type === "custom_tool_call") && item.call_id === callId;
-  });
-}
-
-function parseToolCallArguments(toolCall: ResponsesInputItem) {
-  if (typeof toolCall.arguments !== "string") {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(toolCall.arguments) as unknown;
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function readProgressCommandOutput(input: ResponsesInputItem[], command: string, isPoll = false) {
@@ -682,7 +661,14 @@ function buildScenarioToolCallEvents(
   body: Record<string, unknown>,
   name: string,
   args: Record<string, unknown>,
-) {
+): StreamEvent[] {
+  if (
+    !hasToolDefinition(body, name) &&
+    !hasCodeModeExecSurface(body) &&
+    hasDeferredScenarioTool(body, name)
+  ) {
+    return buildScenarioToolCallEvents(body, "tool_call", { id: name, args });
+  }
   // Code Mode hides catalog capabilities behind exec/wait. Route through that
   // visible surface while retaining the nested capability as debug evidence.
   if (
@@ -748,6 +734,9 @@ function buildScenarioToolCallEvents(
 function extractScenarioPlannedTool(events: StreamEvent[]) {
   const wireName = extractPlannedToolName(events);
   const wireArgs = extractPlannedToolArgs(events);
+  if (wireName === "tool_call" && typeof wireArgs?.id === "string" && isRecord(wireArgs.args)) {
+    return { name: wireArgs.id, args: wireArgs.args, wireName };
+  }
   const source =
     typeof wireArgs?.input === "string"
       ? wireArgs.input
@@ -831,7 +820,7 @@ function resolveQaChildSessionKey(input: ResponsesInputItem[], body: Record<stri
 }
 
 function resolveAcceptedChildSessionKey(input: ResponsesInputItem[]) {
-  const output = parseToolOutputJson(extractToolOutput(input));
+  const output = parseToolOutputJson(extractScenarioToolOutput(input));
   return output?.status === "accepted" && typeof output.childSessionKey === "string"
     ? output.childSessionKey.trim() || undefined
     : undefined;
@@ -899,7 +888,7 @@ async function buildResponsesPayload(
   const toolDeclarationBody = resolveCurrentToolDeclarationSurface(body, input);
   const prompt = extractLastUserText(input);
   const hasCompletedToolOutput = hasToolOutput(input);
-  const rawToolOutput = extractToolOutput(input);
+  const rawToolOutput = extractScenarioToolOutput(input);
   const codeModeSurface = resolveCodeModeExecSurface(toolDeclarationBody);
   const hasCodeModeControlOutput = isCodeModeControlToolOutput(toolDeclarationBody, input);
   const codeModeControlJson = hasCodeModeControlOutput
@@ -915,6 +904,10 @@ async function buildResponsesPayload(
         : rawToolOutput;
   const completedToolCall = findToolCallByCallId(input, extractToolOutputCallId(input));
   const completedToolName = (() => {
+    if (completedToolCall?.name === "tool_call") {
+      const args = parseToolCallArguments(completedToolCall);
+      return typeof args?.id === "string" ? args.id : completedToolCall.name;
+    }
     if (completedToolCall?.name !== "exec") {
       return completedToolCall?.name;
     }
@@ -1154,11 +1147,8 @@ async function buildResponsesPayload(
   );
   const sideEffectKind =
     QA_EMPTY_RESPONSE_SIDE_EFFECT_PROMPT_RE.exec(sideEffectPrompt)?.[1]?.toLowerCase();
-  const hasCallableCodeMode = hasCodeModeExecSurface(toolDeclarationBody);
-  const canCallSessionsSpawn =
-    hasToolDefinition(toolDeclarationBody, "sessions_spawn") || hasCallableCodeMode;
-  const canCallSessionsYield =
-    hasToolDefinition(toolDeclarationBody, "sessions_yield") || hasCallableCodeMode;
+  const canCallSessionsSpawn = hasCallableScenarioTool(toolDeclarationBody, "sessions_spawn");
+  const canCallSessionsYield = hasCallableScenarioTool(toolDeclarationBody, "sessions_yield");
   const slackProgressTurn = extractLastMatchingUserTurn(
     input,
     QA_SLACK_PROGRESS_COMMENTARY_MARKER_RE,
@@ -1342,6 +1332,13 @@ async function buildResponsesPayload(
   }
   const terminalCompletionCase = terminalTurn?.caseName;
   const current = terminalTurn?.text ?? "";
+  const spawnFailure =
+    terminalCompletionCase && completedToolName === "sessions_spawn"
+      ? readMockSubagentSpawnFailure(toolOutput)
+      : undefined;
+  if (spawnFailure) {
+    return buildAssistantEvents(spawnFailure);
+  }
   if (terminalCompletionCase && terminalTurn?.kind === "settled") {
     return buildAssistantEvents("NO_REPLY");
   }
@@ -1391,7 +1388,7 @@ async function buildResponsesPayload(
       if (completedToolName === "message") {
         return buildAssistantEvents("");
       }
-      if (hasToolDefinition(toolDeclarationBody, "message") || hasCallableCodeMode) {
+      if (hasCallableScenarioTool(toolDeclarationBody, "message")) {
         const deliveryInstructions = extractAllRequestTexts(
           input.filter((item) => item.role === "system" || item.role === "developer"),
           body,
@@ -2338,8 +2335,7 @@ async function buildResponsesPayload(
         currentFanoutInstructions,
       ));
   const fanoutRequiresMessageTool =
-    fanoutHasPrivateSourceReply &&
-    (hasToolDefinition(toolDeclarationBody, "message") || hasCallableCodeMode);
+    fanoutHasPrivateSourceReply && hasCallableScenarioTool(toolDeclarationBody, "message");
   if (
     scenarioState.subagentFanoutPhase === 3 &&
     fanoutRequiresMessageTool &&
@@ -2370,23 +2366,20 @@ async function buildResponsesPayload(
   if (isSubagentFanoutPrompt && scenarioState.subagentFanoutPhase === 3) {
     return buildAssistantEvents("subagent-1: ok\nsubagent-2: ok");
   }
-  if (canCallSessionsSpawn && isSubagentFanoutPrompt) {
-    if (!hasCompletedToolOutput && scenarioState.subagentFanoutPhase === 0) {
-      scenarioState.subagentFanoutPhase = 1;
-      return buildToolCallEventsWithArgs("sessions_spawn", {
-        task: subagentFanoutTaskForProvider(providerVariant, "alpha"),
-        label: "qa-fanout-alpha",
-        thread: false,
-      });
-    }
-    if (hasCompletedToolOutput && scenarioState.subagentFanoutPhase === 1) {
-      scenarioState.subagentFanoutPhase = 2;
-      return buildToolCallEventsWithArgs("sessions_spawn", {
-        task: subagentFanoutTaskForProvider(providerVariant, "beta"),
-        label: "qa-fanout-beta",
-        thread: false,
-      });
-    }
+  const fanoutAdmission = isSubagentFanoutPrompt
+    ? resolveMockSubagentFanoutAdmission({
+        state: scenarioState,
+        toolOutput,
+        hasCompletedToolOutput,
+        completedSpawn: completedToolName === "sessions_spawn",
+        canSpawn: canCallSessionsSpawn,
+        providerVariant,
+      })
+    : undefined;
+  if (fanoutAdmission) {
+    return "text" in fanoutAdmission
+      ? buildAssistantEvents(fanoutAdmission.text)
+      : buildToolCallEventsWithArgs(fanoutAdmission.tool, fanoutAdmission.args);
   }
   if (scenarioState.subagentFanoutPhase === 2) {
     if (/\bALPHA-OK\b/i.test(allInputText)) {
@@ -2436,7 +2429,7 @@ async function buildResponsesPayload(
       if (completedToolName === "message") {
         return buildAssistantEvents("NO_REPLY");
       }
-      return hasToolDefinition(toolDeclarationBody, "message") || hasCallableCodeMode
+      return hasCallableScenarioTool(toolDeclarationBody, "message")
         ? buildToolCallEventsWithArgs("message", {
             action: "send",
             message: forkCompletion,

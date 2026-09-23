@@ -1,4 +1,8 @@
-import type { MockScenarioState, ResponsesInputItem } from "./mock-openai-contracts.js";
+import {
+  subagentFanoutTaskForProvider,
+  type MockScenarioState,
+  type ResponsesInputItem,
+} from "./mock-openai-contracts.js";
 import {
   extractAllRequestTexts,
   extractLastUserText,
@@ -58,7 +62,19 @@ export function readMockSubagentCompletion(
   };
 }
 
-type HandoffPlan =
+export function readMockSubagentSpawnFailure(toolOutput: string): string | undefined {
+  const result = parseToolOutputJson(toolOutput);
+  if (
+    result?.status === "accepted" &&
+    typeof result.childSessionKey === "string" &&
+    result.childSessionKey.trim()
+  ) {
+    return undefined;
+  }
+  return `Failed to delegate: ${typeof result?.error === "string" ? result.error : "spawn was not accepted with a child session key"}`;
+}
+
+type MockSubagentPlan =
   | { text: string }
   | { tool: "sessions_spawn" | "sessions_yield"; args: Record<string, unknown> };
 
@@ -70,7 +86,7 @@ export function resolveMockSubagentHandoff(params: {
   canSpawn: boolean;
   canYield: boolean;
   task: string;
-}): HandoffPlan | undefined {
+}): MockSubagentPlan | undefined {
   const { input, toolOutput } = params;
   const completion = readMockSubagentCompletion(input, "qa-sidecar");
   if (completion) {
@@ -92,12 +108,6 @@ export function resolveMockSubagentHandoff(params: {
   ) {
     return undefined;
   }
-  const toolResult = parseToolOutputJson(toolOutput);
-  if (toolResult?.status === "error" || toolResult?.status === "forbidden") {
-    return {
-      text: `Failed to delegate: ${typeof toolResult.error === "string" ? toolResult.error : "spawn failed"}`,
-    };
-  }
   if (!toolOutput && !params.state.subagentHandoffSpawned && params.canSpawn) {
     params.state.subagentHandoffSpawned = true;
     return {
@@ -109,6 +119,10 @@ export function resolveMockSubagentHandoff(params: {
       },
     };
   }
+  const spawnFailure = readMockSubagentSpawnFailure(toolOutput);
+  if (spawnFailure) {
+    return { text: spawnFailure };
+  }
   // A spawn receipt acknowledges admission, not completion. Yield until the
   // owner delivers the protected child result or the all-settled wake.
   return params.canYield
@@ -117,4 +131,45 @@ export function resolveMockSubagentHandoff(params: {
         args: { message: "Waiting for the bounded QA subagent to finish." },
       }
     : { text: "Waiting for the bounded QA subagent to finish." };
+}
+
+export function resolveMockSubagentFanoutAdmission(params: {
+  state: MockScenarioState;
+  toolOutput: string;
+  hasCompletedToolOutput: boolean;
+  completedSpawn: boolean;
+  canSpawn: boolean;
+  providerVariant: Parameters<typeof subagentFanoutTaskForProvider>[0];
+}): MockSubagentPlan | undefined {
+  const { state, hasCompletedToolOutput } = params;
+  if (
+    hasCompletedToolOutput &&
+    (state.subagentFanoutPhase === 1 || (state.subagentFanoutPhase === 2 && params.completedSpawn))
+  ) {
+    const failure = readMockSubagentSpawnFailure(params.toolOutput);
+    if (failure) {
+      return { text: failure };
+    }
+  }
+  if (!params.canSpawn) {
+    return undefined;
+  }
+  const worker =
+    !hasCompletedToolOutput && state.subagentFanoutPhase === 0
+      ? "alpha"
+      : hasCompletedToolOutput && state.subagentFanoutPhase === 1
+        ? "beta"
+        : undefined;
+  if (!worker) {
+    return undefined;
+  }
+  state.subagentFanoutPhase = worker === "alpha" ? 1 : 2;
+  return {
+    tool: "sessions_spawn",
+    args: {
+      task: subagentFanoutTaskForProvider(params.providerVariant, worker),
+      label: `qa-fanout-${worker}`,
+      thread: false,
+    },
+  };
 }
