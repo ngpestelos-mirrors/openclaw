@@ -424,11 +424,11 @@ checklist below explains each step; this section decides what the default is.
    `Operator-approved by <operator> for YYYY.M.PATCH: beta-profile Full Release Validation <run id> attempt <n> green; soak, live/E2E, Telegram, QA-live, and Parallels deferred to postpublish confidence; update from <previous stable> to the candidate proven.`
 3. **Time-boxed validation.** One FRV parent per release. As each child
    completes, rerun its failed jobs at most twice, automatically, without
-   waiting for the operator: `pnpm frv rerun-failed --run <parent-run-id>`
-   (per child with `--child <key>`; the raw form is
-   `gh run rerun <child-run-id> --failed`), then
-   `pnpm frv continue --failed --run <parent-run-id>` to adopt the attempts and
-   seal. A
+   waiting for the operator: `gh run rerun <child-run-id> --failed` per child,
+   then `pnpm frv continue --failed --run <parent-run-id>` once the children
+   are terminal to adopt the attempts and seal. (The per-child
+   `pnpm frv rerun-failed` controller from #156305 replaces the raw rerun once
+   it lands.) A
    lane that fails twice on a test the candidate did not touch, where diagnosis
    finds no product cause in the candidate delta, is flaky: record it, fix it
    on `main` in parallel, and do not re-cut. A re-cut is justified only by a
@@ -445,10 +445,10 @@ checklist below explains each step; this section decides what the default is.
    parallel rather than re-cutting.
 5. **Runner priority.** While a release FRV or publish parent is active, cancel
    queued pull-request-event runs of the named non-release workflows and
-   restore them afterwards: `pnpm frv prioritize --run <parent-run-id>` and,
-   after the seal, `pnpm frv prioritize --restore <record>`. Where that
-   controller is unavailable, use the raw recipe below. Select by workflow name
-   and `pull_request` event, never by branch: release parents, children, Linux
+   restore them afterwards with the recipe below (the
+   `pnpm frv prioritize --run <parent>` / `--restore <record>` controller from
+   #156305 replaces it once it lands). Select by workflow name and
+   `pull_request` event, never by branch: release parents, children, Linux
    requests, and Docker recovery are `workflow_dispatch` runs, some on `main`,
    and must stay queued.
 
