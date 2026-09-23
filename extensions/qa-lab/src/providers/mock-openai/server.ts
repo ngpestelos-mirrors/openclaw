@@ -1095,7 +1095,7 @@ async function buildResponsesPayload(
     if (!hasCompletedToolOutput) {
       return buildToolCallEventsWithArgs("read", { path: "qa-failed-terminal-missing-file.txt" });
     }
-    if (!hasToolErrorOutput(parseToolOutputJson(rawToolOutput), rawToolOutput)) {
+    if (!hasToolErrorOutput(toolJson, toolOutput || rawToolOutput)) {
       return buildAssistantEvents("BUG-TOOL-DID-NOT-FAIL");
     }
     const marker = exactMarkerDirective ?? exactReplyDirective ?? "QA-FAILED-TOOL-FINALIZED-OK";

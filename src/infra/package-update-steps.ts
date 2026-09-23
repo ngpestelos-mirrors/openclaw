@@ -66,7 +66,6 @@ import {
 import type { UpdateRecovery } from "./update-recovery.js";
 import { isFailedUpdateStep } from "./update-run-step.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
-export { markPackagePostInstallDoctorAdvisory } from "./package-update-verification-step.js";
 export type { PackageUpdateTransaction } from "./package-update-swap.js";
 
 type PackageUpdateStepsResult = {

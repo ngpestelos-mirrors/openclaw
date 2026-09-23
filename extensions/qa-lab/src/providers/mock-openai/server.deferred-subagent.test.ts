@@ -232,6 +232,22 @@ describe("mock deferred subagent tool surface", () => {
 
   it.each([
     ["missing receipt", "{}"],
+    [
+      "missing receipt content",
+      wrappedResult("sessions_spawn", spawnResult("agent:qa:subagent:no-content"), {
+        content: undefined,
+      }),
+    ],
+    [
+      "missing receipt tool name",
+      JSON.stringify({
+        tool: { id: "sessions_spawn" },
+        result: {
+          content: [],
+          details: spawnResult("agent:qa:subagent:no-name"),
+        },
+      }),
+    ],
     ["missing child", wrappedResult("sessions_spawn", { status: "accepted" })],
     ["blank child", wrappedResult("sessions_spawn", spawnResult("  "))],
     [
@@ -324,6 +340,37 @@ describe("mock deferred subagent tool surface", () => {
       expect(outputText(rejected)).toMatch(/^Failed to delegate:/);
     }
   });
+
+  it.each([false, true])(
+    "uses the correlated deferred result failure flag for terminal recovery (isError=%s)",
+    async (isError) => {
+      const input = [makeUserInput("Failed tool terminal recovery QA check.")];
+      const tools = [{ type: "function", name: "tool_call" }];
+      const planned = await expectNonStreamingResponsesJson(server, { tools, input });
+      const call = outputToolCall(planned, "tool_call");
+      expect(outputToolArgsFromItem(call)).toMatchObject({
+        id: "read",
+        args: { path: "qa-failed-terminal-missing-file.txt" },
+      });
+      const response = await expectNonStreamingResponsesJson(server, {
+        tools,
+        input: [
+          ...input,
+          call,
+          makeToolOutputWithCallId(
+            String(call.call_id),
+            wrappedResult("read", undefined, { content: [], isError }),
+          ),
+        ],
+      });
+      expect(outputText(response)).toBe(
+        isError
+          ? "The requested file could not be read: ENOENT. QA-FAILED-TOOL-FINALIZED-OK"
+          : "BUG-TOOL-DID-NOT-FAIL",
+      );
+      expect(outputItems(response).some((item) => item.type === "function_call")).toBe(false);
+    },
+  );
 
   // Current main routes known targets through the declared dispatcher; catalog
   // prose is not invocation authority (server.tool-routing.test.ts).

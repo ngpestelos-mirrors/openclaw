@@ -1,6 +1,6 @@
-import { resolveToolResultFailureKind } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
+import { readQaDeferredToolResult } from "../../suite-runtime-agent-tool-evidence.js";
 import type {
   MockOpenAiCodeModeExecSurface,
   ResponsesInputItem,
@@ -282,22 +282,15 @@ export function unwrapScenarioCatalogOutput(
   }
   const envelope = parseToolOutputJson(output);
   const id = parseToolCallArguments(call)?.id;
-  if (
-    !isRecord(envelope?.tool) ||
-    (envelope.tool.name !== id && envelope.tool.id !== id) ||
-    !isRecord(envelope.result)
-  ) {
+  const receipt = readQaDeferredToolResult(id, envelope);
+  if (!receipt) {
     return output;
   }
   // Keep target failures and receipt fields at the same level as direct calls.
   // Do not unwrap unrelated JSON stdout or an unmatched catalog result.
-  const result = envelope.result;
+  const result = receipt.result;
   if (projection === "details") {
-    if (
-      extractToolOutputStructuredError(input) === true ||
-      result.isError === true ||
-      resolveToolResultFailureKind(result)
-    ) {
+    if (extractToolOutputStructuredError(input) === true || receipt.failed) {
       const details = isRecord(result.details) ? result.details : {};
       const content = extractToolOutput([{ type: "function_call_output", output: result.content }]);
       const error = details.error ?? parseToolOutputJson(content)?.error;
