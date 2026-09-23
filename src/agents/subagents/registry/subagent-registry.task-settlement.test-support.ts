@@ -1,0 +1,117 @@
+import { expectDefined } from "@openclaw/normalization-core";
+import { expect, it, vi } from "vitest";
+import { createRunningTaskRun } from "../../../tasks/detached-task-runtime.js";
+import { getTaskFlowById } from "../../../tasks/task-flow-registry.js";
+import { readTaskRegistryRevision } from "../../../tasks/task-registry-state.js";
+import {
+  configureTaskRegistryRuntime,
+  getTaskRegistryStore,
+} from "../../../tasks/task-registry.store.js";
+import {
+  resetTaskFlowRegistryForTests,
+  resetTaskRegistryForTests,
+} from "../../../tasks/task-runtime.test-helpers.js";
+import { findTaskByRunIdForStatus } from "../../../tasks/task-status-access.js";
+import {
+  createSessionEntry,
+  createSubagentRunRecord,
+  waitForFast,
+  type SubagentRegistryHarness,
+} from "../../subagent-test-fixtures.test-helpers.js";
+import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
+import { observeRootWork } from "./subagent-registry.browser-cleanup.test-support.js";
+import type { createSubagentRegistryMockState } from "./subagent-registry.mock-state.test-support.js";
+import { makeRunningTaskParams } from "./subagent-registry.run-fixtures.test-support.js";
+
+export function registerRestoredTaskSettlementTest({
+  getRegistry,
+  mocks,
+  hydrateAndActivateRegistry,
+}: {
+  getRegistry: () => SubagentRegistryHarness;
+  mocks: Pick<
+    ReturnType<typeof createSubagentRegistryMockState>,
+    "entries" | "restoreSubagentRunsFromDisk"
+  >;
+  hydrateAndActivateRegistry: () => void;
+}): void {
+  it("repairs a terminal task projection on restore and preserves it on repeated restore", async () => {
+    const mod = getRegistry();
+    resetTaskRegistryForTests({ persist: false });
+    resetTaskFlowRegistryForTests({ persist: false });
+    try {
+      const startedAt = Date.now() - 2_000;
+      const endedAt = Date.now() - 1_000;
+      const runId = "run-restored-task-projection";
+      const childSessionKey = "agent:main:subagent:restored-task-projection";
+      mocks.entries = {
+        [childSessionKey]: createSessionEntry({ lifecycleRevision: "revision-child" }),
+      };
+      expect(
+        createRunningTaskRun(
+          makeRunningTaskParams({
+            runId,
+            childSessionKey,
+            task: "restore terminal task projection",
+            startedAt,
+          }),
+        ),
+      ).not.toBeNull();
+      mocks.restoreSubagentRunsFromDisk.mockImplementation((params) => {
+        params.runs.set(
+          runId,
+          createSubagentRunRecord({
+            runId,
+            childSessionKey,
+            task: "restore terminal task projection",
+            cleanup: "keep",
+            createdAt: startedAt,
+            startedAt,
+            endedAt,
+            endedReason: SUBAGENT_ENDED_REASON_COMPLETE,
+            outcome: { status: "ok" },
+            completion: { required: false, resultText: "restored result" },
+            cleanupCompletedAt: endedAt,
+            suppressCompletionDelivery: true,
+          }),
+        );
+        return 1;
+      });
+
+      const settleRootWork = observeRootWork();
+      hydrateAndActivateRegistry();
+
+      await waitForFast(() =>
+        expect(findTaskByRunIdForStatus(runId)).toMatchObject({
+          status: "succeeded",
+          endedAt,
+          progressSummary: "restored result",
+        }),
+      );
+      await settleRootWork(true);
+      const restored = expectDefined(findTaskByRunIdForStatus(runId), "restored task");
+      const flowId = expectDefined(restored.parentFlowId, "mirrored flow ID");
+      const firstFlow = expectDefined(getTaskFlowById(flowId), "restored mirrored flow");
+      expect(firstFlow.status).toBe("succeeded");
+      const store = getTaskRegistryStore();
+      const upsertTask = vi.fn(store.upsertTaskWithDeliveryState);
+      configureTaskRegistryRuntime({
+        store: { ...store, upsertTaskWithDeliveryState: upsertTask },
+      });
+      const taskRevision = readTaskRegistryRevision();
+
+      mod.resetSubagentRegistryForTests({ persist: false });
+      hydrateAndActivateRegistry();
+
+      await settleRootWork();
+      expect(mocks.restoreSubagentRunsFromDisk).toHaveBeenCalledTimes(2);
+      expect(findTaskByRunIdForStatus(runId)).toEqual(restored);
+      expect(getTaskFlowById(flowId)).toEqual(firstFlow);
+      expect(upsertTask).not.toHaveBeenCalled();
+      expect(readTaskRegistryRevision()).toBe(taskRevision);
+    } finally {
+      resetTaskRegistryForTests({ persist: false });
+      resetTaskFlowRegistryForTests({ persist: false });
+    }
+  });
+}
