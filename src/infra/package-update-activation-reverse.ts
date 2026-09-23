@@ -339,6 +339,7 @@ export function createPackageActivationReverseOwner(params: {
       assertOriginalCapture = undefined;
     };
     while (params.current().phase !== "reverse-complete") {
+      // SAFETY: inspect validated reverse intent; exclusive transitions preserve its kind.
       const progress = params.current().intent as PackageActivationReverseIntent;
       const resource = binding.resources[progress.completed];
       if (!resource) {
@@ -577,6 +578,7 @@ export function createPackageActivationReverseOwner(params: {
           .filter((r) => r.role === "launcher" && r.after.kind !== "missing")
           .map((r) => ({
             name: path.basename(r.live),
+            // SAFETY: the preceding filter excludes missing postimages.
             identity: (r.after as Exclude<typeof r.after, { kind: "missing" }>).identity,
           }));
         assertAuthority(binding, guard);

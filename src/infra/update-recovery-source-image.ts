@@ -49,6 +49,7 @@ async function stat(file: string) {
   try {
     return await fs.lstat(file, { bigint: true });
   } catch (error) {
+    // SAFETY: fs.lstat rejects with a Node system error; only its optional code is read.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
     }

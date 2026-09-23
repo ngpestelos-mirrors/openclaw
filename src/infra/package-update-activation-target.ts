@@ -45,6 +45,7 @@ export async function capturePackageActivationPreviousRuntime(params: {
     buildInfoSha256 = reverseFileDigest(buildFile);
     const value: unknown = JSON.parse(readReverseFile(buildFile, 1024 * 1024).toString("utf8"));
     if (value && typeof value === "object" && !Array.isArray(value)) {
+      // SAFETY: JSON.parse returned a non-null, non-array object; values remain unknown.
       build = value as Record<string, unknown>;
     }
     if (buildInfoSha256 !== reverseFileDigest(buildFile)) {
