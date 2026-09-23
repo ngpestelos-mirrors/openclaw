@@ -176,7 +176,7 @@ async function runReadOnlyGitCommand(params: {
 type RemoteRevisionResolution =
   | { status: "ok"; revision: string }
   | { status: "missing" }
-  | { status: "unreadable"; reason: string };
+  | { status: "unreadable"; reason: string; failureCode?: "target-git-cache-stale" };
 
 async function listGitRemotes(params: {
   runCommand: GlobalCommandRunner;
@@ -245,7 +245,8 @@ async function resolveCurrentRemoteBranchRevision(params: {
     ? { status: "ok", revision: remoteRevision }
     : {
         status: "unreadable",
-        reason: `current remote target ${remote}/${branch} is not available in the local checkout`,
+        reason: `cached ${trackingRef} differs from current remote ${remote}/${branch}`,
+        failureCode: "target-git-cache-stale",
       };
 }
 
@@ -392,7 +393,7 @@ export async function inspectGitDryRunTargetSchemaVersions(params: {
         break;
       }
       if (resolved.status === "unreadable") {
-        return { metadataUnreadable: resolved.reason };
+        return { metadataUnreadable: resolved.reason, failureCode: resolved.failureCode };
       }
     }
   }
