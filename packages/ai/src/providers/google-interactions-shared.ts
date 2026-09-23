@@ -16,6 +16,7 @@ import {
   assignTransportErrorDetails,
   notifyProviderHttpResponse,
   notifyProviderStreamOpened,
+  parseTerminalToolCallArguments,
   transportAbortError,
 } from "../transports/transport-stream-shared.js";
 import type { AssistantMessage, Context, Model, ThinkingContent, ToolCall } from "../types.js";
@@ -181,11 +182,7 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
         latestThoughtSignature = undefined;
       } else if (currentBlockType === "toolCall" && currentToolCall) {
         if (currentToolArgs.trim()) {
-          try {
-            currentToolCall.arguments = JSON.parse(currentToolArgs);
-          } catch {
-            currentToolCall.arguments = { raw: currentToolArgs };
-          }
+          currentToolCall.arguments = parseTerminalToolCallArguments(currentToolArgs);
         }
         stream.push({
           type: "toolcall_end",

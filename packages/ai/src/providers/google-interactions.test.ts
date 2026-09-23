@@ -298,6 +298,73 @@ describe("google-interactions provider", () => {
     ]);
   });
 
+  it("preserves unsafe integers in streamed tool call arguments", async () => {
+    const encoder = new TextEncoder();
+    const ssePayload = [
+      'data: {"event_type":"step.start","step":{"type":"function_call","id":"call_exec_1","name":"exec","arguments":{}}}\n\n',
+      'data: {"event_type":"step.delta","delta":{"type":"arguments_delta","arguments":"{\\"target\\":9223372036854775807}"}}\n\n',
+      'data: {"event_type":"step.stop"}\n\n',
+      completedSse({ status: "requires_action" }),
+      "data: [DONE]\n\n",
+    ].join("");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(encoder.encode(ssePayload), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+      ),
+    );
+
+    const result = await streamGoogleInteractions(makeInteractionsModel(), basicContext, {
+      apiKey: "test-key",
+    }).result();
+
+    expect(result.content).toEqual([
+      {
+        type: "toolCall",
+        id: "call_exec_1",
+        name: "exec",
+        arguments: { target: "9223372036854775807" },
+      },
+    ]);
+  });
+
+  it("rejects malformed streamed tool call arguments", async () => {
+    const encoder = new TextEncoder();
+    const ssePayload = [
+      'data: {"event_type":"step.start","step":{"type":"function_call","id":"call_exec_1","name":"exec","arguments":{}}}\n\n',
+      'data: {"event_type":"step.delta","delta":{"type":"arguments_delta","arguments":"{\\"command\\":\\"ls"}}\n\n',
+      'data: {"event_type":"step.stop"}\n\n',
+      completedSse({ status: "requires_action" }),
+      "data: [DONE]\n\n",
+    ].join("");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(encoder.encode(ssePayload), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+      ),
+    );
+
+    const result = await streamGoogleInteractions(makeInteractionsModel(), basicContext, {
+      apiKey: "test-key",
+    }).result();
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      errorCode: "malformed_tool_call_arguments",
+      errorMessage: "Provider completed tool call with malformed JSON arguments",
+    });
+  });
+
   it("resolves API-key and custom-header sentinels before guarded egress", async () => {
     const sentinel = "oc-sent-v2.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.end";
     const guardedFetch = vi.fn(async (_url: string, init?: RequestInit) => {
