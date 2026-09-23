@@ -202,6 +202,32 @@ describe("google-interactions provider", () => {
     );
   });
 
+  it("uses GOOGLE_API_KEY through the registered simple stream", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "");
+    vi.stubEnv("GOOGLE_API_KEY", "google-fallback-key");
+
+    let capturedHeaders: HeadersInit | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        capturedHeaders = init?.headers;
+        return new Response(new TextEncoder().encode(completedSse() + "data: [DONE]\n\n"), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }),
+    );
+
+    await streamSimpleGoogleInteractions(
+      makeInteractionsModel("google-interactions"),
+      basicContext,
+    ).result();
+
+    expect((capturedHeaders as Record<string, string>)["x-goog-api-key"]).toBe(
+      "google-fallback-key",
+    );
+  });
+
   it("keeps thought signatures on thinking blocks and does not attach them to toolCall blocks in streaming", async () => {
     const encoder = new TextEncoder();
     const ssePayload = [

@@ -30,6 +30,21 @@ import type { GoogleApiType, GoogleProviderOptions } from "./google-shared.js";
 
 export type { GoogleApiType };
 
+export function resolveGoogleInteractionsApiKey<T extends GoogleApiType>(
+  model: Model<T>,
+  options?: GoogleProviderOptions,
+  apiKey?: string,
+): string {
+  return (
+    apiKey ||
+    options?.apiKey ||
+    getEnvApiKey(model.provider) ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ""
+  );
+}
+
 function logGoogleInteractionsDebug(message: string, data?: Record<string, unknown>): void {
   getAiTransportHost().logDebug("google-interactions", () => ({ message, data }));
 }
@@ -60,13 +75,7 @@ export async function runGoogleInteractionsLifecycle<T extends GoogleApiType>(pa
 
   try {
     const host = getAiTransportHost();
-    const unresolvedApiKey =
-      params.apiKey ||
-      options?.apiKey ||
-      getEnvApiKey(model.provider) ||
-      process.env.GEMINI_API_KEY ||
-      process.env.GOOGLE_API_KEY ||
-      "";
+    const unresolvedApiKey = resolveGoogleInteractionsApiKey(model, options, params.apiKey);
     const apiKey = host.resolveSecretSentinel(unresolvedApiKey);
     if (!apiKey.trim()) {
       throw new Error(`No API key for provider: ${model.provider}`);

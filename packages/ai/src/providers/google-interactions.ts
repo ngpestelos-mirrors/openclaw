@@ -1,9 +1,11 @@
 // Google Interactions provider adapts Gemini Interactions API streams and tools to the agent runtime.
-import { getEnvApiKey } from "../env-api-keys.js";
 import { createAssistantOutput } from "../transports/assistant-output.js";
 import type { Context, Model, SimpleStreamOptions, StreamFunction } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
-import { runGoogleInteractionsLifecycle } from "./google-interactions-shared.js";
+import {
+  resolveGoogleInteractionsApiKey,
+  runGoogleInteractionsLifecycle,
+} from "./google-interactions-shared.js";
 import {
   buildGoogleInteractionsSimpleThinking,
   type GoogleProviderOptions,
@@ -33,7 +35,7 @@ export const streamGoogleInteractions: StreamFunction<
     options,
     context,
     nextToolCallId: (name) => `${name}_${Date.now()}_${++toolCallCounter}`,
-    apiKey: options?.apiKey || getEnvApiKey(model.provider),
+    apiKey: resolveGoogleInteractionsApiKey(model, options),
   });
 
   return stream;
@@ -43,7 +45,7 @@ export const streamSimpleGoogleInteractions: StreamFunction<
   "google-interactions",
   SimpleStreamOptions
 > = (model: Model<"google-interactions">, context: Context, options?: SimpleStreamOptions) => {
-  const apiKey = options?.apiKey || getEnvApiKey(model.provider);
+  const apiKey = resolveGoogleInteractionsApiKey(model, options);
   if (!apiKey) {
     throw new Error(`No API key for provider: ${model.provider}`);
   }
