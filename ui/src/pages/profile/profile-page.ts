@@ -77,6 +77,7 @@ export class ProfilePage extends OpenClawLightDomElement {
 
   private client: GatewayBrowserClient | null = null;
   private connected = false;
+  private connecting = false;
   private canWrite = false;
   private connectionScopes: readonly string[] | null = null;
   private readonly heroAvatarLoader = new IdentityAvatarController(this);
@@ -101,6 +102,7 @@ export class ProfilePage extends OpenClawLightDomElement {
     this.identityRequestId += 1;
     this.client = null;
     this.connected = false;
+    this.connecting = false;
     this.canWrite = false;
     this.connectionScopes = null;
     super.disconnectedCallback();
@@ -120,6 +122,7 @@ export class ProfilePage extends OpenClawLightDomElement {
       clientChanged || connectionChanged || selfProfileChanged || writeAccessChanged;
     this.client = snapshot.client;
     this.connected = nextConnected;
+    this.connecting = snapshot.phase === "connecting" || snapshot.phase === "reconnecting";
     this.canWrite = nextCanWrite;
     // Hello records this connection's negotiated grants, not the profile's role ceiling.
     this.connectionScopes = nextConnected ? (snapshot.hello?.auth?.scopes ?? null) : null;
@@ -362,26 +365,57 @@ export class ProfilePage extends OpenClawLightDomElement {
 
   private renderConnectionAccess() {
     const scopes = this.connectionScopes;
+    const summary =
+      scopes === null
+        ? "unknown"
+        : scopes.length === 0
+          ? "none"
+          : ((
+              [
+                ["operator.admin", "admin"],
+                ["operator.write", "write"],
+                ["operator.sessions.write", "sessionWrite"],
+                ["operator.read", "read"],
+                ["operator.sessions.read", "sessionRead"],
+              ] as const
+            ).find(([scope]) => scopes.includes(scope))?.[1] ?? "limited");
     return html`<div id="settings-profile-access">
       ${renderSettingsSection(
-        {
-          title: t("profilePage.access.title"),
-          description: t("profilePage.access.description"),
-        },
+        { title: t("profilePage.access.title") },
         html`
           ${renderSettingsRow({
-            title: t("profilePage.access.scopes"),
-            description: t("profilePage.access.browserRequirement"),
-            stacked: true,
-            control: renderSettingsValue(
-              scopes === null
-                ? t("profilePage.access.unknown")
-                : scopes.length === 0
-                  ? t("profilePage.access.none")
-                  : scopes.join(", "),
-              { mono: scopes !== null && scopes.length > 0 },
-            ),
+            title: t(`profilePage.access.${summary}`),
+            description: t("profilePage.access.limits"),
           })}
+          ${renderSettingsRow({
+            title: t("profilePage.access.help"),
+            description: t("profilePage.access.nextStep"),
+            stackedOnNarrow: true,
+            control: html`<button
+              type="button"
+              class="btn"
+              ?disabled=${this.identityLoading || this.identityBusy !== null}
+              @click=${() => this.context.gateway.connect()}
+            >
+              ${t("profilePage.access.reconnect")}
+            </button>`,
+          })}
+          <details class="settings-row settings-row--stacked">
+            <summary>${t("profilePage.access.details")}</summary>
+            ${renderSettingsRow({
+              title: t("profilePage.access.scopes"),
+              description: t("profilePage.access.description"),
+              stacked: true,
+              control: renderSettingsValue(
+                scopes === null
+                  ? t("profilePage.access.unknown")
+                  : scopes.length === 0
+                    ? t("profilePage.access.none")
+                    : scopes.join(", "),
+                { mono: scopes !== null && scopes.length > 0 },
+              ),
+            })}
+          </details>
         `,
       )}
     </div>`;
@@ -424,7 +458,15 @@ export class ProfilePage extends OpenClawLightDomElement {
 
   private renderBody() {
     if (!this.connected || !this.client) {
-      return renderSettingsPage(renderSettingsGroup(renderSettingsEmpty(t("profilePage.offline"))));
+      return renderSettingsPage(
+        renderSettingsGroup(
+          this.connecting
+            ? html`<div role="status">
+                ${renderSettingsEmpty(t("profilePage.access.connecting"))}
+              </div>`
+            : renderSettingsEmpty(t("profilePage.offline")),
+        ),
+      );
     }
     return renderSettingsPage(html`
       ${this.renderHero()} ${this.renderConnectionAccess()} ${this.renderIdentity()}
@@ -454,7 +496,7 @@ export class ProfilePage extends OpenClawLightDomElement {
           </div>
         </div>
         ${
-          this.selfUser
+          this.selfUser && this.canWrite
             ? html`<button
                 class="btn profile-refresh"
                 ?disabled=${this.identityLoading || this.identityBusy !== null}
