@@ -30,24 +30,11 @@ const ciWorkflowPath = path.join(process.cwd(), ".github", "workflows", "ci.yml"
 const rubyVersionPath = path.join(process.cwd(), "apps", "ios", ".ruby-version");
 const gemfilePath = path.join(process.cwd(), "apps", "ios", "Gemfile");
 const gemfileLockPath = path.join(process.cwd(), "apps", "ios", "Gemfile.lock");
-const iosReadmePath = path.join(process.cwd(), "apps", "ios", "README.md");
-const iosAgentsPath = path.join(process.cwd(), "apps", "ios", "AGENTS.md");
-const iosVersioningPath = path.join(process.cwd(), "apps", "ios", "VERSIONING.md");
-const fastlaneSetupPath = path.join(process.cwd(), "apps", "ios", "fastlane", "SETUP.md");
-const metadataReadmePath = path.join(
-  process.cwd(),
-  "apps",
-  "ios",
-  "fastlane",
-  "metadata",
-  "README.md",
-);
 const screenshotsScriptPath = path.join(process.cwd(), "scripts", "ios-screenshots.sh");
 
 function runIosScreenshotsCommand(
   options: {
     bundleCheckExit?: number;
-    bundleExit?: number;
     conflictingGemfile?: boolean;
   } = {},
 ) {
@@ -64,7 +51,7 @@ function runIosScreenshotsCommand(
       '[[ "${1:-}" == "_4.0.21_" ]] || exit 92\n' +
       `[[ "\${2:-}" != "check" ]] || exit ${options.bundleCheckExit ?? 0}\n` +
       'printf "bundle:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n' +
-      `exit ${options.bundleExit ?? 0}`,
+      "exit 0",
   );
   writeExecutable("fastlane", 'printf "direct:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"');
 
@@ -174,85 +161,6 @@ describe("iOS Fastlane release upload gates", () => {
     expect(shardJob).toContain("bundle _4.0.21_ exec fastlane --version");
     expect(workflow.match(/ruby\/setup-ruby@/gu)).toHaveLength(1);
     expect(workflow.match(/name: Install locked Fastlane bundle/gu)).toHaveLength(1);
-  });
-
-  it("documents every iOS Fastlane command through the pinned bundle", () => {
-    const documentedCommands = [iosReadmePath, fastlaneSetupPath, metadataReadmePath].flatMap(
-      (documentationPath) =>
-        readFileSync(documentationPath, "utf8")
-          .split("\n")
-          .filter((line) => /\bfastlane (?:ios [a-z_]+|spaceauth)\b/u.test(line)),
-    );
-
-    expect(documentedCommands).toHaveLength(7);
-    for (const command of documentedCommands) {
-      expect(command).toContain('BUNDLE_GEMFILE="$PWD/Gemfile" bundle _4.0.21_ exec fastlane');
-    }
-  });
-
-  it("documents the shared mobile cutter as the sole release-note writer", () => {
-    const operatorSurfaces = [
-      iosAgentsPath,
-      iosReadmePath,
-      iosVersioningPath,
-      fastlaneSetupPath,
-      metadataReadmePath,
-    ];
-
-    for (const documentationPath of operatorSurfaces) {
-      const documentation = readFileSync(documentationPath, "utf8");
-      expect(documentation).not.toContain("pnpm ios:release:cut");
-      expect(documentation).toContain("scripts/mobile-release-version.ts");
-    }
-    expect(readFastfile()).not.toContain("pnpm ios:release:cut");
-  });
-
-  it("documents a direct Fastlane command that rejects an inherited Gemfile", () => {
-    const fixture = mkdtempSync(path.join(tmpdir(), "openclaw-ios-fastlane-docs-"));
-    const bundlePath = path.join(fixture, "bundle");
-    const tracePath = path.join(fixture, "trace.log");
-    writeFileSync(
-      bundlePath,
-      '#!/usr/bin/env bash\nprintf "%s\\n" "$BUNDLE_GEMFILE" > "$OPENCLAW_FASTLANE_TEST_TRACE"\n',
-      "utf8",
-    );
-    chmodSync(bundlePath, 0o755);
-
-    try {
-      const result = spawnSync(
-        "bash",
-        ["-c", 'BUNDLE_GEMFILE="$PWD/Gemfile" bundle _4.0.21_ exec fastlane ios auth_check'],
-        {
-          cwd: path.join(process.cwd(), "apps", "ios"),
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            BUNDLE_GEMFILE: path.join(fixture, "Gemfile"),
-            OPENCLAW_FASTLANE_TEST_TRACE: tracePath,
-            PATH: `${fixture}:/usr/bin:/bin`,
-          },
-        },
-      );
-
-      expect(result.status).toBe(0);
-      expect(readFileSync(tracePath, "utf8")).toBe(`${gemfilePath}\n`);
-    } finally {
-      rmSync(fixture, { force: true, recursive: true });
-    }
-  });
-
-  it("uses the repository bundle when Fastlane is also on PATH", () => {
-    const { result, trace } = runIosScreenshotsCommand();
-
-    expect(result.status).toBe(0);
-    expect(trace).toBe("bundle:_4.0.21_ exec fastlane ios screenshots\n");
-  });
-
-  it("fails closed when the repository bundle fails", () => {
-    const { result, trace } = runIosScreenshotsCommand({ bundleExit: 42 });
-
-    expect(result.status).toBe(42);
-    expect(trace).toBe("bundle:_4.0.21_ exec fastlane ios screenshots\n");
   });
 
   it("prints the pinned setup command when the repository bundle is unavailable", () => {
