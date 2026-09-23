@@ -109,7 +109,7 @@ function resolveGatewaySessionThinkingDefault(params: {
     agentRuntime: params.agentRuntime,
     providerPolicySource: params.providerPolicySource,
   });
-  return resolveGatewaySessionThinkingLevel({
+  const resolved = resolveGatewaySessionThinkingLevel({
     provider: params.provider,
     model: params.model,
     level: defaultLevel,
@@ -118,6 +118,11 @@ function resolveGatewaySessionThinkingDefault(params: {
     providerPolicySource: params.providerPolicySource,
     rowContext: params.rowContext,
   });
+  // A harness-only Ultra choice must not invent an unsupported Off default.
+  // An explicit Ultra default remains valid even without native effort controls.
+  return params.thinkingProfile.levels.some(({ id }) => id !== "ultra") || resolved === "ultra"
+    ? resolved
+    : undefined;
 }
 
 type GatewayModelThinkingParams = {
