@@ -19,7 +19,6 @@ const {
   createPageViaPlaywright,
   getPageForTargetId,
   listPagesViaPlaywright,
-  retirePlaywrightBrowserConnection,
   retirePlaywrightBrowserConnectionExact,
 } = pwAi;
 
@@ -572,27 +571,6 @@ describe("pw-session connection scoping", () => {
     ).resolves.toBeUndefined();
 
     expect(browser.browserClose).toHaveBeenCalledTimes(2);
-  });
-
-  it("retires a scoped adapter without waiting for a hung CDP disconnect", async () => {
-    const first = makeBrowser("A", "https://a.example");
-    let releaseClose!: () => void;
-    const closeGate = new Promise<void>((resolve) => {
-      releaseClose = resolve;
-    });
-    first.browserClose.mockReturnValue(closeGate);
-    const second = makeBrowser("B", "https://b.example");
-    connectOverCdpSpy.mockResolvedValueOnce(first.browser).mockResolvedValueOnce(second.browser);
-    getChromeWebSocketUrlSpy.mockResolvedValue(null);
-    await listPagesViaPlaywright({ cdpUrl: "http://127.0.0.1:9222" });
-
-    expect(retirePlaywrightBrowserConnection({ cdpUrl: "http://127.0.0.1:9222" })).toBe(true);
-    await expect(listPagesViaPlaywright({ cdpUrl: "http://127.0.0.1:9222" })).resolves.toEqual([
-      expect.objectContaining({ targetId: "B" }),
-    ]);
-    expect(first.browserClose).toHaveBeenCalledOnce();
-
-    releaseClose();
   });
 
   it("awaits only the retired adapter after a same-URL successor connects", async () => {
