@@ -20,6 +20,7 @@ export function withExistingSqliteRollbackDatabase<T>(
     busyTimeoutMs: number;
     assertIdentity: () => void;
     validate: (database: DatabaseSync) => void;
+    observeConnection?: (database: DatabaseSync) => void;
   },
   operation: (database: DatabaseSync, transact: ExistingSqliteTransaction) => T,
 ): T {
@@ -49,6 +50,7 @@ export function withExistingSqliteRollbackDatabase<T>(
   };
   try {
     options.assertIdentity();
+    options.observeConnection?.(reader);
     setSqliteBusyTimeout(reader, options.busyTimeoutMs);
     // Disable WAL shared-memory admission before the first pager read. A foreign
     // WAL database cannot acquire an exclusive writer lock through a read-only
@@ -75,6 +77,7 @@ export function withExistingSqliteRollbackDatabase<T>(
     }
     writer = openNodeSqliteDatabase(resolveExistingSqliteFileUri(pathname));
     options.assertIdentity();
+    options.observeConnection?.(writer);
     setSqliteBusyTimeout(writer, options.busyTimeoutMs);
     const database = writer;
     let admitted = false;

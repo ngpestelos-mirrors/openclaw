@@ -4,6 +4,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { captureUpdateCommandExecutorAuthority } from "../cli/update-cli/update-command-executor.js";
+import { requireDirectorySync, syncDirectory } from "./directory-durability.js";
 import {
   completePackageActivationCustody,
   inspectPackageActivationCustody,
@@ -22,6 +23,7 @@ import {
   encodePackageActivationLauncher,
 } from "./package-update-activation-journal.js";
 import { packageActivationRuntimeEntrypoint } from "./package-update-activation-runtime-assets.js";
+import { capturePackageActivationPreviousRuntime } from "./package-update-activation-target.js";
 import {
   createPackageIntegrityReader,
   type PackageIntegrityFingerprint,
@@ -78,7 +80,10 @@ export function resolvePackageActivationRecoveryCommand(record: PackageActivatio
 }
 
 export async function preparePackageActivationJournal(params: PackageActivationPreparation) {
-  const authority = captureUpdateCommandExecutorAuthority(params.options.fence);
+  const authority = captureUpdateCommandExecutorAuthority(
+    params.options.fence,
+    params.options.runId,
+  );
   const assertCurrent = params.options.fence.assertCurrent;
   if (process.platform === "win32" || authority.installKey !== params.liveRoot) {
     throw new Error("Package publication recovery requires its original POSIX npm directory.");
@@ -103,6 +108,15 @@ export async function preparePackageActivationJournal(params: PackageActivationP
   if (version.status !== 0 || !isSupportedNodeVersion(version.stdout.trim().replace(/^v/u, ""))) {
     throw new Error("Recovery requires a supported external Node executable.");
   }
+  const previousRuntime = params.options.runId
+    ? await capturePackageActivationPreviousRuntime({
+        root: params.liveRoot,
+        previous: params.previous,
+        nodePath: node,
+        nodeVersion: version.stdout.trim(),
+        assertCurrent,
+      })
+    : undefined;
   const reader = createPackageIntegrityReader();
   const candidate = await reader.tree(params.stageRoot);
   const launchers = [];
@@ -176,7 +190,18 @@ export async function preparePackageActivationJournal(params: PackageActivationP
     ? path.join(stagedControl, "recovery.mjs")
     : `${stagedAnchor}.recovery.mjs`;
   assertCurrent();
-  fs.writeFileSync(stagedHelper, helperBytes, { flag: "wx", mode: 0o600 });
+  fs.writeFileSync(stagedHelper, helperBytes, { flag: "wx", mode: 0o600, flush: true });
+  // The durable journal may refer to these staged objects immediately after
+  // its CAS. Persist their contents and names before handing cleanup custody off.
+  for (const directory of new Set([
+    stagedAnchor,
+    path.dirname(stagedHelper),
+    path.dirname(stagedAnchor),
+  ])) {
+    assertCurrent();
+    requireDirectorySync(await syncDirectory(directory), "Package preparation staging");
+  }
+  assertCurrent();
   const helperIdentity = packageActivationIdentity(stagedHelper, false);
   const helperDigest = createHash("sha256").update(helperBytes).digest("hex");
   preparation.unshift(
@@ -197,6 +222,7 @@ export async function preparePackageActivationJournal(params: PackageActivationP
     version: 1 as const,
     layout: "external-helper" as const,
     operationId: randomUUID(),
+    ...(params.options.runId ? { originalRunId: params.options.runId, previousRuntime } : {}),
     authority,
     anchorIdentity,
     parentIdentity,

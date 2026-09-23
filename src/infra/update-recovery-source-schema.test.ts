@@ -1,0 +1,182 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { expect, it } from "vitest";
+import {
+  readUpdateRecoverySourceAttestation,
+  assertUpdateRecoverySourceAttestationCurrent,
+} from "./update-recovery-source-attestation.js";
+import { captureUpdateRecoverySourceInventory } from "./update-recovery-source-image.js";
+import {
+  parseUpdateRecoverySourceAttestation,
+  serializeUpdateRecoverySourceAttestation,
+  updateRecoverySourceAttestationSchema,
+} from "./update-recovery-source-schema.js";
+
+it("round-trips complete physical inventory and refuses unknown, duplicate, omitted or unbounded transport", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "source-schema-")));
+  try {
+    const live = path.join(root, "live");
+    fs.mkdirSync(live, { mode: 0o700 });
+    const file = path.join(live, "file");
+    const missing = path.join(live, "missing");
+    const link = path.join(live, "link");
+    fs.writeFileSync(file, "physical source", { mode: 0o600 });
+    fs.symlinkSync("file", link);
+    let held = true;
+    const assertCurrent = () => {
+      if (!held) {
+        throw new Error("Authority released");
+      }
+    };
+    const inventory = await captureUpdateRecoverySourceInventory({
+      runId: "run",
+      operationId: "op",
+      assertCurrent,
+      resources: [
+        { sourcePath: live, kind: "directory" },
+        { sourcePath: file, kind: "file", sqlite: true },
+        { sourcePath: missing, kind: "missing" },
+        { sourcePath: link, kind: "symlink" },
+      ],
+    });
+    const attestation = {
+      protocol: "update-recovery-source-v1" as const,
+      ...inventory,
+      candidateManifestSha256: "a".repeat(64),
+    };
+    const serialized = serializeUpdateRecoverySourceAttestation(attestation);
+    expect(parseUpdateRecoverySourceAttestation(Buffer.from(serialized))).toEqual(attestation);
+    const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+    const ref = { path: path.join(root, "source.json"), sha256: sha256(serialized) };
+    fs.writeFileSync(ref.path, serialized, { flag: "wx", mode: 0o600 });
+    const expected = {
+      runId: "run",
+      operationId: "op",
+      candidateManifestSha256: attestation.candidateManifestSha256,
+      entries: [
+        { kind: "directory" as const, sourcePath: live, mode: 0o700 },
+        {
+          kind: "file" as const,
+          sourcePath: file,
+          mode: 0o600,
+          sqlite: true,
+          sha256: "b".repeat(64),
+          size: 12,
+          archivePath: "payload/0",
+        },
+        { kind: "missing" as const, sourcePath: missing, sqlite: false, directory: false },
+        { kind: "symlink" as const, sourcePath: link, target: "file" },
+      ],
+    };
+    expect(readUpdateRecoverySourceAttestation(ref, expected)).toEqual(attestation);
+    await assertUpdateRecoverySourceAttestationCurrent(
+      attestation,
+      expected.entries,
+      assertCurrent,
+    );
+    const malformed: unknown[] = [
+      { ...attestation, unknown: true },
+      { ...attestation, runId: "x".repeat(129) },
+      { ...attestation, candidateManifestSha256: "not-a-digest" },
+      { ...attestation, resources: [...attestation.resources, attestation.resources[0]] },
+      {
+        ...attestation,
+        resources: attestation.resources.map((r) => ({
+          ...r,
+          ancestor: { ...r.ancestor, extra: true },
+        })),
+      },
+      {
+        ...attestation,
+        resources: attestation.resources.map((r) => ({ ...r, image: { ...r.image, extra: true } })),
+      },
+      {
+        ...attestation,
+        resources: attestation.resources.map((r) =>
+          r.sourcePath === file ? { ...r, sidecars: [r.sidecars[0], r.sidecars[0]] } : r,
+        ),
+      },
+      {
+        ...attestation,
+        resources: attestation.resources.map((r) =>
+          r.sourcePath === file
+            ? { ...r, image: { ...r.image, size: Number.MAX_SAFE_INTEGER + 1 } }
+            : r,
+        ),
+      },
+      {
+        ...attestation,
+        resources: attestation.resources.map((r) => ({ ...r, sourcePath: r.sourcePath + "/" })),
+      },
+      {
+        ...attestation,
+        resources: attestation.resources.map((r) =>
+          r.sourcePath === live ? { ...r, image: { ...r.image, children: ["file", "file"] } } : r,
+        ),
+      },
+    ];
+    for (const input of malformed) {
+      expect(updateRecoverySourceAttestationSchema.safeParse(input).success).toBe(false);
+    }
+    expect(() =>
+      parseUpdateRecoverySourceAttestation(
+        Buffer.from(serialized.replace('"runId":"run"', '"runId":"forged","runId":"run"')),
+      ),
+    ).toThrow("canonical encoding");
+    for (const field of ["runId", "operationId", "candidateManifestSha256"] as const) {
+      expect(() =>
+        readUpdateRecoverySourceAttestation(ref, { ...expected, [field]: "wrong" }),
+      ).toThrow("another run");
+    }
+    expect(() =>
+      readUpdateRecoverySourceAttestation(ref, { ...expected, entries: expected.entries.slice(1) }),
+    ).toThrow("one-to-one");
+    expect(() =>
+      readUpdateRecoverySourceAttestation(ref, {
+        ...expected,
+        entries: [...expected.entries, expected.entries[0]!],
+      }),
+    ).toThrow("one-to-one");
+    expect(() =>
+      readUpdateRecoverySourceAttestation(ref, {
+        ...expected,
+        entries: expected.entries.map((e) => (e.sourcePath === file ? { ...e, sqlite: false } : e)),
+      }),
+    ).toThrow("paths, kinds or metadata");
+    const omitted = {
+      ...attestation,
+      resources: attestation.resources.map((r) => ({ ...r, sidecars: [] })),
+    };
+    const omittedRaw = serializeUpdateRecoverySourceAttestation(omitted);
+    fs.writeFileSync(ref.path, omittedRaw);
+    expect(() =>
+      readUpdateRecoverySourceAttestation({ ...ref, sha256: sha256(omittedRaw) }, expected),
+    ).toThrow("paths, kinds or metadata");
+    fs.writeFileSync(ref.path, serialized);
+    fs.chmodSync(ref.path, 0o644);
+    expect(() => readUpdateRecoverySourceAttestation(ref, expected)).toThrow("private immutable");
+    fs.chmodSync(ref.path, 0o600);
+    fs.linkSync(ref.path, path.join(root, "hardlink"));
+    expect(() => readUpdateRecoverySourceAttestation(ref, expected)).toThrow("private immutable");
+    fs.unlinkSync(path.join(root, "hardlink"));
+    fs.symlinkSync(ref.path, path.join(root, "alias"));
+    expect(() =>
+      readUpdateRecoverySourceAttestation({ ...ref, path: path.join(root, "alias") }, expected),
+    ).toThrow("private immutable");
+    // Equal bytes on a foreign inode are a changed source, not valid C.
+    const same = fs.readFileSync(file);
+    fs.renameSync(file, path.join(root, "old-file"));
+    fs.writeFileSync(file, same, { mode: 0o600 });
+    await expect(
+      assertUpdateRecoverySourceAttestationCurrent(attestation, expected.entries, assertCurrent),
+    ).rejects.toThrow("changed after capture");
+    held = false;
+    await expect(
+      assertUpdateRecoverySourceAttestationCurrent(attestation, expected.entries, assertCurrent),
+    ).rejects.toThrow("Authority released");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1,5 +1,12 @@
 // Public contracts shared by package activation and its existing callers.
 import type { LocalPackageOverridesResult } from "./package-local-overrides-shared.js";
+import type {
+  PackageActivationDescriptor,
+  PackageActivationStatus,
+} from "./package-update-activation-journal.js";
+import type { PackageReverseResourceCustody } from "./package-update-activation-reverse-resources.js";
+import type { PackageActivationReverseBinding } from "./package-update-activation-reverse-schema.js";
+import type { PackageReverseAuthority } from "./package-update-activation-reverse.js";
 import type { PackagePostInstallVerifier } from "./package-update-verification-step.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
 import type { NativePackageStage } from "./update-native-package-stage.js";
@@ -7,7 +14,39 @@ import type { NpmGlobalPrefixLayout } from "./update-npm-prefix.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery-types.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
+export type UpdatePublishedStateGeneration = Readonly<
+  Pick<
+    PackageActivationReverseBinding,
+    "operationId" | "runId" | "baseline" | "candidate" | "prepared" | "target"
+  > & {
+    bindingDigest: string;
+    state: Readonly<{ databasePath: string; databaseIdentity: string; parentIdentity: string }>;
+  }
+>;
+export type UpdateRecoveryPublicationCompletion = PackageActivationStatus & {
+  publishedState: UpdatePublishedStateGeneration;
+};
+export type PackageReversePublication = {
+  resourceCustody: (
+    authority: Pick<PackageReverseAuthority, "assertCurrent" | "assertWritersSettled">,
+  ) => Promise<PackageReverseResourceCustody>;
+  selection: () => Pick<
+    PackageActivationDescriptor,
+    "operationId" | "originalRunId" | "previous" | "previousRuntime"
+  > & { anchor: string };
+  publish: (
+    binding: PackageActivationReverseBinding,
+    authority: PackageReverseAuthority,
+  ) => Promise<PackageActivationStatus>;
+  settle: (authority: PackageReverseAuthority) => Promise<PackageActivationStatus>;
+  verifyCompletion: (
+    binding: Readonly<PackageActivationReverseBinding>,
+    authority: PackageReverseAuthority,
+  ) => Promise<UpdateRecoveryPublicationCompletion>;
+};
+
 export type PackageActivationOptions = {
+  runId?: string;
   fence: UpdateRecoveryFence;
   nodeRunner: string;
   onPrepared: (command: string) => void;
@@ -16,6 +55,7 @@ export type PackageActivationOptions = {
 
 /** The orchestrator owns schema safety and service verification before confirming or restoring. */
 export type PackageUpdateTransaction = {
+  reversePublication?: PackageReversePublication;
   backupRoot: string;
   assertRollbackSafe?: () => Promise<void>;
   rollback: (

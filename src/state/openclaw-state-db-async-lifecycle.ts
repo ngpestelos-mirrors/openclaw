@@ -91,6 +91,13 @@ const maintenanceResources = resolveGlobalSingleton(
       MaintenanceResource & { scope: OpenClawDatabaseMaintenanceScope; release: () => void }
     >(),
     parents: new WeakMap<OpenClawDatabaseMaintenanceScope, OpenClawDatabaseMaintenanceScope>(),
+    admissions: new WeakMap<
+      OpenClawDatabaseMaintenanceScope,
+      {
+        assertAdmission: () => void;
+        assertOwnerCurrent: () => void;
+      }
+    >(),
   }),
 );
 
@@ -98,6 +105,38 @@ export function getOpenClawDatabaseMaintenanceScope():
   | OpenClawDatabaseMaintenanceScope
   | undefined {
   return maintenanceResources.current.getStore()?.scope;
+}
+
+/** Retain the original owner checks across an asynchronous publication.
+ * Native parent links, not caller-supplied ancestry, define the captured chain.
+ * Parent scopes need owner checks, not fresh admission: admitted descendants may
+ * still be draining while an ancestor has closed its admission to new work.
+ */
+export function captureOpenClawDatabaseMaintenanceAdmission(
+  scope: OpenClawDatabaseMaintenanceScope,
+): () => void {
+  const admission = maintenanceResources.admissions.get(scope);
+  if (!admission) {
+    throw new Error("Database maintenance admission requires its original native scope.");
+  }
+  const owners: Array<() => void> = [];
+  for (
+    let current: OpenClawDatabaseMaintenanceScope | undefined = scope;
+    current;
+    current = maintenanceResources.parents.get(current)
+  ) {
+    const owner = maintenanceResources.admissions.get(current);
+    if (!owner) {
+      throw new Error("Database maintenance admission lost its original native ancestor.");
+    }
+    owners.push(owner.assertOwnerCurrent);
+  }
+  return () => {
+    for (const assertOwner of owners) {
+      assertOwner();
+    }
+    admission.assertAdmission();
+  };
 }
 
 /** Delayed work acquires its own resources instead of inheriting the completed scope. */
@@ -296,6 +335,11 @@ export function createOpenClawDatabaseMaintenanceScope(
   if (parent) {
     maintenanceResources.parents.set(scope, parent);
   }
+  // Keep native guards independently of replaceable methods on a retained scope.
+  maintenanceResources.admissions.set(scope, {
+    assertAdmission: scope.assertAdmission.bind(scope),
+    assertOwnerCurrent: scope.assertOwnerCurrent.bind(scope),
+  });
   return scope;
 }
 

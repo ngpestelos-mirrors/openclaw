@@ -2,10 +2,12 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { requireDirectorySync, syncDirectory } from "./directory-durability.js";
 import { hasErrnoCode } from "./errors.js";
 import {
   packageActivationIdentity,
   resolvePackageActivationHelper,
+  resolvePackageActivationControl,
   type PackageActivationJournal,
   type PackageActivationRecord,
 } from "./package-update-activation-journal.js";
@@ -97,6 +99,20 @@ export async function completePackageActivationCustody(
     return;
   }
   const entries = inspectPackageActivationCustody(anchor, record);
+  // Reconcile a first-use control publication whose rename acknowledgement was
+  // lost before its parents were persisted. Do this before any journal writes.
+  const control = resolvePackageActivationControl(anchor);
+  for (const directory of new Set([
+    control,
+    path.dirname(control),
+    ...entries.map((entry) => path.dirname(entry.source)),
+  ])) {
+    assertCurrent();
+    journal.assertCurrent(record);
+    requireDirectorySync(await syncDirectory(directory), "Package preparation control");
+  }
+  assertCurrent();
+  journal.assertCurrent(record);
   if (record.intent?.kind === "prepare" && record.intent.completed.includes("helper")) {
     assertCurrent();
     journal.assertCurrent(record);
@@ -129,6 +145,16 @@ export async function completePackageActivationCustody(
         throw new Error("Preparation preimage changed before rename.");
       }
       await fsp.rename(entry.source, entry.destination);
+    }
+    // An observed rename is not durable until both directory entries are
+    // synchronized, including when resuming an already-moved transfer.
+    for (const directory of new Set([
+      path.dirname(entry.source),
+      path.dirname(entry.destination),
+    ])) {
+      assertCurrent();
+      journal.assertCurrent(record);
+      requireDirectorySync(await syncDirectory(directory), "Package preparation transfer");
     }
     assertCurrent();
     journal.assertCurrent(record);

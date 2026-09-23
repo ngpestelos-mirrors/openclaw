@@ -270,7 +270,14 @@ it.each([
       },
     );
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toMatch(/retained owner pair|does not match its parent/);
+    if (["both", "wrong-key", "wrong-generation"].includes(tamper)) {
+      expect(result.stderr).toContain(
+        "Candidate store selection or lineage is missing or invalid.",
+      );
+    } else {
+      expect(result.stderr).toMatch(/retained owner pair|does not match its parent/);
+    }
+    expect(fs.existsSync(path.join(root, "receipt"))).toBe(false);
     expect(fs.existsSync(output)).toBe(false);
     fence.assertCurrent();
   });

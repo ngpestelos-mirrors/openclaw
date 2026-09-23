@@ -15,11 +15,14 @@ import { packageActivationRuntimeEntrypoint } from "../../src/infra/package-upda
 import { createPackageIntegrityReader } from "../../src/infra/package-update-integrity.js";
 import { createPackageSwapFixture } from "../../src/infra/package-update-swap.test-support.js";
 import { resolveRuntimeWorkerUrl } from "../../src/infra/runtime-worker-url.js";
-import * as tempRoot from "../../src/infra/tmp-openclaw-dir.js";
 import { MANAGED_HANDOFF_RUNTIME_ENTRY } from "../../src/infra/update-managed-service-handoff-runtime-assets.js";
 import { stageManagedHandoffRuntime } from "../../src/infra/update-managed-service-handoff-runtime.js";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import buildConfigs from "../../tsdown.config.ts";
+import {
+  installPrivateUpdateHandoffStore,
+  writePrivateUpdateHandoffChildGuard,
+} from "../helpers/private-update-handoff-store.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 // The test runner relocates worker declarations; the production factory needs source metadata.
@@ -102,8 +105,26 @@ it.each(
   if (!config) {
     throw new Error("Missing production managed handoff build config");
   }
-  const outDir = tempDirs.make("openclaw-handoff-build-");
-  const directory = tempDirs.make("openclaw-handoff-stage-");
+  const root = realpathSync(tempDirs.make("openclaw-handoff-build-"));
+  const outDir = path.join(root, "build");
+  const directory = path.join(root, "stage");
+  const control = path.join(root, "authority");
+  for (const dir of [outDir, directory, control]) {
+    mkdirSync(dir, { mode: 0o700 });
+  }
+  const { databasePath } = installPrivateUpdateHandoffStore(control);
+  const guardEnv = writePrivateUpdateHandoffChildGuard(databasePath, control);
+  const childEnv = guardEnv({
+    HOME: directory,
+    USERPROFILE: directory,
+    TMPDIR: control,
+    TMP: control,
+    TEMP: control,
+    OPENCLAW_STATE_DIR: path.join(control, "state"),
+    OPENCLAW_CONFIG_PATH: path.join(control, "state", "openclaw.json"),
+    SystemRoot: process.env.SystemRoot,
+    WINDIR: process.env.WINDIR,
+  });
   const commands: string[] = [];
   let preparedPackage: Awaited<ReturnType<typeof preparePackageActivationJournal>> | undefined;
   let prepareNext: (() => Promise<NonNullable<typeof preparedPackage>>) | undefined;
@@ -113,7 +134,7 @@ it.each(
       timeout: 30_000,
       killSignal: "SIGKILL",
       cwd: directory,
-      env: { ...process.env, HOME: directory, USERPROFILE: directory },
+      env: childEnv,
     });
   // Use the production graph unchanged, not the invocation compiler's extra plugins.
   const { bundles } = await build({ ...config, config: false, outDir, logLevel: "silent" });
@@ -154,9 +175,6 @@ it.each(
     } else {
       const base = path.join(realpathSync(directory), "literal-$HOME-`id`-'quoted'");
       mkdirSync(base, { mode: 0o700 });
-      const control = path.join(base, "authority");
-      mkdirSync(control, { mode: 0o700 });
-      vi.spyOn(tempRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
       prepareNext = async () => {
         const fixture = await createPackageSwapFixture(base);
         return withUpdateCommandExecutor(randomUUID(), async (executor) =>
@@ -248,15 +266,7 @@ it.each(
         cwd: directory,
         encoding: "utf8",
         timeout: 30_000,
-        env: {
-          HOME: directory,
-          USERPROFILE: directory,
-          TMPDIR: directory,
-          TMP: directory,
-          TEMP: directory,
-          SystemRoot: process.env.SystemRoot,
-          WINDIR: process.env.WINDIR,
-        },
+        env: childEnv,
       },
     );
     expect(result.error).toBeUndefined();

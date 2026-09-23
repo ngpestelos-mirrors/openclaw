@@ -25,8 +25,12 @@ import {
   verifyPackageUpdateRecovery,
   resolveGlobalInstallTarget,
   resolveNpmLifecyclePolicyGate,
+  type ResolvedGlobalInstallTarget,
 } from "../../infra/update-global.js";
-import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
+import {
+  DEFAULT_UPDATE_STEP_TIMEOUT_MS,
+  UPDATE_RUNNER_TIMEOUT_MS,
+} from "../../infra/update-run-timeouts.js";
 import {
   buildUpdateCommandRunner,
   normalizeFallbackFailureReason,
@@ -62,8 +66,6 @@ import {
   runPackageUpdateDoctor,
 } from "./update-command-package.js";
 import { gatewayServiceCommandUsesRoot } from "./update-command-service-plan.js";
-
-const DEFAULT_UPDATE_STEP_TIMEOUT_MS = 30 * 60_000;
 
 export async function retireStandaloneGitWrapper(params: {
   previousRoot: string;
@@ -368,17 +370,8 @@ export async function inspectGitDryRunTargetSchemaVersions(params: {
     const needsCheckoutMain = branch !== DEV_BRANCH;
     let remoteBranchRefs: string[] = [];
     if (needsCheckoutMain) {
-      const remoteResult = await runCommand(["git", "-C", params.root, "remote"], {
-        cwd: params.root,
-        timeoutMs: params.timeoutMs,
-      }).catch(() => null);
-      if (remoteResult?.code === 0) {
-        remoteBranchRefs = remoteResult.stdout
-          .split("\n")
-          .map((remote) => remote.trim())
-          .filter(Boolean)
-          .map((remote) => `refs/remotes/${remote}/${DEV_BRANCH}`);
-      }
+      const { remotes = [] } = await listGitRemotes({ runCommand, ...params });
+      remoteBranchRefs = remotes.map((remote) => `refs/remotes/${remote}/${DEV_BRANCH}`);
     }
     for (const candidate of resolveDevUpstreamRefs(needsCheckoutMain, remoteBranchRefs)) {
       const resolved = await resolveCurrentRemoteBranchRevision({
@@ -432,7 +425,10 @@ export async function updateGitInstall(params: {
   jsonMode?: boolean;
   invocationCwd?: string;
   nodeRunner?: string;
-  inspectGitTarget: UpdateRunnerOptions["inspectGitTarget"];
+  inspectGitTarget: (
+    target: Parameters<UpdateRunnerOptions["inspectGitTarget"]>[0],
+    installTarget?: ResolvedGlobalInstallTarget,
+  ) => Promise<void>;
 }): Promise<UpdateRunResult> {
   let updateRoot = params.switchToGit ? resolveGitInstallDir() : params.root;
   const effectiveTimeout = params.timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS;
@@ -544,7 +540,7 @@ export async function updateGitInstall(params: {
                 params.assertCurrent?.();
               }
             : params.beforeGitMutation,
-        inspectGitTarget: params.inspectGitTarget,
+        inspectGitTarget: (target) => params.inspectGitTarget(target, installTarget ?? undefined),
         beforeGitStaging: params.switchToGit
           ? undefined
           : async () => ({

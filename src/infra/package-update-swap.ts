@@ -34,6 +34,7 @@ import {
   createNpmPackageRootLinkLifecycle,
   verifyNpmRootRecovery,
 } from "./package-update-npm-root.js";
+import { withPackageReverseTransaction } from "./package-update-reverse-transaction.js";
 import {
   PackageUpdateActivationError,
   type PackageUpdateTransaction,
@@ -42,6 +43,7 @@ import {
 } from "./package-update-swap-contract.js";
 import { createPackageSwapResults } from "./package-update-swap-results.js";
 import { retireVerifiedPackageSwap } from "./package-update-swap-retirement.js";
+import { resolveStagedPackageSwapTarget } from "./package-update-swap-target.js";
 import { runPackagePostInstallVerification } from "./package-update-verification-step.js";
 import { movePathWithCopyFallback } from "./replace-file.js";
 import {
@@ -53,7 +55,6 @@ import {
   finalizeNativePackageStage,
   NativePackageRollbackError,
 } from "./update-native-package-stage.js";
-import { resolveNpmGlobalPrefixLayoutFromGlobalRoot } from "./update-npm-prefix.js";
 import { isFailedUpdateStep } from "./update-run-step.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "./update-run-timeouts.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
@@ -72,20 +73,9 @@ export async function swapStagedPackageInstall(
   const startedAt = Date.now();
   let activePackageRoot = params.installTarget.packageRoot;
   const native = params.stage.native;
-  const targetLayout = native
-    ? {
-        prefix: native.liveProjectRoot,
-        globalRoot: path.dirname(native.liveProjectRoot),
-        binDir: native.liveBinDir,
-      }
-    : resolveNpmGlobalPrefixLayoutFromGlobalRoot(params.installTarget.globalRoot, {
-        allowDirectNodeModulesRoot: params.installTarget.directNodeModulesRoot === true,
-      });
-  const targetPackageRoot = native
-    ? path.join(native.liveProjectRoot, path.relative(native.projectRoot, params.stage.packageRoot))
-    : params.installTarget.packageRoot;
-  const targetSwapRoot = native?.liveProjectRoot ?? targetPackageRoot;
-  const stagedSwapRoot = native?.projectRoot ?? params.stage.packageRoot;
+  const { targetLayout, targetPackageRoot, targetSwapRoot, stagedSwapRoot } =
+    resolveStagedPackageSwapTarget(params);
+  let baselineError: Error | undefined;
   const results = createPackageSwapResults(params, targetLayout, targetPackageRoot, startedAt);
   const { warnings, step } = results;
   if (!targetLayout || !targetPackageRoot || !targetSwapRoot) {
@@ -303,6 +293,8 @@ export async function swapStagedPackageInstall(
       try {
         previousRoot = await baseline.rootEntry(targetSwapRoot);
       } catch (error) {
+        // Preserve the scan cause if the identity fallback also fails.
+        baselineError = new Error("Baseline package scan failed", { cause: error });
         if (!(error instanceof PackageIntegrityTimeoutError)) {
           throw error;
         }
@@ -318,6 +310,7 @@ export async function swapStagedPackageInstall(
           `baseline package fingerprint incomplete after ${error.budgetMs / 1000} s; rollback will be verified by the retained package copy`,
         );
       }
+      baselineError = undefined;
       previousVersion =
         previousRoot?.kind === "directory"
           ? previousRoot.tree.version
@@ -458,93 +451,103 @@ export async function swapStagedPackageInstall(
             }
           }
         : rootLink?.verifyRuntime;
-      params.onTransaction({
-        backupRoot,
-        ...(assertRollbackSafe ? { assertRollbackSafe } : {}),
-        rollback: (assertion) => {
-          const assertCurrent = retainAuthority(assertion);
-          if (retirement) {
-            return Promise.resolve({
-              ...step(
-                1,
-                null,
-                "Package transaction retirement has started; automatic rollback is no longer available.",
-              ),
-              name: "package-rollback",
-              activePackageRoot,
-            });
-          }
-          // Repeated completion paths must never remove an already-restored package.
-          rollbackResult ??= (async () => {
-            const rollbackStartedAt = Date.now();
-            // Late verification can outlive another global install. Check before
-            // restoring any launcher or project bytes, or we'd erase sibling changes.
-            try {
-              await assertRollbackSafe?.();
-            } catch (error) {
-              assertCurrent();
-              return {
-                ...step(1, null, formatErrorMessage(error)),
-                name: "package-rollback",
-                activePackageRoot,
-                ...(error instanceof NativePackageRollbackError ? { reason: error.reason } : {}),
-              };
-            }
-            const messages = await restoreSwap(assertCurrent);
-            return {
-              ...step(
-                packageRollbackVerified ? 0 : 1,
-                packageRollbackVerified
-                  ? `restored previous ${params.packageName} package and affected launchers`
-                  : null,
-                messages.join("\n") || null,
-              ),
-              name: "package-rollback",
-              activePackageRoot,
-              command: `restore ${backupRoot} -> ${targetSwapRoot}`,
-              durationMs: Date.now() - rollbackStartedAt,
-            };
-          })();
-          return rollbackResult;
-        },
-        complete: async ({ activationVerified }, assertion): Promise<UpdateStepResult | void> => {
-          const assertCurrent = retainAuthority(assertion);
-          if (retirement) {
-            return await retirement;
-          }
-          // Retire backups only after verified activation or restoration. A failed
-          // backup move can leave its published copy as the only intact installation.
-          const outcomeVerified = rollbackResult
-            ? (await rollbackResult).exitCode === 0 && packageRollbackVerified
-            : (native ? projectActivated : activationCompleted) && activationVerified;
-          assertCurrent();
-          if (rollbackRefused || !outcomeVerified) {
-            return {
-              ...step(
-                1,
-                null,
-                `Installation recovery is unverified; inspect the installation and backups in ${targetLayout.globalRoot} before restarting.`,
-              ),
-              name: "package-backup-retention",
-            };
-          }
-          // Seal automatic rollback once retirement begins, but retain the actual
-          // outcome. A repeated completion must not report a renamed backup gone.
-          retirement ??= retireVerifiedPackageSwap({
-            activation,
-            rootLink,
-            hadPackage,
-            previousRoot,
+      params.onTransaction(
+        withPackageReverseTransaction(
+          {
             backupRoot,
-            launchers,
-            packageBackedUp,
-            globalRoot: targetLayout.globalRoot,
-            assertCurrent,
-            step,
-          });
-          return await retirement;
-        },
-      });
+            ...(assertRollbackSafe ? { assertRollbackSafe } : {}),
+            rollback: (assertion) => {
+              const assertCurrent = retainAuthority(assertion);
+              if (retirement) {
+                return Promise.resolve({
+                  ...step(
+                    1,
+                    null,
+                    "Package transaction retirement has started; automatic rollback is no longer available.",
+                  ),
+                  name: "package-rollback",
+                  activePackageRoot,
+                });
+              }
+              // Repeated completion paths must never remove an already-restored package.
+              rollbackResult ??= (async () => {
+                const rollbackStartedAt = Date.now();
+                // Late verification can outlive another global install. Check before
+                // restoring any launcher or project bytes, or we'd erase sibling changes.
+                try {
+                  await assertRollbackSafe?.();
+                } catch (error) {
+                  assertCurrent();
+                  return {
+                    ...step(1, null, formatErrorMessage(error)),
+                    name: "package-rollback",
+                    activePackageRoot,
+                    ...(error instanceof NativePackageRollbackError
+                      ? { reason: error.reason }
+                      : {}),
+                  };
+                }
+                const messages = await restoreSwap(assertCurrent);
+                return {
+                  ...step(
+                    packageRollbackVerified ? 0 : 1,
+                    packageRollbackVerified
+                      ? `restored previous ${params.packageName} package and affected launchers`
+                      : null,
+                    messages.join("\n") || null,
+                  ),
+                  name: "package-rollback",
+                  activePackageRoot,
+                  command: `restore ${backupRoot} -> ${targetSwapRoot}`,
+                  durationMs: Date.now() - rollbackStartedAt,
+                };
+              })();
+              return rollbackResult;
+            },
+            complete: async (
+              { activationVerified },
+              assertion,
+            ): Promise<UpdateStepResult | void> => {
+              const assertCurrent = retainAuthority(assertion);
+              if (retirement) {
+                return await retirement;
+              }
+              // Retire backups only after verified activation or restoration. A failed
+              // backup move can leave its published copy as the only intact installation.
+              const outcomeVerified = rollbackResult
+                ? (await rollbackResult).exitCode === 0 && packageRollbackVerified
+                : (native ? projectActivated : activationCompleted) && activationVerified;
+              assertCurrent();
+              if (rollbackRefused || !outcomeVerified) {
+                return {
+                  ...step(
+                    1,
+                    null,
+                    `Installation recovery is unverified; inspect the installation and backups in ${targetLayout.globalRoot} before restarting.`,
+                  ),
+                  name: "package-backup-retention",
+                };
+              }
+              // Seal automatic rollback once retirement begins, but retain the actual
+              // outcome. A repeated completion must not report a renamed backup gone.
+              retirement ??= retireVerifiedPackageSwap({
+                activation,
+                rootLink,
+                hadPackage,
+                previousRoot,
+                backupRoot,
+                launchers,
+                packageBackedUp,
+                globalRoot: targetLayout.globalRoot,
+                assertCurrent,
+                step,
+              });
+              return await retirement;
+            },
+          },
+          activation,
+        ),
+      );
     }
     const restorePackage = async (assertCurrent: () => void) => {
       if (!native && hadPackage) {
@@ -718,7 +721,7 @@ export async function swapStagedPackageInstall(
         ? error
         : new PackageUpdateActivationError(error);
     }
-    const errors = [formatErrorMessage(error)];
+    const errors = [formatErrorMessage(baselineError ?? error)];
     if (!retained && !liveMutationStarted && !activation && !preparationCustody) {
       // Preparation can fail before a baseline exists. There is nothing to
       // restore; the caller independently verifies the untouched runtime.
@@ -737,6 +740,7 @@ export async function swapStagedPackageInstall(
       error,
       errors,
       retained ? false : packageRollbackVerified,
+      baselineError,
     );
   }
 }

@@ -3,7 +3,7 @@ import type {
   StagedPackageSwapParams,
   StagedPackageSwapResult,
 } from "./package-update-swap-contract.js";
-import { createUpdateFailureFact } from "./update-failure-facts.js";
+import { createUpdateErrorFact, createUpdateFailureFact } from "./update-failure-facts.js";
 import type { NpmGlobalPrefixLayout } from "./update-npm-prefix.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
@@ -20,6 +20,7 @@ export function createPackageSwapResults(
     stdoutTail: string | null,
     stderrTail: string | null,
     code = "swap-failed",
+    failureError?: Error,
   ): UpdateStepResult => ({
     name: "package-swap",
     command: `swap ${params.stage.packageRoot} -> ${targetPackageRoot ?? "unknown root"}`,
@@ -31,11 +32,13 @@ export function createPackageSwapResults(
     ...(exitCode !== 0
       ? {
           failureFacts: [
-            createUpdateFailureFact({
-              check: "package-swap",
-              code,
-              message: stderrTail ?? undefined,
-            }),
+            failureError
+              ? { ...createUpdateErrorFact("package-swap", failureError), code }
+              : createUpdateFailureFact({
+                  check: "package-swap",
+                  code,
+                  message: stderrTail ?? undefined,
+                }),
           ],
         }
       : {}),
@@ -114,6 +117,7 @@ export function createPackageSwapResults(
       error: unknown,
       errors: string[],
       packageRollbackVerified: boolean,
+      baselineError?: Error,
     ): StagedPackageSwapResult {
       return {
         status: "failed",
@@ -122,11 +126,14 @@ export function createPackageSwapResults(
           1,
           null,
           errors.join("\n"),
-          isErrno(error) && typeof error.code === "string"
-            ? error.code
-            : error instanceof Error
-              ? error.name
-              : "swap-failed",
+          baselineError
+            ? "baseline-scan-failed"
+            : isErrno(error) && typeof error.code === "string"
+              ? error.code
+              : error instanceof Error
+                ? error.name
+                : "swap-failed",
+          baselineError,
         ),
         postVerifyStep: null,
         packageRollbackVerified,

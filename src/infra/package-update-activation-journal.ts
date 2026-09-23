@@ -6,14 +6,34 @@ import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { sql } from "kysely";
 import { z } from "zod";
+import { requireDirectorySync, syncDirectorySync } from "./directory-durability.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "./node-sqlite.js";
+import type { PackageActivationReverseBinding } from "./package-update-activation-reverse-schema.js";
+import {
+  identity,
+  basename,
+  PackageActivationDescriptorSchema,
+  PackageActivationPhaseSchema,
+  intentSchema,
+  type PackageActivationDescriptor,
+  type PackageActivationPhase,
+  type PackageActivationIntent,
+  type PackageActivationRecord,
+} from "./package-update-activation-schema.js";
 import type { PackageLauncherFingerprint } from "./package-update-integrity.js";
 import {
   withExistingSqliteRollbackDatabase,
   type ExistingSqliteTransaction,
 } from "./sqlite-existing-database.js";
 import { createVerifiedSqliteSnapshot } from "./sqlite-snapshot.js";
+
+export type {
+  PackageActivationDescriptor,
+  PackageActivationPhase,
+  PackageActivationIntent,
+  PackageActivationRecord,
+} from "./package-update-activation-schema.js";
 
 /** Keep the journal's version-1 launcher encoding while the live reader exposes metadata. */
 export function encodePackageActivationLauncher(value: PackageLauncherFingerprint): string {
@@ -22,120 +42,6 @@ export function encodePackageActivationLauncher(value: PackageLauncherFingerprin
 
 const PACKAGE_ACTIVATION_JOURNAL = "operation.sqlite";
 const MAX_PACKAGE_ACTIVATION_DESCRIPTOR_BYTES = 1024 * 1024;
-const absolutePath = z
-  .string()
-  .min(1)
-  .max(4096)
-  .refine((value) => path.resolve(value) === value);
-const identity = z.string().regex(/^\d+:\d+$/u);
-const fingerprint = z.strictObject({
-  digest: z.string().regex(/^[a-f0-9]{64}$/u),
-  identity,
-  version: z.string().min(1).max(256),
-});
-const basename = z
-  .string()
-  .min(1)
-  .max(255)
-  .refine((value) => value !== "." && value !== ".." && !/[\\/\0]/u.test(value));
-const transferName = z.enum(["anchor", "helper", "candidate", "launchers", "previous-launchers"]);
-const PackageActivationDescriptorSchema = z.strictObject({
-  layout: z.literal("external-helper"),
-  version: z.literal(1),
-  operationId: z.uuid(),
-  authority: z.strictObject({
-    databasePath: absolutePath,
-    databaseIdentity: identity,
-    parentIdentity: identity,
-    installKey: absolutePath,
-    owner: z.string().min(1).max(4096),
-  }),
-  anchorIdentity: identity,
-  journalIdentity: identity,
-  journalParentIdentity: identity,
-  parentIdentity: identity,
-  binDir: absolutePath,
-  binIdentity: identity,
-  originalStageRoot: absolutePath,
-  previous: fingerprint,
-  candidate: fingerprint,
-  launcherRootIdentity: identity,
-  previousLauncherRootIdentity: identity.nullable(),
-  helperIdentity: identity,
-  preparation: z
-    .array(
-      z.strictObject({
-        name: transferName,
-        source: absolutePath,
-        sourceParentIdentity: identity,
-        identity,
-      }),
-    )
-    .min(4)
-    .max(5),
-  helperDigest: z.string().regex(/^[a-f0-9]{64}$/u),
-  launchers: z
-    .array(
-      z.strictObject({
-        name: basename,
-        previous: z.string().max(4096).nullable(),
-        candidate: z.string().max(4096),
-        previousIdentity: identity.nullable(),
-        candidateIdentity: identity,
-      }),
-    )
-    .max(64),
-});
-export type PackageActivationDescriptor = z.infer<typeof PackageActivationDescriptorSchema>;
-const PackageActivationPhaseSchema = z.enum([
-  "preparing",
-  "prepared",
-  "publishing",
-  "publication-complete",
-  "rollback-in-progress",
-  "rolled-back",
-  "aborted",
-  "retiring",
-  "anchor-retired",
-]);
-export type PackageActivationPhase = z.infer<typeof PackageActivationPhaseSchema>;
-const intentSchema = z
-  .union([
-    z.strictObject({
-      kind: z.literal("prepare"),
-      completed: z.array(transferName).max(5),
-      moving: transferName.nullable(),
-    }),
-    z.strictObject({
-      kind: z.enum(["remove-anchor", "unlink-helper"]),
-      identity,
-      selected: z.enum(["previous", "candidate"]),
-    }),
-    z.strictObject({ kind: z.enum(["displace", "publish"]) }),
-    z.strictObject({ kind: z.literal("launcher"), name: basename, identity }),
-    z.strictObject({ kind: z.literal("retire"), selected: z.enum(["previous", "candidate"]) }),
-    z.strictObject({
-      kind: z.literal("remove"),
-      name: z.enum([
-        "previous",
-        "candidate",
-        "previous.candidate",
-        "launchers",
-        "previous-launchers",
-      ]),
-      identity,
-      selected: z.enum(["previous", "candidate"]),
-    }),
-  ])
-  .nullable();
-export type PackageActivationIntent = z.infer<typeof intentSchema>;
-export type PackageActivationRecord = {
-  revision: number;
-  phase: PackageActivationPhase;
-  intent: PackageActivationIntent;
-  descriptor: PackageActivationDescriptor;
-  publications: Array<{ name: string; identity: string }>;
-};
 type ActivationRow = {
   slot: number;
   revision: number;
@@ -270,7 +176,13 @@ export function openPackageActivationJournal(anchor: string) {
           );
         },
       },
-      operation,
+      (db, transact) => {
+        if (write) {
+          // Persist rollback-journal deletion before the next filesystem effect.
+          db.exec("PRAGMA synchronous = EXTRA"); // sqlite-allow-raw -- Durable reverse intent before rename.
+        }
+        return operation(db, transact);
+      },
     );
   const decode = (row: ActivationRow | undefined): PackageActivationRecord => {
     if (
@@ -319,6 +231,33 @@ export function openPackageActivationJournal(anchor: string) {
       .parse(JSON.parse(row.publications_json));
     const intent = intentSchema.parse(JSON.parse(row.intent_json));
     const names = new Set(descriptor.launchers.map((entry) => entry.name));
+    if (
+      descriptor.reverse &&
+      (descriptor.reverse.operationId !== descriptor.operationId ||
+        descriptor.reverse.runId !== descriptor.originalRunId ||
+        ![
+          "reverse-in-progress",
+          "reverse-complete",
+          "rolled-back",
+          "retiring",
+          "anchor-retired",
+        ].includes(row.phase))
+    ) {
+      throw new Error("Reverse binding is not in its original operation phase.");
+    }
+    if (row.phase.startsWith("reverse-") && (!descriptor.reverse || intent?.kind !== "reverse")) {
+      throw new Error("Reverse phase has no durable binding/progress.");
+    }
+    if (
+      intent?.kind === "reverse" &&
+      (!descriptor.reverse ||
+        !["reverse-in-progress", "reverse-complete", "rolled-back"].includes(row.phase) ||
+        intent.completed > descriptor.reverse.resources.length ||
+        (row.phase !== "reverse-in-progress" &&
+          (intent.completed !== descriptor.reverse.resources.length || intent.effect !== null)))
+    ) {
+      throw new Error("Reverse progress is incomplete or invalid.");
+    }
     if (
       new Set(publications.map((entry) => entry.name)).size !== publications.length ||
       publications.some((entry) => !names.has(entry.name)) ||
@@ -518,7 +457,26 @@ export function openPackageActivationJournal(anchor: string) {
       intent: PackageActivationIntent,
       assertCurrent: () => void,
       publications = expected.publications,
+      reverse?: PackageActivationReverseBinding,
     ): PackageActivationRecord {
+      if (
+        reverse &&
+        (expected.descriptor.reverse ||
+          expected.phase !== "publication-complete" ||
+          phase !== "reverse-in-progress" ||
+          reverse.operationId !== expected.descriptor.operationId ||
+          reverse.runId !== expected.descriptor.originalRunId ||
+          intent?.kind !== "reverse" ||
+          intent.completed !== 0 ||
+          intent.effect !== null)
+      ) {
+        throw new Error(
+          "Reverse binding can only be committed once by original publication admission.",
+        );
+      }
+      const encodedDescriptor = descriptorJson(
+        reverse ? { ...expected.descriptor, reverse } : expected.descriptor,
+      );
       const intentJson = JSON.stringify(intentSchema.parse(intent));
       PackageActivationPhaseSchema.parse(phase);
       return withDatabase(true, (db, transact) => {
@@ -535,6 +493,7 @@ export function openPackageActivationJournal(anchor: string) {
                 .set({
                   revision: expected.revision + 1,
                   phase,
+                  descriptor_json: encodedDescriptor,
                   intent_json: intentJson,
                   publications_json: JSON.stringify(publications),
                 })
@@ -681,12 +640,17 @@ export function createPackageActivationJournal(
       },
     );
   verifyPrivate();
+  requireDirectorySync(syncDirectorySync(stagedControl), "Private package control");
   // No public name exists until both closed objects are complete. A lost rename
   // acknowledgement retains stage custody; only proven nonpublication releases it.
   onCustody?.(true);
   try {
     assertReady();
     fs.renameSync(stagedControl, control);
+    for (const directory of new Set([path.dirname(stagedControl), path.dirname(control)])) {
+      assertCurrent();
+      requireDirectorySync(syncDirectorySync(directory), "Package control publication");
+    }
   } catch (error) {
     try {
       if (!fs.lstatSync(control, { throwIfNoEntry: false })) {
@@ -714,4 +678,24 @@ export function assertPackageActivationOperation(
   if (record.descriptor.operationId !== operationId) {
     throw new Error("Package recovery command belongs to a different operation.");
   }
+}
+
+export type PackageActivationStatus = {
+  phase: PackageActivationPhase | "complete";
+  operationId: string;
+  installKey: string;
+};
+export function readPackageActivationRecordStatus(
+  record: PackageActivationRecord,
+): PackageActivationStatus {
+  return {
+    phase: isPackageActivationComplete(
+      resolvePackageActivationAnchor(record.descriptor.authority.installKey),
+      record,
+    )
+      ? "complete"
+      : record.phase,
+    operationId: record.descriptor.operationId,
+    installKey: record.descriptor.authority.installKey,
+  };
 }

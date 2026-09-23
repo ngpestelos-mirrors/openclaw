@@ -65,11 +65,7 @@ DatabaseSync.prototype.prepare = function (sql) {
       },
     });
   }
-  if (
-    isSelectedJournal(this.location() ?? "") &&
-    /^update "package_activation" set /iu.test(sql) &&
-    sql.includes('"descriptor_json"') === replacement
-  ) {
+  if (isSelectedJournal(this.location() ?? "") && /^update "package_activation" set /iu.test(sql)) {
     const originalRun: typeof statement.run = Reflect.get(statement, "run");
     statement.run = new Proxy(originalRun, {
       apply(run, receiver: unknown, args: unknown[]) {
