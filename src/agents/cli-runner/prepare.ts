@@ -56,10 +56,7 @@ import { resolveReusableWorkspaceSkillSnapshot } from "../../skills/runtime/sess
 import type { SkillUsagePath } from "../../skills/types.js";
 import { resolveUserPath } from "../../utils.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
-import {
-  resolveAdmittedRunActiveAssertion,
-  resolvePreparedRunAdmission,
-} from "../admitted-run-context.js";
+import { resolveAdmittedRunActiveAssertion } from "../admitted-run-context.js";
 import { hasAgentRosterProperty, resolveAgentWorkspaceDir } from "../agent-scope-config.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import { hasUsableOAuthCredential } from "../auth-profiles/credential-state.js";
@@ -134,7 +131,6 @@ import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { buildSystemPromptReport } from "../system-prompt-report.js";
 import { appendModelIdentitySystemPrompt, buildModelIdentityPromptLine } from "../system-prompt.js";
 import { expandToolGroups, normalizeToolPolicyName } from "../tool-policy.js";
-import { resolveQuestionTimeoutMs } from "../tools/ask-user-tool-normalization.js";
 import { assertNativeCronCreatorCapabilities } from "../tools/cron-tool-creator-cap.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import {
@@ -143,6 +139,10 @@ import {
 } from "../workspace.js";
 import { CliAuthProfilePreparationError } from "./auth-profile-preparation-error.js";
 import { canTransportSystemPrompt, resolveCliBootstrapPromptHash } from "./bootstrap-transport.js";
+import {
+  applyClaudeManagedMcpTimeout,
+  CLAUDE_MANAGED_MCP_TIMEOUT_MS,
+} from "./bundle-mcp-claude.js";
 import { prepareCliBundleMcpConfig, resolveCliNativeWebSearchEnabled } from "./bundle-mcp.js";
 import { prepareClaudeCliSkillsPlugin } from "./claude-skills-plugin.js";
 import { runCliCleanup } from "./cleanup.js";
@@ -170,6 +170,7 @@ import {
   composeCliPromptContext,
   prepareCliSystemPrompt,
 } from "./prompt-context.js";
+import { admitCliRunParams, prepareCliRunModelAuthority } from "./run-admission.js";
 import {
   buildCliSessionHistoryPrompt,
   hasCliSessionTranscript,
@@ -190,8 +191,6 @@ type PrivateCliBackendPreparedExecution = CliBackendPreparedExecution & {
   isolatedCompletionEnforced?: true;
   secretInput?: CliSecretInput;
 };
-
-const CLAUDE_MANAGED_MCP_TIMEOUT_MS = resolveQuestionTimeoutMs(3_600);
 
 function unsupportedIsolatedCompletionError(backendId: string): Error & { code: "unsupported" } {
   const error = new Error(
@@ -553,21 +552,6 @@ async function prepareCliRunContextWithinReadFence(
   // Control bytes must reach the resumed backend without turn hooks, prompts,
   // tools, MCP, skills, or context-engine setup changing their execution.
   const skipsTurnPreparation = isSideQuestion || isControlOperation;
-  const admitPreparedParams = async (
-    candidate: RunCliAgentParams,
-  ): Promise<
-    RunCliAgentParams & { admittedRunContext: NonNullable<RunCliAgentParams["admittedRunContext"]> }
-  > => {
-    const admittedRunContext = await resolvePreparedRunAdmission({
-      runId: candidate.runId,
-      runtimeKind: "embedded",
-      admittedRunContext: candidate.admittedRunContext,
-      preparedRunAdmission: candidate.preparedRunAdmission,
-    });
-    candidate.assertCurrent?.();
-    const { preparedRunAdmission: _preparedRunAdmission, ...rest } = candidate;
-    return { ...rest, agentId: workspaceResolution.agentId, admittedRunContext };
-  };
   const runtimeChatType = params.chatType ?? params.sessionEntry?.chatType;
   const workspaceResolution = resolveRunWorkspaceDir({
     workspaceDir: params.rootedExecution?.root ?? params.workspaceDir,
@@ -624,6 +608,7 @@ async function prepareCliRunContextWithinReadFence(
   if (!backendResolved) {
     throw new Error(`Unknown CLI backend: ${params.provider}`);
   }
+  params = prepareCliRunModelAuthority(params);
   const backendAuthPolicy = resolveBundledCliBackendAuthPolicy(backendResolved.id);
   const canEnforceExactToolAvailability =
     backendResolved.nativeToolMode === "selectable" &&
@@ -723,7 +708,7 @@ async function prepareCliRunContextWithinReadFence(
       disableCliLiveSession: true,
       cliToolAvailability: { native: [], openClaw: params.cliToolAvailability?.openClaw ?? [] },
     };
-    const admittedParams = await admitPreparedParams(params);
+    const admittedParams = await admitCliRunParams(params, workspaceResolution.agentId);
     const assertRootedCurrent = resolveAdmittedRunActiveAssertion(
       admittedParams.admittedRunContext,
       params.abortSignal,
@@ -1357,7 +1342,7 @@ async function prepareCliRunContextWithinReadFence(
     if (!promptBuildHookRunner || !toolAuthorityFingerprint) {
       return undefined;
     }
-    const admittedParams = await admitPreparedParams(params);
+    const admittedParams = await admitCliRunParams(params, workspaceResolution.agentId);
     params = admittedParams;
     const assertHostActive = resolveAdmittedRunActiveAssertion(
       admittedParams.admittedRunContext,
@@ -1557,16 +1542,7 @@ async function prepareCliRunContextWithinReadFence(
       : undefined;
     const loopbackServerConfig =
       rawLoopbackServerConfig && backendResolved.bundleMcpMode === "claude-config-file"
-        ? {
-            ...rawLoopbackServerConfig,
-            mcpServers: {
-              ...rawLoopbackServerConfig.mcpServers,
-              openclaw: {
-                ...rawLoopbackServerConfig.mcpServers.openclaw,
-                timeout: CLAUDE_MANAGED_MCP_TIMEOUT_MS,
-              },
-            },
-          }
+        ? applyClaudeManagedMcpTimeout(rawLoopbackServerConfig)
         : rawLoopbackServerConfig;
     const sandboxStatus = resolveSandboxRuntimeStatus({
       cfg: runConfig,
@@ -2024,8 +2000,7 @@ async function prepareCliRunContextWithinReadFence(
     let systemPrompt = transformedSystemPrompt;
     const allowRawTranscriptReseed =
       backendResolved.config.reseedFromRawTranscriptWhenUncompacted === true;
-    const historyParams = await admitPreparedParams(params);
-    params = historyParams;
+    const historyParams = (params = await admitCliRunParams(params, workspaceResolution.agentId));
     const cliHistoryWriter = !isSideQuestion
       ? await prepareCliHistoryBoundary(historyParams, { credential: authCredential })
       : undefined;
@@ -2041,6 +2016,7 @@ async function prepareCliRunContextWithinReadFence(
       skipsTurnPreparation || params.isolatedCompletion
         ? undefined
         : await loadCliSessionPromptContext({
+            abortSignal: params.abortSignal,
             sessionManager: params.sessionManager,
             sessionTarget: params.sessionTarget,
             allowRawTranscriptReseed,
@@ -2206,6 +2182,11 @@ async function prepareCliRunContextWithinReadFence(
       cwd,
       backendResolved,
       preparedBackend: preparedBackendFinal,
+      ...(loopbackServerConfig &&
+      !systemAgentMcpConfig &&
+      backendResolved.bundleMcpMode === "claude-config-file"
+        ? { managedMcpToolTimeoutMs: CLAUDE_MANAGED_MCP_TIMEOUT_MS }
+        : {}),
       executionTarget,
       ...(pluginExecutionConsumer ? { pluginExecutionConsumer } : {}),
       reusableCliSession,
@@ -2229,13 +2210,16 @@ async function prepareCliRunContextWithinReadFence(
       ...(mcpDeliveryCaptureEnabled ? { mcpDeliveryCapture: true as const } : {}),
     });
     const admitFinalParams = () =>
-      admitPreparedParams({
-        ...params,
-        config: runConfig,
-        prompt: preparedPrompt,
-        transcriptPrompt: finalizedTranscriptPrompt,
-        ...(requireExplicitMessageTarget ? { requireExplicitMessageTarget: true } : {}),
-      });
+      admitCliRunParams(
+        {
+          ...params,
+          config: runConfig,
+          prompt: preparedPrompt,
+          transcriptPrompt: finalizedTranscriptPrompt,
+          ...(requireExplicitMessageTarget ? { requireExplicitMessageTarget: true } : {}),
+        },
+        workspaceResolution.agentId,
+      );
     const bindPreparedParams = (preparedParams: PreparedCliRunContext["params"]) => {
       bindMcpClientGrantAdmission(preparedParams.admittedRunContext);
       if (!isControlOperation) {

@@ -44,10 +44,7 @@ import {
 } from "../routing/session-key.js";
 import { listAgentDatabaseAdmissionRefusals } from "../state/agent-database-admission.js";
 import { inspectOpenClawRegisteredAgentDatabases } from "../state/openclaw-agent-db-registry.js";
-import {
-  detectOpenClawStateDatabaseSchemaMigrations,
-  type OpenClawStateDatabaseSchemaMigration,
-} from "../state/openclaw-state-db.js";
+import { detectOpenClawStateDatabaseSchemaMigrations } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveIdentityPathViaExistingAncestorSync } from "./boundary-path.js";
 import { detectLegacyDeliveryQueueFiles } from "./delivery-queue-legacy-files.js";
@@ -139,6 +136,10 @@ import {
   runPluginDoctorStateMigrationPlans,
 } from "./state-migrations.plugin-doctor.js";
 import {
+  buildPlannedPluginStateMigrationDescriptor,
+  preparePostSessionPluginMigration,
+} from "./state-migrations.plugin-plan.js";
+import {
   migrateLegacyInstalledPluginIndex,
   migrateLegacyPluginStateSidecar,
 } from "./state-migrations.plugin-state.js";
@@ -185,7 +186,10 @@ import {
   autoMigrateLegacyStateDir,
   resolvePendingLegacyStateDirMigrationPaths,
 } from "./state-migrations.state-dir.js";
-import { createStateSchemaMigrationStep } from "./state-migrations.state-schema.js";
+import {
+  createStateSchemaMigrationStep,
+  describeStateSchemaMigration,
+} from "./state-migrations.state-schema.js";
 import {
   PLUGIN_STATE_SQLITE_SIDECAR_SUFFIXES,
   TASK_STATE_SQLITE_SIDECAR_SUFFIXES,
@@ -229,44 +233,6 @@ import {
   isUpdateRehearsalReadOnlyPath,
   resolveUpdateRehearsalRoot,
 } from "./update-rehearsal-paths.js";
-
-function describeStateSchemaMigration(migration: OpenClawStateDatabaseSchemaMigration): string {
-  switch (migration.kind) {
-    case "agent-databases-composite-primary-key":
-      return "agent database registry primary key → agent_id,path";
-    case "audit-events-v2":
-      return "audit event ledger → versioned message lifecycle schema";
-    case "commitments-retirement-v7":
-      return "retired commitments storage → discarded rows, table, and indexes";
-    case "worker-placement-execution-mode-v8":
-      return "cloud worker placements → execution-mode claims";
-    case "agent-databases-relative-paths-v9":
-      return "agent database registry paths → state-relative storage";
-    case "state-table-retirement-v10":
-      return "retired shared-state tables → removed tables and indexes";
-    case "state-table-retirement-v11":
-      return "retired skill curator tables → removed tables and indexes";
-    case "singleton-state-foldin-v12":
-      return "singleton state tables → shared configuration state";
-    case "state-consolidation-v13":
-      return "cron jobs and subagent runs → canonical JSON storage";
-    case "creator-namespace-v14":
-      return "historical cron creators → unknown source attribution";
-    case "conversation-binding-targets-v15":
-      return "conversation bindings → exact target keys without agent/session projections";
-    case "skill-workshop-directory-ownership-v16":
-      return "Skill Workshop ownership → per-agent directory containment";
-    case "prepared-worker-ownership-v17":
-      return "prepared workers → one-use capacity and fixed workspace ownership";
-    case "operator-approvals-system-agent":
-      return "operator approvals → OpenClaw system changes";
-    case "session-watch-cursor-provenance-v4":
-      return "session watch cursors → provenance column";
-    case "strict-tables-v3":
-      return "tables → SQLite STRICT typing";
-  }
-  return migration.kind satisfies never;
-}
 
 const autoMigrateChecked = new Set<string>();
 
@@ -1015,60 +981,6 @@ const unresolvedMigrationStepLayout = [
   ]
 >;
 
-type PlannedPluginStateMigrationDescriptor = {
-  actions: PluginDoctorStateMigrationInventory["descriptors"];
-  source: LegacyStateMigrationEndpoint[];
-  target: LegacyStateMigrationEndpoint[];
-  requiredness: PreparedLegacyStateMigrationStep["requiredness"];
-  refusal?: PreparedLegacyStateMigrationStep["refusal"];
-};
-
-function buildPlannedPluginStateMigrationDescriptor(params: {
-  inventory: PluginDoctorStateMigrationInventory;
-  mode: LegacyStateMigrationMode;
-  phase?: "after-session-repair";
-}): PlannedPluginStateMigrationDescriptor {
-  const actions = params.inventory.descriptors.filter(
-    (descriptor) =>
-      descriptor.phase === params.phase &&
-      (params.mode === "doctor" || descriptor.doctorOnly !== true),
-  );
-  const unresolvedPluginIds = params.inventory.unresolvedPluginIds;
-  const source = [
-    ...actions.map((descriptor) => ({
-      kind: "owner" as const,
-      id: `plugin:${descriptor.pluginId}:${descriptor.id}`,
-    })),
-    ...unresolvedPluginIds.map((pluginId) => ({
-      kind: "owner" as const,
-      id: `plugin:${pluginId}:state-migrations`,
-    })),
-  ];
-  const target = [
-    ...new Set([...actions.map((descriptor) => descriptor.pluginId), ...unresolvedPluginIds]),
-  ].map((pluginId) => ({
-    kind: "owner" as const,
-    id: `plugin:${pluginId}:doctor-state`,
-  }));
-  return {
-    actions,
-    source,
-    target,
-    requiredness:
-      source.length > 0 || params.inventory.resolutionFailure ? "conditional" : "not-required",
-    ...(params.inventory.resolutionFailure
-      ? { refusal: params.inventory.resolutionFailure }
-      : unresolvedPluginIds.length > 0
-        ? {
-            refusal: {
-              code: "plugin-planning-deferred",
-              message: `Plugin migration identities are not declared for: ${unresolvedPluginIds.join(", ")}.`,
-            },
-          }
-        : {}),
-  };
-}
-
 function buildUnresolvedBlockedMigrationSteps(params: {
   mode: LegacyStateMigrationMode;
   stateDir: string;
@@ -1424,11 +1336,10 @@ function buildLegacyStateMigrationSteps(
         mode: pluginMigrationMode,
       })
     : undefined;
-  const plannedPostSessionPluginDescriptor = params.pluginStateMigrationInventory
-    ? buildPlannedPluginStateMigrationDescriptor({
+  const plannedPostSessionPluginMigration = params.pluginStateMigrationInventory
+    ? preparePostSessionPluginMigration({
         inventory: params.pluginStateMigrationInventory,
         mode: pluginMigrationMode,
-        phase: "after-session-repair",
       })
     : undefined;
   const pluginMigrationSources = plannedPluginDescriptor
@@ -1607,11 +1518,6 @@ function buildLegacyStateMigrationSteps(
       pluginMigrationSources,
       plannedPluginDescriptor?.requiredness ?? detected.pluginPlans?.hasLegacy === true,
       pluginMigrationTargets,
-    ],
-    "plugin-doctor-post-session-state": [
-      plannedPostSessionPluginDescriptor?.source ?? [],
-      plannedPostSessionPluginDescriptor?.requiredness ?? false,
-      plannedPostSessionPluginDescriptor?.target ?? [],
     ],
     sessions: [
       pathEndpoints(detected.sessions.legacyDir, detected.sessions.legacyStorePath),
@@ -1940,28 +1846,18 @@ function buildLegacyStateMigrationSteps(
   }
   if (
     isDoctor &&
-    plannedPostSessionPluginDescriptor &&
+    plannedPostSessionPluginMigration &&
     params.deferPostSessionPluginMigrations !== false
   ) {
-    finalSteps.push(
-      finalStep(
-        "plugin-doctor-post-session-state",
-        () => ({ changes: [], warnings: [] }),
-        true,
-        plannedPostSessionPluginDescriptor.refusal,
-      ),
-    );
-    const step = finalSteps.at(-1);
-    if (!step || step.id !== "plugin-doctor-post-session-state") {
-      throw new Error("legacy state migration plan is missing its post-session plugin step");
-    }
-    step.deferredExecution = {
-      kind: "post-session-plugin",
-      plannedActions: plannedPostSessionPluginDescriptor.actions.map(({ pluginId, id }) => ({
-        pluginId,
-        id,
-      })),
-    };
+    finalSteps.push({
+      ...plannedPostSessionPluginMigration.step,
+      run: () => ({ changes: [], warnings: [] }),
+      collectNotices: true,
+      deferredExecution: {
+        kind: "post-session-plugin",
+        plannedActions: plannedPostSessionPluginMigration.plannedActions,
+      },
+    });
   }
 
   return [
@@ -2747,7 +2643,7 @@ export async function prepareLegacyStateDatabaseSchema(
     createStateSchemaMigrationStep({
       stateDir: resolveStateDir(env),
       env,
-      mode: "doctor",
+      mode: "doctor-preparation",
       requiredness: "conditional",
     }),
   ]);
