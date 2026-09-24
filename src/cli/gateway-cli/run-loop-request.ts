@@ -1,15 +1,12 @@
 import {
+  getGatewayInstallationReplacement,
   registerGatewayInstallationReplacementHandler,
   type GatewayInstallationReplacement,
 } from "../../gateway/stale-install.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
-import {
-  getGatewaySuspendAdmissionPhase,
-  onGatewaySuspendAdmissionChange,
-  type GatewayShutdownTrigger,
-} from "../../process/gateway-work-admission.js";
+import type { GatewayShutdownTrigger } from "../../process/gateway-work-admission.js";
 import { formatCliCommand } from "../command-format.js";
 import type { createGatewayHostLifecycle } from "./host-lifecycle.js";
 
@@ -37,10 +34,9 @@ export function registerGatewayRunInstallationReplacement(params: {
   supervised: boolean;
 }): () => void {
   let current = true;
-  let releaseSuspensionWait: (() => void) | undefined;
   const release = registerGatewayInstallationReplacementHandler((fact) => {
     const accept = () => {
-      if (!current) {
+      if (!current || getGatewayInstallationReplacement() !== fact) {
         return;
       }
       const pending = params.waitForUpdates();
@@ -50,18 +46,6 @@ export function registerGatewayRunInstallationReplacement(params: {
             params.logger.error(
               `Installation replacement restart deferred: system-service update settlement failed: ${formatErrorMessage(error)}`,
             );
-          }
-        });
-        return;
-      }
-      // A suspension may have begun while the system-service helper settled.
-      // Let its owner finish; retirement still cancels this deferred callback.
-      if (getGatewaySuspendAdmissionPhase() !== "accepting") {
-        releaseSuspensionWait ??= onGatewaySuspendAdmissionChange((phase) => {
-          if (phase === "accepting") {
-            releaseSuspensionWait?.();
-            releaseSuspensionWait = undefined;
-            queueMicrotask(accept);
           }
         });
         return;
@@ -78,7 +62,6 @@ export function registerGatewayRunInstallationReplacement(params: {
   });
   return () => {
     current = false;
-    releaseSuspensionWait?.();
     release();
   };
 }

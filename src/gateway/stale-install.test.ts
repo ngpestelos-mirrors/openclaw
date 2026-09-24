@@ -202,6 +202,7 @@ describe("running installation replacement", () => {
         dispose = undefined;
       }
       expect(suspension?.release()).toBe(true);
+      await owner.checkGatewayInstallationReplacement();
       if (outcome === "resume") {
         await accepted.promise;
         expect(restart).toHaveBeenCalledOnce();
@@ -210,6 +211,30 @@ describe("running installation replacement", () => {
       }
     },
   );
+
+  it("rechecks a latched replacement after a suspended helper rollback", async () => {
+    const { registerGatewayRunInstallationReplacement } =
+      await import("../cli/gateway-cli/run-loop-request.js");
+    const helper = createDeferredCore();
+    const restart = vi.fn();
+    dispose = registerGatewayRunInstallationReplacement({
+      waitForUpdates: vi.fn().mockReturnValueOnce(helper.promise),
+      accept: restart,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      supervised: true,
+    });
+    await writeIdentity("2026.9.5", "build-after");
+    await owner.checkGatewayInstallationReplacement();
+    const suspension = tryBeginGatewaySuspendAdmission(vi.fn());
+    expect(suspension?.drain()).toBe(true);
+    await writeIdentity("2026.9.4", "build-before");
+    helper.resolve();
+    await helper.promise;
+    expect(suspension?.release()).toBe(true);
+    await owner.checkGatewayInstallationReplacement();
+    expect(restart).not.toHaveBeenCalled();
+    expect(owner.getGatewayInstallationReplacement()).toBeUndefined();
+  });
 
   it("discards an installation read across suspension and rollback before it settles", async () => {
     const json = await import("../infra/json-files.js");

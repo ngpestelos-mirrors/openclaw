@@ -69,7 +69,14 @@ export function registerGatewayInstallationReplacementHandler(
     onReplacement,
   };
   installationState.observer = observer;
+  const releaseSuspension = onGatewaySuspendAdmissionChange((phase) => {
+    if (phase !== "accepting") {
+      // A host operation may restore the running installation before reopening.
+      observer.replacement = undefined;
+    }
+  });
   return () => {
+    releaseSuspension();
     if (installationState.observer === observer) {
       installationState.observer = undefined;
     }
