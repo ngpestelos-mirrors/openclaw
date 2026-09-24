@@ -61,6 +61,16 @@ the same background reader pool, without hydrating message bodies. Both paths
 retain the transcript read fence and raw line ordinals. Full indexing still scans
 the transcript; stored data, exported content, hashes, and update behavior are unchanged.
 
+Channel ingress admission, claims, completion, recovery, and pruning use the
+shared-state writer. Queue inspection, claim preparation, and health counts use
+the read-only worker. Channel callbacks retain payload and lane policy on the
+Gateway thread; the writer compares the prepared ordered rows before claiming
+and rejects stale recovery decisions. A conflicting claim snapshot is prepared
+again; an uncertain write is never replayed. Database admission and commit remain
+bound to the captured owner, and shutdown joins accepted work. The existing
+`channel_ingress_events` schema, payload encoding, dedupe windows, retention, and
+update behavior are unchanged.
+
 Before yielding, capture the physical store target, source/admission scope,
 request identity, and the owning projection revision. The lifecycle owner retains
 that source until reader cleanup or write settlement completes. Workers return

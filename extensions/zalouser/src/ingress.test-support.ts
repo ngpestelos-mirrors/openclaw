@@ -5,7 +5,11 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
-import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseAsync,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { expect, vi } from "vitest";
 import type { createZalouserIngressMonitor } from "./ingress.js";
@@ -81,7 +85,9 @@ export async function withZalouserIngressTestQueue<T>(
     // Both closes must run before OPENCLAW_STATE_DIR is restored: cached agent
     // databases captured the child env, and lease release after restoration would
     // write through the parent fixture's shared state instead.
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 });
     if (previousStateDir === undefined) {

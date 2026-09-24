@@ -1,11 +1,13 @@
 // Plugin state runtime tests cover runtime-backed plugin state storage.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
 import { resolveStateDir } from "../config/paths.js";
 import { markPluginRegistryActive, revokePluginRecord } from "../plugins/registry-lifecycle.js";
 import type { PluginRecord } from "../plugins/registry-types.js";
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -223,6 +225,51 @@ describe("plugin runtime state proxy", () => {
       expect(await canonicalRetained.lookup("current")).toBe(2);
       expect(await canonicalRetained.lookup("promoted")).toBeUndefined();
       expect(await canonicalRetained.lookup("denied")).toBeUndefined();
+    });
+  });
+
+  it("fences ingress reads, admission, and recovery when its plugin owner is revoked", async () => {
+    await withOpenClawTestState({ label: "plugin-ingress-runtime-closure" }, async (state) => {
+      const registry = createTestPluginRegistry();
+      const record = createPluginRecord("ingress-owner");
+      registry.registry.plugins.push(record);
+      markPluginRegistryActive(registry.registry);
+      const api = registry.createApi(record, { config: {} });
+      const queue = api.runtime.state.openChannelIngressQueue<{ text: string }>({ now: () => 10 });
+      await queue.enqueue("claimed", { text: "retained" });
+      const claimed = await queue.claim("claimed", { ownerId: "previous" });
+      expect(claimed).not.toBeNull();
+      const entered = createDeferredCore();
+      const releasePolicy = createDeferredCore<boolean>();
+      const recovering = queue.recoverStaleClaims({
+        now: 20,
+        staleMs: 5,
+        shouldRecover: () => {
+          entered.resolve();
+          return releasePolicy.promise;
+        },
+      });
+      try {
+        await entered.promise;
+        const listing = queue.listClaims();
+        const admission = queue.enqueue("denied", { text: "revoked" });
+        revokePluginRecord(registry.registry, record);
+        releasePolicy.resolve(true);
+        await Promise.all([
+          expect(recovering).rejects.toThrow('Plugin "ingress-owner" runtime is no longer active'),
+          expect(listing).rejects.toThrow('Plugin "ingress-owner" runtime is no longer active'),
+          expect(admission).rejects.toThrow('Plugin "ingress-owner" runtime is no longer active'),
+        ]);
+        const maintenance = createChannelIngressQueue({
+          channelId: record.id,
+          stateDir: state.stateDir,
+        });
+        expect(await maintenance.listClaims()).toEqual([claimed]);
+        expect(await maintenance.listPending()).toEqual([]);
+      } finally {
+        releasePolicy.resolve(false);
+        await recovering.catch(() => {});
+      }
     });
   });
 

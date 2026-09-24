@@ -18,7 +18,7 @@ type TelegramSpooledBot = {
 };
 
 type CreateTelegramTransportIngressMonitorParams = {
-  spoolDir: string;
+  stateDir?: string;
   bot: TelegramSpooledBot;
   accountId: string;
   botInfo?: TelegramBotInfo;
@@ -36,7 +36,7 @@ type CreateTelegramTransportIngressMonitorParams = {
 export function createTelegramTransportIngressMonitor(
   params: CreateTelegramTransportIngressMonitorParams,
 ) {
-  const queue = openTelegramIngressQueue(params.spoolDir);
+  const queue = openTelegramIngressQueue(params);
   const adoptionStallTimeoutMs = resolveTelegramAdoptionStallTimeoutMs({
     configured: params.adoptionStallTimeoutMs,
     env: process.env,

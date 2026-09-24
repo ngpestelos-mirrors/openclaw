@@ -24,6 +24,10 @@ import { retireMissingWorktreeInWorker } from "../agents/worktrees/registry-reti
 import { executeWorktreeRunLeaseCommand } from "../agents/worktrees/run-lease-store.worker.js";
 import { listAuditEventsInDatabase } from "../audit/audit-event-read.kernel.js";
 import { executeAuditWriterCommand } from "../audit/audit-event-writer.worker.js";
+import {
+  isChannelIngressCommand,
+  executeChannelIngressCommand,
+} from "../channels/message/ingress-queue.worker.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import { readWorkshopMigrationRecordsInDatabase } from "../commands/doctor-skill-workshop-read.kernel.js";
@@ -506,6 +510,9 @@ export function executeSharedStateCommand(
   }
   if (command.type === "sessionGroups.mutate") {
     return mutateSessionGroupCatalogInDatabase(database, command.input, writeOptions.env);
+  }
+  if (isChannelIngressCommand(command)) {
+    return executeChannelIngressCommand(command, writeOptions);
   }
   if (deliveryQueue.isDeliveryQueueCommand(command)) {
     return deliveryQueue.executeDeliveryQueueCommand(command, writeOptions);

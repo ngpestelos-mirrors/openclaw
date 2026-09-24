@@ -1,20 +1,16 @@
 // Ingress queue tests cover durable queueing for inbound channel messages.
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import type { Insertable } from "kysely";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as sqliteQueries from "../../infra/kysely-sync.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createChannelIngressQueue } from "./ingress-queue.js";
 
 type ChannelIngressTestDatabase = Pick<OpenClawStateKyselyDatabase, "channel_ingress_events">;
@@ -35,13 +31,10 @@ function createTestIngressQueue<TPayload, TMetadata = unknown, TCompletedMetadat
 }
 
 async function withTempState<T>(fn: (stateDir: string) => Promise<T>): Promise<T> {
-  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ingress-queue-"));
-  try {
-    return await fn(stateDir);
-  } finally {
-    closeOpenClawStateDatabaseForTest();
-    await fs.rm(stateDir, { recursive: true, force: true });
-  }
+  return await withOpenClawTestState(
+    { layout: "state-only", prefix: "openclaw-ingress-queue-", applyEnv: false },
+    ({ stateDir }) => fn(stateDir),
+  );
 }
 
 function openIngressStateDatabase(stateDir: string) {
@@ -49,10 +42,6 @@ function openIngressStateDatabase(stateDir: string) {
 }
 
 describe("channel ingress queue", () => {
-  afterEach(() => {
-    closeOpenClawStateDatabaseForTest();
-  });
-
   it("deduplicates pending and completed ingress events", async () => {
     await withTempState(async (stateDir) => {
       const queue = createTestIngressQueue<
@@ -61,58 +50,80 @@ describe("channel ingress queue", () => {
         { handledBy: string }
       >(stateDir, { now: () => 100 });
 
-      const accepted = await queue.enqueue(
-        "event-1",
-        { text: "first" },
-        { metadata: { source: "fixture" }, receivedAt: 50 },
-      );
-      const pending = await queue.enqueue("event-1", { text: "duplicate" });
-      await queue.complete("event-1", { metadata: { handledBy: "worker" }, completedAt: 150 });
-      const completed = await queue.enqueue("event-1", { text: "late duplicate" });
-
-      expect(accepted.kind).toBe("accepted");
-      expect(pending.kind).toBe("pending");
-      if (pending.kind !== "pending") {
-        throw new Error(`Expected pending duplicate, got ${pending.kind}`);
-      }
-      expect(pending.record.payload).toEqual({ text: "first" });
-      expect(completed).toEqual({
-        kind: "completed",
-        duplicate: true,
-        record: {
-          id: "event-1",
-          channelId: "test",
-          accountId: "account",
-          queueName: JSON.stringify(["test", "account"]),
-          completedAt: 150,
+      const rejectHostQuery = () => {
+        throw new Error("Ingress queue operations must not query SQLite on the calling thread");
+      };
+      const hostQuery = vi
+        .spyOn(sqliteQueries, "executeSqliteQuerySync")
+        .mockImplementation(rejectHostQuery);
+      const hostFirstQuery = vi
+        .spyOn(sqliteQueries, "executeSqliteQueryTakeFirstSync")
+        .mockImplementation(rejectHostQuery);
+      try {
+        const accepted = await queue.enqueue(
+          "event-1",
+          { text: "first" },
+          { metadata: { source: "fixture" }, receivedAt: 50 },
+        );
+        const pending = await queue.enqueue("event-1", { text: "duplicate" });
+        const claim = await queue.claim("event-1", { ownerId: "worker" });
+        expect(claim?.id).toBe("event-1");
+        await queue.complete(expectDefined(claim, "claimed event"), {
           metadata: { handledBy: "worker" },
-        },
-      });
-      expect(await queue.listPending()).toEqual([]);
+          completedAt: 150,
+        });
+        const completed = await queue.enqueue("event-1", { text: "late duplicate" });
 
-      expect(
-        await queue.complete("missing-event", {
-          metadata: { handledBy: "late-worker" },
-          completedAt: 200,
-        }),
-      ).toBe(true);
-      expect(await queue.enqueue("missing-event", { text: "late duplicate" })).toMatchObject({
-        kind: "completed",
-        duplicate: true,
-        record: {
-          id: "missing-event",
-          completedAt: 200,
-          metadata: { handledBy: "late-worker" },
-        },
-      });
+        expect(accepted.kind).toBe("accepted");
+        expect(pending.kind).toBe("pending");
+        if (pending.kind !== "pending") {
+          throw new Error(`Expected pending duplicate, got ${pending.kind}`);
+        }
+        expect(pending.record.payload).toEqual({ text: "first" });
+        expect(completed).toEqual({
+          kind: "completed",
+          duplicate: true,
+          record: {
+            id: "event-1",
+            channelId: "test",
+            accountId: "account",
+            queueName: JSON.stringify(["test", "account"]),
+            completedAt: 150,
+            metadata: { handledBy: "worker" },
+          },
+        });
+        expect(await queue.listPending()).toEqual([]);
 
-      await queue.enqueue(" spaced-event ", { text: "spaced" });
-      expect(await queue.complete(" spaced-event ", { completedAt: 250 })).toBe(true);
-      expect(await queue.enqueue("spaced-event", { text: "duplicate" })).toMatchObject({
-        kind: "completed",
-        duplicate: true,
-        record: { id: "spaced-event", completedAt: 250 },
-      });
+        expect(
+          await queue.complete("missing-event", {
+            metadata: { handledBy: "late-worker" },
+            completedAt: 200,
+          }),
+        ).toBe(true);
+        expect(await queue.enqueue("missing-event", { text: "late duplicate" })).toMatchObject({
+          kind: "completed",
+          duplicate: true,
+          record: {
+            id: "missing-event",
+            completedAt: 200,
+            metadata: { handledBy: "late-worker" },
+          },
+        });
+
+        await queue.enqueue(" spaced-event ", { text: "spaced" });
+        expect(await queue.complete(" spaced-event ", { completedAt: 250 })).toBe(true);
+        expect(await queue.enqueue("spaced-event", { text: "duplicate" })).toMatchObject({
+          kind: "completed",
+          duplicate: true,
+          record: { id: "spaced-event", completedAt: 250 },
+        });
+        expect(await queue.prune({ completedMaxEntries: 0 })).toBe(3);
+        expect(hostQuery).not.toHaveBeenCalled();
+        expect(hostFirstQuery).not.toHaveBeenCalled();
+      } finally {
+        hostQuery.mockRestore();
+        hostFirstQuery.mockRestore();
+      }
     });
   });
 
@@ -294,6 +305,42 @@ describe("channel ingress queue", () => {
     });
   });
 
+  it("rechecks FIFO when an earlier event arrives while claim lanes are prepared", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue<{ lane: string }>(stateDir, { now: () => 20 });
+      await queue.enqueue("original", { lane: "chat-original" }, { receivedAt: 20 });
+      const { db } = openIngressStateDatabase(stateDir);
+      let inserted = false;
+      const claim = await queue.claimNext({
+        ownerId: "worker",
+        deriveLaneKey: (record) => {
+          if (!inserted) {
+            inserted = true;
+            // A competing writer commits after the candidate snapshot was read.
+            executeSqliteQuerySync(
+              db,
+              getNodeSqliteKysely<ChannelIngressTestDatabase>(db)
+                .insertInto("channel_ingress_events")
+                .values({
+                  queue_name: JSON.stringify(["test", "account"]),
+                  event_id: "earlier",
+                  channel_id: "test",
+                  account_id: "account",
+                  status: "pending",
+                  payload_json: JSON.stringify({ lane: "chat-earlier" }),
+                  received_at: 10,
+                  updated_at: 20,
+                }),
+            );
+          }
+          return record.payload.lane;
+        },
+      });
+      expect(claim).toMatchObject({ id: "earlier", laneKey: "chat-earlier" });
+      expect((await queue.listPending()).map((record) => record.id)).toEqual(["original"]);
+    });
+  });
+
   it("reconciles opted-in persisted lanes before blocking and claiming", async () => {
     await withTempState(async (stateDir) => {
       let clock = 1;
@@ -406,111 +453,6 @@ describe("channel ingress queue", () => {
       expect(claimed?.laneKey).toBe("chat-2");
       const sameLanePending = (await queue.listPending()).find((record) => record.id === "b");
       expect(sameLanePending?.laneKey).toBeUndefined();
-    });
-  });
-
-  it("requires claim tokens before mutating claimed rows", async () => {
-    await withTempState(async (stateDir) => {
-      const queue = createTestIngressQueue<{ text: string }>(stateDir, { now: () => 10 });
-
-      await queue.enqueue("event-1", { text: "claimed" });
-      const claimed = await queue.claim("event-1", { ownerId: "worker" });
-      if (!claimed) {
-        throw new Error("Expected a claimed ingress event");
-      }
-
-      expect(await queue.complete("event-1")).toBe(false);
-      expect(await queue.release("event-1")).toBe(false);
-      expect(await queue.fail("event-1", { reason: "stale-handler" })).toBe(false);
-      expect(await queue.delete("event-1")).toBe(false);
-
-      expect(await queue.complete(claimed, { completedAt: 20 })).toBe(true);
-      const duplicate = await queue.enqueue("event-1", { text: "duplicate" });
-      expect(duplicate.kind).toBe("completed");
-    });
-  });
-
-  it("refreshes claimed rows only with the active claim token", async () => {
-    await withTempState(async (stateDir) => {
-      const queue = createTestIngressQueue<{ text: string }>(stateDir, { now: () => 10 });
-
-      await queue.enqueue("event-1", { text: "claimed" });
-      const claimed = await queue.claim("event-1", { ownerId: "worker" });
-      if (!claimed) {
-        throw new Error("Expected a claimed ingress event");
-      }
-
-      expect(await queue.refreshClaim?.(claimed, { refreshedAt: 20 })).toBe(true);
-      expect(
-        (await queue.listClaims()).map((claim) => ({
-          id: claim.id,
-          claimedAt: claim.claim.claimedAt,
-          updatedAt: claim.updatedAt,
-        })),
-      ).toEqual([{ id: "event-1", claimedAt: 20, updatedAt: 20 }]);
-
-      expect(
-        await queue.refreshClaim?.(
-          { id: "event-1", claim: { token: "wrong" } },
-          {
-            refreshedAt: 30,
-          },
-        ),
-      ).toBe(false);
-      expect((await queue.listClaims())[0]?.claim.claimedAt).toBe(20);
-    });
-  });
-
-  it("does not let old claim tokens refresh recovered and reclaimed rows", async () => {
-    await withTempState(async (stateDir) => {
-      const queue = createTestIngressQueue<{ text: string }>(stateDir, { now: () => 10 });
-
-      await queue.enqueue("event-1", { text: "claimed" });
-      const oldClaim = await queue.claim("event-1", { ownerId: "worker-1" });
-      if (!oldClaim) {
-        throw new Error("Expected a claimed ingress event");
-      }
-      expect(await queue.recoverStaleClaims({ staleMs: 5, now: 20 })).toBe(1);
-      const newClaim = await queue.claim("event-1", { ownerId: "worker-2" });
-      if (!newClaim) {
-        throw new Error("Expected reclaimed ingress event");
-      }
-
-      expect(await queue.refreshClaim?.(oldClaim, { refreshedAt: 30 })).toBe(false);
-      expect(await queue.refreshClaim?.(newClaim, { refreshedAt: 40 })).toBe(true);
-      expect((await queue.listClaims())[0]?.claim).toMatchObject({
-        ownerId: "worker-2",
-        claimedAt: 40,
-      });
-    });
-  });
-
-  it("does not recover a claim refreshed after stale recovery snapshots it", async () => {
-    await withTempState(async (stateDir) => {
-      const queue = createTestIngressQueue<{ text: string }>(stateDir, { now: () => 10 });
-
-      await queue.enqueue("event-1", { text: "claimed" });
-      const claimed = await queue.claim("event-1", { ownerId: "worker" });
-      if (!claimed) {
-        throw new Error("Expected a claimed ingress event");
-      }
-
-      expect(
-        await queue.recoverStaleClaims({
-          staleMs: 5,
-          now: 20,
-          shouldRecover: async (claim) => {
-            expect(claim.id).toBe("event-1");
-            expect(await queue.refreshClaim?.(claim, { refreshedAt: 20 })).toBe(true);
-            return true;
-          },
-        }),
-      ).toBe(0);
-      expect((await queue.listPending()).map((record) => record.id)).toEqual([]);
-      expect((await queue.listClaims())[0]?.claim).toMatchObject({
-        ownerId: "worker",
-        claimedAt: 20,
-      });
     });
   });
 

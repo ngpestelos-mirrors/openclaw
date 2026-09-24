@@ -1,13 +1,8 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { Insertable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
-import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createChannelIngressQueue } from "./ingress-queue.js";
 
 export type IngressDrainTestPayload = { text: string };
@@ -28,15 +23,10 @@ export function createTestIngressQueue(
 }
 
 export async function withTempState<T>(fn: (stateDir: string) => Promise<T>): Promise<T> {
-  const stateDir = await fs.mkdtemp(
-    path.join(resolvePreferredOpenClawTmpDir(), "openclaw-ingress-drain-"),
+  return await withOpenClawTestState(
+    { layout: "state-only", prefix: "openclaw-ingress-drain-", applyEnv: false },
+    ({ stateDir }) => fn(stateDir),
   );
-  try {
-    return await fn(stateDir);
-  } finally {
-    closeOpenClawStateDatabaseForTest();
-    await fs.rm(stateDir, { recursive: true, force: true });
-  }
 }
 
 export function seedPendingBacklog(stateDir: string, total: number): void {

@@ -14,7 +14,11 @@ import {
   createRuntimeEnv,
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseAsync,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { vi, type Mock } from "vitest";
 import type { ResolvedZaloAccount } from "../types.js";
@@ -116,7 +120,9 @@ const importCachedWebhookModule = createLazyRuntimeModule(
 export async function resetLifecycleTestState() {
   // Agent close releases leases through shared state; closing shared state first
   // can reopen it during teardown and leave Windows handles under the state dir.
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   if (lifecycleStateDir) {
     await fs.rm(lifecycleStateDir, {
