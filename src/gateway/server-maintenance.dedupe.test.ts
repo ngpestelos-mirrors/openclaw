@@ -3,6 +3,8 @@
 // sits at the max-lines cap; mocks are hoisted per file, so the module-mock
 // preamble is repeated while pure fixtures stay local to each block.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
@@ -44,10 +46,10 @@ vi.mock("../media/store.js", async () => {
 const ABORTED_RUN_TTL_MS = 60 * 60_000;
 
 function createActiveRun(
+  now: number,
   sessionKey: string,
   kind?: ChatAbortControllerEntry["kind"],
 ): ChatAbortControllerEntry {
-  const now = Date.now();
   return {
     controller: new AbortController(),
     sessionId: "sess-1",
@@ -59,8 +61,11 @@ function createActiveRun(
 }
 
 function createMaintenanceTimerDeps() {
+  const clock = createGatewaySchedulerClock(Date.parse("2026-03-22T00:00:00Z"));
   return {
     ...createGatewayMaintenanceStateForTest(),
+    scheduler: new GatewayScheduler({ clock: clock.clock }),
+    clock,
     logHealth: { info: vi.fn(), error: vi.fn() },
     runWorktreeGc: vi.fn(async () => undefined),
     runDeliveryQueueMediaGc: vi.fn(async () => undefined),
@@ -77,11 +82,9 @@ function seedStableDedupeEntries(deps: MaintenanceTimerDeps, now: number): void 
 }
 
 async function createTimedMaintenanceScenario() {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-03-22T00:00:00Z"));
   const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
   const deps = createMaintenanceTimerDeps();
-  return { startGatewayMaintenanceTimers, deps, now: Date.now() };
+  return { startGatewayMaintenanceTimers, deps, now: deps.scheduler.now() };
 }
 
 async function stopMaintenanceTimers(
@@ -89,12 +92,10 @@ async function stopMaintenanceTimers(
 ) {
   await timers.stopPeriodicTasks();
   await timers.skillUsageCleanup();
-  vi.useRealTimers();
 }
 
 describe("gateway dedupe maintenance", () => {
   afterEach(() => {
-    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
     pruneExpiredDevicePairSetupCompletionsMock.mockReset().mockResolvedValue(0);
@@ -103,7 +104,7 @@ describe("gateway dedupe maintenance", () => {
   it("keeps active exec approval dedupe aliases past the normal ttl", async () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
     const runId = "exec-approval-followup:req-active:nonce:retry-1";
-    deps.chatAbortControllers.set(runId, createActiveRun("agent:main:main", "agent"));
+    deps.chatAbortControllers.set(runId, createActiveRun(now, "agent:main:main", "agent"));
     deps.dedupe.set("agent:exec-approval-followup:req-active", {
       ts: now - DEDUPE_TTL_MS - 1,
       ok: true,
@@ -117,7 +118,7 @@ describe("gateway dedupe maintenance", () => {
 
     const timers = startGatewayMaintenanceTimers(deps);
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    await deps.clock.advanceBy(60_000);
 
     expect(deps.dedupe.has("agent:exec-approval-followup:req-active")).toBe(true);
     expect(deps.dedupe.has("agent:exec-approval-followup:req-stale")).toBe(false);
@@ -140,7 +141,7 @@ describe("gateway dedupe maintenance", () => {
     });
 
     const timers = startGatewayMaintenanceTimers(deps);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await deps.clock.advanceBy(60_000);
 
     expect(deps.dedupe.has(`chat:${runId}`)).toBe(true);
     await stopMaintenanceTimers(timers);
@@ -163,7 +164,7 @@ describe("gateway dedupe maintenance", () => {
     deps.dedupe.set("overflow-newest", { ts: now, ok: true });
 
     const timers = startGatewayMaintenanceTimers(deps);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await deps.clock.advanceBy(60_000);
 
     expect(deps.dedupe.size).toBe(DEDUPE_MAX);
     expect(deps.dedupe.has(`chat:${runId}`)).toBe(true);
@@ -182,7 +183,7 @@ describe("gateway dedupe maintenance", () => {
 
     const timers = startGatewayMaintenanceTimers(deps);
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    await deps.clock.advanceBy(60_000);
 
     expect(deps.dedupe.size).toBe(DEDUPE_MAX);
     expect(deps.dedupe.has("stable-10")).toBe(false);
@@ -193,11 +194,7 @@ describe("gateway dedupe maintenance", () => {
   });
 
   it("evicts multiple dedupe overflows by oldest timestamp with interleaved reinsertions", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-22T00:00:00Z"));
-    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
-    const deps = createMaintenanceTimerDeps();
-    const now = Date.now();
+    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
 
     // Fill to max with sequential timestamps
     for (let index = 0; index < DEDUPE_MAX; index += 1) {
@@ -230,7 +227,7 @@ describe("gateway dedupe maintenance", () => {
     // Total: 499 + 499 + 1 + 1 + 1 + 1 = 1002
     expect(deps.dedupe.size).toBe(DEDUPE_MAX + 2);
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    await deps.clock.advanceBy(60_000);
 
     expect(deps.dedupe.size).toBe(DEDUPE_MAX);
 
@@ -252,7 +249,10 @@ describe("gateway dedupe maintenance", () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
 
     seedStableDedupeEntries(deps, now);
-    deps.chatAbortControllers.set("active-oldest", createActiveRun("agent:main:main", "agent"));
+    deps.chatAbortControllers.set(
+      "active-oldest",
+      createActiveRun(now, "agent:main:main", "agent"),
+    );
     deps.dedupe.set("agent:active-oldest", {
       ts: now - 10_000,
       ok: true,
@@ -262,7 +262,7 @@ describe("gateway dedupe maintenance", () => {
 
     const timers = startGatewayMaintenanceTimers(deps);
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    await deps.clock.advanceBy(60_000);
 
     expect(deps.dedupe.size).toBe(DEDUPE_MAX);
     expect(deps.dedupe.has("agent:active-oldest")).toBe(true);

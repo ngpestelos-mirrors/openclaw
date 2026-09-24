@@ -42,9 +42,7 @@ const createSessionMcpRuntimeLazy: CreateSessionMcpRuntime = async (params) => {
   return runtime.createSessionMcpRuntime(params);
 };
 
-export function createSessionMcpRuntimeManager(
-  opts: SessionMcpRuntimeManagerOpts = {},
-): SessionMcpRuntimeManager {
+export function createSessionMcpRuntimeManager(opts: SessionMcpRuntimeManagerOpts = {}) {
   const store = createSessionMcpRuntimeManagerStore(opts, createSessionMcpRuntimeLazy);
   const lifecycle = createSessionMcpRuntimeManagerLifecycle(store);
   const install = createSessionMcpRuntimeManagerInstall(lifecycle);
@@ -424,5 +422,5 @@ export function createSessionMcpRuntimeManager(
       advertisedScopedCatalogs: store.advertisedScopedCatalogBySessionId.size,
     }),
   });
-  return manager;
+  return Object.assign(manager, { setScheduler: lifecycle.setScheduler });
 }

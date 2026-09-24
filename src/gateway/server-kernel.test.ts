@@ -207,7 +207,6 @@ describe("createGatewayKernel", () => {
       let server: GatewayServer | undefined;
       let closing: Promise<void> | undefined;
       let pendingStop: Promise<void> | undefined;
-      let maintenanceTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         await state.writeConfig({
           gateway: { auth: { mode: "token", token }, controlUi: { enabled: false }, port },
@@ -302,8 +301,11 @@ describe("createGatewayKernel", () => {
         kernel.kernel.setMaintenanceHandles(maintenance);
         const invalidateCron = vi.spyOn(kernel.cronReconciliation, "invalidate");
         const startMaintenance = vi.fn(() => {});
-        maintenanceTimer = setTimeout(startMaintenance, 0);
-        kernel.postReadyState.maintenanceTimer = maintenanceTimer;
+        kernel.scheduler.schedule({
+          id: "test:post-ready-maintenance",
+          delayMs: 0,
+          run: startMaintenance,
+        });
         closing = server
           ? server.close({ reason: "close ordering test" })
           : kernel.prepareClose({ reason: "close ordering test" }).then((close) => close());
@@ -318,7 +320,6 @@ describe("createGatewayKernel", () => {
         await pendingStop;
         await expect(boundHost.request("start", () => {})).rejects.toThrow("closed instance");
         expect(acceptRequest).not.toHaveBeenCalled();
-        expect(kernel.postReadyState.maintenanceTimer).toBeNull();
         expect(invalidateCron).toHaveBeenCalledOnce();
         expect(stopRecovery).toHaveBeenCalledOnce();
         await nextTurn();
@@ -355,7 +356,6 @@ describe("createGatewayKernel", () => {
         }
       } finally {
         release();
-        clearTimeout(maintenanceTimer);
         try {
           await Promise.all([closing, reloadWork, recoveryWork, updateWork]);
         } finally {

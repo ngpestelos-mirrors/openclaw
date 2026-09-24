@@ -4,6 +4,8 @@ import { PassThrough } from "node:stream";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { withMockedPlatform } from "../test-utils/vitest-spies.js";
 import { isAddressInUseError } from "./gmail-watcher-errors.js";
 
@@ -290,77 +292,54 @@ describe("startGmailWatcher", () => {
     ).toHaveBeenCalledWith("SIGTERM");
   });
 
-  it("clears existing renewInterval on re-entry to prevent interval leak", async () => {
-    vi.useFakeTimers();
-    try {
-      mocks.runCommandWithTimeout.mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+  it("renews once after multiple starts and coalesces missed renewals after sleep", async () => {
+    const clock = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    mocks.runCommandWithTimeout.mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+    await startGmailWatcher(createGmailConfig(), { scheduler });
+    await startGmailWatcher(createGmailConfig(), { scheduler });
+    expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(2);
 
-      // First start - creates a renewal interval
-      await startGmailWatcher(createGmailConfig());
-      const timersAfterFirstStart = vi.getTimerCount();
-      expect(timersAfterFirstStart).toBeGreaterThanOrEqual(1);
-
-      // Second start (re-entry without stop) - the guard should clear the old
-      // interval before creating a new one, keeping the timer count stable.
-      await startGmailWatcher(createGmailConfig());
-      expect(vi.getTimerCount()).toBe(timersAfterFirstStart);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("only one renewal fires per tick after multiple starts", async () => {
-    vi.useFakeTimers();
-    try {
-      // Resolve watch-start immediately on every call
-      mocks.runCommandWithTimeout.mockResolvedValue({ code: 0, stdout: "", stderr: "" });
-
-      // Start twice without stopping
-      await startGmailWatcher(createGmailConfig());
-      await startGmailWatcher(createGmailConfig());
-
-      // runCommandWithTimeout is called once per start (the gog watch start
-      // call).  After two successful starts it has been called twice.
-      expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(2);
-
-      // Advance by one full renewal cycle.
-      // Default renewEveryMinutes = 720 (12 h) = 43_200_000 ms.
-      // If the old interval leaked, the callback would fire twice per cycle.
-      await vi.advanceTimersByTimeAsync(720 * 60_000);
-
-      // Only ONE renewal should have fired (the latest interval).
-      expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(3);
-    } finally {
-      vi.useRealTimers();
-    }
+    await clock.advanceBy(720 * 60_000);
+    expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(3);
+    await clock.advanceBy(3 * 720 * 60_000);
+    expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(4);
+    await stopGmailWatcher();
+    await clock.advanceBy(720 * 60_000);
+    expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(4);
   });
 
   it("keeps a stalled periodic renewal single-flight", async () => {
-    vi.useFakeTimers();
+    const clock = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const renewal = deferredCommandResult();
+    let tick: void | Promise<void> = undefined;
     try {
-      const renewal = deferredCommandResult();
       mocks.runCommandWithTimeout
         .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
         .mockImplementation(async () => await renewal.promise);
 
-      await startGmailWatcher(createGmailConfig("me@example.com", 1));
-      await vi.advanceTimersByTimeAsync(60_000);
+      await startGmailWatcher(createGmailConfig("me@example.com", 1), { scheduler });
+      tick = clock.advanceBy(60_000);
       expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(2);
 
-      await vi.advanceTimersByTimeAsync(60_000);
+      await clock.advanceBy(60_000);
       const callsWhileStalled = mocks.runCommandWithTimeout.mock.calls.length;
       renewal.resolve({ code: 0, stdout: "", stderr: "" });
-      await Promise.resolve();
+      await tick;
 
       expect(callsWhileStalled).toBe(2);
     } finally {
-      vi.useRealTimers();
+      renewal.resolve({ code: 0, stdout: "", stderr: "" });
+      await tick;
     }
   });
 
-  it("does not let a stalled renewal survive stop and suppress a replacement watcher", async () => {
-    vi.useFakeTimers();
-    try {
+  it.each(["watcher", "scheduler"])(
+    "retires a stalled renewal on %s stop before replacement",
+    async (stopOwner) => {
+      const clock = createGatewaySchedulerClock();
+      const scheduler = new GatewayScheduler({ clock: clock.clock });
       let stalledSignal: AbortSignal | undefined;
       mocks.runCommandWithTimeout
         .mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" })
@@ -377,22 +356,26 @@ describe("startGmailWatcher", () => {
         )
         .mockResolvedValue({ code: 0, stdout: "", stderr: "" });
 
-      await startGmailWatcher(createGmailConfig("old@example.com", 1));
-      await vi.advanceTimersByTimeAsync(60_000);
+      await startGmailWatcher(createGmailConfig("old@example.com", 1), { scheduler });
+      const tick = clock.advanceBy(60_000);
       expect(stalledSignal?.aborted).toBe(false);
 
+      if (stopOwner === "scheduler") {
+        await scheduler.stop();
+      }
       await stopGmailWatcher();
+      await tick;
       expect(stalledSignal?.aborted).toBe(true);
 
-      await startGmailWatcher(createGmailConfig("new@example.com", 1));
-      await vi.advanceTimersByTimeAsync(60_000);
+      await startGmailWatcher(createGmailConfig("new@example.com", 1), {
+        scheduler: new GatewayScheduler({ clock: clock.clock }),
+      });
+      await clock.advanceBy(60_000);
 
       expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(4);
       expect(mocks.runCommandWithTimeout.mock.calls[3]?.[0]).toContain("new@example.com");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+    },
+  );
 
   it("uses killProcessTree for gog shutdown and resolves on final timeout when process ignores signals", async () => {
     vi.useFakeTimers();

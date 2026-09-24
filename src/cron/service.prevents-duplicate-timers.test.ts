@@ -191,7 +191,7 @@ describe("CronService", () => {
     const staleTimer = stale.state.timer;
     await addAtJob(writer.state, "earlier-job", baseMs + 10_000);
     if (writer.state.timer) {
-      clearTimeout(writer.state.timer);
+      writer.state.timer.cancel();
       writer.state.timer = null;
     }
     const previousRevision = cronStoreModule.getCronJobsStoreRevision(store.storePath);
@@ -218,7 +218,7 @@ describe("CronService", () => {
       { interval: 0 },
     );
     if (stale.state.timer) {
-      clearTimeout(stale.state.timer);
+      stale.state.timer.cancel();
     }
     await store.cleanup();
   });

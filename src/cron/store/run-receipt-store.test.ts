@@ -422,7 +422,7 @@ describe("cron run receipt store", () => {
       } finally {
         admission.close();
         if (state.timer) {
-          clearTimeout(state.timer);
+          state.timer.cancel();
         }
         finishCronRunReceipt({ handle: receipt, status: "ok", finishedAtMs: Date.now() });
         resetCronActiveJobs();

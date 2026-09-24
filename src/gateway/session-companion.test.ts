@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { emitSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import type { SessionCompanionContextReader } from "./session-companion-context.js";
 import { SessionCompanionAskError } from "./session-companion-errors.js";
 import { trimSessionCompanionExchanges } from "./session-companion-state.js";
@@ -10,6 +12,7 @@ import type { SessionObserverCompanionSnapshot } from "./session-observer-contra
 import { notifyGatewaySessionReset } from "./session-reset-notifications.js";
 
 function createHarness(overrides?: {
+  scheduler?: GatewayScheduler;
   now?: () => number;
   currentSessionId?: () => string | undefined;
   readContext?: () => ReturnType<SessionCompanionContextReader["read"]>;
@@ -48,6 +51,7 @@ function createHarness(overrides?: {
       })),
   );
   const deps = {
+    scheduler: overrides?.scheduler,
     contextReader: { currentSessionId, read: readContext },
     getConfig: () => cfg,
     sessionObserver: { getCompanionSnapshot },
@@ -547,17 +551,16 @@ describe("session companion asks", () => {
   });
 
   it("sweeps idle threads after two hours", async () => {
-    vi.useFakeTimers();
-    let now = 0;
-    const harness = createHarness({ now: () => now });
+    const clock = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const harness = createHarness({ now: clock.clock.now, scheduler });
     await harness.service.ask({
       agentId: "main",
       sessionKey: "agent:main:main",
       question: "Before idle?",
       connId: "conn-1",
     });
-    now = 2 * 60 * 60_000;
-    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    clock.advanceBy(2 * 60 * 60_000);
     expect(harness.service.state({ agentId: "main", sessionKey: "agent:main:main" })).toEqual({
       exchanges: [],
     });

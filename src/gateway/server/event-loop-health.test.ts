@@ -15,29 +15,29 @@ import {
   getActiveDiagnosticTraceContext,
   runWithDiagnosticTraceContext,
 } from "../../infra/diagnostic-trace-context.js";
+import { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import {
   startDiagnosticStabilityRecorder,
   stopDiagnosticStabilityRecorder,
 } from "../../logging/diagnostic-stability.js";
 import { registerSkillUsageTracking } from "../../skills/workshop/curator.js";
+import { createGatewaySchedulerClock } from "../../test-utils/gateway-scheduler-clock.js";
 import { createGatewayEventLoopHealthMonitor } from "./event-loop-health.js";
 
 type CpuUsage = ReturnType<typeof process.cpuUsage>;
 type EventLoopUtilization = ReturnType<typeof performance.eventLoopUtilization>;
 const monitors: ReturnType<typeof createGatewayEventLoopHealthMonitor>[] = [];
 
-beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-});
 afterEach(() => {
   for (const monitor of monitors.splice(0)) {
     monitor.stop();
   }
-  vi.useRealTimers();
 });
 
 function createMonitorHarness(params?: { cpuMsPerWallMs?: number; utilization?: number }) {
   let nowMs = 10_000;
+  const clock = createGatewaySchedulerClock(nowMs);
+  const scheduler = new GatewayScheduler({ clock: clock.clock });
   const cpuMsPerWallMs = params?.cpuMsPerWallMs ?? 0.1;
   const utilization = params?.utilization ?? 0.2;
   const cpuUsage = vi.fn((previous?: CpuUsage) => {
@@ -54,6 +54,7 @@ function createMonitorHarness(params?: { cpuMsPerWallMs?: number; utilization?: 
     }),
   );
   const monitor = createGatewayEventLoopHealthMonitor({
+    scheduler,
     now: () => nowMs,
     cpuUsage,
     eventLoopUtilization,
@@ -61,12 +62,13 @@ function createMonitorHarness(params?: { cpuMsPerWallMs?: number; utilization?: 
   monitors.push(monitor);
   const sample = (elapsedMs = 20) => {
     nowMs += elapsedMs;
-    vi.advanceTimersByTime(20);
+    clock.advanceTo(nowMs);
   };
   return {
     monitor,
     cpuUsage,
     eventLoopUtilization,
+    clock,
     sample,
     samples: (count: number, elapsedMs = 20) => {
       for (let index = 0; index < count; index++) {
@@ -201,14 +203,14 @@ describe("createGatewayEventLoopHealthMonitor", () => {
 
   it("releases its only timer and cached observation when stopped", () => {
     const harness = createMonitorHarness();
-    expect(vi.getTimerCount()).toBe(1);
+    expect(harness.clock.armedAtMs).not.toBeNull();
     harness.samples(50);
     harness.monitor.stop();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(harness.clock.armedAtMs).toBeNull();
     harness.samples(100);
     harness.monitor.reset();
     expect(harness.monitor.snapshot()).toBeUndefined();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(harness.clock.armedAtMs).toBeNull();
   });
 });
 

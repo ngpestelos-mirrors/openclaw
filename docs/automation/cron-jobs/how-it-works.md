@@ -15,6 +15,7 @@ How the Gateway scheduler runs a job, what it keeps between runs, and how a repe
 
 - Automations run **inside the Gateway process**, not inside the model. The Gateway must be running for schedules to fire.
 - Job definitions, runtime state, and run history persist in OpenClaw's shared SQLite state database, so restarts do not lose schedules.
+- Automation wakeups share the Gateway's timed-work scheduler. After system sleep, the Gateway checks due jobs once; cron still owns run admission, missed-job recovery, and the next persisted occurrence. A long-running automation does not stop later jobs from becoming eligible.
 - Every automation run creates a [background task](/automation/tasks) record.
 - One-shot jobs (`--at`) auto-delete after successful completion: delivery is confirmed, not requested, intentionally suppressed, or explicitly best-effort. Failed or unknown required delivery retains the job disabled for inspection without replaying the payload. Pass `--keep-after-run` to keep successful jobs too.
 - Per-run wall-clock budget: `--timeout-seconds` when set. Otherwise, isolated/detached agent-turn jobs are bounded by the scheduler's own 60-minute watchdog before the underlying agent-turn timeout (`agents.defaults.timeoutSeconds`, default 48 hours) would ever apply; command jobs default to 10 minutes, and script payloads default to 5 minutes.

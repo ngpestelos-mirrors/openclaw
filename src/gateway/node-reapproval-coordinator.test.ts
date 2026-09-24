@@ -9,8 +9,10 @@ import {
   requestNodePairing,
 } from "../infra/device-pairing-node.js";
 import { requestDevicePairing } from "../infra/device-pairing.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { createNodeReapprovalCoordinator } from "./node-reapproval-coordinator.js";
 
 const tempDirs = createSuiteTempRootTracker({ prefix: "openclaw-node-reapproval-" });
@@ -64,12 +66,17 @@ describe("node reapproval coordinator", () => {
       },
       baseDir,
     );
-    const coordinator = createNodeReapprovalCoordinator({
-      maxAttempts: 2,
-      windowMs: 60_000,
-      lockoutMs: 60_000,
-      exemptLoopback: true,
-    });
+    const clock = createGatewaySchedulerClock(1_000);
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const coordinator = createNodeReapprovalCoordinator(
+      {
+        maxAttempts: 2,
+        windowMs: 60_000,
+        lockoutMs: 60_000,
+        exemptLoopback: true,
+      },
+      { scheduler },
+    );
 
     const matchingConnect = await beginNodePairingConnect("node-1", baseDir);
     await expect(
@@ -142,7 +149,23 @@ describe("node reapproval coordinator", () => {
       created: false,
     });
 
+    clock.advanceBy(60_000);
+    await expect(
+      coordinator.request({
+        input: {
+          nodeId: "node-1",
+          platform: "darwin",
+          caps: ["camera", "location"],
+        },
+        baseDir,
+      }),
+    ).resolves.toMatchObject({
+      request: { caps: ["camera", "location"] },
+      created: true,
+    });
+
     coordinator.dispose();
+    expect(scheduler.nextWakeAtMs).toBeNull();
   });
 
   test("stops accepting work after disposal", async () => {

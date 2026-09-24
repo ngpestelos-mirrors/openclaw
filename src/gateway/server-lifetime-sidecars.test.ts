@@ -6,6 +6,7 @@ import { MessageChannel, Worker } from "node:worker_threads";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   getProcessCleanupBudget,
   runWithProcessCleanupBudget,
@@ -18,6 +19,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { holdStateDatabaseCoordinator } from "../test-utils/state-database-contention.js";
 import { attachInitialGatewayLifetimeSidecars } from "./server-lifetime-sidecars.js";
 import {
@@ -91,7 +93,8 @@ describe("gateway lifetime sidecars", () => {
 
   test("keeps scheduled secret expiry responsive and joins its accepted sweep on shutdown", async () => {
     await withEnvAsync({ OPENCLAW_STATE_DIR: createStateDir() }, async () => {
-      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const clock = createGatewaySchedulerClock(Date.now());
+      const scheduler = new GatewayScheduler({ clock: clock.clock });
       const owner = createGatewaySidecarStopOwner();
       const sweeps: Promise<number>[] = [];
       const purge = secretStore.purgeExpiredSecretStoreEntries;
@@ -104,6 +107,7 @@ describe("gateway lifetime sidecars", () => {
           return result;
         });
       await attachInitialGatewayLifetimeSidecars({
+        scheduler,
         chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
         gatewayRequestContext: {} as never,
         flushPendingSessionsChangedEvents: vi.fn(),
@@ -111,6 +115,7 @@ describe("gateway lifetime sidecars", () => {
         logWarning: vi.fn(),
         publishSidecars: owner.publish,
       });
+      clock.wake();
       expect(await Promise.all(sweeps)).toEqual([0]);
       const context = captureOpenClawStateWorkerContext();
       const openIndex = openingMessages.mock.calls.findIndex(([message]) => {
@@ -152,7 +157,7 @@ describe("gateway lifetime sidecars", () => {
       try {
         await holder.ready;
         checkpoint.port2.postMessage(null);
-        vi.advanceTimersByTime(60_000);
+        clock.advanceBy(60_000);
         await withEnvAsync({ OPENCLAW_STATE_DIR: createStateDir() }, async () => {
           expect(
             await withTestTimeout(hostYielded.promise, 10_000, "Expiry did not yield to the host"),
@@ -163,7 +168,7 @@ describe("gateway lifetime sidecars", () => {
             5_000,
             "Expiry did not reach its shared-state worker",
           );
-          vi.advanceTimersByTime(60_000);
+          clock.advanceBy(60_000);
           expect(sweeps).toHaveLength(2);
           let stopped = false;
           stopping = owner.stop().then(() => {
@@ -184,7 +189,7 @@ describe("gateway lifetime sidecars", () => {
           await stopping;
           expect(await sweeps[1]).toBe(1);
 
-          vi.advanceTimersByTime(60_000);
+          clock.advanceBy(60_000);
           expect(sweeps).toHaveLength(2);
         });
         expect(countStoredRows(handoff)).toBe(0);
@@ -240,6 +245,7 @@ describe("gateway lifetime sidecars", () => {
     const owner = createGatewaySidecarStopOwner();
     try {
       await attachInitialGatewayLifetimeSidecars({
+        scheduler: new GatewayScheduler(),
         chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
         gatewayRequestContext: context,
         flushPendingSessionsChangedEvents,
@@ -288,6 +294,7 @@ describe("gateway lifetime sidecars", () => {
     const owner = createGatewaySidecarStopOwner();
 
     await attachInitialGatewayLifetimeSidecars({
+      scheduler: new GatewayScheduler(),
       chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
       gatewayRequestContext: {} as never,
       flushPendingSessionsChangedEvents: vi.fn(),
@@ -296,7 +303,7 @@ describe("gateway lifetime sidecars", () => {
       reconcileGitHubPublications,
       publishSidecars: owner.publish,
     });
-    vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(0);
     expect(reconcileGitHubPublications).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(60_000);
@@ -317,6 +324,7 @@ describe("gateway lifetime sidecars", () => {
     const warn = vi.fn();
 
     await attachInitialGatewayLifetimeSidecars({
+      scheduler: new GatewayScheduler(),
       chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
       gatewayRequestContext: context as never,
       flushPendingSessionsChangedEvents: vi.fn(),
@@ -326,6 +334,7 @@ describe("gateway lifetime sidecars", () => {
     });
 
     expect(oauth.create).toHaveBeenCalledWith({
+      scheduler: expect.any(GatewayScheduler),
       getConfig: context.getRuntimeConfig,
       getPersistedConfig: expect.any(Function),
       warn,
@@ -353,7 +362,7 @@ describe("gateway lifetime sidecars", () => {
     "owns startup and scheduled handoff expiry when minimalTestGateway=$minimalTestGateway",
     async ({ minimalTestGateway, expectedHandoffRows }) => {
       await withEnvAsync({ OPENCLAW_STATE_DIR: createStateDir() }, async () => {
-        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
         vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
         const startupHandoff = "github-setup-55555555555555555555555555555555";
         writeStoredSecret(startupHandoff, "temporary-value");
@@ -369,6 +378,7 @@ describe("gateway lifetime sidecars", () => {
         });
 
         await attachInitialGatewayLifetimeSidecars({
+          scheduler: new GatewayScheduler(),
           chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
           gatewayRequestContext: {} as never,
           flushPendingSessionsChangedEvents: vi.fn(),
@@ -376,6 +386,7 @@ describe("gateway lifetime sidecars", () => {
           logWarning: vi.fn(),
           publishSidecars: owner.publish,
         });
+        await vi.advanceTimersByTimeAsync(0);
         await Promise.all(sweeps);
         expect(countStoredRows(startupHandoff)).toBe(expectedHandoffRows);
 

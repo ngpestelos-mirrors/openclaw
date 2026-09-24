@@ -9,6 +9,7 @@ import {
   type NodePairingSupersededRequest,
   type RequestNodePairingResult,
 } from "../infra/device-pairing-node.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import {
@@ -81,13 +82,14 @@ function buildRequestFingerprint(input: NodePairingRequestInput): string {
 /** Creates the gateway-lifetime owner for paired-node reapproval write limits. */
 export function createNodeReapprovalCoordinator(
   config?: RateLimitConfig,
+  { scheduler }: { scheduler?: GatewayScheduler } = {},
 ): NodeReapprovalCoordinator & {
   updateConfig: (config?: GatewayAuthRateLimitConfig) => void;
 } {
-  const limiter = createAuthRateLimiter({
-    ...config,
-    exemptLoopback: false,
-  });
+  const limiter = createAuthRateLimiter(
+    { ...config, exemptLoopback: false },
+    { scheduler, id: "auth/node-reapproval" },
+  );
   const requestStates = new Map<string, NodeRequestState>();
   let disposed = false;
 

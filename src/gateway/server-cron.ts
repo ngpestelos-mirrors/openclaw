@@ -71,6 +71,7 @@ import type {
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resolveMainScopedEventSessionKey } from "../infra/event-session-routing.js";
+import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import {
   resolveHeartbeatForWake,
   resolveHeartbeatTimeoutOverrideSeconds,
@@ -398,10 +399,12 @@ export function buildGatewayCronService(params: {
   deps: CliDeps;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
   env?: NodeJS.ProcessEnv;
+  scheduler?: GatewayScheduler;
   resolveGatewayContext?: () => GatewayRequestContext | undefined;
 }): GatewayCronState {
   const cronLogger = getChildLogger({ module: "cron" });
   const cronServiceLogger = toPinoLikeLogger(cronLogger, getResolvedLoggerSettings().level);
+  const scheduler = params.scheduler ?? new GatewayScheduler();
   // Fence the raw context reference behind its Gateway instance lifecycle so a
   // long-running scheduled turn cannot resolve a retired context after shutdown.
   const scheduledGatewayContextResolver = fenceScheduledGatewayContextResolver(
@@ -756,6 +759,7 @@ export function buildGatewayCronService(params: {
   };
 
   const cron = new CronService({
+    scheduler,
     storePath,
     cronEnabled,
     cronConfig: params.cfg.cron,
@@ -1205,14 +1209,10 @@ export function buildGatewayCronService(params: {
   const updateCron = cron.update.bind(cron);
   streamWatchersRef.current = createCronStreamWatchers({
     getProcessSupervisor,
-    updateState: async (jobId, patch, streamScheduleKey, streamSourceIdentity) => {
-      return await cron.updateExternalState(jobId, streamScheduleKey, streamSourceIdentity, patch);
-    },
-    retireSource: async (jobId, streamScheduleKey, streamSourceIdentity) =>
-      await cron.retireExternalStreamSource(jobId, streamScheduleKey, streamSourceIdentity),
-    updateCounters: async (jobId, counters) => {
-      await cron.updateExternalCounters(jobId, counters);
-    },
+    updateState: (jobId, patch, streamScheduleKey, streamSourceIdentity) =>
+      cron.updateExternalState(jobId, streamScheduleKey, streamSourceIdentity, patch),
+    retireSource: cron.retireExternalStreamSource.bind(cron),
+    updateCounters: cron.updateExternalCounters.bind(cron),
     recordFailure: async (jobId, error, patch, streamScheduleKey, streamSourceIdentity) => {
       await cron.recordExternalFailure(jobId, error, patch, {
         scheduleKey: streamScheduleKey,
@@ -1476,17 +1476,15 @@ export function buildGatewayCronService(params: {
       throw streamWatchersResult.error;
     }
   };
-  cron.stopAndDrain = async () => {
-    await stopAndDrainCron();
-  };
+  cron.stopAndDrain = () => stopAndDrainCron();
   // Serialize accepted-config convergence; newer requests and stop supersede this tail.
   let systemJobReconcileEpoch = 0;
   let systemJobReconcileTail = Promise.resolve<GatewaySystemJobReconciliationResult>("converged");
-  let systemJobRetryTimer: NodeJS.Timeout | undefined;
+  let systemJobRetryTimer: GatewayScheduledJob | undefined;
   const stopSystemJobReconcileRetry = () => {
     // Also invalidate any in-flight pass so a post-stop retry cannot fire.
     systemJobReconcileEpoch += 1;
-    clearTimeout(systemJobRetryTimer);
+    systemJobRetryTimer?.cancel();
     systemJobRetryTimer = undefined;
   };
   const reconcileSystemJobs = (): Promise<GatewaySystemJobReconciliationResult> => {
@@ -1516,11 +1514,11 @@ export function buildGatewayCronService(params: {
           converged &&= ok;
         }
         if (!converged) {
-          systemJobRetryTimer = setTimeout(() => {
-            systemJobRetryTimer = undefined;
-            void reconcileSystemJobs();
-          }, 30_000);
-          systemJobRetryTimer.unref?.();
+          systemJobRetryTimer = scheduler.schedule({
+            id: `cron:${storePath}:system-jobs`,
+            delayMs: 30_000,
+            run: reconcileSystemJobs,
+          });
         }
         return converged ? "converged" : "retry-scheduled";
       } catch (error) {
@@ -1602,9 +1600,7 @@ export function buildGatewayCronService(params: {
         exitWatchersRef.current = watchers;
         return watchers.updateHandlers(exitWatcherHandlers);
       },
-      stopOwner: async () => {
-        await stopAndDrainCron(true);
-      },
+      stopOwner: () => stopAndDrainCron(true),
     }),
     reconcileExitWatchers,
     reconcileStreamWatchers,

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
+import { GatewayScheduler } from "./gateway-scheduler.js";
 import { UpdateCampaignController } from "./update-campaign.js";
 
 const randomUUIDMock = vi.hoisted(() => vi.fn());
@@ -36,23 +38,33 @@ function createInspectors(
 }
 
 describe("UpdateCampaignController", () => {
+  let clock: ReturnType<typeof createGatewaySchedulerClock>;
+  let scheduler: GatewayScheduler;
+
   beforeEach(() => {
     let nextId = 0;
     randomUUIDMock.mockReset();
     randomUUIDMock.mockImplementation(() => `campaign-${++nextId}`);
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000_000);
+    clock = createGatewaySchedulerClock(1_000_000);
+    scheduler = new GatewayScheduler({ clock: clock.clock });
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
+  afterEach(async () => {
+    await scheduler.stop();
   });
 
   function createController() {
-    return new UpdateCampaignController();
+    const controller = new UpdateCampaignController();
+    controller.attachScheduler(scheduler);
+    return controller;
   }
 
-  it("counts down while idle and applies after one minute", async () => {
+  async function advance(ms: number) {
+    clock.advanceBy(ms);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  it("keeps the countdown deadline absolute across a clock rollback and applies once", async () => {
     const controller = createController();
     const apply = vi.fn(async () => "applied" as const);
     const onChange = vi.fn();
@@ -69,9 +81,15 @@ describe("UpdateCampaignController", () => {
       applyAtMs: 1_060_000,
       forceAtMs: 1_900_000,
     });
-    await vi.advanceTimersByTimeAsync(60_000);
+    await advance(59_000);
+    clock.setTime(1_050_000);
+    await clock.wake();
+    expect(apply).not.toHaveBeenCalled();
+    await advance(10_000);
     expect(controller.getState()?.state).toBe("applying");
     expect(apply).toHaveBeenCalledWith({ forced: false });
+    await advance(5 * 60_000);
+    expect(apply).toHaveBeenCalledOnce();
   });
 
   it("ignores open terminals while persistence and queue work still delay countdown", async () => {
@@ -93,13 +111,14 @@ describe("UpdateCampaignController", () => {
 
     terminalPersistence = 0;
     queueSize = 1;
-    await vi.advanceTimersByTimeAsync(5_000);
+    clock.setTime(900_000);
+    await clock.wake();
     expect(controller.getState()?.state).toBe("waiting-for-idle");
     queueSize = 0;
-    await vi.advanceTimersByTimeAsync(5_000);
+    await advance(5_000);
     expect(controller.getState()?.state).toBe("countdown");
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    await advance(60_000);
     expect(controller.getState()?.state).toBe("applying");
     expect(apply).toHaveBeenCalledWith({ forced: false });
   });
@@ -117,10 +136,10 @@ describe("UpdateCampaignController", () => {
     });
     const applyAtMs = controller.getState()?.applyAtMs;
     busy = 1;
-    await vi.advanceTimersByTimeAsync(5_000);
+    await advance(5_000);
     expect(controller.getState()).toMatchObject({ state: "countdown", applyAtMs });
 
-    await vi.advanceTimersByTimeAsync(55_000);
+    await advance(55_000);
     expect(controller.getState()?.state).toBe("applying");
     expect(apply).toHaveBeenCalledWith({ forced: false });
   });
@@ -138,7 +157,7 @@ describe("UpdateCampaignController", () => {
       onChange,
     });
     const first = controller.getState();
-    vi.setSystemTime(1_010_000);
+    clock.setTime(1_010_000);
     controller.announce({
       target: { kind: "package", version: "3.0.0" },
       inspect,
@@ -175,7 +194,7 @@ describe("UpdateCampaignController", () => {
     });
     expect(controller.getState()?.state).toBe("applying");
     expect(controller.hold()).toBe(false);
-    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await advance(15 * 60_000);
     expect(apply).not.toHaveBeenCalled();
   });
 
@@ -264,7 +283,7 @@ describe("UpdateCampaignController", () => {
         apply,
         onChange,
       });
-      await vi.advanceTimersByTimeAsync(60_000);
+      await advance(60_000);
       const transitionCount = onChange.mock.calls.length;
       const requestedTarget =
         targetRelation === "untargeted"
@@ -303,15 +322,15 @@ describe("UpdateCampaignController", () => {
     expect(controller.getState()?.applyAtMs).toBeUndefined();
     expect(controller.hold()).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    await advance(60 * 60_000);
     expect(controller.getState()).toMatchObject({
       state: "waiting-for-idle",
       holdUntilMs: 4_600_000,
     });
     expect(controller.hold()).toBe(false);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(scheduler.nextWakeAtMs).toBe(4_605_000);
     expect(apply).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await advance(15 * 60_000);
     expect(controller.getState()?.state).toBe("applying");
     expect(apply).toHaveBeenCalledWith({ forced: true });
   });
@@ -335,7 +354,7 @@ describe("UpdateCampaignController", () => {
       forceAtMs: 1_910_000,
     });
     expect(controller.getState()?.applyAtMs).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(9_999);
+    await advance(9_999);
     expect(controller.getState()?.state).toBe("waiting-for-idle");
     expect(apply).not.toHaveBeenCalled();
 
@@ -345,7 +364,7 @@ describe("UpdateCampaignController", () => {
       target: { kind: "package", version: "2.0.0" },
     });
     expect(controller.getState()?.state).toBe("applying");
-    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    await advance(20 * 60_000);
     expect(apply).not.toHaveBeenCalled();
   });
 
@@ -361,14 +380,14 @@ describe("UpdateCampaignController", () => {
     });
     expect(controller.hold(10_000)).toBe(true);
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    await advance(10_000);
     expect(controller.getState()).toMatchObject({
       state: "countdown",
       holdUntilMs: 1_010_000,
       applyAtMs: 1_070_000,
     });
     expect(controller.hold()).toBe(false);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(scheduler.nextWakeAtMs).toBe(1_015_000);
     expect(apply).not.toHaveBeenCalled();
   });
 
@@ -387,7 +406,7 @@ describe("UpdateCampaignController", () => {
     };
 
     controller.announce(announcement);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await advance(60_000);
 
     expect(controller.getState()).toBeUndefined();
     expect(onChange).toHaveBeenLastCalledWith(undefined);
@@ -409,7 +428,7 @@ describe("UpdateCampaignController", () => {
     };
 
     controller.announce(announcement);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await advance(60_000);
 
     expect(controller.getState()).toBeUndefined();
     expect(onChange).toHaveBeenLastCalledWith(undefined);
@@ -429,7 +448,7 @@ describe("UpdateCampaignController", () => {
         apply: vi.fn(async () => outcome),
         onChange: vi.fn(),
       });
-      await vi.advanceTimersByTimeAsync(60_000);
+      await advance(60_000);
 
       expect(controller.getState()).toMatchObject({ id: "campaign-1", state: "applying" });
     },
@@ -447,7 +466,7 @@ describe("UpdateCampaignController", () => {
       apply: firstApply,
       onChange,
     });
-    await vi.advanceTimersByTimeAsync(60_000);
+    await advance(60_000);
     const applying = controller.getState();
     onChange.mockClear();
 
@@ -457,7 +476,7 @@ describe("UpdateCampaignController", () => {
       apply: nextApply,
       onChange,
     });
-    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await advance(15 * 60_000);
 
     expect(controller.getState()).toEqual(applying);
     expect(onChange).not.toHaveBeenCalled();
@@ -482,19 +501,21 @@ describe("UpdateCampaignController", () => {
       apply,
       onChange: vi.fn(),
     });
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(controller.getState()).toMatchObject({ id: "campaign-1", state: "applying" });
+    try {
+      await advance(60_000);
+      expect(controller.getState()).toMatchObject({ id: "campaign-1", state: "applying" });
 
-    controller.clear();
-    controller.announce({
-      target: { kind: "package", version: "3.0.0" },
-      inspect: createInspectors(() => 0),
-      apply: vi.fn(async () => "applied" as const),
-      onChange: vi.fn(),
-    });
-    expect(controller.getState()).toMatchObject({ id: "campaign-2", state: "countdown" });
-
-    resolveApply("failed");
+      controller.clear();
+      controller.announce({
+        target: { kind: "package", version: "3.0.0" },
+        inspect: createInspectors(() => 0),
+        apply: vi.fn(async () => "applied" as const),
+        onChange: vi.fn(),
+      });
+      expect(controller.getState()).toMatchObject({ id: "campaign-2", state: "countdown" });
+    } finally {
+      resolveApply?.("failed");
+    }
     await apply.mock.results[0]?.value;
     expect(controller.getState()).toMatchObject({ id: "campaign-2", state: "countdown" });
   });

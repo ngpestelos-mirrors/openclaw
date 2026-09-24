@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveStateDir } from "../config/state-dir.js";
 import { hasErrnoCode } from "../infra/errno.js";
+import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import {
   tryAcquireExclusiveSqliteCoordinator,
   type SqliteCoordinatorLease,
@@ -20,9 +21,12 @@ import {
 const CAPTURE_GRACE_MS = 60 * 60 * 1_000;
 const LEASE_FILE = "owner.sqlite";
 type Instance = {
-  references: number;
+  references: Set<{ scheduler?: GatewayScheduler }>;
   closing?: boolean;
-  timer: ReturnType<typeof setInterval>;
+  scheduler?: GatewayScheduler;
+  standaloneScheduler?: GatewayScheduler;
+  cleanupJob?: GatewayScheduledJob;
+  detachScheduler?: () => void;
   root?: string;
   managedRoot?: string;
   lease?: SqliteCoordinatorLease;
@@ -60,9 +64,10 @@ function retireInstance(key: string, instance: Instance): string | undefined {
   if (instance.root) {
     ownedRoots.delete(instance.root);
   }
-  instance.references = 0;
+  instance.references.clear();
   instances.delete(key);
-  clearInterval(instance.timer);
+  instance.cleanupJob?.cancel();
+  instance.detachScheduler?.();
   return instance.root;
 }
 
@@ -322,8 +327,44 @@ function createCaptureDirectory(instance: Instance, stateDir: string, prefix: st
   }
 }
 
+function scheduleCaptureCleanup(key: string, instance: Instance): void {
+  const references = [...instance.references];
+  const scheduler =
+    references.findLast((reference) => reference.scheduler && !reference.scheduler.signal.aborted)
+      ?.scheduler ??
+    (references.some((reference) => !reference.scheduler)
+      ? (instance.standaloneScheduler ??= new GatewayScheduler())
+      : undefined);
+  if (instance.scheduler === scheduler) {
+    return;
+  }
+  instance.detachScheduler?.();
+  instance.cleanupJob?.cancel();
+  instance.scheduler = scheduler;
+  instance.cleanupJob = undefined;
+  instance.detachScheduler = undefined;
+  if (!scheduler) {
+    return;
+  }
+  // Metadata can retain native custody after its Gateway stops accepting timed work.
+  const rebind = () => scheduleCaptureCleanup(key, instance);
+  scheduler.signal.addEventListener("abort", rebind, { once: true });
+  instance.detachScheduler = () => scheduler.signal.removeEventListener("abort", rebind);
+  instance.cleanupJob = runInPluginSourceCaptureContext(() =>
+    scheduler.schedule({
+      id: `plugin-source-captures:${key}`,
+      atMs: scheduler.now() + CAPTURE_GRACE_MS,
+      everyMs: CAPTURE_GRACE_MS,
+      run: () => sweepPluginSourceCaptureDirectories(key),
+    }),
+  );
+}
+
 /** Metadata and its captures share custody; standalone CLI captures own their own lifetime. */
-export function retainPluginSourceCaptureInstance(stateDir = resolveStateDir()) {
+export function retainPluginSourceCaptureInstance(
+  stateDir = resolveStateDir(),
+  scheduler?: GatewayScheduler,
+) {
   const key = path.resolve(stateDir);
   let instance = instances.get(key);
   if (instance?.closing) {
@@ -332,23 +373,22 @@ export function retainPluginSourceCaptureInstance(stateDir = resolveStateDir()) 
     );
   }
   if (!instance) {
-    const timer = runInPluginSourceCaptureContext(() =>
-      setInterval(() => void sweepPluginSourceCaptureDirectories(key), CAPTURE_GRACE_MS),
-    );
-    timer.unref();
-    instance = { references: 0, timer };
+    instance = { references: new Set() };
     instances.set(key, instance);
     void sweepPluginSourceCaptureDirectories(key);
   }
-  instance.references += 1;
+  const reference = { scheduler };
+  instance.references.add(reference);
+  scheduleCaptureCleanup(key, instance);
   const retained = instance;
   let released = false;
   const retire = () => {
     if (released) {
       return undefined;
     }
-    if (retained.references > 1) {
-      retained.references -= 1;
+    if (retained.references.size > 1) {
+      retained.references.delete(reference);
+      scheduleCaptureCleanup(key, retained);
       released = true;
       return undefined;
     }

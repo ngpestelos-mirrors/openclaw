@@ -290,6 +290,7 @@ describe("gateway telemetry maintenance", () => {
       runDeliveryQueueMediaGc: async () => undefined,
       runManagedOutgoingMediaGc: async () => undefined,
     });
+    await vi.advanceTimersByTimeAsync(0);
     let settled = false;
     const stopping = timers.stopPeriodicTasks().then(
       () => {

@@ -120,6 +120,11 @@ Heartbeat-timeout records also capture these facts before termination:
 The Gateway records a bounded, payload-free stability stream by default when
 diagnostics are enabled. It captures operational facts, not content.
 
+The existing diagnostic heartbeat debug log includes `nextWakeAtMs`, the earliest
+pending wake time in the Gateway scheduler as a Unix timestamp in milliseconds
+(or `none` when no wake is pending). Overdue periodic jobs run once after sleep;
+the scheduler does not replay missed ticks.
+
 The same heartbeat also samples liveness when the event loop or CPU looks
 saturated, emitting `diagnostic.liveness.warning` events with event-loop delay,
 event-loop utilization, CPU-core ratio, active/waiting/queued session counts,

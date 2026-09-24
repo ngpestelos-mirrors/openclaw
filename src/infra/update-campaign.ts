@@ -1,10 +1,12 @@
 // Coordinates the process-local idle/countdown window before an automatic update.
 import { randomUUID } from "node:crypto";
 import type { UpdateScheduleState } from "../../packages/gateway-protocol/src/index.js";
+import { trackAsyncWork } from "../shared/async-work-scope.js";
 import {
   createGatewayActiveWorkSnapshot,
   type GatewayActiveWorkInspectors,
 } from "./gateway-active-work.js";
+import { GatewayScheduler, type GatewayScheduledJob } from "./gateway-scheduler.js";
 import type { TrackedDevUpdateTarget } from "./update-dev-target.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 
@@ -51,9 +53,16 @@ export class UpdateCampaignController {
   private campaign: UpdateCampaignState | undefined;
   private target: UpdateCampaignTarget | undefined;
   private announcement: UpdateCampaignAnnouncement | undefined;
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private scheduler = new GatewayScheduler();
+  private job: GatewayScheduledJob | undefined;
   private runId: string | undefined;
   private held = false;
+
+  attachScheduler(scheduler: GatewayScheduler): void {
+    this.cancelJob();
+    this.scheduler = scheduler;
+    this.scheduleNext();
+  }
 
   getState(): UpdateCampaignState | undefined {
     return this.campaign;
@@ -79,11 +88,11 @@ export class UpdateCampaignController {
       return;
     }
 
-    this.cancelTimer();
+    this.cancelJob();
     this.held = false;
     this.target = announcement.target;
     this.announcement = announcement;
-    const now = Date.now();
+    const now = this.scheduler.now();
     this.campaign = {
       id: this.createId(),
       state: "waiting-for-idle",
@@ -98,7 +107,7 @@ export class UpdateCampaignController {
   clear(): void {
     const onChange = this.announcement?.onChange;
     const hadCampaign = this.campaign !== undefined;
-    this.cancelTimer();
+    this.cancelJob();
     this.campaign = undefined;
     this.runId = undefined;
     this.target = undefined;
@@ -158,9 +167,9 @@ export class UpdateCampaignController {
     if (!campaign || campaign.state === "applying" || this.held) {
       return false;
     }
-    this.cancelTimer();
+    this.cancelJob();
     this.held = true;
-    const now = Date.now();
+    const now = this.scheduler.now();
     const holdUntilMs = now + durationMs;
     this.transition({
       id: campaign.id,
@@ -181,8 +190,8 @@ export class UpdateCampaignController {
       return;
     }
 
-    this.cancelTimer();
-    const now = Date.now();
+    this.cancelJob();
+    const now = this.scheduler.now();
     if (campaign.holdUntilMs !== undefined && now < campaign.holdUntilMs) {
       this.scheduleNext();
       return;
@@ -245,8 +254,8 @@ export class UpdateCampaignController {
     if (!campaign || !announcement) {
       return;
     }
-    this.cancelTimer();
-    const now = Date.now();
+    this.cancelJob();
+    const now = this.scheduler.now();
     this.transition({
       id: campaign.id,
       state: "applying",
@@ -257,7 +266,7 @@ export class UpdateCampaignController {
     });
     if (runApply) {
       // An apply can settle after clear/new announce; only its originating campaign may be cleared.
-      void announcement.apply({ forced }).then(
+      void trackAsyncWork(() => announcement.apply({ forced })).then(
         (outcome) => {
           if (outcome === "failed" && this.campaign?.id === campaign.id) {
             this.clear();
@@ -277,7 +286,7 @@ export class UpdateCampaignController {
     if (!campaign || campaign.state === "applying") {
       return;
     }
-    const now = Date.now();
+    const now = this.scheduler.now();
     const holdBoundaryMs =
       campaign.holdUntilMs !== undefined && campaign.holdUntilMs > now
         ? campaign.holdUntilMs
@@ -287,17 +296,18 @@ export class UpdateCampaignController {
       campaign.applyAtMs ?? Number.POSITIVE_INFINITY,
       holdBoundaryMs,
     );
-    const delayMs = Math.max(0, Math.min(CAMPAIGN_POLL_MS, nextBoundaryMs - now));
-    this.timer = setTimeout(() => this.reconcile(), delayMs);
-    this.timer.unref?.();
+    this.job = this.scheduler.schedule({
+      id: "update.campaign",
+      ...(nextBoundaryMs <= now + CAMPAIGN_POLL_MS
+        ? { atMs: nextBoundaryMs }
+        : { delayMs: CAMPAIGN_POLL_MS }),
+      run: () => this.reconcile(),
+    });
   }
 
-  private cancelTimer(): void {
-    if (this.timer === undefined) {
-      return;
-    }
-    clearTimeout(this.timer);
-    this.timer = undefined;
+  private cancelJob(): void {
+    this.job?.cancel();
+    this.job = undefined;
   }
 }
 

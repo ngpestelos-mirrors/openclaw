@@ -1,5 +1,6 @@
 /** Module-level session MCP runtime manager entry APIs. */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { logWarn } from "../logger.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { createSessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.js";
@@ -13,8 +14,12 @@ import type {
   SessionMcpRuntimeManager,
 } from "./agent-bundle-mcp-types.js";
 
-function getSessionMcpRuntimeManager(): SessionMcpRuntimeManager {
+function getSessionMcpRuntimeManager() {
   return resolveGlobalSingleton(SESSION_MCP_RUNTIME_MANAGER_KEY, createSessionMcpRuntimeManager);
+}
+
+export function setSessionMcpRuntimeScheduler(scheduler: GatewayScheduler): Promise<void> {
+  return getSessionMcpRuntimeManager().setScheduler(scheduler);
 }
 
 function peekSessionMcpRuntimeManager(): SessionMcpRuntimeManager | undefined {

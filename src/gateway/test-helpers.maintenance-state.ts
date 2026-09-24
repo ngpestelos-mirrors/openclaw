@@ -1,5 +1,6 @@
 // Gateway maintenance-state test helper.
 // Builds minimal timer/health/chat state for maintenance tests.
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import type { HealthSummary } from "./health/types.js";
 import { createChatRunState } from "./server-chat-state.js";
 
@@ -11,6 +12,7 @@ export function createGatewayMaintenanceStateForTest(params?: {
 }) {
   const chatRunState = createChatRunState();
   return {
+    scheduler: new GatewayScheduler(),
     broadcast: () => {},
     nodeSendToAllSubscribed: () => {},
     getPresenceVersion: () => params?.presenceVersion ?? 1,

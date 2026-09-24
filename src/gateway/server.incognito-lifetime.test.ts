@@ -14,12 +14,14 @@ import {
   deleteSessionEntryLifecycle,
   resetSessionEntryLifecycle,
 } from "../config/sessions/session-accessor.sqlite-lifecycle.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db-lifecycle.js";
 import {
   getOpenClawAgentDatabaseIfOpen,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { attachInitialGatewayLifetimeSidecars } from "./server-lifetime-sidecars.js";
@@ -34,7 +36,6 @@ const ordinary = { agentId: "main", sessionKey: "agent:main:dashboard:ordinary" 
 const originalDelete = deletion.deleteGatewaySession;
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -45,14 +46,15 @@ async function withLifetime(
     logWarning: ReturnType<typeof vi.fn<(message: string) => void>>;
     scope: { agentId: string; sessionKey: string; sessionId: string; storePath: string };
     stateDir: string;
+    time: ReturnType<typeof createGatewaySchedulerClock>;
   }) => Promise<void>,
   creationStamp: "provided" | "omitted" | "legacy" = "provided",
 ) {
   await withOpenClawTestState({ label: "incognito-lifetime" }, async (state) => {
     await state.writeConfig(config);
-    const now = Date.now();
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    vi.setSystemTime(now);
+    const time = createGatewaySchedulerClock(Date.now());
+    vi.spyOn(Date, "now").mockImplementation(time.clock.now);
+    const scheduler = new GatewayScheduler({ clock: time.clock });
     await upsertSessionEntryCore(ordinary, {
       sessionId: "ordinary",
       updatedAt: Date.now() - DAY_MS,
@@ -64,6 +66,7 @@ async function withLifetime(
     });
     const logWarning = vi.fn<(message: string) => void>();
     await attachInitialGatewayLifetimeSidecars({
+      scheduler,
       chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
       gatewayRequestContext: context,
       flushPendingSessionsChangedEvents,
@@ -98,16 +101,16 @@ async function withLifetime(
           .run(scope.sessionKey);
         expect(loadSessionEntryReadOnly(scope)?.createdAt).toBeUndefined();
       }
-      await run({ owner, context, logWarning, scope, stateDir: state.stateDir });
+      await run({ owner, context, logWarning, scope, stateDir: state.stateDir, time });
     } finally {
       await owner.stop();
-      vi.useRealTimers();
+      await scheduler.stop();
     }
   });
 }
 
 it("expires Incognito at creation plus 24 hours, cancels work, and deletes without an archive", async () => {
-  await withLifetime(async ({ context, logWarning, scope }) => {
+  await withLifetime(async ({ context, logWarning, scope, time }) => {
     const deleted = createDeferredCore<Awaited<ReturnType<typeof originalDelete>>>();
     const deletes = vi.spyOn(deletion, "deleteGatewaySession").mockImplementation((params) => {
       const operation = originalDelete(params);
@@ -118,23 +121,23 @@ it("expires Incognito at creation plus 24 hours, cancels work, and deletes witho
       eventId: "private-input",
       message: { role: "user", content: "Ephemeral conversation", timestamp: Date.now() },
     });
-    await vi.advanceTimersByTimeAsync(23 * 60 * 60_000);
+    time.advanceBy(23 * 60 * 60_000);
     await patchSessionEntryCore(scope, () => ({ label: "Recent activity", updatedAt: Date.now() }));
     await resetSessionEntryLifecycle({
       ...scope,
       target: { canonicalKey: scope.sessionKey, storeKeys: [scope.sessionKey] },
       buildNextEntry: ({ currentEntry }) => ({ ...currentEntry!, lifecycleRevision: "rewound" }),
     });
-    await vi.advanceTimersByTimeAsync(60 * 60_000 - 1);
+    time.advanceBy(60 * 60_000 - 1);
     expect(loadSessionEntryReadOnly(scope)).toBeDefined();
     const active = replyRunRegistry.begin({ ...scope, resetTriggered: false });
     try {
-      await vi.advanceTimersByTimeAsync(1);
-      expect(deletes).toHaveBeenCalledOnce();
+      time.advanceBy(1);
       await expect(deleted.promise).resolves.toMatchObject({
         ok: true,
         result: { deleted: true, archived: [] },
       });
+      expect(deletes).toHaveBeenCalledOnce();
       expect(active.abortSignal.aborted).toBe(true);
       expect(replyRunRegistry.isActive(scope.sessionKey)).toBe(false);
       await flushPendingSessionsChangedEvents(context);
@@ -156,7 +159,7 @@ it("expires Incognito at creation plus 24 hours, cancels work, and deletes witho
 });
 
 it("does not replace its deadline or delete another Gateway's Incognito publication", async () => {
-  await withLifetime(async ({ scope, stateDir, logWarning }) => {
+  await withLifetime(async ({ scope, stateDir, logWarning, time }) => {
     const foreign = {
       agentId: scope.agentId,
       sessionKey: scope.sessionKey,
@@ -164,7 +167,16 @@ it("does not replace its deadline or delete another Gateway's Incognito publicat
     };
     const foreignPath = resolveIncognitoOpenClawAgentSqlitePath(foreign);
     expect(foreignPath).not.toBe(scope.storePath);
-    const deletes = vi.spyOn(deletion, "deleteGatewaySession");
+    const deleted = createDeferredCore();
+    const deletes = vi
+      .spyOn(deletion, "deleteGatewaySession")
+      .mockImplementation(async (params) => {
+        try {
+          return await originalDelete(params);
+        } finally {
+          deleted.resolve();
+        }
+      });
     try {
       await upsertSessionEntryCore(foreign, {
         sessionId: "foreign-incognito",
@@ -173,12 +185,12 @@ it("does not replace its deadline or delete another Gateway's Incognito publicat
         incognito: true,
       });
       expect(loadSessionEntryReadOnly(scope)?.sessionId).toBe(scope.sessionId);
-      await vi.advanceTimersByTimeAsync(1);
+      time.advanceBy(1);
       expect(deletes).not.toHaveBeenCalled();
       expect(logWarning).not.toHaveBeenCalled();
       expect(loadSessionEntryReadOnly(foreign)?.sessionId).toBe("foreign-incognito");
-      await vi.advanceTimersByTimeAsync(DAY_MS - 1);
-      await Promise.allSettled(deletes.mock.results.map((result) => result.value));
+      time.advanceBy(DAY_MS - 1);
+      await deleted.promise;
       expect(deletes).toHaveBeenCalledOnce();
       expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
       expect(loadSessionEntryReadOnly(foreign)?.sessionId).toBe("foreign-incognito");
@@ -191,7 +203,7 @@ it("does not replace its deadline or delete another Gateway's Incognito publicat
 it.each(["provided", "omitted", "legacy"] as const)(
   "inherits the original deadline with a %s creation stamp when a sibling outlives the creator",
   async (creationStamp) => {
-    await withLifetime(async ({ owner, scope, logWarning }) => {
+    await withLifetime(async ({ owner, scope, logWarning, time }) => {
       const createdAt = Date.now();
       expect(loadSessionEntryReadOnly(scope)?.createdAt).toBe(
         creationStamp === "legacy" ? undefined : createdAt,
@@ -199,11 +211,23 @@ it.each(["provided", "omitted", "legacy"] as const)(
       expect(loadSessionEntryReadOnly(ordinary)?.createdAt).toBeUndefined();
       const sibling = createGatewaySidecarStopOwner();
       const context = createDirectChatContext({ getRuntimeConfig: () => config });
-      const deletes = vi.spyOn(deletion, "deleteGatewaySession");
-      await vi.advanceTimersByTimeAsync(DAY_MS - 1);
+      const deleted = createDeferredCore();
+      const deletes = vi
+        .spyOn(deletion, "deleteGatewaySession")
+        .mockImplementation(async (params) => {
+          try {
+            return await originalDelete(params);
+          } finally {
+            deleted.resolve();
+          }
+        });
+      time.advanceBy(DAY_MS - 1);
       await patchSessionEntryCore(scope, () => ({ createdAt: Date.now(), updatedAt: Date.now() }));
       expect(loadSessionEntryReadOnly(scope)?.createdAt).toBe(createdAt);
+      const siblingTime = createGatewaySchedulerClock(time.clock.now());
+      const siblingScheduler = new GatewayScheduler({ clock: siblingTime.clock });
       await attachInitialGatewayLifetimeSidecars({
+        scheduler: siblingScheduler,
         chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
         gatewayRequestContext: context,
         flushPendingSessionsChangedEvents,
@@ -214,13 +238,15 @@ it.each(["provided", "omitted", "legacy"] as const)(
       try {
         await owner.stop();
         expect(loadSessionEntryReadOnly(scope)?.sessionId).toBe(scope.sessionId);
-        await vi.advanceTimersByTimeAsync(1);
-        await Promise.allSettled(deletes.mock.results.map((result) => result.value));
+        time.advanceBy(1);
+        siblingTime.advanceBy(1);
+        await deleted.promise;
         expect(deletes).toHaveBeenCalledOnce();
         expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
         expect(logWarning).not.toHaveBeenCalled();
       } finally {
         await sibling.stop();
+        await siblingScheduler.stop();
       }
     }, creationStamp);
   },
@@ -229,7 +255,7 @@ it.each(["provided", "omitted", "legacy"] as const)(
 it.each(["session replacement", "database replacement", "Gateway stop"] as const)(
   "revokes a pending expiry across %s before cancellation or deletion",
   async (replacement) => {
-    await withLifetime(async ({ owner, scope, logWarning }) => {
+    await withLifetime(async ({ owner, scope, logWarning, time }) => {
       const entered = createDeferredCore();
       const release = createDeferredCore();
       const finished = createDeferredCore();
@@ -246,7 +272,7 @@ it.each(["session replacement", "database replacement", "Gateway stop"] as const
         });
       let stopping: Promise<void> | undefined;
       try {
-        await vi.advanceTimersByTimeAsync(DAY_MS);
+        time.advanceBy(DAY_MS);
         await entered.promise;
         if (replacement === "session replacement") {
           await deleteSessionEntryLifecycle({
@@ -278,7 +304,7 @@ it.each(["session replacement", "database replacement", "Gateway stop"] as const
         expect(loadSessionEntryReadOnly(scope)).toEqual(before);
         expect(logWarning).not.toHaveBeenCalled();
         if (replacement === "Gateway stop") {
-          await vi.advanceTimersByTimeAsync(DAY_MS);
+          time.advanceBy(DAY_MS);
           expect(deletes).toHaveBeenCalledOnce();
         }
       } finally {
@@ -292,13 +318,13 @@ it.each(["session replacement", "database replacement", "Gateway stop"] as const
 it.each(["provided", "legacy"] as const)(
   "refuses work while %s session cleanup retries",
   async (creationStamp) => {
-    await withLifetime(async ({ scope, context, logWarning }) => {
-      const failed = createDeferredCore();
+    await withLifetime(async ({ scope, context, logWarning, time }) => {
+      const retrying = createDeferredCore();
+      logWarning.mockImplementation(() => retrying.resolve());
       const deleted = createDeferredCore<Awaited<ReturnType<typeof originalDelete>>>();
       const deletes = vi
         .spyOn(deletion, "deleteGatewaySession")
         .mockImplementationOnce(async () => {
-          failed.resolve();
           return { ok: false, error: { code: "UNAVAILABLE", message: "Cleanup still draining" } };
         })
         .mockImplementation((params) => {
@@ -306,9 +332,8 @@ it.each(["provided", "legacy"] as const)(
           void operation.then(deleted.resolve, deleted.reject);
           return operation;
         });
-      await vi.advanceTimersByTimeAsync(DAY_MS);
-      await failed.promise;
-      await vi.advanceTimersByTimeAsync(0);
+      time.advanceBy(DAY_MS);
+      await retrying.promise;
       expect(logWarning).toHaveBeenCalledOnce();
       expect(loadSessionEntryReadOnly(scope)).toBeDefined();
       expect(resolveSessionWorkStartError(scope.sessionKey, loadSessionEntryReadOnly(scope))).toBe(
@@ -340,7 +365,7 @@ it.each(["provided", "legacy"] as const)(
       );
       expect(await loadTranscriptEvents(scope)).toEqual([]);
       expect(context.chatAbortControllers.size).toBe(0);
-      await vi.advanceTimersByTimeAsync(60_000);
+      time.advanceBy(60_000);
       await expect(deleted.promise).resolves.toMatchObject({ ok: true, result: { deleted: true } });
       expect(deletes).toHaveBeenCalledTimes(2);
       expect(loadSessionEntryReadOnly(scope)).toBeUndefined();

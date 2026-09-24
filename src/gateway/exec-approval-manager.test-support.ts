@@ -3,11 +3,30 @@ import path from "node:path";
 import { vi, type TestContext } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import type { ExecApprovalRequestPayload } from "../infra/exec-approvals.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { ExecApprovalManager } from "./exec-approval-manager.js";
 import type { ExecApprovalManagerOptions } from "./exec-approval-manager.types.js";
 import * as operatorApprovalStore from "./operator-approval-store.js";
+
+export type ApprovalClockWake = ReturnType<typeof createGatewaySchedulerClock>["wakes"][number];
+
+export function createApprovalScheduler() {
+  const clock = createGatewaySchedulerClock();
+  const scheduler = new GatewayScheduler({
+    clock: {
+      ...clock.clock,
+      now: () => Date.now(),
+      arm: (run, delayMs) => {
+        clock.setTime(Date.now());
+        return clock.clock.arm(run, delayMs);
+      },
+    },
+  });
+  return { scheduler, wakes: clock.wakes };
+}
 
 /** Vitest clocks are process-local; send controlled time through the store's existing input. */
 export function installTestApprovalClock(): (() => void) | undefined {

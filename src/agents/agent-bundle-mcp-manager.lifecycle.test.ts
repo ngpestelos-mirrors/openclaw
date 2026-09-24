@@ -2,13 +2,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { createSessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.test-support.js";
 import type { SessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.test-support.js";
-import {
-  SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS,
-  type CreateSessionMcpRuntime,
-} from "./agent-bundle-mcp-runtime-shared.js";
+import type { CreateSessionMcpRuntime } from "./agent-bundle-mcp-runtime-shared.js";
 import type { SessionMcpRuntime } from "./agent-bundle-mcp-types.js";
 import { createMcpProofPluginRegistry } from "./mcp-connection-resolver.test-fixtures.js";
 import { createAgentCleanupScope } from "./run-cleanup-timeout.js";
@@ -225,7 +224,7 @@ describe("MCP manager creation ownership", () => {
   });
 
   it.each(["static", "requester"] as const)(
-    "keeps the native idle timer outside %s requesting turns across disposal",
+    "expires idle %s runtimes outside requesting turns across scheduler replacement and disposal",
     async (entrypoint) => {
       const resolverRegistry = createMcpProofPluginRegistry();
       await withPluginRuntimeRegistryScope(resolverRegistry.registry, async () => {
@@ -235,19 +234,19 @@ describe("MCP manager creation ownership", () => {
           turn: turnContext.getStore(),
           pendingInput: pendingInputContext.getStore(),
         });
-        const timerContexts: ReturnType<typeof readContext>[] = [];
+        const sweepContexts: ReturnType<typeof readContext>[] = [];
         const factoryContexts: ReturnType<typeof readContext>[] = [];
-        const nativeSetInterval = globalThis.setInterval;
-        const intervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation((...args) => {
-          if (args[1] === SESSION_MCP_RUNTIME_SWEEP_INTERVAL_MS) {
-            timerContexts.push(readContext());
-          }
-          return nativeSetInterval(...args);
-        });
+        const clock = createGatewaySchedulerClock(Date.now());
+        const previousClock = createGatewaySchedulerClock(clock.clock.now());
         const manager = createSessionMcpRuntimeManager({
+          scheduler: new GatewayScheduler({ clock: previousClock.clock }),
           createRuntime(input) {
             factoryContexts.push(readContext());
-            return createRuntimeFixture(input);
+            const runtime = createRuntimeFixture(input);
+            runtime.dispose = vi.fn(async () => {
+              sweepContexts.push(readContext());
+            });
+            return runtime;
           },
         });
         managers.push(manager);
@@ -279,20 +278,115 @@ describe("MCP manager creation ownership", () => {
                     },
                   });
                 }
+                await manager.setScheduler(new GatewayScheduler({ clock: clock.clock }));
                 expect(readContext()).toEqual({ turn, pendingInput });
               }),
             );
             expect(factoryContexts.splice(0)).toEqual([{ turn, pendingInput }]);
-            expect(timerContexts.splice(0)).toEqual([{ turn: undefined, pendingInput: undefined }]);
+            expect(previousClock.armedAtMs).toBeNull();
+            await clock.advanceBy(1_200_000);
+            expect(sweepContexts.splice(0)).toEqual([{ turn: undefined, pendingInput: undefined }]);
+            expect(manager.listRuntimeKeys()).toEqual([]);
+            expect(clock.armedAtMs).toBeNull();
             await manager.disposeAll();
           }
         } finally {
           await manager.disposeAll();
-          intervalSpy.mockRestore();
         }
       });
     },
   );
+
+  it("keeps idle reclamation on the surviving Gateway when the latest scheduler closes", async () => {
+    const firstClock = createGatewaySchedulerClock(Date.now());
+    const secondClock = createGatewaySchedulerClock(firstClock.clock.now());
+    const firstScheduler = new GatewayScheduler({ clock: firstClock.clock });
+    const secondScheduler = new GatewayScheduler({ clock: secondClock.clock });
+    const manager = createSessionMcpRuntimeManager({
+      scheduler: firstScheduler,
+      createRuntime: createRuntimeFixture,
+    });
+    managers.push(manager);
+    await manager.setScheduler(firstScheduler);
+    const lease = await manager.acquire({
+      ...params,
+      cfg: { mcp: { sessionIdleTtlMs: 60_000, servers: {} } },
+    });
+    try {
+      await manager.setScheduler(secondScheduler);
+      await secondScheduler.stop();
+      await firstClock.advanceBy(120_000);
+      expect(lease.runtime.dispose).not.toHaveBeenCalled();
+
+      lease.releaseLease();
+      await firstClock.advanceBy(60_000);
+      expect(lease.runtime.dispose).toHaveBeenCalledOnce();
+      expect(manager.listRuntimeKeys()).toEqual([]);
+    } finally {
+      lease.releaseLease();
+      await Promise.all([firstScheduler.stop(), secondScheduler.stop()]);
+    }
+  });
+
+  it("resumes standalone acquisitions only after the last Gateway manager disposal drains", async () => {
+    const standaloneClock = createGatewaySchedulerClock(Date.now());
+    const gatewayClock = createGatewaySchedulerClock(standaloneClock.clock.now());
+    const standaloneScheduler = new GatewayScheduler({ clock: standaloneClock.clock });
+    const gatewayScheduler = new GatewayScheduler({ clock: gatewayClock.clock });
+    const manager = createSessionMcpRuntimeManager({
+      scheduler: standaloneScheduler,
+      createRuntime: createRuntimeFixture,
+    });
+    managers.push(manager);
+    const input = { ...params, cfg: { mcp: { sessionIdleTtlMs: 60_000, servers: {} } } };
+    try {
+      await manager.setScheduler(gatewayScheduler);
+      const gatewayRuntime = await manager.getOrCreate(input);
+      await gatewayScheduler.stop();
+      await standaloneClock.advanceBy(120_000);
+      expect(gatewayRuntime.dispose).not.toHaveBeenCalled();
+
+      await manager.disposeAll();
+      expect(gatewayRuntime.dispose).toHaveBeenCalledOnce();
+      const standaloneRuntime = await manager.getOrCreate({ ...input, sessionId: "cli-session" });
+      await standaloneClock.advanceBy(60_000);
+      expect(standaloneRuntime.dispose).toHaveBeenCalledOnce();
+      expect(manager.listRuntimeKeys()).toEqual([]);
+    } finally {
+      await Promise.all([standaloneScheduler.stop(), gatewayScheduler.stop()]);
+    }
+  });
+
+  it("joins running idle cleanup before arming the successor scheduler", async () => {
+    const firstClock = createGatewaySchedulerClock(Date.now());
+    const secondClock = createGatewaySchedulerClock(firstClock.clock.now());
+    const firstScheduler = new GatewayScheduler({ clock: firstClock.clock });
+    const secondScheduler = new GatewayScheduler({ clock: secondClock.clock });
+    const manager = createSessionMcpRuntimeManager({
+      scheduler: firstScheduler,
+      createRuntime: createRuntimeFixture,
+    });
+    managers.push(manager);
+    const input = { ...params, cfg: { mcp: { sessionIdleTtlMs: 60_000, servers: {} } } };
+    const runtime = await manager.getOrCreate(input);
+    const cleanup = holdDisposal(runtime);
+    const sweep = firstClock.advanceBy(120_000);
+    await cleanup.started;
+    const handoff = manager.setScheduler(secondScheduler);
+    try {
+      const next = await manager.getOrCreate({ ...input, sessionId: "later-session" });
+      expect(secondScheduler.nextWakeAtMs).toBeNull();
+      cleanup.release();
+      await Promise.all([sweep, handoff]);
+      await secondClock.advanceBy(120_000);
+      expect(next.dispose).toHaveBeenCalledOnce();
+      expect(manager.listRuntimeKeys()).toEqual([]);
+    } finally {
+      cleanup.release();
+      await Promise.all([sweep, handoff]);
+      await Promise.all([firstScheduler.stop(), secondScheduler.stop()]);
+    }
+  });
 
   it.each(["session", "all"] as const)(
     "drains late creation during %s disposal before admitting a successor",

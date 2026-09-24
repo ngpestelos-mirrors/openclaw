@@ -8,12 +8,16 @@ import {
   type DiagnosticEventPayload,
   type DiagnosticMessageProcessedEvent,
 } from "../infra/diagnostic-events.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import {
   getDiagnosticSessionState,
   isDiagnosticSessionStateCurrent,
   peekDiagnosticSessionState,
 } from "./diagnostic-session-state.js";
 import {
+  configureDiagnosticHeartbeatScheduler,
+  diagnosticLogger,
   logMessageQueued,
   logSessionStateChange,
   logWebhookReceived,
@@ -26,7 +30,41 @@ import { createDiagnosticMessageLifecycle } from "./message-lifecycle.js";
 afterEach(() => {
   resetDiagnosticStateForTest();
   setDiagnosticsEnabledForProcess(true);
+  vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+it("reports the shared next wake and coalesces diagnostic heartbeats after sleep", async () => {
+  const startedAt = Date.now();
+  const clock = createGatewaySchedulerClock(startedAt);
+  const scheduler = new GatewayScheduler({ clock: clock.clock });
+  const debug = vi.spyOn(diagnosticLogger, "debug");
+  const heartbeats: DiagnosticEventPayload[] = [];
+  const unsubscribe = onDiagnosticEvent((event) => {
+    if (event.type === "diagnostic.heartbeat") {
+      heartbeats.push(event);
+    }
+  });
+  try {
+    configureDiagnosticHeartbeatScheduler(scheduler);
+    scheduler.schedule({ id: "pending-work", atMs: startedAt + 60_000, run: () => {} });
+    startDiagnosticHeartbeat({}, { sampleLiveness: () => null });
+    logMessageQueued({ sessionKey: "diagnostic-schedule", source: "test" });
+    await clock.advanceBy(30_000);
+    expect(debug).toHaveBeenCalledWith(
+      expect.stringContaining(`nextWakeAtMs=${startedAt + 60_000}`),
+    );
+    await clock.advanceBy(120_000);
+    await waitForDiagnosticEventsDrained();
+    expect(heartbeats).toHaveLength(2);
+    stopDiagnosticHeartbeat();
+    await clock.advanceBy(120_000);
+    await waitForDiagnosticEventsDrained();
+    expect(heartbeats).toHaveLength(2);
+  } finally {
+    unsubscribe();
+    await scheduler.stop();
+  }
 });
 
 it("preserves independent tool-loop and poll-backoff policy when diagnostic observation stops", () => {
@@ -48,7 +86,8 @@ it("preserves independent tool-loop and poll-backoff policy when diagnostic obse
 });
 
 it("retires interrupted diagnostic observations before re-enable without reviving their authority", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const clock = createGatewaySchedulerClock(Date.now());
+  configureDiagnosticHeartbeatScheduler(new GatewayScheduler({ clock: clock.clock }));
   setDiagnosticsEnabledForProcess(true);
   const events: DiagnosticEventPayload[] = [];
   const unsubscribe = onDiagnosticEvent((event) => events.push(event));
@@ -65,7 +104,7 @@ it("retires interrupted diagnostic observations before re-enable without revivin
     setDiagnosticsEnabledForProcess(true);
     startDiagnosticHeartbeat({}, { sampleLiveness: () => null });
     logWebhookReceived({ channel: "test" });
-    await vi.advanceTimersByTimeAsync(30_000);
+    await clock.advanceBy(30_000);
     await waitForDiagnosticEventsDrained();
     expect(events.findLast((event) => event.type === "diagnostic.heartbeat")).toMatchObject({
       active: 0,

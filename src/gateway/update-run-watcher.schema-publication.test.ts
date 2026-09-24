@@ -1,17 +1,19 @@
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createUpdateRun, finishUpdateRun } from "../infra/update-run-ledger.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { startUpdateRunWatcher, wakeUpdateRunWatcher } from "./update-run-watcher.js";
 
 vi.mock("./update-run-notice.runtime.js", () => ({ notifyUpdateRunPhase: vi.fn() }));
 vi.mock("../infra/update-run-interruption.js", () => ({
-  // Hold unrelated native I/O pending while fake time exercises publication and shutdown.
+  // Publication and shutdown remain responsive during interrupted-update verification.
   reconcileInterruptedUpdateRuns: async ({ signal }: { signal: AbortSignal }) => {
     await new Promise<void>((resolve) => {
       signal.addEventListener("abort", () => resolve(), { once: true });
@@ -24,10 +26,13 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const now = Date.parse("2026-09-07T12:00:00Z");
 const graceMs = 5 * 60_000;
 let watcher: ReturnType<typeof startUpdateRunWatcher> | undefined;
+let clock: ReturnType<typeof createGatewaySchedulerClock>;
+let scheduler: GatewayScheduler;
 
 beforeEach(() => {
-  vi.useFakeTimers();
-  vi.setSystemTime(now);
+  clock = createGatewaySchedulerClock(now);
+  scheduler = new GatewayScheduler({ clock: clock.clock });
+  vi.spyOn(Date, "now").mockImplementation(clock.clock.now);
   vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-watcher-publication-"));
 });
 afterEach(async () => {
@@ -35,7 +40,8 @@ afterEach(async () => {
   watcher = undefined;
   closeOpenClawStateDatabaseForTest();
   vi.unstubAllEnvs();
-  vi.useRealTimers();
+  vi.restoreAllMocks();
+  await scheduler.stop();
 });
 
 function createDeferredState() {
@@ -60,50 +66,50 @@ function expectVersion(db: DatabaseSync, version: number) {
 
 function startWatcher() {
   const log = { warn: vi.fn() };
-  watcher = startUpdateRunWatcher({ broadcast: vi.fn(), log });
+  watcher = startUpdateRunWatcher({ scheduler, broadcast: vi.fn(), log });
   return log;
 }
 
 describe("Gateway schema publication timer", () => {
-  it("anchors a restarted watcher's timer to the existing terminal timestamp", async () => {
+  it("anchors a restarted watcher's timer to the existing terminal timestamp", () => {
     const { db, runId } = createDeferredState();
     finishUpdateRun(runId, { status: "succeeded" });
-    vi.setSystemTime(now + 2 * 60_000);
+    clock.setTime(now + 2 * 60_000);
     const log = startWatcher();
     expectVersion(db, 15);
-    await vi.advanceTimersByTimeAsync(3 * 60_000 - 1);
+    clock.advanceBy(3 * 60_000 - 1);
     expectVersion(db, 15);
-    await vi.advanceTimersByTimeAsync(1);
+    clock.advanceBy(1);
     expectVersion(db, OPENCLAW_STATE_SCHEMA_VERSION);
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it("publishes after observing the old updater finish without another database open", async () => {
+  it("publishes after observing the old updater finish without another database open", () => {
     const { db, runId } = createDeferredState();
     const log = startWatcher();
-    await vi.advanceTimersByTimeAsync(10_000);
+    clock.advanceBy(10_000);
     finishUpdateRun(runId, { status: "succeeded" });
-    await vi.advanceTimersByTimeAsync(graceMs - 1);
+    clock.advanceBy(graceMs - 1);
     expectVersion(db, 15);
-    await vi.advanceTimersByTimeAsync(1);
+    clock.advanceBy(1);
     expectVersion(db, OPENCLAW_STATE_SCHEMA_VERSION);
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it("rechecks new running rows at the deadline and reschedules for their terminal grace", async () => {
+  it("rechecks new running rows at the deadline and reschedules for their terminal grace", () => {
     const { db, runId } = createDeferredState();
     finishUpdateRun(runId, { status: "succeeded" });
     const log = startWatcher();
-    await vi.advanceTimersByTimeAsync(graceMs - 1);
+    clock.advanceBy(graceMs - 1);
     const next = createUpdateRun({ trigger: "cli", before: { version: "2026.9.2" } });
     // No wake: the already scheduled timer must discover this new driver itself.
-    await vi.advanceTimersByTimeAsync(1);
+    clock.advanceBy(1);
     expectVersion(db, 15);
     wakeUpdateRunWatcher();
     finishUpdateRun(next.runId, { status: "succeeded" });
-    await vi.advanceTimersByTimeAsync(graceMs - 1);
+    clock.advanceBy(graceMs - 1);
     expectVersion(db, 15);
-    await vi.advanceTimersByTimeAsync(1);
+    clock.advanceBy(1);
     expectVersion(db, OPENCLAW_STATE_SCHEMA_VERSION);
     expect(log.warn).not.toHaveBeenCalled();
   });
@@ -114,7 +120,7 @@ describe("Gateway schema publication timer", () => {
     const log = startWatcher();
     await watcher?.stop();
     wakeUpdateRunWatcher();
-    await vi.advanceTimersByTimeAsync(graceMs + 1);
+    clock.advanceBy(graceMs + 1);
     expectVersion(db, 15);
     expect(log.warn).not.toHaveBeenCalled();
   });

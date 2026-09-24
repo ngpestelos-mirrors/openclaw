@@ -1,5 +1,5 @@
 import { StatementSync } from "node:sqlite";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { validateMentionsListResult } from "../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
@@ -29,20 +29,17 @@ import {
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import { identifiedClient, soloClient } from "./server-methods/sessions-sharing.test-support.js";
 
-afterEach(() => vi.useRealTimers());
-
 describe("temporary human mention Inbox", () => {
   it("retains original ids, order, and expiry across Gateway restart without replaying push", async () => {
     await withInbox(async (f) => {
-      vi.useFakeTimers();
       f.post("first");
-      await vi.advanceTimersByTimeAsync(1_000);
+      f.clock.advanceBy(1_000);
       f.post("second");
       const retained = read(f.inbox, f.bobClient).items;
       expect(retained.map((item) => item.messageId)).toEqual(["message-second", "message-first"]);
       f.inbox.dispose();
       f.push.mockClear();
-      await vi.advanceTimersByTimeAsync(6 * 24 * 60 * 60_000);
+      f.clock.advanceBy(6 * 24 * 60 * 60_000);
       const restarted = f.openInbox("restarted-gateway");
 
       expect(read(restarted, f.bobClient)).toMatchObject({
@@ -52,9 +49,9 @@ describe("temporary human mention Inbox", () => {
       f.post("first", {}, restarted);
       f.post("second", {}, restarted);
       expect(f.push).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(24 * 60 * 60_000 - 1_000);
+      f.clock.advanceBy(24 * 60 * 60_000 - 1_000);
       expect(read(restarted, f.bobClient).items).toEqual([retained[0]]);
-      await vi.advanceTimersByTimeAsync(1_000);
+      f.clock.advanceBy(1_000);
       expect(read(restarted, f.bobClient).items).toEqual([]);
     });
   });
@@ -63,7 +60,6 @@ describe("temporary human mention Inbox", () => {
     "restarts expiry cleanup without a connected client or an Inbox read (%s)",
     async (scenario) => {
       await withInbox(async (f) => {
-        vi.useFakeTimers();
         f.clients.length = 0;
         const { db } = openOpenClawStateDatabase();
         const storedSources = () =>
@@ -75,7 +71,7 @@ describe("temporary human mention Inbox", () => {
         f.post("original-deadline");
         expect(storedSources()).toHaveLength(1);
         f.inbox.dispose();
-        await vi.advanceTimersByTimeAsync(6 * 24 * 60 * 60_000);
+        f.clock.advanceBy(6 * 24 * 60 * 60_000);
         const restarted = f.openInbox("restarted-gateway");
         expect(storedSources()).toHaveLength(1);
         if (scenario !== "normal") {
@@ -84,7 +80,7 @@ describe("temporary human mention Inbox", () => {
             BEGIN SELECT RAISE(ABORT, 'synthetic mention expiry failure'); END`);
         }
         try {
-          await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+          f.clock.advanceBy(24 * 60 * 60_000);
           expect(storedSources()).toHaveLength(scenario === "normal" ? 0 : 1);
         } finally {
           if (scenario !== "normal") {
@@ -95,7 +91,7 @@ describe("temporary human mention Inbox", () => {
           if (scenario === "dispose after failure") {
             restarted.dispose();
           }
-          await vi.advanceTimersByTimeAsync(60_000);
+          f.clock.advanceBy(60_000);
           expect(storedSources()).toHaveLength(scenario === "dispose after failure" ? 1 : 0);
           if (scenario === "dispose after failure") {
             f.openInbox("next-gateway");
@@ -109,7 +105,6 @@ describe("temporary human mention Inbox", () => {
 
   it("expires a retained cohort atomically without one delete call per source", async () => {
     await withInbox(async (f) => {
-      vi.useFakeTimers();
       f.clients.length = 0;
       for (let index = 0; index < 32; index++) {
         f.post(`expiry-cohort-${index}`);
@@ -124,7 +119,7 @@ describe("temporary human mention Inbox", () => {
       db.exec(`CREATE TEMP TRIGGER reject_cohort_expiry BEFORE DELETE ON config_machine_state
         WHEN OLD.state_key = '${String(sources[16]!.state_key)}'
         BEGIN SELECT RAISE(ABORT, 'synthetic cohort expiry failure'); END`);
-      vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60_000);
+      f.clock.setTime(f.scheduler.now() + 7 * 24 * 60 * 60_000);
       try {
         expect(f.inbox.list(f.bobClient)).toMatchObject({
           ok: false,
@@ -187,17 +182,16 @@ describe("temporary human mention Inbox", () => {
 
   it("merges alternating owners' writes without resurrecting dismissals or losing new input", async () => {
     await withInbox(async (f) => {
-      vi.useFakeTimers();
       f.post("first");
       const first = read(f.inbox, f.bobClient).items[0]!;
       const peer = f.openInbox("peer-gateway");
       expect(read(peer, f.bobClient).items).toEqual([first]);
       expect(f.inbox.dismiss(f.bobClient, [first.id]).ok).toBe(true);
-      await vi.advanceTimersByTimeAsync(1);
+      f.clock.advanceBy(1);
       f.post("second", {}, peer);
       const second = read(peer, f.bobClient).items[0]!;
       expect(read(f.inbox, f.bobClient).items).toEqual([second]);
-      await vi.advanceTimersByTimeAsync(1);
+      f.clock.advanceBy(1);
       f.post("third");
       const both = read(f.inbox, f.bobClient).items;
       expect(both.map((item) => item.messageId)).toEqual(["message-third", "message-second"]);
@@ -562,22 +556,22 @@ describe("temporary human mention Inbox", () => {
 
   it("expires on the Gateway clock and does not backfill after a new Gateway lifetime", async () => {
     await withInbox(async (f) => {
-      vi.useFakeTimers();
       f.post("first");
       expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(1_000);
+      f.clock.advanceBy(1_000);
       f.post("second");
-      await vi.advanceTimersByTimeAsync(7 * 24 * 60 * 60_000 - 1_000);
+      f.clock.advanceBy(7 * 24 * 60 * 60_000 - 1_000);
       expect(read(f.inbox, f.bobClient).items.map((item) => item.messageId)).toEqual([
         "message-second",
       ]);
-      await vi.advanceTimersByTimeAsync(1_000);
+      f.clock.advanceBy(1_000);
       expect(read(f.inbox, f.bobClient).items).toEqual([]);
       f.post("new-deadline");
-      await vi.advanceTimersByTimeAsync(7 * 24 * 60 * 60_000);
+      f.clock.advanceBy(7 * 24 * 60 * 60_000);
       expect(read(f.inbox, f.bobClient).items).toEqual([]);
       f.inbox.dispose();
       const replacement = createMentionInbox({
+        scheduler: f.scheduler,
         gatewayInstanceId: "replacement-gateway",
         getRuntimeConfig: () => ({}),
         getClients: () => f.clients,

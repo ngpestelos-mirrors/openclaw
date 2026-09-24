@@ -1,4 +1,5 @@
 import type { ExecApprovalDecision, ExecApprovalRequestPayload } from "../infra/exec-approvals.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import {
   ApprovalMutationRefusedError,
@@ -68,7 +69,7 @@ export class ExecApprovalManager<
   TPayload = ExecApprovalRequestPayload,
 > extends ExecApprovalExpiry<TPayload> {
   constructor(protected readonly options: ExecApprovalManagerOptions<TPayload>) {
-    super();
+    super(options.scheduler ?? new GatewayScheduler());
   }
 
   override get approvalKind(): OperatorApprovalKind {

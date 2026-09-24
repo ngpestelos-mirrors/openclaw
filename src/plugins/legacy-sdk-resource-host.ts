@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { AsyncWorkScope, getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
@@ -25,6 +26,19 @@ export class LegacyPluginSdkResourceHost {
   private readonly pending = new Set<Promise<void>>();
   private readonly failures: unknown[] = [];
   private closing?: Promise<void>;
+  private gatewayScheduler?: GatewayScheduler;
+
+  get scheduler(): GatewayScheduler | undefined {
+    return this.gatewayScheduler;
+  }
+
+  bindScheduler(scheduler: GatewayScheduler): void {
+    this.assertOpen();
+    if (this.gatewayScheduler && this.gatewayScheduler !== scheduler) {
+      throw new Error("Plugin SDK resource host already belongs to another Gateway scheduler");
+    }
+    this.gatewayScheduler = scheduler;
+  }
 
   assertOpen(): void {
     if (this.closing || this.work.isClosing) {
@@ -166,7 +180,7 @@ export function bindLegacyPluginSdkResourceHost(
   gatewayHosts.set(resolver, host);
 }
 
-function getBoundLegacyPluginSdkResourceHost(): LegacyPluginSdkResourceHost | undefined {
+export function getBoundLegacyPluginSdkResourceHost(): LegacyPluginSdkResourceHost | undefined {
   const scope = getPluginRuntimeGatewayRequestScope();
   const resolver = scope?.resolveGatewayContext ?? scope?.context?.resolveGatewayContext;
   if (resolver) {

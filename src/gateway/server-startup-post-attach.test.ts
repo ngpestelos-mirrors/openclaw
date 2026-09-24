@@ -260,8 +260,9 @@ vi.mock("./server-startup-handler-prewarm.js", () => ({
 const {
   startGatewayPostAttachRuntime: startGatewayPostAttachRuntimeImpl,
   startGatewaySidecars: startGatewaySidecarsImpl,
-  testing,
 } = await import("./server-startup-post-attach.js");
+const { refreshLatestUpdateRestartSentinelIfPresent } =
+  await import("./server-startup-restart-sentinel.js");
 const { scheduleContextCachePrewarm } = await import("./server-startup-context-cache-prewarm.js");
 const { STARTUP_UNAVAILABLE_GATEWAY_METHODS } = await import("./methods/core-method-policy.js");
 
@@ -879,40 +880,6 @@ describe("startGatewayPostAttachRuntime", () => {
     expect(events).toEqual(["sidecars", "returned", "sentinel"]);
   });
 
-  it("keeps delayed restart sentinel recovery admitted until wake work completes", async () => {
-    vi.useFakeTimers();
-    const { promise: wake, resolve: finishWake } = createDeferred();
-    hoisted.scheduleRestartSentinelWake.mockReturnValueOnce(wake);
-
-    const sidecar = testing.scheduleRestartSentinelWakeAfterReady({
-      deps: {} as never,
-      log: { warn: vi.fn() },
-    });
-    await vi.advanceTimersByTimeAsync(750);
-
-    expect(hoisted.scheduleRestartSentinelWake).toHaveBeenCalledOnce();
-    expect(getActiveGatewayRootWorkCount()).toBe(1);
-
-    finishWake?.();
-    await waitForGatewayTestState(() => {
-      expect(getActiveGatewayRootWorkCount()).toBe(0);
-    });
-    await stopTrackedSidecar(sidecar);
-  });
-
-  it("cancels delayed restart sentinel recovery when the gateway closes", async () => {
-    vi.useFakeTimers();
-    const sidecar = testing.scheduleRestartSentinelWakeAfterReady({
-      deps: {} as never,
-      log: { warn: vi.fn() },
-    });
-
-    await stopTrackedSidecar(sidecar);
-    await vi.advanceTimersByTimeAsync(750);
-
-    expect(hoisted.scheduleRestartSentinelWake).not.toHaveBeenCalled();
-  });
-
   it("starts sidecars while startup logging is pending and waits for both", async () => {
     const events: string[] = [];
     let finishStartupLog: (() => void) | undefined;
@@ -1269,7 +1236,7 @@ describe("startGatewayPostAttachRuntime", () => {
       await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
         hoisted.refreshLatestUpdateRestartSentinel.mockClear();
 
-        const result = await testing.refreshLatestUpdateRestartSentinelIfPresent();
+        const result = await refreshLatestUpdateRestartSentinelIfPresent();
 
         expect(result).toBeNull();
         expect(hoisted.refreshLatestUpdateRestartSentinel).not.toHaveBeenCalled();
@@ -1296,7 +1263,7 @@ describe("startGatewayPostAttachRuntime", () => {
         hoisted.refreshLatestUpdateRestartSentinel.mockClear();
         hoisted.refreshLatestUpdateRestartSentinel.mockResolvedValue(sentinel);
 
-        const result = await testing.refreshLatestUpdateRestartSentinelIfPresent();
+        const result = await refreshLatestUpdateRestartSentinelIfPresent();
 
         expect(result).toBe(sentinel);
         expect(hoisted.refreshLatestUpdateRestartSentinel).toHaveBeenCalledOnce();
