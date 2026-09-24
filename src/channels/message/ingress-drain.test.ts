@@ -1,6 +1,7 @@
 // Durable ingress drain contract tests for lifecycle reliability invariants.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import {
   createChannelIngressDrain,
@@ -108,6 +109,7 @@ describe("channel ingress drain", () => {
       const queue = createTestIngressQueue(stateDir);
       await queue.enqueue("evt-adopt", { text: "x" }, { laneKey: "l1" });
 
+      const adopted = createDeferredCore();
       let settleResolve!: () => void;
       const settleGate = new Promise<void>((resolve) => {
         settleResolve = resolve;
@@ -116,23 +118,23 @@ describe("channel ingress drain", () => {
       const drain = createChannelIngressDrain<Payload>({
         queue,
         dispatchClaimedEvent: async (_event, lifecycle) => {
-          await lifecycle.onAdopted();
+          adopted.resolve(lifecycle.onAdopted());
+          await adopted.promise;
           // Simulate a long-running turn after adoption.
           await settleGate;
         },
       });
 
       await drain.drainOnce();
-      // Adoption already completed the claim before settle.
-      await vi.waitFor(async () => {
-        const pending = await queue.listPending();
-        expect(pending).toEqual([]);
-      });
-      const claims = await queue.listClaims();
-      expect(claims).toEqual([]);
-      settleResolve();
-      await drain.waitForIdle();
-      drain.dispose();
+      try {
+        await adopted.promise;
+        expect(await queue.listPending()).toEqual([]);
+        expect(await queue.listClaims()).toEqual([]);
+      } finally {
+        settleResolve();
+        await drain.waitForIdle();
+        drain.dispose();
+      }
     });
   });
 
@@ -878,6 +880,52 @@ describe("channel ingress drain", () => {
     });
   });
 
+  it("requires owner cancellation before finalizing retained claim custody", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue(stateDir);
+      await queue.enqueue("retained", { text: "pending" }, { laneKey: "lane" });
+      const abort = new AbortController();
+      let cancellation: Promise<void> | undefined;
+      const drain = createChannelIngressDrain<Payload>(
+        {
+          queue,
+          abortSignal: abort.signal,
+          dispatchClaimedEvent: async (_event, lifecycle) => {
+            lifecycle.abortSignal.addEventListener(
+              "abort",
+              () => {
+                cancellation = Promise.resolve(lifecycle.onCancelled?.());
+              },
+              { once: true },
+            );
+            return { kind: "deferred" };
+          },
+        },
+        true,
+      );
+      try {
+        await drain.drainOnce();
+        await drain.waitForIdle();
+        const claim = await queue.listClaims();
+        expect(claim).toHaveLength(1);
+        await expect(drain.dispose({ waitForSettlements: true })).rejects.toThrow(
+          "already-aborted retained owner",
+        );
+        expect(cancellation).toBeUndefined();
+        expect(await queue.listClaims()).toEqual(claim);
+
+        abort.abort();
+        await drain.dispose({ waitForSettlements: true });
+        expect(await queue.listClaims()).toEqual([]);
+        expect(await queue.listPending()).toMatchObject([{ id: "retained", attempts: 0 }]);
+      } finally {
+        abort.abort();
+        await cancellation;
+        drain.dispose();
+      }
+    });
+  });
+
   it("does not steal live peer-drain claims; recovers after owner abort", async () => {
     await withTempState(async (stateDir) => {
       const queue = createTestIngressQueue(stateDir);
@@ -918,6 +966,9 @@ describe("channel ingress drain", () => {
       expect(secondDispatches).toEqual([]);
 
       firstAbort.abort();
+      await expect(first.dispose({ waitForSettlements: true })).rejects.toThrow(
+        "already-aborted retained owner",
+      );
       // Aborted owners retire before an uncooperative handler returns, allowing
       // the replacement drain to recover under the claim-token fence.
       const recovered = await second.recoverStaleClaims();

@@ -18,6 +18,7 @@ export function createTestIngressQueue(
     channelId: "test",
     accountId: "a",
     stateDir,
+    now: () => Date.now(),
     ...options,
   });
 }

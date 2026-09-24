@@ -165,6 +165,11 @@ export type ChannelIngressQueue<TPayload, TMetadata = unknown, TCompletedMetadat
     orderBy?: "received" | "id";
   }): Promise<Array<ChannelIngressQueueRecord<TPayload, TMetadata>>>;
   listClaims(): Promise<Array<ChannelIngressQueueClaim<TPayload, TMetadata>>>;
+  /** Coherent lane state; optional for existing external queue implementations. */
+  listUnsettled?(options?: { orderBy?: "received" | "id" }): Promise<{
+    pending: Array<ChannelIngressQueueRecord<TPayload, TMetadata>>;
+    claims: Array<ChannelIngressQueueClaim<TPayload, TMetadata>>;
+  }>;
   /** Additive SDK seam; optional so existing external queue test doubles remain compatible. */
   listFailed?(options?: {
     limit?: number | "all";
@@ -243,7 +248,7 @@ export type ChannelIngressRow = Selectable<ChannelIngressEvents>;
 export type ChannelIngressScope = { channelId: string; accountId: string; queueName: string };
 export type ChannelIngressListInput = {
   queueName: string;
-  status: "pending" | "claimed" | "failed";
+  status: "pending" | "claimed" | "failed" | "unsettled";
   limit?: number | "all";
   orderBy?: "received" | "id";
 };

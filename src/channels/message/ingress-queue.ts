@@ -327,6 +327,25 @@ export function createChannelIngressQueue<
         .map((row) => claimedRecord<TPayload, TMetadata>(row))
         .filter((row): row is ChannelIngressQueueClaim<TPayload, TMetadata> => row !== null);
     },
+    async listUnsettled(listOptions) {
+      const rows = await readRows({ status: "unsettled", ...listOptions });
+      const pending: Array<ChannelIngressQueueRecord<TPayload, TMetadata>> = [];
+      const claims: Array<ChannelIngressQueueClaim<TPayload, TMetadata>> = [];
+      for (const row of rows) {
+        if (row.status === "claimed") {
+          const claim = claimedRecord<TPayload, TMetadata>(row);
+          if (claim) {
+            claims.push(claim);
+          }
+        } else {
+          const record = baseRecord<TPayload, TMetadata>(row);
+          if (record) {
+            pending.push(record);
+          }
+        }
+      }
+      return { pending, claims };
+    },
     async listFailed(listOptions) {
       return (await readRows({ status: "failed", ...listOptions })).map((row) =>
         failedRecord<TPayload, TMetadata>(row),

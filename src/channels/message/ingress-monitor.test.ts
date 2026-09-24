@@ -8,7 +8,9 @@ import {
   runWithGatewayIndependentRootWorkAdmission,
   runWithGatewayIndependentRootWorkContinuation,
 } from "../../process/gateway-work-admission.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { createChannelIngressDrain } from "./ingress-drain.js";
 import { createChannelIngressError } from "./ingress-errors.js";
 import {
   CHANNEL_INGRESS_RETENTION_DEFAULTS,
@@ -509,15 +511,15 @@ describe("channel ingress monitor", () => {
         const pendingScanGate = new Promise<void>((resolve) => {
           releasePendingScan = resolve;
         });
-        const listPending = queue.listPending.bind(queue);
+        const listUnsettled = queue.listUnsettled!.bind(queue);
         let gateNextPendingScan = true;
-        queue.listPending = async (...args) => {
+        queue.listUnsettled = async (...args) => {
           if (gateNextPendingScan) {
             gateNextPendingScan = false;
             markPendingScanStarted();
             await pendingScanGate;
           }
-          return await listPending(...args);
+          return await listUnsettled(...args);
         };
 
         oldMonitor.requestDrain();
@@ -721,15 +723,15 @@ describe("channel ingress monitor", () => {
       const pendingScanGate = new Promise<void>((resolve) => {
         releasePendingScan = resolve;
       });
-      const listPending = queue.listPending.bind(queue);
+      const listUnsettled = queue.listUnsettled!.bind(queue);
       let gateNextPendingScan = true;
-      queue.listPending = async (...args) => {
+      queue.listUnsettled = async (...args) => {
         if (gateNextPendingScan) {
           gateNextPendingScan = false;
           markPendingScanStarted();
           await pendingScanGate;
         }
-        return await listPending(...args);
+        return await listUnsettled(...args);
       };
       monitor.start();
       try {
@@ -755,7 +757,7 @@ describe("channel ingress monitor", () => {
     });
   });
 
-  it("does not let a blocked settlement write wedge stop", async () => {
+  it("joins a settlement write before disposing the drain on stop", async () => {
     await withQueue(async (queue) => {
       let markReleaseStarted = () => {};
       const releaseStarted = new Promise<void>((resolve) => {
@@ -766,10 +768,13 @@ describe("channel ingress monitor", () => {
         releaseSettlement = resolve;
       });
       const release = queue.release.bind(queue);
+      const order: string[] = [];
       const blockedRelease: typeof queue.release = async (idOrClaim, releaseOptions) => {
         markReleaseStarted();
         await settlementGate;
-        return await release(idOrClaim, releaseOptions);
+        const result = await release(idOrClaim, releaseOptions);
+        order.push("committed");
+        return result;
       };
       queue.release = vi.fn(blockedRelease);
       const monitor = createMonitor(queue, async () => ({
@@ -780,13 +785,12 @@ describe("channel ingress monitor", () => {
       await monitor.admit({ id: "event-stop-settlement", lane: "a", text: "hello" });
       await releaseStarted;
 
-      const stopping = monitor.stop();
-      let stopped = false;
-      void stopping.then(() => {
-        stopped = true;
-      });
+      const stopping = monitor.stop().then(() => order.push("stopped"));
       try {
-        await vi.waitFor(() => expect(stopped).toBe(true));
+        await monitor.waitForPumpIdle();
+        releaseSettlement();
+        await stopping;
+        expect(order).toEqual(["committed", "stopped"]);
       } finally {
         releaseSettlement();
         await stopping;
@@ -905,7 +909,7 @@ describe("channel ingress monitor", () => {
   });
 
   it.each(["onDeferred", "onAdoptionFinalizing"] as const)(
-    "waits for tracked %s claims to settle after drain disposal",
+    "waits for tracked %s claims to settle before drain disposal",
     async (handoff) => {
       await withQueue(async (queue) => {
         let deferredLifecycle: ChannelIngressMonitorLifecycle | undefined;
@@ -931,6 +935,92 @@ describe("channel ingress monitor", () => {
         await deferredLifecycle?.onAbandoned();
         await stopping;
         expect(stopped).toBe(true);
+      });
+    },
+  );
+
+  it.each(
+    (["cancel", "adopt", "completed", "failed"] as const).flatMap((settlementKind) =>
+      [false, true].map((waitForDeliveryIdleOnStop) => ({
+        settlementKind,
+        waitForDeliveryIdleOnStop,
+      })),
+    ),
+  )(
+    "joins the $settlementKind write before disposal with delivery wait=$waitForDeliveryIdleOnStop",
+    async ({ settlementKind, waitForDeliveryIdleOnStop }) => {
+      await withQueue(async (queue) => {
+        const started = createDeferredCore();
+        const writeStarted = createDeferredCore();
+        const commit = createDeferredCore();
+        const order: string[] = [];
+        const pauseWrite = async (write: () => Promise<boolean>) => {
+          writeStarted.resolve();
+          await commit.promise;
+          const result = await write();
+          order.push("committed");
+          return result;
+        };
+        if (settlementKind === "cancel" || settlementKind === "failed") {
+          const release = queue.release.bind(queue);
+          vi.spyOn(queue, "release").mockImplementation((...args) =>
+            pauseWrite(() => release(...args)),
+          );
+        } else {
+          const complete = queue.complete.bind(queue);
+          vi.spyOn(queue, "complete").mockImplementation((...args) =>
+            pauseWrite(() => complete(...args)),
+          );
+        }
+        let settlement = Promise.resolve();
+        const monitor = createMonitor(
+          queue,
+          async (_raw, lifecycle) => {
+            started.resolve();
+            if (settlementKind === "completed") {
+              return { kind: "completed" };
+            }
+            if (settlementKind === "failed") {
+              return { kind: "failed-retryable", error: new Error("retry delivery") };
+            }
+            await waitForAbort(lifecycle.abortSignal);
+            settlement = Promise.resolve(
+              settlementKind === "cancel" ? lifecycle.onCancelled?.() : lifecycle.onAdopted(),
+            );
+            return { kind: settlementKind === "cancel" ? "deferred" : "completed" };
+          },
+          { deferredClaims: "wait-on-stop", waitForDeliveryIdleOnStop },
+        );
+        monitor.start();
+        await monitor.admit({ id: "inline-settlement", lane: "a", text: "hello" });
+        await started.promise;
+        if (settlementKind === "completed" || settlementKind === "failed") {
+          await writeStarted.promise;
+        }
+        const stopping = monitor.stop().then(() => order.push("stopped"));
+        const successor = createChannelIngressDrain({
+          queue,
+          dispatchClaimedEvent: async (_claim, lifecycle) => {
+            await lifecycle.onAdopted();
+          },
+        });
+        try {
+          await writeStarted.promise;
+          await monitor.waitForPumpIdle();
+          expect(await successor.drainOnce()).toEqual({ started: 0 });
+          commit.resolve();
+          await Promise.all([settlement, stopping]);
+          expect(order).toEqual(["committed", "stopped"]);
+          expect(await queue.listClaims()).toEqual([]);
+          expect((await queue.listPending()).map((row) => row.id)).toEqual(
+            settlementKind === "cancel" || settlementKind === "failed" ? ["inline-settlement"] : [],
+          );
+        } finally {
+          commit.resolve();
+          await Promise.allSettled([settlement, stopping]);
+          await successor.waitForIdle();
+          successor.dispose();
+        }
       });
     },
   );

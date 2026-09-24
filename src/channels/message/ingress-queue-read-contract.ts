@@ -61,7 +61,10 @@ export function isChannelIngressReadCommand(value: unknown): value is ChannelIng
   }
   if (value.type === "channelIngress.list") {
     return (
-      (input.status === "pending" || input.status === "claimed" || input.status === "failed") &&
+      (input.status === "pending" ||
+        input.status === "claimed" ||
+        input.status === "failed" ||
+        input.status === "unsettled") &&
       (input.limit === undefined || input.limit === "all" || typeof input.limit === "number") &&
       (input.orderBy === undefined || input.orderBy === "received" || input.orderBy === "id")
     );

@@ -112,7 +112,7 @@ describe("LINE webhook spool", () => {
           activeDeliveries -= 1;
         }
       });
-      const listPending = vi.spyOn(queue, "listPending");
+      const listUnsettled = vi.spyOn(queue, "listUnsettled");
       const spool = createLineWebhookSpool({
         accountId: "default",
         runtime: runtime(),
@@ -135,10 +135,10 @@ describe("LINE webhook spool", () => {
           setImmediate(resolve);
         });
 
-        const drainScansBeforeNinth = listPending.mock.calls.length;
+        const drainScansBeforeNinth = listUnsettled.mock.calls.length;
         await spool.accept(callback(ninth));
         await vi.waitFor(() =>
-          expect(listPending.mock.calls.length).toBeGreaterThan(drainScansBeforeNinth),
+          expect(listUnsettled.mock.calls.length).toBeGreaterThan(drainScansBeforeNinth),
         );
 
         expect(deliver).toHaveBeenCalledTimes(8);

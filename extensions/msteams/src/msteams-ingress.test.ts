@@ -7,6 +7,7 @@ import {
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMSTeamsIngress } from "./msteams-ingress.js";
 import { createMSTeamsReplayContext } from "./replay-context.js";
@@ -89,6 +90,7 @@ async function withQueue<T>(fn: (queue: IngressQueue) => Promise<T>): Promise<T>
   try {
     return await fn(queue);
   } finally {
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   }
@@ -455,7 +457,7 @@ describe("Microsoft Teams durable ingress", () => {
           active -= 1;
         }
       });
-      const listPending = vi.spyOn(queue, "listPending");
+      const listUnsettled = vi.spyOn(queue, "listUnsettled");
       const ingress = makeIngress(queue, dispatch);
       ingress.start();
       try {
@@ -469,10 +471,10 @@ describe("Microsoft Teams durable ingress", () => {
           setImmediate(resolve);
         });
 
-        const drainScansBeforeNinth = listPending.mock.calls.length;
+        const drainScansBeforeNinth = listUnsettled.mock.calls.length;
         await ingress.accept(activity({ id: "activity-concurrency-8", conversationId: "lane-8" }));
         await vi.waitFor(() =>
-          expect(listPending.mock.calls.length).toBeGreaterThan(drainScansBeforeNinth),
+          expect(listUnsettled.mock.calls.length).toBeGreaterThan(drainScansBeforeNinth),
         );
 
         expect(dispatch).toHaveBeenCalledTimes(8);

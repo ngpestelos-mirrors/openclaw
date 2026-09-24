@@ -69,7 +69,9 @@ and rejects stale recovery decisions. A conflicting claim snapshot is prepared
 again; an uncertain write is never replayed. Database admission and commit remain
 bound to the captured owner, and shutdown joins accepted work. The existing
 `channel_ingress_events` schema, payload encoding, dedupe windows, retention, and
-update behavior are unchanged.
+update behavior are unchanged. Drain inspection reads pending and claimed rows in
+one snapshot so a concurrent release cannot hide a lane head between reads.
+Shutdown joins deferred settlement even when it starts before dispatch returns.
 
 Before yielding, capture the physical store target, source/admission scope,
 request identity, and the owning projection revision. The lifecycle owner retains

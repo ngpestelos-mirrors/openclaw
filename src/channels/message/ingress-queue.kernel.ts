@@ -63,7 +63,7 @@ export function listChannelIngressRowsInDatabase(
     .selectFrom("channel_ingress_events")
     .selectAll()
     .where("queue_name", "=", input.queueName)
-    .where("status", "=", input.status);
+    .where("status", "in", input.status === "unsettled" ? ["pending", "claimed"] : [input.status]);
   if (input.status === "claimed") {
     return executeSqliteQuerySync(
       db,
@@ -79,11 +79,18 @@ export function listChannelIngressRowsInDatabase(
         .limit(normalizeLimit(input.limit)),
     ).rows;
   }
+  const ordered =
+    input.orderBy === "id"
+      ? select.orderBy("event_id", "asc")
+      : select.orderBy("received_at", "asc").orderBy("event_id", "asc");
+  if (input.status === "unsettled") {
+    return executeSqliteQuerySync(db, ordered).rows;
+  }
   const limit = normalizeLimit(input.limit);
   const result: ChannelIngressRow[] = [];
   let last: ChannelIngressRow | undefined;
   while (result.length < limit) {
-    let page = select;
+    let page = ordered;
     if (last) {
       const cursor = last;
       page =
@@ -99,11 +106,7 @@ export function listChannelIngressRowsInDatabase(
               ]),
             );
     }
-    const ordered =
-      input.orderBy === "id"
-        ? page.orderBy("event_id", "asc")
-        : page.orderBy("received_at", "asc").orderBy("event_id", "asc");
-    const rows = executeSqliteQuerySync(db, ordered.limit(100)).rows;
+    const rows = executeSqliteQuerySync(db, page.limit(100)).rows;
     for (const row of rows) {
       if (baseRecord(row)) {
         result.push(row);
