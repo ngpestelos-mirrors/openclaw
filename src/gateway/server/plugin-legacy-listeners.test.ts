@@ -69,7 +69,7 @@ describe("legacy channel webhook ports", () => {
   });
 
   afterEach(async () => {
-    for (const cleanup of cleanups.splice(0).reverse()) {
+    for (const cleanup of cleanups.splice(0).toReversed()) {
       cleanup();
     }
     registry = createEmptyPluginRegistry();
@@ -83,7 +83,9 @@ describe("legacy channel webhook ports", () => {
   afterAll(async () => {
     stop();
     gatewayServer.closeAllConnections();
-    await new Promise<void>((resolve) => gatewayServer.close(() => resolve()));
+    await new Promise<void>((resolve) => {
+      gatewayServer.close(() => resolve());
+    });
     await claim.release();
   });
 
@@ -110,7 +112,8 @@ describe("legacy channel webhook ports", () => {
     await Promise.all(
       httpServers
         .slice(1)
-        .map((server) => (server.listening ? undefined : once(server, "listening"))),
+        .filter((server) => !server.listening)
+        .map((server) => once(server, "listening")),
     );
   };
 
