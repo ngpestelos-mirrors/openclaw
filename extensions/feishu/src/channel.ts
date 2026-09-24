@@ -30,6 +30,7 @@ import {
   createRuntimeDirectoryLiveAdapter,
 } from "openclaw/plugin-sdk/directory-runtime";
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
+import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
 import { resolveLegacyInteractiveTextFallback } from "openclaw/plugin-sdk/interactive-runtime";
 import { createLazyRuntimeNamedExport } from "openclaw/plugin-sdk/lazy-runtime";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
@@ -1857,7 +1858,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             { cfg: ctx.cfg, accountId: ctx.accountId },
             { requireEventSecrets: true },
           );
-          const port = account.config?.webhookPort ?? null;
+          const port =
+            account.config?.connectionMode === "webhook" ? resolveGatewayPort(ctx.cfg) : null;
           ctx.setStatus({ accountId: ctx.accountId, port });
           ctx.log?.info(
             `starting feishu[${ctx.accountId}] (mode: ${account.config?.connectionMode ?? "websocket"})`,

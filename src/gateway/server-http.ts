@@ -21,6 +21,7 @@ import {
 import { runHttpConnectionRequest } from "../infra/http-request-lifecycle.js";
 import { readTailscaleWhoisIdentity } from "../infra/tailscale.js";
 import { parseDevicePairingJoinRequestPath } from "../pairing/join-code.js";
+import { getWebhookLegacyListener } from "../plugins/http-legacy-listener.js";
 import { resolveAssistantAgentId } from "./assistant-identity.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
@@ -253,7 +254,8 @@ export function createGatewayHttpServer(opts: {
         sendGatewayAuthFailure(res, { ok: false, reason: "unauthorized" });
         return;
       }
-      if (classifyGatewayProbePath(requestPath) === "live") {
+      const legacyPluginRequest = getWebhookLegacyListener(req) !== undefined;
+      if (!legacyPluginRequest && classifyGatewayProbePath(requestPath) === "live") {
         await handleGatewayProbeRequest(
           req,
           res,
@@ -618,6 +620,9 @@ export function createGatewayHttpServer(opts: {
       }
       // Core and recovery routes run first, then plugin routes, then read-only Control UI
       // surfaces. Non-GET requests the SPA does not claim reach the startup 503 before final 404.
+      if (legacyPluginRequest) {
+        requestStages.length = 0;
+      }
       if (handlePluginRequest) {
         let pluginGatewayAuthSatisfied = false;
         let pluginGatewayRequestAuth: AuthorizedGatewayHttpRequest | undefined;
@@ -667,6 +672,11 @@ export function createGatewayHttpServer(opts: {
           },
         );
       }
+
+      addRequestStage(legacyPluginRequest, () => {
+        respondNotFound(res);
+        return true;
+      });
 
       addRequestStage(focusDocument, handleStandaloneControlUiRequest);
 

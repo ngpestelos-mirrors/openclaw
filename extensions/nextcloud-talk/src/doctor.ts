@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ChannelDoctorAdapter } from "openclaw/plugin-sdk/channel-contract";
 import { fileExists } from "openclaw/plugin-sdk/file-access-runtime";
+import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
 import { migratePersistentDedupeLegacyJsonFile } from "openclaw/plugin-sdk/persistent-dedupe";
 import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
 import { listNextcloudTalkAccountIds, resolveNextcloudTalkAccount } from "./accounts.js";
@@ -18,6 +19,10 @@ import {
   NEXTCLOUD_TALK_REPLAY_DEDUPE_TTL_MS,
 } from "./replay-migration-contract.js";
 import type { CoreConfig } from "./types.js";
+import {
+  DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH,
+  describeNextcloudTalkWebhookProbeConflict,
+} from "./webhook-route.js";
 
 function sanitizeLegacyReplaySegment(value: string): string {
   const trimmed = value.trim();
@@ -29,12 +34,36 @@ function sanitizeLegacyReplaySegment(value: string): string {
 
 async function collectNextcloudTalkBotResponseWarnings(params: {
   cfg: CoreConfig;
+  env?: NodeJS.ProcessEnv;
 }): Promise<string[]> {
   const warnings: string[] = [];
   for (const accountId of listNextcloudTalkAccountIds(params.cfg)) {
     const account = resolveNextcloudTalkAccount({ cfg: params.cfg, accountId });
     if (!account.enabled || !account.secret || !account.baseUrl) {
       continue;
+    }
+    const gatewayPort = resolveGatewayPort({ gateway: params.cfg.gateway }, params.env);
+    const webhookPath = account.config.webhookPath ?? DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH;
+    const destination = `Gateway port ${gatewayPort}${webhookPath}`;
+    const probeConflict = describeNextcloudTalkWebhookProbeConflict(webhookPath, gatewayPort);
+    if (probeConflict) {
+      warnings.push(
+        `- channels.nextcloud-talk.${account.accountId}: ${probeConflict}` +
+          (account.config.legacyWebhook
+            ? " The configured legacy webhook listener remains available; verify the new route before removing legacyWebhook."
+            : " This account cannot start until the callback path is changed."),
+      );
+    } else if (account.config.legacyWebhook) {
+      warnings.push(
+        `- channels.nextcloud-talk.${account.accountId}: legacy webhook port ${account.config.legacyWebhook.port} is deprecated. ` +
+          `Point the Nextcloud callback or reverse-proxy upstream to ${destination}, ` +
+          "verify delivery, then remove legacyWebhook. Compatibility is scheduled for removal after the two-month migration window.",
+      );
+    } else {
+      warnings.push(
+        `- channels.nextcloud-talk.${account.accountId}: the former default webhook port 8788 is no longer opened. ` +
+          `Point the Nextcloud callback or reverse-proxy upstream to ${destination} and verify delivery.`,
+      );
     }
     const result = await probeNextcloudTalkBotResponseFeature({
       account,
@@ -94,8 +123,8 @@ async function repairNextcloudTalkReplayDedupeState(params: {
 export const nextcloudTalkDoctor: ChannelDoctorAdapter = {
   legacyConfigRules: NEXTCLOUD_TALK_LEGACY_CONFIG_RULES,
   normalizeCompatibilityConfig: normalizeNextcloudTalkCompatibilityConfig,
-  collectPreviewWarnings: async ({ cfg }) =>
-    await collectNextcloudTalkBotResponseWarnings({ cfg: cfg as CoreConfig }),
+  collectPreviewWarnings: async ({ cfg, env }) =>
+    await collectNextcloudTalkBotResponseWarnings({ cfg: cfg as CoreConfig, env }),
   repairConfig: async ({ cfg, env }) => {
     const repair = await repairNextcloudTalkReplayDedupeState({
       cfg: cfg as CoreConfig,

@@ -292,3 +292,20 @@ describe("feishu webhook route doctor migration", () => {
     ]);
   });
 });
+
+describe("feishu Gateway listener migration", () => {
+  it("preserves explicit root and account listeners through canonical config and is idempotent", () => {
+    const result = normalizeCompatibilityConfig({
+      cfg: feishuConfig({
+        webhookPort: 3000,
+        webhookHost: "127.0.0.1",
+        accounts: { second: { webhookPort: 3001 } },
+      }),
+    });
+    const parsed = FeishuConfigSchema.parse(result.config.channels?.feishu);
+    expect(parsed.legacyWebhook).toEqual({ port: 3000, host: "127.0.0.1" });
+    expect(parsed.accounts?.second?.legacyWebhook).toEqual({ port: 3001, host: "127.0.0.1" });
+    expect(normalizeCompatibilityConfig({ cfg: result.config }).changes).toEqual([]);
+    expect(FeishuConfigSchema.safeParse({ webhookPort: 3000 }).success).toBe(false);
+  });
+});

@@ -9,10 +9,7 @@ import {
   fetchWithSsrFGuard,
   ssrfPolicyFromHttpBaseUrlAllowedOrigin,
 } from "openclaw/plugin-sdk/ssrf-runtime";
-import {
-  reserveMSTeamsQaWebhookPort,
-  startMSTeamsQaBotFrameworkServer,
-} from "./bot-framework-server.js";
+import { startMSTeamsQaBotFrameworkServer } from "./bot-framework-server.js";
 
 type AdapterFactory = NonNullable<QaRunnerCliRegistration["adapterFactory"]>;
 type FactoryContext = Parameters<AdapterFactory["create"]>[0];
@@ -96,7 +93,7 @@ export async function createMSTeamsQaTransportAdapter(
   context: FactoryContext,
 ): Promise<AdapterDefinition> {
   const accountId = context.adapterOptions?.sutAccountId?.trim() || DEFAULT_ACCOUNT_ID;
-  const webhookPort = await reserveMSTeamsQaWebhookPort();
+  let webhookUrl: string | undefined;
   const nonce = randomUUID();
   const botToken = createMSTeamsQaBotToken();
   const bootstrapPath = path.join(context.outputDir, ".msteams-private-qa-bootstrap.mjs");
@@ -193,7 +190,9 @@ export async function createMSTeamsQaTransportAdapter(
           channel: { id: conversationId },
         },
       };
-      const webhookUrl = `http://127.0.0.1:${webhookPort}/api/messages`;
+      if (!webhookUrl) {
+        throw new Error("Microsoft Teams QA Gateway URL has not been configured");
+      }
       const { response, release } = await fetchWithSsrFGuard({
         url: webhookUrl,
         init: {
@@ -231,8 +230,9 @@ export async function createMSTeamsQaTransportAdapter(
       conversationKindByNativeId.clear();
       logicalConversationByNativeId.clear();
     },
-    createGatewayConfig: () =>
-      ({
+    createGatewayConfig: ({ baseUrl }) => {
+      webhookUrl = new URL("/api/messages", baseUrl).toString();
+      return {
         channels: {
           msteams: {
             enabled: true,
@@ -244,10 +244,11 @@ export async function createMSTeamsQaTransportAdapter(
             groupPolicy: "open",
             requireMention: requireGroupMention,
             replyStyle: "thread",
-            webhook: { port: webhookPort, path: "/api/messages" },
+            webhook: { path: "/api/messages" },
           },
         },
-      }) as Pick<OpenClawConfig, "channels" | "messages">,
+      } satisfies Pick<OpenClawConfig, "channels" | "messages">;
+    },
     createRuntimeEnvPatch: () => ({
       OPENCLAW_BUILD_PRIVATE_QA: "1",
       NODE_OPTIONS: [process.env.NODE_OPTIONS?.trim(), `--import=${bootstrapUrl}`]

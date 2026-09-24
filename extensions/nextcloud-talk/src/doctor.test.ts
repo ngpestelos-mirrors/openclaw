@@ -70,33 +70,69 @@ describe("nextcloud-talk doctor", () => {
     });
   });
 
-  it("warns when the configured bot is missing the response feature", async () => {
-    hoisted.probeNextcloudTalkBotResponseFeature.mockResolvedValueOnce({
-      ok: false,
-      code: "missing_response_feature",
-      message:
-        'Nextcloud Talk bot "OpenClaw" (1) is missing the response feature (features=9); outbound replies will fail.',
-    });
+  it.each([
+    {
+      label: "retained legacy listener",
+      webhookPath: undefined,
+      legacyWebhook: { port: 8788 },
+      expectedWarning:
+        "- channels.nextcloud-talk.default: legacy webhook port 8788 is deprecated. Point the Nextcloud callback or reverse-proxy upstream to Gateway port 19801/nextcloud-talk-webhook, verify delivery, then remove legacyWebhook. Compatibility is scheduled for removal after the two-month migration window.",
+    },
+    {
+      label: "retired implicit listener",
+      webhookPath: undefined,
+      legacyWebhook: undefined,
+      expectedWarning:
+        "- channels.nextcloud-talk.default: the former default webhook port 8788 is no longer opened. Point the Nextcloud callback or reverse-proxy upstream to Gateway port 19801/nextcloud-talk-webhook and verify delivery.",
+    },
+    {
+      label: "blocked probe path",
+      webhookPath: "/ready?tenant=a",
+      legacyWebhook: undefined,
+      expectedWarning:
+        '- channels.nextcloud-talk.default: Webhook path "/ready?tenant=a" is reserved for Gateway probes and cannot receive Nextcloud callbacks on the Gateway port. Set webhookPath to "/nextcloud-talk-webhook" and update the Nextcloud bot callback and reverse-proxy upstream to Gateway port 19801/nextcloud-talk-webhook. This account cannot start until the callback path is changed.',
+    },
+    {
+      label: "legacy probe path",
+      webhookPath: "/healthz?tenant=a",
+      legacyWebhook: { port: 8788 },
+      expectedWarning:
+        '- channels.nextcloud-talk.default: Webhook path "/healthz?tenant=a" is reserved for Gateway probes and cannot receive Nextcloud callbacks on the Gateway port. Set webhookPath to "/nextcloud-talk-webhook" and update the Nextcloud bot callback and reverse-proxy upstream to Gateway port 19801/nextcloud-talk-webhook. The configured legacy webhook listener remains available; verify the new route before removing legacyWebhook.',
+    },
+  ])(
+    "warns about $label and a missing response feature",
+    async ({ webhookPath, legacyWebhook, expectedWarning }) => {
+      hoisted.probeNextcloudTalkBotResponseFeature.mockResolvedValueOnce({
+        ok: false,
+        code: "missing_response_feature",
+        message:
+          'Nextcloud Talk bot "OpenClaw" (1) is missing the response feature (features=9); outbound replies will fail.',
+      });
 
-    await expect(
-      nextcloudTalkDoctor.collectPreviewWarnings?.({
-        cfg: {
-          channels: {
-            "nextcloud-talk": {
-              baseUrl: "https://cloud.example.com",
-              botSecret: "secret",
-              apiUser: "admin",
-              apiPassword: "app-password",
-              webhookPublicUrl: "https://gateway.example.com/nextcloud-talk-webhook",
+      await expect(
+        nextcloudTalkDoctor.collectPreviewWarnings?.({
+          cfg: {
+            channels: {
+              "nextcloud-talk": {
+                baseUrl: "https://cloud.example.com",
+                botSecret: "secret",
+                apiUser: "admin",
+                apiPassword: "app-password",
+                webhookPublicUrl: "https://gateway.example.com/nextcloud-talk-webhook",
+                webhookPath,
+                legacyWebhook,
+              },
             },
-          },
-        } as never,
-        doctorFixCommand: "openclaw doctor --fix",
-      }),
-    ).resolves.toEqual([
-      '- channels.nextcloud-talk.default: Nextcloud Talk bot "OpenClaw" (1) is missing the response feature (features=9); outbound replies will fail.',
-    ]);
-  });
+          } as never,
+          doctorFixCommand: "openclaw doctor --fix",
+          env: { OPENCLAW_GATEWAY_PORT: "19801" },
+        }),
+      ).resolves.toEqual([
+        expectedWarning,
+        '- channels.nextcloud-talk.default: Nextcloud Talk bot "OpenClaw" (1) is missing the response feature (features=9); outbound replies will fail.',
+      ]);
+    },
+  );
 
   it("migrates legacy replay dedupe JSON into SQLite during doctor repair", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-nextcloud-doctor-"));

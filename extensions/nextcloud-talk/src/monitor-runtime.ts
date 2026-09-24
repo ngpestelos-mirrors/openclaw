@@ -1,22 +1,22 @@
-// Nextcloud Talk plugin module implements monitor runtime behavior.
 import { resolveLoggerBackedRuntime } from "openclaw/plugin-sdk/extension-shared";
+import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveNextcloudTalkAccount } from "./accounts.js";
 import { handleNextcloudTalkInbound } from "./inbound.js";
-import { createNextcloudTalkWebhookServer } from "./monitor.js";
+import { registerNextcloudTalkWebhook } from "./monitor.js";
 import { getNextcloudTalkRuntime } from "./runtime.js";
 import type { CoreConfig, NextcloudTalkInboundMessage } from "./types.js";
+import {
+  DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH,
+  describeNextcloudTalkWebhookProbeConflict,
+} from "./webhook-route.js";
 import {
   createNextcloudTalkWebhookSpool,
   type NextcloudTalkIngressLifecycle,
 } from "./webhook-spool.js";
-
-const DEFAULT_WEBHOOK_PORT = 8788;
-const DEFAULT_WEBHOOK_HOST = "0.0.0.0";
-const DEFAULT_WEBHOOK_PATH = "/nextcloud-talk-webhook";
 
 function normalizeOrigin(value: string): string | null {
   try {
@@ -37,7 +37,6 @@ type NextcloudTalkMonitorOptions = {
   ) => void | Promise<void>;
   statusSink?: (patch: Omit<ChannelAccountSnapshot, "accountId">) => void;
   createSpool?: typeof createNextcloudTalkWebhookSpool;
-  createServer?: typeof createNextcloudTalkWebhookServer;
 };
 
 export async function monitorNextcloudTalkProvider(
@@ -58,9 +57,12 @@ export async function monitorNextcloudTalkProvider(
     throw new Error(`Nextcloud Talk bot secret not configured for account "${account.accountId}"`);
   }
 
-  const port = account.config.webhookPort ?? DEFAULT_WEBHOOK_PORT;
-  const host = account.config.webhookHost ?? DEFAULT_WEBHOOK_HOST;
-  const path = account.config.webhookPath ?? DEFAULT_WEBHOOK_PATH;
+  const path = account.config.webhookPath ?? DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH;
+  const gatewayPort = resolveGatewayPort({ gateway: cfg.gateway });
+  const probeConflict = describeNextcloudTalkWebhookProbeConflict(path, gatewayPort);
+  if (probeConflict && !account.config.legacyWebhook) {
+    throw new Error(`[nextcloud-talk:${account.accountId}] ${probeConflict}`);
+  }
 
   const logger = core.logging.getChildLogger({
     channel: "nextcloud-talk",
@@ -93,31 +95,12 @@ export async function monitorNextcloudTalkProvider(
     },
   });
 
-  const server = (opts.createServer ?? createNextcloudTalkWebhookServer)({
-    port,
-    host,
-    path,
-    secret: account.secret,
-    isBackendAllowed: (backend) => {
-      if (!expectedBackendOrigin) {
-        return true;
-      }
-      const backendOrigin = normalizeOrigin(backend);
-      return backendOrigin === expectedBackendOrigin;
-    },
-    onWebhook: spool.receive,
-    onError: (error) => {
-      logger.error(`[nextcloud-talk:${account.accountId}] webhook error: ${error.message}`);
-    },
-    trustedProxies: cfg.gateway?.trustedProxies,
-    allowRealIpFallback: cfg.gateway?.allowRealIpFallback,
-    abortSignal: opts.abortSignal,
-  });
-
+  let unregister: (() => void) | undefined;
   let stopPromise: Promise<void> | undefined;
   const stop = () => {
     stopPromise ??= (async () => {
-      await server.stop();
+      unregister?.();
+      unregister = undefined;
       await spool.stop();
     })();
     return stopPromise;
@@ -133,7 +116,29 @@ export async function monitorNextcloudTalkProvider(
   }
   try {
     await spool.ready();
-    await server.start();
+    if (opts.abortSignal?.aborted) {
+      await stop();
+      return { stop };
+    }
+    unregister = registerNextcloudTalkWebhook({
+      accountId: account.accountId,
+      legacyListener: account.config.legacyWebhook,
+      path,
+      secret: account.secret,
+      isBackendAllowed: (backend) => {
+        if (!expectedBackendOrigin) {
+          return true;
+        }
+        const backendOrigin = normalizeOrigin(backend);
+        return backendOrigin === expectedBackendOrigin;
+      },
+      onWebhook: spool.receive,
+      onError: (error) => {
+        logger.error(`[nextcloud-talk:${account.accountId}] webhook error: ${error.message}`);
+      },
+      trustedProxies: cfg.gateway?.trustedProxies,
+      allowRealIpFallback: cfg.gateway?.allowRealIpFallback,
+    });
   } catch (error) {
     await stop();
     throw error;
@@ -144,10 +149,29 @@ export async function monitorNextcloudTalkProvider(
   }
   opts.statusSink?.(channelReadyPatch());
 
-  const publicUrl =
-    account.config.webhookPublicUrl ??
-    `http://${host === "0.0.0.0" ? "localhost" : host}:${port}${path}`;
-  logger.info(`[nextcloud-talk:${account.accountId}] webhook listening on ${publicUrl}`);
+  if (probeConflict) {
+    logger.warn(
+      `[nextcloud-talk:${account.accountId}] ${probeConflict} ` +
+        "The configured legacy webhook listener remains available; verify the new route before removing legacyWebhook.",
+    );
+    return { stop };
+  }
+  logger.info(
+    `[nextcloud-talk:${account.accountId}] Gateway webhook route ready at port ${gatewayPort}${path}; ` +
+      "point the Nextcloud bot callback or reverse-proxy upstream here.",
+  );
+  if (account.config.legacyWebhook) {
+    logger.warn(
+      `[nextcloud-talk:${account.accountId}] legacy webhook port ${account.config.legacyWebhook.port} is deprecated. ` +
+        `Point the Nextcloud bot callback or reverse-proxy upstream to Gateway port ${gatewayPort}${path}, ` +
+        "then remove legacyWebhook. The compatibility listener is scheduled for removal after the two-month migration window.",
+    );
+  } else {
+    logger.warn(
+      `[nextcloud-talk:${account.accountId}] the former default webhook port 8788 is no longer opened. ` +
+        `Point the Nextcloud bot callback or reverse-proxy upstream to Gateway port ${gatewayPort}${path} and verify delivery.`,
+    );
+  }
 
   return { stop };
 }

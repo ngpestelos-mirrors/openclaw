@@ -10,9 +10,10 @@ import {
 import {
   buildWebhookConfig,
   createFeishuWebhookTestAccount,
-  getFreePort,
+  getGatewayPort,
+  getGatewayServer,
   signFeishuPayload,
-  waitUntilServerReady,
+  waitForWebhookRoute,
   withRunningWebhookMonitor,
 } from "./monitor.webhook.test-helpers.js";
 
@@ -70,7 +71,7 @@ import type { RuntimeEnv } from "../runtime-api.js";
 import { buildFeishuWebhookRateLimitKey } from "./monitor-rate-limit-key.js";
 import { cleanupFeishuMonitorStateForTests } from "./monitor.cleanup.test-helpers.js";
 import { monitorFeishuProvider } from "./monitor.js";
-import { feishuWebhookRateLimiter, httpServers } from "./monitor.state.js";
+import { feishuWebhookRateLimiter } from "./monitor.state.js";
 import { monitorWebhook } from "./monitor.transport.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
@@ -257,8 +258,8 @@ function resolveTestClientIp(remoteAddress: string | undefined): string | undefi
   } as IncomingMessage);
 }
 
-function waitForWebhookResponseClose(accountId: string): Promise<void> {
-  const server = httpServers.get(accountId);
+function waitForWebhookResponseClose(): Promise<void> {
+  const server = getGatewayServer();
   if (!server) {
     throw new Error("expected webhook server");
   }
@@ -290,7 +291,6 @@ describe("Feishu webhook security hardening", () => {
     const cfg = buildWebhookConfig({
       accountId: "missing-token",
       path: "/hook-missing-token",
-      port: await getFreePort(),
     });
 
     await expect(monitorFeishuProvider({ config: cfg })).rejects.toThrow(
@@ -304,7 +304,6 @@ describe("Feishu webhook security hardening", () => {
     const cfg = buildWebhookConfig({
       accountId: "missing-encrypt-key",
       path: "/hook-missing-encrypt",
-      port: await getFreePort(),
       verificationToken: "verify_token",
     });
 
@@ -317,8 +316,6 @@ describe("Feishu webhook security hardening", () => {
       config: {
         enabled: true,
         connectionMode: "webhook",
-        webhookHost: "127.0.0.1",
-        webhookPort: await getFreePort(),
         webhookPath: "/hook-transport-missing-encrypt",
       },
     } as ResolvedFeishuAccount;
@@ -373,7 +370,7 @@ describe("Feishu webhook security hardening", () => {
       monitorFeishuProvider,
       async (url) => {
         statusSink.mockClear();
-        const responseClosed = waitForWebhookResponseClose("payload-too-large");
+        const responseClosed = waitForWebhookResponseClose();
         const response = await waitForOversizedBodyResponse(url);
 
         expect(response).toContain("413 Payload Too Large");
@@ -408,7 +405,7 @@ describe("Feishu webhook security hardening", () => {
       monitorFeishuProvider,
       async (url) => {
         statusSink.mockClear();
-        const responseClosed = waitForWebhookResponseClose("slow-body-timeout");
+        const responseClosed = waitForWebhookResponseClose();
         const result = await waitForSlowBodyTimeoutResponse(url, 1_000);
         expect(result.body).toContain("408 Request Timeout");
         expect(result.body).toContain("Request body timeout");
@@ -431,7 +428,7 @@ describe("Feishu webhook security hardening", () => {
     webhookBodyTimeoutMs.value = 5_000;
     const accountId = "pre-auth-inflight";
     const path = "/hook-pre-auth-inflight";
-    const port = await getFreePort();
+    const port = await getGatewayPort();
     const abortController = new AbortController();
     const invokeWebhookEvent = vi.fn(async () => ({
       kind: "durable" as const,
@@ -439,7 +436,7 @@ describe("Feishu webhook security hardening", () => {
     }));
     const openRequests: Array<ReturnType<typeof openIncompleteWebhookRequest>> = [];
     const monitorPromise = monitorWebhook({
-      account: createFeishuWebhookTestAccount(accountId, port, path),
+      account: createFeishuWebhookTestAccount(accountId, path),
       accountId,
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       abortSignal: abortController.signal,
@@ -449,8 +446,8 @@ describe("Feishu webhook security hardening", () => {
 
     try {
       const url = `http://127.0.0.1:${port}${path}`;
-      await waitUntilServerReady(url);
-      const server = httpServers.get(accountId);
+      await waitForWebhookRoute(url);
+      const server = getGatewayServer();
       if (!server) {
         throw new Error("expected webhook server");
       }
@@ -515,7 +512,7 @@ describe("Feishu webhook security hardening", () => {
     preAuthInFlightLimit.value = 1;
     const accountId = "pre-auth-dispatch";
     const path = "/hook-pre-auth-dispatch";
-    const port = await getFreePort();
+    const port = await getGatewayPort();
     const abortController = new AbortController();
     let releaseDispatch = () => {};
     const dispatchGate = new Promise<void>((resolve) => {
@@ -527,7 +524,7 @@ describe("Feishu webhook security hardening", () => {
     });
     let signedRequest: Promise<Response> | undefined;
     const monitorPromise = monitorWebhook({
-      account: createFeishuWebhookTestAccount(accountId, port, path),
+      account: createFeishuWebhookTestAccount(accountId, path),
       accountId,
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       abortSignal: abortController.signal,
@@ -537,7 +534,7 @@ describe("Feishu webhook security hardening", () => {
 
     try {
       const url = `http://127.0.0.1:${port}${path}`;
-      await waitUntilServerReady(url);
+      await waitForWebhookRoute(url);
       const rawBody = JSON.stringify({
         schema: "2.0",
         header: { event_type: "test.pre_auth_dispatch" },

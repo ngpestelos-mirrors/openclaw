@@ -1,6 +1,5 @@
 // Feishu tests cover monitor.webhook e2e plugin behavior.
 import crypto from "node:crypto";
-import type { Server } from "node:http";
 import { createConnection } from "node:net";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -9,15 +8,22 @@ import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { normalizeCompatibilityConfig } from "./doctor-contract.js";
 import { createFeishuRuntimeMockModule } from "./monitor.test-mocks.js";
 import {
-  buildWebhookConfig,
   createFeishuWebhookTestAccount,
-  getFreePort,
+  getGatewayPort,
   signFeishuPayload,
-  waitUntilServerReady,
+  waitForWebhookRoute,
   withRunningWebhookMonitor,
 } from "./monitor.webhook.test-helpers.js";
 
 const probeFeishuMock = vi.hoisted(() => vi.fn());
+const legacyListener = vi.hoisted(() => ({
+  value: undefined as { port: number; host?: string } | undefined,
+}));
+
+vi.mock("openclaw/plugin-sdk/webhook-ingress", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/webhook-ingress")>()),
+  getWebhookLegacyListener: () => legacyListener.value,
+}));
 
 vi.mock("./probe.js", () => ({
   probeFeishu: probeFeishuMock,
@@ -36,7 +42,6 @@ vi.mock("./runtime.js", () => createFeishuRuntimeMockModule());
 
 import { cleanupFeishuMonitorStateForTests } from "./monitor.cleanup.test-helpers.js";
 import { monitorFeishuProvider } from "./monitor.js";
-import { httpServers } from "./monitor.state.js";
 import { monitorWebhook } from "./monitor.transport.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
@@ -92,10 +97,12 @@ async function sendRawSignedFeishuRequest(params: {
 }
 
 afterEach(async () => {
+  legacyListener.value = undefined;
   await cleanupFeishuMonitorStateForTests();
 });
 
 afterAll(() => {
+  vi.doUnmock("openclaw/plugin-sdk/webhook-ingress");
   vi.doUnmock("./probe.js");
   vi.doUnmock("./client.js");
   vi.doUnmock("./runtime.js");
@@ -103,107 +110,114 @@ afterAll(() => {
 });
 
 describe("Feishu webhook signed-request e2e", () => {
-  it("waits for HTTP close before resolving webhook abort cleanup", async () => {
-    probeFeishuMock.mockResolvedValue({ ok: true, botOpenId: "bot_open_id" });
-
-    const accountId = "abort-delayed-close";
-    const path = "/hook-e2e-abort-delayed-close";
-    const port = await getFreePort();
+  it.each(
+    ["/health", "/healthz", "/ready", "/readyz", "/startup", "/startupz"].flatMap((path) => [
+      path,
+      `${path}?tenant=test`,
+    ]),
+  )("requires an explicit legacy listener for reserved path %s", async (path) => {
+    const port = await getGatewayPort();
     const abortController = new AbortController();
-    const monitorPromise = monitorFeishuProvider({
-      config: buildWebhookConfig({
-        accountId,
-        path,
-        port,
-        verificationToken: "verify_token",
-        encryptKey: "encrypt_key",
-      }),
-      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+    const invoke = vi.fn(async () => ({ accepted: true }));
+    const account = createFeishuWebhookTestAccount("reserved-path", path);
+    const params = {
+      account,
+      accountId: account.accountId,
       abortSignal: abortController.signal,
-      accountId,
+      eventDispatcher: { invoke } as Lark.EventDispatcher,
+      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+    };
+    await expect(monitorWebhook(params)).rejects.toThrow(
+      `webhookPath ${JSON.stringify(path)} is reserved for Gateway probes`,
+    );
+    legacyListener.value = { port: 3000, host: "127.0.0.1" };
+    const monitor = monitorWebhook({
+      ...params,
+      account: { ...account, config: { ...account.config, legacyWebhook: legacyListener.value } },
     });
-    await waitUntilServerReady(`http://127.0.0.1:${port}${path}`);
-
-    const server = httpServers.get(accountId);
-    expect(server).toBeDefined();
-    if (!server) {
-      throw new Error("expected webhook server to be tracked");
-    }
-
-    const originalClose = server.close.bind(server);
-    let releaseClose: (() => void) | undefined;
-    const closeGate = new Promise<void>((resolve) => {
-      releaseClose = resolve;
-    });
-    const closeSpy = vi.fn((callback?: (err?: Error) => void) => {
-      void closeGate.then(() => {
-        originalClose(callback);
-      });
-      return server;
-    });
-    server.close = closeSpy as unknown as Server["close"];
-
-    let monitorSettled = false;
-    const observedMonitorPromise = monitorPromise.finally(() => {
-      monitorSettled = true;
-    });
-
     try {
-      abortController.abort();
-      await vi.waitFor(() => {
-        expect(closeSpy).toHaveBeenCalledTimes(1);
+      const response = await postSignedPayload(`http://127.0.0.1:${port}${path}`, {
+        schema: "2.0",
+        event: {},
       });
-      expect(monitorSettled).toBe(false);
-      expect(httpServers.get(accountId)).toBe(server);
-
-      releaseClose?.();
-      await observedMonitorPromise;
-
-      expect(httpServers.has(accountId)).toBe(false);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ accepted: true });
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(params.runtime.log).toHaveBeenCalledWith(
+        expect.stringContaining("before removing legacyWebhook"),
+      );
     } finally {
-      releaseClose?.();
-      await observedMonitorPromise;
+      legacyListener.value = undefined;
+      abortController.abort();
+      await monitor;
     }
   });
 
-  it("rejects webhook monitor when abort cleanup close fails", async () => {
-    probeFeishuMock.mockResolvedValue({ ok: true, botOpenId: "bot_open_id" });
-
-    const accountId = "abort-close-fails";
-    const path = "/hook-e2e-abort-close-fails";
-    const port = await getFreePort();
-    const abortController = new AbortController();
-    const monitorPromise = monitorFeishuProvider({
-      config: buildWebhookConfig({
-        accountId,
-        path,
-        port,
-        verificationToken: "verify_token",
-        encryptKey: "encrypt_key",
-      }),
-      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-      abortSignal: abortController.signal,
-      accountId,
-    });
-    await waitUntilServerReady(`http://127.0.0.1:${port}${path}`);
-
-    const server = httpServers.get(accountId);
-    expect(server).toBeDefined();
-    if (!server) {
-      throw new Error("expected webhook server to be tracked");
-    }
-
-    const originalClose = server.close.bind(server);
-    server.close = vi.fn((callback?: (err?: Error) => void) => {
-      originalClose(() => {
-        callback?.(new Error("close failed"));
+  it("dispatches shared Gateway routes and honors trusted legacy-listener metadata", async () => {
+    const path = "/hook-shared-accounts";
+    const port = await getGatewayPort();
+    const controllers = [new AbortController(), new AbortController(), new AbortController()];
+    const dispatchers = [
+      vi.fn(async () => ({ account: "first" })),
+      vi.fn(async () => ({ account: "second" })),
+      vi.fn(),
+    ];
+    const start = (index: number, encryptKey: string) =>
+      monitorWebhook({
+        account: {
+          ...createFeishuWebhookTestAccount(`shared-${index}`, path),
+          encryptKey,
+          config: { webhookPath: path, legacyWebhook: { port: 3000 + index, host: "127.0.0.1" } },
+        },
+        accountId: `shared-${index}`,
+        abortSignal: controllers[index].signal,
+        eventDispatcher: { invoke: dispatchers[index] } as Lark.EventDispatcher,
+        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       });
-      return server;
-    }) as unknown as Server["close"];
+    const monitors = [start(0, "first-key"), start(1, "second-key")];
+    const rawBody = JSON.stringify({ schema: "2.0", event: {} });
+    const post = (encryptKey: string) =>
+      fetch(`http://127.0.0.1:${port}${path}`, {
+        method: "POST",
+        headers: signFeishuPayload({ encryptKey, rawBody }),
+        body: rawBody,
+      });
+    try {
+      const first = await post("first-key");
+      expect(first.status).toBe(200);
+      await expect(first.json()).resolves.toEqual({ account: "first" });
+      const second = await post("second-key");
+      expect(second.status).toBe(200);
+      await expect(second.json()).resolves.toEqual({ account: "second" });
+      expect(dispatchers[0]).toHaveBeenCalledTimes(1);
+      expect(dispatchers[1]).toHaveBeenCalledTimes(1);
 
-    abortController.abort();
-    await expect(monitorPromise).rejects.toThrow("close failed");
-    expect(httpServers.has(accountId)).toBe(false);
+      monitors.push(start(2, "second-key"));
+      expect((await post("second-key")).status).toBe(401);
+      expect(dispatchers[1]).toHaveBeenCalledTimes(1);
+      expect(dispatchers[2]).not.toHaveBeenCalled();
+      // This supplies the trusted Gateway boundary input, not a network or header claim.
+      legacyListener.value = { port: 3001, host: "127.0.0.1" };
+      expect((await post("second-key")).status).toBe(200);
+      expect(dispatchers[1]).toHaveBeenCalledTimes(2);
+      expect(dispatchers[2]).not.toHaveBeenCalled();
+      legacyListener.value = { port: 3001 };
+      expect((await post("second-key")).status).toBe(404);
+      legacyListener.value = undefined;
+      controllers[2].abort();
+      await monitors[2];
+      controllers[0].abort();
+      await monitors[0];
+      expect((await post("first-key")).status).toBe(401);
+      expect((await post("second-key")).status).toBe(200);
+      expect(dispatchers[1]).toHaveBeenCalledTimes(3);
+    } finally {
+      legacyListener.value = undefined;
+      for (const controller of controllers) {
+        controller.abort();
+      }
+      await Promise.all(monitors);
+    }
   });
 
   it("rejects invalid signatures with 401 instead of empty 200", async () => {
@@ -428,7 +442,7 @@ describe("Feishu webhook signed-request e2e", () => {
   it("admits signed requests only on the configured POST webhook route", async () => {
     const accountId = "signed-route-boundary";
     const path = "/hook-e2e-signed-route-boundary";
-    const port = await getFreePort();
+    const port = await getGatewayPort();
     const encryptKey = "encrypt_key";
     const handler = vi.fn(async () => ({ accepted: true }));
     const eventDispatcher = new Lark.EventDispatcher({
@@ -439,7 +453,7 @@ describe("Feishu webhook signed-request e2e", () => {
     const statusSink = vi.fn();
     const abortController = new AbortController();
     const monitorPromise = monitorWebhook({
-      account: createFeishuWebhookTestAccount(accountId, port, path),
+      account: createFeishuWebhookTestAccount(accountId, path),
       accountId,
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       abortSignal: abortController.signal,
@@ -469,25 +483,8 @@ describe("Feishu webhook signed-request e2e", () => {
     ];
 
     try {
-      await waitUntilServerReady(url);
+      await waitForWebhookRoute(url);
       statusSink.mockClear();
-      const server = httpServers.get(accountId);
-      const requestListener = server?.listeners("request")[0];
-      if (!server || !requestListener) {
-        throw new Error("expected Feishu webhook request listener");
-      }
-      let malformedTargetError: unknown;
-      server.removeListener("request", requestListener);
-      server.on("request", (request, response) => {
-        try {
-          requestListener.call(server, request, response);
-        } catch (error) {
-          malformedTargetError = error;
-          response.statusCode = 500;
-          response.end("Webhook request handler threw");
-        }
-      });
-
       const rawTargets = [
         { label: "malformed authority", target: "//[" },
         { label: "foreign authority", target: `//attacker${path}` },
@@ -506,7 +503,6 @@ describe("Feishu webhook signed-request e2e", () => {
       for (const rawTarget of rawTargets) {
         const initialDispatches = handler.mock.calls.length;
         const initialActivity = statusSink.mock.calls.length;
-        malformedTargetError = undefined;
         const rawResponse = await sendRawSignedFeishuRequest({
           port,
           target: rawTarget.target,
@@ -516,7 +512,6 @@ describe("Feishu webhook signed-request e2e", () => {
         observedRawTargets.push({
           label: rawTarget.label,
           statusLine: rawResponse.split("\r\n", 1)[0],
-          error: malformedTargetError instanceof Error ? malformedTargetError.message : undefined,
           dispatched: handler.mock.calls.length > initialDispatches,
           publishedActivity: statusSink.mock.calls.length > initialActivity,
         });
@@ -526,7 +521,6 @@ describe("Feishu webhook signed-request e2e", () => {
         rawTargets.map((rawTarget) => ({
           label: rawTarget.label,
           statusLine: "HTTP/1.1 404 Not Found",
-          error: undefined,
           dispatched: false,
           publishedActivity: false,
         })),
@@ -603,13 +597,14 @@ describe("Feishu webhook signed-request e2e", () => {
     ["empty query fragment", "root", "/old?#", "/old"],
     ["relative trailing slash", "account", "old/", "/old/"],
     ["canonical trailing slash", "root", "/old/", "/old/"],
+    ["probe namespace", "account", "/readyz/events", "/readyz/events"],
     ["empty root", "root", "", "/feishu/events"],
     ["whitespace account", "account", "   ", "/feishu/events"],
   ])(
     "requires Doctor to canonicalize the configured %s before raw webhook admission",
     async (_label, scope, configuredPath, acceptedTarget) => {
       const accountId = `legacy-route-${scope}`;
-      const port = await getFreePort();
+      const port = await getGatewayPort();
       const encryptKey = "encrypt_key";
       const config = {
         channels: {
@@ -620,7 +615,6 @@ describe("Feishu webhook signed-request e2e", () => {
                 appId: "cli_test",
                 appSecret: "secret_test", // pragma: allowlist secret
                 connectionMode: "webhook" as const,
-                webhookPort: port,
                 ...(scope === "account" ? { webhookPath: configuredPath } : {}),
                 encryptKey,
                 verificationToken: "verify_token",
@@ -654,7 +648,6 @@ describe("Feishu webhook signed-request e2e", () => {
       const needsMigration = configuredPath !== acceptedTarget;
       if (needsMigration) {
         await expect(monitorWebhook(monitorParams)).rejects.toThrow("openclaw doctor --fix");
-        expect(httpServers.has(accountId)).toBe(false);
         expect(handler).not.toHaveBeenCalled();
         expect(statusSink).not.toHaveBeenCalled();
       }
@@ -688,7 +681,7 @@ describe("Feishu webhook signed-request e2e", () => {
       ];
 
       try {
-        await waitUntilServerReady(`http://127.0.0.1:${port}${acceptedTarget}`);
+        await waitForWebhookRoute(`http://127.0.0.1:${port}${acceptedTarget}`);
         statusSink.mockClear();
         const observed = [];
 
@@ -728,7 +721,7 @@ describe("Feishu webhook signed-request e2e", () => {
     const accountId = "signed-configured-query-boundary";
     const route = "/hook-e2e-configured-query";
     const configuredPath = `${route}?tenant=alpha&mode=exact`;
-    const port = await getFreePort();
+    const port = await getGatewayPort();
     const encryptKey = "encrypt_key";
     const handler = vi.fn(async () => ({ accepted: true }));
     const eventDispatcher = new Lark.EventDispatcher({
@@ -739,7 +732,7 @@ describe("Feishu webhook signed-request e2e", () => {
     const statusSink = vi.fn();
     const abortController = new AbortController();
     const monitorPromise = monitorWebhook({
-      account: createFeishuWebhookTestAccount(accountId, port, configuredPath),
+      account: createFeishuWebhookTestAccount(accountId, configuredPath),
       accountId,
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       abortSignal: abortController.signal,
@@ -777,7 +770,7 @@ describe("Feishu webhook signed-request e2e", () => {
     ];
 
     try {
-      await waitUntilServerReady(`http://127.0.0.1:${port}${configuredPath}`);
+      await waitForWebhookRoute(`http://127.0.0.1:${port}${configuredPath}`);
       statusSink.mockClear();
       const observed = [];
 
@@ -849,7 +842,7 @@ describe("Feishu webhook signed-request e2e", () => {
   it("acks durable envelopes only after ingress admission resolves", async () => {
     const accountId = "durable-ack-ordering";
     const path = "/hook-e2e-durable-ack-ordering";
-    const port = await getFreePort();
+    const port = await getGatewayPort();
     const abortController = new AbortController();
     let releaseAdmission: (() => void) | undefined;
     const invoke = vi.fn(
@@ -859,7 +852,7 @@ describe("Feishu webhook signed-request e2e", () => {
         }),
     );
     const monitorPromise = monitorWebhook({
-      account: createFeishuWebhookTestAccount(accountId, port, path),
+      account: createFeishuWebhookTestAccount(accountId, path),
       accountId,
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       abortSignal: abortController.signal,
@@ -872,7 +865,7 @@ describe("Feishu webhook signed-request e2e", () => {
 
     try {
       const url = `http://127.0.0.1:${port}${path}`;
-      await waitUntilServerReady(url);
+      await waitForWebhookRoute(url);
 
       const payload = {
         schema: "2.0",
@@ -906,13 +899,13 @@ describe("Feishu webhook signed-request e2e", () => {
   it("does not mark acks when durable admission fails", async () => {
     const accountId = "durable-ack-failure";
     const path = "/hook-e2e-durable-ack-failure";
-    const port = await getFreePort();
+    const port = await getGatewayPort();
     const abortController = new AbortController();
     const invoke = vi.fn(async () => {
       throw new Error("admission failed");
     });
     const monitorPromise = monitorWebhook({
-      account: createFeishuWebhookTestAccount(accountId, port, path),
+      account: createFeishuWebhookTestAccount(accountId, path),
       accountId,
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       abortSignal: abortController.signal,
@@ -925,7 +918,7 @@ describe("Feishu webhook signed-request e2e", () => {
 
     try {
       const url = `http://127.0.0.1:${port}${path}`;
-      await waitUntilServerReady(url);
+      await waitForWebhookRoute(url);
 
       const response = await postSignedPayload(url, {
         schema: "2.0",
@@ -944,7 +937,7 @@ describe("Feishu webhook signed-request e2e", () => {
   it("filters prototype-bearing keys without changing the Lark webhook envelope", async () => {
     const accountId = "prototype-guard";
     const path = "/hook-e2e-prototype-guard";
-    const port = await getFreePort();
+    const port = await getGatewayPort();
     const encryptKey = "encrypt_key";
     const account = {
       accountId,
@@ -953,8 +946,6 @@ describe("Feishu webhook signed-request e2e", () => {
       config: {
         enabled: true,
         connectionMode: "webhook",
-        webhookHost: "127.0.0.1",
-        webhookPort: port,
         webhookPath: path,
       },
     } as ResolvedFeishuAccount;
@@ -982,7 +973,7 @@ describe("Feishu webhook signed-request e2e", () => {
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
     });
     const url = `http://127.0.0.1:${port}${path}`;
-    await waitUntilServerReady(url);
+    await waitForWebhookRoute(url);
 
     const rawBody =
       '{"schema":"2.0","header":{"event_type":"test.prototype_guard"},"event":{"safe":"kept"},"headers":{"x-envelope-marker":"forged"},"__proto__":{"polluted":true},"constructor":{"polluted":true},"prototype":{"polluted":true}}';

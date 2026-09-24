@@ -510,3 +510,31 @@ describe("Feishu doctor state repair", () => {
     await expect(readSessionTranscriptEvents(session)).resolves.toEqual([]);
   });
 });
+
+describe("Feishu webhook path guidance", () => {
+  it.each([false, true])("explains reserved paths with legacy listener %s", async (legacy) => {
+    const warnings = await feishuDoctor.collectPreviewWarnings?.({
+      cfg: {
+        channels: {
+          feishu: {
+            appId: "cli_test",
+            appSecret: "secret_test",
+            connectionMode: "webhook",
+            webhookPath: "/readyz?tenant=test",
+            ...(legacy ? { legacyWebhook: { port: 3000, host: "127.0.0.1" } } : {}),
+          },
+        },
+      },
+      doctorFixCommand: "openclaw doctor --fix",
+      env: {},
+    });
+    expect(warnings).toEqual([
+      expect.stringContaining('webhookPath "/readyz?tenant=test" is reserved for Gateway probes'),
+    ]);
+    expect(warnings?.[0]).toContain("/feishu/events");
+    expect(warnings?.[0]).toContain("callback");
+    expect(warnings?.[0]).toContain(
+      legacy ? "before deleting legacyWebhook" : "startup is blocked",
+    );
+  });
+});

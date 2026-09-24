@@ -53,3 +53,24 @@ describe("nextcloud-talk normalizeCompatibilityConfig streaming aliases", () => 
     expect(second.changes).toEqual([]);
   });
 });
+
+describe("Nextcloud Talk webhook port migration", () => {
+  it("preserves explicit listeners and host inheritance without creating a default listener", () => {
+    const result = normalizeCompatibilityConfig({
+      cfg: talkConfig({
+        webhookHost: "127.0.0.1",
+        accounts: {
+          existing: { webhookPort: 8788 },
+          fresh: { baseUrl: "https://cloud.example.com" },
+        },
+      }),
+    });
+    expect(result.config.channels?.["nextcloud-talk"]).toEqual({
+      accounts: {
+        existing: { legacyWebhook: { port: 8788, host: "127.0.0.1" } },
+        fresh: { baseUrl: "https://cloud.example.com" },
+      },
+    });
+    expect(normalizeCompatibilityConfig({ cfg: result.config }).changes).toEqual([]);
+  });
+});

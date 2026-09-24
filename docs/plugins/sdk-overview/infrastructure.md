@@ -289,17 +289,40 @@ drain in order. Use separate connections for concurrent requests. Keep the relea
 `beginWebhookRequestPipelineOrReject` in `finally`; it retains any selected
 rejection cleanup before releasing the in-flight slot.
 
-Channel webhook listeners that own their `createServer` admission serialize each
-connection with `runHttpConnectionRequest(req, run, res?)` from
-`openclaw/plugin-sdk/webhook-request-guards`. Pass the `ServerResponse` as the
-third argument: the shared owner waits for response completion (`finish` or
-`close`) before admitting the connection's next request, so a close-aware
-rejection — whose cleanup may destroy the socket within one second — can never
-overtake an earlier queued acknowledgement. Omitting the response argument
-releases the next request before the current response finishes and loses that
-guarantee; omit it only for dispatch that writes no response on the shared
-connection. Already admitted work always finishes; queued work is never
-dispatched after closure, and a closing connection cannot admit later requests.
+Channel webhook transports register their handler with `registerPluginHttpRoute`
+from `openclaw/plugin-sdk/webhook-ingress`. Gateway owns the listener, connection
+admission, request scope, and route lease handoff; the channel owns its signature
+verification and bounded body read. Do not open a separate HTTP server.
+
+For callback setup and Doctor guidance, `classifyGatewayProbePath(pathname)` from
+the same SDK subpath identifies Gateway probe paths. Normalize callback input
+through `new URL(rawPath, "http://localhost").pathname` first. Results `live`,
+`ready`, and `startup` identify exact paths owned by probes on the Gateway port;
+choose a different webhook path. Results `namespace` and `outside` do not identify
+an exact probe route. An explicit legacy listener can still serve its old path
+while the operator updates the external callback.
+
+For a shipped, explicitly configured channel port, registration can temporarily
+include `legacyListener: { port, host? }`. The Gateway forwards only requests for
+that registration's paths through the same HTTP dispatch, preserving the original
+socket and body. It never exposes core HTTP endpoints on the compatibility port.
+`getWebhookLegacyListener(req)` returns its frozen configured `{ port, host? }`
+endpoint, or `undefined` for an ordinary Gateway request; headers cannot set it.
+Filter account targets by this endpoint before signature resolution when old ports
+distinguished accounts sharing a path and secret. Ordinary Gateway requests still
+need an unambiguous account path or authentication identity.
+The channel's Doctor migration must warn the operator and preserve the explicit
+endpoint; do not supply a default port. Plugin-owned Doctor contracts can compose
+`createLegacyWebhookListenerDoctorContract` from
+`openclaw/plugin-sdk/runtime-doctor-migrations` to preserve authored ports and
+inherited bind addresses through the normal backed-up config write.
+Account leases sharing a route can retain
+separate endpoints, and an account restart retains only its endpoints while the route
+returns retryable 503 responses. Bind failure warns without disabling the Gateway
+route. After the operator changes the provider callback or reverse proxy to reach
+the Gateway port, remove `legacyWebhook` from the channel config to close the old
+listener. This compatibility option is deprecated; remove it only after the
+supported release upgrade window for explicitly configured ports has ended.
 
 ### Post-ack webhook work
 

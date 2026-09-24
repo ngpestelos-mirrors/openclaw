@@ -8,11 +8,13 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
 import {
   asObjectRecord,
   collectChannelAccountScopes,
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { classifyGatewayProbePath } from "openclaw/plugin-sdk/webhook-ingress";
 import { inspectTelegramAccount } from "./account-inspect.js";
 import {
   listEnabledTelegramAccounts,
@@ -588,11 +590,20 @@ export const telegramDoctor: ChannelDoctorAdapter = {
       doctorFixCommand,
     }),
     ...listEnabledTelegramAccounts(cfg)
-      .filter(({ config }) => Boolean(config.webhookUrl) && config.webhookPath === "/healthz")
-      .map(
-        ({ accountId }) =>
-          `- Telegram account "${accountId}" resolves webhookPath to /healthz, which is reserved for webhook listener health checks. Change webhookPath and the public webhook URL or proxy route before restarting OpenClaw.`,
-      ),
+      .filter(({ config }) => Boolean(config.webhookUrl))
+      .map(({ accountId, config }) => {
+        const path = config.webhookPath ?? "/telegram-webhook";
+        const probe = classifyGatewayProbePath(
+          URL.parse(path, "http://localhost")?.pathname ?? path,
+        );
+        if (probe === "live" || probe === "ready" || probe === "startup") {
+          return `- Telegram account "${accountId}" resolves webhookPath to ${path}, which is reserved for Gateway probes. Set webhookPath to /telegram-webhook and update webhookUrl or its reverse-proxy mapping. ${config.legacyWebhook ? "The configured legacy listener remains available; verify delivery on the new route before removing legacyWebhook." : "This account cannot start until its webhook path is changed."}`;
+        }
+        const destination = `Gateway port ${resolveGatewayPort(cfg, env)}${path}`;
+        return config.legacyWebhook
+          ? `- Telegram account "${accountId}": legacy port ${config.legacyWebhook.port} forwards to ${destination}. Move the reverse proxy for ${config.webhookUrl} to that Gateway route, verify delivery, then remove legacyWebhook. Removal is planned after a two-month migration window; forwarding does not expire automatically.`
+          : `- Telegram account "${accountId}": route ${config.webhookUrl} to ${destination}. The old default listener on port 8787 is no longer opened; update any reverse proxy still targeting it.`;
+      }),
     ...collectTelegramSelectedQuoteToolProgressWarnings({
       hits: scanTelegramSelectedQuoteToolProgressWarnings(cfg),
     }),

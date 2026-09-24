@@ -213,19 +213,12 @@ const TelegramAccountSchemaBase = z
       .describe(
         "Local webhook route path served by the gateway listener. Defaults to /telegram-webhook.",
       ),
-    webhookHost: z
-      .string()
+    legacyWebhook: z
+      .object({ port: z.number().int().nonnegative(), host: z.string().optional() })
+      .strict()
       .optional()
       .describe(
-        "Local bind host for the webhook listener. Defaults to 127.0.0.1; keep loopback unless you intentionally expose direct ingress.",
-      ),
-    webhookPort: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe(
-        "Local bind port for the webhook listener. Defaults to 8787; set to 0 to let the OS assign an ephemeral port.",
+        "Temporary legacy webhook forwarding endpoint. After moving the reverse proxy to the Gateway webhook route, remove this object.",
       ),
     webhookCertPath: z
       .string()

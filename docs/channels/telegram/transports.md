@@ -1,8 +1,8 @@
 ---
-summary: "Long polling and webhook mode compared, with listener and durable ingress behavior"
+summary: "Long polling and webhook mode compared, with Gateway routes and durable ingress behavior"
 read_when:
   - Choosing between long polling and webhook mode
-  - Putting a reverse proxy in front of the Telegram webhook listener
+  - Putting a reverse proxy in front of the Telegram Gateway webhook route
 title: "Telegram transports"
 sidebarTitle: "Transports"
 ---
@@ -13,13 +13,19 @@ Long polling is the default. Webhook mode is the alternative when an HTTPS ingre
 
 <AccordionGroup>
   <Accordion title="Long polling vs webhook">
-    Default is long polling. For webhook mode, set `channels.telegram.webhookUrl` and `channels.telegram.webhookSecret`; optional `webhookPath` (default `/telegram-webhook`), `webhookHost` (default `127.0.0.1`), `webhookPort` (default `8787`), `webhookCertPath` (self-signed cert PEM for direct-IP or no-domain setups).
+    Default is long polling. For webhook mode, set `channels.telegram.webhookUrl` and `channels.telegram.webhookSecret`; optional `webhookPath` (default `/telegram-webhook`) and `webhookCertPath` (self-signed cert PEM for direct-IP or no-domain setups).
 
-    The listener reserves `/healthz` for health checks, so `webhookPath` must use a different route. If an existing setup uses `/healthz`, choose another route, update the path in `webhookUrl` and the reverse proxy mapping, then verify that [hot reload](/gateway/configuration/hot-reload) applied the listener change with `openclaw channels status --probe`.
+    The Gateway reserves `/health`, `/healthz`, `/ready`, `/readyz`, `/startup`, and `/startupz` for probes, including query variants. Choose `/telegram-webhook` or another route for Gateway ingress. A migrated explicit legacy listener keeps its old reserved path available while you update `webhookPath`, `webhookUrl`, and the reverse proxy mapping; verify delivery before removing `legacyWebhook`. Without that legacy listener, a reserved path produces an actionable startup error. Verify that [hot reload](/gateway/configuration/hot-reload) applied the route change with `openclaw channels status --probe`.
 
     In long-polling mode, OpenClaw saves its restart position after an update is committed to the durable ingress queue. A failed handler remains retryable from that queue.
 
-    The local listener binds to `127.0.0.1:8787` by default. For public ingress, put a reverse proxy in front of the local port, or set `webhookHost: "0.0.0.0"` intentionally.
+    Webhook requests use the Gateway HTTP port (default `18789`). Point the reverse proxy for `webhookUrl` at that port and `webhookPath`. OpenClaw registers the configured public URL with Telegram on every webhook startup, including after a restart; it keeps that URL unchanged because it cannot infer an external proxy's upstream. Telegram's secret header remains the authentication boundary, so this route does not require a Gateway bearer token.
+
+    After upgrading, run `openclaw doctor --fix`. Doctor backs up the config and migrates explicitly configured `webhookPort` and `webhookHost` to `legacyWebhook: { port, host }`. The Gateway temporarily serves the same route through that old endpoint. Move the reverse proxy to the Gateway port, verify incoming messages, then remove `legacyWebhook`. Compatibility removal is planned after a two-month migration window; the endpoint does not expire automatically.
+
+    If no port was explicitly configured, OpenClaw no longer opens the old default port `8787`. Doctor and startup logs name the Gateway route to use. Update any reverse proxy still targeting `127.0.0.1:8787`. A host-only setting does not enable a legacy listener.
+
+    Accounts may share a Gateway route when their webhook secrets differ. Requests matching more than one account are rejected; assign distinct secrets or paths before moving traffic to the Gateway port. Migrated legacy endpoints preserve account selection for accounts that previously shared a secret and path on separate explicit ports.
 
     Webhook mode validates request guards, the Telegram secret token, and the JSON body, then commits the update to its durable ingress queue before returning an empty `200`. Successful durable adoption includes `x-openclaw-delivery-accepted: durable`; health, routing, authentication, validation, and storage-error responses omit this header. Reverse proxies and host controllers can require the header to distinguish OpenClaw adoption from a generic empty `200` without inferring acceptance from response timing.
 

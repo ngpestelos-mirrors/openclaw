@@ -14,13 +14,18 @@ What the Teams path does not support, the failures operators hit most often, and
 
 ### Webhook timeouts
 
-Teams delivers messages via HTTP webhook. OpenClaw applies fixed HTTP server
-timeouts to that webhook listener: 30s inactivity, 30s total request, and 15s
-to receive headers. Optional inbound media and context enrichment has a shared
-10-second budget. The SDK returns after the raw activity is durably appended;
+Teams delivers messages through the Gateway HTTP webhook route. Body reads are
+bounded to 1 MiB and five seconds before SDK JWT verification; Gateway HTTP
+lifecycle limits apply to the shared listener. Optional inbound media and context
+enrichment has a shared 10-second budget. The SDK returns after the raw activity is durably appended;
 the agent turn drains independently and replies proactively. If request
 handling or durable admission misses the transport window, Teams may retry the
 activity, and the ingress tombstone rejects a repeated event ID.
+
+If Teams went silent after an update, check whether Azure Bot or your reverse
+proxy still points to port `3978`. Follow the
+[endpoint migration instructions](/channels/msteams/configuration#migrating-an-existing-webhook-endpoint)
+to use the Gateway port or finish migrating an explicit legacy listener.
 
 ### Teams cloud and service URL support
 

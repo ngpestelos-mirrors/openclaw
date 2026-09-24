@@ -1,9 +1,18 @@
-import type { Server } from "node:http";
-import type { Request, Response } from "express";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
+import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
+import {
+  applyBasicWebhookRequestGuards,
+  registerPluginHttpRoute,
+  WEBHOOK_BODY_READ_DEFAULTS,
+} from "openclaw/plugin-sdk/webhook-ingress";
+import {
+  readJsonBodyWithLimit,
+  sendHttpRequestRejection,
+} from "openclaw/plugin-sdk/webhook-request-guards";
 import {
   DEFAULT_WEBHOOK_MAX_BODY_BYTES,
   isDangerousNameMatchingEnabled,
-  keepHttpServerTaskAlive,
   mergeAllowlist,
   resolveChannelMediaMaxBytes,
   summarizeMapping,
@@ -13,6 +22,7 @@ import {
 import { resolveMSTeamsSdkCloudOptions } from "./cloud.js";
 import { createMSTeamsConversationStoreState } from "./conversation-store-state.js";
 import type { MSTeamsConversationStore } from "./conversation-store.js";
+import { collectMSTeamsWebhookWarnings, resolveMSTeamsWebhookPathIssue } from "./doctor.js";
 import { formatUnknownError } from "./errors.js";
 import { runMSTeamsFeedbackInvokeHandler } from "./feedback-invoke.js";
 import { runMSTeamsFileConsentInvokeHandler } from "./file-consent-invoke.js";
@@ -26,7 +36,6 @@ import type { MSTeamsMessageHandlerDeps } from "./monitor-handler.types.js";
 import {
   publishMSTeamsBlocked,
   publishMSTeamsReady,
-  publishMSTeamsRecovering,
   publishMSTeamsStopped,
   type MSTeamsStatusSink,
 } from "./monitor-status.js";
@@ -49,7 +58,6 @@ import {
 import { getMSTeamsRuntime } from "./runtime.js";
 import type { MSTeamsTurnContext } from "./sdk-types.js";
 import {
-  createMSTeamsExpressAdapter,
   createMSTeamsTokenProvider,
   loadMSTeamsSdkWithAuth,
   type MSTeamsApp,
@@ -57,7 +65,6 @@ import {
 } from "./sdk.js";
 import { createMSTeamsSsoTokenStoreFs } from "./sso-token-store.js";
 import { resolveMSTeamsCredentials } from "./token.js";
-import { applyMSTeamsWebhookTimeouts } from "./webhook-timeouts.js";
 
 type MonitorMSTeamsOpts = {
   cfg: OpenClawConfig;
@@ -93,6 +100,10 @@ export async function monitorMSTeamsProvider(
     return { app: null, shutdown: async () => {} };
   }
   const appId = creds.appId; // Extract for use in closures
+  const webhookPathIssue = resolveMSTeamsWebhookPathIssue({ cfg });
+  if (webhookPathIssue && !msteamsCfg.legacyWebhook) {
+    throw new Error(webhookPathIssue);
+  }
 
   const runtime: RuntimeEnv = opts.runtime ?? {
     log: console.log,
@@ -198,7 +209,6 @@ export async function monitorMSTeamsProvider(
     },
   };
 
-  const port = msteamsCfg.webhook?.port ?? 3978;
   const textLimit = core.channel.text.resolveTextChunkLimit(cfg, "msteams");
   const mediaMaxBytes =
     resolveChannelMediaMaxBytes({
@@ -208,78 +218,104 @@ export async function monitorMSTeamsProvider(
   const conversationStore = opts.conversationStore ?? createMSTeamsConversationStoreState();
   const pollStore = opts.pollStore ?? createMSTeamsPollStoreState();
 
-  log.info(`starting provider (port ${port})`);
-
-  // Dynamic import to avoid loading SDK when provider is disabled
-  const express = await import("express");
-
-  // Create Express server first, then wrap it with the SDK's ExpressAdapter
-  // so the App registers its route handler on it (including JWT validation).
-  const expressApp = express.default();
-
-  // Cheap auth-presence gate: reject requests without a Bearer token before
-  // JSON parsing. Bearer-shaped junk still hits the bounded parser below before
-  // the SDK's route-level parser and full JWT validation.
-  expressApp.use((req: Request, res: Response, next: (err?: unknown) => void) => {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    next();
-  });
-  expressApp.use(express.json({ limit: DEFAULT_WEBHOOK_MAX_BODY_BYTES }));
-  expressApp.use((err: unknown, _req: Request, res: Response, next: (err?: unknown) => void) => {
-    if (err && typeof err === "object" && "status" in err && err.status === 413) {
-      res.status(413).json({ error: "Payload too large" });
-      return;
-    }
-    next(err);
-  });
-
   const configuredPath = (msteamsCfg.webhook?.path ?? "/api/messages") as `/${string}`;
+  const privateQaRuntime = resolveMSTeamsPrivateQaRuntime();
+  const legacyListener = msteamsCfg.legacyWebhook;
+  const unregisterRoutes: Array<() => void> = [];
+  for (const warning of collectMSTeamsWebhookWarnings({ cfg })) {
+    log.warn?.(warning);
+  }
   const ssoConnectionName =
     msteamsCfg.sso?.enabled && msteamsCfg.sso.connectionName
       ? msteamsCfg.sso.connectionName
       : undefined;
 
-  // Lazy-load the SDK and create the App with ExpressAdapter. The SDK
-  // registers POST /api/messages (or configured path) and handles JWT
-  // validation + body parsing internally.
   const { app } = await loadMSTeamsSdkWithAuth(creds, {
     ...resolveMSTeamsSdkCloudOptions(msteamsCfg),
-    httpServerAdapter: await createMSTeamsExpressAdapter(expressApp),
+    httpServerAdapter: {
+      registerRoute(method, path, sdkHandler) {
+        const handler = async (req: IncomingMessage, res: ServerResponse) => {
+          if (!applyBasicWebhookRequestGuards({ req, res, allowMethods: [method] })) {
+            return;
+          }
+          // Private QA bypasses SDK JWT validation, so its route stays loopback-only.
+          if (
+            (privateQaRuntime && !isLoopbackHost(req.socket.remoteAddress ?? "")) ||
+            !req.headers.authorization?.startsWith("Bearer ")
+          ) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Unauthorized" }));
+            return;
+          }
+          const parsed = await readJsonBodyWithLimit(req, {
+            maxBytes: DEFAULT_WEBHOOK_MAX_BODY_BYTES,
+            timeoutMs: WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs,
+            destroyOnLimit: false,
+          });
+          if (!parsed.ok) {
+            const status =
+              parsed.code === "PAYLOAD_TOO_LARGE"
+                ? 413
+                : parsed.code === "REQUEST_BODY_TIMEOUT"
+                  ? 408
+                  : 400;
+            await sendHttpRequestRejection(
+              req,
+              res,
+              status,
+              JSON.stringify({
+                error:
+                  status === 413
+                    ? "Payload too large"
+                    : status === 408
+                      ? "Request body timeout"
+                      : "Invalid JSON",
+              }),
+              "application/json",
+            );
+            return;
+          }
+          const headers: Record<string, string | string[]> = {};
+          for (const [key, value] of Object.entries(req.headers)) {
+            if (value !== undefined) {
+              headers[key] = value;
+            }
+          }
+          const response = await sdkHandler({ body: parsed.value, headers });
+          res.writeHead(response.status, { "Content-Type": "application/json" });
+          res.end(response.body === undefined ? undefined : JSON.stringify(response.body));
+        };
+        const register = (routePath: string, routeHandler = handler) => {
+          unregisterRoutes.push(
+            registerPluginHttpRoute({
+              path: routePath,
+              handler: routeHandler,
+              auth: "plugin",
+              pluginId: "msteams",
+              source: "webhook",
+              throwOnFailure: true,
+              legacyListener,
+            }),
+          );
+        };
+        register(path);
+        if (path !== "/api/messages") {
+          let warned = false;
+          register("/api/messages", async (req, res) => {
+            if (!warned) {
+              warned = true;
+              log.warn?.(
+                `received request on /api/messages but webhook.path is ${path}; update your Azure Bot endpoint — this fallback will be removed in a future release`,
+              );
+            }
+            await handler(req, res);
+          });
+        }
+      },
+    },
     messagingEndpoint: configuredPath,
     ...(ssoConnectionName ? { oauthDefaultConnectionName: ssoConnectionName } : {}),
   });
-
-  // Existing Azure Bot registrations may still point at the legacy
-  // `/api/messages` endpoint while an operator has configured a custom
-  // `webhook.path`. Forward to the configured path with a one-time deprecation
-  // warning so those registrations keep working through the transition. The
-  // forwarder runs after the SDK route is registered, so it only matches
-  // requests that the SDK route itself didn't claim.
-  if (configuredPath !== "/api/messages") {
-    let warnedLegacyMessagesRoute = false;
-    expressApp.post(
-      "/api/messages",
-      (req: Request, res: Response, next: (err?: unknown) => void) => {
-        if (!warnedLegacyMessagesRoute) {
-          warnedLegacyMessagesRoute = true;
-          log.warn?.(
-            `received request on /api/messages but webhook.path is ${configuredPath}; ` +
-              "update your Azure Bot endpoint — this fallback will be removed in a future release",
-          );
-        }
-        // Rewrite the URL so the SDK's registered handler picks it up. Express
-        // app instances are themselves request handlers (Application extends
-        // IRouter extends RequestHandler), so re-invoking the app re-runs the
-        // middleware chain (including the SDK-registered route).
-        req.url = configuredPath;
-        expressApp(req, res, next);
-      },
-    );
-  }
 
   // Build a token provider adapter for Graph API operations
   const tokenProvider = createMSTeamsTokenProvider(app);
@@ -565,56 +601,29 @@ export async function monitorMSTeamsProvider(
     }
   });
 
-  // Initialize the SDK App — registers the POST route on Express and sets up
-  // JWT validation middleware internally.
-  await app.initialize();
-  ingress.start();
-
-  // Start listening and fail fast if bind/listen fails.
-  // skipAuth is private-QA-only and must never expose an unauthenticated
-  // webhook beyond loopback. Production keeps Express' existing bind behavior.
-  const privateQaRuntime = resolveMSTeamsPrivateQaRuntime();
-  const httpServer = await new Promise<Server>((resolve, reject) => {
-    const onListen = (err?: Error) => (err ? reject(err) : resolve(server));
-    const server = privateQaRuntime
-      ? expressApp.listen(port, privateQaRuntime.listenHost, onListen)
-      : expressApp.listen(port, onListen);
-  }).catch(async (err: unknown) => {
-    log.error("msteams server error", { error: formatUnknownError(err) });
-    await ingress.stop();
-    throw err;
-  });
-  log.info(`msteams provider started on port ${port}`);
-  publishMSTeamsReady(opts.statusSink);
-  applyMSTeamsWebhookTimeouts(httpServer);
-
-  httpServer.on("error", (err) => {
-    log.error("msteams server error", { error: formatUnknownError(err) });
-    publishMSTeamsRecovering(opts.statusSink, formatUnknownError(err));
-  });
-
-  const shutdown = async () => {
-    log.info("shutting down msteams provider");
-    await new Promise<void>((resolve) => {
-      httpServer.close((err) => {
-        if (err) {
-          log.debug?.("msteams server close error", { error: formatUnknownError(err) });
-        }
-        resolve();
-      });
-    });
-    await ingress.stop();
-    publishMSTeamsStopped(opts.statusSink);
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = () => {
+    shutdownPromise ??= (async () => {
+      for (const unregister of unregisterRoutes.splice(0)) {
+        unregister();
+      }
+      await ingress.stop();
+      publishMSTeamsStopped(opts.statusSink);
+    })();
+    return shutdownPromise;
   };
-
-  // Keep this task alive until close so gateway runtime does not treat startup as exit.
-  await keepHttpServerTaskAlive({
-    server: httpServer,
-    abortSignal: opts.abortSignal,
-    onAbort: shutdown,
-  });
-
-  return { app: expressApp, shutdown };
+  try {
+    await app.initialize();
+    if (!opts.abortSignal?.aborted) {
+      ingress.start();
+      log.info(`msteams provider registered Gateway route ${configuredPath}`);
+      publishMSTeamsReady(opts.statusSink);
+    }
+    await waitUntilAbort(opts.abortSignal);
+  } finally {
+    await shutdown();
+  }
+  return { app, shutdown };
 }
 
 /**

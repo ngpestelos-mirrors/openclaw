@@ -62,9 +62,8 @@ const SHARED_CHANNEL_FIELD_HELP: Record<string, string> = {
   threadBindings: "How chat threads bind to agent sessions, including idle expiry and spawning.",
   tokenFile: "Read the token from this file instead of storing it inline in config.",
   typingIndicator: "How this channel signals that the agent is working.",
-  webhookHost: "Interface the inbound webhook listener binds to.",
-  webhookPath: "Path the inbound webhook listener serves.",
-  webhookPort: "Port the inbound webhook listener binds to.",
+  legacyWebhook: "Temporary legacy webhook listener; remove after moving callbacks to the Gateway.",
+  webhookPath: "Path the Gateway serves for inbound webhooks.",
   webhookSecret: "Shared secret used to verify inbound webhook requests.",
   webhookUrl: "Public URL the provider should deliver webhooks to.",
 };

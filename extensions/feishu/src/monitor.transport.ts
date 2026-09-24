@@ -1,12 +1,15 @@
 import crypto from "node:crypto";
-import * as http from "node:http";
+import type * as http from "node:http";
 import * as Lark from "@larksuiteoapi/node-sdk";
+import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
 import { channelBlockedPatch, channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { safeEqualSecret } from "openclaw/plugin-sdk/security-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   applyBasicWebhookRequestGuards,
+  getWebhookLegacyListener,
   resolveRequestClientIp,
 } from "openclaw/plugin-sdk/webhook-ingress";
 import {
@@ -15,6 +18,12 @@ import {
   readWebhookBodyOrReject,
   sendHttpRequestRejection,
 } from "openclaw/plugin-sdk/webhook-request-guards";
+import {
+  canonicalizeWebhookRouteKey,
+  registerPluginHttpRoute,
+  registerWebhookTarget,
+  resolveWebhookTargetWithAuthOrRejectSync,
+} from "openclaw/plugin-sdk/webhook-targets";
 import type { RuntimeEnv } from "../runtime-api.js";
 import { waitForAbortableDelay } from "./async.js";
 import { createFeishuWSClient } from "./client.js";
@@ -23,20 +32,20 @@ import { buildFeishuWebhookRateLimitKey } from "./monitor-rate-limit-key.js";
 import type { FeishuStatusSink } from "./monitor.js";
 import {
   clearFeishuBotIdentityState,
-  closeTrackedFeishuHttpServer,
   FEISHU_WEBHOOK_BODY_TIMEOUT_MS,
   FEISHU_WEBHOOK_MAX_BODY_BYTES,
   feishuWebhookRateLimiter,
-  httpServers,
   recordWebhookStatus,
   wsClients,
 } from "./monitor.state.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 import { DEFAULT_FEISHU_WEBHOOK_PATH, normalizeFeishuWebhookPath } from "./webhook-path.js";
+import { describeFeishuWebhookPathConflict } from "./webhook-route.js";
 
 type MonitorTransportParams = {
   account: ResolvedFeishuAccount;
   accountId: string;
+  gatewayPort?: number;
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
   eventDispatcher: Lark.EventDispatcher;
@@ -375,241 +384,256 @@ export async function monitorWebSocket({
   setSocketTerminator?.(undefined);
 }
 
-export async function monitorWebhook({
-  account,
-  accountId,
-  runtime,
-  abortSignal,
-  eventDispatcher,
-  invokeWebhookEvent,
-  statusSink,
-}: MonitorTransportParams): Promise<void> {
-  const log = runtime?.log ?? console.log;
+type FeishuWebhookTarget = MonitorTransportParams & {
+  path: string;
+  rawPath: string;
+  preAuthInFlightLimiter: ReturnType<typeof createWebhookInFlightLimiter>;
+};
+const webhookTargetsStore = createPluginRuntimeStore<Map<string, FeishuWebhookTarget[]>>(
+  "Feishu webhook routes are not registered",
+);
+
+async function handleFeishuWebhook(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  webhookTargets: Map<string, FeishuWebhookTarget[]>,
+): Promise<void> {
+  const requestUrl = req.url ?? "/";
+  const requestPath = requestUrl.split("?", 1)[0];
+  const legacyListener = getWebhookLegacyListener(req);
+  const targets = (
+    webhookTargets.get(canonicalizeWebhookRouteKey(requestPath ?? "/")) ?? []
+  ).filter(
+    (target) =>
+      !target.abortSignal?.aborted &&
+      (!legacyListener ||
+        (target.account.config.legacyWebhook?.port === legacyListener.port &&
+          target.account.config.legacyWebhook.host === legacyListener.host)) &&
+      (target.rawPath.includes("?") ? requestUrl : requestPath) === target.rawPath,
+  );
+  if (!requestPath?.startsWith("/") || requestUrl.includes("#") || targets.length === 0) {
+    respondText(res, 404, "Not Found");
+    return;
+  }
+  const { accountId, rawPath: path, runtime, preAuthInFlightLimiter } = targets[0];
   const error = runtime?.error ?? console.error;
-  const encryptKey = account.encryptKey?.trim();
-  if (!encryptKey) {
-    throw new Error(`Feishu account "${accountId}" webhook mode requires encryptKey`);
+  const preAuthInFlightKey = canonicalizeWebhookRouteKey(requestPath);
+  let selectedTarget: FeishuWebhookTarget | null = null;
+
+  // Transport-owned rejections close without finish. Anomaly counts describe
+  // selected error outcomes, not successful delivery to the client.
+  res.once("close", () => {
+    recordWebhookStatus(runtime, accountId, path, res.statusCode);
+  });
+  res.once("finish", () => {
+    // Refresh lastEventAt / lastTransportActivityAt on every successful 2xx
+    // response so the gateway health monitor sees inbound activity. Non-2xx
+    // (e.g. 401 invalid signature, 400 invalid JSON, 429 rate-limited) is
+    // intentionally NOT counted as transport activity.
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      const inboundAt = Date.now();
+      selectedTarget?.statusSink?.({
+        lastEventAt: inboundAt,
+        lastTransportActivityAt: inboundAt,
+      });
+    }
+  });
+
+  const rateLimitKey = buildFeishuWebhookRateLimitKey({
+    accountId,
+    path,
+    clientIp: resolveRequestClientIp(req),
+  });
+  if (
+    !applyBasicWebhookRequestGuards({
+      req,
+      res,
+      allowMethods: ["POST"],
+      rateLimiter: feishuWebhookRateLimiter,
+      rateLimitKey,
+      nowMs: Date.now(),
+      requireJsonContentType: true,
+    })
+  ) {
+    return;
   }
 
-  const port = account.config.webhookPort ?? 3000;
-  const path = account.config.webhookPath ?? DEFAULT_FEISHU_WEBHOOK_PATH;
-  if (normalizeFeishuWebhookPath(path) !== path) {
+  // Feishu signature validation needs the complete raw body; bound incomplete
+  // pre-auth reads per route so held uploads cannot consume all webhook capacity.
+  if (!preAuthInFlightLimiter.tryAcquire(preAuthInFlightKey)) {
+    void sendHttpRequestRejection(
+      req,
+      res,
+      429,
+      "Rate limit exceeded",
+      "text/plain; charset=utf-8",
+    ).catch((err: unknown) => {
+      error(`feishu[${accountId}]: webhook concurrency rejection failed: ${String(err)}`);
+    });
+    return;
+  }
+
+  const guard = installRequestBodyLimitGuard(req, res, {
+    maxBytes: FEISHU_WEBHOOK_MAX_BODY_BYTES,
+    timeoutMs: FEISHU_WEBHOOK_BODY_TIMEOUT_MS,
+    responseFormat: "text",
+  });
+  if (guard.isTripped()) {
+    preAuthInFlightLimiter.release(preAuthInFlightKey);
+    return;
+  }
+
+  try {
+    let rawBody: string;
+    try {
+      const body = await readWebhookBodyOrReject({
+        req,
+        res,
+        maxBytes: FEISHU_WEBHOOK_MAX_BODY_BYTES,
+        timeoutMs: FEISHU_WEBHOOK_BODY_TIMEOUT_MS,
+        profile: "pre-auth",
+      });
+      if (!body.ok || res.writableEnded) {
+        return;
+      }
+      if (guard.isTripped()) {
+        return;
+      }
+      rawBody = body.value;
+
+      selectedTarget = resolveWebhookTargetWithAuthOrRejectSync({
+        targets,
+        res,
+        isMatch: (target) =>
+          !target.abortSignal?.aborted &&
+          isFeishuWebhookSignatureValid({
+            headers: req.headers,
+            rawBody,
+            encryptKey: target.account.encryptKey,
+          }),
+        unauthorizedMessage: "Invalid signature",
+      });
+      if (!selectedTarget) {
+        return;
+      }
+    } finally {
+      // This slot owns only untrusted body and signature work; authenticated
+      // parsing and dispatch must not reject new reads when downstream stalls.
+      guard.dispose();
+      preAuthInFlightLimiter.release(preAuthInFlightKey);
+    }
+
+    const { account, eventDispatcher, invokeWebhookEvent } = selectedTarget;
+    const encryptKey = account.encryptKey?.trim();
+    const payload = parseFeishuWebhookPayload(rawBody);
+    if (!payload) {
+      respondText(res, 400, "Invalid JSON");
+      return;
+    }
+
+    const { isChallenge, challenge } = Lark.generateChallenge(payload, {
+      encryptKey,
+    });
+    if (isChallenge) {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify(challenge));
+      return;
+    }
+
+    const envelope = buildFeishuWebhookEnvelope(req, payload);
+    const invocation = invokeWebhookEvent
+      ? await invokeWebhookEvent(envelope, { needCheck: false })
+      : {
+          kind: "non-durable" as const,
+          value: await eventDispatcher.invoke(envelope, { needCheck: false }),
+        };
+    if (!res.headersSent) {
+      if (invocation.kind === "durable") {
+        // The ingress owner records this fact at admission; challenges and
+        // non-durable event types ack without claiming durable acceptance.
+        res.setHeader(FEISHU_WEBHOOK_ACCEPTED_HEADER, FEISHU_WEBHOOK_ACCEPTED_VALUE);
+      }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify(invocation.value));
+    }
+  } catch (err) {
+    error(`feishu[${accountId}]: webhook handler error: ${String(err)}`);
+    if (!res.headersSent) {
+      respondText(res, 500, "Internal Server Error");
+    }
+  }
+}
+
+export async function monitorWebhook(params: MonitorTransportParams): Promise<void> {
+  const { account, accountId, runtime, abortSignal, statusSink } = params;
+  if (!account.encryptKey?.trim()) {
+    throw new Error(`Feishu account "${accountId}" webhook mode requires encryptKey`);
+  }
+  const rawPath = account.config.webhookPath ?? DEFAULT_FEISHU_WEBHOOK_PATH;
+  if (normalizeFeishuWebhookPath(rawPath) !== rawPath) {
     throw new Error(
       `Feishu account "${accountId}" webhookPath must be a canonical HTTP request path; ` +
         'run "openclaw doctor --fix" to repair it',
     );
   }
-  const host = account.config.webhookHost ?? "127.0.0.1";
-  const preAuthInFlightLimiter = createWebhookInFlightLimiter({
-    maxInFlightPerKey: FEISHU_PRE_AUTH_MAX_IN_FLIGHT,
-    maxTrackedKeys: 1,
+  const pathConflict = describeFeishuWebhookPathConflict(rawPath);
+  if (pathConflict && !account.config.legacyWebhook) {
+    throw new Error(`Feishu account "${accountId}" ${pathConflict}`);
+  }
+  if (abortSignal?.aborted) {
+    return;
+  }
+  let webhookTargets = webhookTargetsStore.tryGetRuntime();
+  if (!webhookTargets) {
+    webhookTargets = new Map();
+    webhookTargetsStore.setRuntime(webhookTargets);
+  }
+  const path = canonicalizeWebhookRouteKey(rawPath.split("?", 1)[0]);
+  const preAuthInFlightLimiter =
+    webhookTargets.get(path)?.[0]?.preAuthInFlightLimiter ??
+    createWebhookInFlightLimiter({
+      maxInFlightPerKey: FEISHU_PRE_AUTH_MAX_IN_FLIGHT,
+      maxTrackedKeys: 1,
+    });
+  const target = registerWebhookTarget(webhookTargets, {
+    ...params,
+    path,
+    rawPath,
+    preAuthInFlightLimiter,
   });
-  const preAuthInFlightKey = `${accountId}:${path}`;
-
-  log(`feishu[${accountId}]: starting Webhook server on ${host}:${port}, path ${path}...`);
-
-  const server = http.createServer();
-
-  server.on("request", (req, res) => {
-    const requestUrl = req.url ?? "/";
-    const requestPath = requestUrl.split("?", 1)[0];
-    // Explicit query routes retain Lark's exact raw-target contract; path-only
-    // routes accept queries without normalizing attacker-controlled targets.
-    const requestRoute = path.includes("?") ? requestUrl : requestPath;
-    if (!requestPath?.startsWith("/") || requestUrl.includes("#") || requestRoute !== path) {
-      respondText(res, 404, "Not Found");
-      return;
-    }
-
-    // Transport-owned rejections close without finish. Anomaly counts describe
-    // selected error outcomes, not successful delivery to the client.
-    res.once("close", () => {
-      recordWebhookStatus(runtime, accountId, path, res.statusCode);
-    });
-    res.once("finish", () => {
-      // Refresh lastEventAt / lastTransportActivityAt on every successful 2xx
-      // response so the gateway health monitor sees inbound activity. Non-2xx
-      // (e.g. 401 invalid signature, 400 invalid JSON, 429 rate-limited) is
-      // intentionally NOT counted as transport activity.
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        const inboundAt = Date.now();
-        statusSink?.({
-          lastEventAt: inboundAt,
-          lastTransportActivityAt: inboundAt,
-        });
-      }
-    });
-
-    const rateLimitKey = buildFeishuWebhookRateLimitKey({
-      accountId,
+  let unregisterRoute: (() => void) | undefined;
+  try {
+    unregisterRoute = registerPluginHttpRoute({
       path,
-      clientIp: resolveRequestClientIp(req),
+      auth: "plugin",
+      pluginId: "feishu",
+      source: "webhook",
+      accountId,
+      handler: (req, res) => handleFeishuWebhook(req, res, webhookTargets),
+      reuseExistingSameOwner: true,
+      throwOnFailure: true,
+      legacyListener: account.config.legacyWebhook,
+      log: runtime?.log,
     });
+    const connectedAt = Date.now();
+    statusSink?.(channelReadyPatch({ lastConnectedAt: connectedAt, lastEventAt: connectedAt }));
+    runtime?.log?.(
+      pathConflict
+        ? `feishu[${accountId}]: ${pathConflict} The configured legacy listener keeps the old path working; move the path and callback before removing legacyWebhook.`
+        : `feishu[${accountId}]: webhook registered on Gateway port ${params.gatewayPort ?? 18789} at ${rawPath}; point the Feishu callback URL or reverse-proxy upstream to this Gateway route. ${account.config.legacyWebhook ? "The configured legacy listener forwards here; remove legacyWebhook after updating the upstream (planned retirement after a two-month migration window, no automatic cutoff)." : "No separate webhook listener is opened; the former default port 3000 is no longer used."}`,
+    );
+    await waitUntilAbort(abortSignal);
+  } finally {
+    target.unregister();
+    unregisterRoute?.();
     if (
-      !applyBasicWebhookRequestGuards({
-        req,
-        res,
-        allowMethods: ["POST"],
-        rateLimiter: feishuWebhookRateLimiter,
-        rateLimitKey,
-        nowMs: Date.now(),
-        requireJsonContentType: true,
-      })
+      ![...webhookTargets.values()].some((targets) =>
+        targets.some((target) => target.accountId === accountId),
+      )
     ) {
-      return;
+      clearFeishuBotIdentityState(accountId);
     }
-
-    // Feishu signature validation needs the complete raw body; bound incomplete
-    // pre-auth reads per route so held uploads cannot consume all webhook capacity.
-    if (!preAuthInFlightLimiter.tryAcquire(preAuthInFlightKey)) {
-      void sendHttpRequestRejection(
-        req,
-        res,
-        429,
-        "Rate limit exceeded",
-        "text/plain; charset=utf-8",
-      ).catch((err: unknown) => {
-        error(`feishu[${accountId}]: webhook concurrency rejection failed: ${String(err)}`);
-      });
-      return;
-    }
-
-    const guard = installRequestBodyLimitGuard(req, res, {
-      maxBytes: FEISHU_WEBHOOK_MAX_BODY_BYTES,
-      timeoutMs: FEISHU_WEBHOOK_BODY_TIMEOUT_MS,
-      responseFormat: "text",
-    });
-    if (guard.isTripped()) {
-      preAuthInFlightLimiter.release(preAuthInFlightKey);
-      return;
-    }
-
-    void (async () => {
-      try {
-        let rawBody: string;
-        try {
-          const body = await readWebhookBodyOrReject({
-            req,
-            res,
-            maxBytes: FEISHU_WEBHOOK_MAX_BODY_BYTES,
-            timeoutMs: FEISHU_WEBHOOK_BODY_TIMEOUT_MS,
-            profile: "pre-auth",
-          });
-          if (!body.ok || res.writableEnded) {
-            return;
-          }
-          if (guard.isTripped()) {
-            return;
-          }
-          rawBody = body.value;
-
-          // Reject invalid signatures before any JSON parsing to keep the auth boundary strict.
-          if (
-            !isFeishuWebhookSignatureValid({
-              headers: req.headers,
-              rawBody,
-              encryptKey,
-            })
-          ) {
-            respondText(res, 401, "Invalid signature");
-            return;
-          }
-        } finally {
-          // This slot owns only untrusted body and signature work; authenticated
-          // parsing and dispatch must not reject new reads when downstream stalls.
-          guard.dispose();
-          preAuthInFlightLimiter.release(preAuthInFlightKey);
-        }
-
-        const payload = parseFeishuWebhookPayload(rawBody);
-        if (!payload) {
-          respondText(res, 400, "Invalid JSON");
-          return;
-        }
-
-        const { isChallenge, challenge } = Lark.generateChallenge(payload, {
-          encryptKey,
-        });
-        if (isChallenge) {
-          res.statusCode = 200;
-          res.setHeader("Content-Type", "application/json; charset=utf-8");
-          res.end(JSON.stringify(challenge));
-          return;
-        }
-
-        const envelope = buildFeishuWebhookEnvelope(req, payload);
-        const invocation = invokeWebhookEvent
-          ? await invokeWebhookEvent(envelope, { needCheck: false })
-          : {
-              kind: "non-durable" as const,
-              value: await eventDispatcher.invoke(envelope, { needCheck: false }),
-            };
-        if (!res.headersSent) {
-          if (invocation.kind === "durable") {
-            // The ingress owner records this fact at admission; challenges and
-            // non-durable event types ack without claiming durable acceptance.
-            res.setHeader(FEISHU_WEBHOOK_ACCEPTED_HEADER, FEISHU_WEBHOOK_ACCEPTED_VALUE);
-          }
-          res.statusCode = 200;
-          res.setHeader("Content-Type", "application/json; charset=utf-8");
-          res.end(JSON.stringify(invocation.value));
-        }
-      } catch (err) {
-        error(`feishu[${accountId}]: webhook handler error: ${String(err)}`);
-        if (!res.headersSent) {
-          respondText(res, 500, "Internal Server Error");
-        }
-      }
-    })();
-  });
-
-  httpServers.set(accountId, server);
-
-  return await new Promise<void>((resolve, reject) => {
-    let cleanupStarted = false;
-    const cleanup = async () => {
-      if (cleanupStarted) {
-        return;
-      }
-      cleanupStarted = true;
-      await closeTrackedFeishuHttpServer(accountId, server);
-    };
-
-    const handleAbort = () => {
-      log(`feishu[${accountId}]: abort signal received, stopping Webhook server`);
-      cleanup().then(resolve, reject);
-    };
-
-    if (abortSignal?.aborted) {
-      cleanup().then(resolve, reject);
-      return;
-    }
-
-    abortSignal?.addEventListener("abort", handleAbort, { once: true });
-
-    server.listen(port, host, () => {
-      log(`feishu[${accountId}]: Webhook server listening on ${host}:${port}`);
-      // Publish connected + lastEventAt once the server is listening. Without
-      // this, the gateway health monitor has no transport signal for webhook
-      // mode and will not detect a server crash. See PROPOSAL.md.
-      const webhookConnectedAt = Date.now();
-      statusSink?.(
-        channelReadyPatch({
-          lastConnectedAt: webhookConnectedAt,
-          lastEventAt: webhookConnectedAt,
-        }),
-      );
-    });
-
-    server.on("error", (err) => {
-      error(`feishu[${accountId}]: Webhook server error: ${err}`);
-      statusSink?.({
-        connected: false,
-        lifecycle: "recovering",
-        lastError: formatFeishuWsErrorForLog(err),
-      });
-      abortSignal?.removeEventListener("abort", handleAbort);
-      reject(err);
-    });
-  });
+  }
 }

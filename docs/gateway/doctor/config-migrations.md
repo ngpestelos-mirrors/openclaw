@@ -26,6 +26,28 @@ the account's bindings unchanged. An unresolved account stays blocked
 with that reason while the Gateway and other accounts continue running; it does
 not enter a restart loop. Add the reported binding and restart the Gateway.
 
+## Channel webhook listeners
+
+Telegram, Feishu, Microsoft Teams, and Nextcloud Talk now receive webhooks on
+Gateway HTTP routes. Their plugin-owned Doctor migrations move an explicitly
+configured `webhookPort` (Teams: `webhook.port`) and effective bind host into
+`legacyWebhook: { port, host? }`. Doctor validates and backs up the config through
+the normal write flow. The temporary listener forwards only its registered
+webhook routes through the same Gateway request pipeline, preserving signatures
+and retry responses during channel restarts.
+
+Update the external callback or reverse-proxy upstream to the Gateway port and
+the channel's webhook path, verify delivery, then remove `legacyWebhook`.
+Compatibility removal is planned after a two-month migration window; listeners
+do not expire automatically. Configs that omitted the old port do not open a
+compatibility listener. Doctor and channel startup identify the new destination
+and the former default port to replace.
+
+Telegram re-registers its configured public `webhookUrl` at startup. It preserves
+that URL because its reverse-proxy upstream cannot be inferred safely. Accounts
+that shared a path and secret on different explicit ports keep their old-port
+routing; assign distinct secrets or paths before moving them to one Gateway port.
+
 ## ACP agents' model precedence
 
 For an agent with `runtime.type: "acp"`, `agents.entries.*.model` (string form) or

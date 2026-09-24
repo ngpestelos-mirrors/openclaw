@@ -236,8 +236,10 @@ const FeishuGroupSchema = buildGroupEntrySchema({
 }).omit({ toolsBySender: true });
 
 const FeishuSharedConfigShape = {
-  webhookHost: z.string().optional(),
-  webhookPort: z.number().int().positive().optional(),
+  legacyWebhook: z
+    .object({ port: z.number().int().min(1).max(65535), host: z.string().optional() })
+    .strict()
+    .optional(),
   capabilities: z.array(z.string()).optional(),
   markdown: MarkdownConfigSchema,
   configWrites: z.boolean().optional(),

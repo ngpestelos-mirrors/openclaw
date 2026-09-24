@@ -110,10 +110,8 @@ export type TelegramAccountConfig = CommonChannelMessagingConfig<
     webhookUrl?: string;
     webhookSecret?: string;
     webhookPath?: string;
-    /** Local webhook listener bind host (default: 127.0.0.1). */
-    webhookHost?: string;
-    /** Local webhook listener bind port (default: 8787). */
-    webhookPort?: number;
+    /** Temporary forwarding endpoint retained by Doctor for an explicitly configured old port. */
+    legacyWebhook?: { port: number; host?: string };
     /** Path to the self-signed certificate (PEM) to upload to Telegram during webhook registration. */
     webhookCertPath?: string;
     /** Per-action tool gating (default: true for all). */

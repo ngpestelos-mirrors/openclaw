@@ -104,8 +104,14 @@ export const MSTeamsConfigSchema = z
     managedIdentityClientId: z.string().optional(),
     webhook: z
       .object({
-        port: z.number().int().positive().optional(),
         path: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    legacyWebhook: z
+      .object({
+        port: z.number().int().min(1).max(65535),
+        host: z.string().optional(),
       })
       .strict()
       .optional(),

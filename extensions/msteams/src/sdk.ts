@@ -100,40 +100,16 @@ const loadSdkModules = createLazyRuntimeModule(() =>
   Promise.all([import("@microsoft/teams.apps"), import("@microsoft/teams.api")]).then(
     ([apps, api]) => ({
       App: apps.App,
-      ExpressAdapter: apps.ExpressAdapter,
       cloudFromName: api.cloudFromName,
     }),
   ),
 );
 
 /**
- * Lazily construct an ExpressAdapter that the Teams SDK App can register its
- * routes on. The dynamic import keeps the SDK bundle off the hot startup path
- * when msteams is disabled; the structural return type matches what
- * `loadMSTeamsSdkWithAuth` accepts as its `httpServerAdapter` option.
- */
-export async function createMSTeamsExpressAdapter(
-  serverOrApp: ConstructorParameters<
-    typeof import("@microsoft/teams.apps/dist/http/express-adapter.js").ExpressAdapter
-  >[0],
-): Promise<MSTeamsHttpServerAdapter> {
-  const { ExpressAdapter } = await loadSdkModules();
-  return new ExpressAdapter(serverOrApp);
-}
-
-/**
  * Options for creating a Teams SDK App instance.
  */
 type CreateMSTeamsAppOptions = {
-  /**
-   * HTTP server adapter to use. When an Express app is available (monitor
-   * mode), pass an ExpressAdapter so the SDK registers routes and handles
-   * JWT validation. When omitted, the SDK creates a default ExpressAdapter
-   * (no server starts until app.start() is called).
-   *
-   * Use {@link createMSTeamsExpressAdapter} to construct a properly-typed
-   * adapter from an Express application.
-   */
+  /** Inbound transport adapter; the SDK retains JWT validation and activity dispatch. */
   httpServerAdapter?: MSTeamsHttpServerAdapter;
   /**
    * Custom messaging endpoint path.
@@ -155,7 +131,7 @@ type CreateMSTeamsAppOptions = {
 
 /**
  * Create a Teams SDK App instance from credentials. The App manages token
- * acquisition, JWT validation, and the HTTP server lifecycle.
+ * acquisition, JWT validation, and activity dispatch.
  *
  * Auth modes:
  * - Secret: clientId + clientSecret → MSAL client credential flow (SDK built-in)

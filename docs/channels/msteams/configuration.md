@@ -40,8 +40,8 @@ Key settings (see [/gateway/configuration](/gateway/configuration) for shared ch
 - `channels.msteams.appId`, `channels.msteams.appPassword`, `channels.msteams.tenantId`: bot credentials.
 - `channels.msteams.cloud`: Teams SDK cloud environment (`Public`, `USGov`, `USGovDoD`, or `China`; default `Public`). Set with `serviceUrl` for USGov/DoD SDK clouds; China uses the SDK preset and stored Azure China Bot Framework conversation references, with Graph-backed helpers disabled until Azure China Graph routing ships.
 - `channels.msteams.serviceUrl`: Bot Connector service URL boundary for SDK proactive operations. Public cloud uses the SDK default; set for GCC (`https://smba.infra.gcc.teams.microsoft.com/teams`), GCC High, or DoD. China accepts Azure China Bot Framework channel hosts when the stored conversation reference comes from Teams operated by 21Vianet.
-- `channels.msteams.webhook.port` (default `3978`).
-- `channels.msteams.webhook.path` (default `/api/messages`).
+- `channels.msteams.webhook.path`: Gateway HTTP route (default `/api/messages`), served on `gateway.port` (default `18789`).
+- `channels.msteams.legacyWebhook`: temporary `{ port, host? }` forwarding for an explicitly configured former listener; created by Doctor during migration.
 - `channels.msteams.dmPolicy`: `pairing | allowlist | open | disabled` (default `pairing`).
 - `channels.msteams.allowFrom`: DM allowlist (AAD object IDs recommended). Stable AAD object IDs also authorize approval actions. The wizard resolves names to IDs during setup when Graph access is available.
 - `channels.msteams.defaultTo`: default outbound target; a stable AAD object ID can also authorize approval actions.
@@ -73,3 +73,33 @@ Key settings (see [/gateway/configuration](/gateway/configuration) for shared ch
 - `channels.msteams.responsePrefix`: text prefixed to outbound replies.
 - `channels.msteams.feedbackEnabled` (default `true`), `channels.msteams.feedbackReflection` (default `true`), `channels.msteams.feedbackReflectionCooldownMs`: thumbs-up/down feedback on replies and the negative-feedback reflection follow-up.
 - `channels.msteams.sso`, `channels.msteams.delegatedAuth`: Bot Framework OAuth connection and delegated Graph scopes for SSO-backed flows; `sso.enabled: true` requires `sso.connectionName`.
+
+## Migrating an existing webhook endpoint
+
+Teams webhooks now share the Gateway HTTP listener. The Teams SDK still verifies
+Azure JWT signatures; callers do not supply a Gateway token. Keep the public
+HTTPS messaging endpoint in Azure Bot and change its reverse-proxy upstream to
+Gateway port `18789` (or your `gateway.port`), preserving `/api/messages` or your
+configured `webhook.path`. If you expose a port directly, update Azure Bot's
+messaging endpoint to the public HTTPS URL that reaches this Gateway route.
+
+Doctor migrates an explicitly configured `webhook.port` to `legacyWebhook.port`
+and backs up the original config. That port temporarily forwards into the same
+Gateway route, including the same JWT validation. After confirming a delivery
+through the Gateway port, remove `legacyWebhook` and any old firewall or Compose
+port mapping. Forwarding is planned for removal after the two-month migration
+window; it does not expire automatically in a running installation.
+
+If `webhook.port` was absent, OpenClaw does not open the former default port
+`3978`. Doctor and startup print the Gateway path and port to use; update the
+reverse proxy or Azure Bot endpoint before expecting deliveries. A custom path
+continues accepting the older `/api/messages` alias with a deprecation warning;
+update Azure Bot to the configured path before that alias is removed.
+
+The Gateway reserves `/health`, `/healthz`, `/ready`, `/readyz`, `/startup`, and
+`/startupz` for probes, including URLs with query strings. If your former Teams
+callback uses one of these paths, set `webhook.path` to `/api/messages` and update
+Azure Bot or the proxy upstream to match. Doctor reports this conflict, and
+startup refuses the unusable route unless an explicit legacy listener preserves
+the old endpoint. That legacy port continues serving the old path during the
+migration; verify the replacement before removing it.
