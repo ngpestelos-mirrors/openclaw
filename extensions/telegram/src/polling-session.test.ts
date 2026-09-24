@@ -13,8 +13,8 @@ import {
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { resolveRuntimeWorkerThreadExecArgv } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveRuntimeWorkerThreadExecArgv } from "../../../src/infra/runtime-worker-url.js";
 import type * as TelegramProcessingOutcome from "./bot-processing-outcome.js";
 import type { TelegramBotOptions } from "./bot.types.js";
 import { asTelegramClientFetch, createTelegramClientFetch } from "./client-fetch.js";
