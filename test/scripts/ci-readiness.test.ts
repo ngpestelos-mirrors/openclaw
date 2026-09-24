@@ -475,7 +475,7 @@ describe("real CI workflow admission and required status", () => {
     expect(
       evaluate(workflow.jobs.preflight.if, "pull_request", "labeled", fixture().label, "true"),
     ).toBe(true);
-    expect(evaluate(workflow.jobs.preflight.if, "push")).toBe(true);
+    expect(evaluate(workflow.jobs.preflight.if, "push")).toBe(false);
     expect(evaluate(workflow.jobs.preflight.if, "workflow_dispatch")).toBe(true);
     expect(
       evaluate(workflow.jobs["security-fast"].if, "pull_request", "synchronize", "", "false", true),

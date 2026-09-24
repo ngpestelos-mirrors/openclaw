@@ -24,6 +24,7 @@ describe("attempt-bound workflow entry paths", () => {
         for (const draft of [true, false]) {
           expect(
             evaluateWorkflowExpression(gate.if, {
+              ciOnPush: "true",
               cancelled,
               draft,
               eventName,
