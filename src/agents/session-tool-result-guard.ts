@@ -90,12 +90,27 @@ function extractPendingAssistantToolCalls(message: AgentMessage) {
     : [];
 }
 
+/** Provider response identity shared by every fragment of one streamed assistant response. */
+function assistantResponseIdentity(message: AgentMessage): string | undefined {
+  return message.role === "assistant"
+    ? (normalizeOptionalString(message.responseId) ?? normalizeOptionalString(message.turnId))
+    : undefined;
+}
+
 function clearsPendingToolCalls(
   message: AgentMessage,
   toolCalls: ReturnType<typeof extractPendingAssistantToolCalls>,
   allowSyntheticToolResults: boolean,
+  pendingResponseIds: ReadonlySet<string>,
 ): boolean {
   if (message.role === "toolResult") {
+    return false;
+  }
+  // Async tool execution commits each call as a fragment of one provider response, and the
+  // response keeps sampling while those tools run. A later fragment of that same response
+  // is not a turn boundary: its calls' real results are still on the way.
+  const responseId = assistantResponseIdentity(message);
+  if (responseId && pendingResponseIds.has(responseId)) {
     return false;
   }
   const transcriptOnly =
@@ -178,6 +193,12 @@ export function installSessionToolResultGuard(
     sessionManager.appendMessageWithTranscriptAnchorAsync.bind(sessionManager);
   setRawSessionAppendMessage(sessionManager, originalAppend);
   const pending = new Map<string, string | undefined>();
+  // Responses whose tool calls are still pending; see clearsPendingToolCalls.
+  const pendingResponseIds = new Set<string>();
+  const clearPending = () => {
+    pending.clear();
+    pendingResponseIds.clear();
+  };
   const persistMessage = (message: AgentMessage, sourceAppend?: CodeModeSourceAppend) => {
     const transformer = opts?.transformMessageForPersistence;
     const persisted = transformer ? transformer(message) : message;
@@ -251,9 +272,16 @@ export function installSessionToolResultGuard(
     const resultId = message.role === "toolResult" ? extractToolResultId(message) : null;
     if (resultId) {
       pending.delete(resultId);
+      if (pending.size === 0) {
+        pendingResponseIds.clear();
+      }
     }
     for (const call of calls) {
       pending.set(call.id, call.name);
+    }
+    const responseId = calls.length > 0 ? assistantResponseIdentity(message) : undefined;
+    if (responseId) {
+      pendingResponseIds.add(responseId);
     }
   };
   const recordPendingReceipt = (
@@ -277,8 +305,10 @@ export function installSessionToolResultGuard(
         continue;
       }
       const calls = extractPendingAssistantToolCalls(entry.message);
-      if (clearsPendingToolCalls(entry.message, calls, allowSyntheticToolResults)) {
-        pending.clear();
+      if (
+        clearsPendingToolCalls(entry.message, calls, allowSyntheticToolResults, pendingResponseIds)
+      ) {
+        clearPending();
       }
       updatePending(entry.message, calls);
     }
@@ -425,13 +455,9 @@ export function installSessionToolResultGuard(
         }
       }
     }
-    pending.clear();
+    clearPending();
   }
   const flushPendingToolResults = () => runSync(flushPendingToolResultsOperation());
-
-  const clearPendingToolResults = () => {
-    pending.clear();
-  };
 
   function* guardedAppend(
     message: AgentMessage,
@@ -521,7 +547,7 @@ export function installSessionToolResultGuard(
     // back into strict provider order before the next replay.
     if (
       pending.size > 0 &&
-      clearsPendingToolCalls(nextMessage, toolCalls, allowSyntheticToolResults)
+      clearsPendingToolCalls(nextMessage, toolCalls, allowSyntheticToolResults, pendingResponseIds)
     ) {
       yield* flushPendingToolResultsOperation();
     }
@@ -627,7 +653,7 @@ export function installSessionToolResultGuard(
   return {
     hasPendingToolResults: () => pending.size > 0,
     flushPendingToolResults,
-    clearPendingToolResults,
+    clearPendingToolResults: clearPending,
     clearNextUserMessagePersistenceSuppression: () => {
       suppressNextUserMessagePersistence = false;
     },
