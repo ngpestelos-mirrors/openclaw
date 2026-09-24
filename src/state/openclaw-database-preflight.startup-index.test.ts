@@ -6,6 +6,7 @@ import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/sessio
 import { runGatewayStartupMaintenance } from "../gateway/server-startup-plugins.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { flushLogger, resetLogger, setLoggerOverride } from "../logging/logger.js";
+import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
@@ -70,8 +71,12 @@ async function createFixture(ids: string[], damage: "missing" | "drifted" | "mis
     const writer = new DatabaseSync(agent.path);
     writer.exec("DROP INDEX idx_agent_session_nodes_active;");
     writer.exec("UPDATE schema_meta SET app_version = '2026.9.1';");
-    expect(writer.prepare("PRAGMA user_version").get()?.user_version).toBe(21);
-    expect(writer.prepare("SELECT schema_version FROM schema_meta").get()?.schema_version).toBe(21);
+    expect(writer.prepare("PRAGMA user_version").get()?.user_version).toBe(
+      OPENCLAW_AGENT_SCHEMA_VERSION,
+    );
+    expect(writer.prepare("SELECT schema_version FROM schema_meta").get()?.schema_version).toBe(
+      OPENCLAW_AGENT_SCHEMA_VERSION,
+    );
     expect(writer.prepare("SELECT app_version FROM schema_meta").get()?.app_version).toBe(
       "2026.9.1",
     );

@@ -1,15 +1,11 @@
 import catalog from "./upgrade-survivor-scenarios.json" with { type: "json" };
 
 const UPGRADE_SURVIVOR_SCENARIOS = Object.freeze(catalog.scenarios);
-// Direct-only recipes stay outside aggregate scheduling.
+// Frozen Codex allowlist recipes retain their assertion-only scenario.
 export const UPGRADE_SURVIVOR_ASSERTION_SCENARIOS = Object.freeze([
   ...UPGRADE_SURVIVOR_SCENARIOS,
   ...catalog.assertionOnlyScenarios,
 ]);
-
-export function isChannelPostCoreScenario(scenario) {
-  return scenario === "channel-post-core-restore" || scenario === "channel-post-core-readiness";
-}
 
 // Oldest release line supported by the operator-state upgrade regression gate.
 export const OLDEST_SUPPORTED_UPGRADE_SURVIVOR_BASELINE = "2026.6.34";
@@ -156,7 +152,10 @@ export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec
   ) {
     return baselineSpec === "openclaw@2026.9.4";
   }
-  if (scenario === "abandoned-update" || scenario === "missing-configured-plugin-migration") {
+  if (scenario === "abandoned-update") {
+    return baselineSpec === "openclaw@2026.9.4" || baselineSpec === "openclaw@2026.9.3";
+  }
+  if (scenario === "missing-configured-plugin-migration") {
     return baselineSpec === "openclaw@2026.9.2";
   }
   if (scenario === "workshop-doctor-recovery") {

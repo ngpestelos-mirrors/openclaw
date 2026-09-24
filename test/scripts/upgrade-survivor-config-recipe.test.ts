@@ -24,7 +24,9 @@ import {
   resolveUpgradeSurvivorOpenClawCommand,
   runUpgradeSurvivorOpenClawStep,
 } from "../../scripts/e2e/lib/upgrade-survivor/config-recipe.mts";
+import { buildInlineProviderModels } from "../../src/agents/embedded-agent-runner/model.inline-provider.js";
 import { AgentsSchema } from "../../src/config/zod-schema.agents.js";
+import { ModelsConfigSchema } from "../../src/config/zod-schema.core.js";
 
 const RECIPE_PATH = "scripts/e2e/lib/upgrade-survivor/config-recipe.mts";
 const RUN_PATH = "scripts/e2e/lib/upgrade-survivor/run.sh";
@@ -93,8 +95,6 @@ process.exit(failed ? 17 : 0);
         RECIPE_PATH,
         "scripts/e2e/lib/upgrade-survivor/config-recipe",
         "scripts/lib/release-version.mjs",
-        "scripts/lib/upgrade-survivor-policy.mjs",
-        "scripts/lib/upgrade-survivor-scenarios.json",
         "scripts/windows-cmd-helpers.mjs",
       ]) {
         mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -153,9 +153,6 @@ node() {
       loggedArgs,
       summary: existsSync(summaryPath) ? JSON.parse(readFileSync(summaryPath, "utf8")) : null,
       legacySeeded: existsSync(legacyMarker),
-      authoredConfig: existsSync(join(root, "config.json"))
-        ? JSON.parse(readFileSync(join(root, "config.json"), "utf8"))
-        : null,
     };
   } finally {
     rmSync(root, { force: true, recursive: true });
@@ -163,51 +160,32 @@ node() {
 }
 
 describe("upgrade survivor config recipe command resolution", () => {
-  it.each(["channel-post-core-restore", "channel-post-core-readiness"])(
-    "authors the 4.15 %s witness without retired metadata and validates through the baseline",
-    (selectedScenario) => {
-      const { result, summary, loggedArgs, authoredConfig } = runRecipeFixture({
-        scenario: selectedScenario,
-        version: "2026.4.15",
-      });
-      expect(result.status, result.stderr).toBe(0);
-      expect(loggedArgs).toEqual([["config", "validate"]]);
-      expect(summary.source).toBe("synthetic-cross-version-config");
-      expect(authoredConfig).not.toHaveProperty("meta");
-      expect(authoredConfig.update.channel).toBe("stable");
-      expect(authoredConfig.plugins).toEqual({
-        enabled: true,
-        allow: ["whatsapp"],
-        entries: { whatsapp: { enabled: true } },
-      });
-      expect(
-        authoredConfig.channels.whatsapp.groups["120363000000000000@g.us"].requireMention,
-      ).toBe(true);
-      expect(
-        resolveUpgradeSurvivorConfigStepsForBaseline(selectedScenario, "2026.4.15").flatMap(
-          (step) => step.prepublishPluginPackages ?? [],
-        ),
-      ).toEqual(["@openclaw/whatsapp"]);
-      for (const [scenario, version] of [
-        ["base", "2026.4.15"],
-        ["channel-post-core-restore", "2026.4.29"],
-      ]) {
-        const steps = resolveUpgradeSurvivorConfigStepsForBaseline(scenario, version);
-        expect(steps.some((step) => step.authoredConfigFile)).toBe(false);
-        expect(steps.some((step) => step.id === "models-openai")).toBe(true);
-      }
-    },
-  );
-
   it("selects the prerelease update channel for the plugin registry", () => {
     const runner = readFileSync(RUN_PATH, "utf8");
     expect(runner).toContain('OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL="beta"');
     expect(runner).toContain("OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION");
   });
 
-  it.skipIf(process.platform === "win32")(
-    "launches the published baseline with trusted sources and no host dependencies",
-    () => {
+  it.skipIf(process.platform === "win32").each([
+    { liveEnv: {}, expectedKeys: [] },
+    { liveEnv: { OPENCLAW_UPGRADE_SURVIVOR_LIVE_OPENAI: "1" }, expectedKeys: ["OPENAI_API_KEY"] },
+    {
+      liveEnv: {
+        OPENCLAW_UPGRADE_SURVIVOR_LIVE_MODELS:
+          "openai/gpt-5.5 anthropic/claude-opus-5 google/gemini-3.1-pro-preview",
+      },
+      expectedKeys: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"],
+    },
+    {
+      liveEnv: {
+        OPENCLAW_UPGRADE_SURVIVOR_LIVE_OPENAI: "1",
+        OPENCLAW_UPGRADE_SURVIVOR_LIVE_MODELS: "google/gemini-3.1-pro-preview",
+      },
+      expectedKeys: ["GEMINI_API_KEY"],
+    },
+  ])(
+    "launches the published baseline with trusted sources and only selected keys: $expectedKeys",
+    ({ liveEnv, expectedKeys }) => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), "openclaw-upgrade-docker-boundary-")));
       const harnessRoot = realpathSync(process.cwd());
       try {
@@ -245,10 +223,21 @@ esac
             OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE: "1",
             OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC: "openclaw@2026.7.1-2",
             OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE: candidate,
+            OPENAI_API_KEY: "fixture-openai-key",
+            ANTHROPIC_API_KEY: "fixture-anthropic-key",
+            GEMINI_API_KEY: "fixture-google-key",
+            ...liveEnv,
           },
         });
         expect(result.status, result.stdout + result.stderr).toBe(0);
         const args = readFileSync(join(root, "docker-args"), "utf8").split("\0").slice(0, -1);
+        const envArgs = args.filter((_, index) => args[index - 1] === "-e");
+        expect(
+          envArgs.filter((arg) =>
+            ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"].includes(arg),
+          ),
+        ).toEqual(expectedKeys);
+        expect(args.join(" ")).not.toMatch(/fixture-(openai|anthropic|google)-key/u);
         const mounts = args.filter((_, index) => args[index - 1] === "-v");
         expect(mounts.filter((mount) => mount.includes("node_modules"))).toEqual([]);
         expect(args.some((arg) => arg.startsWith("OPENCLAW_UPGRADE_SURVIVOR_TSX_IMPORT="))).toBe(
@@ -335,7 +324,16 @@ esac
           "config",
           "set",
           "plugins.allow",
-          JSON.stringify(["discord", "memory", "telegram", "whatsapp", "codex"]),
+          JSON.stringify([
+            "anthropic",
+            "google",
+            "openai",
+            "discord",
+            "memory",
+            "telegram",
+            "whatsapp",
+            "codex",
+          ]),
           "--strict-json",
         ],
         id: "plugins-codex-allowlist",
@@ -366,6 +364,90 @@ esac
     expect(steps.find((step) => step.id === "channels-discord")).toBeDefined();
     expect(steps.find((step) => step.id === "channels-feishu")).toBeDefined();
     expect(steps.at(-1)?.id).toBe("validate");
+  });
+
+  it.each([null, "2026.3.22", "2026.8.1", "2026.9.5"])(
+    "authors schema-valid provider credentials without changing the primary model for %s",
+    (version) => {
+      const writes = configLeafWrites(
+        resolveUpgradeSurvivorConfigStepsForBaseline("base", version),
+      );
+      const providers = Object.fromEntries(
+        writes
+          .filter((entry) => entry.path.startsWith("models.providers."))
+          .map((entry) => [entry.path.slice("models.providers.".length), entry.value]),
+      );
+      expect(ModelsConfigSchema.safeParse({ providers }).success).toBe(true);
+      expect(providers).toEqual({
+        openai: {
+          api: "openai-responses",
+          apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+          baseUrl: "https://api.openai.com/v1",
+          models: [],
+        },
+        anthropic: {
+          api: "anthropic-messages",
+          apiKey: { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" },
+          baseUrl: "https://api.anthropic.com",
+          models: [],
+        },
+        google: {
+          api: "google-generative-ai",
+          apiKey: { source: "env", provider: "default", id: "GEMINI_API_KEY" },
+          baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+          models: [
+            {
+              id: "gemini-3.1-pro-preview",
+              name: "Gemini 3.1 Pro Preview",
+              reasoning: true,
+              input: ["text", "image"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 1048576,
+              maxTokens: 65536,
+            },
+          ],
+        },
+      });
+      expect(writes.find((entry) => entry.path === "agents")?.value).toMatchObject({
+        defaults: { model: { primary: "openai/gpt-5.5" } },
+      });
+      const googleStep = resolveUpgradeSurvivorConfigStepsForBaseline("base", version).find(
+        (step) => step.id === "models-google",
+      );
+      const google = JSON.parse(googleStep?.argv[3] ?? "{}");
+      expect(buildInlineProviderModels({ google })).toEqual([
+        expect.objectContaining({
+          provider: "google",
+          id: "gemini-3.1-pro-preview",
+          api: "google-generative-ai",
+          baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+          reasoning: true,
+          contextWindow: 1048576,
+          maxTokens: 65536,
+        }),
+      ]);
+    },
+  );
+
+  it.each([
+    "base",
+    "feishu-channel",
+    "configured-plugin-installs",
+    "sqlite-volume",
+    "acpx-openclaw-tools-bridge",
+    "codex-allowlist-survival",
+  ])("keeps all configured provider owners allowed in the %s recipe", (scenario) => {
+    for (const version of ["2026.3.22", "2026.8.1", "2026.9.5"]) {
+      let allow: string[] = [];
+      for (const step of resolveUpgradeSurvivorConfigStepsForBaseline(scenario, version)) {
+        if (step.argv[2] === "plugins") {
+          allow = JSON.parse(step.argv[3] ?? "{}").allow;
+        } else if (step.argv[2] === "plugins.allow") {
+          allow = JSON.parse(step.argv[3] ?? "[]");
+        }
+      }
+      expect(allow).toEqual(expect.arrayContaining(["anthropic", "google", "openai"]));
+    }
   });
 
   it("keeps the watch direct-node recipe isolated from unrelated plugin fixtures", () => {
@@ -407,6 +489,11 @@ esac
     { version: "2026.7.2-beta.3", legacy: true, explicit: false },
     { version: "2026.7.2-beta.4", legacy: false, explicit: false },
     { version: "2026.7.2-beta.5", legacy: false, explicit: false },
+    { version: "2026.7.2", legacy: false, explicit: false },
+    { version: "2026.7.33", legacy: true, explicit: false },
+    { version: "2026.7.34", legacy: true, explicit: false },
+    { version: "2026.7.35", legacy: true, explicit: false },
+    { version: "2026.7.36", legacy: true, explicit: false },
     { version: "2026.8.1-beta.1", legacy: false, explicit: false },
     { version: "2026.8.1-beta.2", legacy: false, explicit: true },
     { version: "2026.8.1", legacy: false, explicit: true },
@@ -488,7 +575,7 @@ esac
     },
   );
 
-  it.each(["2026.3.13", "2026.4.1", "2026.7.2-beta.3"])(
+  it.each(["2026.3.13", "2026.4.1", "2026.6.34", "2026.6.35", "2026.7.2-beta.3", "2026.7.33"])(
     "preserves the legacy agent contract for baseline %s",
     (version) => {
       const agentStep = resolveUpgradeSurvivorConfigStepsForBaseline("base", version).find(
@@ -521,7 +608,7 @@ esac
     { version: "2026.7.2", batched: true },
   ])("batches only supported final baselines: $version", ({ version, batched }) => {
     const steps = resolveUpgradeSurvivorConfigStepsForBaseline("base", version);
-    expect(steps).toHaveLength(batched ? 8 : 10);
+    expect(steps).toHaveLength(batched ? 10 : 12);
     expect(steps.filter((step) => step.argv[2] === "--batch-json")).toHaveLength(batched ? 1 : 0);
     expect(configLeafWrites(steps).filter((entry) => entry.path.startsWith("channels."))).toEqual([
       expect.objectContaining({ path: "channels.discord" }),
@@ -532,6 +619,8 @@ esac
       "update",
       "gateway",
       "models",
+      "models-anthropic",
+      "models-google",
       "agents",
       "skills",
       "plugins",
@@ -647,6 +736,8 @@ esac
       "update-channel",
       "gateway",
       "models-openai",
+      "models-anthropic",
+      "models-google",
       "agents",
       "skills",
       "plugins",
@@ -656,7 +747,7 @@ esac
       "channels-matrix",
       "validate",
     ]);
-    expect(summary.steps[6]).toMatchObject({
+    expect(summary.steps.find((step: { id: string }) => step.id === "channels")).toMatchObject({
       id: "channels",
       ok: true,
       status: 0,
@@ -666,6 +757,8 @@ esac
       "update",
       "gateway",
       "models",
+      "models-anthropic",
+      "models-google",
       "agents",
       "skills",
       "plugins",
@@ -694,6 +787,8 @@ esac
         "update-channel",
         "gateway",
         "models-openai",
+        "models-anthropic",
+        "models-google",
         "agents",
         "skills",
         "plugins",
@@ -712,6 +807,8 @@ esac
         "update",
         "gateway",
         "models",
+        "models-anthropic",
+        "models-google",
         "agents",
         "skills",
         "plugins",
@@ -724,7 +821,7 @@ esac
         "configured-plugin-installs",
         version,
       );
-      expect(loggedArgs).toEqual(steps.slice(0, batched ? 7 : 8).map((step) => step.argv));
+      expect(loggedArgs).toEqual(steps.slice(0, batched ? 9 : 10).map((step) => step.argv));
       expect(result.stderr).toContain(
         `baseline config recipe failed at ${batched ? "channels" : "channels-telegram"}: 17`,
       );
@@ -742,8 +839,16 @@ esac
     {
       failPath: "plugins",
       failedStep: "plugins",
-      launches: 6,
-      accepted: ["update", "gateway", "models", "agents", "skills"],
+      launches: 8,
+      accepted: [
+        "update",
+        "gateway",
+        "models",
+        "models-anthropic",
+        "models-google",
+        "agents",
+        "skills",
+      ],
       skipped: ["agent-modern-preferences", "memory-plugin-allow"],
     },
   ])(

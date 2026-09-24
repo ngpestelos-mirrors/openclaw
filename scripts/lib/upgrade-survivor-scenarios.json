@@ -30,7 +30,6 @@
     "watchos-direct-node"
   ],
   "assertionOnlyScenarios": [
-    "codex-allowlist-survival",
-    "channel-post-core-readiness"
+    "codex-allowlist-survival"
   ]
 }

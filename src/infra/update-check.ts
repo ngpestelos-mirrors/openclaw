@@ -5,6 +5,7 @@ import { runCommandWithTimeout } from "../process/exec.js";
 import { detectPackageManager as detectPackageManagerImpl } from "./detect-package-manager.js";
 import { createGitCommandError, executeGitCommand } from "./git-exec.js";
 import { compareOpenClawReleaseVersions } from "./npm-registry-spec.js";
+import { readPackageName } from "./package-json.js";
 import { compareValidSemver, normalizeLegacyDotBetaVersion } from "./semver.js";
 import {
   channelToNpmTag,
@@ -17,12 +18,15 @@ import {
   fetchNpmPackageTargetStatus,
   type NpmMetadataCommandRunner,
 } from "./update-check-package-target.js";
+import { resolveGitRepositoryMetadata, type GitTrackingTarget } from "./update-git-metadata.js";
 import { readBuiltRuntimeCommit } from "./update-git-runtime.js";
 import { detectGlobalInstallManagerForRoot } from "./update-global.js";
 import { updateInstallRootsMatch } from "./update-install-root.js";
 import { UPDATE_NETWORK_TIMEOUT_MS } from "./update-network-budget.js";
+import { createUpdatePreflightFailure } from "./update-preflight-details.js";
 import type { UpdateFetchFailure } from "./update-run-record.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "./update-run-timeouts.js";
+import { describeUpdateInstallRoot } from "./update-runner-install-surface.js";
 
 type PackageManager = "pnpm" | "bun" | "npm" | "unknown";
 type GitUpdateOptions = {
@@ -40,6 +44,7 @@ type GitUpdateStatus = {
   upstream: string | null;
   upstreamSource?: "tracking" | "receipt";
   upstreamSha?: string | null;
+  repositoryUrl?: string;
   commitAtMs?: number | null;
   dirty: boolean | null;
   ahead: number | null;
@@ -54,12 +59,6 @@ type GitUpdateStatus = {
 export type UpdateInstallIdentity = {
   installKind: "git" | "package" | "unknown";
   git?: Pick<GitUpdateStatus, "branch" | "tag" | "error">;
-};
-
-type GitTrackingTarget = {
-  revision: string;
-  display: string;
-  fetch: "prune" | { remote: string; mergeRef: string };
 };
 
 type DepsStatus = {
@@ -108,7 +107,12 @@ export type UpdateCheckResult = {
   git?: GitUpdateStatus;
   deps?: DepsStatus;
   registry?: RegistryStatus;
-  error?: { status: "unknown" | "failed"; message: string; timeoutMs?: number };
+  error?: {
+    status: "unknown" | "failed";
+    message: string;
+    timeoutMs?: number;
+    code?: "installation-unclassified";
+  };
 };
 
 const PUBLIC_NPM_REGISTRY_URL = "https://registry.npmjs.org/";
@@ -235,7 +239,12 @@ export async function resolveUpdateInstallKind(
     throw createGitCommandError("git rev-parse --show-toplevel", result);
   }
   const gitRoot = result?.code === 0 ? result.stdout.trim() : "";
-  return gitRoot && updateInstallRootsMatch(gitRoot, root) ? "git" : "package";
+  if (gitRoot && updateInstallRootsMatch(gitRoot, root)) {
+    return "git";
+  }
+  const packageName = await readPackageName(root);
+  options.signal?.throwIfAborted();
+  return packageName === PUBLIC_NPM_PACKAGE_NAME ? "package" : "unknown";
 }
 
 /** Read the install and local Git identity needed to select an update channel. */
@@ -419,6 +428,7 @@ async function checkGitUpdateStatus(params: {
     upstream,
     ...(upstreamSource ? { upstreamSource } : {}),
     upstreamSha: upstreamCommit,
+    ...(await resolveGitRepositoryMetadata(readGit, tracking, branch)),
     commitAtMs,
     dirty,
     ahead: parsed ? Number(parsed[1]) : null,
@@ -466,13 +476,12 @@ async function checkDepsStatus(params: {
     root,
     manager: params.manager,
   });
+  const paths = { manager: params.manager, lockfilePath, markerPath };
 
   if (!lockfilePath || !markerPath) {
     return {
-      manager: params.manager,
+      ...paths,
       status: "unknown",
-      lockfilePath,
-      markerPath,
       reason: "unknown package manager",
     };
   }
@@ -481,28 +490,22 @@ async function checkDepsStatus(params: {
   const markerExists = await exists(markerPath);
   if (!lockExists) {
     return {
-      manager: params.manager,
+      ...paths,
       status: "unknown",
-      lockfilePath,
-      markerPath,
       reason: "lockfile missing",
     };
   }
   if (!markerExists) {
     return {
-      manager: params.manager,
+      ...paths,
       status: "missing",
-      lockfilePath,
-      markerPath,
       reason: "node_modules marker missing",
     };
   }
 
   return {
-    manager: params.manager,
+    ...paths,
     status: "ok",
-    lockfilePath,
-    markerPath,
   };
 }
 
@@ -513,11 +516,8 @@ async function fetchNpmLatestVersion(params?: {
   runCommand?: NpmMetadataCommandRunner;
 }): Promise<RegistryStatus> {
   const res = await fetchNpmTagVersion({
+    ...params,
     tag: "latest",
-    timeoutMs: params?.timeoutMs,
-    cwd: params?.cwd,
-    env: params?.env,
-    runCommand: params?.runCommand,
   });
   return {
     latestVersion: res.version,
@@ -532,13 +532,7 @@ async function fetchNpmRegistryVersionForChannel(params: {
   env?: NodeJS.ProcessEnv;
   runCommand?: NpmMetadataCommandRunner;
 }): Promise<RegistryStatus> {
-  const res = await resolveNpmChannelTag({
-    channel: params.channel,
-    timeoutMs: params.timeoutMs,
-    cwd: params.cwd,
-    env: params.env,
-    runCommand: params.runCommand,
-  });
+  const res = await resolveNpmChannelTag(params);
   return {
     latestVersion: res.version,
     tag: res.tag,
@@ -556,17 +550,13 @@ export async function fetchNpmTagVersion(params: {
   env?: NodeJS.ProcessEnv;
   runCommand?: NpmMetadataCommandRunner;
 }): Promise<NpmTagStatus> {
+  const { tag, ...options } = params;
   const res = await fetchNpmPackageTargetStatus({
-    target: params.tag,
-    timeoutMs: params.timeoutMs,
-    spec: params.spec,
-    command: params.command,
-    cwd: params.cwd,
-    env: params.env,
-    runCommand: params.runCommand,
+    ...options,
+    target: tag,
   });
   return {
-    tag: params.tag,
+    tag,
     version: res.version,
     error: res.error,
   };
@@ -580,8 +570,9 @@ export async function resolveNpmChannelTag(params: {
   env?: NodeJS.ProcessEnv;
   runCommand?: NpmMetadataCommandRunner;
 }): Promise<NpmTagStatus & { reason?: ExtendedStableFailureReason }> {
-  const channelTag = channelToNpmTag(params.channel);
-  if (params.channel === "extended-stable") {
+  const { channel, ...options } = params;
+  const channelTag = channelToNpmTag(channel);
+  if (channel === "extended-stable") {
     const resolved = await resolveExtendedStablePackage({
       installKind: "package",
       timeoutMs: params.timeoutMs,
@@ -592,14 +583,10 @@ export async function resolveNpmChannelTag(params: {
   }
   const fetchTag = (tag: string) =>
     fetchNpmTagVersion({
+      ...options,
       tag,
-      timeoutMs: params.timeoutMs,
-      command: params.command,
-      cwd: params.cwd,
-      env: params.env,
-      runCommand: params.runCommand,
     });
-  if (params.channel !== "beta") {
+  if (channel !== "beta") {
     return await fetchTag(channelTag);
   }
 
@@ -664,6 +651,19 @@ export async function checkUpdateStatus(params: {
     onGitProbeTimeout: params.onGitProbeTimeout,
   });
   const isGit = installKind === "git";
+  if (installKind === "unknown") {
+    const failure = createUpdatePreflightFailure(
+      "installation-unclassified",
+      `${await describeUpdateInstallRoot(root)} Service unit target: not inspected by update status installation checks; run openclaw gateway status --deep.`,
+    );
+    params.signal?.throwIfAborted();
+    return {
+      root,
+      installKind,
+      packageManager: "unknown",
+      error: { status: "unknown", code: "installation-unclassified", message: failure.message },
+    };
+  }
   const packageManager = isGit
     ? await detectPackageManager(root)
     : ((await detectGlobalInstallManagerForRoot(

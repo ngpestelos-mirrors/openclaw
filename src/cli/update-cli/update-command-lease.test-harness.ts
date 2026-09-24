@@ -219,18 +219,6 @@ export async function invoke(lane: Lane, recoveryRunIds: readonly string[] = [])
   });
 }
 
-export async function invokeReportedFailure(
-  lane: Lane,
-  recoveryRunIds: readonly string[] = [],
-): Promise<void> {
-  await expect(invoke(lane, recoveryRunIds)).rejects.toMatchObject(
-    lane === "repair"
-      ? { name: "ExitError", code: 1 }
-      : { name: "UpdateCommandFailure", exitCode: 1 },
-  );
-  expect(defaultRuntime.exit).not.toHaveBeenCalled();
-}
-
 export async function events(): Promise<string[]> {
   return (await fs.readFile(state.statePath("events.jsonl"), "utf8"))
     .trim()

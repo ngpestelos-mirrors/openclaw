@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import { createConfigIO } from "../config/io.factory.js";
@@ -9,6 +8,7 @@ import {
   type ConfigSnapshotReadOptions,
 } from "../config/io.js";
 import type { PreparedConfigRecovery } from "../config/io.types.js";
+import { describeConfigSnapshotInputChange } from "../config/snapshot-inputs.js";
 import type { ConfigFileSnapshot } from "../config/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
@@ -292,11 +292,9 @@ export function assertPreflightConfigUnchanged(
   before: ConfigFileSnapshot,
   after: ConfigFileSnapshot,
 ): void {
-  if (
-    before.path !== after.path ||
-    !isDeepStrictEqual(before.sourceConfig ?? before.config, after.sourceConfig ?? after.config)
-  ) {
-    throwStartupMigrationIdentityChanged();
+  const change = describeConfigSnapshotInputChange(before, after);
+  if (change) {
+    throwStartupMigrationIdentityChanged(change);
   }
 }
 

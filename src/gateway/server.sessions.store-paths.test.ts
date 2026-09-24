@@ -16,7 +16,11 @@ import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/sess
 import * as agentDatabaseRegistry from "../state/openclaw-agent-db-registry.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
 import { rpcReq, testState, writeSessionStore } from "./test-helpers.js";
+import { releaseGatewaySessionStoreFixture } from "./test/server-sessions-resources.test-helpers.js";
 import {
   directSessionReq,
   getGatewayConfigModule,
@@ -89,13 +93,21 @@ test("sessions.list reads completed models from each physical agent store", asyn
     });
   }
 
+  const projection = await createSessionRowProjection({
+    cfg: (await getGatewayConfigModule()).getRuntimeConfig(),
+  });
   // A bad relative selector must stay inside the disposable fixture if it regresses.
   const cwd = vi.spyOn(process, "cwd").mockReturnValue(stateDir);
   try {
+    await vi.waitFor(() =>
+      expect(
+        projection.snapshot({ agentId: "main", key: "agent:main:main" }).row?.activeModel,
+      ).toBe("claude-sonnet-4-6"),
+    );
     const listed = await directSessionReq<{
       path: string;
       sessions: Array<{ key: string; activeModelProvider?: string; activeModel?: string }>;
-    }>("sessions.list", {});
+    }>("sessions.list", {}, { context: bindSessionRowProjection({}, () => projection) });
     expect(listed).toMatchObject({ ok: true, payload: { path: "(multiple)" } });
     expect(listed.payload?.sessions.find((row) => row.key === "agent:main:main")).toMatchObject({
       activeModelProvider: "anthropic",
@@ -108,6 +120,7 @@ test("sessions.list reads completed models from each physical agent store", asyn
       [],
     );
   } finally {
+    projection.dispose();
     cwd.mockRestore();
   }
 });
@@ -158,6 +171,8 @@ test.runIf(process.platform !== "win32")(
         },
       });
     } finally {
+      await disposeSessionReadContexts();
+      await releaseGatewaySessionStoreFixture(aliasStateDir);
       fsSync.rmSync(aliasStateDir, { force: true });
     }
   },

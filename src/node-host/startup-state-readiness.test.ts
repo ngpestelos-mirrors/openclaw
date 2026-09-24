@@ -25,6 +25,7 @@ import {
   migrateLegacyExecApprovals,
 } from "../infra/state-migrations.exec-approvals.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
+import { withExistingOpenClawStateSchema } from "../state/openclaw-state-db-schema-policy.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -190,6 +191,19 @@ describe.each([
     expect(fixture.prepare).toHaveBeenCalledOnce();
     expect(loadDeviceIdentityIfPresent({ env })).toBeNull();
     expect(readExecApprovalsConfigRow(openOpenClawStateDatabase({ env }).db)).toBeUndefined();
+  });
+
+  it("admits managed runtime state without attempting schema bootstrap", async () => {
+    const { env, stateDir } = useStateDir();
+    openOpenClawStateDatabase({ env });
+    closeOpenClawStateDatabaseForTest();
+    const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
+
+    await expect(withExistingOpenClawStateSchema({ path: databasePath }, run)).rejects.toBe(
+      fixture.admitted,
+    );
+
+    expect(fixture.prepare).toHaveBeenCalledOnce();
   });
 
   it("keeps the canonical identity authoritative and leaves divergent retired bytes for Doctor", async () => {

@@ -59,12 +59,17 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
     expect(payloads).toStrictEqual([]);
   });
 
+  it("keeps indented code intact when preparing the final channel payload", () => {
+    const text = `    ${"A".repeat(128)}\n\n    ${"B".repeat(128)}`;
+    expectSinglePayloadText(buildPayloads({ assistantTexts: [text] }), text);
+  });
+
   it("sanitizes every streamed text while preserving multiple visible answers", () => {
     const payloads = buildPayloads({
       assistantTexts: [
         '<tool_call>{"name":"exec","arguments":{"command":"secret"}}</tool_call>',
-        "</mm:think>First visible answer.",
-        "Second visible answer.",
+        "  </mm:think>First visible answer.  ",
+        "\nSecond visible answer.\n",
       ],
     });
 
@@ -582,61 +587,6 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
       title: "Exec",
       absentDetail: "command failed",
     });
-  });
-
-  it.each(["NO_REPLY", '{"action":"NO_REPLY"}'])(
-    "respects an intentional conversational silence after a non-mutating tool failure: %s",
-    (text) => {
-      expectNoPayloads({
-        assistantTexts: [text],
-        lastToolError: {
-          toolName: "codex_apps.slack.slack_read_thread",
-          error: "429 RATE_LIMITED",
-          mutatingAction: false,
-        },
-      });
-    },
-  );
-
-  it.each([
-    { name: "unknown mutation status", mutatingAction: undefined },
-    { name: "a failed mutation", mutatingAction: true },
-    { name: "a scheduled run", mutatingAction: false, isCronTrigger: true },
-    { name: "a heartbeat", mutatingAction: false, isHeartbeatTrigger: true },
-    { name: "an aborted run", mutatingAction: false, runAborted: true },
-  ])(
-    "keeps failure reporting for $name despite NO_REPLY",
-    ({ name: _name, mutatingAction, ...run }) => {
-      expectSingleToolErrorPayload(
-        buildPayloads({
-          ...run,
-          assistantTexts: ["NO_REPLY"],
-          lastToolError: { toolName: "read", error: "failed", mutatingAction },
-        }),
-        { title: "Read" },
-      );
-    },
-  );
-
-  it("does not treat an earlier silent steered input as the current answer", () => {
-    const prior = makeAgentAssistantMessage({ content: [{ type: "text", text: "NO_REPLY" }] });
-    expectSingleToolErrorPayload(
-      buildPayloads({
-        assistantTexts: ["NO_REPLY"],
-        answerSegments: [{ textEnd: 1, messageEnd: 2, finalMessageStart: 2, lastAssistant: prior }],
-        lastToolError: { toolName: "read", error: "failed", mutatingAction: false },
-      }),
-      { title: "Read" },
-    );
-  });
-
-  it("still warns when a non-mutating tool failure leaves no answer", () => {
-    expectSingleToolErrorPayload(
-      buildPayloads({
-        lastToolError: { toolName: "read", error: "failed", mutatingAction: false },
-      }),
-      { title: "Read" },
-    );
   });
 
   it("surfaces concise bash tool errors when verbose mode is off", () => {

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { seedNativeVersionZeroState } from "../state/native-version-zero.test-support.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -116,64 +117,11 @@ describe("startup migration lease", () => {
       mkdirSync(path.dirname(databasePath), { recursive: true });
       const { DatabaseSync } = requireNodeSqlite();
       const native = new DatabaseSync(databasePath);
-      native.exec(`
-        CREATE TABLE device_identities (
-          identity_key TEXT NOT NULL PRIMARY KEY,
-          device_id TEXT NOT NULL,
-          public_key_pem TEXT NOT NULL,
-          private_key_pem TEXT NOT NULL,
-          created_at_ms INTEGER NOT NULL,
-          updated_at_ms INTEGER NOT NULL
-        ) STRICT;
-        CREATE INDEX idx_device_identities_device
-          ON device_identities(device_id, updated_at_ms DESC);
-        INSERT INTO device_identities VALUES ('node', 'native-device', 'public', 'private', 1, 1);
-        CREATE TABLE exec_approvals_config (
-          config_key TEXT NOT NULL PRIMARY KEY,
-          raw_json TEXT NOT NULL,
-          socket_path TEXT,
-          has_socket_token INTEGER NOT NULL,
-          default_security TEXT,
-          default_ask TEXT,
-          default_ask_fallback TEXT,
-          auto_allow_skills INTEGER,
-          agent_count INTEGER NOT NULL,
-          allowlist_count INTEGER NOT NULL,
-          updated_at_ms INTEGER NOT NULL
-        ) STRICT;
-        INSERT INTO exec_approvals_config
-          VALUES ('current', '{}', NULL, 0, NULL, NULL, NULL, NULL, 0, 0, 1);
-      `);
-      if (hasExistingLeaseTables) {
-        native.exec(`
-          CREATE TABLE schema_meta (
-            meta_key TEXT NOT NULL PRIMARY KEY,
-            role TEXT NOT NULL,
-            schema_version INTEGER NOT NULL,
-            agent_id TEXT,
-            app_version TEXT,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-          );
-          CREATE TABLE state_leases (
-            scope TEXT NOT NULL,
-            lease_key TEXT NOT NULL,
-            owner TEXT NOT NULL,
-            expires_at INTEGER,
-            heartbeat_at INTEGER,
-            payload_json TEXT,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (scope, lease_key)
-          );
-          CREATE INDEX idx_state_leases_expiry
-            ON state_leases(expires_at, scope, lease_key)
-            WHERE expires_at IS NOT NULL;
-          CREATE INDEX idx_state_leases_owner
-            ON state_leases(owner, updated_at DESC);
-        `);
+      try {
+        seedNativeVersionZeroState(native, hasExistingLeaseTables);
+      } finally {
+        native.close();
       }
-      native.close();
 
       const lease = await acquireStartupMigrationLeaseWithWait({
         env,
@@ -261,14 +209,15 @@ describe("startup migration lease", () => {
     if (!originalExec) {
       throw new Error("DatabaseSync.exec descriptor is unavailable");
     }
-    // Schema setup commits before the lease helper starts its own transaction.
-    // Claim at that exact boundary so the final transaction must fence the new owner.
-    let immediateTransactionCount = 0;
+    // External custody can change after outer admission but before the verified
+    // write transaction. Its inner authority check must refuse the new owner.
+    let claimed = false;
     const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
       this: import("node:sqlite").DatabaseSync,
       sql: string,
     ) {
-      if (sql === "BEGIN IMMEDIATE" && ++immediateTransactionCount === 2) {
+      if (sql === "BEGIN" && !claimed) {
+        claimed = true;
         const claimant = new DatabaseSync(databasePath);
         try {
           claimant
@@ -481,7 +430,15 @@ describe("startup migration lease", () => {
       timeoutMs: 0,
     });
 
+    const onActivity = vi.fn();
+    expect(hasActiveStartupMigrationLease({ env, nowMs: 1001, onActivity })).toBe(true);
     lease.heartbeat({ nowMs: 300_000 });
+    expect(hasActiveStartupMigrationLease({ env, nowMs: 301_001, onActivity })).toBe(true);
+    expect(onActivity).toHaveBeenLastCalledWith({
+      owner: "first",
+      pid: process.pid,
+      heartbeatAt: 300_000,
+    });
 
     await expect(
       acquireStartupMigrationLeaseWithWait({
@@ -493,6 +450,8 @@ describe("startup migration lease", () => {
     ).rejects.toThrow("OpenClaw startup migrations are already running");
 
     lease.release();
+    expect(hasActiveStartupMigrationLease({ env, nowMs: 301_002, onActivity })).toBe(false);
+    expect(onActivity).toHaveBeenCalledTimes(2);
   });
 
   it("checks exact lease ownership inside the caller write transaction", async () => {

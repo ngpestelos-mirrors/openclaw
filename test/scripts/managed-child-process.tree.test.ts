@@ -46,7 +46,12 @@ it("cancels admission while Windows platform code loads without spawning or reta
 it("preserves requested command inputs across Windows platform loading", async () => {
   const root = dirs.make("managed-platform-inputs-");
   const child = new ChildProcess();
-  Object.defineProperties(child, { pid: { value: 12345 }, exitCode: { value: 0 } });
+  Object.defineProperties(child, {
+    pid: { value: 12345 },
+    exitCode: { value: 0 },
+    stdout: { value: null, writable: true },
+    stderr: { value: null, writable: true },
+  });
   let launched: { argument?: string; value?: string } | undefined;
   mocks.spawnWindowsJobChild.mockImplementation((_command, args, options) => {
     launched = { argument: args[0], value: options.env.VALUE };
@@ -104,6 +109,65 @@ it.each(["returned false", "ESRCH"])(
     expect(terminateManagedChild(child, "SIGTERM", { platform: "darwin" })).toEqual({
       processTreeState: "indeterminate",
     });
+  },
+);
+
+it.each([false, true])(
+  "retains signal failures after strict POSIX cleanup joins (leader signal fails: %s)",
+  async (leaderSignalFails) => {
+    const root = dirs.make("managed-joined-diagnostics-");
+    const owner = createVitestResourceOwner(root);
+    const child = new ChildProcess();
+    Object.defineProperties(child, { pid: { value: 12345 }, exitCode: { value: 0 } });
+    const groupError = Object.assign(new Error("group signal denied"), { code: "EPERM" });
+    const leaderError = Object.assign(new Error("leader signal denied"), { code: "EACCES" });
+    mocks.spawn.mockReturnValue(child);
+    const leaderSignal = vi.spyOn(child, "kill").mockImplementation(() => {
+      if (leaderSignalFails) {
+        throw leaderError;
+      }
+      return false;
+    });
+    let terminationAttempted = false;
+    const groupSignal = vi.spyOn(process, "kill").mockImplementation((_pid, received) => {
+      if (received === 0) {
+        throw Object.assign(new Error("group observation"), {
+          code: terminationAttempted ? "ESRCH" : "EPERM",
+        });
+      }
+      terminationAttempted = true;
+      throw groupError;
+    });
+
+    await expect(
+      runManagedCommand({
+        bin: "fixture",
+        platform: "darwin",
+        shell: false,
+        stdio: "ignore",
+        requireProcessTreeExit: true,
+        env: { TMPDIR: root },
+        onReady: () => {
+          child.emit("exit", 0, null);
+          child.emit("close", 0, null);
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "EPROCESSGROUP_CLEANUP_FAILED",
+      processGroupId: 12345,
+      processTreeState: "terminated",
+      cause: expect.objectContaining({
+        name: "AggregateError",
+        errors: leaderSignalFails ? [groupError, leaderError] : [groupError],
+      }),
+    });
+    expect(groupSignal.mock.calls).toEqual([
+      [-12345, 0],
+      [-12345, "SIGKILL"],
+      [-12345, 0],
+    ]);
+    expect(leaderSignal).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    owner.assertReleased();
   },
 );
 

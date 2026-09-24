@@ -11,12 +11,14 @@ read_when:
 The `pnpm tsgo` lanes use stable TypeScript 7 through the `typescript-native`
 package alias. Their existing tool owner resolves that package's native executable
 directly, so a `tsc` bin link cannot accidentally select TypeScript 6. TypeScript 6
-remains the in-process compiler API dependency for Code Mode's filesystem-free
-preflight, plugin source transforms, and packaged declaration compilation with
+remains the in-process compiler API dependency for plugin source transforms
+and packaged declaration compilation with
 hermetic `Program` membership receipts. TypeScript 7's package root exports version
 metadata instead of that API. Remove the TypeScript 6 dependency only after its
 callers can preserve those contracts through a maintained replacement, including
 declaration input capture and failure handling.
+Code Mode executes JavaScript directly and does not use this compiler;
+its TypeScript-style tool declarations are model-facing documentation.
 
 `build-all`, standalone tsdown builds, tsgo, SDK declaration preparation,
 package-boundary checks, and dependent lint use checkout-local ownership at
@@ -138,6 +140,11 @@ JavaScript `process.env` does not change native thread home lookup. Per-worker a
 per-test fixture homes remain separate. Installed Corepack and Playwright browser
 caches retain their caller-selected locations.
 
+Gateway port claims remain in the common temporary directory outside all enclosing
+Vitest namespaces, found through their explicit resource owners. Parallel invocations
+therefore share port ownership while a fixture hands its reserved socket to a child;
+removing one invocation's files cannot remove another fixture's port claim.
+
 Live-aware setup still loads the original profile and stages live state when
 requested. A bounded invocation artifact carries the original home to that setup;
 it does not grant live access, and hermetic setup never consults it. Known
@@ -178,6 +185,10 @@ This is home isolation, not a filesystem sandbox: explicit absolute paths,
 `os.userInfo()` account lookup, children with stripped or replaced home variables,
 and intentionally real-home live execution remain outside its protection.
 
+Codex app-server fixtures await agent and shared-state SQLite drainage between
+cases. Their file teardown drains the shared disk-budget scan worker, preserving
+reuse during the file and releasing it before isolated fork shutdown.
+
 - `src/test-utils/openclaw-test-state.ts`: use from Vitest when a test needs an isolated `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, config fixture, workspace, agent dir, or auth-profile store.
 - `pnpm test:env-mutations:report`: non-blocking report of tests/harnesses that mutate `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, `OPENCLAW_WORKSPACE_DIR`, or related env keys directly. Use it to find migration candidates for the shared test-state helper.
 - `test/helpers/openclaw-test-instance.ts`: process-level E2E tests needing a running Gateway, CLI env, log capture, and cleanup in one place.
@@ -206,6 +217,19 @@ fragments by Node's inspector are redacted as one value.
 Redaction is unconditional and affects diagnostic output, not assertion behavior.
 Test console capture is outside this boundary; tests must still avoid logging
 credentials directly.
+
+Configured extension fork projects use the `openclaw-forks` diagnostic adapter
+around Vitest's native fork transport. If the existing stop deadline fails while
+the child remains alive, the adapter spends at most two additional seconds
+collecting a Node report before native termination and pipe cleanup. The timeout
+remains a test failure. The report distinguishes a missing stop acknowledgement
+from a stall after acknowledgement and includes native stacks, libuv handles, and
+worker-thread reports. Environment variables, command arguments, and socket
+endpoints are omitted. A blocked event loop can prevent signal reporting; that
+case explicitly reports that no complete report was captured.
+
+Successful shutdown remains quiet. An explicit `--pool=forks` selects Vitest's
+built-in pool and bypasses this adapter.
 
 ## JSON reports across native processes
 

@@ -6,7 +6,7 @@ import { resolveDeferredPluginMigrationConfigPaths } from "../config/deferred-pl
 import { readConfigFileSnapshot } from "../config/io.js";
 import { recordDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { readBundledDiscoveryMode } from "../plugins/bundled-discovery-state.js";
-import { readPersistedInstalledPluginIndexRowSync } from "../plugins/installed-plugin-index-row.js";
+import { readPersistedInstalledPluginIndexRowSync } from "../plugins/installed-plugin-index-record-state.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,

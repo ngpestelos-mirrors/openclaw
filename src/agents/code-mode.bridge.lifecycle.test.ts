@@ -1,4 +1,4 @@
-/** Subscribed embedded tool lifecycles, including real QuickJS bridge coverage. */
+/** Subscribed embedded tool lifecycles, including real executor bridge coverage. */
 import { getEventListeners } from "node:events";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -638,7 +638,7 @@ describe("Code Mode subscribed bridge lifecycle", () => {
         );
         expect(pending.settled).toBeUndefined();
         expect(otherPending.settled).toBeUndefined();
-        expect(ownerState.snapshot.memory.byteLength).toBeGreaterThan(0);
+        expect(ownerState.continuation.retainedBytes).toBeGreaterThan(0);
         expect(testing.resumingRunIds.size).toBe(0);
 
         // Both exec calls have returned; no wait is in flight to perform owner cleanup.
@@ -821,6 +821,84 @@ describe("Code Mode subscribed bridge lifecycle", () => {
     }
   });
 
+  it.each(["resolve", "reject"] as const)(
+    "keeps sequential exclusion after cell cancellation until implementation %s",
+    async (settlement) => {
+      const harness = createSubscribedCodeModeHarness({
+        name: `sequential-cancel-${settlement}`,
+        timeoutMs: 2_000,
+      });
+      const controller = new AbortController();
+      const started = createDeferred();
+      const downstream = createDeferred();
+      const events: string[] = [];
+      let calls = 0;
+      const target = pluginToolWithExecute(
+        "ordered_target",
+        "Write without observing cancellation",
+        async () => {
+          const call = ++calls;
+          events.push(`${call}:start`);
+          if (call === 1) {
+            started.resolve();
+            try {
+              await downstream.promise;
+            } finally {
+              events.push(`${call}:settled`);
+            }
+          } else {
+            events.push(`${call}:settled`);
+          }
+          return jsonResult({ call });
+        },
+      );
+      target.executionMode = "sequential";
+      applyCodeModeCatalog({ ...harness, tools: [...harness.tools, target] });
+      const exec = expectDefined(harness.tools[0], "Code Mode exec");
+      const wait = expectDefined(harness.tools[1], "Code Mode wait");
+      try {
+        const first = exec.execute(
+          "cancelled-cell",
+          { code: "return await ordered_target({});" },
+          controller.signal,
+        );
+        await started.promise;
+        controller.abort();
+        expect(resultDetails(await first)).toMatchObject({ status: "failed", code: "aborted" });
+        expect(harness.runAbortController.signal.aborted).toBe(false);
+        expect(events).toEqual(["1:start"]);
+
+        // A second real cell must reach the shared catalog while the first source
+        // still owns its write. Its observer deadline does not release that write.
+        const second = exec.execute("following-cell", {
+          code: "return await ordered_target({});",
+        });
+        // The worker uses performance.now(), so wait on the real cell deadline
+        // instead of advancing only its host timers ahead of that clock.
+        const following = resultDetails(await second);
+        expect(following.status).toBe("waiting");
+        expect(events).toEqual(["1:start"]);
+        expect(target.execute).toHaveBeenCalledOnce();
+
+        if (settlement === "reject") {
+          downstream.reject(new Error("late implementation failure"));
+        } else {
+          downstream.resolve();
+        }
+        expect(await waitUntilCompleted({ details: following, waitTool: wait })).toMatchObject({
+          status: "completed",
+          value: { call: 2 },
+        });
+        expect(events).toEqual(["1:start", "1:settled", "2:start", "2:settled"]);
+        expect(testing.activeRuns.size).toBe(0);
+        expect(testing.resumingRunIds.size).toBe(0);
+      } finally {
+        downstream.resolve();
+        harness.dispose();
+      }
+    },
+  );
+
   it.each([
     { kind: "explicit cancellation", close: "cancel" },
     { kind: "run-owner loss", close: "abort" },
@@ -833,15 +911,24 @@ describe("Code Mode subscribed bridge lifecycle", () => {
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       const downstream = createDeferred();
       const started = createDeferred();
+      const toolAbort = vi.fn();
       const harness = createSubscribedCodeModeHarness({
         name: `closure-${close}`,
         timeoutMs: 2_000,
       });
-      const target = pluginToolWithExecute("stalled_target", "Ignore cancellation", async () => {
-        started.resolve();
-        await downstream.promise;
-        return jsonResult({ late: true });
-      });
+      const target = pluginToolWithExecute(
+        "stalled_target",
+        "Ignore cancellation",
+        async (_toolCallId, _input, signal) => {
+          expectDefined(signal, "nested tool cancellation signal").addEventListener(
+            "abort",
+            toolAbort,
+          );
+          started.resolve();
+          await downstream.promise;
+          return jsonResult({ late: true });
+        },
+      );
       const continuation = pluginToolWithExecute(
         "continue_after_target",
         "Continue the guest",
@@ -873,11 +960,11 @@ describe("Code Mode subscribed bridge lifecycle", () => {
         }
         const settlements = vi.fn();
         void pending.promise.then(settlements);
-        const cancel = vi.spyOn(pending, "cancel");
-        const waiting = expectDefined(harness.tools[1], "Code Mode wait test invariant").execute(
-          `code-wait-${close}`,
-          { runId: suspended.runId },
-        );
+        const wait = expectDefined(harness.tools[1], "Code Mode wait test invariant");
+        const waiting =
+          close === "expire"
+            ? undefined
+            : wait.execute(`code-wait-${close}`, { runId: suspended.runId });
 
         if (close === "cancel") {
           pending.cancel?.();
@@ -889,30 +976,35 @@ describe("Code Mode subscribed bridge lifecycle", () => {
         } else if (close === "catalog") {
           clearToolSearchCatalog(harness);
         } else {
-          disposeAllCodeModeRuns();
+          await disposeAllCodeModeRuns();
         }
 
         await expect(pending.promise).resolves.toBeUndefined();
-        const result = resultDetails(await waiting);
-        if (close === "cancel") {
-          expect(result).toMatchObject({
-            status: "completed",
-            value: expect.stringMatching(/cancel/i),
-          });
+        if (waiting) {
+          const result = resultDetails(await waiting);
+          expect(result.status).not.toBe("waiting");
+          if (close === "cancel") {
+            expect(result).toMatchObject({
+              status: "completed",
+              value: expect.stringMatching(/cancel/i),
+            });
+          } else if (close === "catalog") {
+            expect(result).toMatchObject({
+              status: "failed",
+              code: "aborted",
+              telemetry: suspended.telemetry,
+            });
+            expect(harness.catalogRef.current).toBeUndefined();
+          }
+        } else {
+          await expect(
+            wait.execute("code-wait-after-expiry", { runId: suspended.runId }),
+          ).rejects.toThrow("code mode run is unavailable or expired");
         }
         expect(() => pending.reply.take()).toThrow("unavailable");
-        expect(result.status).not.toBe("waiting");
-        if (close === "catalog") {
-          expect(result).toMatchObject({
-            status: "failed",
-            code: "aborted",
-            telemetry: suspended.telemetry,
-          });
-          expect(harness.catalogRef.current).toBeUndefined();
-        }
         await vi.waitFor(() => expect(countActiveToolExecutions(harness.runId)).toBe(0));
         expect(settlements).toHaveBeenCalledOnce();
-        expect(cancel).toHaveBeenCalledOnce();
+        expect(toolAbort).toHaveBeenCalledOnce();
         expect(harness.subscription.getItemLifecycle().activeCount).toBe(0);
         expect(testing.activeRuns.size).toBe(0);
         expect(testing.resumingRunIds.size).toBe(0);
@@ -922,7 +1014,7 @@ describe("Code Mode subscribed bridge lifecycle", () => {
         expect(target.execute).toHaveBeenCalledOnce();
         expect(continuation.execute).not.toHaveBeenCalled();
         expect(settlements).toHaveBeenCalledOnce();
-        expect(cancel).toHaveBeenCalledOnce();
+        expect(toolAbort).toHaveBeenCalledOnce();
       } finally {
         downstream.resolve();
         clearToolSearchCatalog(harness);

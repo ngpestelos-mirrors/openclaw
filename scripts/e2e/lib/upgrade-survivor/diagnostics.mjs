@@ -5,11 +5,6 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMainThread } from "node:worker_threads";
 import { compareReleaseVersions } from "../../../lib/release-version.mjs";
-import { isChannelPostCoreScenario } from "../../../lib/upgrade-survivor-policy.mjs";
-import {
-  captureChannelPostCoreNodeHost,
-  projectChannelPostCoreNodeHost,
-} from "./channel-post-core-state.mjs";
 
 // Capture and snapshot validation stay plain Node. The host entrypoint owns
 // the redactor; neither candidate code nor raw fixture data owns uploads.
@@ -21,9 +16,6 @@ const publicLimit = 512 * 1024;
 const entryLimit = 128;
 const migrationFileLimit = 2 * 1024 * 1024;
 const migrationDirectory = "session-sqlite-migration-runs";
-const observeChannelPostCoreConfig =
-  isChannelPostCoreScenario(process.env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIO) &&
-  process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION === "2026.4.15";
 const migrationLabels = {
   manifest: "session migration manifest",
   failureReport: "session migration failure report",
@@ -47,42 +39,21 @@ const logNames = [
   "workshop-baseline-doctor.json",
   "workshop-recovered-upgrade.json",
   "workshop-candidate-doctor.json",
+  "legacy-operator-cron-history-proof.json",
+  "legacy-operator-baseline-turn.out",
+  "legacy-operator-baseline-turn.err",
+  "legacy-operator-candidate-turn.out",
+  "legacy-operator-candidate-turn.err",
   "gateway.log",
   "gateway.log.doctor",
+  "missing-load-path/baseline-gateway.log",
+  "missing-load-path/baseline-gateway-convergence-refusal.log",
   "baseline-service-install.err",
   "systemctl-shim.log",
   "systemctl-shim-gateway.log",
   "systemctl-shim-gateway.log.bootstrap.log",
   "gateway-restart.log",
 ];
-// Candidate observations select one declared RPC pair, never an arbitrary private path.
-const rpcLogNames = new Set([
-  "channels-status-before",
-  "wizard-start",
-  "wizard-status",
-  "wizard-next",
-  "wizard-duplicate-start",
-  "wizard-cancel",
-  "wizard-cancelled-status",
-  "wizard-replacement-start",
-  "wizard-replacement-cancel",
-  "wizard-replacement-status",
-  "update-rpc",
-  "update-status.candidate",
-  "target-wizard-status-start",
-  "target-wizard-status",
-  "target-wizard-status-retained",
-  "target-wizard-status-cancel",
-  "target-wizard-status-purged",
-  "target-wizard-active-start",
-  "target-wizard-next",
-  "target-wizard-duplicate-start",
-  "target-wizard-cancel",
-  "target-wizard-replacement-start",
-  "target-wizard-replacement-cancel",
-  "target-wizard-purged-status",
-  "channels-status",
-]);
 const reasons = [
   "missing or unsafe file",
   "input exceeds cap; omitted whole",
@@ -244,6 +215,53 @@ function postCoreResult(value, sanitize = (text) => text) {
   };
 }
 
+// Keep the assertion receipt independent of large Doctor output in update.json.
+export function recordSuccessfulUpdateCheck(artifactRoot, result) {
+  if (!artifactRoot) {
+    return;
+  }
+  try {
+    writeReport(
+      artifactRoot,
+      path.join(artifactRoot, "diagnostics"),
+      "successful-update-check.json",
+      { artifactRoot: fs.realpathSync(artifactRoot), ...successfulUpdateCheck(result) },
+      inputLimit,
+    );
+  } catch {
+    // Diagnostic failure must preserve the original assertion and exit status.
+  }
+}
+
+function successfulUpdateCheck(value, sanitize = (text) => text) {
+  const unavailable = { availability: "unavailable" };
+  if (!value || value.availability === "unavailable") {
+    return unavailable;
+  }
+  try {
+    if (!["passed", "failed"].includes(value.outcome)) {
+      throw new Error();
+    }
+    const result = {
+      availability: "captured",
+      outcome: value.outcome,
+      ...textFields(value, ["message"], sanitize),
+      plugins: null,
+    };
+    if (value.plugins !== null) {
+      try {
+        result.plugins = postCoreResult(value.plugins, sanitize);
+      } catch {
+        omissions["successful update plugins"] = reasons[3];
+      }
+    }
+    return result;
+  } catch {
+    omissions["successful update check"] = reasons[3];
+    return unavailable;
+  }
+}
+
 export function readPostCoreSnapshot(artifactRoot) {
   try {
     ownedPath(artifactRoot, "diagnostics/post-core.json");
@@ -383,194 +401,6 @@ function readDoctorResults(root) {
     pairs.push(pair);
   }
   return pairs;
-}
-
-function channelPostCoreConfig(value) {
-  if (
-    typeof value?.sha256 !== "string" ||
-    !/^[a-f0-9]{64}$/.test(value.sha256) ||
-    ![null, "stable", "beta", "dev"].includes(value.updateChannel) ||
-    ["hasLastTouchedAt", "hasLegacyRoster", "hasLegacyPluginInstalls"].some(
-      (key) => typeof value[key] !== "boolean",
-    )
-  ) {
-    throw new Error("Invalid channel post-core config observation");
-  }
-  return {
-    sha256: value.sha256,
-    updateChannel: value.updateChannel,
-    hasLastTouchedAt: value.hasLastTouchedAt,
-    hasLegacyRoster: value.hasLegacyRoster,
-    hasLegacyPluginInstalls: value.hasLegacyPluginInstalls,
-  };
-}
-
-function readChannelPostCoreConfig() {
-  try {
-    const stateRoot = process.env.OPENCLAW_STATE_DIR;
-    const configPath = process.env.OPENCLAW_CONFIG_PATH;
-    if (!stateRoot || !configPath) {
-      return null;
-    }
-    const bytes = readOwned(
-      stateRoot,
-      path.relative(stateRoot, configPath),
-      "process config",
-      inputLimit,
-      true,
-    );
-    if (bytes === null) {
-      return null;
-    }
-    const config = JSON.parse(bytes.toString("utf8"));
-    if (!config || typeof config !== "object" || Array.isArray(config)) {
-      return null;
-    }
-    return channelPostCoreConfig({
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      updateChannel: config.update?.channel ?? null,
-      hasLastTouchedAt: Object.hasOwn(config.meta ?? {}, "lastTouchedAt"),
-      hasLegacyRoster: Object.hasOwn(config.agents ?? {}, "list"),
-      hasLegacyPluginInstalls: Object.hasOwn(config.plugins ?? {}, "installs"),
-    });
-  } catch {
-    return null;
-  }
-}
-
-function channelPostCoreNodeHost(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  const digest = (input) => typeof input === "string" && /^[a-f0-9]{64}$/u.test(input);
-  const timestamp = (input) => Number.isSafeInteger(input) && input >= 0;
-  const source = (input) => {
-    if (input === null) {
-      return null;
-    }
-    if (!digest(input?.sha256) || !timestamp(input.size) || !timestamp(input.mtimeMs)) {
-      throw new Error("Invalid node-host source observation");
-    }
-    return { sha256: input.sha256, size: input.size, mtimeMs: input.mtimeMs };
-  };
-  if (!Array.isArray(value.canonicalRows) || value.canonicalRows.length > 1) {
-    throw new Error("Invalid node-host canonical observation");
-  }
-  return {
-    source: source(value.source),
-    claim: source(value.claim),
-    canonicalRows: value.canonicalRows.map((row) => {
-      if (
-        row.stateKey !== "nodeHost.config" ||
-        !digest(row.valueSha256) ||
-        !timestamp(row.updatedAtMs)
-      ) {
-        throw new Error("Invalid node-host row observation");
-      }
-      return { stateKey: row.stateKey, valueSha256: row.valueSha256, updatedAtMs: row.updatedAtMs };
-    }),
-  };
-}
-
-function channelPostCoreProcessObservation({ started, exited }) {
-  if (
-    !["update", "doctor", "post-core"].includes(started?.role) ||
-    started.event !== "started" ||
-    exited?.event !== "exited" ||
-    !Number.isSafeInteger(started.pid) ||
-    started.pid <= 0 ||
-    !Number.isSafeInteger(started.parentPid) ||
-    started.parentPid <= 0 ||
-    typeof started.packageVersion !== "string" ||
-    !/^\d{4}\.\d{1,2}\.\d{1,3}(?:-(?:\d+|(?:alpha|beta)\.\d+))?$/.test(started.packageVersion) ||
-    ["role", "pid", "parentPid", "packageVersion"].some((key) => started[key] !== exited[key]) ||
-    !Number.isInteger(exited.exitCode) ||
-    exited.exitCode < 0 ||
-    exited.exitCode > 255
-  ) {
-    throw new Error("Invalid channel post-core process observation");
-  }
-  const identity = {
-    role: started.role,
-    pid: started.pid,
-    parentPid: started.parentPid,
-    packageVersion: started.packageVersion,
-    ...(typeof started.repairRequested === "boolean" &&
-    started.repairRequested === exited.repairRequested
-      ? { repairRequested: started.repairRequested }
-      : {}),
-  };
-  return {
-    started: {
-      ...identity,
-      event: "started",
-      config: channelPostCoreConfig(started.config),
-      nodeHost: channelPostCoreNodeHost(started.nodeHost),
-    },
-    exited: {
-      ...identity,
-      event: "exited",
-      exitCode: exited.exitCode,
-      config: channelPostCoreConfig(exited.config),
-      nodeHost: channelPostCoreNodeHost(exited.nodeHost),
-    },
-  };
-}
-
-export function readChannelPostCoreProcessObservations(artifactRoot) {
-  const names = boundedList(fs.readdirSync(ownedPath(artifactRoot, "diagnostics")));
-  const pids = new Set();
-  for (const name of names) {
-    const match = /^process-([1-9]\d*)-(?:started|exited)\.json$/.exec(name);
-    if (match) {
-      pids.add(Number(match[1]));
-    }
-  }
-  if (!pids.size) {
-    throw new Error("Missing channel post-core process observations");
-  }
-  return [...pids]
-    .toSorted((left, right) => left - right)
-    .map((pid) => {
-      const read = (event) => {
-        const raw = readOwned(
-          artifactRoot,
-          `diagnostics/process-${pid}-${event}.json`,
-          "channel post-core processes",
-        );
-        if (raw === null) {
-          throw new Error("Channel post-core process observation could not be read safely");
-        }
-        const value = JSON.parse(raw);
-        if (value?.pid !== pid) {
-          throw new Error("Channel post-core process observation does not match its filename");
-        }
-        return value;
-      };
-      return channelPostCoreProcessObservation({
-        started: read("started"),
-        exited: read("exited"),
-      });
-    });
-}
-
-function publishedChannelPostCoreProcesses(value) {
-  const unknown = { availability: "unknown", observations: [] };
-  try {
-    if (value?.availability !== "captured") {
-      return unknown;
-    }
-    const observations = boundedList(value.observations).map(channelPostCoreProcessObservation);
-    if (
-      !observations.length ||
-      new Set(observations.map((pair) => pair.started.pid)).size !== observations.length
-    ) {
-      return unknown;
-    }
-    return { availability: "captured", observations };
-  } catch {
-    return unknown;
-  }
 }
 
 // Project only the existing Doctor IPC contract, never config changes or receipt payloads.
@@ -1087,35 +917,14 @@ function armUpgradeProcessCapture() {
       packageVersion: version,
       pid: process.pid,
       parentPid: process.ppid,
-      ...(observeChannelPostCoreConfig
-        ? {
-            repairRequested:
-              command === "doctor" &&
-              process.argv.slice(3).some((arg) => ["--fix", "--repair", "--yes"].includes(arg)),
-          }
-        : {}),
     };
     const destination = path.join(artifactRoot, "diagnostics");
-    const configObservation = (event) => {
-      if (!observeChannelPostCoreConfig) {
-        return {};
-      }
-      let nodeHost = null;
-      try {
-        nodeHost = projectChannelPostCoreNodeHost(
-          captureChannelPostCoreNodeHost(`process-${process.pid}-${event}`),
-        );
-      } catch {
-        // Missing state evidence must fail the witness without changing the updater's behavior.
-      }
-      return { config: readChannelPostCoreConfig(), nodeHost };
-    };
     writeReport(
       artifactRoot,
       destination,
       `process-${process.pid}-started.json`,
-      { ...identity, event: "started", ...configObservation("started") },
-      2048,
+      { ...identity, event: "started" },
+      1024,
     );
     const doctorResultPath =
       command === "doctor"
@@ -1133,13 +942,7 @@ function armUpgradeProcessCapture() {
           artifactRoot,
           destination,
           `process-${process.pid}-exited.json`,
-          {
-            ...identity,
-            event: "exited",
-            exitCode,
-            ...configObservation("exited"),
-            ...(result ? { doctorResult: result } : {}),
-          },
+          { ...identity, event: "exited", exitCode, ...(result ? { doctorResult: result } : {}) },
           outputLimit,
         );
       } catch {
@@ -1463,20 +1266,6 @@ async function capture(artifactRoot, phase, exitStatus, signal = "", observation
         ? readOwned(process.env.OPENCLAW_STATE_DIR, "logs/gateway-restart.log", name)
         : readOwned(artifactRoot, name, name);
   }
-  const rpcName = readOwned(artifactRoot, "diagnostics/last-rpc", "last RPC")?.trim();
-  if (rpcLogNames.has(rpcName)) {
-    report.lastRpc = {
-      name: rpcName,
-      stdout: readOwned(artifactRoot, `${rpcName}.json`, "RPC stdout"),
-      stderr: readOwned(
-        artifactRoot,
-        `${rpcName === "update-status.candidate" ? "update-status" : rpcName}.err`,
-        "RPC stderr",
-      ),
-    };
-  } else if (rpcName) {
-    omissions["last RPC"] = reasons[3];
-  }
   const stateRoot = process.env.OPENCLAW_STATE_DIR;
   report.pluginIdentity = await pluginIdentities(stateRoot, artifactRoot);
   report.migration = captureMigrationEvidence(stateRoot, artifactRoot, observationRoot);
@@ -1492,22 +1281,30 @@ async function capture(artifactRoot, phase, exitStatus, signal = "", observation
   } catch {
     omissions["post-core"] = reasons[3];
   }
+  report.successfulUpdateCheck = { availability: "unavailable" };
+  if (observationRoot) {
+    try {
+      const raw = readOwned(
+        observationRoot,
+        "diagnostics/successful-update-check.json",
+        "successful update check",
+      );
+      if (raw !== null) {
+        const receipt = JSON.parse(raw);
+        if (receipt.artifactRoot !== fs.realpathSync(observationRoot)) {
+          throw new Error();
+        }
+        report.successfulUpdateCheck = successfulUpdateCheck(receipt);
+      }
+    } catch {
+      omissions["successful update check"] = reasons[3];
+    }
+  }
   report.doctorResults = [];
   try {
     report.doctorResults = readDoctorResults(observationRoot || artifactRoot);
   } catch {
     // Missing, interrupted, or mismatched observations remain unknown.
-  }
-  if (observeChannelPostCoreConfig) {
-    report.channelPostCoreProcesses = { availability: "unknown", observations: [] };
-    try {
-      report.channelPostCoreProcesses = {
-        availability: "captured",
-        observations: readChannelPostCoreProcessObservations(observationRoot || artifactRoot),
-      };
-    } catch {
-      // Incomplete pairs and unreadable config cannot establish an update outcome.
-    }
   }
   const configPath = process.env.OPENCLAW_CONFIG_PATH;
   if (stateRoot && configPath) {
@@ -1803,13 +1600,6 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
       reason: sanitize(companion.reason, "baseline companion"),
     };
   }
-  const channelPostCoreProcesses =
-    isChannelPostCoreScenario(snapshot.scenario) && snapshot.baseline?.version === "2026.4.15"
-      ? publishedChannelPostCoreProcesses(snapshot.channelPostCoreProcesses)
-      : undefined;
-  if (channelPostCoreProcesses?.availability === "unknown") {
-    throw new Error("Missing or invalid channel post-core process evidence");
-  }
   return {
     status: "passed",
     baseline: textFields(snapshot.baseline, ["spec", "version"], sanitize),
@@ -1829,7 +1619,6 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
     updateRecovery: sanitize(snapshot.updateRecovery, "summary"),
     updateRestartSource: sanitize(snapshot.updateRestartSource, "summary"),
     firstHopPostCore: publishedPostCore(snapshot.firstHopPostCore, sanitize),
-    ...(channelPostCoreProcesses ? { channelPostCoreProcesses } : {}),
     backupRollback: publishedBackupRollback(snapshot, sanitize),
     timings,
     phases: boundedList(snapshot.phases).map((event) => {
@@ -1851,6 +1640,11 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
         "recovery-update.json",
         ...(snapshot.scenario === "workshop-doctor-recovery"
           ? ["workshop-doctor-recovery.json", "baseline-doctor.log", "doctor.log"]
+          : []),
+        ...(snapshot.scenario === "legacy-operator-state" &&
+        snapshot.updateRestartMode === "manual" &&
+        ["2026.9.3", "2026.9.4"].includes(snapshot.baseline.version)
+          ? ["legacy-operator-cron-history-proof.json"]
           : []),
       ].map((name) => [name, sanitize(readOwned(artifactRoot, name, name), name)]),
     ),
@@ -1905,14 +1699,13 @@ export function publishDiagnostics(
   // arbitrary omission text. Redact every permitted free-text field on the host.
   for (const label of [
     ...logNames,
-    "last RPC",
-    "RPC stdout",
-    "RPC stderr",
     "config",
     "service unit",
     "service environment",
     "child exit",
     "post-core",
+    "successful update check",
+    "successful update plugins",
     "plugin identity",
     ...["doctor", "sessions", "archives", "sibling"].map((section) => `migration-${section}`),
     "session migration",
@@ -1943,17 +1736,6 @@ export function publishDiagnostics(
   for (const name of logNames) {
     report.logs[name] = sanitize(snapshot.logs?.[name], name);
   }
-  if (snapshot.lastRpc !== undefined) {
-    if (rpcLogNames.has(snapshot.lastRpc?.name)) {
-      report.lastRpc = {
-        name: snapshot.lastRpc.name,
-        stdout: sanitize(snapshot.lastRpc.stdout, "RPC stdout"),
-        stderr: sanitize(snapshot.lastRpc.stderr, "RPC stderr"),
-      };
-    } else {
-      omissions["last RPC"] = reasons[3];
-    }
-  }
   for (const field of ["ExecStart", "WorkingDirectory", "supervisorWorkingDirectory"]) {
     report.service[field] = sanitize(snapshot.service?.[field], field);
   }
@@ -1976,11 +1758,7 @@ export function publishDiagnostics(
     report.config.sha256 = snapshot.config.sha256;
   }
   report.postCore = publishedPostCore(snapshot.postCore, sanitize);
-  if (snapshot.channelPostCoreProcesses !== undefined) {
-    report.channelPostCoreProcesses = publishedChannelPostCoreProcesses(
-      snapshot.channelPostCoreProcesses,
-    );
-  }
+  report.successfulUpdateCheck = successfulUpdateCheck(snapshot.successfulUpdateCheck, sanitize);
   report.sessionMigration = publishedSessionMigration(snapshot.sessionMigration, sanitize);
   report.doctorResults = { availability: "unknown", observations: [] };
   try {

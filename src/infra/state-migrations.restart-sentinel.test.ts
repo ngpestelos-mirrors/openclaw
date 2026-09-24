@@ -16,7 +16,7 @@ import {
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
 import {
-  clearRestartSentinel,
+  clearRestartSentinelIfRevision,
   readRestartSentinel,
   writeRestartSentinel,
   type RestartSentinelPayload,
@@ -115,29 +115,36 @@ describe("legacy restart sentinel migration", () => {
     expect(detectLegacyRestartSentinel({ stateDir }).hasLegacy).toBe(true);
   });
 
-  it("imports and verifies the complete legacy payload before removing the source", async () => {
-    const { env, stateDir } = useStateDir();
-    const expected = payload();
-    const sourcePath = await writeLegacy(stateDir, { version: 1, payload: expected });
+  it.each([false, true])(
+    "imports the complete legacy payload after prior native delivery=%s",
+    async (priorNative) => {
+      const { env, stateDir } = useStateDir();
+      if (priorNative) {
+        const previous = await writeRestartSentinel({ kind: "restart", status: "ok", ts: 1 }, env);
+        await clearRestartSentinelIfRevision(previous.revision, env);
+      }
+      const expected = payload();
+      const sourcePath = await writeLegacy(stateDir, { version: 1, payload: expected });
 
-    const result = await migrate({ env, stateDir });
+      const result = await migrate({ env, stateDir });
 
-    expect(result.warnings).toEqual([]);
-    expect(result.changes).toEqual([
-      "Imported the legacy restart sentinel into shared SQLite state.",
-    ]);
-    await expect(readRestartSentinel(env)).resolves.toMatchObject({
-      version: 1,
-      payload: expected,
-    });
-    expect(fs.existsSync(sourcePath)).toBe(false);
-    expect(receipt(env)).toMatchObject({
-      removed_source: 1,
-      source_record_count: 1,
-      status: "completed",
-      target_table: "gateway_restart_sentinel",
-    });
-  });
+      expect(result.warnings).toEqual([]);
+      expect(result.changes).toEqual([
+        "Imported the legacy restart sentinel into shared SQLite state.",
+      ]);
+      await expect(readRestartSentinel(env)).resolves.toMatchObject({
+        version: 1,
+        payload: expected,
+      });
+      expect(fs.existsSync(sourcePath)).toBe(false);
+      expect(receipt(env)).toMatchObject({
+        removed_source: 1,
+        source_record_count: 1,
+        status: "completed",
+        target_table: "gateway_restart_sentinel",
+      });
+    },
+  );
 
   it("canonicalizes legacy null fields and an empty delivery context before verification", async () => {
     const { env, stateDir } = useStateDir();
@@ -240,12 +247,24 @@ describe("legacy restart sentinel migration", () => {
     expect(fs.existsSync(sourcePath)).toBe(false);
   });
 
-  it("treats a completed receipt as authoritative if the retired file reappears", async () => {
+  it("imports later update generations without replaying any consumed source", async () => {
     const { env, stateDir } = useStateDir();
     await writeLegacy(stateDir, { version: 1, payload: payload(1) });
     await migrate({ env, stateDir });
-    await clearRestartSentinel(env);
-    const sourcePath = await writeLegacy(stateDir, { version: 1, payload: payload(2) });
+    const imported = await readRestartSentinel(env);
+    if (!imported) {
+      throw new Error("Expected the migrated restart sentinel");
+    }
+    await expect(clearRestartSentinelIfRevision(imported.revision, env)).resolves.toBe(true);
+    await writeLegacy(stateDir, { version: 1, payload: payload(2) });
+    expect((await migrate({ env, stateDir })).warnings).toEqual([]);
+    const later = await readRestartSentinel(env);
+    expect(later?.payload).toEqual(payload(2));
+    if (!later) {
+      throw new Error("Expected the later update notification");
+    }
+    await clearRestartSentinelIfRevision(later.revision, env);
+    const sourcePath = await writeLegacy(stateDir, { version: 1, payload: payload(1) });
 
     const result = await migrate({ env, stateDir });
 
@@ -254,6 +273,91 @@ describe("legacy restart sentinel migration", () => {
     ]);
     await expect(readRestartSentinel(env)).resolves.toBeNull();
     expect(fs.existsSync(sourcePath)).toBe(false);
+  });
+
+  it.each([
+    "unchanged",
+    "recreated-pending",
+    "conflicting-source",
+    "newer-canonical",
+    "consumed-newer-canonical",
+    "consumed-pending",
+    "consumed-newer-legacy",
+  ] as const)(
+    "imports a late final only over its own pending revision (%s)",
+    async (replacement) => {
+      const { env, stateDir } = useStateDir();
+      const pending: RestartSentinelPayload = {
+        ...payload(1),
+        status: "skipped",
+        stats: { ...payload(1).stats, reason: "restart-health-pending" },
+      };
+      await writeLegacy(stateDir, { version: 1, payload: pending });
+      await migrate({ env, stateDir });
+      let preserved = await readRestartSentinel(env);
+      if (replacement === "recreated-pending") {
+        await writeLegacy(stateDir, { version: 1, payload: pending });
+        await migrate({ env, stateDir });
+      } else if (replacement === "conflicting-source") {
+        await writeLegacy(stateDir, {
+          version: 1,
+          payload: { ...payload(2), stats: { handoffId: "unrelated-handoff" } },
+        });
+        await migrate({ env, stateDir });
+      } else if (replacement === "newer-canonical" || replacement === "consumed-newer-canonical") {
+        preserved = await writeRestartSentinel(pending, env);
+      }
+      if (replacement.startsWith("consumed-")) {
+        if (!preserved) {
+          throw new Error("Expected the pending update notification");
+        }
+        await clearRestartSentinelIfRevision(preserved.revision, env);
+        if (replacement === "consumed-newer-legacy") {
+          await writeLegacy(stateDir, {
+            version: 1,
+            payload: { ...pending, ts: 2, stats: { ...pending.stats, handoffId: "newer-handoff" } },
+          });
+          await migrate({ env, stateDir });
+          const newer = await readRestartSentinel(env);
+          expect(newer?.payload.stats?.handoffId).toBe("newer-handoff");
+          if (!newer) {
+            throw new Error("Expected the newer legacy update notification");
+          }
+          await clearRestartSentinelIfRevision(newer.revision, env);
+        }
+        preserved = null;
+      }
+      await writeLegacy(stateDir, { version: 1, payload: payload(3) });
+
+      const result = await migrate({ env, stateDir });
+
+      expect(result.warnings).toEqual([]);
+      const current = await readRestartSentinel(env);
+      if (replacement === "newer-canonical" || replacement.startsWith("consumed-")) {
+        expect(current).toEqual(preserved);
+      } else {
+        expect(current?.payload).toEqual(payload(3));
+        expect(current?.revision).not.toBe(preserved?.revision);
+      }
+    },
+  );
+
+  it("does not use another source generation's receipt to delete an interrupted claim", async () => {
+    const { env, stateDir } = useStateDir();
+    await writeLegacy(stateDir, { version: 1, payload: payload(1) });
+    await migrate({ env, stateDir });
+    const sourcePath = await writeLegacy(stateDir, { version: 1, payload: payload(2) });
+    const claimPath = `${sourcePath}.doctor-importing`;
+    await fsp.rename(sourcePath, claimPath);
+    await writeLegacy(stateDir, { version: 1, payload: payload(3) });
+    const sourceBefore = await fsp.readFile(sourcePath);
+    const claimBefore = await fsp.readFile(claimPath);
+
+    const result = await migrate({ env, stateDir });
+
+    expect(result.warnings).toHaveLength(1);
+    expect(await fsp.readFile(sourcePath)).toEqual(sourceBefore);
+    expect(await fsp.readFile(claimPath)).toEqual(claimBefore);
   });
 
   it("recovers an interrupted claim and finishes the same migration owner", async () => {

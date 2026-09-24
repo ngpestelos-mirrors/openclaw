@@ -16,6 +16,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
+import { sqlitePrimaryResultCode } from "./sqlite-error-diagnostics.js";
 import { runSqliteImmediateTransactionSync } from "./sqlite-transaction.js";
 import {
   parseStateLeaseProcessOwner,
@@ -35,6 +36,7 @@ const STARTUP_MIGRATION_LEASE_SCOPE = "startup-migrations";
 const STARTUP_MIGRATION_LEASE_KEY = "global";
 const STARTUP_MIGRATION_LEASE_POLL_INTERVAL_MS = 250;
 export const STARTUP_MIGRATION_LEASE_TTL_MS = 5 * 60_000;
+export const STARTUP_MIGRATION_HEARTBEAT_INTERVAL_MS = 60_000;
 
 export type StartupMigrationLease = {
   assertOwnedInTransaction: (database: DatabaseSync, params?: { nowMs?: number }) => void;
@@ -71,8 +73,9 @@ class StartupMigrationLeaseConflictError extends Error {
 function withStartupMigrationCheckpointDatabase<T>(
   env: NodeJS.ProcessEnv,
   callback: (db: DatabaseSync) => T,
+  atomic = false,
 ): T {
-  return withOpenClawStateStartupMigrationCheckpointDatabase(callback, { env });
+  return withOpenClawStateStartupMigrationCheckpointDatabase(callback, { env, atomic });
 }
 
 function writeStartupMigrationCheckpointDatabase<T>(
@@ -113,7 +116,11 @@ function assertStartupMigrationLeaseOwnedInTransaction(params: {
 
 /** Returns whether the shared startup/Doctor lease has a live process owner. */
 export function hasActiveStartupMigrationLease(
-  params: { env?: NodeJS.ProcessEnv; nowMs?: number } = {},
+  params: {
+    env?: NodeJS.ProcessEnv;
+    nowMs?: number;
+    onActivity?: (activity: { owner: string; pid?: number; heartbeatAt: number | null }) => void;
+  } = {},
 ): boolean {
   const env = params.env ?? process.env;
   const nowMs = params.nowMs ?? Date.now();
@@ -125,16 +132,24 @@ export function hasActiveStartupMigrationLease(
           db,
           stateDb
             .selectFrom("state_leases")
-            .select("payload_json as payloadJson")
+            .select(["payload_json as payloadJson", "owner", "heartbeat_at as heartbeatAt"])
             .where("scope", "=", STARTUP_MIGRATION_LEASE_SCOPE)
             .where("lease_key", "=", STARTUP_MIGRATION_LEASE_KEY)
             .where("expires_at", ">", nowMs),
         );
-        return Boolean(
-          lease &&
-          readStateLeaseProcessOwnerStatus(parseStateLeaseProcessOwner(lease.payloadJson)) !==
-            "dead",
-        );
+        if (!lease) {
+          return false;
+        }
+        const owner = parseStateLeaseProcessOwner(lease.payloadJson);
+        if (readStateLeaseProcessOwnerStatus(owner) === "dead") {
+          return false;
+        }
+        params.onActivity?.({
+          owner: lease.owner,
+          pid: owner?.host === hostname() ? owner.pid : undefined,
+          heartbeatAt: lease.heartbeatAt,
+        });
+        return true;
       },
       { env },
     ) ?? false
@@ -142,7 +157,23 @@ export function hasActiveStartupMigrationLease(
 }
 
 function acquireStartupMigrationLease(
-  params: StartupMigrationLeaseParams = {},
+  params: StartupMigrationLeaseParams,
+  now: () => number,
+): StartupMigrationLease {
+  const env = params.env ?? process.env;
+  const owner = params.owner ?? randomUUID();
+  return withStartupMigrationCheckpointDatabase(
+    env,
+    (db) =>
+      // Integrity verification may outlast a lease; start its lifetime at the actual claim.
+      acquireStartupMigrationLeaseFromDatabase(db, { ...params, env, nowMs: now(), owner }),
+    true,
+  );
+}
+
+function acquireStartupMigrationLeaseFromDatabase(
+  connection: DatabaseSync,
+  params: StartupMigrationLeaseParams,
 ): StartupMigrationLease {
   const env = params.env ?? process.env;
   const nowMs = params.nowMs ?? Date.now();
@@ -155,7 +186,13 @@ function acquireStartupMigrationLease(
   };
   const expiresAt = nowMs + STARTUP_MIGRATION_LEASE_TTL_MS;
 
-  writeStartupMigrationCheckpointDatabase(env, (db) => {
+  runSqliteImmediateTransactionSync(connection, () => {
+    const db = connection;
+    assertOpenClawStateWriteAllowed({
+      database: db,
+      databasePath: resolveOpenClawStateSqlitePath(env),
+      env,
+    });
     const stateDb = getNodeSqliteKysely<StartupMigrationCheckpointDatabase>(db);
     executeSqliteQuerySync(
       db,
@@ -243,7 +280,7 @@ function acquireStartupMigrationLease(
   };
 }
 
-export async function acquireStartupMigrationLeaseWithWait(
+export function acquireStartupMigrationLeaseWithWait(
   params: StartupMigrationLeaseWaitParams = {},
 ): Promise<StartupMigrationLease> {
   const now = params.now ?? Date.now;
@@ -263,14 +300,10 @@ export async function acquireStartupMigrationLeaseWithWait(
     now: monotonicNow,
     sleep: params.sleep,
     acquire: () =>
-      acquireStartupMigrationLease({
-        env: params.env,
-        nowMs: now(),
-        owner,
-        ownerPid: params.ownerPid,
-      }),
+      acquireStartupMigrationLease({ env: params.env, owner, ownerPid: params.ownerPid }, now),
     shouldRetry: (error) =>
-      error instanceof StartupMigrationLeaseConflictError && error.canWaitForSameHostOwner,
+      (error instanceof StartupMigrationLeaseConflictError && error.canWaitForSameHostOwner) ||
+      sqlitePrimaryResultCode(error) === 5,
   });
 }
 

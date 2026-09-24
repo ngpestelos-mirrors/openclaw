@@ -1,4 +1,5 @@
 /** CLI runner for node-host stdin/stdout command dispatch. */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { CloudflareAccessCredentials } from "../../packages/gateway-client/src/cloudflare-access.js";
 import { gatewayOriginScope } from "../../packages/gateway-client/src/gateway-origin-scope.js";
@@ -8,6 +9,7 @@ import {
   GATEWAY_CLIENT_NAMES,
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { ConnectErrorDetailCodes } from "../../packages/gateway-protocol/src/connect-error-details.js";
+import { requestExitAfterOneShotOutput } from "../cli/one-shot-exit.js";
 import { getRuntimeConfig, type OpenClawConfig } from "../config/config.js";
 import { copyConfigResolutionFactsExcept } from "../config/resolution-facts.js";
 import { GatewayClientRequestError, type GatewayReconnectPausedInfo } from "../gateway/client.js";
@@ -34,6 +36,12 @@ import {
   coerceNodeInvokeInputPayload,
   coerceNodeInvokePayload,
 } from "./invoke-payload.js";
+import {
+  isNodeHostLauncherChild,
+  notifyNodeHostLauncherReady,
+  setNodeHostLauncherRestartArguments,
+  watchNodeHostParentStdin,
+} from "./launcher-client.js";
 import { prepareNodeHostRuntime } from "./runtime.js";
 import { ensureNodeHostStateReady } from "./startup-state-readiness.js";
 
@@ -57,6 +65,9 @@ type NodeHostRunOptions = {
   nodeId?: string;
   displayName?: string;
   installedAppsSharing?: boolean;
+  desktopSharingEnabled?: boolean;
+  gatewayAuthFromEnv?: boolean;
+  parentStdin?: boolean;
   commands?: string[];
   allCommands?: boolean;
 };
@@ -114,8 +125,15 @@ async function resolveNodeHostGatewayCredentials(params: {
   gatewayCandidates: readonly NodeHostGatewayConfig[];
   deviceId: string;
   env?: NodeJS.ProcessEnv;
+  envOnly?: boolean;
 }): Promise<{ token?: string; password?: string }> {
   const env = params.env ?? process.env;
+  if (params.envOnly) {
+    return resolveExplicitGatewayAuth({
+      token: env.OPENCLAW_GATEWAY_TOKEN,
+      password: env.OPENCLAW_GATEWAY_PASSWORD,
+    });
+  }
   const savedGatewayScope = params.savedGateway
     ? gatewayOriginScope(formatGatewayCandidateUrl(params.savedGateway))
     : undefined;
@@ -124,7 +142,7 @@ async function resolveNodeHostGatewayCredentials(params: {
     params.gatewayCandidates.every(
       (candidate) => gatewayOriginScope(formatGatewayCandidateUrl(candidate)) === savedGatewayScope,
     ) &&
-    loadDeviceAuthTokenReadOnly({ deviceId: params.deviceId, role: "node", env })?.token
+    (await loadDeviceAuthTokenReadOnly({ deviceId: params.deviceId, role: "node", env }))?.token
   ) {
     // A co-located Gateway's shared password must not displace the paired node
     // credential. GatewayClient rereads the current token when connecting.
@@ -228,6 +246,7 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     forceWorkerRuns: opts.forceWorkerRuns,
     ephemeral: opts.ephemeral,
     installedAppsSharingEnabled: config.installedAppsSharing,
+    desktopSharingEnabled: opts.desktopSharingEnabled,
     commands: config.commands,
   });
   logInfo(`node-host: advertised commands: ${preparedRuntime.manifest.commands.join(", ")}`);
@@ -236,6 +255,7 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     ? {}
     : await resolveNodeHostGatewayCredentials({
         config: cfg,
+        envOnly: opts.gatewayAuthFromEnv,
         savedGateway: savedConfig?.gateway,
         gatewayCandidates,
         deviceId: deviceIdentity.deviceId,
@@ -243,6 +263,9 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       });
 
   let consecutivePermanentGatewayRejections = 0;
+  const autoUpdateAbort = new AbortController();
+  let autoUpdateStart: Promise<void> | undefined;
+  let autoUpdater: { stop: () => Promise<void> } | undefined;
   const persistWinningGateway = (winningGateway: NodeHostGatewayConfig) => {
     void configureNodeHost({
       nodeId,
@@ -327,6 +350,9 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
         ...(tlsFingerprint ? { tlsFingerprint } : {}),
         ...(cloudflareAccess ? { cloudflareAccess } : {}),
       });
+      void announceLauncherReady(url, tlsFingerprint).catch((error: unknown) => {
+        writeStderrLine(`node host update supervisor readiness failed: ${String(error)}`);
+      });
     },
     onConnectError: (error) => {
       writeStderrLine(`node host gateway connect failed: ${error.message}`);
@@ -357,10 +383,9 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     onReconnectPaused: (info) => {
       handleNodeHostReconnectPaused(info, {
         exit: (code) => {
-          client.stop();
           // Terminal auth/version pauses restart under a supervisor; close MCP
           // subprocesses first so restart loops cannot orphan server processes.
-          void activeRuntime.close().finally(() => process.exit(code));
+          void finish(code).finally(() => requestExitAfterOneShotOutput(undefined, code));
         },
       });
     },
@@ -377,6 +402,67 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     onManifestChanged: (manifest) => client.updateNodeManifest(manifest),
   });
 
+  async function announceLauncherReady(url: string, tlsFingerprint?: string) {
+    if (!isNodeHostLauncherChild() || opts.ephemeral || autoUpdateAbort.signal.aborted) {
+      return;
+    }
+    const endpoint = new URL(url);
+    const args = [
+      "node",
+      "run",
+      "--host",
+      endpoint.hostname.replace(/^\[|\]$/g, ""),
+      "--port",
+      endpoint.port || (endpoint.protocol === "wss:" ? "443" : "80"),
+      "--node-id",
+      nodeId,
+      "--display-name",
+      displayName,
+      endpoint.protocol === "wss:" ? "--tls" : "--no-tls",
+      config.installedAppsSharing ? "--share-installed-apps" : "--no-share-installed-apps",
+    ];
+    if (endpoint.pathname !== "/") {
+      args.push("--context-path", endpoint.pathname);
+    }
+    if (tlsFingerprint) {
+      args.push("--tls-fingerprint", tlsFingerprint);
+    }
+    if (config.commands) {
+      args.push("--commands", config.commands.join(","));
+    }
+    if (opts.forceWorkerRuns) {
+      args.push("--session-host");
+    }
+    if (opts.desktopSharingEnabled !== undefined) {
+      args.push(opts.desktopSharingEnabled ? "--desktop-sharing" : "--no-desktop-sharing");
+    }
+    if (opts.gatewayAuthFromEnv) {
+      args.push("--auth-from-env");
+    }
+    if (opts.parentStdin) {
+      args.push("--parent-stdin");
+    }
+    // One-use pairing credentials are replaced by the authenticated device state.
+    await setNodeHostLauncherRestartArguments(args);
+    if (autoUpdateAbort.signal.aborted) {
+      return;
+    }
+    await notifyNodeHostLauncherReady(VERSION);
+    autoUpdateStart ??= import("./auto-update.js").then(({ startNodeHostAutoUpdate }) => {
+      if (!autoUpdateAbort.signal.aborted) {
+        autoUpdater = startNodeHostAutoUpdate({
+          runtime: activeRuntime,
+          signal: autoUpdateAbort.signal,
+          log: writeStderrLine,
+          onRestartAccepted: () => {
+            void finish(0);
+          },
+        });
+      }
+    });
+    await autoUpdateStart;
+  }
+
   let stopping = false;
   let resolveStopped: (() => void) | undefined;
   const stopped = new Promise<void>((resolve) => {
@@ -385,13 +471,20 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
   // A pending Promise alone does not keep Node alive. Pairing pauses can close
   // the last socket, so retain a handle until a signal finishes the foreground host.
   const lifetimeInterval = setInterval(() => {}, 1_000_000);
+  let stopWatchingParent = () => {};
   const removeSignalHandlers = () => {
+    stopWatchingParent();
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
   };
   const stopClientAndMcp = async () => {
-    client.stop();
     try {
+      autoUpdateAbort.abort();
+      // A failed lazy import was already reported by the hello handler; shutdown
+      // still owns client and runtime cleanup.
+      await autoUpdateStart?.catch(() => undefined);
+      await autoUpdater?.stop();
+      client.stop();
       await activeRuntime.close();
     } finally {
       clearInterval(lifetimeInterval);
@@ -402,18 +495,25 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       return;
     }
     stopping = true;
-    removeSignalHandlers();
+    let finalExitCode = exitCode;
     try {
       await stopClientAndMcp();
+    } catch (error) {
+      finalExitCode = 1;
+      writeStderrLine(`node host shutdown failed: ${String(error)}`);
     } finally {
-      process.exitCode = exitCode;
+      removeSignalHandlers();
+      process.exitCode = finalExitCode;
       resolveStopped?.();
     }
   };
-  const onSigint = () => void finish(130);
-  const onSigterm = () => void finish(143);
-  process.once("SIGINT", onSigint);
-  process.once("SIGTERM", onSigterm);
+  const onSigint = AsyncLocalStorage.bind(() => void finish(130));
+  const onSigterm = AsyncLocalStorage.bind(() => void finish(143));
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+  if (opts.parentStdin && !isNodeHostLauncherChild()) {
+    stopWatchingParent = watchNodeHostParentStdin(onSigterm);
+  }
 
   const readinessPromise = startGatewayClientWhenEventLoopReady(client);
   let readiness;

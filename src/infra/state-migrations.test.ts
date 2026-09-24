@@ -48,6 +48,10 @@ import {
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
+import {
+  closeDatabaseTestCohorts,
+  closeStateDatabaseForTest,
+} from "../test-utils/database-cleanup.js";
 import { createTrackedTempDirs } from "../test-utils/tracked-temp-dirs.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
@@ -66,10 +70,7 @@ import {
   migrateLegacyCurrentConversationBindings,
   migrateLegacyPluginBindingApprovals,
 } from "./state-migrations.runtime-state.js";
-import {
-  resetAutoMigrateLegacyStateDirForTest,
-  resetAutoMigrateLegacyTaskStateSidecarsForTest,
-} from "./state-migrations.state-dir.js";
+import { resetAutoMigrateLegacyStateDirForTest } from "./state-migrations.state-dir.js";
 import { loadVoiceWakeRoutingConfig } from "./voicewake-routing.js";
 import { loadVoiceWakeConfig, setVoiceWakeTriggers } from "./voicewake.js";
 
@@ -77,35 +78,27 @@ type DetectLegacyStateParams = Parameters<typeof detectLegacyStateMigrationsWith
 type RunLegacyStateParams = Parameters<typeof runLegacyStateMigrationsWithSurfaces>[0];
 type AutoMigrateLegacyStateParams = Parameters<typeof autoMigrateLegacyStateWithSurfaces>[0];
 
+type CoreMigrationParams<T> = Omit<T, "legacySessionSurfaces"> & {
+  legacySessionSurfaces?: DetectLegacyStateParams["legacySessionSurfaces"];
+};
+
 // This broad core suite intentionally exercises migration mechanics without plugin-owned keys.
 // Package-shaped coverage owns configured plugin resolution and setup-sidecar loading.
-function detectLegacyStateMigrations(
-  params: Omit<DetectLegacyStateParams, "legacySessionSurfaces"> & {
-    legacySessionSurfaces?: DetectLegacyStateParams["legacySessionSurfaces"];
-  },
-) {
+function detectLegacyStateMigrations(params: CoreMigrationParams<DetectLegacyStateParams>) {
   return detectLegacyStateMigrationsWithSurfaces({
     legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
     ...params,
   });
 }
 
-function runLegacyStateMigrations(
-  params: Omit<RunLegacyStateParams, "legacySessionSurfaces"> & {
-    legacySessionSurfaces?: RunLegacyStateParams["legacySessionSurfaces"];
-  },
-) {
+function runLegacyStateMigrations(params: CoreMigrationParams<RunLegacyStateParams>) {
   return runLegacyStateMigrationsWithSurfaces({
     legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
     ...params,
   });
 }
 
-function autoMigrateLegacyState(
-  params: Omit<AutoMigrateLegacyStateParams, "legacySessionSurfaces"> & {
-    legacySessionSurfaces?: AutoMigrateLegacyStateParams["legacySessionSurfaces"];
-  },
-) {
+function autoMigrateLegacyState(params: CoreMigrationParams<AutoMigrateLegacyStateParams>) {
   return autoMigrateLegacyStateWithSurfaces({
     legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
     ...params,
@@ -115,17 +108,11 @@ function autoMigrateLegacyState(
 // Static helpers can retain earlier cohorts after resetModules; close every cohort at teardown.
 const migrationDatabaseClosers = new Set([
   closeOpenClawAgentDatabasesForTest,
-  closeOpenClawStateDatabaseForTest,
+  closeStateDatabaseForTest,
 ]);
 
-function closeMigrationDatabases() {
-  for (const close of migrationDatabaseClosers) {
-    close();
-  }
-}
-
 async function rerunAutomaticMigrationAfterRestart(params: AutoMigrateLegacyStateParams) {
-  closeMigrationDatabases();
+  await closeDatabaseTestCohorts(migrationDatabaseClosers);
   vi.resetModules();
   const [agentDb, stateDb, agentDbTest] = await Promise.all([
     import("../state/openclaw-agent-db.js"),
@@ -141,7 +128,7 @@ async function rerunAutomaticMigrationAfterRestart(params: AutoMigrateLegacyStat
       ...params,
     });
   } finally {
-    closeMigrationDatabases();
+    await closeDatabaseTestCohorts(migrationDatabaseClosers);
     expect(agentDbTest.listOpenClawAgentDatabasesForTest()).toEqual([]);
     expect(stateDb.isOpenClawStateDatabaseOpen()).toBe(false);
   }
@@ -814,12 +801,11 @@ async function createLegacyStateFixture(params?: { includePreKey?: boolean }) {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   pluginDoctorStateMigrationEntries.entries = [];
-  resetAutoMigrateLegacyTaskStateSidecarsForTest();
   resetAutoMigrateLegacyStateDirForTest();
-  closeMigrationDatabases();
+  await closeDatabaseTestCohorts(migrationDatabaseClosers);
   resetPluginRuntimeStateForTest();
 });
 
@@ -1112,14 +1098,7 @@ describe("state migrations", () => {
         const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
         expect(result).toMatchObject({ changes: [], warnings: [] });
         const ids = result.stepReceipts.map((receipt) => receipt.id);
-        const workshopIndex = ids.indexOf("skill-workshop");
-        expect(workshopIndex).toBeGreaterThan(ids.indexOf("workspace-state"));
-        expect(workshopIndex).toBeLessThan(ids.indexOf("plugin-doctor-state"));
-        expect(result.stepReceipts[workshopIndex]).toMatchObject({
-          outcome: "skipped",
-          changes: [],
-          requiredness: "conditional",
-        });
+        expect(ids).not.toContain("skill-workshop");
         if (bundle) {
           await expect(fs.readFile(bundle.path, "utf8")).resolves.toBe(bundle.content);
         }
@@ -1158,6 +1137,13 @@ describe("state migrations", () => {
         },
       });
       const workshop = result.stepReceipts.find((receipt) => receipt.id === "skill-workshop");
+      if (mode === "automatic") {
+        expect(result.warnings).toEqual([]);
+        expect(workshop).toBeUndefined();
+        expect(callbackSamples).toEqual([]);
+        await expect(fs.readFile(indexPath, "utf8")).resolves.toBe("{}\n");
+        return;
+      }
       expect(workshop).toMatchObject({
         phase: "final",
         source: [
@@ -1249,7 +1235,11 @@ describe("state migrations", () => {
           database
             .prepare("SELECT agent_id, app_version FROM schema_meta WHERE meta_key = ?")
             .get("historical-transcript-directives-v1"),
-        ).toEqual({ agent_id: "main", app_version: JSON.stringify({ phase: "complete" }) });
+        ).toEqual(
+          doctorOnlyStateMigrations
+            ? { agent_id: "main", app_version: JSON.stringify({ phase: "complete" }) }
+            : undefined,
+        );
         expect(
           database.prepare("SELECT session_key FROM session_nodes ORDER BY session_key").all(),
         ).toEqual([{ session_key: "agent:qa:proof" }]);
@@ -1322,7 +1312,7 @@ describe("state migrations", () => {
       agents: { ownership: "explicit", entries: { main: {} } },
       cron: { store },
     };
-    const result = await autoMigrateLegacyState({ cfg, env });
+    const result = await autoMigrateLegacyState({ cfg, env, invocationPurpose: "doctor" });
     expect(result.warnings).toContainEqual(
       expect.stringContaining("invalid historical transcript migration cursor"),
     );
@@ -3828,56 +3818,6 @@ describe("state migrations", () => {
     await expectMissingPath(restartSentinelPath);
   });
 
-  it("runs plugin doctor migrations after repairing shared state schema", async () => {
-    const { root, stateDir, env } = createMigrationContext(await createTempDir());
-    const cfg = createConfig();
-    const stateDbPath = path.join(stateDir, "state", "openclaw.sqlite");
-    await fs.mkdir(path.dirname(stateDbPath), { recursive: true });
-    const db = new DatabaseSync(stateDbPath);
-    try {
-      db.exec(`
-        CREATE TABLE agent_databases (
-          agent_id TEXT PRIMARY KEY,
-          path TEXT NOT NULL,
-          schema_version INTEGER NOT NULL,
-          last_seen_at INTEGER NOT NULL,
-          size_bytes INTEGER
-        );
-        INSERT INTO agent_databases VALUES ('main', 'agent.sqlite', 1, 10, 20);
-      `);
-    } finally {
-      db.close();
-    }
-    const migrateLegacyState = vi.fn(() => ({
-      changes: ["plugin state migrated"],
-      warnings: [],
-    }));
-    pluginDoctorStateMigrationEntries.entries = [
-      {
-        pluginId: "memory-core",
-        migration: {
-          id: "memory-core-test",
-          label: "Memory Core test migration",
-          detectLegacyState: () => ({ preview: ["plugin state"] }),
-          migrateLegacyState,
-        },
-      },
-    ];
-
-    const result = await autoMigrateLegacyPluginDoctorState({
-      config: cfg,
-      env,
-      homedir: () => root,
-    });
-
-    expect(result.warnings).toStrictEqual([]);
-    expect(result.changes).toContain(
-      "Migrated shared state agent database registry primary key → agent_id,path",
-    );
-    expect(result.changes).toContain("plugin state migrated");
-    expect(migrateLegacyState).toHaveBeenCalledOnce();
-  });
-
   it("previews and repairs the released audit ledger before other state migrations", async () => {
     const { root, stateDir, env } = createMigrationContext(await createTempDir());
     const databasePath = await createLegacyAuditLedger(stateDir);
@@ -4124,9 +4064,16 @@ describe("state migrations", () => {
       homedir: () => root,
       doctorOnlyStateMigrations: true,
     });
-    db.exec("PRAGMA query_only = ON;");
-
-    const result = await runLegacyStateMigrations({ detected, config: cfg, env });
+    const result = await runLegacyStateMigrations({
+      detected,
+      config: cfg,
+      env,
+      onStepReceipt: (receipt) => {
+        if (receipt.id === "plugin-install-index") {
+          openOpenClawStateDatabase({ env }).db.exec("PRAGMA query_only = ON;");
+        }
+      },
+    });
 
     expect(result.stepReceipts.find((receipt) => receipt.id === "managed-worktrees")).toMatchObject(
       {
@@ -4145,10 +4092,9 @@ describe("state migrations", () => {
         refusal: { code: "blocked-by-prior-refusal" },
       },
     );
-    expect(db.prepare("SELECT id FROM worktrees ORDER BY id").all()).toEqual([
-      { id: "legacy-a" },
-      { id: "legacy-b" },
-    ]);
+    expect(
+      openOpenClawStateDatabase({ env }).db.prepare("SELECT id FROM worktrees ORDER BY id").all(),
+    ).toEqual([{ id: "legacy-a" }, { id: "legacy-b" }]);
   });
 
   it("does not run plugin doctor migrations after shared state schema repair fails", async () => {
@@ -5602,27 +5548,18 @@ describe("state migrations", () => {
       '"retryCount":2',
     );
     await expectMissingPath(path.join(queueDir, "outbound-completed.delivered"));
+    const migratedDb = openOpenClawStateDatabase({ env }).db;
     expect(
-      db
+      migratedDb
         .prepare(
-          "SELECT retry_count FROM delivery_queue_entries WHERE queue_name = 'outbound' AND id = 'outbound-1'",
+          "SELECT id, retry_count, failed_at FROM delivery_queue_entries WHERE queue_name = 'outbound' ORDER BY id",
         )
-        .get(),
-    ).toEqual({ retry_count: 0 });
-    expect(
-      db
-        .prepare(
-          "SELECT retry_count FROM delivery_queue_entries WHERE queue_name = 'outbound' AND id = 'outbound-2'",
-        )
-        .get(),
-    ).toEqual({ retry_count: 1 });
-    expect(
-      db
-        .prepare(
-          "SELECT retry_count, failed_at FROM delivery_queue_entries WHERE queue_name = 'outbound' AND id = 'outbound-failed'",
-        )
-        .get(),
-    ).toEqual({ retry_count: 3, failed_at: 12 });
+        .all(),
+    ).toEqual([
+      { id: "outbound-1", retry_count: 0, failed_at: null },
+      { id: "outbound-2", retry_count: 1, failed_at: null },
+      { id: "outbound-failed", retry_count: 3, failed_at: 12 },
+    ]);
 
     vi.setSystemTime(2_000);
     const rerunDetected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });

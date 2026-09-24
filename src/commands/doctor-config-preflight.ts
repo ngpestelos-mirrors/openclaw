@@ -61,9 +61,7 @@ const loadCronRepair = createLazyRuntimeModule(() => import("./doctor/cron/legac
 export async function runDoctorConfigPreflight(
   options: DoctorConfigPreflightOptions = {},
 ): Promise<DoctorConfigPreflightResult> {
-  return await withDoctorConfigPreflightWorkerScope(options, () =>
-    runDoctorConfigPreflightOperation(options),
-  );
+  return await withDoctorConfigPreflightWorkerScope(options, runDoctorConfigPreflightOperation);
 }
 
 async function runDoctorConfigPreflightOperation(
@@ -78,7 +76,7 @@ async function runDoctorConfigPreflightOperation(
       recoverOrphanedSidecars: true,
     });
   }
-  await noteStaleUpdateRuns();
+  await noteStaleUpdateRuns({ migrateState: stateMigrationsRequested });
   const measurePreflightStep = <T>(name: string, run: () => T | Promise<T>) =>
     measureDoctorConfigPreflightStep(name, run, options.measure);
   let modelBillingRouteMigrationSource: OpenClawConfig | undefined;
@@ -121,7 +119,7 @@ async function runDoctorConfigPreflightOperation(
     runWithPluginMetadataSnapshot: pluginMetadata.run,
   });
   const readConfigSnapshotForPreflight = async (allowCurrentPluginMetadata = true) =>
-    await measurePreflightStep("config-snapshot", () =>
+    await measurePreflightStep("config-snapshot", async () =>
       readConfigPreflightSnapshot({
         allowCurrentPluginMetadata,
         includePluginMetadata: options.preparePluginMetadataSnapshot === true,
@@ -130,7 +128,7 @@ async function runDoctorConfigPreflightOperation(
         preparePluginMetadataSnapshot: options.preparePluginMetadataSnapshot === true,
         skipPluginValidation: shouldSkipPluginValidationForDoctorConfigPreflight(),
         prepareSnapshot: getSnapshotPreparation(options.doctorOnlyStateMigrations === true),
-        ...pluginMigrations.snapshotOptions(),
+        ...(await pluginMigrations.snapshotOptions()),
       }),
     );
   const stateDirMigrations = stateMigrationsRequested
@@ -230,13 +228,6 @@ async function runDoctorConfigPreflightOperation(
         ),
       );
     }
-    const { autoMigrateLegacyTaskStateSidecars } = stateDirMigrations;
-    const migrateTaskStateSidecars = async () =>
-      noteDoctorStateMigrationResult(
-        await measurePreflightStep("task-sidecar-migrations", () =>
-          autoMigrateLegacyTaskStateSidecars({ env: process.env }),
-        ),
-      );
     if (stateMigrationInput) {
       // Retired cron.store selects a persisted SQLite partition. Preserve it in machine state
       // before config repair removes the only custom-partition evidence.
@@ -269,6 +260,10 @@ async function runDoctorConfigPreflightOperation(
               env: process.env,
               recoverCorruptTargetStore: options.recoverCorruptTargetStore,
               doctorOnlyStateMigrations: options.doctorOnlyStateMigrations,
+              invocationPurpose: options.invocationPurpose,
+              ...(options.agentDatabaseMigrationDiscovery
+                ? { agentDatabaseMigrationDiscovery: options.agentDatabaseMigrationDiscovery }
+                : {}),
               beforeWorkspaceStateMigration: options.beforeWorkspaceStateMigration,
               onStepReceipt: (receipt) => stateMigrationStepReceipts.push(receipt),
             }),
@@ -287,33 +282,14 @@ async function runDoctorConfigPreflightOperation(
         }
       } else if (stateMigrationInput.pluginDoctorConfig) {
         const pluginDoctorConfig = stateMigrationInput.pluginDoctorConfig;
-        const cronMigrationConfig = cronMigration.retainStoreConfig(pluginDoctorConfig);
-        if (cronMigrationConfig) {
-          // A partially valid config cannot drive general core migrations, but its retired
-          // cron.store is still the sole authority for selecting and preserving that partition.
-          const { repairLegacyCronStoreWithoutPrompt } = await measurePreflightStep(
-            "cron-repair-import",
-            loadCronRepair,
-          );
-          noteDoctorStateMigrationResult(
-            await measurePreflightStep("cron-repair", () =>
-              repairLegacyCronStoreWithoutPrompt({
-                cfg: cronMigrationConfig,
-                migrateCodexModelRefs: false,
-              }),
-            ),
-          );
-          const { migrateLegacyConfigMachineState } =
-            await import("../infra/state-migrations.config-machine-state.js");
-          noteDoctorStateMigrationResult(
-            migrateLegacyConfigMachineState({ config: pluginDoctorConfig, env: process.env }),
-          );
-        }
+        await cronMigration.migrateRetainedStore({
+          config: pluginDoctorConfig,
+          env: process.env,
+          measure: measurePreflightStep,
+          report: noteDoctorStateMigrationResult,
+        });
         await pluginMigrations.migrate(pluginDoctorConfig);
-        await migrateTaskStateSidecars();
       }
-    } else {
-      await migrateTaskStateSidecars();
     }
   }
   if (

@@ -5,13 +5,13 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { UPGRADE_SURVIVOR_ASSERTION_SCENARIOS } from "../../../lib/upgrade-survivor-policy.mjs";
 import {
-  isChannelPostCoreScenario,
-  UPGRADE_SURVIVOR_ASSERTION_SCENARIOS,
-} from "../../../lib/upgrade-survivor-policy.mjs";
-import { validatePrepublishPluginRegistryArtifact } from "../../../prepublish-plugin-registry-artifact.mjs";
+  inspectNpmPackageTarball,
+  validatePrepublishPluginRegistryArtifact,
+} from "../../../prepublish-plugin-registry-artifact.mjs";
 import { readPluginInstallIndex } from "../plugin-index-sqlite.mjs";
-import { readPostCoreSnapshot } from "./diagnostics.mjs";
+import { recordSuccessfulUpdateCheck } from "./diagnostics.mjs";
 import {
   assertExecApprovalPolicySurvived,
   seedLegacyExecApprovalPolicy,
@@ -84,46 +84,11 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-function readUpdateJson(file, observationRoot) {
+function readUpdateJson(file) {
   const raw = fs.readFileSync(file, "utf8");
-  // April baselines print a pretty-printed core result before their fresh child
-  // inherits stdout and prints finalization. Never discard a failed/truncated child.
   const jsonStart = raw.indexOf("{");
   assert(jsonStart !== -1, "update reported no JSON result");
-  const reports = raw
-    .slice(jsonStart)
-    .trim()
-    .split(/\n(?=\{)/u)
-    .map((text) => JSON.parse(text));
-  assert(reports.length <= 2, "update reported unexpected extra results");
-  const [core, continuation] = reports;
-  let result = core;
-  if (continuation) {
-    assert(core.status === "ok", "historical core update did not succeed");
-    assert(continuation.mode === "unknown", "unexpected historical continuation mode");
-    assert(
-      Array.isArray(continuation.steps) && continuation.steps.length === 0,
-      "unexpected historical continuation steps",
-    );
-    assert(continuation.after === undefined, "historical continuation replaced the core result");
-    result = {
-      ...core,
-      status: continuation.status,
-      reason: continuation.reason,
-      postUpdate: continuation.postUpdate,
-    };
-  }
-  if (result.postUpdate !== undefined || !observationRoot) {
-    return result;
-  }
-  // April 23 omits the child result from stdout. Consume only this invocation's
-  // complete exit snapshot; explicit CLI results and nonzero child exits win.
-  const snapshot = readPostCoreSnapshot(observationRoot);
-  if (snapshot === null) {
-    return result;
-  }
-  assert(snapshot.childExitCode === 0, "historical post-core child did not exit successfully");
-  return { ...result, postUpdate: { plugins: snapshot.result } };
+  return JSON.parse(raw.slice(jsonStart));
 }
 
 function isCapabilityConsentReason(value) {
@@ -368,20 +333,6 @@ function hasCoverage(coverage) {
   return Boolean(coverage);
 }
 
-function isChannelPostCoreWriterCell() {
-  return (
-    getScenario() === "channel-post-core-restore" &&
-    process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION === "2026.4.15"
-  );
-}
-
-function isChannelPostCoreCell() {
-  return (
-    isChannelPostCoreScenario(getScenario()) &&
-    process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION === "2026.4.15"
-  );
-}
-
 function seedState() {
   const stateDir = requireEnv("OPENCLAW_STATE_DIR");
   const workspace = requireEnv("OPENCLAW_TEST_WORKSPACE_DIR");
@@ -395,9 +346,6 @@ function seedState() {
     path.join(workspace, "IDENTITY.md"),
     "# Upgrade Survivor\n\nThis workspace must survive package update and doctor repair.\n",
   );
-  if (isChannelPostCoreCell()) {
-    return;
-  }
   if (scenario === "bootstrap-persona") {
     for (const [fileName, contents] of PERSONA_FILES) {
       write(path.join(workspace, fileName), contents);
@@ -523,10 +471,7 @@ function assertConfigSurvived() {
 
   if (acceptsIntent(coverage, "update")) {
     const expectedChannel =
-      (isChannelPostCoreWriterCell() &&
-      process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE !== "baseline"
-        ? "beta"
-        : process.env.OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL) ||
+      process.env.OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL ||
       (scenario === "prerelease-plugin-registry" ? "beta" : "stable");
     assert(
       expectedChannel === "stable" || expectedChannel === "beta",
@@ -541,6 +486,30 @@ function assertConfigSurvived() {
 
   if (acceptsIntent(coverage, "models")) {
     assert(config.models?.providers?.openai, "OpenAI model provider missing");
+  }
+  for (const [providerId, api, baseUrl, keyEnv] of [
+    ["anthropic", "anthropic-messages", "https://api.anthropic.com", "ANTHROPIC_API_KEY"],
+    [
+      "google",
+      "google-generative-ai",
+      "https://generativelanguage.googleapis.com/v1beta",
+      "GEMINI_API_KEY",
+    ],
+  ]) {
+    // Frozen recipes without coverage receipts predate these provider specimens.
+    if (!hasCoverage(coverage) || !acceptsIntent(coverage, `models-${providerId}`)) {
+      continue;
+    }
+    const provider = config.models?.providers?.[providerId];
+    assert(provider, `${providerId} model provider missing`);
+    assert(provider.api === api, `${providerId} model provider API changed`);
+    assert(provider.baseUrl === baseUrl, `${providerId} model provider URL changed`);
+    assert(
+      provider.apiKey?.source === "env" &&
+        provider.apiKey.provider === "default" &&
+        provider.apiKey.id === keyEnv,
+      `${providerId} model provider env credential reference changed`,
+    );
   }
 
   if (acceptsIntent(coverage, "agents")) {
@@ -648,18 +617,7 @@ function assertConfigSurvived() {
     }
   }
 
-  if (isChannelPostCoreScenario(scenario)) {
-    if (isChannelPostCoreCell()) {
-      assert(config.plugins?.enabled === true, "post-core restore disabled plugins");
-      assert(
-        config.plugins?.entries?.whatsapp?.enabled === true,
-        "post-core restore disabled WhatsApp plugin",
-      );
-      assert(
-        config.plugins?.allow?.includes("whatsapp"),
-        "post-core restore dropped WhatsApp allow entry",
-      );
-    }
+  if (scenario === "channel-post-core-restore") {
     const whatsapp = config.channels?.whatsapp;
     assert(whatsapp?.enabled === true, "post-core channel restore dropped WhatsApp");
     assert(
@@ -709,9 +667,6 @@ function assertStateSurvived() {
     return;
   }
   assert(fs.existsSync(path.join(workspace, "IDENTITY.md")), "workspace identity file missing");
-  if (isChannelPostCoreCell()) {
-    return;
-  }
   if (scenario === "watchos-direct-node" || scenario === "mobile-pairing-reconnect") {
     return;
   }
@@ -1380,6 +1335,7 @@ function assertNpmPluginInstall([
   pendingUpdateFile,
   observationRoot,
   baselineVersion,
+  publishedCompanionTarball,
 ]) {
   assert(
     pluginId && packageName && expectedVersion,
@@ -1422,14 +1378,20 @@ function assertNpmPluginInstall([
     requiredPackages: [packageName],
   });
   const artifact = manifest.packages.find((entry) => entry.name === packageName);
-  const archive = fs.readFileSync(path.join(artifactDir, artifact.tarball));
+  let expectedTarball = path.join(artifactDir, artifact.tarball);
+  if (publishedCompanionTarball) {
+    const published = inspectNpmPackageTarball(publishedCompanionTarball).packageJson;
+    assert(
+      published.name === packageName && published.version === expectedVersion,
+      "published companion identity must match the unchanged candidate version",
+    );
+    expectedTarball = publishedCompanionTarball;
+  }
+  const archive = fs.readFileSync(expectedTarball);
   const integrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
   assert(record.integrity === integrity, `${pluginId} plugin registry artifact integrity changed`);
   if (getScenario() === "msteams-polls" && pluginId === "msteams") {
-    assertMSTeamsPluginFiles(
-      resolveHomePath(record.installPath),
-      path.join(artifactDir, artifact.tarball),
-    );
+    assertMSTeamsPluginFiles(resolveHomePath(record.installPath), expectedTarball);
   }
 }
 
@@ -1580,8 +1542,8 @@ function assertStatusJson([file]) {
   assert(/running|connected|ok|ready/u.test(text), "gateway status did not report a healthy state");
 }
 
-function assertRecoverableUpdateJson([file, expectedVersion, observationRoot, baselineVersion]) {
-  const result = readUpdateJson(file, observationRoot);
+function assertRecoverableUpdateJson([file, expectedVersion, , baselineVersion]) {
+  const result = readUpdateJson(file);
   assertStrict.ok(baselineVersion, "Expected baseline version is required.");
   assertStrict.ok(result.status === "error" || result.status === "ok");
   assertStrict.equal(result.mode, "npm");
@@ -1711,8 +1673,27 @@ function assertExpectedMissingCodexOutcomes(result, expectedVersion) {
 }
 
 function assertSuccessfulUpdateJson([file, expectedVersion, observationRoot]) {
-  assert(file && expectedVersion, "assert-successful-update-json requires a path and version");
-  const result = readUpdateJson(file, observationRoot);
+  let result;
+  let outcome = "failed";
+  let message;
+  try {
+    assert(file && expectedVersion, "assert-successful-update-json requires a path and version");
+    result = readUpdateJson(file);
+    assertSuccessfulUpdateResult(result, expectedVersion);
+    outcome = "passed";
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    recordSuccessfulUpdateCheck(observationRoot, {
+      outcome,
+      message,
+      plugins: result?.postUpdate?.plugins ?? null,
+    });
+  }
+}
+
+function assertSuccessfulUpdateResult(result, expectedVersion) {
   const plugins = result?.postUpdate?.plugins;
   assert(result?.status === "ok", `update did not report ok: ${String(result?.status)}`);
   if (
@@ -1769,161 +1750,6 @@ function assertRepairJson([file]) {
   assert(result?.restart === false, "update repair unexpectedly restarted the Gateway");
   assert(result?.postUpdate?.doctor?.status === "ok", "update repair doctor did not pass");
   assert(result?.postUpdate?.plugins?.status === "ok", "update repair plugins did not pass");
-}
-
-function parseStableVersion(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$/u.exec(version ?? "");
-  assert(match, `invalid stable package version: ${String(version)}`);
-  return match.slice(1).map((part) => Number(part ?? 0));
-}
-
-function compareStableVersions(left, right) {
-  const leftParts = parseStableVersion(left);
-  const rightParts = parseStableVersion(right);
-  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
-    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
-    if (difference !== 0) {
-      return difference;
-    }
-  }
-  return 0;
-}
-
-function normalizeSystemctlInvocation(line) {
-  const parts = String(line ?? "")
-    .trim()
-    .split(/\s+/u)
-    .filter(Boolean);
-  const normalized = [];
-  for (let index = 0; index < parts.length; index += 1) {
-    const part = parts[index];
-    if (["--user", "--quiet", "--no-page", "--no-pager", "--now"].includes(part)) {
-      continue;
-    }
-    if (part === "--property") {
-      index += 1;
-      continue;
-    }
-    normalized.push(part);
-  }
-  return normalized.join(" ");
-}
-
-function assertUpdateRunSelfUpgrade([file]) {
-  assert(file, "assert-update-run-self-upgrade requires a summary path");
-  const summary = readJson(file);
-  const sourceVersion = summary?.source?.version;
-  const targetVersion = summary?.target?.resolvedVersion;
-  const updateRpc = summary?.updateRpcResult;
-  const sentinel = summary?.restartSentinel;
-  const qaChannelInstallRecord = summary?.qaChannelInstallRecord;
-  const targetQaChannelInstallRecord = summary?.targetPluginIndex?.installRecords?.["qa-channel"];
-  const gatewayStatus = summary?.gateway?.status;
-  const qaAccounts = summary?.qaChannel?.status?.channelAccounts?.["qa-channel"];
-  const targetServiceStarts = (summary?.supervisorHandoff?.systemctlInvocations ?? [])
-    .map(normalizeSystemctlInvocation)
-    .filter((invocation) => invocation === "start openclaw-gateway.service");
-
-  assert(summary?.status === "passed", "update.run self-upgrade summary did not pass");
-  assert(sourceVersion === "2026.4.26", `unexpected source version: ${String(sourceVersion)}`);
-  assert(summary?.source?.spec === "openclaw@2026.4.26", "source package spec was not exact");
-  assert(summary?.target?.tag === "latest", "target tag was not latest");
-  assert(
-    compareStableVersions(targetVersion, sourceVersion) > 0,
-    `target version did not advance beyond source: ${String(sourceVersion)} -> ${String(targetVersion)}`,
-  );
-  assert(
-    summary?.installedVersion === targetVersion,
-    `installed version mismatch: expected ${String(targetVersion)}, got ${String(summary?.installedVersion)}`,
-  );
-  assert(qaChannelInstallRecord?.source === "path", "QA channel was not path-installed");
-  assert(
-    typeof qaChannelInstallRecord?.sourcePath === "string" &&
-      qaChannelInstallRecord.sourcePath.includes("/extensions/qa-channel"),
-    "QA channel install record omitted its source path",
-  );
-  assert(
-    typeof qaChannelInstallRecord?.installPath === "string" &&
-      qaChannelInstallRecord.installPath.includes("/dist/extensions/qa-channel"),
-    "QA channel install record omitted its compiled local install path",
-  );
-  assert(
-    qaChannelInstallRecord?.version === "2026.4.25",
-    "QA channel install record version mismatch",
-  );
-  assert(
-    summary?.sourcePluginInspect?.plugin?.status === "loaded",
-    "source package did not load the compiled QA channel plugin",
-  );
-  assert(
-    targetQaChannelInstallRecord?.source === "path" &&
-      targetQaChannelInstallRecord?.installPath === qaChannelInstallRecord?.installPath,
-    "target SQLite index did not preserve the QA channel path install record",
-  );
-
-  assert(updateRpc?.ok === true, `update.run RPC did not report ok: ${JSON.stringify(updateRpc)}`);
-  assert(updateRpc?.result?.status === "ok", "update.run did not execute the package update");
-  assert(
-    updateRpc?.result?.before?.version === sourceVersion,
-    "update.run source version mismatch",
-  );
-  assert(updateRpc?.result?.after?.version === targetVersion, "update.run target version mismatch");
-  assert(
-    Array.isArray(updateRpc?.result?.steps) && updateRpc.result.steps.length > 0,
-    "update.run reported no executed update steps",
-  );
-  assert(updateRpc?.restart, "update.run did not schedule a Gateway restart");
-  assert(
-    updateRpc?.sentinel?.payload?.message === summary.expectedRestartNote,
-    "update.run response sentinel note mismatch",
-  );
-
-  assert(sentinel?.kind === "update", "final restart sentinel kind was not update");
-  assert(sentinel?.status === "ok", "final restart sentinel did not report ok");
-  assert(sentinel?.message === summary.expectedRestartNote, "final restart sentinel note mismatch");
-  assert(
-    sentinel?.stats?.before?.version === sourceVersion,
-    "restart sentinel source version mismatch",
-  );
-  assert(
-    sentinel?.stats?.after?.version === targetVersion,
-    "restart sentinel target version mismatch",
-  );
-  assert(
-    Number.isSafeInteger(summary?.supervisorHandoff?.servicePid) &&
-      summary.supervisorHandoff.servicePid > 1,
-    "supervisor handoff did not record the target service PID",
-  );
-  assert(targetServiceStarts.length === 1, "systemctl shim did not start the target exactly once");
-  assert(
-    summary?.supervisorHandoff?.monitorEvents?.some((line) =>
-      line.includes("source Gateway exited through supervised update handoff"),
-    ),
-    "supervisor monitor did not prove the source supervised handoff",
-  );
-
-  assert(
-    summary?.gateway?.healthz?.body?.ok === true &&
-      summary?.gateway?.healthz?.body?.status === "live",
-    "post-restart /healthz was not live",
-  );
-  assert(summary?.gateway?.readyz?.body?.ready === true, "post-restart /readyz was not ready");
-  assert(
-    gatewayStatus?.rpc?.ok === true &&
-      gatewayStatus?.rpc?.version === targetVersion &&
-      gatewayStatus?.gateway?.version === targetVersion &&
-      gatewayStatus?.cli?.version === targetVersion,
-    `post-restart Gateway did not report target version ${String(targetVersion)}`,
-  );
-  assert(Array.isArray(qaAccounts), "post-restart channels.status omitted qa-channel");
-  assert(
-    qaAccounts.some((account) => account?.running === true && account?.restartPending !== true),
-    "post-restart QA channel account was not running",
-  );
-  assert(
-    Number(summary?.qaChannel?.busPollsAfterRestart) > 0,
-    "QA channel did not poll its bus after the target Gateway restart",
-  );
 }
 
 function assertMobilePairingEvidence(files) {
@@ -2043,10 +1869,7 @@ if (command === "list-scenarios") {
     legacyOperator.assertLegacyOperatorApprovals(
       process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE || "survival",
     );
-  } else if (
-    !isChannelPostCoreCell() &&
-    !["watchos-direct-node", "mobile-pairing-reconnect"].includes(getScenario())
-  ) {
+  } else if (!["watchos-direct-node", "mobile-pairing-reconnect"].includes(getScenario())) {
     assertExecApprovalPolicySurvived(
       requireEnv("OPENCLAW_STATE_DIR"),
       process.env.OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE || "survival",
@@ -2058,43 +1881,6 @@ if (command === "list-scenarios") {
   seedUpgradeVolume(stateDir);
 } else if (command === "assert-config") {
   assertConfigSurvived();
-} else if (command === "capture-channel-post-core-config") {
-  const { captureChannelPostCoreConfig } = await import("./channel-post-core-witness.mjs");
-  captureChannelPostCoreConfig();
-} else if (command === "seed-channel-post-core-node-host") {
-  const { seedChannelPostCoreNodeHost } = await import("./channel-post-core-state.mjs");
-  seedChannelPostCoreNodeHost();
-} else if (command === "assert-channel-post-core-writer") {
-  const { assertChannelPostCoreWriterWitness } = await import("./channel-post-core-witness.mjs");
-  const [candidateVersion, observationRoot, updateOutcome, updateRepairRequired] =
-    process.argv.slice(3);
-  assertChannelPostCoreWriterWitness({
-    candidateVersion,
-    observationRoot,
-    updateOutcome,
-    updateRepairRequired,
-  });
-} else if (command === "assert-channel-post-core-readiness") {
-  const { assertChannelPostCoreReadinessWitness } = await import("./channel-post-core-witness.mjs");
-  assertChannelPostCoreReadinessWitness({
-    candidateVersion: process.argv[3],
-    observationRoot: process.argv[4],
-    updateOutcome: process.argv[5],
-    updateRepairRequired: process.argv[6],
-  });
-} else if (command === "prepare-channel-post-core-config-validation") {
-  const { prepareChannelPostCoreConfigValidation } =
-    await import("./channel-post-core-witness.mjs");
-  process.stdout.write(`${prepareChannelPostCoreConfigValidation()}\n`);
-} else if (command === "assert-channel-post-core-config-validation") {
-  const { assertChannelPostCoreConfigValidation } = await import("./channel-post-core-witness.mjs");
-  assertChannelPostCoreConfigValidation(Number(process.argv[3]));
-} else if (command === "seed-channel-post-core-voicewake") {
-  const { seedChannelPostCoreVoiceWake } = await import("./channel-post-core-state.mjs");
-  seedChannelPostCoreVoiceWake();
-} else if (command === "assert-channel-post-core-voicewake") {
-  const { assertChannelPostCoreVoiceWake } = await import("./channel-post-core-state.mjs");
-  assertChannelPostCoreVoiceWake(process.argv[3]);
 } else if (command === "assert-restart-serving-turn") {
   await assertRestartServingTurn(process.argv[3]);
 } else if (command === "assert-state") {
@@ -2120,8 +1906,6 @@ if (command === "list-scenarios") {
   assertSuccessfulUpdateJson(process.argv.slice(3));
 } else if (command === "assert-repair-json") {
   assertRepairJson(process.argv.slice(3));
-} else if (command === "assert-update-run-self-upgrade") {
-  assertUpdateRunSelfUpgrade(process.argv.slice(3));
 } else if (command === "assert-mobile-pairing-evidence") {
   assertMobilePairingEvidence(process.argv.slice(3));
 } else {

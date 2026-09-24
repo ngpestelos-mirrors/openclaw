@@ -34,7 +34,7 @@ const mocks = vi.hoisted(() => ({
     | undefined,
   closeMcpManager: vi.fn(async () => undefined),
   loadNodeHostConfig: vi.fn<() => Promise<NodeHostConfig | null>>(async () => null),
-  loadDeviceAuthTokenReadOnly: vi.fn<typeof loadDeviceAuthTokenReadOnly>(() => null),
+  loadDeviceAuthTokenReadOnly: vi.fn<typeof loadDeviceAuthTokenReadOnly>(async () => null),
   configureNodeHost: vi.fn(async (params: Parameters<typeof configureNodeHost>[0]) => {
     mocks.capturedConfiguredGatewayConfigs.push(params.gateway);
     return {
@@ -56,6 +56,8 @@ const mocks = vi.hoisted(() => ({
     handleInput: vi.fn(),
     cancel: vi.fn(),
     cancelAll: vi.fn(),
+    tryPauseForUpdate: vi.fn(async () => true),
+    resumeAfterUpdate: vi.fn(),
     updateGatewayConnection: vi.fn(),
     close: vi.fn(async () => {}),
   },
@@ -246,7 +248,7 @@ export function resetRunnerTestState() {
   mocks.runtimeClient = undefined;
   vi.clearAllMocks();
   mocks.loadNodeHostConfig.mockReset().mockResolvedValue(null);
-  mocks.loadDeviceAuthTokenReadOnly.mockReset().mockReturnValue(null);
+  mocks.loadDeviceAuthTokenReadOnly.mockReset().mockResolvedValue(null);
   mocks.getRuntimeConfig.mockReturnValue({
     gateway: { handshakeTimeoutMs: 1_000 },
   });

@@ -5,9 +5,9 @@ export function makePreflightConfigSnapshot(config: Record<string, unknown>) {
     config,
     sourceConfig: config,
     parsed: config,
-    legacyIssues: [] as Array<{ path: string; message: string }>,
-    warnings: [] as Array<{ path: string; message: string }>,
-    issues: [] as Array<{ path: string; message: string }>,
+    legacyIssues: [],
+    warnings: [],
+    issues: [],
   };
 }
 

@@ -11,6 +11,11 @@ import {
   getPluginMetadataSnapshotCache,
 } from "../../plugins/plugin-cache.js";
 import { ExitError, type RuntimeEnv } from "../../runtime.js";
+import {
+  getExistingOpenClawStateSchemaPath,
+  isExistingOpenClawStateSchema,
+} from "../../state/openclaw-state-db-schema-policy.js";
+import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { InvalidConfigRecoveryDeps } from "../invalid-config-recovery.js";
 
 const ALLOWED_INVALID_COMMANDS = new Set(["audit", "doctor", "logs", "health", "help", "status"]);
@@ -94,12 +99,25 @@ export async function ensureConfigReady(
   const commandPath = params.commandPath ?? [];
   const commandName = commandPath[0];
   const subcommandName = commandPath[1];
+  const existingStatePath = getExistingOpenClawStateSchemaPath();
+  const isManagedNodeRuntime =
+    existingStatePath !== undefined &&
+    ((commandName === "node" && subcommandName === "run") || commandName === "connect");
+  if (existingStatePath !== undefined) {
+    if (!isManagedNodeRuntime) {
+      throw new Error("The managed node runtime cannot run shared-state maintenance commands.");
+    }
+    if (!isExistingOpenClawStateSchema(resolveOpenClawStateSqlitePath())) {
+      throw new Error("The managed node runtime state directory changed after launcher admission.");
+    }
+  }
   const isRestartController =
     (commandName === "gateway" || commandName === "daemon") && subcommandName === "restart";
   let preflightResult: StartupConfigPreflightResult | null = null;
   const shouldRunStartupPreflight =
     !params.validateConfigOnly &&
     commandName !== "doctor" &&
+    !isManagedNodeRuntime &&
     commandName !== "config" &&
     commandName !== "health" &&
     commandName !== "logs" &&
@@ -160,11 +178,11 @@ export async function ensureConfigReady(
 
   // Read-only diagnostics must not record config health. Core-only validation
   // also skips plugin metadata discovery, whose state reads create SQLite sidecars.
-  const configSnapshotOptions = params.validateConfigOnly
-    ? ({ observe: false, pluginValidation: "core-only" } as const)
-    : commandName === "logs"
+  const configSnapshotOptions =
+    params.validateConfigOnly || commandName === "logs"
       ? ({ observe: false, pluginValidation: "core-only" } as const)
-      : commandName === "status" ||
+      : isManagedNodeRuntime ||
+          commandName === "status" ||
           (commandName === "gateway" && subcommandName === "call") ||
           isRestartController
         ? ({ observe: false } as const)
@@ -240,7 +258,8 @@ export async function ensureConfigReady(
   const isReadOnlyConfig = resolveIsConfigReadOnly();
   const isGatewayStartup = isGatewayStartupCommand(commandPath);
   const mustBlockInvalid = !allowInvalid || (isGatewayStartup && params.allowInvalid !== true);
-  const shouldOfferRecovery = mustBlockInvalid && !params.suppressDoctorStdout && !isReadOnlyConfig;
+  const shouldOfferRecovery =
+    mustBlockInvalid && !params.suppressDoctorStdout && !isReadOnlyConfig && !isManagedNodeRuntime;
   if (isPluginPackagingFailure || isReadOnlyConfig || !shouldOfferRecovery) {
     const fixHint = isPluginPackagingFailure
       ? formatPluginPackagingRuntimeOutputRecoveryHint()

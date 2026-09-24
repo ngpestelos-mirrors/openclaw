@@ -21,7 +21,9 @@ function writeStderrLine(message: string): void {
   process.stderr.write(`${message}\n`);
 }
 
-export async function runNodeHostWorker(): Promise<void> {
+export async function runNodeHostWorker(
+  options: { desktopSharingEnabled?: boolean } = {},
+): Promise<void> {
   ensureNodeHostStateReady();
   const nodeConfig = await loadNodeHostConfig();
   // The private app worker is a capability superset; persisted headless
@@ -30,6 +32,7 @@ export async function runNodeHostWorker(): Promise<void> {
     enableDuplexPluginCommands: true,
     enableWorkerRuns: true,
     installedAppsSharingEnabled: nodeConfig?.installedAppsSharing === true,
+    desktopSharingEnabled: options.desktopSharingEnabled,
   });
   const client = new NodeHostWorkerBridgeClient(writeMessage);
   let stopping = false;
