@@ -1,5 +1,5 @@
 import { parentPort, type MessagePort, type Transferable } from "node:worker_threads";
-import { routeLogsToStderr } from "../logging/console.js";
+import { routeLogsToStderr } from "../logging/state.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { cancelWorkerIdleGc, scheduleWorkerIdleGc } from "./worker-idle-gc.js";
 import {

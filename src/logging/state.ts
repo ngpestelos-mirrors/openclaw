@@ -44,3 +44,9 @@ if (!Object.hasOwn(loggingState, "appliedConfig")) {
   loggingState.appliedConfig = APPLIED_LOGGING_CONFIG_UNOWNED;
 }
 globalStore[LOGGING_STATE_KEY] = loggingState;
+
+// Route all console output (including tslog console writes) to stderr.
+// This keeps stdout clean for RPC/JSON modes.
+export function routeLogsToStderr(): void {
+  loggingState.forceConsoleToStderr = true;
+}

@@ -15,6 +15,7 @@ import { formatTimestamp } from "./timestamps.js";
 import type { ConsoleStyle, LoggerSettings } from "./types.js";
 
 export type { ConsoleStyle } from "./types.js";
+export { routeLogsToStderr } from "./state.js";
 export { formatJsonConsoleLine };
 type ConsoleSettings = {
   level: LogLevel;
@@ -70,12 +71,6 @@ export function getConsoleSettings(): ConsoleLoggerSettings {
   const settings = resolveConsoleSettings();
   loggingState.cachedConsoleSettings = settings;
   return loggingState.cachedConsoleSettings as ConsoleSettings;
-}
-
-// Route all console output (including tslog console writes) to stderr.
-// This keeps stdout clean for RPC/JSON modes.
-export function routeLogsToStderr(): void {
-  loggingState.forceConsoleToStderr = true;
 }
 
 export function setConsoleSubsystemFilter(filters?: string[] | null): void {
