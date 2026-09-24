@@ -38,7 +38,11 @@ function normalizeGoogleVideoInput(
 function resolveGoogleReasoningOutputMode(
   ctx: ProviderReasoningOutputModeContext,
 ): "native" | "tagged" {
-  if (ctx.provider === "google" || ctx.provider === "google-vertex") {
+  if (
+    ctx.provider === "google" ||
+    ctx.provider === "google-vertex" ||
+    ctx.provider === "google-interactions"
+  ) {
     const api = ctx.model?.api ?? ctx.modelApi;
     if (
       !api ||
@@ -55,7 +59,7 @@ function resolveGoogleReasoningOutputMode(
 export function buildGoogleProvider(): ProviderPlugin {
   return {
     ...googleProviderDiscovery,
-    hookAliases: ["google-antigravity", "google-vertex"],
+    hookAliases: ["google-antigravity", "google-vertex", "google-interactions"],
     envVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     auth: [
       createProviderApiKeyAuthMethod({
