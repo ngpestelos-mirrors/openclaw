@@ -219,6 +219,10 @@ export function findTsgoCoreTestShardViolations(params: {
   return violations;
 }
 
+export function isTsgoCoreTestRoot(file: string): boolean {
+  return /^(?:src|ui|packages)\/.+\.test\.tsx?$/u.test(file);
+}
+
 /** Ambient declarations and compiler configuration retain the full graph check. */
 export function isChangedTsgoCoreTestInput(file: string): boolean {
   return (
@@ -236,9 +240,7 @@ export function selectChangedTsgoCoreTestShards(
   if (paths.length === 0 || !paths.every(isChangedTsgoCoreTestInput)) {
     return undefined;
   }
-  const changedTestRoots = paths.filter((file) =>
-    /^(?:src|ui|packages)\/.+\.test\.tsx?$/u.test(file),
-  );
+  const changedTestRoots = paths.filter(isTsgoCoreTestRoot);
   const testConfigs = new Set<string>(TSGO_CORE_TEST_SHARDS.map((shard) => shard.config));
   const testGraphs = graphs.filter((graph) => testConfigs.has(graph.config));
   if (

@@ -1610,11 +1610,12 @@ jobs:
             [
               ["scripts/run-tsgo-core-test-shards.mts", "--changed-paths-json"],
               ["scripts/run-additional-boundary-checks.mts", "--core-test-boundary-owner=test-types"],
+              ["scripts/changed-lanes.mts", "test-roots"],
             ].every(([file, capability]) => existsSync(file) && readFileSync(file, "utf8").includes(capability))) {
             const lanes = await import("./scripts/changed-lanes.mts");
             if (typeof lanes.getChangedCoreTestPaths === "function") {
-              const coreTestPaths = lanes.getChangedCoreTestPaths(lanes.detectChangedLanes(changedPaths));
-              // Deleted leaves need the full plan before hosted stripes are scheduled.
+              // Shared source can consume every graph and exceed the central row's budget.
+              const coreTestPaths = lanes.getChangedCoreTestPaths(lanes.detectChangedLanes(changedPaths), "test-roots");
               if (coreTestPaths?.length && coreTestPaths.every((path) => existsSync(path))) {
                 changedCoreTestPaths = coreTestPaths;
               }

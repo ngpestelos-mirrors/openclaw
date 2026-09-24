@@ -7,7 +7,7 @@ import { isDirectRunUrl } from "./lib/direct-run.mjs";
 import { resolveMergeHeadDiffBase } from "./lib/merge-head-diff-base.mjs";
 import { isRecord } from "./lib/record-shared.mjs";
 import { isReleaseChangelogPath } from "./lib/release-changelog.mjs";
-import { isChangedTsgoCoreTestInput } from "./lib/tsgo-core-test-shards.mts";
+import { isChangedTsgoCoreTestInput, isTsgoCoreTestRoot } from "./lib/tsgo-core-test-shards.mts";
 
 const GIT_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
 const IMPLAUSIBLE_NO_MERGE_BASE_DIFF_PATHS = 200;
@@ -128,7 +128,10 @@ export type ChangedLaneResult = {
 };
 
 /** Eligible source inputs; compiler inventories still decide all consuming graphs. */
-export function getChangedCoreTestPaths(result: ChangedLaneResult): string[] | undefined {
+export function getChangedCoreTestPaths(
+  result: ChangedLaneResult,
+  inputKind: "source" | "test-roots" = "source",
+): string[] | undefined {
   const { lanes } = result;
   if (lanes.all || lanes.liveDockerTooling) {
     return undefined;
@@ -137,7 +140,8 @@ export function getChangedCoreTestPaths(result: ChangedLaneResult): string[] | u
   const paths = result.paths.filter(
     (file) => getChangedPathFacts(file).surface !== "docs" && !/^ui\/.+\.css$/u.test(file),
   );
-  return paths.length > 0 && paths.every(isChangedTsgoCoreTestInput) ? paths : undefined;
+  const isEligible = inputKind === "test-roots" ? isTsgoCoreTestRoot : isChangedTsgoCoreTestInput;
+  return paths.length > 0 && paths.every(isEligible) ? paths : undefined;
 }
 
 type DetectChangedLanesOptions = {

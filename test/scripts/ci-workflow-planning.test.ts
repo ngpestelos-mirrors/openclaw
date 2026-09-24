@@ -4776,19 +4776,8 @@ describe("ci workflow guards", () => {
     },
   );
 
-  it.each([
-    {
-      label: "test leaves",
-      paths: ["src/commands/doctor-config-preflight.plugin-persistence.test.ts"],
-    },
-    {
-      label: "source inputs and their test consumers",
-      paths: [
-        "src/shared/reply-payload.types.ts",
-        "src/commands/doctor-config-preflight.plugin-persistence.test.ts",
-      ],
-    },
-  ])("retains compiler coverage when narrowing $label", ({ paths }) => {
+  it("retains compiler coverage when narrowing test leaves", () => {
+    const paths = ["src/commands/doctor-config-preflight.plugin-persistence.test.ts"];
     const changedPaths = [...paths, "docs/ci.md"];
     const compilerPaths = paths.toSorted();
     const manifest = runCiManifestFixture({
@@ -4873,6 +4862,16 @@ describe("ci workflow guards", () => {
       ],
     },
     { changedPaths: ["src/commands/doctor.test.ts", "package.json"] },
+    {
+      changedPaths: [
+        "src/infra/sqlite-wal-checkpoint.ts",
+        "src/infra/sqlite-wal-checkpoint.test.ts",
+      ],
+      changedPlannerDependencies: [
+        "src/infra/sqlite-wal-checkpoint.ts",
+        "src/infra/sqlite-wal-checkpoint.test.ts",
+      ],
+    },
     { changedPaths: ["src/commands/doctor.test.ts", "src/shared.test-support.ts"] },
     { changedPaths: ["packages/mermaid-renderer/src/render.test.ts"] },
     { changedPaths: ["src/gateway/gateway-acp-bind.live.test.ts"] },
