@@ -39,7 +39,7 @@ const gatewayServer = createServer((req, res) => {
     res.end("Not Found");
     return;
   }
-  Promise.resolve(route.handler(req, res)).catch((err) => {
+  Promise.resolve(route.handler(req, res)).catch((err: unknown) => {
     res.statusCode = 500;
     res.end(String(err));
   });
@@ -65,9 +65,9 @@ export function getGatewayPort(): Promise<number> {
 afterAll(async () => {
   gatewayServer.closeAllConnections();
   if (gatewayServer.listening) {
-    await new Promise<void>((resolve, reject) =>
-      gatewayServer.close((err) => (err ? reject(err) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => {
+      gatewayServer.close((err) => (err ? reject(err) : resolve()));
+    });
   }
 });
 

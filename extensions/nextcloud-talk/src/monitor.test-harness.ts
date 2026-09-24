@@ -92,7 +92,7 @@ export async function startWebhookServer(params: StartWebhookServerParams) {
   return {
     server,
     waitForIdle: async () => {
-      await Promise.all([...pending]);
+      await Promise.all(pending);
     },
     webhookUrl: `http://127.0.0.1:${address.port}${params.path}`,
     stop: async () => unregister(),

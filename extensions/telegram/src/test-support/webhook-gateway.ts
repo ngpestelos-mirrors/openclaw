@@ -78,10 +78,10 @@ export function createTelegramWebhookTestGateway(options: {
       setActivePluginRegistry(registry);
     },
     startWebhook,
-    async withWebhook<T>(
+    withWebhook: async <T>(
       params: StartWebhookOptions,
       run: (ctx: { server: Server; port: number }) => Promise<T>,
-    ): Promise<T> {
+    ): Promise<T> => {
       const abort = new AbortController();
       const started = await startWebhook({
         token: options.token,

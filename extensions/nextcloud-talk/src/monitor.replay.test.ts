@@ -1,6 +1,10 @@
 // Nextcloud Talk tests cover monitor.replay plugin behavior.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createMockIncomingRequest, postRawWebhook } from "openclaw/plugin-sdk/test-env";
+import {
+  createMockIncomingRequest,
+  createMockServerResponse,
+  postRawWebhook,
+} from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
 import { createSignedCreateMessageRequest } from "./monitor.test-fixtures.js";
 import { startWebhookServer, webhookRegistry } from "./monitor.test-harness.js";
@@ -26,7 +30,7 @@ vi.mock("openclaw/plugin-sdk/webhook-ingress", async (importOriginal) => {
 });
 
 async function invokeWebhookRequestListener(params: {
-  listener: (req: IncomingMessage, res: ServerResponse) => void;
+  listener: (typeof webhookRegistry.httpRoutes)[number]["handler"];
   path: string;
   body: string;
   headers: Record<string, string>;
@@ -43,37 +47,22 @@ async function invokeWebhookRequestListener(params: {
     legacyListeners.set(req, params.legacyListener);
   }
 
-  return await new Promise<{ body: string; status: number }>((resolve) => {
-    let status = 0;
-    const res = {
-      headersSent: false,
-      writableFinished: false,
-      destroyed: false,
-      once() {
-        return this;
-      },
-      off() {
-        return this;
-      },
-      destroy() {
-        this.destroyed = true;
-        return this;
-      },
-      writeHead(code: number) {
-        status = code;
-        this.headersSent = true;
-        return this;
-      },
-      setHeader() {
-        return this;
-      },
-      end(body?: string) {
-        resolve({ body: body ?? "", status });
-        return this;
-      },
-    };
-    params.listener(req, res as unknown as ServerResponse);
+  const result = Promise.withResolvers<{ body: string; status: number }>();
+  const response = createMockServerResponse();
+  const finishResponse = response.end.bind(response);
+  const res = Object.assign(response, {
+    writeHead(code: number): ServerResponse {
+      Object.assign(response, { statusCode: code, headersSent: true });
+      return response;
+    },
+    end(body?: string): ServerResponse {
+      finishResponse(body);
+      result.resolve({ body: body ?? "", status: response.statusCode });
+      return response;
+    },
   });
+  await params.listener(req, res);
+  return await result.promise;
 }
 
 describe("Nextcloud Talk Gateway webhook auth order", () => {

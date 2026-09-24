@@ -594,7 +594,7 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
       maxInFlightPerKey: FEISHU_PRE_AUTH_MAX_IN_FLIGHT,
       maxTrackedKeys: 1,
     });
-  const target = registerWebhookTarget(webhookTargets, {
+  const registration = registerWebhookTarget(webhookTargets, {
     ...params,
     path,
     rawPath,
@@ -624,7 +624,7 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
     );
     await waitUntilAbort(abortSignal);
   } finally {
-    target.unregister();
+    registration.unregister();
     unregisterRoute?.();
     if (
       ![...webhookTargets.values()].some((targets) =>

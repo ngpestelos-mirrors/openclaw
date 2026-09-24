@@ -11,7 +11,7 @@ import { DEFAULT_FEISHU_WEBHOOK_PATH, normalizeFeishuWebhookPath } from "./webho
 export function describeFeishuWebhookPathConflict(path: string): string | undefined {
   const normalized = normalizeFeishuWebhookPath(path);
   if (!normalized) {
-    return;
+    return undefined;
   }
   const pathname = new URL(normalized, "http://localhost").pathname;
   const probe = classifyGatewayProbePath(pathname);
@@ -21,7 +21,7 @@ export function describeFeishuWebhookPathConflict(path: string): string | undefi
   } else if (isProtectedPluginRoutePathFromContext(resolvePluginRoutePathContext(pathname))) {
     reason = "requires Gateway authentication";
   } else {
-    return;
+    return undefined;
   }
   return `webhookPath ${JSON.stringify(path)} ${reason}. Set webhookPath to ${DEFAULT_FEISHU_WEBHOOK_PATH} and update the Feishu callback URL or reverse-proxy path to match.`;
 }
