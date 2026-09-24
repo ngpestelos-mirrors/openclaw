@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
+import { withConsoleLogsRoutedToStderrForJson } from "../cli/json-output-mode.js";
 import { acquireOpenClawStateDatabaseFileExclusion } from "../state/openclaw-state-db-cache.js";
 import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db.js";
@@ -13,7 +14,8 @@ import type { CronStoreFile } from "./types.js";
 it.each([false, true])(
   "loads cold readonly cron state off the host with artifact preservation=%s",
   async (preserveArtifacts) => {
-    await withOpenClawTestState({ label: "cron-readonly-worker" }, async (state) => {
+    const env = preserveArtifacts ? { OPENCLAW_LOG_LEVEL: "debug" } : undefined;
+    await withOpenClawTestState({ label: "cron-readonly-worker", env }, async (state) => {
       const storePath = state.statePath("cron", "jobs.json");
       const databasePath = resolveOpenClawStateSqlitePath(state.env);
       const store: CronStoreFile = {
@@ -45,9 +47,26 @@ it.each([false, true])(
         run: vi.spyOn(StatementSync.prototype, "run"),
         iterate: vi.spyOn(StatementSync.prototype, "iterate"),
       };
+      const output = { stdout: "", stderr: "" };
+      const outputSpies = preserveArtifacts
+        ? (["stdout", "stderr"] as const).map((stream) =>
+            vi.spyOn(process[stream], "write").mockImplementation((chunk) => {
+              output[stream] += String(chunk);
+              return true;
+            }),
+          )
+        : [];
       try {
         const read = () => loadCronJobsStoreWithConfigJobsReadOnly(storePath, state.env);
-        const loaded = await (preserveArtifacts ? withArtifactPreservingStateReads(read) : read());
+        const loaded = await (preserveArtifacts
+          ? withConsoleLogsRoutedToStderrForJson(["--json"], () =>
+              withArtifactPreservingStateReads(read),
+            )
+          : read());
+        if (preserveArtifacts) {
+          expect(output.stdout).toBe("");
+          expect(output.stderr).toContain(`SQLite read-only snapshot for ${databasePath}:`);
+        }
         expect(loaded.store).toEqual(store);
         expect(loaded.configJobIndexes).toEqual([0]);
         expect(loaded.configJobRuntimeEntries[0]?.state).toEqual({ nextRunAtMs: 60_001 });
@@ -60,7 +79,7 @@ it.each([false, true])(
         ).toEqual({ prepare: 0, exec: 0, close: 0, get: 0, all: 0, run: 0, iterate: 0 });
         expect(await fs.readFile(databasePath)).toEqual(before);
       } finally {
-        for (const spy of Object.values(spies)) {
+        for (const spy of [...Object.values(spies), ...outputSpies]) {
           spy.mockRestore();
         }
       }

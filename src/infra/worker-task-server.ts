@@ -1,4 +1,5 @@
 import { parentPort, type MessagePort, type Transferable } from "node:worker_threads";
+import { routeLogsToStderr } from "../logging/console.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { cancelWorkerIdleGc, scheduleWorkerIdleGc } from "./worker-idle-gc.js";
 import {
@@ -54,6 +55,8 @@ export function serveOwnedWorkerTasks<Output>(
   if (!port) {
     return;
   }
+  // Replies use the port; diagnostics must not enter the caller's structured stdout.
+  routeLogsToStderr();
   let active: WorkerConversation | undefined;
   let execution = Promise.resolve();
   let resourceClosures = Promise.resolve();
