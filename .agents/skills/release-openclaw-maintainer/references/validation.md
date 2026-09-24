@@ -86,8 +86,7 @@ recorded as advisory. Coverage is never reduced: all-group
 `cross_os_suite_filter` selections must retain `packaged-fresh`,
 `installer-fresh`, and `packaged-upgrade` on all three OSes (nine pairs).
 Focused `cross-os` reruns may select individual lanes. Publishing a stable with
-a failed advisory lane requires `lane_waiver` (RELEASING.md "Publication
-modes"). Read required versus advisory conclusions in the manifest and
+a failed advisory lane requires `lane_waiver` (see [release validation](../../../../docs/reference/RELEASING.md#release-validation)). Read required versus advisory conclusions in the manifest and
 `release-ci-summary`.
 
 ## Postpublish confidence

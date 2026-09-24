@@ -99,7 +99,7 @@ and performance failures are recorded as advisory during validation (Release
 Decision `- Advisory:` entries and `::warning` annotations); Linux Gateway
 cross-OS lanes and the other required proofs block. Publishing a stable with a
 recorded advisory failure, or without soak and blocking performance evidence,
-requires the operator waivers described in RELEASING.md "Publication modes";
+requires the operator waivers described in [Release validation](/reference/RELEASING#release-validation);
 without them the publisher gates fail closed. Skipped or deferred attempts are
 never reported as passed. When
 `live_suite_filter` explicitly requests a gated QA live lane such as Discord,
