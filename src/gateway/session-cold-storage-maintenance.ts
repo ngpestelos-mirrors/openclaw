@@ -116,7 +116,7 @@ export function startSessionColdStorageMaintenance(params: {
       isGatewayWorkAdmissionClosed() ||
       params.getRuntimeConfig().session?.maintenance?.coldStorage?.enabled !== true
     ) {
-      return;
+      return undefined;
     }
     return owner.run().catch((error: unknown) => params.onError(String(error)));
   };

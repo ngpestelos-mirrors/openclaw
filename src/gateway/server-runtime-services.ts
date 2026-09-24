@@ -112,7 +112,7 @@ export function scheduleGatewayPostReadyMaintenance(params: {
     delayMs: params.delayMs,
     run: () => {
       if (params.isClosing()) {
-        return;
+        return undefined;
       }
       return runWithGatewayIndependentRootWorkAdmission(
         async () => {
@@ -174,7 +174,7 @@ function startPendingOutboundDeliveryRecovery(params: {
 
   const recover = (): Promise<void> | undefined => {
     if (stopped || inFlight || isGatewayWorkAdmissionClosed()) {
-      return;
+      return undefined;
     }
     const recovery = runWithGatewayIndependentRootWorkAdmission(async () => {
       if (stopped) {

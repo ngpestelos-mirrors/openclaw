@@ -75,7 +75,7 @@ export function scheduleGatewayGenerationTimer(params: {
     delayMs: params.delayMs,
     run: () => {
       if (isStopped()) {
-        return;
+        return undefined;
       }
       return runWithGatewayIndependentRootWorkAdmission(
         async () => {

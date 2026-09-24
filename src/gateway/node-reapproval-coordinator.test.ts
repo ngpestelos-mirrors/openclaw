@@ -149,7 +149,7 @@ describe("node reapproval coordinator", () => {
       created: false,
     });
 
-    clock.advanceBy(60_000);
+    await clock.advanceBy(60_000);
     await expect(
       coordinator.request({
         input: {

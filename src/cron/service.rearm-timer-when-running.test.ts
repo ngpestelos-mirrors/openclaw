@@ -34,9 +34,9 @@ describe("cron wakes during active execution", () => {
     const now = Date.parse("2026-02-06T10:05:00.000Z");
     const clock = createGatewaySchedulerClock(now);
     const scheduler = new GatewayScheduler({ clock: clock.clock });
-    const started = createDeferred<void>();
+    const started = createDeferred();
     const deferredRun = createDeferred<{ status: "ok"; summary: string }>();
-    const laterFinished = createDeferred<void>();
+    const laterFinished = createDeferred();
     const laterJob = recurringJob("later-job", now, now + 10_000);
     laterJob.sessionTarget = "main";
     laterJob.payload = { kind: "systemEvent", text: "later work" };
@@ -65,12 +65,13 @@ describe("cron wakes during active execution", () => {
     });
 
     const timerPromise = onTimer(state);
+    let laterWake: ReturnType<typeof clock.advanceTo> = undefined;
     try {
       await started.promise;
       expect(state.running).toBe(true);
       expect(scheduler.nextWakeAtMs).not.toBeNull();
 
-      clock.advanceTo(now + 10_000);
+      laterWake = clock.advanceTo(now + 10_000);
       await laterFinished.promise;
 
       expect(enqueueSystemEvent).toHaveBeenCalledWith("later work", expect.any(Object));
@@ -79,6 +80,7 @@ describe("cron wakes during active execution", () => {
     } finally {
       deferredRun.resolve({ status: "ok", summary: "done" });
       await timerPromise;
+      await laterWake;
       stop(state);
       await scheduler.stop();
     }

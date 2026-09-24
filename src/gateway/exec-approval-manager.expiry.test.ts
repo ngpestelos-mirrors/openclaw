@@ -160,7 +160,7 @@ describe("ExecApprovalManager timeout expiry publication", () => {
     if (!timer || typeof timer.run !== "function") {
       throw new Error("expected timer callback");
     }
-    timer.run();
+    await timer.run();
 
     await expect(decisionPromise).resolves.toBeNull();
     // The gateway clock owns expiry: reviewer surfaces get the terminal fact
@@ -196,12 +196,12 @@ describe("ExecApprovalManager timeout expiry publication", () => {
         timers.filter(({ delayMs }) => delayMs !== 15_000).map((wake) => [wake.atMs, wake]),
       ).values(),
     ];
-    const invoke = (timer: (typeof timers)[number] | undefined) => {
+    const invoke = async (timer: (typeof timers)[number] | undefined) => {
       expect(timer).toBeDefined();
       if (typeof timer?.run !== "function") {
         throw new Error("expected approval timer callback");
       }
-      timer.run();
+      await timer.run();
     };
     return {
       manager,
@@ -247,7 +247,7 @@ describe("ExecApprovalManager timeout expiry publication", () => {
       }
       try {
         clock.mockReturnValue(record.expiresAtMs);
-        invoke(deadlines()[0]);
+        await invoke(deadlines()[0]);
         await expect(Promise.race([refused.promise, decision])).resolves.toBeInstanceOf(Error);
         expect(onError.mock.calls[0]?.[0]).toMatchObject({
           code: code === "unavailable" ? "unavailable" : "overloaded",
@@ -270,9 +270,9 @@ describe("ExecApprovalManager timeout expiry publication", () => {
       if (code === "coordinator") {
         const otherCoordinator = path.join(path.dirname(databaseOptions.path), "other-coordinator");
         fs.mkdirSync(otherCoordinator);
-        withStateDatabaseCoordinatorRuntimeDirectory(otherCoordinator, () => invoke(retry));
+        await withStateDatabaseCoordinatorRuntimeDirectory(otherCoordinator, () => invoke(retry));
       } else {
-        invoke(retry);
+        await invoke(retry);
       }
       await expect(Promise.race([decision, retryFailure.promise])).resolves.toBeNull();
       await observation;
@@ -304,13 +304,13 @@ describe("ExecApprovalManager timeout expiry publication", () => {
         new SqliteWorkerError("synthetic pre-execution unavailable", "unavailable"),
       );
       clock.mockReturnValue(record.expiresAtMs);
-      invoke(deadlines()[0]);
+      await invoke(deadlines()[0]);
       await refused.promise;
       expect(deadlines()).toHaveLength(2);
       if (action === "retire") {
         await manager.drain();
         expect(deadlines()[1]?.cancelled).toBe(true);
-        invoke(deadlines()[1]);
+        await invoke(deadlines()[1]);
       } else {
         const original = await stat(databaseOptions.path);
         await closeOpenClawStateDatabaseByPathAsync(databaseOptions.path);
@@ -321,7 +321,7 @@ describe("ExecApprovalManager timeout expiry publication", () => {
         const retryRefused = createDeferredCore<unknown>();
         onError.mockImplementationOnce((error) => retryRefused.resolve(error));
         clock.mockReturnValue(record.expiresAtMs + (deadlines()[1]?.delayMs ?? 0));
-        invoke(deadlines()[1]);
+        await invoke(deadlines()[1]);
         await expect(retryRefused.promise).resolves.toBeInstanceOf(Error);
       }
       expect(fixture.decisionSettled).not.toHaveBeenCalled();
@@ -352,7 +352,7 @@ describe("ExecApprovalManager timeout expiry publication", () => {
       const releaseCapacity = holdWorkerInputCapacity();
       try {
         clock.mockReturnValue(record.expiresAtMs);
-        invoke(deadlines()[0]);
+        await invoke(deadlines()[0]);
         await expect(Promise.race([refused.promise, fixture.decision])).resolves.toBeInstanceOf(
           Error,
         );
@@ -473,7 +473,7 @@ describe("ExecApprovalManager timeout expiry publication", () => {
           new SqliteWorkerError("synthetic definite refusal", "unavailable"),
         );
         clock.mockReturnValue(record.expiresAtMs);
-        invoke(deadlines()[0]);
+        await invoke(deadlines()[0]);
         await refused.promise;
         clock.mockReturnValue(record.createdAtMs + 500);
         databaseOptions.path = redirected.path;
@@ -545,7 +545,7 @@ describe("ExecApprovalManager timeout expiry publication", () => {
         );
       }
       clock.mockReturnValue(record.expiresAtMs);
-      invoke(deadlines()[0]);
+      await invoke(deadlines()[0]);
       await expect(refused.promise).resolves.toBeInstanceOf(Error);
       expect(deadlines()).toHaveLength(1);
       expect(spy).toHaveBeenCalledTimes(1);

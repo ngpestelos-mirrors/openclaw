@@ -64,7 +64,7 @@ export function startIncognitoSessionLifetime(params: {
       run: () => {
         if (!current(deadline)) {
           retire(deadline);
-          return;
+          return undefined;
         }
         const operation = (async () => {
           try {

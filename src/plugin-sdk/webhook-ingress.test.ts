@@ -48,11 +48,11 @@ it("prunes SDK limiters on their Gateway's clock without sharing their lifecycle
     for (const limiter of [first, peer, second]) {
       limiter.recordFailure("192.0.2.1");
     }
-    firstClock.advanceBy(100);
+    await firstClock.advanceBy(100);
     expect([first.size(), peer.size(), second.size()]).toEqual([0, 0, 1]);
     await firstScheduler.stop();
     await firstHost.close();
-    secondClock.advanceBy(100);
+    await secondClock.advanceBy(100);
     expect(second.size()).toBe(0);
     expect(() => firstHost.run(() => createAuthRateLimiter(config))).toThrow(
       "Plugin SDK resource host is closed",
