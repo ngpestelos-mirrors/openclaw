@@ -62,4 +62,5 @@ export function readChannelIngressInDatabase(
         result: countChannelIngressQueuePressureInDatabase(db, command.input.now),
       };
   }
+  return command satisfies never;
 }

@@ -403,6 +403,7 @@ export function createChannelIngressQueue<
             previous: failedRecord<TPayload, TMetadata>(result.previous),
           };
       }
+      return result satisfies never;
     },
     delete: (value) => write("channelIngress.delete", mutation(value, now())),
     recoverStaleClaims,

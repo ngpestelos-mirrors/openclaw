@@ -69,4 +69,5 @@ function executeInTransaction(
     case "channelIngress.prune":
       return kernel.pruneChannelIngressInDatabase(db, command.input);
   }
+  return command satisfies never;
 }
