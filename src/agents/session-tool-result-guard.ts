@@ -101,16 +101,14 @@ function clearsPendingToolCalls(
   message: AgentMessage,
   toolCalls: ReturnType<typeof extractPendingAssistantToolCalls>,
   allowSyntheticToolResults: boolean,
-  pendingResponseIds: ReadonlySet<string>,
+  pendingResponseId: string | undefined,
 ): boolean {
   if (message.role === "toolResult") {
     return false;
   }
-  // Async tool execution commits each call as a fragment of one provider response, and the
-  // response keeps sampling while those tools run. A later fragment of that same response
-  // is not a turn boundary: its calls' real results are still on the way.
-  const responseId = assistantResponseIdentity(message);
-  if (responseId && pendingResponseIds.has(responseId)) {
+  // Async tool execution commits each call as a fragment of one provider response while the
+  // response keeps streaming. A later fragment of that response is not a turn boundary.
+  if (pendingResponseId && assistantResponseIdentity(message) === pendingResponseId) {
     return false;
   }
   const transcriptOnly =
@@ -193,12 +191,8 @@ export function installSessionToolResultGuard(
     sessionManager.appendMessageWithTranscriptAnchorAsync.bind(sessionManager);
   setRawSessionAppendMessage(sessionManager, originalAppend);
   const pending = new Map<string, string | undefined>();
-  // Responses whose tool calls are still pending; see clearsPendingToolCalls.
-  const pendingResponseIds = new Set<string>();
-  const clearPending = () => {
-    pending.clear();
-    pendingResponseIds.clear();
-  };
+  // Response that most recently added pending tool calls; see clearsPendingToolCalls.
+  let pendingResponseId: string | undefined;
   const persistMessage = (message: AgentMessage, sourceAppend?: CodeModeSourceAppend) => {
     const transformer = opts?.transformMessageForPersistence;
     const persisted = transformer ? transformer(message) : message;
@@ -272,16 +266,12 @@ export function installSessionToolResultGuard(
     const resultId = message.role === "toolResult" ? extractToolResultId(message) : null;
     if (resultId) {
       pending.delete(resultId);
-      if (pending.size === 0) {
-        pendingResponseIds.clear();
-      }
     }
     for (const call of calls) {
       pending.set(call.id, call.name);
     }
-    const responseId = calls.length > 0 ? assistantResponseIdentity(message) : undefined;
-    if (responseId) {
-      pendingResponseIds.add(responseId);
+    if (calls.length > 0) {
+      pendingResponseId = assistantResponseIdentity(message);
     }
   };
   const recordPendingReceipt = (
@@ -306,9 +296,9 @@ export function installSessionToolResultGuard(
       }
       const calls = extractPendingAssistantToolCalls(entry.message);
       if (
-        clearsPendingToolCalls(entry.message, calls, allowSyntheticToolResults, pendingResponseIds)
+        clearsPendingToolCalls(entry.message, calls, allowSyntheticToolResults, pendingResponseId)
       ) {
-        clearPending();
+        pending.clear();
       }
       updatePending(entry.message, calls);
     }
@@ -455,9 +445,13 @@ export function installSessionToolResultGuard(
         }
       }
     }
-    clearPending();
+    pending.clear();
   }
   const flushPendingToolResults = () => runSync(flushPendingToolResultsOperation());
+
+  const clearPendingToolResults = () => {
+    pending.clear();
+  };
 
   function* guardedAppend(
     message: AgentMessage,
@@ -547,7 +541,7 @@ export function installSessionToolResultGuard(
     // back into strict provider order before the next replay.
     if (
       pending.size > 0 &&
-      clearsPendingToolCalls(nextMessage, toolCalls, allowSyntheticToolResults, pendingResponseIds)
+      clearsPendingToolCalls(nextMessage, toolCalls, allowSyntheticToolResults, pendingResponseId)
     ) {
       yield* flushPendingToolResultsOperation();
     }
@@ -653,7 +647,7 @@ export function installSessionToolResultGuard(
   return {
     hasPendingToolResults: () => pending.size > 0,
     flushPendingToolResults,
-    clearPendingToolResults: clearPending,
+    clearPendingToolResults,
     clearNextUserMessagePersistenceSuppression: () => {
       suppressNextUserMessagePersistence = false;
     },
