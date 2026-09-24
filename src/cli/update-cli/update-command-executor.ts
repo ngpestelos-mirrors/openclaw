@@ -41,7 +41,10 @@ import {
   finishManagedUpdateCommandGeneration,
   readManagedUpdateCommandRetainedLease,
 } from "./update-command-executor-managed.js";
-import { runUpdateCommandExecutorOperation } from "./update-command-executor-operation.js";
+import {
+  createUpdateCommandReadConnections,
+  runUpdateCommandExecutorOperation,
+} from "./update-command-executor-operation.js";
 import {
   captureUpdateCommandDirectLocation,
   resolveUpdateCommandRetainedRoot,
@@ -100,15 +103,7 @@ export async function withUpdateCommandExecutor<T>(
           let entering = false;
           let databasePath: string | undefined;
           let store: ReturnType<typeof createManagedHandoffLeaseStore> | undefined;
-          let readConnection: Disposable | undefined;
-          using readConnections = new DisposableStack();
-          readConnections.defer(() => readConnection?.[Symbol.dispose]());
-          const retainReadConnection = (
-            next: ReturnType<typeof createManagedHandoffLeaseStore>,
-          ) => {
-            readConnection?.[Symbol.dispose]();
-            readConnection = next.retainReadConnection();
-          };
+          using readConnections = createUpdateCommandReadConnections();
           let lease: ManagedHandoffParent | undefined;
           let slotLease: ManagedHandoffLease | undefined;
           let borrowed = false;
@@ -456,7 +451,7 @@ export async function withUpdateCommandExecutor<T>(
                   initialStoreAdmission,
                   onProcessIdentityWarning: identityWarnings.warn,
                 });
-                retainReadConnection(store);
+                readConnections.retain(store);
                 if (
                   borrowed &&
                   !legacyChild &&
@@ -520,17 +515,16 @@ export async function withUpdateCommandExecutor<T>(
                   !legacyParent &&
                   lease.version === 2 &&
                   !lease.key.includes("/.openclaw-update-child-");
-                const generationStore = (admission?: typeof initialStoreAdmission) => {
-                  const selected = createManagedHandoffLeaseStore({
-                    databasePath: authority.databasePath,
-                    existingIdentity: authority,
-                    initialStoreAdmission: admission,
-                    serviceManagerEnv: resolveServiceManagerEnv(),
-                    onProcessIdentityWarning: identityWarnings.warn,
-                  });
-                  retainReadConnection(selected);
-                  return selected;
-                };
+                const generationStore = (admission?: typeof initialStoreAdmission) =>
+                  readConnections.retain(
+                    createManagedHandoffLeaseStore({
+                      databasePath: authority.databasePath,
+                      existingIdentity: authority,
+                      initialStoreAdmission: admission,
+                      serviceManagerEnv: resolveServiceManagerEnv(),
+                      onProcessIdentityWarning: identityWarnings.warn,
+                    }),
+                  );
                 if ((originalOwner || managed) && initialStoreAdmission) {
                   generation = registerUpdateCommandGenerationOwner({
                     fence,
@@ -599,7 +593,7 @@ export async function withUpdateCommandExecutor<T>(
                       );
                     }
                     lease = undefined;
-                    readConnections.dispose();
+                    readConnections[Symbol.dispose]();
                   });
                 }
                 if (!enterOptions?.preflight) {

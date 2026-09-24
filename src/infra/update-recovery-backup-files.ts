@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
-import { sha256Hex } from "./crypto-digest.js";
 import { sha256File } from "./directory-durability.js";
 import { hasErrnoCode } from "./errno.js";
 import { sameFileMutationFingerprint } from "./file-descriptor.js";
@@ -43,10 +42,6 @@ export function canonicalEntryPath(pathname: string): string {
 }
 
 export const MAX_MANIFEST_BYTES = 128 * 1024 * 1024;
-
-export function digest(value: string | Buffer): string {
-  return sha256Hex(value);
-}
 
 export function backupStore(stateDir = resolveStateDir()): string {
   return `${resolvePathViaExistingAncestorSync(stateDir)}.update-captures`;
