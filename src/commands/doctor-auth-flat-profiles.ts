@@ -74,7 +74,6 @@ import { shortenHomePath } from "../utils.js";
 import { normalizeSecretInput } from "../utils/normalize-secret-input.js";
 import {
   listAuthProfileRepairCandidates,
-  resolveLegacyAuthProfilesPath as resolveAuthStorePath,
   resolveLegacyAuthStatePath as resolveAuthStatePath,
   resolveLegacyFlatAuthPath as resolveLegacyAuthStorePath,
   type AuthProfileRepairCandidate,

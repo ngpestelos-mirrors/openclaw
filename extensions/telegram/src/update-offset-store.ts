@@ -7,8 +7,8 @@ import {
 } from "./token-fingerprint.js";
 
 const STORE_VERSION = 3;
-export const TELEGRAM_UPDATE_OFFSET_NAMESPACE = "telegram.update-offsets";
-export const TELEGRAM_UPDATE_OFFSET_MAX_ENTRIES = 1_000;
+const TELEGRAM_UPDATE_OFFSET_NAMESPACE = "telegram.update-offsets";
+const TELEGRAM_UPDATE_OFFSET_MAX_ENTRIES = 1_000;
 
 type TelegramUpdateOffsetState = {
   version: number;

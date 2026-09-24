@@ -10,8 +10,6 @@ import { setTelegramRuntime } from "./runtime.js";
 import { clearTelegramRuntimeForTest } from "./runtime.test-support.js";
 import type { TelegramRuntime } from "./runtime.types.js";
 import {
-  TELEGRAM_UPDATE_OFFSET_MAX_ENTRIES,
-  TELEGRAM_UPDATE_OFFSET_NAMESPACE,
   deleteTelegramUpdateOffset,
   readTelegramUpdateOffset,
   writeTelegramUpdateOffset,
@@ -33,8 +31,8 @@ describe("deleteTelegramUpdateOffset", () => {
   beforeEach(async () => {
     installStore(
       createPluginStateKeyedStoreForTests<unknown>("telegram", {
-        namespace: TELEGRAM_UPDATE_OFFSET_NAMESPACE,
-        maxEntries: TELEGRAM_UPDATE_OFFSET_MAX_ENTRIES,
+        namespace: "telegram.update-offsets",
+        maxEntries: 1_000,
       }),
     );
     await updateOffsetStore.clear();
@@ -68,8 +66,8 @@ describe("deleteTelegramUpdateOffset", () => {
     await withStateDirEnv("openclaw-tg-offset-", async () => {
       installStore({
         ...createPluginStateKeyedStoreForTests<unknown>("telegram", {
-          namespace: TELEGRAM_UPDATE_OFFSET_NAMESPACE,
-          maxEntries: TELEGRAM_UPDATE_OFFSET_MAX_ENTRIES,
+          namespace: "telegram.update-offsets",
+          maxEntries: 1_000,
         }),
         async register() {
           throw new Error("store write failed");
@@ -166,8 +164,8 @@ describe("deleteTelegramUpdateOffset", () => {
     await withStateDirEnv("openclaw-tg-offset-", async () => {
       installStore({
         ...createPluginStateKeyedStoreForTests<unknown>("telegram", {
-          namespace: TELEGRAM_UPDATE_OFFSET_NAMESPACE,
-          maxEntries: TELEGRAM_UPDATE_OFFSET_MAX_ENTRIES,
+          namespace: "telegram.update-offsets",
+          maxEntries: 1_000,
         }),
         async lookup() {
           throw new Error("store unavailable");

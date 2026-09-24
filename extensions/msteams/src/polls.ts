@@ -22,7 +22,7 @@ type MSTeamsPollVote = {
   selections: string[];
 };
 
-export type MSTeamsPoll = {
+type MSTeamsPoll = {
   id: string;
   question: string;
   options: string[];
