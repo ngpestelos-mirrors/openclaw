@@ -74,7 +74,7 @@ async function runTimer(jobs: CronJob[], nowMs: number) {
   } finally {
     maintenance.mockRestore();
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
       state.timer = null;
     }
   }
@@ -156,10 +156,7 @@ describe("cron timer maintenance admission", () => {
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
     state.schedulerStarted = true;
-    // These spies delegate to Croner and the suite's timer implementation.
-    // Observe the real tick after fixture persistence, including its final armed timer.
     const previousRuns = vi.spyOn(Cron.prototype, "previousRuns");
-    const timers = vi.spyOn(globalThis, "setTimeout");
     const maintenance = vi.spyOn(scheduleMaintenance, "recomputeUnownedCronSchedules");
     sqliteTransactionLabels.length = 0;
     try {
@@ -176,18 +173,13 @@ describe("cron timer maintenance admission", () => {
       expect(state.deps.requestHeartbeat).not.toHaveBeenCalled();
       expect(state.queuedRunReservationsByJobId.size).toBe(0);
       expect(state.running).toBe(false);
-      const armedCall = timers.mock.results.findIndex(
-        (result) => result.type === "return" && result.value === state.timer,
-      );
-      expect(armedCall).toBeGreaterThanOrEqual(0);
-      expect(timers.mock.calls[armedCall]?.[1]).toBe(60_000);
+      expect(state.deps.scheduler.nextWakeAtMs).toBe(nowMs + 60_000);
       expect(previousRuns).toHaveBeenCalledTimes(0);
     } finally {
       previousRuns.mockRestore();
-      timers.mockRestore();
       maintenance.mockRestore();
       if (state.timer) {
-        clearTimeout(state.timer);
+        state.timer.cancel();
         state.timer = null;
       }
     }

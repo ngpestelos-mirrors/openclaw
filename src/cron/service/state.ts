@@ -6,6 +6,7 @@ import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { NormalizeReplySkipReason } from "../../auto-reply/reply/normalize-reply-skip-reason.js";
 import type { SessionCreatedActor } from "../../config/sessions/session-entry-provenance.js";
 import type { CronConfig } from "../../config/types.cron.js";
+import { GatewayScheduler, type GatewayScheduledJob } from "../../infra/gateway-scheduler.js";
 import type { HeartbeatRunResult, HeartbeatWakeRequest } from "../../infra/heartbeat-wake.js";
 import type { SessionEventWakeWaitOptions } from "../../infra/session-event-wake.js";
 import { LEGACY_IMPLICIT_AGENT_ID } from "../../routing/session-key.js";
@@ -117,6 +118,7 @@ export type CronRunDeliveryResult = {
 /** Dependency injection surface for the cron service runtime. */
 export type CronServiceDeps = {
   nowMs?: () => number;
+  scheduler?: GatewayScheduler;
   log: Logger;
   storePath: string;
   cronEnabled: boolean;
@@ -272,8 +274,9 @@ export type CronExecutionIdentityAdmission = {
 };
 
 /** Cron deps after optional defaults have been made concrete. */
-type CronServiceDepsInternal = Omit<CronServiceDeps, "nowMs"> & {
+type CronServiceDepsInternal = Omit<CronServiceDeps, "nowMs" | "scheduler"> & {
   nowMs: () => number;
+  scheduler: GatewayScheduler;
 };
 
 /** Dependencies consumed by job policy before its mutation is committed. */
@@ -308,7 +311,7 @@ export type CronServiceState = {
   /** Last known durable wake for each persisted job. Map presence distinguishes
    * a durably unscheduled job from one that is not part of durable topology. */
   durableNextRunAtMsByJobId: Map<string, number | undefined>;
-  timer: NodeJS.Timeout | null;
+  timer: GatewayScheduledJob | null;
   running: boolean;
   /** Number of timer batches currently executing admitted scheduled work. */
   activeTimerTicks: number;
@@ -344,8 +347,9 @@ export function createCronServiceState(deps: CronServiceDeps): CronServiceState 
   // Preserve its implicit owner unless a static or dynamic configured default exists.
   const defaultAgentId =
     deps.defaultAgentId ?? (deps.resolveDefaultAgentId ? undefined : LEGACY_IMPLICIT_AGENT_ID);
+  const scheduler = deps.scheduler ?? new GatewayScheduler();
   return {
-    deps: { ...deps, defaultAgentId, nowMs: deps.nowMs ?? (() => Date.now()) },
+    deps: { ...deps, defaultAgentId, scheduler, nowMs: deps.nowMs ?? (() => scheduler.now()) },
     store: null,
     durableNextRunAtMsByJobId: new Map<string, number | undefined>(),
     timer: null,

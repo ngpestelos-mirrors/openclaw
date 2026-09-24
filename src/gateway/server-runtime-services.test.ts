@@ -2,6 +2,7 @@
  * Gateway runtime service lifecycle tests.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   bindGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
@@ -18,12 +19,10 @@ import {
 import { getSpawnBroker, runWithSpawnBroker } from "../process/spawn-broker/context.js";
 import { useSpawnBrokerTestFixture } from "../process/spawn-broker/host.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { registerGatewayCronStartupTests } from "./server-runtime-services.cron.test-support.js";
 import {
   createLog,
-  createTestCronState,
-  createMaintenanceHandles,
-  createPostReadyMaintenanceScheduleParams,
   runtimeServiceMocks as hoisted,
   resetRuntimeServiceMocks,
   waitForFast,
@@ -32,7 +31,6 @@ import {
 const {
   activateGatewayScheduledServices,
   scheduleGatewayIdleTask,
-  scheduleGatewayPostReadyMaintenance,
   startGatewayChannelHealthMonitor,
   startGatewayCronWithLogging,
 } = await import("./server-runtime-services.js");
@@ -57,6 +55,7 @@ describe("server-runtime-services", () => {
 
   it("starts channel health without activating scheduled services", () => {
     startGatewayChannelHealthMonitor({
+      scheduler: new GatewayScheduler({ clock: createGatewaySchedulerClock().clock }),
       channelManager: {
         getRuntimeSnapshot: vi.fn(),
         isHealthMonitorEnabled: vi.fn(),
@@ -75,6 +74,7 @@ describe("server-runtime-services", () => {
     "keeps channel health recovery disabled when %s suppresses startup",
     (envKey) => {
       const monitor = startGatewayChannelHealthMonitor({
+        scheduler: new GatewayScheduler({ clock: createGatewaySchedulerClock().clock }),
         channelManager: {} as never,
         env: { [envKey]: "1" },
       });
@@ -735,58 +735,17 @@ describe("server-runtime-services", () => {
     services.heartbeatRunner.stop();
   });
 
-  it("starts cron and records memory when post-ready maintenance fails", async () => {
-    vi.useFakeTimers();
-    const cron = { start: vi.fn(async () => undefined) };
-    const log = createLog();
-    const recordPostReadyMemory = vi.fn();
-
-    scheduleGatewayPostReadyMaintenance(
-      createPostReadyMaintenanceScheduleParams({
-        startMaintenance: vi.fn(async () => {
-          throw new Error("timers unavailable");
-        }),
-        cronState: createTestCronState(cron),
-        log,
-        recordPostReadyMemory,
-      }),
-    );
-    await vi.advanceTimersByTimeAsync(1);
-
-    expect(log.warn).toHaveBeenCalledWith(
-      "gateway post-ready maintenance startup failed: Error: timers unavailable",
-    );
-    expect(cron.start).toHaveBeenCalledTimes(1);
-    expect(recordPostReadyMemory).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns a cancellable post-ready maintenance timer", async () => {
-    vi.useFakeTimers();
-    const startMaintenance = vi.fn(async () => null);
-    const onStarted = vi.fn();
-    const handle = scheduleGatewayPostReadyMaintenance(
-      createPostReadyMaintenanceScheduleParams({
-        delayMs: 25,
-        onStarted,
-        startMaintenance,
-      }),
-    );
-
-    clearTimeout(handle);
-    await vi.advanceTimersByTimeAsync(25);
-
-    expect(onStarted).not.toHaveBeenCalled();
-    expect(startMaintenance).not.toHaveBeenCalled();
-  });
-
   it("runs a scheduled idle task in an independent admitted root", async () => {
-    vi.useFakeTimers();
+    const clock = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
     const activeRootCounts: number[] = [];
     const run = vi.fn(async () => {
       activeRootCounts.push(getActiveGatewayRootWorkCount());
     });
 
     scheduleGatewayIdleTask({
+      id: "test:idle",
+      scheduler,
       delayMs: 25,
       retryDelayMs: 50,
       isClosing: () => false,
@@ -796,14 +755,15 @@ describe("server-runtime-services", () => {
       errorMessage: "idle task failed",
     });
 
-    await vi.advanceTimersByTimeAsync(25);
-    await waitForFast(() => expect(run).toHaveBeenCalledOnce());
+    await clock.advanceBy(25);
+    expect(run).toHaveBeenCalledOnce();
     expect(activeRootCounts).toEqual([1]);
-    await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+    expect(getActiveGatewayRootWorkCount()).toBe(0);
   });
 
   it("retries a scheduled idle task while request work is active", async () => {
-    vi.useFakeTimers();
+    const clock = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
     const admission = tryBeginGatewayRootWorkAdmission();
     if (!admission) {
       throw new Error("Expected request work admission");
@@ -811,6 +771,8 @@ describe("server-runtime-services", () => {
     const run = vi.fn(async () => undefined);
 
     scheduleGatewayIdleTask({
+      id: "test:idle",
+      scheduler,
       delayMs: 25,
       retryDelayMs: 50,
       isClosing: () => false,
@@ -820,17 +782,18 @@ describe("server-runtime-services", () => {
       errorMessage: "idle task failed",
     });
 
-    await vi.advanceTimersByTimeAsync(25);
+    await clock.advanceBy(25);
     expect(run).not.toHaveBeenCalled();
     admission.release();
-    await vi.advanceTimersByTimeAsync(49);
+    await clock.advanceBy(49);
     expect(run).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    await waitForFast(() => expect(run).toHaveBeenCalledOnce());
+    await clock.advanceBy(1);
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it("rechecks request work after joining the admitted root set", async () => {
-    vi.useFakeTimers();
+    const clock = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
     const run = vi.fn(async () => undefined);
     const isBusy = vi
       .fn()
@@ -839,6 +802,8 @@ describe("server-runtime-services", () => {
       .mockReturnValue(false);
 
     scheduleGatewayIdleTask({
+      id: "test:idle",
+      scheduler,
       delayMs: 25,
       retryDelayMs: 50,
       isClosing: () => false,
@@ -848,19 +813,22 @@ describe("server-runtime-services", () => {
       errorMessage: "idle task failed",
     });
 
-    await vi.advanceTimersByTimeAsync(25);
+    await clock.advanceBy(25);
     expect(run).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(49);
+    await clock.advanceBy(49);
     expect(run).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    await waitForFast(() => expect(run).toHaveBeenCalledOnce());
+    await clock.advanceBy(1);
+    expect(run).toHaveBeenCalledOnce();
     expect(isBusy).toHaveBeenCalledTimes(4);
   });
 
   it("cancels a scheduled idle task before its delay elapses", async () => {
-    vi.useFakeTimers();
+    const clock = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
     const run = vi.fn(async () => undefined);
     const handle = scheduleGatewayIdleTask({
+      id: "test:idle",
+      scheduler,
       delayMs: 25,
       retryDelayMs: 50,
       isClosing: () => false,
@@ -871,55 +839,9 @@ describe("server-runtime-services", () => {
     });
 
     await handle.stop();
-    await vi.advanceTimersByTimeAsync(25);
+    await clock.advanceBy(25);
 
     expect(run).not.toHaveBeenCalled();
-  });
-
-  it("clears delayed maintenance handles when close starts during maintenance startup", async () => {
-    vi.useFakeTimers();
-    let closing = false;
-    let resolveMaintenance:
-      | ((maintenance: ReturnType<typeof createMaintenanceHandles>) => void)
-      | undefined;
-    const startMaintenance = vi.fn(
-      () =>
-        new Promise<ReturnType<typeof createMaintenanceHandles>>((resolve) => {
-          resolveMaintenance = resolve;
-        }),
-    );
-    const applyMaintenance = vi.fn();
-    const cron = { start: vi.fn(async () => undefined) };
-    const recordPostReadyMemory = vi.fn();
-
-    scheduleGatewayPostReadyMaintenance(
-      createPostReadyMaintenanceScheduleParams({
-        delayMs: 25,
-        isClosing: () => closing,
-        startMaintenance,
-        applyMaintenance,
-        cronState: createTestCronState(cron),
-        recordPostReadyMemory,
-      }),
-    );
-
-    await vi.advanceTimersByTimeAsync(25);
-    expect(startMaintenance).toHaveBeenCalledTimes(1);
-
-    closing = true;
-    if (!resolveMaintenance) {
-      throw new Error("Expected gateway maintenance resolver to be initialized");
-    }
-    const maintenance = createMaintenanceHandles();
-    resolveMaintenance(maintenance);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(applyMaintenance).not.toHaveBeenCalled();
-    expect(maintenance.startMediaCleanup).not.toHaveBeenCalled();
-    expect(maintenance.stopPeriodicTasks).toHaveBeenCalledTimes(1);
-    expect(cron.start).not.toHaveBeenCalled();
-    expect(recordPostReadyMemory).not.toHaveBeenCalled();
   });
 
   it("keeps scheduled services disabled for minimal test gateways", () => {

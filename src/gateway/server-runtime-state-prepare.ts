@@ -6,6 +6,7 @@ import { createDefaultDeps } from "../cli/deps.js";
 import { getRuntimeConfig } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isTruthyEnvValue } from "../infra/env.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { loadGatewayTlsServerRuntime } from "../infra/tls/gateway.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { runtimeForLogger } from "../logging/subsystem.js";
@@ -48,6 +49,7 @@ type ChannelRuntime = ReturnType<
 
 export async function prepareGatewayKernelState(params: {
   bootstrap: GatewayBootstrap;
+  scheduler: GatewayScheduler;
   bootId: string;
   pluginRegistryOwner: ReturnType<typeof createPluginRegistryOwner>;
   getPluginReloadStatus: () => GatewayPluginReloadStatus | undefined;
@@ -68,6 +70,7 @@ export async function prepareGatewayKernelState(params: {
 }) {
   const {
     bootstrap,
+    scheduler,
     bootId,
     port,
     opts,
@@ -129,6 +132,7 @@ export async function prepareGatewayKernelState(params: {
     ? await startupTrace.measure("worker-environments.runtime-imports", async () => {
         const workerModule = await loadWorkerEnvironmentStartupModule();
         return await workerModule.createGatewayWorkerEnvironmentRuntime({
+          scheduler,
           getPluginRegistry: () => pluginRuntime.registry,
           getPortalRuntime: () => pluginGatewayContext.current,
           resolveGatewayContext: resolvePluginGatewayContext,
@@ -185,6 +189,7 @@ export async function prepareGatewayKernelState(params: {
     workerPlacementModule
       ? await startupTrace.measure("worker-environments.placement-runtime", async () =>
           workerPlacementModule.createGatewayWorkerPlacementRuntime({
+            scheduler,
             placements: workerEnvironmentStartup.placementStore,
             getCommittedRuntimeConfig,
             environments: workerEnvironmentService,
@@ -351,13 +356,16 @@ export async function prepareGatewayKernelState(params: {
   const initialHookClientIpConfig = resolveHookClientIpConfig(cfgAtStart);
 
   const rateLimitConfig = cfgAtStart.gateway?.auth?.rateLimit;
-  const authRateLimiter = createAuthRateLimiter(rateLimitConfig);
+  const authRateLimiter = createAuthRateLimiter(rateLimitConfig, { scheduler, id: "auth/main" });
   // Browser-origin attempts are throttled even when local CLI clients are exempt.
-  const browserAuthRateLimiter = createAuthRateLimiter({
-    ...rateLimitConfig,
-    exemptLoopback: false,
-  });
-  const nodeReapprovalCoordinator = createNodeReapprovalCoordinator(rateLimitConfig);
+  const browserAuthRateLimiter = createAuthRateLimiter(
+    {
+      ...rateLimitConfig,
+      exemptLoopback: false,
+    },
+    { scheduler, id: "auth/browser" },
+  );
+  const nodeReapprovalCoordinator = createNodeReapprovalCoordinator(rateLimitConfig, { scheduler });
 
   const controlUiRootLifecycle = await startupTrace.measure("control-ui.root", () =>
     createGatewayControlUiRootLifecycle({
@@ -389,7 +397,7 @@ export async function prepareGatewayKernelState(params: {
     loadGatewayTlsServerRuntime(cfgAtStart.gateway?.tls, log.child("tls")),
   );
   const serverStartedAt = Date.now();
-  const readinessEventLoopHealth = createGatewayEventLoopHealthMonitor();
+  const readinessEventLoopHealth = createGatewayEventLoopHealthMonitor({ scheduler });
   const startupState = {
     sidecarsReady: minimalTestGateway,
     pendingReason: "startup-sidecars",
@@ -460,6 +468,7 @@ export async function prepareGatewayKernelState(params: {
   log.info("starting HTTP server...");
   const connectionState = await startupTrace.measure("runtime.state", () =>
     createGatewayConnectionState({
+      scheduler,
       bootId,
       cfg: cfgAtStart,
       getRuntimeConfig,
@@ -530,6 +539,7 @@ export async function prepareGatewayKernelState(params: {
 
   return {
     ...bootstrap,
+    scheduler,
     bootId,
     pluginRuntime,
     workerEnvironmentService,

@@ -1,7 +1,9 @@
 import { getEventListeners } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createRetainedCache } from "../infra/retained-cache.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import type { ControlUiSessionPullRequests } from "./control-ui-contract.js";
 import { parseControlUiSessionPullRequestsSubscribeParams } from "./control-ui-session-pr-subscriptions.js";
 import { createTestControlUiSessionPrSubscriptions } from "./control-ui-session-pr-subscriptions.test-support.js";
@@ -483,10 +485,14 @@ describe("control UI session PR subscriptions", () => {
   );
 
   it("coalesces forced refresh bursts per session and acknowledges each requester once", async () => {
-    vi.useFakeTimers();
+    const clock = createGatewaySchedulerClock();
     const load = vi.fn(async () => READY);
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: new GatewayScheduler({ clock: clock.clock }),
+    });
     await active.replace("first", ["shared", "independent"]);
     await active.replace("second", ["shared"]);
     await active.replace("first", ["shared", "independent"], new Set(["shared"]));
@@ -499,7 +505,7 @@ describe("control UI session PR subscriptions", () => {
       active.replace("first", ["shared", "independent"], new Set(["shared"])),
     ];
     await active.replace("first", ["shared", "independent"], new Set(["independent"]));
-    await vi.advanceTimersByTimeAsync(9_999);
+    await clock.advanceBy(9_999);
     expect(load).toHaveBeenCalledExactlyOnceWith(
       { sessionKey: "independent", agentId: "main", refresh: true },
       expect.any(AbortSignal),
@@ -507,7 +513,7 @@ describe("control UI session PR subscriptions", () => {
     );
     broadcastToConnIds.mockClear();
 
-    await vi.advanceTimersByTimeAsync(1);
+    await clock.advanceBy(1);
     await Promise.all(queued);
 
     expect(load).toHaveBeenCalledTimes(2);
@@ -529,7 +535,7 @@ describe("control UI session PR subscriptions", () => {
   it.each(["stop", "disconnect", "empty replace", "reader retirement"])(
     "cancels a coalesced refresh on %s and settles its callers without waiting",
     async (cleanup) => {
-      vi.useFakeTimers();
+      const clock = createGatewaySchedulerClock();
       const load = vi.fn(async () => READY);
       const broadcastToConnIds = vi.fn();
       let connected = true;
@@ -537,6 +543,7 @@ describe("control UI session PR subscriptions", () => {
         broadcastToConnIds,
         load,
         isConnectionActive: () => connected,
+        scheduler: new GatewayScheduler({ clock: clock.clock }),
       });
       await active.replace("requester", ["session"], new Set(["session"]));
       const refresh = active.replace("requester", ["session"], new Set(["session"]));
@@ -553,7 +560,7 @@ describe("control UI session PR subscriptions", () => {
         operations.push(active.replace("requester", []));
       }
       await Promise.all(operations);
-      await vi.advanceTimersByTimeAsync(60_000);
+      await clock.advanceBy(60_000);
 
       expect(load).toHaveBeenCalledTimes(1);
       expect(broadcastToConnIds).not.toHaveBeenCalled();
@@ -678,15 +685,19 @@ describe("control UI session PR subscriptions", () => {
   );
 
   it("stops polling keys orphaned by replace-set or disconnect cleanup", async () => {
-    vi.useFakeTimers();
+    const clock = createGatewaySchedulerClock();
     const load = vi.fn(async () => READY);
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: new GatewayScheduler({ clock: clock.clock }),
+    });
 
     await active.replace("conn-a", ["replace-orphan"]);
     await active.replace("conn-a", []);
     load.mockClear();
-    await vi.advanceTimersByTimeAsync(60_000);
+    await clock.advanceBy(60_000);
     expect(load).not.toHaveBeenCalled();
 
     await active.replace("conn-b", ["disconnect-orphan"]);

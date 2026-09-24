@@ -251,6 +251,7 @@ export function createService(
       | "generateWorkerCredential"
       | "liveEvents"
       | "maintainProviders"
+      | "scheduler"
       | "logger"
       | "now"
       | "nodeTunnelManager"

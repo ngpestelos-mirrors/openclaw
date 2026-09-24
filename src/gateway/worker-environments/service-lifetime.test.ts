@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { GatewayScheduler } from "../../infra/gateway-scheduler.js";
+import { createGatewaySchedulerClock } from "../../test-utils/gateway-scheduler-clock.js";
 import * as support from "./service.test-support.js";
 import type { WorkerTunnelManager } from "./tunnel.js";
 
@@ -168,26 +170,31 @@ describe("worker environment service", () => {
     expect(store.get(active.environmentId)?.profileSnapshot).toEqual(active.profileSnapshot);
   });
 
-  it("maintains configured providers on the existing timer with no environments", async () => {
-    // Keep the monotonic clock shared with real SQLite workers on its native epoch.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
-    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
-    const maintain = vi.fn(async () => {});
+  it("maintains configured providers on schedule without environments and stops after shutdown", async () => {
+    const time = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: time.clock });
+    const scheduledMaintenance = createDeferred();
+    let maintenanceCount = 0;
+    const maintain = vi.fn(async () => {
+      maintenanceCount += 1;
+      if (maintenanceCount === 2) {
+        scheduledMaintenance.resolve();
+      }
+    });
     const workerService = support.createService(support.createProvider(), {
       maintainProviders: maintain,
+      scheduler,
     });
 
     expect(support.testState.store.list()).toEqual([]);
     workerService.start();
-    await vi.advanceTimersByTimeAsync(0);
+    await workerService.reconcileOnce();
     expect(maintain).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(25);
+    time.advanceBy(250);
+    await scheduledMaintenance.promise;
     expect(maintain).toHaveBeenCalledTimes(2);
-    expect(setIntervalSpy).toHaveBeenCalledExactlyOnceWith(expect.any(Function), 25);
     await workerService.stop();
-    expect(clearIntervalSpy).toHaveBeenCalledWith(setIntervalSpy.mock.results[0]?.value);
-    await vi.advanceTimersByTimeAsync(25);
+    time.advanceBy(25);
     expect(maintain).toHaveBeenCalledTimes(2);
   });
 
@@ -470,14 +477,20 @@ describe("worker environment service", () => {
     expect(stopped).toBe(true);
   });
 
-  it("owns and clears one periodic reconciliation timer", async () => {
+  it("reconciles periodically through the placement guard and retires the schedule on stop", async () => {
     const environmentId = "worker-guarded-reconcile";
     await support.seedReady(environmentId);
-    // Keep the monotonic clock shared with real SQLite workers on its native epoch.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
-    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
-    const inspect = vi.fn(async () => ({ status: "active" as const }));
+    const time = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: time.clock });
+    const periodicInspection = createDeferred();
+    let inspectionCount = 0;
+    const inspect = vi.fn(async () => {
+      inspectionCount += 1;
+      if (inspectionCount === 3) {
+        periodicInspection.resolve();
+      }
+      return { status: "active" as const };
+    });
     const liveEvents = support.createLiveEvents();
     const unsubscribeTurnClaimClosed = vi.fn();
     const placementStore = {
@@ -495,6 +508,7 @@ describe("worker environment service", () => {
     const workerService = support.createService(support.createProvider({ inspect }), {
       liveEvents,
       placementStore,
+      scheduler,
     });
     const guardedEnvironmentIds: string[] = [];
     const uninstallGuard = workerService.installReconcileEnvironmentGuard(
@@ -509,8 +523,8 @@ describe("worker environment service", () => {
     workerService.start();
     workerService.start();
     await workerService.reconcileOnce();
-    expect(setIntervalSpy).toHaveBeenCalledExactlyOnceWith(expect.any(Function), 25);
-    vi.advanceTimersByTime(25);
+    time.advanceBy(25);
+    await periodicInspection.promise;
     await workerService.reconcileOnce();
     expect(guardedEnvironmentIds).toEqual([environmentId, environmentId, environmentId]);
     expect(inspect).toHaveBeenCalledTimes(3);
@@ -522,8 +536,7 @@ describe("worker environment service", () => {
 
     expect(liveEvents.clear).toHaveBeenCalledTimes(2);
     expect(unsubscribeTurnClaimClosed).toHaveBeenCalledOnce();
-    expect(clearIntervalSpy).toHaveBeenCalledWith(setIntervalSpy.mock.results[0]?.value);
-    await vi.advanceTimersByTimeAsync(25);
+    time.advanceBy(25);
     expect(inspect).toHaveBeenCalledTimes(4);
   });
 

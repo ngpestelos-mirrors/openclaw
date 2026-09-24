@@ -137,7 +137,7 @@ describe("cron batch outcome finalization", () => {
         releaseRun.resolve({ status: "ok", summary: "stale completion" });
         await batch;
         if (state.timer) {
-          clearTimeout(state.timer);
+          state.timer.cancel();
         }
       }
     },
@@ -331,7 +331,7 @@ describe("cron batch outcome finalization", () => {
         release.resolve({ status: "ok", summary: "removed original completed" });
         await batch;
         if (state.timer) {
-          clearTimeout(state.timer);
+          state.timer.cancel();
         }
       }
     },
@@ -675,7 +675,7 @@ describe("cron batch outcome finalization", () => {
       releaseRun.resolve({ status: "ok", summary: "finished during shutdown" });
       await batch;
       if (state.timer) {
-        clearTimeout(state.timer);
+        state.timer.cancel();
       }
     }
   });
@@ -758,7 +758,7 @@ describe("cron batch outcome finalization", () => {
         await completion;
         database.exec(`DROP TRIGGER IF EXISTS ${triggerName}`);
         if (state.timer) {
-          clearTimeout(state.timer);
+          state.timer.cancel();
         }
       }
     },
@@ -823,7 +823,7 @@ describe("cron batch outcome finalization", () => {
     } finally {
       database.exec("DROP TRIGGER IF EXISTS reject_startup_terminal");
       if (state.timer) {
-        clearTimeout(state.timer);
+        state.timer.cancel();
       }
     }
   });
@@ -901,7 +901,7 @@ describe("cron batch outcome finalization", () => {
         releaseSecond.resolve({ status: "ok", summary: "finished second" });
         await batch;
         if (state.timer) {
-          clearTimeout(state.timer);
+          state.timer.cancel();
         }
       }
 
@@ -966,7 +966,7 @@ describe("cron batch outcome finalization", () => {
         releaseFinalRun.resolve({ status: "ok", summary: "finished final job" });
         await batch;
         if (state.timer) {
-          clearTimeout(state.timer);
+          state.timer.cancel();
         }
       }
 

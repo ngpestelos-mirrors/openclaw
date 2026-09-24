@@ -1,8 +1,16 @@
 /**
  * Public SDK subpath for webhook ingress guards, targets, and request helpers.
  */
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import type { GatewayAuthRateLimitConfig } from "../config/types.gateway.js";
+import {
+  createAuthRateLimiter as createGatewayAuthRateLimiter,
+  type AuthRateLimiter,
+  type RateLimitConfig,
+} from "../gateway/auth-rate-limit.js";
 import { resolveRequestClientIpFromHeaders } from "../gateway/net.js";
+import { getBoundLegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 
 export {
@@ -60,7 +68,16 @@ export function resolveRequestClientIp(
     resolveRequestClientIpFromHeaders(req, trustedProxies, allowRealIpFallback)
   );
 }
-export { createAuthRateLimiter } from "../gateway/auth-rate-limit.js";
+export function createAuthRateLimiter(config?: RateLimitConfig): AuthRateLimiter & {
+  updateConfig: (config?: GatewayAuthRateLimitConfig) => void;
+} {
+  const host = getBoundLegacyPluginSdkResourceHost();
+  host?.assertOpen();
+  return createGatewayAuthRateLimiter(config, {
+    scheduler: host?.scheduler,
+    id: `auth/sdk:${randomUUID()}`,
+  });
+}
 export type { AuthRateLimiter, RateLimitConfig } from "../gateway/auth-rate-limit.js";
 export { rawDataToString } from "../infra/ws.js";
 export { normalizePluginHttpPath } from "../plugins/http-path.js";

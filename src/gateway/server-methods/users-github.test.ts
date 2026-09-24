@@ -917,7 +917,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
   });
 
   it.each([false, true])(
-    "recovers an exact remote rotation after persistence failure, disconnected=%s",
+    "immediate lifecycle maintenance recovers an exact remote rotation after persistence failure, disconnected=%s",
     async (disconnect) => {
       const connection = await connect();
       if (connection.selection.kind !== "connected") {
@@ -933,7 +933,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
       if (disconnect) {
         await rpc(alice, "users.github.disconnect");
       }
-      await lifecycle.personal.maintain();
+      await lifecycle.maintain();
       expect(network.refresh).toHaveBeenCalledOnce();
       expect(readUserGitHubConnection(owner())?.selection).toMatchObject(
         disconnect

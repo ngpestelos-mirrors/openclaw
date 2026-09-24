@@ -176,7 +176,7 @@ describe("CronService startup catch-up repair scoping", () => {
     expect(deferred?.state.nextRunAtMs).toBe(startNow + 5_000);
 
     if (state.timer) {
-      clearTimeout(state.timer);
+      state.timer.cancel();
     }
     state.stopped = true;
     now = startNow + 3_000;
@@ -197,7 +197,7 @@ describe("CronService startup catch-up repair scoping", () => {
     expect(completed?.state.startupCatchupAtMs).toBeUndefined();
 
     if (restartedState.timer) {
-      clearTimeout(restartedState.timer);
+      restartedState.timer.cancel();
     }
     restartedState.stopped = true;
     await store.cleanup();

@@ -5,8 +5,10 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import * as census from "../infra/openclaw-process-census.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import { retainGatewayPluginMetadata } from "./plugin-metadata-lifecycle.js";
 import { withPluginSourceCaptureDirectory } from "./plugin-package-metadata-capture.js";
@@ -293,21 +295,33 @@ it.each(["payload", "instance"])(
   30_000,
 );
 
-it("retries reclamation when a long-lived metadata owner's hourly scan reaches the grace period", async () => {
+it("keeps hourly reclamation on a live metadata owner when its siblings are closing", async () => {
   const stateDir = temp.make("plugin-capture-periodic-");
   const orphan = await abandonCapture(stateDir, createSource());
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
-  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
-  const metadata = retainGatewayPluginMetadata();
+  const time = createGatewaySchedulerClock();
+  const scheduler = new GatewayScheduler({ clock: time.clock });
+  const metadata = retainGatewayPluginMetadata(scheduler);
+  const fencedTime = createGatewaySchedulerClock();
+  const fencedScheduler = new GatewayScheduler({ clock: fencedTime.clock });
+  const fenced = retainGatewayPluginMetadata(fencedScheduler);
+  const siblingTime = createGatewaySchedulerClock();
+  const siblingScheduler = new GatewayScheduler({ clock: siblingTime.clock });
+  const sibling = retainGatewayPluginMetadata(siblingScheduler);
   try {
     await sweepPluginSourceCaptureDirectories(stateDir);
     expect(fs.readFileSync(orphan.capturedFile, "utf8")).toBe(capturedSource);
-    await vi.advanceTimersByTimeAsync(2 * hour);
-    await vi.waitFor(() => expect(fs.existsSync(orphan.instanceRoot)).toBe(false));
+    fencedScheduler.beginClose();
+    await siblingScheduler.stop();
+    age(orphan.instanceRoot);
+    await time.advanceBy(2 * hour);
+    expect(fs.existsSync(orphan.instanceRoot)).toBe(false);
+    await sibling.close();
   } finally {
+    await sibling.close();
+    await fenced.close();
     await metadata.close();
     await sweepPluginSourceCaptureDirectories(stateDir);
-    vi.useRealTimers();
   }
 }, 30_000);
 

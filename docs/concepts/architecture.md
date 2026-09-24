@@ -141,6 +141,34 @@ Details: [Gateway protocol](/gateway/protocol), [Pairing](/channels/pairing),
 - Health: `health` over WS (also included in `hello-ok`).
 - Supervision: launchd/systemd for auto-restart.
 
+## Timed work and shutdown
+
+Gateway-lifetime maintenance and durable deadline wakeups share one in-memory
+schedule and one armed host timer. Each job has a stable identity. The scheduler
+arms the earliest due job; changing or canceling a deadline updates that wake.
+Diagnostic heartbeat logs include `nextWakeAtMs` when diagnostics are enabled.
+
+After sleep or a forward clock jump, each overdue maintenance job runs once.
+Missed intervals are coalesced, and the next maintenance interval starts after
+that pass completes. A slow job does not overlap itself or block unrelated jobs.
+Maintenance delays use elapsed time, with wall time also detecting sleep on hosts
+whose elapsed clock pauses. Durable deadlines keep their absolute timestamps. Cron retains its own catch-up,
+capacity, execution, and run-record policies, including starting other due jobs
+while earlier runs are still active.
+
+The schedule is a projection, not another durable store. Startup rebuilds cron,
+delivery, and other deadlines from their existing owners. Approval recovery keeps
+its existing epoch and expiry decisions; scheduling never restores an old
+Gateway's execution authority. Updates do
+not change stored schedules, configuration, or schema. Shutdown stops scheduling
+before draining requests, then joins admitted callbacks and their tracked cleanup
+through the existing Gateway shutdown budget.
+
+Request timeouts, stream idle checks, operation retries, debounce, and shutdown
+watchdogs retain their operation owners. Database connection retirement and
+worker-thread lease heartbeats remain independent; a main-thread maintenance
+scheduler cannot replace a worker heartbeat that detects a stalled main thread.
+
 ## Invariants
 
 - Exactly one Gateway controls a single Baileys session per host.

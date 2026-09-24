@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
@@ -18,6 +19,7 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateDirForDatabasePath } from "../../state/openclaw-state-db.paths.js";
+import { createGatewaySchedulerClock } from "../../test-utils/gateway-scheduler-clock.js";
 import { advanceCronActiveJobGeneration, isCronJobActive } from "../active-jobs.js";
 import { cronOwnerHardeningEntrypoints } from "../owner-hardening-runtime.test-support.js";
 import { CronService } from "../service.js";
@@ -272,8 +274,13 @@ async function waitForImmediate(
   }
 }
 
-function makeParentService(storePath: string, runCommandJob = vi.fn()) {
+function makeParentService(
+  storePath: string,
+  runCommandJob = vi.fn(),
+  scheduler?: GatewayScheduler,
+) {
   return new CronService({
+    scheduler,
     storePath,
     cronEnabled: true,
     log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -641,11 +648,15 @@ describe("cron durable run ownership", () => {
     await waitForLine(first, "started");
 
     const replacementRunner = vi.fn(async () => ({ status: "ok" as const }));
-    const replacement = makeParentService(storePath, replacementRunner);
+    const clock = createGatewaySchedulerClock(now);
+    const replacement = makeParentService(
+      storePath,
+      replacementRunner,
+      new GatewayScheduler({ clock: clock.clock }),
+    );
     let suspension: ReturnType<typeof tryBeginGatewaySuspendAdmission> | undefined;
     let second: ChildProcess | undefined;
     try {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       await replacement.start();
       const replacementState = (replacement as unknown as { state: CronServiceState }).state;
       suspension = tryBeginGatewaySuspendAdmission(() => {});
@@ -665,14 +676,14 @@ describe("cron durable run ownership", () => {
       await waitForLine(second, "started");
       const secondReceiptId = receipts(storePath, job.id)[0]?.receiptId;
       expect(secondReceiptId).toBeDefined();
-      await vi.advanceTimersByTimeAsync(2_000);
+      clock.advanceBy(2_000);
       await waitForImmediate(
         () => listForeignReceipts(replacementState)[0]?.receiptId === secondReceiptId,
         "replacement foreign receipt enrollment",
       );
       second.kill("SIGKILL");
       await waitForExit(second);
-      await vi.advanceTimersByTimeAsync(2_000);
+      clock.advanceBy(2_000);
 
       await vi.waitFor(
         async () => {

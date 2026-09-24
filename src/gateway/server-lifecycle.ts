@@ -4,23 +4,20 @@ import { fenceSessionSuspensionWritesForGatewayShutdown } from "../agents/sessio
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
 import { listLoadedChannelPluginsForRegistry } from "../channels/plugins/registry-loaded.js";
 import { getRuntimeConfig } from "../config/io.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  isDiagnosticsEnabled,
-  setDiagnosticsEnabledForProcess,
-} from "../infra/diagnostic-events.js";
 import { markGatewaySuspendExiting } from "../infra/gateway-suspend-coordinator.js";
 import { upsertPresence } from "../infra/system-presence.js";
-import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
+import { stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import type { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import type { GatewayPluginMetadataOwner } from "../plugins/plugin-metadata-lifecycle.js";
+import { PluginRuntimeCloseRetainedError } from "../plugins/runtime-close-error.js";
 import {
   getGatewayContextLifetime,
   withPluginRuntimeRegistryScope,
 } from "../plugins/runtime/gateway-request-scope.js";
 import { clearSecretsRuntimeSnapshotState } from "../secrets/runtime-state.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import {
   recordRemoteNodeInfo,
   removeRemoteNodeInfo,
@@ -36,11 +33,11 @@ import { waitForNodeWorkerSupervisor } from "./node-registry-private.js";
 import { clearNodeWakeState } from "./node-wake-state.js";
 import { createLazyGatewayCronState } from "./server-cron-lazy.js";
 import { createGatewayCronReconciliation } from "./server-cron-reconciled.js";
+import { createGatewayDiagnostics } from "./server-diagnostics.js";
 import { applyGatewayLaneConcurrency, resolveGatewayLaneConcurrency } from "./server-lanes.js";
 import { createGatewayServerLiveState } from "./server-live-state.js";
 import { createGatewayPluginRuntimeGeneration } from "./server-plugin-runtime-generation.js";
 import type { GatewayCloseOptions } from "./server-public.js";
-import { resolveQaDiagnosticHeartbeatTimings } from "./server-qa-diagnostic-timings.js";
 import { GatewayRequestEntryLifetime } from "./server-request-entry.js";
 import type { prepareGatewayKernelState } from "./server-runtime-state-prepare.js";
 import { resolveGatewayShutdownNotice, runGatewayCloseSteps } from "./server-shutdown.js";
@@ -229,6 +226,7 @@ export async function prepareGatewayLifecycle(params: {
     hooksConfig: initialHooksConfig,
     hookClientIpConfig: initialHookClientIpConfig,
     cronState: createLazyGatewayCronState({
+      scheduler: runtime.scheduler,
       cfg: cfgAtStart,
       deps,
       broadcast,
@@ -237,6 +235,7 @@ export async function prepareGatewayLifecycle(params: {
     gatewayMethods: listActiveGatewayMethods(pluginRuntime.baseGatewayMethods),
   });
   const runtimeState = runtimeStateRef.current;
+  runtimeState.gatewayLifetimeSidecars.publish({ stop: () => runtime.scheduler.stop() });
   const pluginRuntimeGeneration = createGatewayPluginRuntimeGeneration({
     getServices: () => runtimeState.pluginServices,
     setServices: (services) => {
@@ -333,6 +332,7 @@ export async function prepareGatewayLifecycle(params: {
     },
   };
   runtimeState.controlUiSessionPullRequests = createControlUiSessionPullRequestSubscriptions({
+    scheduler: runtime.scheduler,
     broadcastToConnIds,
     isConnectionActive,
     prepareRead: async (connId, session) => {
@@ -378,17 +378,27 @@ export async function prepareGatewayLifecycle(params: {
       }
     },
   });
-  const postReadyState: {
-    maintenanceTimer: ReturnType<typeof setTimeout> | null;
-  } = {
-    maintenanceTimer: null,
-  };
   let deliveryRecoveryStopPromise: Promise<void> | null = null;
   const stopDeliveryRecoveryForClose = () =>
     (deliveryRecoveryStopPromise ??= runtimeState.stopDeliveryRecovery());
   let mediaCleanupStopPromise: ReturnType<typeof runtimeState.stopMediaCleanup> | null = null;
   const stopMediaCleanupForClose = () =>
     (mediaCleanupStopPromise ??= runtimeState.stopMediaCleanup());
+  const cronDrains = new Map<typeof runtimeState.cronState.cron, Promise<void>>();
+  const stopCronForClose = () => {
+    const cron = runtimeState.cronState.cron;
+    return getOrCreatePromise(
+      cronDrains,
+      cron,
+      () =>
+        Promise.resolve()
+          .then(() => (cron.stopAndDrain ? cron.stopAndDrain() : cron.stop()))
+          .catch((error: unknown) => {
+            throw new PluginRuntimeCloseRetainedError(error);
+          }),
+      { cacheRejections: false },
+    );
+  };
   // Connect, RPC, and maintenance refreshes share a Gateway owner, not a socket lifetime.
   const healthWork = new AsyncWorkScope();
   const markClosePreludeStarted = (options?: GatewayCloseOptions) => {
@@ -399,6 +409,10 @@ export async function prepareGatewayLifecycle(params: {
     const notice = resolveGatewayShutdownNotice(options);
     lifecycle.closePreludeStarted = true;
     markGatewaySuspendExiting();
+    authRateLimiter.dispose();
+    browserAuthRateLimiter.dispose();
+    runtime.scheduler.beginClose();
+    void stopConfigReloaderForClose().catch(() => {});
     void runtimeState.maintenance?.stopPeriodicTasks();
     // Publish the exact cancellation before withdrawing capabilities or running
     // disposal callbacks; startup can otherwise fail before restart marking.
@@ -413,6 +427,8 @@ export async function prepareGatewayLifecycle(params: {
     // Keep late general sidecars owned until received work drains. Fence background
     // producers now, before their plugin/channel and shared-state dependencies can close.
     void stopDeliveryRecoveryForClose();
+    // Cron owns cancellation; its callbacks must settle before the scheduler joins them.
+    void stopCronForClose().catch(() => {});
     void stopMediaCleanupForClose();
     void runtimeState.stopGatewayUpdateCheck().catch(() => {});
     void runtimeState.controlUiSessionPullRequests?.stop();
@@ -420,8 +436,6 @@ export async function prepareGatewayLifecycle(params: {
     kernel.setDispatchReady(false);
     gatewayInstanceRuntimeRef.current?.close();
     cronReconciliation.invalidate();
-    clearTimeout(postReadyState.maintenanceTimer ?? undefined);
-    postReadyState.maintenanceTimer = null;
   };
   let configReloaderStopPromise: Promise<void> | null = null;
   const stopConfigReloaderForClose = () =>
@@ -434,6 +448,7 @@ export async function prepareGatewayLifecycle(params: {
     await Promise.all([
       requestEntryLifetime.waitForPendingEntries(),
       stopDeliveryRecoveryForClose(),
+      stopCronForClose(),
       stopMediaCleanupForClose(),
       runtimeState.stopGatewayUpdateCheck(),
       stopConfigReloaderForClose().catch(() => {}),
@@ -570,7 +585,10 @@ export async function prepareGatewayLifecycle(params: {
               channelIds,
               stopChannel,
               pluginServices: runtimeState.pluginServices,
-              cron: runtimeState.cronState.cron,
+              cron: {
+                stop: () => runtimeState.cronState.cron.stop(),
+                stopAndDrain: stopCronForClose,
+              },
               heartbeatRunner: runtimeState.heartbeatRunner,
               stopTaskRegistryMaintenance: shutdownRuntime.stopTaskRegistryMaintenance,
               nodePresenceTimers,
@@ -628,39 +646,11 @@ export async function prepareGatewayLifecycle(params: {
     });
   };
 
-  const configureDiagnostics = (config: OpenClawConfig) => {
-    if (lifecycle.closePreludeStarted) {
-      return;
-    }
-    const enabled = isDiagnosticsEnabled(config);
-    setDiagnosticsEnabledForProcess(enabled);
-    if (!enabled) {
-      stopDiagnosticHeartbeat();
-      return;
-    }
-    // Gateway lifecycle owns both this existing heartbeat timer and the monitor
-    // it samples, so startup failure and normal close tear them down together.
-    startDiagnosticHeartbeat(undefined, {
-      getConfig: getRuntimeConfig,
-      startupGraceMs: 60_000,
-      testTimings: resolveQaDiagnosticHeartbeatTimings(process.env),
-      sampleLiveness: () => {
-        const sample = readinessEventLoopHealth.persistentDegradationSnapshot();
-        if (!sample || sample.degradedSinceMs == null) {
-          return null;
-        }
-        return {
-          reasons: sample.reasons,
-          intervalMs: sample.intervalMs,
-          degradedSinceMs: sample.degradedSinceMs,
-          eventLoopDelayP99Ms: sample.delayP99Ms,
-          eventLoopDelayMaxMs: sample.delayMaxMs,
-          eventLoopUtilization: sample.utilization,
-          cpuCoreRatio: sample.cpuCoreRatio,
-        };
-      },
-    });
-  };
+  const configureDiagnostics = createGatewayDiagnostics({
+    scheduler: runtime.scheduler,
+    isClosing: () => lifecycle.closePreludeStarted,
+    eventLoopHealth: readinessEventLoopHealth,
+  });
   configureDiagnostics(cfgAtStart);
 
   return {
@@ -692,7 +682,6 @@ export async function prepareGatewayLifecycle(params: {
     pluginHostServices,
     shutdownRuntime,
     lifecycle,
-    postReadyState,
     cronReconciliation,
     beginClosePrelude,
     getRuntimeSnapshot,

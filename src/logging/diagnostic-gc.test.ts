@@ -8,7 +8,13 @@ import {
   setDiagnosticsEnabledForProcess,
   waitForDiagnosticEventsDrained,
 } from "../infra/diagnostic-events.js";
-import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "./diagnostic.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  configureDiagnosticHeartbeatScheduler,
+  startDiagnosticHeartbeat,
+  stopDiagnosticHeartbeat,
+} from "./diagnostic.js";
 import { resetDiagnosticStateForTest } from "./diagnostic.test-support.js";
 
 const native = vi.hoisted(() => {
@@ -42,7 +48,8 @@ afterEach(() => {
 });
 
 it("owns demand, queued GC batches, and disable/re-enable through the existing heartbeat", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const clock = createGatewaySchedulerClock(Date.now());
+  configureDiagnosticHeartbeatScheduler(new GatewayScheduler({ clock: clock.clock }));
   const now = vi.spyOn(performance, "now").mockReturnValue(100);
   const durations: number[] = [];
   const start = () => startDiagnosticHeartbeat({}, { sampleLiveness: () => null });
@@ -65,9 +72,9 @@ it("owns demand, queued GC batches, and disable/re-enable through the existing h
       },
       { include: ["diagnostic.gc"] },
     );
-    await vi.advanceTimersByTimeAsync(29_999);
+    await clock.advanceBy(29_999);
     expect(native.observers).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1);
+    await clock.advanceBy(1);
     const first = native.observers[0]!;
     expect(first.observe).toHaveBeenCalledExactlyOnceWith({ entryTypes: ["gc"] });
     start();
@@ -97,7 +104,7 @@ it("owns demand, queued GC batches, and disable/re-enable through the existing h
 
     unsubscribe();
     expect(hasInternalDiagnosticEventInterest("diagnostic.gc")).toBe(false);
-    await vi.advanceTimersByTimeAsync(30_000);
+    await clock.advanceBy(30_000);
     expect(native.observers[1]!.disconnect).toHaveBeenCalledTimes(1);
     stopDiagnosticHeartbeat();
     expect(native.observers[1]!.disconnect).toHaveBeenCalledTimes(1);

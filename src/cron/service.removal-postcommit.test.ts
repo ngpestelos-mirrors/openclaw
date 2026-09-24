@@ -90,7 +90,7 @@ async function executeRemovalPath(
 
 function clearStateTimer(state: CronServiceState): void {
   if (state.timer) {
-    clearTimeout(state.timer);
+    state.timer.cancel();
     state.timer = null;
   }
 }

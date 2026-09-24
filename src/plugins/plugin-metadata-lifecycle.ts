@@ -1,4 +1,5 @@
 /** Coordinates plugin metadata snapshot and process memo cache lifecycle resets. */
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
   clearCurrentPluginMetadataSnapshot,
@@ -49,14 +50,14 @@ function hasClosingGateway(): boolean {
 }
 
 /** The kernel owns bootstrap acquisition, published inventory, and unfinished retirement. */
-export function retainGatewayPluginMetadata() {
+export function retainGatewayPluginMetadata(scheduler?: GatewayScheduler) {
   const bootstrapCache = getPluginCache();
   if (hasClosingGateway() || bootstrapCache.retirement) {
     throw new Error(
       "Gateway plugin metadata is shutting down; finish cleanup before starting another Gateway. If cleanup failed, resolve the failure and restart.",
     );
   }
-  const sourceCaptures = retainPluginSourceCaptureInstance();
+  const sourceCaptures = retainPluginSourceCaptureInstance(undefined, scheduler);
   const releaseReaders = retainPluginMetadataSnapshotReaders();
   void sweepPluginSourceCaptureDirectories();
   const owner: GatewayMetadataOwner = {

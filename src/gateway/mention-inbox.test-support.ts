@@ -6,7 +6,9 @@ import {
 import type { SessionEntry } from "../config/sessions.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { ensureProfileForEmail, setDisplayName } from "../state/user-profiles.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createMentionInbox } from "./mention-inbox.js";
 import type { MentionCommittedInput, MentionInbox } from "./mention-inbox.types.js";
@@ -35,12 +37,13 @@ export async function withMentionInbox(
       await run(fixture);
     } finally {
       fixture.dispose();
-      vi.useRealTimers();
     }
   });
 }
 
 async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) {
+  const clock = createGatewaySchedulerClock(Date.now());
+  const scheduler = new GatewayScheduler({ clock: clock.clock });
   const alice = ensureProfileForEmail("alice@mentions.example.test");
   const bob = ensureProfileForEmail("bob@mentions.example.test");
   const carol = ensureProfileForEmail("carol@mentions.example.test");
@@ -69,6 +72,7 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
   const inboxes = new Set<MentionInbox>();
   const openInbox = (gatewayInstanceId = "mention-gateway") => {
     const inbox = createMentionInbox({
+      scheduler,
       gatewayInstanceId,
       getRuntimeConfig: () => cfg,
       getClients: () => clients,
@@ -115,6 +119,8 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
     return response;
   }
   return {
+    clock,
+    scheduler,
     alice,
     bob,
     carol,

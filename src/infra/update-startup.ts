@@ -816,10 +816,8 @@ async function runGatewayUpdateCheckOwned(
       }
     }
   } else {
-    if (channel === "extended-stable") {
-      clearAvailabilityState(nextState);
-    } else {
-      clearAvailabilityState(nextState);
+    clearAvailabilityState(nextState);
+    if (channel !== "extended-stable") {
       clearAutoState(nextState);
     }
     setUpdateAvailableCache({
@@ -851,6 +849,7 @@ export function createGatewayUpdateCheck(params: {
   stop: () => Promise<void>;
 } {
   const lifecycle = params.lifecycle ?? createGatewayUpdateLifecycle();
+  gatewayUpdateCampaign.attachScheduler(lifecycle.scheduler);
   lifecycle.campaign = gatewayUpdateCampaign;
   let started = false;
   let observedCatalog: { sourceUrl: string; generatedAt: number } | undefined;
@@ -862,7 +861,7 @@ export function createGatewayUpdateCheck(params: {
         return;
       }
       started = true;
-      lifecycle.schedule(async () => {
+      lifecycle.schedule("update.check", async () => {
         try {
           await runGatewayUpdateCheck(params, lifecycle);
         } catch {
@@ -870,7 +869,7 @@ export function createGatewayUpdateCheck(params: {
         }
         return resolveCheckIntervalMs(params.getConfig(), getUpdateSchedule()?.install?.kind);
       });
-      lifecycle.schedule(async () => {
+      lifecycle.schedule("update.remote-model-catalog", async () => {
         let nextCheckInMs = REMOTE_MODEL_CATALOG_TTL_MS;
         try {
           const config = params.getConfig();
@@ -912,7 +911,7 @@ export function createGatewayUpdateCheck(params: {
           }
         }
         return nextCheckInMs;
-      }, true);
+      });
     },
   };
 }
