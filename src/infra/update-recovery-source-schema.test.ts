@@ -14,14 +14,10 @@ import {
   matchesUpdateRecoverySourceImage,
   assertUpdateRecoverySourceAttestationCurrent,
 } from "./update-recovery-source-attestation.js";
-import { captureUpdateRecoverySourceInventory } from "./update-recovery-source-image.js";
-import {
-  parseUpdateRecoverySourceAttestation,
-  serializeUpdateRecoverySourceAttestation,
-  updateRecoverySourceAttestationSchema,
-} from "./update-recovery-source-schema.js";
+import { parseUpdateRecoverySourceAttestation } from "./update-recovery-source-schema.js";
+import { sourceInventoryFixture } from "./update-recovery-source.test-support.js";
 
-it("round-trips complete physical inventory and refuses unknown, duplicate, omitted or unbounded transport", async () => {
+it("admits complete physical inventory and refuses unknown, duplicate, omitted or unbounded transport", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "source-schema-")));
   try {
     const live = path.join(root, "live");
@@ -37,23 +33,24 @@ it("round-trips complete physical inventory and refuses unknown, duplicate, omit
         throw new Error("Authority released");
       }
     };
-    const inventory = await captureUpdateRecoverySourceInventory({
+    const inventory = sourceInventoryFixture({
       runId: "run",
       operationId: "op",
-      assertCurrent,
       resources: [
-        { sourcePath: live, kind: "directory" },
-        { sourcePath: file, kind: "file", sqlite: true },
-        { sourcePath: missing, kind: "missing" },
-        { sourcePath: link, kind: "symlink" },
+        { sourcePath: live },
+        { sourcePath: file, sqlite: true },
+        { sourcePath: missing },
+        { sourcePath: link },
       ],
     });
     const attestation = {
       protocol: "update-recovery-source-v1" as const,
-      ...inventory,
+      runId: inventory.runId,
+      operationId: inventory.operationId,
       candidateManifestSha256: "a".repeat(64),
+      resources: inventory.resources,
     };
-    const serialized = serializeUpdateRecoverySourceAttestation(attestation);
+    const serialized = JSON.stringify(attestation) + "\n";
     expect(parseUpdateRecoverySourceAttestation(Buffer.from(serialized))).toEqual(attestation);
     const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
     const ref = { path: path.join(root, "source.json"), sha256: sha256(serialized) };
@@ -125,7 +122,9 @@ it("round-trips complete physical inventory and refuses unknown, duplicate, omit
       },
     ];
     for (const input of malformed) {
-      expect(updateRecoverySourceAttestationSchema.safeParse(input).success).toBe(false);
+      expect(() =>
+        parseUpdateRecoverySourceAttestation(Buffer.from(JSON.stringify(input) + "\n")),
+      ).toThrow();
     }
     expect(() =>
       parseUpdateRecoverySourceAttestation(
@@ -156,7 +155,7 @@ it("round-trips complete physical inventory and refuses unknown, duplicate, omit
       ...attestation,
       resources: attestation.resources.map((r) => ({ ...r, sidecars: [] })),
     };
-    const omittedRaw = serializeUpdateRecoverySourceAttestation(omitted);
+    const omittedRaw = JSON.stringify(omitted) + "\n";
     fs.writeFileSync(ref.path, omittedRaw);
     expect(() =>
       readUpdateRecoverySourceAttestation({ ...ref, sha256: sha256(omittedRaw) }, expected),
@@ -197,11 +196,10 @@ it.each(["binding", "durability", "awaited-parent-change"] as const)(
     const root = tempDirs.make("source-absence-");
     const sourcePath = path.join(root, "never-created", "nested", "agent.sqlite");
     const assertCurrent = () => {};
-    const inventory = await captureUpdateRecoverySourceInventory({
+    const inventory = sourceInventoryFixture({
       runId: "run",
       operationId: "op",
-      assertCurrent,
-      resources: [{ sourcePath, kind: "missing", sqlite: true }],
+      resources: [{ sourcePath, sqlite: true }],
     });
     const captured = inventory.resources[0]!;
     expect(captured.ancestor.path).toBe(root);

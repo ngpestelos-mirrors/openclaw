@@ -70,7 +70,7 @@ function captureAuthority(authority: PackageReverseAuthority): PackageReverseAut
     beforeStatePublication: authority.beforeStatePublication.bind(authority),
   };
 }
-export function packageReverseBindingDigest(binding: PackageActivationReverseBinding) {
+function packageReverseBindingDigest(binding: PackageActivationReverseBinding) {
   return createHash("sha256")
     .update(JSON.stringify(packageActivationReverseBindingSchema.parse(binding)))
     .digest("hex");

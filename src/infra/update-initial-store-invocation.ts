@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import { captureOpenClawDatabaseMaintenanceAdmission } from "../state/openclaw-state-db-async-lifecycle.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { admitUpdateInitialStores } from "./update-initial-store-admission.js";
 
@@ -81,93 +80,6 @@ export async function withUpdateInitialStoreInvocation<T>(
       scope.admission.close();
     }
   });
-}
-
-/** Bridge the lexical caller to the publication owner's verified generation.
- * The executor owns exclusion and the retained native handoff; this scope neither
- * grants publication authority nor infers a generation from a filesystem restat.
- */
-export async function publishUpdateInitialStoreGeneration(
-  params: Parameters<
-    typeof import("./update-recovery-generation-consumer.js").publishUpdateRecoveryGeneration
-  >[0],
-  onRetired: () => void,
-  beforeRetire?: () => Promise<void>,
-) {
-  const scope = invocation.getStore();
-  const lexical = currentUpdateInitialStoreAdmission();
-  const initial = params.initialStores;
-  initial.assertCurrent();
-  lexical?.assertCurrent();
-  if (lexical && !isDeepStrictEqual(lexical.selection, initial.selection)) {
-    throw new Error("Publication does not own the current invocation selection.");
-  }
-  // Pin the provider before yielding to its lazy consumer. Transaction owners
-  // may retain the input object, but cannot replace an admitted publication.
-  const transaction = params.transaction;
-  const publication = transaction.reversePublication;
-  const assertAuthority = params.authority.assertCurrent.bind(params.authority);
-  const assertMaintenance = captureOpenClawDatabaseMaintenanceAdmission(params.maintenance);
-  const captured = {
-    ...params,
-    binding: structuredClone(params.binding),
-    transaction: {
-      ...transaction,
-      reversePublication: publication && {
-        resourceCustody: publication.resourceCustody.bind(publication),
-        selection: publication.selection.bind(publication),
-        publish: publication.publish.bind(publication),
-        settle: publication.settle.bind(publication),
-        verifyCompletion: publication.verifyCompletion.bind(publication),
-      },
-    },
-    authority: {
-      assertCurrent() {
-        assertAuthority();
-        assertMaintenance();
-      },
-      assertWritersSettled: params.authority.assertWritersSettled.bind(params.authority),
-      validateTarget: params.authority.validateTarget.bind(params.authority),
-      assertCapturedSource: params.authority.assertCapturedSource?.bind(params.authority),
-    },
-  };
-  if (scope) {
-    scope.publishing = true;
-  }
-  const { publishUpdateRecoveryGeneration } =
-    await import("./update-recovery-generation-consumer.js");
-  // The helper's physical readers must join before the provider can cause an
-  // inode transition. The synchronous close callback below remains synchronous.
-  await beforeRetire?.();
-  assertAuthority();
-  initial.assertCurrent();
-  lexical?.assertCurrent();
-  const result = await publishUpdateRecoveryGeneration({
-    ...captured,
-    initialStores: {
-      ...initial,
-      close() {
-        initial.close();
-        lexical?.close();
-        onRetired();
-      },
-    },
-  });
-  return {
-    ...result,
-    commitInvocation() {
-      assertAuthority();
-      result.admission.assertCurrent();
-      if (scope) {
-        if (!scope.active || scope.admission !== lexical || !scope.publishing) {
-          throw new Error("Publication outlived its original invocation.");
-        }
-        // Reopen only after the executor and its helper select the verified result.
-        scope.admission = admitUpdateInitialStores(result.admission.selection);
-        scope.publishing = false;
-      }
-    },
-  };
 }
 
 /** Original executor's forward package transition. The provider is selected here

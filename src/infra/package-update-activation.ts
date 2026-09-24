@@ -26,10 +26,6 @@ import {
   type PackageActivationPreparation,
 } from "./package-update-activation-prepare.js";
 import {
-  packageReverseBindingDigest,
-  type PackageReverseAuthority,
-} from "./package-update-activation-reverse.js";
-import {
   createPublicationOwner,
   packageActivationStatus as status,
   type PackageActivationStatus,
@@ -310,89 +306,6 @@ export async function runPackageActivationRecovery(
       journal.assertCurrent(initial);
       const owner = createPublicationOwner(anchor, journal, fence.assertCurrent, initial);
       return action === "repair" ? owner.publish(true) : owner.retire();
-    },
-    { existingAuthority: initial.descriptor.authority },
-  );
-}
-
-/** A later process reacquires the existing installation fence. It cannot invent
- * a target, B/C/T binding, original run, or adopt a legacy interrupted rollback.
- * The preservation owner must reacquire/join maintenance around the whole call. */
-export async function runPackageActivationReverseRecovery(
-  anchor: string,
-  operationId: string,
-  bindingDigest: string,
-  withStateAuthority: <T>(run: (authority: PackageReverseAuthority) => Promise<T>) => Promise<T>,
-  action: "resume" | "settle" = "resume",
-) {
-  const journal = openPackageActivationJournal(anchor);
-  const admission = await journal.readForRecovery();
-  const initial = admission.record;
-  assertPackageActivationOperation(initial, operationId);
-  const binding = initial.descriptor.reverse;
-  if (
-    !binding ||
-    !["reverse-in-progress", "reverse-complete"].includes(initial.phase) ||
-    packageReverseBindingDigest(binding) !== bindingDigest
-  ) {
-    throw new Error("Reverse recovery does not match its durable original operation.");
-  }
-  assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
-  return withUpdateCommandExecutor(
-    binding.runId,
-    async (executor) => {
-      const fence = await executor.enter(initial.descriptor.authority.installKey);
-      assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
-      admission.admit(fence.assertCurrent);
-      journal.assertCurrent(initial);
-      const owner = createPublicationOwner(
-        anchor,
-        journal,
-        fence.assertCurrent,
-        initial,
-        undefined,
-        fence,
-        true,
-      );
-      let work: ReturnType<typeof owner.resumeReverse> | undefined;
-      let scopeFailure: { error: unknown } | undefined;
-      try {
-        await withStateAuthority(async (authority) => {
-          if (work) {
-            throw new Error("Reverse maintenance scope invoked publication twice.");
-          }
-          work =
-            action === "settle" ? owner.settleReverse(authority) : owner.resumeReverse(authority);
-          return work;
-        });
-      } catch (error) {
-        scopeFailure = { error };
-      }
-      // Join issued work without replacing scope cleanup/cancellation evidence.
-      // The executor's existing nested-error classifier must see both failures.
-      const joined = work
-        ? await work.then(
-            (value) => ({ value }),
-            (error: unknown) => ({ error }),
-          )
-        : undefined;
-      if (scopeFailure) {
-        if (joined && "error" in joined && joined.error !== scopeFailure.error) {
-          throw new AggregateError(
-            [scopeFailure.error, joined.error],
-            "Reverse publication and maintenance scope failed",
-            { cause: scopeFailure.error },
-          );
-        }
-        throw scopeFailure.error;
-      }
-      if (!joined) {
-        throw new Error("Reverse maintenance scope did not execute publication.");
-      }
-      if ("error" in joined) {
-        throw joined.error;
-      }
-      return joined.value;
     },
     { existingAuthority: initial.descriptor.authority },
   );

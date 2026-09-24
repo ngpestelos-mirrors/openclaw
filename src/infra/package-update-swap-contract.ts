@@ -26,7 +26,7 @@ type UpdatePublishedStateGeneration = Readonly<
 export type UpdateRecoveryPublicationCompletion = PackageActivationStatus & {
   publishedState: UpdatePublishedStateGeneration;
 };
-export type PackageReversePublication = {
+type PackageReversePublication = {
   resourceCustody: (
     authority: Pick<PackageReverseAuthority, "assertCurrent" | "assertWritersSettled">,
   ) => Promise<PackageReverseResourceCustody>;

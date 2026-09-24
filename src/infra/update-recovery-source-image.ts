@@ -16,12 +16,12 @@ type Metadata = {
   ctimeNs: string;
   birthtimeNs: string;
 };
-export type UpdateRecoverySourceImage =
+type UpdateRecoverySourceImage =
   | { kind: "missing" }
   | (Metadata & { kind: "file"; sha256: string; size: number })
   | (Metadata & { kind: "directory"; children: string[] })
   | (Metadata & { kind: "symlink"; target: string });
-export type UpdateRecoverySourceResource = {
+type UpdateRecoverySourceResource = {
   sourcePath: string;
   kind: UpdateRecoverySourceImage["kind"];
   sqlite?: boolean;
@@ -171,7 +171,7 @@ function freeze<T>(value: T): T {
 }
 
 /** Capture physical images without opening live SQLite or changing its artifacts. */
-export async function captureUpdateRecoverySourceInventory(
+async function captureUpdateRecoverySourceInventory(
   params: CaptureParams,
 ): Promise<UpdateRecoverySourceInventory> {
   const { runId, operationId, assertCurrent } = params;

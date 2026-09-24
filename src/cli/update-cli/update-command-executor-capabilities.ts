@@ -108,5 +108,4 @@ export {
   captureUpdateCommandExecutorCurrentStores,
   captureUpdateCommandRecoveryGenerationAuthority,
   publishUpdateCommandPackageGeneration,
-  publishUpdateCommandRecoveryGeneration,
 } from "./update-command-executor-generation.js";

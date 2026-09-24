@@ -68,7 +68,7 @@ const image = z.discriminatedUnion("kind", [
   }),
 ]);
 export const updateRecoverySourceRefSchema = z.strictObject({ path: absolute, sha256: digest });
-export const updateRecoverySourceAttestationSchema = z
+const updateRecoverySourceAttestationSchema = z
   .strictObject({
     protocol: z.literal("update-recovery-source-v1"),
     runId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/u),
@@ -135,7 +135,7 @@ export type UpdateRecoverySourceAttestation = z.infer<typeof updateRecoverySourc
 export type UpdateRecoverySourceRef = z.infer<typeof updateRecoverySourceRefSchema>;
 
 /** This is the exact wire encoding. Canonical readback also rejects duplicate JSON keys. */
-export function serializeUpdateRecoverySourceAttestation(input: UpdateRecoverySourceAttestation) {
+function serializeUpdateRecoverySourceAttestation(input: UpdateRecoverySourceAttestation) {
   const raw = JSON.stringify(updateRecoverySourceAttestationSchema.parse(input)) + "\n";
   if (Buffer.byteLength(raw) > MAX_SOURCE_ATTESTATION_BYTES) {
     throw new Error("Update recovery source attestation exceeds its bound.");

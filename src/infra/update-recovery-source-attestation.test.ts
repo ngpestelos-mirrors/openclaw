@@ -33,11 +33,10 @@ import {
   assertUpdateRecoverySourceAttestationCurrent,
   assertUpdateRecoverySourceAttestationAdmission,
 } from "./update-recovery-source-attestation.js";
-import { captureUpdateRecoverySourceInventory } from "./update-recovery-source-image.js";
-import { serializeUpdateRecoverySourceAttestation } from "./update-recovery-source-schema.js";
+import { sourceInventoryFixture } from "./update-recovery-source.test-support.js";
 
 // Only executor registration and journal persistence are doubled in owner tests.
-// Physical inventory, immutable manifests, reverse validation and filesystem moves are real.
+// Attestation input is synthetic; inventory validation, immutable manifests and filesystem moves are real.
 const executorAuthority = vi.hoisted(() => vi.fn<() => PackageActivationDescriptor["authority"]>());
 vi.mock("../cli/update-cli/update-command-executor.js", () => ({
   captureUpdateCommandExecutorAuthority: executorAuthority,
@@ -311,14 +310,13 @@ it.each([
           const exclusion = acquireStateDatabaseHandleExclusion({ databasePath: state });
           try {
             await exclusion.runWithSourceReads(async (assertCurrent) => {
-              const inventory = await captureUpdateRecoverySourceInventory({
+              const inventory = sourceInventoryFixture({
                 runId,
                 operationId,
-                assertCurrent,
                 resources: [
-                  { sourcePath: stateDir, kind: "directory" },
-                  { sourcePath: config, kind: "missing" },
-                  { sourcePath: state, kind: "file", sqlite: true },
+                  { sourcePath: stateDir },
+                  { sourcePath: config },
+                  { sourcePath: state, sqlite: true },
                 ],
               });
               // The exact preserving branch used by capture under native source
@@ -360,10 +358,12 @@ it.each([
               );
               const attestation = {
                 protocol: "update-recovery-source-v1" as const,
-                ...inventory,
+                runId: inventory.runId,
+                operationId: inventory.operationId,
                 candidateManifestSha256: binding.candidate.manifestSha256,
+                resources: inventory.resources,
               };
-              const raw = serializeUpdateRecoverySourceAttestation(attestation);
+              const raw = JSON.stringify(attestation) + "\n";
               await assertUpdateRecoverySourceAttestationCurrent(
                 attestation,
                 candidate.entries,

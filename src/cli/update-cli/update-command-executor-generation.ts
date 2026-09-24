@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  publishUpdateInitialPackageGeneration,
-  publishUpdateInitialStoreGeneration,
-} from "../../infra/update-initial-store-invocation.js";
+import { publishUpdateInitialPackageGeneration } from "../../infra/update-initial-store-invocation.js";
 import type { UpdateInitialStoreTransport } from "../../infra/update-initial-store-transport.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import {
@@ -13,17 +10,6 @@ import {
 } from "./update-command-executor-state.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 
-type GenerationInput = Omit<
-  Parameters<typeof publishUpdateInitialStoreGeneration>[0],
-  "initialStores" | "authority"
-> &
-  Pick<
-    Parameters<typeof publishUpdateInitialStoreGeneration>[0]["authority"],
-    "assertWritersSettled" | "validateTarget" | "assertCapturedSource"
-  >;
-type GenerationResult = Awaited<
-  ReturnType<typeof publishUpdateInitialStoreGeneration>
->["completion"];
 type PackageGenerationResult = Awaited<
   ReturnType<typeof publishUpdateInitialPackageGeneration>
 >["completion"];
@@ -31,10 +17,7 @@ type Admission = Parameters<typeof publishUpdateInitialPackageGeneration>[0]["in
 
 // Original-only operations. Admission identity itself stays in the receiver's
 // shared state module, including the exact registry used by delegated executors.
-const originalGenerations = new WeakMap<
-  UpdateRecoveryFence,
-  (runId: string, input: GenerationInput) => Promise<GenerationResult>
->();
+const originalGenerations = new WeakSet<UpdateRecoveryFence>();
 const originalPackageGenerations = new WeakMap<
   UpdateRecoveryFence,
   (runId: string, operationId: string) => Promise<PackageGenerationResult>
@@ -87,20 +70,6 @@ export function publishUpdateCommandPackageGeneration(
     );
   }
   return publish(runId, operationId);
-}
-
-export function publishUpdateCommandRecoveryGeneration(
-  fence: UpdateRecoveryFence,
-  runId: string,
-  input: GenerationInput,
-): Promise<GenerationResult> {
-  const publish = originalGenerations.get(fence);
-  if (!publish) {
-    throw new UpdateCommandRecoveryPendingError(
-      "Publication requires its direct original executor.",
-    );
-  }
-  return publish(runId, input);
 }
 
 /** Internal part of the original native executor, not a replacement admission.
@@ -181,54 +150,7 @@ export function registerUpdateCommandGenerationOwner(params: {
       })(),
     );
   });
-  originalGenerations.set(fence, (requestedRunId, input) => {
-    const initial = admit(requestedRunId);
-    if (input.binding.runId !== runId) {
-      throw new UpdateCommandRecoveryPendingError("Publication changed its original run.");
-    }
-    const transition = randomUUID();
-    const binding = structuredClone(input.binding);
-    const assertWritersSettled = input.assertWritersSettled.bind(input);
-    const validateTarget = input.validateTarget.bind(input);
-    const assertCapturedSource = input.assertCapturedSource?.bind(input);
-    assertWritersSettled();
-    state = "publishing";
-    preflightReleases.delete(fence);
-    return retain(
-      (async () => {
-        try {
-          const result = await publishUpdateInitialStoreGeneration(
-            {
-              ...input,
-              binding,
-              initialStores: initial,
-              authority: {
-                assertCurrent: assertPublicationCurrent,
-                assertWritersSettled: () => {
-                  assertPublicationCurrent();
-                  assertWritersSettled();
-                },
-                validateTarget,
-                assertCapturedSource,
-              },
-            },
-            retired,
-            async () => {
-              await retire(initial, transition);
-            },
-          );
-          await selected(result.admission, transition);
-          assertPublicationCurrent();
-          result.commitInvocation();
-          state = "ready";
-          return result.completion;
-        } catch (error) {
-          state = "failed";
-          throw error;
-        }
-      })(),
-    );
-  });
+  originalGenerations.add(fence);
   return {
     assertPublicationCurrent() {
       if (state === "failed") {
