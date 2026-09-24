@@ -385,24 +385,25 @@ export function resolveSessionStorePathWithContext(
     const agentId = normalizeAgentId(opts.agentId);
     return path.join(resolveAgentSessionsDir(agentId, env, homedir), "sessions.json");
   }
-  if (store.includes("{agentId}")) {
+  let expandedStore = store;
+  if (expandedStore.includes("{agentId}")) {
     if (!opts?.agentId?.trim()) {
       throw new SessionStoreAgentIdRequiredError();
     }
     const agentId = normalizeAgentId(opts.agentId);
-    store = store.replaceAll("{agentId}", agentId);
+    expandedStore = expandedStore.replaceAll("{agentId}", agentId);
   }
-  if (store.startsWith("~")) {
+  if (expandedStore.startsWith("~")) {
     return path.resolve(
       context.cwd,
-      expandHomePrefix(store, {
+      expandHomePrefix(expandedStore, {
         home: resolveRequiredHomeDir(env, homedir),
         env,
         homedir,
       }),
     );
   }
-  return path.resolve(context.cwd, store);
+  return path.resolve(context.cwd, expandedStore);
 }
 
 export function resolveAgentsDirFromSessionStorePath(storePath: string): string | undefined {
