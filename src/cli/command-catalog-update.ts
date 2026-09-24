@@ -14,7 +14,7 @@ export const updateCommandCatalog: readonly CliCommandCatalogEntry[] = [
   },
   {
     commandPath: ["update", "admit"],
-    exact: true,
+    // Malformed internal argv must keep protocol stdout and read-only startup policy too.
     policy: { ...PASSIVE_STARTUP_POLICY, hideBanner: true, ownsProtocolStdout: true },
   },
 ];

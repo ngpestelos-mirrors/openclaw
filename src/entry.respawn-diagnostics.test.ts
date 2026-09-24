@@ -6,6 +6,7 @@ const boundary = vi.hoisted(() => ({
   runtimeSupported: true,
   events: [] as string[],
   spawnTitle: undefined as string | undefined,
+  admissionContext: undefined as string | undefined,
   writer: undefined as ((message: string, error?: unknown) => void | Promise<void>) | undefined,
 }));
 
@@ -56,7 +57,8 @@ vi.mock("./entry.version-fast-path.js", () => ({
   tryHandleRootVersionFastPath: () => boundary.mode === "none",
 }));
 vi.mock("./cli/update-cli/update-command-admit.js", () => ({
-  updateAdmitCommand: async () => {
+  updateAdmitCommand: async (contextPath: string) => {
+    boundary.admissionContext = contextPath;
     boundary.events.push("admission");
     process.exitCode = 2;
   },
@@ -64,6 +66,7 @@ vi.mock("./cli/update-cli/update-command-admit.js", () => ({
 
 const originalArgv = process.argv;
 const originalTitle = process.title;
+const originalExitCode = process.exitCode;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -72,13 +75,16 @@ beforeEach(() => {
   boundary.runtimeSupported = true;
   boundary.writer = undefined;
   boundary.spawnTitle = undefined;
+  boundary.admissionContext = undefined;
   process.title = "doctor-launcher-fixture";
   process.argv = [process.execPath, "/fixture/openclaw/dist/entry.js", "doctor", "--fix"];
 });
 afterEach(() => {
   process.argv = originalArgv;
   process.title = originalTitle;
+  process.exitCode = originalExitCode;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 it.each([true, false])(
@@ -140,19 +146,62 @@ it("names the final executing CLI after startup respawn decisions", async () => 
   expect(process.title).toBe("openclaw");
 });
 
-it("runs internal admission before runtime recovery, cache activation, or respawn", async () => {
-  const previousExitCode = process.exitCode;
+it("runs internal admission with root options before runtime recovery, cache activation, or respawn", async () => {
   boundary.mode = "compile-cache";
   boundary.trace = true;
   boundary.runtimeSupported = false;
-  process.argv = [process.execPath, "/fixture/openclaw/dist/entry.js", "update", "admit"];
-  try {
+  const { isUpdateAdmissionAuthorityEnvKey } = await import("./infra/update-admission-contract.js");
+  for (const key of Object.keys(process.env)) {
+    if (isUpdateAdmissionAuthorityEnvKey(key)) {
+      vi.stubEnv(key, undefined);
+    }
+  }
+  for (const key of ["OPENCLAW_PROFILE", "OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH"]) {
+    vi.stubEnv(key, undefined);
+  }
+  process.argv = [
+    process.execPath,
+    "/fixture/openclaw/dist/entry.js",
+    "--profile",
+    "admission-fixture",
+    "update",
+    "admit",
+    "--context",
+    "/fixture/context.json",
+    "--no-color",
+  ];
+  await import("./entry.js");
+  expect(boundary.events).toEqual(["admission"]);
+  expect(boundary.admissionContext).toBe("/fixture/context.json");
+  expect(process.env.OPENCLAW_PROFILE).toBe("admission-fixture");
+  expect(process.exitCode).toBe(2);
+  const compileCache = await import("./entry.compile-cache.js");
+  expect(compileCache.enableOpenClawCompileCache).not.toHaveBeenCalled();
+});
+
+it.each([[], ["--context"], ["--context", "/fixture/context.json", "extra"]])(
+  "rejects malformed admission argv before runtime recovery or respawn (%j)",
+  async (...args) => {
+    boundary.mode = "compile-cache";
+    boundary.trace = true;
+    boundary.runtimeSupported = false;
+    process.argv = [
+      process.execPath,
+      "/fixture/openclaw/dist/entry.js",
+      "update",
+      "admit",
+      ...args,
+    ];
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+
     await import("./entry.js");
-    expect(boundary.events).toEqual(["admission"]);
+
+    expect(boundary.events).toEqual([]);
     expect(process.exitCode).toBe(2);
+    expect(stdout).not.toHaveBeenCalled();
+    expect(stderr).toHaveBeenCalledOnce();
     const compileCache = await import("./entry.compile-cache.js");
     expect(compileCache.enableOpenClawCompileCache).not.toHaveBeenCalled();
-  } finally {
-    process.exitCode = previousExitCode;
-  }
-});
+  },
+);

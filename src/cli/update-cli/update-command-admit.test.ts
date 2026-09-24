@@ -122,7 +122,6 @@ beforeEach(() => {
     OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
     OPENCLAW_BUNDLED_PLUGINS_DIR: undefined,
     OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
-    OPENCLAW_UPDATE_ADMISSION_CONTEXT: contextPath,
   })) {
     vi.stubEnv(key, value);
   }
@@ -146,7 +145,7 @@ describe("candidate update admission", () => {
     expect(
       program.commands.find((command) => command.name() === "update")!.helpInformation(),
     ).not.toContain("admit");
-    await program.parseAsync(["node", "openclaw", "update", "admit"]);
+    await program.parseAsync(["node", "openclaw", "update", "admit", "--context", contextPath]);
     expect(readVerdict()).toMatchObject({
       verdict: "admit",
       reasons: [],
@@ -168,7 +167,16 @@ describe("candidate update admission", () => {
   it("admits a missing custom plugin path with the candidate warning and preserves its bytes", async () => {
     writeConfig({ plugins: { load: { paths: [path.join(home, "missing-custom-plugin")] } } });
     const before = snapshotFiles();
-    await updateAdmitCommand();
+    await runCli([
+      "node",
+      "openclaw",
+      "--profile",
+      "admission-fixture",
+      "update",
+      "admit",
+      "--context",
+      contextPath,
+    ]);
     expect(readVerdict()).toMatchObject({
       verdict: "admit",
       warnings: expect.arrayContaining([
@@ -183,7 +191,7 @@ describe("candidate update admission", () => {
   it("returns invalid-config with exit 3 without repairing or quoting rejected config values", async () => {
     writeConfig({ gateway: { port: "private-invalid-value" } });
     const before = snapshotFiles();
-    await updateAdmitCommand();
+    await updateAdmitCommand(contextPath);
     expect(readVerdict()).toMatchObject({
       verdict: "refuse",
       reasons: [
@@ -231,7 +239,7 @@ describe("candidate update admission", () => {
     vi.stubEnv("OPENCLAW_VERSION", "1.0.0");
     const before = snapshotFiles();
 
-    await updateAdmitCommand();
+    await updateAdmitCommand(contextPath);
 
     expect(readVerdict()).toMatchObject({ verdict: "admit", reasons: [] });
     expect(process.exitCode).toBe(0);
@@ -252,7 +260,7 @@ describe("candidate update admission", () => {
       .run();
     database.close();
     const before = snapshotFiles();
-    await updateAdmitCommand();
+    await updateAdmitCommand(contextPath);
     expect(readVerdict()).toMatchObject({
       verdict: "refuse",
       reasons: [expect.objectContaining({ code: "database-schema-preflight" })],
@@ -267,7 +275,7 @@ describe("candidate update admission", () => {
       fs.readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
     ).engines.node;
     const before = snapshotFiles();
-    await updateAdmitCommand();
+    await updateAdmitCommand(contextPath);
     expect(readVerdict()).toMatchObject({
       verdict: "admit",
       reasons: [],
@@ -297,7 +305,7 @@ describe("candidate update admission", () => {
         guidance: [],
       },
     ]);
-    await updateAdmitCommand();
+    await updateAdmitCommand(contextPath);
     expect(readVerdict()).toMatchObject({
       verdict: "admit",
       warnings: [{ code: "plugin-availability", message: expect.any(String) }],
@@ -309,15 +317,31 @@ describe("candidate update admission", () => {
   it.each([undefined, "", "relative/context.json"])(
     "requires an absolute private context path (%s) without writing live state",
     async (value) => {
-      vi.stubEnv("OPENCLAW_UPDATE_ADMISSION_CONTEXT", value);
       const before = snapshotFiles();
-      await updateAdmitCommand();
+      await updateAdmitCommand(value);
       expect(process.exitCode).toBe(2);
       expect(stdout).toBe("");
       expect(stderr).toContain("context path is missing or invalid");
       expect(snapshotFiles()).toEqual(before);
     },
   );
+
+  it.each([
+    [],
+    ["--context"],
+    ["--context", "relative/context.json"],
+    ["--context", "/fixture/context.json", "extra"],
+    ["--context", "/fixture/context.json", "--context", "/fixture/other.json"],
+    ["--context", "/fixture/context.json", "--json"],
+  ])("rejects malformed admission argv without generic CLI startup (%j)", async (...args) => {
+    vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
+    const before = snapshotFiles();
+    await runCli(["node", "openclaw", "update", "admit", ...args]);
+    expect(process.exitCode).toBe(2);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("Candidate admission requires");
+    expect(snapshotFiles()).toEqual(before);
+  });
 
   it.each(
     [
@@ -340,7 +364,7 @@ describe("candidate update admission", () => {
       fs.unlinkSync(contextPath);
       vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
       const before = snapshotFiles();
-      await runCli(["node", "openclaw", "update", "admit"]);
+      await runCli(["node", "openclaw", "update", "admit", "--context", contextPath]);
       expect(process.exitCode).toBe(2);
       expect(stdout).toBe("");
       expect(stderr).toContain("authority-free");
@@ -352,7 +376,7 @@ describe("candidate update admission", () => {
     "returns no verdict for invalid context %s",
     async (raw) => {
       fs.writeFileSync(contextPath, raw);
-      await updateAdmitCommand();
+      await updateAdmitCommand(contextPath);
       expect(process.exitCode).toBe(2);
       expect(stdout).toBe("");
       expect(stderr).not.toBe("");

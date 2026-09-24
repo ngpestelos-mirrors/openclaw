@@ -125,7 +125,6 @@ try {
     }
   }
   Object.assign(env, {
-    OPENCLAW_UPDATE_ADMISSION_CONTEXT: contextPath,
     OPENCLAW_DEV_SOURCE_ROOT: packageRoot,
     OPENCLAW_VERSION: manifest.version,
     OPENCLAW_NO_RESPAWN: "1",
@@ -133,7 +132,7 @@ try {
   });
   result = spawnSync(
     process.execPath,
-    [path.join(packageRoot, "dist/index.js"), "update", "admit"],
+    [path.join(packageRoot, "dist/index.js"), "update", "admit", "--context", contextPath],
     {
       cwd: packageRoot,
       env,

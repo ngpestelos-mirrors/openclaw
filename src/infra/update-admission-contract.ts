@@ -2,8 +2,6 @@ import { z } from "zod";
 import { SUPERVISOR_HINT_ENV_VARS } from "./supervisor-markers.js";
 import { UPDATE_ADMISSION_PROTOCOL } from "./update-run-schema.js";
 
-export const UPDATE_ADMISSION_CONTEXT_ENV = "OPENCLAW_UPDATE_ADMISSION_CONTEXT";
-
 const authorityEnvKeys = new Set<string>([
   ...SUPERVISOR_HINT_ENV_VARS,
   "OPENCLAW_CONTROL_PLANE_UPDATE_SENTINEL_META",
@@ -14,10 +12,7 @@ const authorityEnvKeys = new Set<string>([
 /** Admission may observe a live profile, but cannot inherit an update or service continuation. */
 export function isUpdateAdmissionAuthorityEnvKey(key: string): boolean {
   const normalized = key.toUpperCase();
-  return (
-    authorityEnvKeys.has(normalized) ||
-    (normalized.startsWith("OPENCLAW_UPDATE_") && normalized !== UPDATE_ADMISSION_CONTEXT_ENV)
-  );
+  return authorityEnvKeys.has(normalized) || normalized.startsWith("OPENCLAW_UPDATE_");
 }
 
 const text = z.string().min(1);

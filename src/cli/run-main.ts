@@ -948,6 +948,9 @@ export async function runCli(
 ) {
   const runtimeRecoveryEnv = options.runtimeRecoveryEnv ?? { ...process.env };
   const originalArgv = normalizeWindowsArgv(argv);
+  if (await tryRunUpdateAdmissionBeforeStartup(resolveCliArgvInvocation(originalArgv))) {
+    return;
+  }
   const builtInMachineOutput = resolveBuiltInMachineOutput(originalArgv);
   return await withConsoleLogsRoutedToStderrForJson(
     originalArgv,
@@ -1016,9 +1019,6 @@ async function runCliWithPreparedOutputMode(
     applyCliProfileEnv({ profile: earlyProfile.profile });
   }
   const originalInvocation = resolveCliArgvInvocation(originalArgv);
-  if (await tryRunUpdateAdmissionBeforeStartup(originalInvocation)) {
-    return;
-  }
   let consoleCaptureInstalled = false;
   const installConsoleCapture = async () => {
     if (consoleCaptureInstalled) {

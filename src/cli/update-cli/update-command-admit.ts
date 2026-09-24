@@ -14,7 +14,6 @@ import { nodeVersionSatisfiesEngine } from "../../infra/runtime-guard.js";
 import {
   isUpdateAdmissionAuthorityEnvKey,
   parseUpdateAdmissionContext,
-  UPDATE_ADMISSION_CONTEXT_ENV,
   type UpdateAdmissionContext,
 } from "../../infra/update-admission-contract.js";
 import {
@@ -231,12 +230,11 @@ async function inspectUpdateAdmission(
 }
 
 /** Internal protocol receiver; failures return no verdict and cannot inherit update authority. */
-export async function updateAdmitCommand(): Promise<void> {
+export async function updateAdmitCommand(contextPath?: string): Promise<void> {
   try {
     if (Object.keys(process.env).some(isUpdateAdmissionAuthorityEnvKey)) {
       throw new Error("Candidate admission requires an authority-free supervisor invocation.");
     }
-    const contextPath = process.env[UPDATE_ADMISSION_CONTEXT_ENV];
     if (!contextPath || !path.isAbsolute(contextPath)) {
       throw new Error("Candidate admission context path is missing or invalid.");
     }

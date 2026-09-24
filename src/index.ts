@@ -5,11 +5,17 @@ import { existsSync } from "node:fs";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { resolveCliArgvInvocation } from "./cli/argv-invocation.js";
-import { isUpdateAdmissionInvocation } from "./cli/run-main-update-admission.js";
+import { tryRunUpdateAdmissionBeforeStartup } from "./cli/run-main-update-admission.js";
+import { isMainModule } from "./infra/is-main.js";
 
+const isMain = isMainModule({
+  currentFile: fileURLToPath(import.meta.url),
+});
+const handledAdmission =
+  isMain && (await tryRunUpdateAdmissionBeforeStartup(resolveCliArgvInvocation(process.argv)));
 const packageRootUrl = new URL("../", import.meta.url);
 if (
-  !isUpdateAdmissionInvocation(resolveCliArgvInvocation(process.argv)) &&
+  !handledAdmission &&
   !existsSync(new URL("entry.ts", import.meta.url)) &&
   (existsSync(new URL(".openclaw-lifecycle-pending", packageRootUrl)) ||
     existsSync(new URL("dist/openclaw-install-guard", packageRootUrl)))
@@ -34,7 +40,6 @@ const [
   { tryHandleRootVersionFastPath },
   { formatUncaughtError },
   { runFatalErrorHooks },
-  { isMainModule },
   { installUnhandledRejectionHandler, isBenignUncaughtExceptionError, isUncaughtExceptionHandled },
 ] = await Promise.all([
   import("./cli/failure-output.js"),
@@ -45,7 +50,6 @@ const [
   import("./entry.version-fast-path.js"),
   import("./infra/errors.js"),
   import("./infra/fatal-error-hooks.js"),
-  import("./infra/is-main.js"),
   import("./infra/unhandled-rejections.js"),
 ]);
 
@@ -102,13 +106,11 @@ export async function runLegacyCliEntry(
   await runCli(argv, options);
 }
 
-const isMain = isMainModule({
-  currentFile: fileURLToPath(import.meta.url),
-});
-if (isMain) {
+if (isMain && !handledAdmission) {
   installDistEsmResolveFastPath(import.meta.url);
 }
-const handledRootVersion = isMain && tryHandleRootVersionFastPath(process.argv);
+const handledRootVersion =
+  isMain && !handledAdmission && tryHandleRootVersionFastPath(process.argv);
 
 if (!isMain) {
   ({
@@ -135,7 +137,7 @@ if (!isMain) {
   } = await import("./library.js"));
 }
 
-if (isMain && !handledRootVersion) {
+if (isMain && !handledRootVersion && !handledAdmission) {
   const { defaultRuntime, restoreRuntimeTerminalState } = await import("./runtime.js");
 
   // Global error handlers to prevent silent crashes from unhandled rejections/exceptions.

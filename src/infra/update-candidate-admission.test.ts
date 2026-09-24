@@ -94,13 +94,13 @@ beforeEach(async () => {
   spawned = new Promise((resolve) => {
     resolveSpawned = resolve;
   });
-  mocks.spawn.mockImplementation((_command: string, _args: string[], options: SpawnOptions) => {
+  mocks.spawn.mockImplementation((_command: string, args: string[], options: SpawnOptions) => {
     child = new ChildProcess();
     Object.defineProperty(child, "pid", { value: 654 });
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     childEnv = options.env ?? {};
-    contextPath = childEnv.OPENCLAW_UPDATE_ADMISSION_CONTEXT!;
+    contextPath = args[args.indexOf("--context") + 1]!;
     observedContext = JSON.parse(fsSync.readFileSync(contextPath, "utf8"));
     observedModes = {
       file: fsSync.statSync(contextPath).mode & 0o777,
@@ -167,7 +167,6 @@ describe("runUpdateCandidateAdmission", () => {
       OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "1",
       OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
       OPENCLAW_UPDATE_EXECUTOR_GRANT: "inherited-grant",
-      OPENCLAW_UPDATE_ADMISSION_CONTEXT: "inherited-context",
       OPENCLAW_CONTROL_PLANE_UPDATE_SENTINEL_META: "inherited-sentinel",
       OPENCLAW_GATEWAY_SERVICE_PID: "789",
       OPENCLAW_SYSTEMD_UNIT: "live.service",
@@ -195,7 +194,7 @@ describe("runUpdateCandidateAdmission", () => {
     }
     expect(mocks.spawn).toHaveBeenCalledWith(
       "/selected/node",
-      [path.join(root, "dist", "index.js"), "update", "admit"],
+      [path.join(root, "dist", "index.js"), "update", "admit", "--context", contextPath],
       expect.objectContaining({ cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }),
     );
     expect(childEnv).toEqual({
@@ -208,7 +207,6 @@ describe("runUpdateCandidateAdmission", () => {
       OPENCLAW_DEV_SOURCE_ROOT: root,
       OPENCLAW_VERSION: context.target.version,
       OPENCLAW_NO_RESPAWN: "1",
-      OPENCLAW_UPDATE_ADMISSION_CONTEXT: contextPath,
       PROVIDER_API_KEY: "synthetic-provider-key",
     });
     expect(env.OPENCLAW_UPDATE_RUN_ID).toBe("inherited-run");

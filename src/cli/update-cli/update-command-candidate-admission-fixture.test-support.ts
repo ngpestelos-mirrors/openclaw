@@ -146,7 +146,7 @@ export function createCandidateAdmissionFixtures(f: CandidateAdmissionFixture) {
         return originalSpawn(command, args, options);
       }
       const contextPath = expectDefined(
-        options.env?.OPENCLAW_UPDATE_ADMISSION_CONTEXT,
+        args[args.indexOf("--context") + 1],
         "candidate admission context",
       );
       contexts.push(JSON.parse(fsSync.readFileSync(contextPath, "utf8")) as UpdateAdmissionContext);

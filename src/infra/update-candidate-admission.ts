@@ -14,7 +14,6 @@ import { resolvePreferredOpenClawTmpDir } from "./tmp-openclaw-dir.js";
 import {
   isUpdateAdmissionAuthorityEnvKey,
   parseUpdateAdmissionContext,
-  UPDATE_ADMISSION_CONTEXT_ENV,
   type UpdateAdmissionContext,
 } from "./update-admission-contract.js";
 import { launchCanary, terminateCanary, waitBounded } from "./update-candidate-canary-process.js";
@@ -121,11 +120,7 @@ export async function runUpdateCandidateAdmission(params: {
         // Preserve live profile selectors, but never inherit an updater continuation.
         for (const key of Object.keys(env)) {
           const normalized = key.toUpperCase();
-          if (
-            normalized.startsWith("OPENCLAW_UPDATE_") ||
-            isUpdateAdmissionAuthorityEnvKey(key) ||
-            candidateRuntimeEnvKeys.has(normalized)
-          ) {
+          if (isUpdateAdmissionAuthorityEnvKey(key) || candidateRuntimeEnvKeys.has(normalized)) {
             delete env[key];
           }
         }
@@ -136,7 +131,6 @@ export async function runUpdateCandidateAdmission(params: {
           env.OPENCLAW_VERSION = context.target.version;
         }
         env.OPENCLAW_NO_RESPAWN = "1";
-        env[UPDATE_ADMISSION_CONTEXT_ENV] = contextPath;
         const budget = resolveTimerTimeoutMs(
           params.timeoutMs ?? context.request.timeoutMs,
           120_000,
@@ -145,7 +139,7 @@ export async function runUpdateCandidateAdmission(params: {
         const cleanupBudget = Math.min(2_000, Math.floor(budget / 10));
         const running = launchCanary({
           entry,
-          args: ["update", "admit"],
+          args: ["update", "admit", "--context", contextPath],
           root: params.candidateRoot,
           env,
           nodeRunner: params.nodeRunner,

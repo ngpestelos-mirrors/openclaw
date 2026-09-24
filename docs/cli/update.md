@@ -202,8 +202,8 @@ uses installed checks and does not stage a package or invoke candidate admission
 Git/source updates keep their existing flow.
 
 `openclaw update admit` is an internal command, hidden from help. The supervisor
-sets `OPENCLAW_UPDATE_ADMISSION_CONTEXT` to a private context file; this path is
-the sole signal for the admission child mode. The command emits
+passes `--context <absolute-path>` to a private mode-0600 context file; this command
+path and required argument select admission child mode. The command emits
 one JSON document with `protocol`, `verdict`, `reasons`, `warnings`, and `facts`
 containing candidate/installed versions, the candidate's `nodeEngines` requirement
 when declared, and named check results. It exits `0`
@@ -219,6 +219,9 @@ The ledger stores this metadata in its existing origin JSON;
 `run.origin.candidateAdmission` retains the bounded, redacted verdict, including
 all recorded reasons and warnings. Older history records can omit admission
 metadata.
+
+Admission metadata is diagnostic and can be omitted from history when recovery
+receipts use the full history budget.
 
 This handoff works only when the installed updater already supports it. An older
 updater that refuses before staging cannot use a newer candidate's judgment;

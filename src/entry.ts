@@ -131,10 +131,6 @@ if (
 ) {
   // Imported as a dependency — skip all entry-point side effects.
 } else if (isUpdateAdmissionInvocation(resolveCliArgvInvocation(process.argv))) {
-  const profile = parseCliProfileArgs(process.argv);
-  if (profile.ok && profile.profile) {
-    applyCliProfileEnv({ profile: profile.profile });
-  }
   await tryRunUpdateAdmissionBeforeStartup(resolveCliArgvInvocation(process.argv));
 } else {
   const entryFile = fileURLToPath(import.meta.url);

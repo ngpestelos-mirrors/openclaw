@@ -27,6 +27,7 @@ vi.mock("./infra/package-lifecycle.js", () => ({
 }));
 
 const originalArgv = process.argv;
+const originalExitCode = process.exitCode;
 
 describe("legacy package executable entrypoint", () => {
   beforeEach(() => {
@@ -41,6 +42,7 @@ describe("legacy package executable entrypoint", () => {
 
   afterEach(() => {
     process.argv = originalArgv;
+    process.exitCode = originalExitCode;
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
@@ -90,12 +92,18 @@ describe("legacy package executable entrypoint", () => {
     expect(tryHandleRootVersionFastPath).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, "relative/context.json", "/private/fixture/admission.json"])(
-    "leaves pending lifecycle untouched before internal context validation (%s)",
-    async (contextPath) => {
-      process.argv = ["node", "dist/index.js", "update", "admit"];
-      vi.stubEnv("OPENCLAW_UPDATE_ADMISSION_CONTEXT", contextPath);
+  it.each([
+    [],
+    ["--context", "relative/context.json"],
+    ["--context", "/private/fixture/admission.json"],
+    ["--context", "/private/fixture/admission.json", "extra"],
+  ])(
+    "leaves pending lifecycle untouched before internal context validation (%j)",
+    async (...args) => {
+      process.argv = ["node", "dist/index.js", "update", "admit", ...args];
       vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", "inherited-authority");
+      const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
       vi.mocked(existsSync).mockImplementation((value) =>
         String(value).endsWith(".openclaw-lifecycle-pending"),
       );
@@ -104,14 +112,16 @@ describe("legacy package executable entrypoint", () => {
       await import("./index.js?admission-before-lifecycle" as "./index.js");
 
       expect(completePendingPackageLifecycle).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(2);
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledOnce();
       const exitFinalization = await import("./cli/one-shot-exit.js");
-      expect(exitFinalization.runCliWithExitFinalization).toHaveBeenCalledOnce();
+      expect(exitFinalization.runCliWithExitFinalization).not.toHaveBeenCalled();
     },
   );
 
   it.each([
     ["update", "admit", "--help"],
-    ["update", "admit", "extra"],
     ["update", "status"],
   ])("retains lifecycle completion for ordinary argv %j", async (...args) => {
     process.argv = ["node", "dist/index.js", ...args];

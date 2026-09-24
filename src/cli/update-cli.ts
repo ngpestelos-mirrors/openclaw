@@ -225,9 +225,10 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/update", "docs.openclaw.ai/cli/up
 
   setCommandJsonMode(update.command("admit", { hidden: true }), "output", () => true)
     .description("Internal read-only candidate admission protocol")
-    .action(async () => {
+    .requiredOption("--context <path>", "Absolute path to the private admission context")
+    .action(async (opts: { context: string }) => {
       const { updateAdmitCommand } = await import("./update-cli/update-command-admit.js");
-      await updateAdmitCommand();
+      await updateAdmitCommand(opts.context);
     });
 
   update
