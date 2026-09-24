@@ -28,7 +28,7 @@ import { buildAssistantMediaContentDisposition } from "./assistant-media-content
 import {
   AUTH_RATE_LIMIT_SCOPE_DEVICE_TOKEN,
   AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET,
-  createAuthRateLimiter,
+  createGatewayAuthRateLimiter,
   type AuthRateLimiter,
 } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
@@ -446,19 +446,15 @@ describe("handleControlUiHttpRequest", () => {
     const originalRead = fileHandlePrototype.read;
     await probe.close();
     let constrained = false;
-    return vi.spyOn(fileHandlePrototype, "read").mockImplementation(async function (
-      this: unknown,
-      target,
-      offset,
-      length,
-      position,
-    ) {
-      if (!constrained && position === 0 && length > maxBytes) {
-        constrained = true;
-        return await originalRead.call(this, target, offset, maxBytes, position);
-      }
-      return await originalRead.call(this, target, offset, length, position);
-    });
+    return vi
+      .spyOn(fileHandlePrototype, "read")
+      .mockImplementation(async function (this: unknown, target, offset, length, position) {
+        if (!constrained && position === 0 && length > maxBytes) {
+          constrained = true;
+          return await originalRead.call(this, target, offset, maxBytes, position);
+        }
+        return await originalRead.call(this, target, offset, length, position);
+      });
   }
 
   async function withBasePathRootFixture<T>(params: {
@@ -2408,7 +2404,7 @@ describe("handleControlUiHttpRequest", () => {
   });
 
   it("rejects unattributable proxy ingress before bootstrap device-token fallback", async () => {
-    const rateLimiter = createAuthRateLimiter({
+    const rateLimiter = createGatewayAuthRateLimiter({
       maxAttempts: 2,
       windowMs: 60_000,
       lockoutMs: 60_000,

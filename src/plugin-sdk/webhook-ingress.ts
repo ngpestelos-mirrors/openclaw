@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { GatewayAuthRateLimitConfig } from "../config/types.gateway.js";
 import {
-  createAuthRateLimiter as createGatewayAuthRateLimiter,
+  createGatewayAuthRateLimiter,
   type AuthRateLimiter,
   type RateLimitConfig,
 } from "../gateway/auth-rate-limit.js";
