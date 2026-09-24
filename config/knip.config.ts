@@ -24,6 +24,8 @@ const repositoryScriptEntries = [
   "src/node-host/mac-worker-entry.ts!",
   // CI imports this selector from its trusted harness inside an inline Node script.
   ".github/actions/git-owner/test-prerequisites.mjs!",
+  // The compiler below exposes this workflow's inline and generated-config imports.
+  ".github/workflows/plugin-prerelease.yml!",
   // mobile-release-authority invokes this helper from composite-action YAML.
   ".github/actions/mobile-release-authority/authority.mjs!",
   // setup-node-env invokes this helper from composite-action YAML.
@@ -127,6 +129,8 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs!",
   "scripts/e2e/lib/upgrade-survivor/published-plugin-registry.mjs!",
   "scripts/e2e/lib/upgrade-survivor/recovery-cleanup.mjs!",
+  // The compiler below exposes the runner's inline Node imports.
+  "scripts/e2e/lib/upgrade-survivor/run.sh!",
   "scripts/e2e/lib/upgrade-survivor/schema-expectation.mjs!",
   // update-restart-auth.sh installs this manager/launch adapter into the fixture bin directory.
   "scripts/e2e/lib/upgrade-survivor/systemd-fixture.mjs!",
@@ -147,8 +151,9 @@ const repositoryScriptEntries = [
   "scripts/ios-release-plan.ts!",
   "scripts/ios-release-signing.mts!",
   "scripts/lib/docker-plugin-selection.mjs!",
-  // The frozen compatibility shell invokes this CLI and imports it from inline bundle resolution.
+  // The frozen compatibility shell invokes the source CLI and imports trusted tooling.
   "scripts/lib/frozen-target-source.mjs!",
+  "scripts/lib/frozen-target-compat.sh!",
   // CI loads the native Vitest reporter through its CLI path.
   "scripts/lib/vitest-resource-reporter.mts!",
   // Invoked by scripts/lib/live-docker-stage.sh during container validation.
@@ -179,6 +184,8 @@ const repositoryScriptEntries = [
   "scripts/pr-lib/ci-dispatch.mjs!",
   // merge.sh invokes this native review-authority parser by path.
   "scripts/pr-lib/clawsweeper-review-gate.mjs!",
+  // review.sh invokes the corrected-candidate review validator by path.
+  "scripts/pr-lib/correction-review.mjs!",
   "scripts/pr-lib/gh-api-preflight.mjs!",
   "scripts/pr-lib/materialize-dependencies.mjs!",
   "scripts/pr-lib/merge-body.mjs!",
@@ -198,9 +205,13 @@ const repositoryScriptEntries = [
   "scripts/print-live-docker-plugin-selection.mjs!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
+  // Docker/release workflows launch the warning relay from copied harness roots.
+  "scripts/relay-build-limit-warnings.mts",
   "scripts/resolve-frozen-codex-live-suite.mjs!",
   // Changed-file checks invoke this targeted UI Stylelint entrypoint by path.
   "scripts/run-stylelint.mts!",
+  // lint-swift.sh launches the SwiftLint policy wrapper by absolute path.
+  "scripts/run-swiftlint.mts",
   // Path-spawned test roots are development entries; `!` would audit dev tools as production.
   "scripts/run-vitest-child.mts",
   // The isolated Vitest adapter executes this entry by path inside its container.
@@ -241,6 +252,64 @@ function listScriptShimEntries(dir = "scripts"): string[] {
       ? [entryPath, implementationPath].map((filePath) => `${filePath.replaceAll("\\", "/")}!`)
       : [];
   });
+}
+
+function compileFrvWorkflowConsumers(source: string, filePath: string): string {
+  if (path.resolve(filePath) !== path.resolve(".github/workflows/plugin-prerelease.yml")) {
+    return "";
+  }
+  const names = new Set(
+    [
+      ...source.matchAll(
+        /\b(?:import|const)\s*\{([^}]+)\}\s*(?:from\s*|=\s*await\s+import\()["']\.\/\.frv-tooling\/scripts\/frv-test-exclusions\.mjs["']/gu,
+      ),
+    ].flatMap((match) => match[1]?.split(",").map((name) => name.trim()) ?? []),
+  );
+  // The run CLI writes a Vitest config importing its own URL. Model that emitted
+  // import only while the workflow invokes the generator, and derive its names
+  // from the real template so removing a consumer restores the unused finding.
+  if (/\.frv-tooling\/scripts\/frv-test-exclusions\.mjs["']?,?\s+["']?run["']?/u.test(source)) {
+    const generator = fs.readFileSync("scripts/frv-test-exclusions.mjs", "utf8");
+    for (const match of generator.matchAll(
+      /`import\s*\{([^}]+)\}\s*from\s*\$\{JSON\.stringify\(import\.meta\.url\)\};`/gu,
+    )) {
+      for (const name of match[1]?.split(",") ?? []) {
+        names.add(name.trim());
+      }
+    }
+  }
+  return names.size
+    ? `import { ${[...names].join(", ")} } from "../../scripts/frv-test-exclusions.mjs";`
+    : "";
+}
+
+function compileShellConsumers(source: string, filePath: string): string {
+  if (path.resolve(filePath) === path.resolve("scripts/lib/frozen-target-compat.sh")) {
+    // These URLs resolve beside this shell file; keep the export edges tied to its actual imports.
+    return [
+      ...source.matchAll(
+        /\bconst\s*\{([^}]+)\}\s*=\s*await\s+import\(new URL\("(\.\/[^"\r\n]+\.mjs)", pathToFileURL\(trustedHelper\)\)\)/gu,
+      ),
+    ]
+      .map(([, names, specifier]) => `import {${names}} from ${JSON.stringify(specifier)};`)
+      .join("\n");
+  }
+  if (path.resolve(filePath) !== path.resolve("scripts/e2e/lib/upgrade-survivor/run.sh")) {
+    return "";
+  }
+  const imports = source.match(
+    /^[ \t]*import\s*\{[^}]+\}\s*from\s*["']\.\/scripts\/[^"'\r\n]+["'];?/gmu,
+  );
+  return (imports ?? [])
+    .map((declaration) =>
+      declaration.replace(/["'](\.\/scripts\/[^"']+)["']/u, (_match, specifier: string) => {
+        const relative = path
+          .relative(path.dirname(filePath), path.resolve(specifier))
+          .replaceAll("\\", "/");
+        return JSON.stringify(relative.startsWith(".") ? relative : `./${relative}`);
+      }),
+    )
+    .join("\n");
 }
 
 const rootEntries = [
@@ -302,6 +371,9 @@ const rootEntries = [
   "scripts/e2e/*.{js,mjs,ts}!",
   "scripts/e2e/lib/**/{assertions,probe,mock-server}.{js,mjs,ts}!",
   "src/agents/prepared-model-catalog.worker.ts!",
+  // Documented core-only Decision Labs foundation entry. No automatic consumers
+  // ship with the gate; remove this root when the first consumer imports it.
+  "src/agents/decision-assistance.ts!",
   // Split runtime loaded through a path assembled in subagent-registry.ts.
   "src/agents/subagents/registry/subagent-registry.runtime.ts!",
   // Loaded lazily by the sweeper only when a receipt-bearing or interrupted row is found.
@@ -310,6 +382,8 @@ const rootEntries = [
   "src/tasks/task-registry-control.runtime.ts!",
   // Reply dispatch and Gateway startup consume this namespace through loadGetReplyFromConfigRuntime.
   "src/auto-reply/reply/get-reply-from-config.runtime.ts!",
+  // Command attempts consume this namespace through runtime-loaders.ts's Promise.all preload.
+  "src/agents/command/attempt-execution.runtime.ts!",
   // Human plugin listing lazily loads its formatter to keep JSON startup lean.
   "src/cli/plugins-list-format.ts!",
   "src/infra/warning-filter.ts!",
@@ -527,6 +601,7 @@ const ignoredTestSupportFiles = [
 ] as const;
 
 const config = {
+  compilers: { yml: compileFrvWorkflowConsumers, sh: compileShellConsumers },
   ignoreFiles: [
     // Production mode excludes dev/maintainer executables. The full-tree
     // companion config removes this exclusion and audits them as script roots.
@@ -608,7 +683,7 @@ const config = {
         ...rootBundledPluginRuntimeDependencies,
       ],
       // Platform tools, installed CLIs, and shell builtins used by scripts and boundary tests.
-      ignoreBinaries: ["mint", "ngrok", "open", "openclaw", "sleep", "xcrun"],
+      ignoreBinaries: ["mint", "ngrok", "open", "openclaw", "sleep", "swiftlint", "xcrun"],
       // The stylelint config lives under config/, not a root default path.
       stylelint: { config: ["config/stylelint.config.mjs"] },
       project: [
@@ -846,6 +921,8 @@ const config = {
       "chrome-extension/options.js!",
       "chrome-extension/popup.js!",
       "scripts/copy-chrome-extension.mjs!",
+      // The opt-in browser benchmark is documented and invoked directly by path.
+      "scripts/bench-lightweight.ts!",
     ]),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/canvas`]: bundledPluginWorkspace([
       // Package build/copy scripts are invoked from package.json.
@@ -901,7 +978,7 @@ const config = {
     [`${BUNDLED_PLUGIN_ROOT_DIR}/memory-core`]: bundledPluginWorkspace([
       // The subprocess boundary tests spawn these fixtures by computed URL.
       "src/memory/fixtures/manager-search-knn-child.fixture.mjs!",
-      "src/memory/fixtures/manager-search-knn-parent.fixture.mjs!",
+      "src/memory/fixtures/manager-search-knn-parent.test-support.ts!",
     ]),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/memory-lancedb`]: {
       ...bundledPluginWorkspace(),

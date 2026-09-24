@@ -1,4 +1,5 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
+import { selectAcpSessionRowForRead } from "../acp/runtime/session-meta-keys.js";
 import {
   countMcpOAuthPrincipalsInDatabase,
   listMcpOAuthStoreKeysInDatabase,
@@ -14,6 +15,7 @@ import {
 } from "../agents/sandbox/registry.kernel.js";
 import {
   loadSubagentRunsByRunIdsFromSqlite,
+  loadSubagentRunsForChildSessionFromSqlite,
   loadSubagentRunsForSessionFromSqlite,
   loadSubagentSessionListRunsFromSqlite,
 } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
@@ -21,7 +23,6 @@ import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/work
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
-import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import {
   readGitHubPublicationRequest,
   readKnownGitHubPublicationPullRequestUrlsInDatabase,
@@ -60,6 +61,10 @@ import {
   selectSkillLibraryRevisionMetadataBatch,
   selectSkillLibraryRevisionManifestsBatch,
 } from "../skills/library/selection-read.kernel.js";
+import {
+  readTaskRegistryMutationSnapshotInDatabase,
+  readTaskRegistrySnapshot,
+} from "../tasks/task-registry.store.kernel.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
 import { readGitHubPublicationSessionLifecycle } from "./github-publication-session-lifecycles.js";
 import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
@@ -71,9 +76,11 @@ import {
   withOpenClawStateReadOnlyLocation,
 } from "./openclaw-state-db-read-connection.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
+import { readStateRegistryCommand } from "./openclaw-state-read-registry.js";
 import type { OpenClawStateReadReply } from "./openclaw-state-read.types.js";
 import { isReadRequest } from "./openclaw-state-read.validation.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
+import { findSessionRepositoryWorkspaceInDatabase } from "./session-repository-workspaces.js";
 import {
   listUserChannelIdentitiesInDatabase,
   resolveUserChannelIdentityInDatabase,
@@ -174,6 +181,16 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "acpSessions.metadata") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    rows: command.entries.map(
+                      (entry) => selectAcpSessionRowForRead(db, entry) ?? null,
+                    ),
+                  };
+                }
                 if (command.type === "subagents.runs") {
                   const rows =
                     command.scope.kind === "session"
@@ -268,6 +285,27 @@ serveOwnedWorkerTasks(
                   command.type === "devicePairing.bootstrapContext"
                 ) {
                   return executeDevicePairingRead(db, input.databasePath, command);
+                }
+                if (command.type === "tasks.mutationSnapshot") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    snapshot:
+                      command.input === undefined
+                        ? readTaskRegistrySnapshot({ db, path: input.databasePath })
+                        : readTaskRegistryMutationSnapshotInDatabase(db, command.input),
+                  };
+                }
+                if (command.type === "subagents.forChildSession") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    runs: loadSubagentRunsForChildSessionFromSqlite(command.childSessionKey, {
+                      db,
+                    }),
+                  };
                 }
                 if (command.type === "pluginBlob.lookup") {
                   return {
@@ -552,6 +590,19 @@ serveOwnedWorkerTasks(
                     ),
                   };
                 }
+                if (command.type === "sessionRepositoryWorkspaces.find") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    workspaces: runSqliteDeferredTransactionSync(db, () =>
+                      command.owners.flatMap((owner) => {
+                        const workspace = findSessionRepositoryWorkspaceInDatabase(db, owner);
+                        return workspace ? [workspace] : [];
+                      }),
+                    ),
+                  };
+                }
                 if (command.type === "sandboxRegistry.list") {
                   return {
                     ok: true,
@@ -589,7 +640,7 @@ serveOwnedWorkerTasks(
                     ok: true,
                     type: command.type,
                     sourceAdmitted,
-                    placements: readWorkerPlacementChangeSnapshotInDatabase(db),
+                    placements: readWorkerPlacementChangeSnapshotInDatabase(db, command.profileIds),
                   };
                 }
                 if (command.type === "workers.placementProjection") {
@@ -604,19 +655,7 @@ serveOwnedWorkerTasks(
                     ),
                   };
                 }
-                return command.type === "fleet.list"
-                  ? {
-                      ok: true,
-                      type: "fleet.list",
-                      sourceAdmitted,
-                      cells: listFleetCellsInDatabase(db),
-                    }
-                  : {
-                      ok: true,
-                      type: "fleet.get",
-                      sourceAdmitted,
-                      cell: getFleetCellInDatabase(db, command.tenantId),
-                    };
+                return readStateRegistryCommand(db, command);
               },
               input.databasePath,
               input.location,

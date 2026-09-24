@@ -10,6 +10,8 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import { sqliteMaintenanceEntrypoints } from "./sqlite-maintenance-runtime.test-support.js";
 import {
   createUpdateRun,
   finishUpdateRun,
@@ -208,23 +210,84 @@ describe("update run ledger", () => {
     expect(Buffer.byteLength(JSON.stringify(retained.origin))).toBeLessThanOrEqual(16 * 1024);
   });
 
-  it("rejects irreducible admission metadata instead of looping during origin compaction", () => {
+  it("evicts irreducible admission diagnostics without refusing the ledger write", () => {
     const options = isolatedOptions();
     const checks = Array.from({ length: 32 }, (_, index) => ({
       name: `check-${index}-${"x".repeat(1_000)}`,
       status: "ok" as const,
     }));
-    expect(() =>
-      createUpdateRun(
-        {
-          trigger: "cli",
-          origin: {
-            admission: { owner: "candidate", protocol: 1, candidateVersion: "2026.9.5", checks },
+    const run = createUpdateRun(
+      {
+        trigger: "cli",
+        origin: {
+          ...admissionRouting,
+          admission: { owner: "candidate", protocol: 1, candidateVersion: "2026.9.5", checks },
+        },
+      },
+      options,
+    );
+    const retained = getUpdateRun(run.runId, options)!;
+    expect(retained.origin).toEqual({});
+    expect(retained.admission).toBeUndefined();
+  });
+
+  it("keeps full-capacity recovery receipts exact while evicting admission and routing", () => {
+    const options = isolatedOptions();
+    const receipts = {
+      driver: { host: "fixture", pid: 42, startIdentity: "2" },
+      previousDrivers: [{ host: "fixture", pid: 41, startIdentity: "1" }],
+      updateRecoveryCapture: {
+        manifestSha256: "a".repeat(64),
+        configWrites: [
+          {
+            path: `${options.env.OPENCLAW_STATE_DIR}/private-config.json`,
+            beforeHash: "b".repeat(64),
+            afterHash: "c".repeat(64),
+            contiguous: false,
+          },
+        ],
+        warnings: [
+          {
+            kind: "undeclared-migration-resources" as const,
+            pluginId: "legacy",
+            message: "Private state is undeclared",
+          },
+        ],
+        status: "restore-failed" as const,
+      },
+    };
+    receipts.updateRecoveryCapture.warnings[0]!.message += "w".repeat(
+      16 * 1024 - Buffer.byteLength(JSON.stringify(receipts)),
+    );
+    const checks = [{ name: "config", status: "ok" as const }];
+    const run = createUpdateRun(
+      {
+        trigger: "cli",
+        origin: {
+          ...receipts,
+          ...admissionRouting,
+          admission: { owner: "candidate", protocol: 1, candidateVersion: "2026.9.5", checks },
+          candidateAdmission: {
+            protocol: 1,
+            verdict: "admit",
+            reasons: [],
+            warnings: [],
+            facts: { candidateVersion: "2026.9.5", installedVersion: "2026.9.4", checks },
           },
         },
-        options,
-      ),
-    ).toThrow("Update run retained metadata exceeds its byte limit");
+      },
+      options,
+    );
+    const database = openOpenClawStateDatabase(options);
+    const row = database.db
+      .prepare("SELECT origin_json FROM update_runs WHERE run_id = ?")
+      .get(run.runId) as { origin_json: string };
+    expect(Buffer.byteLength(row.origin_json)).toBe(16 * 1024);
+    expect(row.origin_json).toBe(JSON.stringify(receipts));
+    const retained = getUpdateRun(run.runId, options)!;
+    expect(retained.origin).toStrictEqual(receipts);
+    expect(retained.admission).toBeUndefined();
+    expect(listUpdateRuns({}, options)[0]?.admission).toBeUndefined();
   });
 
   it.each(["selected", "refused", "unavailable"] as const)(
@@ -628,6 +691,8 @@ describe("update run ledger", () => {
         "previous generation restoration",
         "finalize:doctor",
         "finalize:future-phase",
+        // Candidate Doctor's predecessor-stop receipt: identity lives in the key.
+        "finalize:predecessor-stop:1758600000000:1000:631:0123456789abcdef",
         "post-update verification",
       ];
       for (const step of [...UPDATE_RUN_PHASES, ...notices]) {
@@ -859,16 +924,13 @@ describe("update run ledger", () => {
     const run = createUpdateRun({ trigger: "cli" }, options);
     const database = openOpenClawStateDatabase(options);
     expect(database.db.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
+    const writerUrl = resolveRuntimeWorkerUrl(sqliteMaintenanceEntrypoints.updateLedger);
     const children = ["cli", "gateway"].map((role) => {
-      const child = fork(
-        new URL("./update-run-ledger.process.test-support.ts", import.meta.url),
-        [run.runId, role],
-        {
-          execArgv: ["--import", "tsx"],
-          env: { ...process.env, ...options.env },
-          stdio: ["ignore", "pipe", "pipe", "ipc"],
-        },
-      );
+      const child = fork(writerUrl, [run.runId, role], {
+        execArgv: resolveRuntimeWorkerArgv(writerUrl).slice(0, -1),
+        env: { ...process.env, ...options.env },
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      });
       let output = "";
       child.stdout?.on("data", (chunk) => {
         output += chunk;

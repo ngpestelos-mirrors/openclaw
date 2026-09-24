@@ -120,45 +120,52 @@ function boundedOriginJson(origin: UpdateRunRecord["origin"]): string {
   const {
     driver,
     previousDrivers,
+    updateRecoveryCapture,
     requester,
     sessionKey,
     deliveryContext,
     campaignId,
     ...admissionDiagnostics
   } = origin;
+  // Operational receipts are not expendable diagnostics. Keep them exact inside
+  // the existing database byte budget; oversized sets fail before replacing a row.
+  const retained = JSON.stringify({ driver, previousDrivers, updateRecoveryCapture });
+  if (Buffer.byteLength(retained) > JSON_BYTES) {
+    throw new Error("Update run recovery receipts exceed the origin byte limit");
+  }
   const routing = { requester, sessionKey, deliveryContext, campaignId };
   const hasAdmission = origin.admission !== undefined || origin.candidateAdmission !== undefined;
-  // Candidate diagnostics cannot shorten the continuation's requester or destination.
-  // Keep the legacy codec behavior for records without an admission receipt.
-  const identities = JSON.stringify({
-    driver,
-    previousDrivers,
-    ...(hasAdmission ? routing : {}),
-  });
+  // Admission diagnostics cannot shorten routing; both yield to recovery receipts.
+  const identities = hasAdmission
+    ? JSON.stringify({ driver, previousDrivers, updateRecoveryCapture, ...routing })
+    : retained;
   const diagnostics = hasAdmission ? admissionDiagnostics : { ...admissionDiagnostics, ...routing };
-  const diagnosticBudget = JSON_BYTES - Buffer.byteLength(identities);
-  // Warning receipts are disposable diagnostics; refusal and check identities are not.
+  // Merging removes the diagnostic braces and needs a comma only when identities exist.
+  const diagnosticBudget =
+    JSON_BYTES - Buffer.byteLength(identities) + 2 - (identities === "{}" ? 0 : 1);
   if (
     diagnostics.candidateAdmission?.warnings.length &&
     Buffer.byteLength(JSON.stringify(diagnostics)) > diagnosticBudget
   ) {
     diagnostics.candidateAdmission = { ...diagnostics.candidateAdmission, warnings: [] };
   }
-  const boundedDiagnostics = boundedJson(
-    diagnostics,
-    diagnosticBudget,
-    // Preserve decision identity while shortening only its explanatory prose.
-    new Set([
-      "owner",
-      "verdict",
-      "status",
-      "code",
-      "name",
-      "candidateVersion",
-      "installedVersion",
-      "fallbackReason",
-    ]),
+  const preservedTextFields = new Set([
+    "owner",
+    "verdict",
+    "status",
+    "code",
+    "name",
+    "candidateVersion",
+    "installedVersion",
+    "fallbackReason",
+  ]);
+  const minimumDiagnostics = JSON.stringify(
+    mapJsonText(diagnostics, (text, key) => (key && preservedTextFields.has(key) ? text : "")),
   );
+  if (Buffer.byteLength(minimumDiagnostics) > diagnosticBudget) {
+    return retained;
+  }
+  const boundedDiagnostics = boundedJson(diagnostics, diagnosticBudget, preservedTextFields);
   return `{${[identities.slice(1, -1), boundedDiagnostics.slice(1, -1)].filter(Boolean).join(",")}}`;
 }
 
@@ -197,8 +204,8 @@ export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOption
         ]
       : [];
   });
-  // Process identities are exact observations, never redacted diagnostic strings.
-  const { driver, previousDrivers, ...originDiagnostics } = input.origin;
+  // Process identities and recovery receipts are operational facts, not diagnostics.
+  const { driver, previousDrivers, updateRecoveryCapture, ...originDiagnostics } = input.origin;
   const record = UpdateRunRecordSchema.parse(
     mapJsonText(
       {
@@ -224,6 +231,7 @@ export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOption
     ...record.origin,
     driver,
     previousDrivers,
+    updateRecoveryCapture,
   });
   return {
     run_id: record.runId,

@@ -2,8 +2,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { reportLimitViolations } from "./lib/check-limits.mts";
 import {
-  enforceRatchetScalar,
   loadRatchetReference,
   loadRatchetSnapshot,
   loadRatchetSources,
@@ -110,30 +110,7 @@ function readBaseBudget(root: string, ref: string) {
   if (mergeBase.status !== 0 || !baselineRef) {
     throw new Error(`Could not resolve env-var count merge base for: ${ref}`);
   }
-  const budget = loadRatchetReference(root, baselineRef, BUDGET_PATH, parseBudget);
-  return budget === null ? null : { ref: baselineRef, budget };
-}
-
-function addsOnlyAdmissionContext(root: string, ref: string, names: readonly string[]) {
-  const files = execFileSync(
-    "git",
-    ["ls-tree", "-r", "--name-only", "-z", ref, "--", ...SOURCE_ROOTS],
-    { cwd: root, maxBuffer: 256 * 1024 * 1024 },
-  )
-    .toString("utf8")
-    .split("\0")
-    .filter(isCountedSourcePath);
-  const baseNames = new Set<string>();
-  for (const source of loadRatchetSources(root, files, ref).values()) {
-    addEnvVarNames(source, baseNames);
-  }
-  const added = names.filter((name) => !baseNames.has(name));
-  return (
-    baseNames.size === 491 &&
-    names.length === 492 &&
-    added.length === 1 &&
-    added[0] === "OPENCLAW_UPDATE_ADMISSION_CONTEXT"
-  );
+  return loadRatchetReference(root, baselineRef, BUDGET_PATH, parseBudget);
 }
 
 export function main(
@@ -151,27 +128,41 @@ export function main(
     );
   }
   const budget = loadRatchetSnapshot(root, BUDGET_PATH, staged, parseBudget);
-  const base = readBaseBudget(root, baseRef);
-  let names: string[] | undefined;
-  if (base !== null) {
-    let allowedBudget = base.budget;
-    // One approved cross-process context path; it grants no later budget headroom.
-    if (base.budget === 491 && budget === 492) {
-      names = collectEnvVarNames(root, { staged, preparedNames });
-      if (addsOnlyAdmissionContext(root, base.ref, names)) {
-        allowedBudget = budget;
-      }
-    }
-    enforceRatchetScalar(budget, allowedBudget, {
-      increased: `OPENCLAW_* budget grew from ${base.budget} to ${budget}`,
-    });
+  const baseBudget = readBaseBudget(root, baseRef);
+  const growth =
+    baseBudget !== null && budget > baseBudget
+      ? [
+          {
+            file: BUDGET_PATH,
+            title: "Environment variable count budget",
+            message: `OPENCLAW_* budget grew from ${baseBudget} to ${budget}`,
+          },
+        ]
+      : [];
+  if (reportLimitViolations(growth)) {
+    throw new Error(growth[0]!.message);
   }
-  names ??= collectEnvVarNames(root, { staged, preparedNames });
-  enforceRatchetScalar(names.length, budget, {
-    decreased: `OPENCLAW_* count ${names.length} is below budget ${budget}; update ${BUDGET_PATH}`,
-    increased: `OPENCLAW_* count ${names.length} exceeds budget ${budget}; update ${BUDGET_PATH}`,
-  });
-  reportRatchetSuccess(`OPENCLAW_* count ${names.length}/${budget}`);
+  const names = collectEnvVarNames(root, { staged, preparedNames });
+  const messages =
+    names.length === budget
+      ? []
+      : [
+          `OPENCLAW_* count ${names.length} ${names.length < budget ? "is below" : "exceeds"} budget ${budget}; update ${BUDGET_PATH}`,
+        ];
+  if (
+    reportLimitViolations(
+      messages.map((message) => ({
+        file: BUDGET_PATH,
+        title: "Environment variable count budget",
+        message,
+      })),
+    )
+  ) {
+    throw new Error(messages.join("\n"));
+  }
+  if (messages.length === 0 && growth.length === 0) {
+    reportRatchetSuccess(`OPENCLAW_* count ${names.length}/${budget}`);
+  }
   return names.length;
 }
 

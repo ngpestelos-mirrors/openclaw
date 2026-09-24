@@ -1,5 +1,7 @@
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { formatConfigIssueLines } from "../../config/issue-format.js";
+import { withGatewayServiceUpdateAuthority } from "../../daemon/service-update-authority.js";
+import { tryProcessCwd } from "../../infra/safe-cwd.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import type { RetainUpdateRuntime } from "../../infra/update-retained-runtime.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
@@ -9,8 +11,8 @@ import { VERSION } from "../../version.js";
 import { createUpdateProgress } from "./progress.js";
 import {
   confirmUpdateDowngrade,
-  tryResolveInvocationCwd,
   UpdatePreMutationError,
+  resolveGitInstallDir,
   type UpdateCommandOptions,
 } from "./shared.js";
 import { withUpdateCandidateAdmission } from "./update-command-candidate-admission.js";
@@ -23,6 +25,7 @@ import type { InitializedUpdate } from "./update-command-initialization.js";
 import { admitUpdateRequesterContinuation } from "./update-command-managed-context.js";
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
 import type { StagedPackageInstallUpdate } from "./update-command-package.js";
+import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
 import {
   admitUpdateCommandRun,
@@ -59,7 +62,7 @@ async function updateCommandWithRuntime(
   inputOpts: UpdateCommandOptions,
   retainRuntime: RetainUpdateRuntime,
 ): Promise<void> {
-  const invocationCwd = tryResolveInvocationCwd();
+  const invocationCwd = tryProcessCwd();
   const recoveryState: UpdateCommandRecoveryState = {
     triageTarget: { env: resolveServiceRefreshEnv(process.env, invocationCwd) },
   };
@@ -167,19 +170,45 @@ async function runAdmittedUpdate(
         resolveUpdateCommandAdmissionRoot(prepared),
         initialization?.target.managedServiceRoot ?? prepared.servicePlan?.serviceRoot,
       );
-      executionStarted = true;
-      return withUpdateCommandRecoveryUnwind(opts, recoveryState, () =>
-        updateCommandInternal(
-          opts,
-          recoveryState,
-          invocationCwd,
-          prepared,
-          presentation,
-          executor,
-          retainRuntime,
-          initialization,
-        ),
-      );
+      const execute = () => {
+        executionStarted = true;
+        return withUpdateCommandRecoveryUnwind(opts, recoveryState, () =>
+          updateCommandInternal(
+            opts,
+            recoveryState,
+            invocationCwd,
+            prepared,
+            presentation,
+            executor,
+            retainRuntime,
+            initialization,
+          ),
+        );
+      };
+      if (inputOpts.dryRun || !prepared.controlPlaneUpdateSentinelMeta?.handoffId) {
+        return execute();
+      }
+      // The admitted helper owns native stop and recovery for this invocation.
+      // A handoff tuple alone never grants authority to an ordinary service caller.
+      const fence =
+        run.executorFence ??
+        (await executor.enter(prepared.servicePlan?.rootRedirect?.root ?? prepared.discoveredRoot, {
+          preflight: true,
+          serviceRoot: prepared.servicePlan?.serviceRoot,
+        }));
+      run.executorFence = fence;
+      const runId = run.runId;
+      const assertCurrent = () => {
+        if (opts.run !== run || run.runId !== runId || run.executorFence !== fence) {
+          throw new UpdateCommandRecoveryPendingError(
+            "Managed updater lost its admitted executor.",
+          );
+        }
+        captureUpdateCommandExecutorAuthority(fence, runId);
+      };
+      return withGatewayServiceUpdateAuthority(assertCurrent, execute, {
+        originalRoot: captureUpdateCommandExecutorAuthority(fence, runId).installKey,
+      });
     };
     const execute = initialization
       ? () => executeWith(initialization.executor)
@@ -503,7 +532,7 @@ async function runResolvedUpdate(
   let mutableUpdatePrepared = false;
   const prepareMutableUpdate: Parameters<
     typeof executeMutableUpdate
-  >[0]["prepareMutableUpdate"] = async (env, activationTimeoutMs, admitExecutor) => {
+  >[0]["prepareMutableUpdate"] = async (env, activationTimeoutMs, admitExecutor, installTarget) => {
     if (!mutableUpdatePrepared) {
       assertUpdatePackageActivationAdmission(root, { serviceRoot: managedServiceRoot });
     }
@@ -523,10 +552,27 @@ async function runResolvedUpdate(
     const installKey = captureUpdateCommandExecutorAuthority(fence).installKey;
     assertUpdatePackageActivationAdmission(installKey, { serviceRoot: managedServiceRoot });
     preUpdatePluginInstallRecords = await prepareMutableUpdateRuntime(env, fence);
+    // Retention can walk the full dependency tree before the first staging step.
+    // Record that work so the completed capacity check does not look stalled.
+    const retentionStep = {
+      name: "updater-runtime-retention",
+      command: "retain running updater runtime",
+      index: 0,
+      total: 0,
+    };
+    const retentionStartedAt = Date.now();
+    progress.onStepStart?.(retentionStep);
     await retainRuntime({
-      mutationRoots: [root],
+      mutationRoots: [root, ...(switchToGit ? [resolveGitInstallDir()] : [])],
+      installTarget,
+      env,
       timeoutMs: updateStepTimeoutMs,
       assertCurrent: () => fence.assertCurrent(),
+    });
+    progress.onStepComplete?.({
+      ...retentionStep,
+      durationMs: Date.now() - retentionStartedAt,
+      exitCode: 0,
     });
     mutableUpdatePrepared = true;
   };

@@ -191,49 +191,31 @@ export OPENCLAW_UPGRADE_SURVIVOR_CONFIG_COVERAGE_JSON="$CONFIG_COVERAGE_JSON"
 rm -f "$SUMMARY_JSON" "$CONFIG_COVERAGE_JSON" "$ARTIFACT_ROOT/backup-rollback.json" "$ARTIFACT_ROOT/baseline-companion.json"
 : >"$PHASE_LOG"
 
-validate_baseline_package_spec() {
-  local spec="$1"
-  if [[ "$spec" =~ ^openclaw@(alpha|beta|latest|[0-9]{4}\.[1-9][0-9]*\.[1-9][0-9]*(-[1-9][0-9]*|-(alpha|beta)\.[1-9][0-9]*)?)$ ]]; then
-    return 0
-  fi
-  echo "OPENCLAW_UPGRADE_SURVIVOR_BASELINE must be openclaw@latest, openclaw@beta, openclaw@alpha, an exact OpenClaw release version, or a bare release version; got: $spec" >&2
-  return 1
+normalize_baseline_spec() {
+  node --input-type=module - "$1" <<'NODE'
+import {
+  assertSupportedUpgradeSurvivorBaselineSpec,
+  normalizeUpgradeSurvivorBaselineSpec,
+} from "./scripts/lib/upgrade-survivor-policy.mjs";
+const spec = normalizeUpgradeSurvivorBaselineSpec(process.argv[2]);
+if (!spec) throw new Error("OPENCLAW_UPGRADE_SURVIVOR_BASELINE cannot be empty");
+assertSupportedUpgradeSurvivorBaselineSpec(spec);
+process.stdout.write(spec);
+NODE
 }
 
 normalize_baseline() {
-  local raw="${BASELINE_RAW//[[:space:]]/}"
-  if [ -z "$raw" ]; then
-    echo "OPENCLAW_UPGRADE_SURVIVOR_BASELINE cannot be empty" >&2
-    return 1
-  fi
-  case "$raw" in
-    openclaw@*)
-      baseline_spec="$raw"
-      baseline_version="${raw#openclaw@}"
-      ;;
-    *@*)
-      echo "OPENCLAW_UPGRADE_SURVIVOR_BASELINE must be openclaw@<version> or a bare version" >&2
-      return 1
-      ;;
-    *)
-      baseline_version="$raw"
-      baseline_spec="openclaw@$raw"
-      ;;
-  esac
+  baseline_spec="$(normalize_baseline_spec "$BASELINE_RAW")" || return "$?"
+  baseline_version="${baseline_spec#openclaw@}"
   case "$baseline_version" in
     latest | beta | alpha)
       baseline_version=""
       baseline_version_expected="0"
       ;;
-    dev | main | "")
-      echo "OPENCLAW_UPGRADE_SURVIVOR_BASELINE must be openclaw@latest, openclaw@beta, openclaw@alpha, openclaw@<version>, or a bare version" >&2
-      return 1
-      ;;
     *)
       baseline_version_expected="1"
       ;;
   esac
-  validate_baseline_package_spec "$baseline_spec"
 }
 
 validate_update_restart_mode() {
@@ -1010,6 +992,7 @@ install_baseline() {
     return 1
   fi
   installed_version="$(read_installed_version)"
+  normalize_baseline_spec "$installed_version" >/dev/null || return "$?"
   if [ "$baseline_version_expected" = "1" ] && [ "$installed_version" != "$baseline_version" ]; then
     echo "baseline package version mismatch: expected $baseline_version, got $installed_version" >&2
     cat "$(package_root)/package.json" >&2 || true
@@ -1422,10 +1405,6 @@ resolve_candidate_version() {
     echo "could not resolve candidate version from $CANDIDATE_KIND:$CANDIDATE_SPEC" >&2
     return 1
   fi
-  OPENCLAW_PACKAGE_ACCEPTANCE_LEGACY_COMPAT="$(
-    node scripts/e2e/lib/package-compat.mjs "$candidate_version"
-  )"
-  export OPENCLAW_PACKAGE_ACCEPTANCE_LEGACY_COMPAT
 }
 
 resolve_candidate_install_mode() {
@@ -1530,6 +1509,7 @@ update_candidate() {
   if [ "$SCENARIO" = "workshop-doctor-recovery" ]; then
     update_node_options+=" --import=$PWD/scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs"
     update_env+=("OPENCLAW_UPGRADE_SURVIVOR_WORKSHOP_STATE_DIR=$OPENCLAW_STATE_DIR")
+    update_env+=("OPENCLAW_UPGRADE_SURVIVOR_WORKSHOP_LEGACY_FIXTURE=$ARTIFACT_ROOT/workshop-legacy-seeded.json")
   fi
   if [ "$SCENARIO" = "legacy-operator-state" ] && [ "$UPDATE_RESTART_MODE" = "manual" ] &&
     { [ "${baseline_version:-}" = "2026.9.3" ] || [ "${baseline_version:-}" = "2026.9.4" ]; }; then
@@ -1609,6 +1589,7 @@ run_workshop_doctor() {
   local doctor_node_options="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$PWD/scripts/e2e/lib/upgrade-survivor/diagnostics.mjs --import=$PWD/scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs"
   openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" env -u OPENCLAW_UPDATE_IN_PROGRESS \
     "OPENCLAW_UPGRADE_SURVIVOR_WORKSHOP_STATE_DIR=$OPENCLAW_STATE_DIR" \
+    "OPENCLAW_UPGRADE_SURVIVOR_WORKSHOP_LEGACY_FIXTURE=$ARTIFACT_ROOT/workshop-legacy-seeded.json" \
     "OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT=$workshop_doctor_observation_root" \
     "NODE_OPTIONS=$doctor_node_options" \
     openclaw doctor --fix --non-interactive >"$log" 2>&1
@@ -1875,8 +1856,7 @@ assert_volume_idempotence() {
   budget="$(openclaw_e2e_read_positive_int_env OPENCLAW_UPGRADE_SURVIVOR_VOLUME_IDEMPOTENCE_BUDGET_SECONDS 60)"
   echo "SQLite volume idempotence doctor completed in ${idempotence_seconds}s (budget ${budget}s)."
   if [ "$idempotence_seconds" -gt "$budget" ]; then
-    echo "SQLite volume idempotence exceeded budget: ${idempotence_seconds}s > ${budget}s" >&2
-    return 1
+    node scripts/lib/check-limits.mts scripts/e2e/lib/upgrade-survivor/run.sh "Upgrade idempotence budget" "SQLite volume idempotence exceeded budget: ${idempotence_seconds}s > ${budget}s" || return "$?"
   fi
   OPENCLAW_UPGRADE_SURVIVOR_ASSERT_STAGE="$survival_assert_stage" \
     node scripts/e2e/lib/upgrade-survivor/assertions.mjs assert-state
@@ -1966,9 +1946,10 @@ start_gateway() {
   ready_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$?"
   start_seconds=$(((ready_epoch - start_epoch + 999) / 1000))
   if [ "$start_seconds" -gt "$budget" ]; then
-    echo "gateway startup exceeded survivor budget: ${start_seconds}s > ${budget}s" >&2
-    openclaw_e2e_print_log "$GATEWAY_LOG" >&2
-    return 1
+    if ! node scripts/lib/check-limits.mts scripts/e2e/lib/upgrade-survivor/run.sh "Upgrade startup budget" "gateway startup exceeded survivor budget: ${start_seconds}s > ${budget}s"; then
+      openclaw_e2e_print_log "$GATEWAY_LOG" >&2
+      return 1
+    fi
   fi
 }
 
@@ -2008,9 +1989,10 @@ check_gateway_status() {
   status_end="$(node -e "process.stdout.write(String(Date.now()))")"
   status_seconds=$(((status_end - status_start + 999) / 1000))
   if [ "$status_seconds" -gt "$budget" ]; then
-    echo "gateway status exceeded survivor budget: ${status_seconds}s > ${budget}s" >&2
-    openclaw_e2e_print_log "$STATUS_JSON" >&2
-    return 1
+    if ! node scripts/lib/check-limits.mts scripts/e2e/lib/upgrade-survivor/run.sh "Upgrade status budget" "gateway status exceeded survivor budget: ${status_seconds}s > ${budget}s"; then
+      openclaw_e2e_print_log "$STATUS_JSON" >&2
+      return 1
+    fi
   fi
   node scripts/e2e/lib/upgrade-survivor/assertions.mjs assert-status-json "$STATUS_JSON"
 }
@@ -2247,12 +2229,16 @@ if [ "$SCENARIO" = "workshop-doctor-recovery" ]; then
   phase prepare-workshop-baseline openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw doctor --fix --non-interactive
   phase resolve-workshop-candidate resolve_candidate_version
   phase capture-workshop-baseline node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs baseline "$(package_root)"
+  phase capture-workshop-published-package node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs baseline "$(package_root)"
   phase capture-workshop-candidate node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs candidate "$CANDIDATE_SPEC" "$candidate_version"
+  phase capture-workshop-candidate-package node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs candidate "$(package_root)" "$CANDIDATE_SPEC"
   phase seed-workshop-baseline-index node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs seed baseline
   phase assert-workshop-published-refusal assert_workshop_published_refusal
   phase repair-workshop-baseline run_workshop_doctor baseline "$ARTIFACT_ROOT/baseline-doctor.log"
   phase assert-workshop-baseline-repair node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs doctor "$workshop_doctor_observation_root" baseline
+  phase seed-workshop-legacy-proposals node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs seed-legacy
   phase update-workshop-recovered-state update_candidate 1
+  phase assert-workshop-installed-package node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs installed "$(package_root)" "$CANDIDATE_SPEC"
   phase assert-workshop-recovered-upgrade node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs upgrade "$last_update_observation_root" "$(package_root)"
   phase seed-workshop-candidate-index node scripts/e2e/lib/upgrade-survivor/workshop-doctor-recovery.mjs seed candidate
   phase repair-workshop-candidate run_workshop_doctor candidate "$DOCTOR_LOG"

@@ -46,6 +46,11 @@ The current route and stored drafts survive the reload. If browser storage is un
 or reload protection blocks recovery, reload the tab after saving your work;
 do not clear site data while drafts or queued messages still need recovery.
 
+Unsaved file edits block automatic and in-app reloads, even after you close their
+previews or switch conversations. Reopen each edited file and save or discard its
+changes, then retry the reload. File edits stay in memory in the current page;
+an explicit browser reload or closing the browser tab discards them.
+
 ## Connection loss and reconnect
 
 Once a session is established, a dropped Gateway connection does not log you out. The dashboard
@@ -62,8 +67,8 @@ the WebSocket close code for troubleshooting; specific Gateway errors keep their
 Open the account menu and use **Retry now** to request an immediate attempt when offered.
 Sign-in failures use the sign-in flow, and a required dashboard refresh uses its reload flow;
 retrying the connection does not replace either action. Live updates and realtime/session actions pause until the connection
-returns. Chat remains editable, with a conversation-specific outbox notice instead of another
-global connection warning.
+returns. Chat remains editable without a pre-queue helper. The conversation-specific outbox
+summary appears only after a message is queued, alongside the actual queued message.
 
 Ordinary text and attachment sends require successful admission to the current tab's
 Gateway/session-scoped browser outbox. Eligible messages resume automatically after connection
