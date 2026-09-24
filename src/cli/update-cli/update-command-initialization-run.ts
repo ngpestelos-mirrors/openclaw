@@ -11,6 +11,7 @@ import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-con
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { createUpdateProgress, type UpdateDisplayProgress } from "./progress.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import type { UpdateCommandExecutorOptions } from "./update-command-executor-options.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import {
   acquireLegacyUpdateInitializationFence,
@@ -46,6 +47,7 @@ export async function initializeAndRunUpdate(
   invocationCwd: string | undefined,
   env: NodeJS.ProcessEnv,
   runInitialized: (initialization: InitializedUpdate) => Promise<void>,
+  executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const targetEnv = resolveUpdateTargetEnv({ baseEnv: env, nodeRunner: process.execPath });
   const runId = env.OPENCLAW_UPDATE_RUN_ID?.trim() || randomUUID();
@@ -264,12 +266,13 @@ export async function initializeAndRunUpdate(
                 runSelectedTarget,
               );
             },
-            selection
-              ? {
-                  directOriginal: { databasePath: selection.handoff.databasePath },
-                  initialStores: { protocol: "initial-pair-v1", selection },
-                }
-              : undefined,
+            executorOptions ??
+              (selection
+                ? {
+                    directOriginal: { databasePath: selection.handoff.databasePath },
+                    initialStores: { protocol: "initial-pair-v1", selection },
+                  }
+                : undefined),
           ),
         ),
       opts,

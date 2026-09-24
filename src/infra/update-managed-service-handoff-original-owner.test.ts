@@ -135,7 +135,8 @@ process.on("message", async (input) => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const { registerSealedRuntime } = await import(${JSON.stringify(new URL("./sealed-runtime-registry.ts", import.meta.url).href)});
-    registerSealedRuntime({ json5: undefined, resolveSecureTempRoot: () => path.dirname(input.identity.databasePath) });
+    const ambient = path.join(path.dirname(input.identity.databasePath), "unselected-ambient");
+    registerSealedRuntime({ json5: undefined, resolveSecureTempRoot: () => ambient });
     const meta = path.join(path.dirname(input.result), "sentinel.json");
     fs.writeFileSync(meta, JSON.stringify({version:1,meta:{
       runId:"managed-test", handoffId:input.lease.owner, root:input.lease.key,
@@ -158,6 +159,7 @@ process.on("message", async (input) => {
           revoke: () => request("revoke", [], true),
         };
       }});
+      assert.equal(fs.existsSync(ambient), false);
       fs.writeFileSync(input.result, "planned-pair-settled");
       process.disconnect();
       return;
@@ -188,6 +190,7 @@ process.on("message", async (input) => {
       await assert.rejects(executor.enter(input.lease.key, plan), /admission is incomplete/);
     }, executorOptions), /ownership is no longer current/);
     assert.equal(attempts, 1);
+    assert.equal(fs.existsSync(ambient), false);
     fs.writeFileSync(input.result, "retry-refused");
     process.disconnect();
     return;

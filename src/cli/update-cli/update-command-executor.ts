@@ -309,6 +309,7 @@ export async function withUpdateCommandExecutor<T>(
                 databasePath =
                   options?.existingAuthority?.databasePath ??
                   directDatabasePath ??
+                  (managedIssuer ? initialStores?.selection.handoff.databasePath : undefined) ??
                   resolveManagedUpdateLeaseDatabasePath();
                 let existingIdentity =
                   options?.existingAuthority ??
@@ -372,10 +373,8 @@ export async function withUpdateCommandExecutor<T>(
                 ) {
                   const { isCurrentManagedServiceUpdateHandoffProcess } =
                     await import("../../infra/update-managed-service-handoff.js");
-                  const handedOff = await isCurrentManagedServiceUpdateHandoffProcess({
-                    root: key,
-                    runId,
-                  });
+                  const handoff = { root: key, runId, store };
+                  const handedOff = await isCurrentManagedServiceUpdateHandoffProcess(handoff);
                   // Retain the exact row observed before the await. Matching the run in
                   // a later metadata read cannot authorize a different lease generation.
                   if (

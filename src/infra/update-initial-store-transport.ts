@@ -53,7 +53,7 @@ export type UpdateManagedGenerationIssuer = (
   }>,
 ) => Promise<UpdateManagedGenerationRoute>;
 
-export type UpdateManagedGenerationRoute = {
+type UpdateManagedGenerationRoute = {
   /** Refuse disconnected/cancelled control locally, including while stores are retired. */
   assertCurrent: () => void;
   /** ACK only after all helper readers, Workers and handles have closed and joined. */

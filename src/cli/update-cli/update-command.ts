@@ -17,6 +17,7 @@ import {
   resolveGitInstallDir,
   type UpdateCommandOptions,
 } from "./shared.js";
+import type { UpdateCommandExecutorOptions } from "./update-command-executor-options.js";
 import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
@@ -50,12 +51,15 @@ import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
 
 type PreparedUpdate = NonNullable<Awaited<ReturnType<typeof prepareUpdateCommand>>>;
 
-export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<void> {
+export async function updateCommand(
+  inputOpts: UpdateCommandOptions,
+  executorOptions?: UpdateCommandExecutorOptions,
+): Promise<void> {
   return withUpdateInitialStoreInvocation(inputOpts.initialStores, async () => {
     assertUpdateInitialStoreInvocation();
     const { withRetainedUpdateRuntime } = await import("../../infra/update-retained-runtime.js");
     return await withRetainedUpdateRuntime(import.meta.url, (retainRuntime) =>
-      updateCommandWithRuntime(inputOpts, retainRuntime),
+      updateCommandWithRuntime(inputOpts, retainRuntime, executorOptions),
     );
   });
 }
@@ -63,6 +67,7 @@ export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<vo
 async function updateCommandWithRuntime(
   inputOpts: UpdateCommandOptions,
   retainRuntime: RetainUpdateRuntime,
+  executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const invocationCwd = tryProcessCwd();
   const recoveryState: UpdateCommandRecoveryState = {
@@ -119,7 +124,9 @@ async function updateCommandWithRuntime(
             invocationCwd,
             retainRuntime,
             initialization,
+            executorOptions,
           ),
+        executorOptions,
       );
     }
     return await runAdmittedUpdate(
@@ -128,6 +135,8 @@ async function updateCommandWithRuntime(
       recoveryState,
       invocationCwd,
       retainRuntime,
+      undefined,
+      executorOptions,
     );
   });
 }
@@ -139,6 +148,7 @@ async function runAdmittedUpdate(
   invocationCwd: string | undefined,
   retainRuntime: RetainUpdateRuntime,
   initialization?: InitializedUpdate,
+  executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const run = await admitUpdateCommandRun({
     opts: inputOpts,
@@ -204,12 +214,13 @@ async function runAdmittedUpdate(
                 return withUpdateCommandExecutor(
                   run.runId,
                   executeWith,
-                  selection
-                    ? {
-                        directOriginal: { databasePath: selection.handoff.databasePath },
-                        initialStores: { protocol: "initial-pair-v1", selection },
-                      }
-                    : undefined,
+                  executorOptions ??
+                    (selection
+                      ? {
+                          directOriginal: { databasePath: selection.handoff.databasePath },
+                          initialStores: { protocol: "initial-pair-v1", selection },
+                        }
+                      : undefined),
                 );
               }, opts),
             ),

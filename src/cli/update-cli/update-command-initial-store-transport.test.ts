@@ -175,3 +175,48 @@ it("refuses selector drift during real run readmission before creating another s
     expect(fs.readdirSync(other)).toEqual([]);
   });
 });
+
+it.each(["ordinary", "initialization"] as const)(
+  "preserves managed authority through %s ingress instead of acquiring a direct owner",
+  async (route) => {
+    await withOrdinaryFixture(async ({ root, installation, input }) => {
+      const issuer = vi.fn(async () => {
+        throw new Error("unbound issuer must not run");
+      });
+      const effect = path.join(root, "forbidden-managed-effect");
+      let refusal: unknown;
+      const target = vi
+        .spyOn(targetOwner, "resolveUpdateCommandTarget")
+        .mockImplementation(async (_opts, _recovery, _cwd, _prepared, executor) => {
+          try {
+            (
+              await executor.enter(installation, { preflight: true, serviceRoot: undefined })
+            ).assertCurrent();
+          } catch (error) {
+            refusal = error;
+            throw error;
+          }
+          fs.writeFileSync(effect, "unbound direct fallback");
+          return undefined;
+        });
+      const managedOptions = {
+        initialStores: { protocol: "initial-pair-v1" as const, selection: input.selection },
+        managedGeneration: issuer,
+      };
+      if (route === "initialization") {
+        // Select the initialization branch only; retain its real executor and admission.
+        const initialization = await import("./update-command-initialization.js");
+        vi.spyOn(initialization, "updateStateNeedsInitialization").mockResolvedValue(true);
+      }
+      await expect(updateCommand({ json: true }, managedOptions)).rejects.toThrow(
+        route === "ordinary" ? "exit 1" : "Managed planned installation is not the bound root",
+      );
+      expect(refusal).toMatchObject({
+        message: "Managed planned installation is not the bound root.",
+      });
+      expect(target).toHaveBeenCalledOnce();
+      expect(issuer).not.toHaveBeenCalled();
+      expect(fs.existsSync(effect)).toBe(false);
+    });
+  },
+);
