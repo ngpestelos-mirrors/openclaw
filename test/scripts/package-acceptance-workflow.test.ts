@@ -7318,13 +7318,11 @@ NODE
       workflowJob(".github/workflows/plugin-npm-release.yml", "publish_plugins_npm"),
       "Publish approved bootstrap tarball",
     );
-    // The variable is fetched live after identity verification; the job-start
-    // snapshot is only the fallback when the token cannot read Variables.
-    expect(publish.env?.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER).toBe(
-      "${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}",
-    );
+    // The variable is fetched live after identity verification; an unreadable
+    // variable refuses the publish rather than trusting a job-start snapshot.
+    expect(publish.env?.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER).toBeUndefined();
     const run = publish.run ?? "";
-    expect(run).toContain("was unavailable to this token; using the job-start value");
+    expect(run).toContain("refusing to publish on unverified waiver authority");
     expect(run).toContain("actions/variables/OPENCLAW_RELEASE_STABLE_SOAK_WAIVER");
     expect(run).toContain("assertStableSoakWaiverStillHeld");
     expect(run.indexOf("release-tooling-identity.mjs verify")).toBeLessThan(
