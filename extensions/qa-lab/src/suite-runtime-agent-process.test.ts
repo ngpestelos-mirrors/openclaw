@@ -1,6 +1,9 @@
 // Qa Lab tests cover suite runtime agent process plugin behavior.
 import { EventEmitter } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
+import timersPromises from "node:timers/promises";
+import { promisify } from "node:util";
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -797,53 +800,80 @@ describe("qa suite runtime agent process helpers", () => {
   });
 
   it("preserves the final retryable history failure when the poll deadline expires", async () => {
-    const gatewayError = Object.assign(new Error("session history is rebuilding"), {
-      gatewayCode: "UNAVAILABLE",
-      retryable: true,
-      retryAfterMs: 1,
-      details: { method: "chat.history" },
-    });
-    const wrappedError = new Error("gateway call failed", { cause: gatewayError });
-    const gatewayCall = vi.fn().mockRejectedValue(wrappedError);
+    vi.useFakeTimers();
+    const sleep = vi.spyOn(timersPromises, "setTimeout");
+    try {
+      sleep.mockImplementation(promisify(globalThis.setTimeout));
+      syncBuiltinESMExports();
+      const gatewayError = Object.assign(new Error("session history is rebuilding"), {
+        gatewayCode: "UNAVAILABLE",
+        retryable: true,
+        retryAfterMs: 1,
+        details: { method: "chat.history" },
+      });
+      const wrappedError = new Error("gateway call failed", { cause: gatewayError });
+      const gatewayCall = vi.fn().mockRejectedValue(wrappedError);
 
-    await expect(
-      waitForAgentHistoryReply(
-        { gateway: { call: gatewayCall } } as never,
-        "session-history-retry-timeout",
-        () => false,
-        220,
-        50,
-      ),
-    ).rejects.toMatchObject({
-      message: "timed out after 220ms",
-      cause: wrappedError,
-    });
-    expect(gatewayCall.mock.calls.length).toBeGreaterThanOrEqual(2);
+      const rejection = expect(
+        waitForAgentHistoryReply(
+          { gateway: { call: gatewayCall } } as never,
+          "session-history-retry-timeout",
+          () => false,
+          220,
+          50,
+        ),
+      ).rejects.toMatchObject({
+        message: "timed out after 220ms",
+        cause: wrappedError,
+      });
+      await vi.advanceTimersByTimeAsync(220);
+      await rejection;
+      expect(gatewayCall.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      sleep.mockRestore();
+      vi.useRealTimers();
+      syncBuiltinESMExports();
+    }
   });
 
   it("does not attach a recovered history failure to a later predicate timeout", async () => {
-    const gatewayError = Object.assign(new Error("session history is rebuilding"), {
-      gatewayCode: "UNAVAILABLE",
-      retryable: true,
-      retryAfterMs: 1,
-      details: { method: "chat.history" },
-    });
-    const gatewayCall = vi
-      .fn()
-      .mockRejectedValueOnce(gatewayError)
-      .mockResolvedValue({ messages: [{ role: "assistant", content: "still working" }] });
+    vi.useFakeTimers();
+    const sleep = vi.spyOn(timersPromises, "setTimeout");
+    try {
+      sleep.mockImplementation(promisify(globalThis.setTimeout));
+      syncBuiltinESMExports();
+      const gatewayError = Object.assign(new Error("session history is rebuilding"), {
+        gatewayCode: "UNAVAILABLE",
+        retryable: true,
+        retryAfterMs: 1,
+        details: { method: "chat.history" },
+      });
+      const gatewayCall = vi
+        .fn()
+        .mockRejectedValueOnce(gatewayError)
+        .mockResolvedValue({ messages: [{ role: "assistant", content: "still working" }] });
+      const predicate = vi.fn(() => false);
+      const pending = waitForAgentHistoryReply(
+        { gateway: { call: gatewayCall } } as never,
+        "session-history-recovered-timeout",
+        predicate,
+        220,
+        50,
+      ).catch((error: unknown) => error);
 
-    const timeoutError = await waitForAgentHistoryReply(
-      { gateway: { call: gatewayCall } } as never,
-      "session-history-recovered-timeout",
-      () => false,
-      220,
-      50,
-    ).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(predicate).toHaveBeenCalledWith("still working");
+      await vi.advanceTimersByTimeAsync(120);
+      const timeoutError = await pending;
 
-    expect(timeoutError).toBeInstanceOf(Error);
-    expect(timeoutError).not.toHaveProperty("cause");
-    expect(gatewayCall.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(timeoutError).toBeInstanceOf(Error);
+      expect(timeoutError).not.toHaveProperty("cause");
+      expect(gatewayCall.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      sleep.mockRestore();
+      vi.useRealTimers();
+      syncBuiltinESMExports();
+    }
   });
 
   it("does not retry transient gateway errors for a different method", async () => {
