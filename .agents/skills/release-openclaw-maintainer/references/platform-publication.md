@@ -30,8 +30,11 @@ release readiness. Real publish reuses the successful notarized preflight and
 validation for the same tag/source SHA.
 
 The real publish (`openclaw-macos-publish.yml` in `openclaw/releases`) requires
-the public GitHub release; flip it as soon as core npm is visible. Preflights
-resume from notarization checkpoints without rebuilding: pass
+the public GitHub release. Wait for the selected publisher's activation step:
+the direct route normally verifies npm and Docker first; the prepared button
+also verifies ClawHub downloads. Do not make a draft public to bypass a failed
+gate. See [publication recovery](publication-recovery.md).
+Preflights resume from notarization checkpoints without rebuilding: pass
 `resume_notarization_run_id=<run>`, `resume_notarization_run_attempt=1`, and
 `resume_notarization_variant=all`. The appcast lands as an auto-opened PR
 `chore(release): update appcast for <version>` that must be merged; macOS is
@@ -106,8 +109,7 @@ after preparatory reads, including after a deletion and before its replacement.
 Verify both canonical and legacy endpoints after publication, including when a
 newer Gateway release appeared during the Linux build. If canonical metadata is
 missing after an interrupted deletion, normal publication refuses recovery.
-Use the explicit owner reconciliation procedure in
-`docs/reference/RELEASING.md` under **Linux companion publication**: preserve the
+Have the release owner reconcile it explicitly: preserve the
 last verified Linux floor and all intervening publication evidence, exclude
 other writers, revalidate release/source/inventory and immutable bytes, and
 read back both endpoints. Version/hash inputs or current Gateway `latest` alone

@@ -26,7 +26,7 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   the initial Tooling SHA selection; it does not authorize replacing that
   tooling after `main` advances.
 - Apply a release firebreak after the Code SHA is frozen. Admit only confirmed
-  product defects, package/provenance defects in the bytes to publish, security
+  product defects, wrong or unverifiable package bytes, security
   defects, or failures that make publication impossible. Queue other findings
   for postpublish confidence or the next beta.
 - Frozen CI children use the pinned Tooling SHA's Node shard planner and measured
@@ -40,9 +40,8 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   adopt newer main code, repair unrelated main CI, wait for broad main health,
   or expand a release fix because the workflow source lives on `main`.
 - Once publication binds the Tooling SHA to an exact protected lightweight
-  `release-publish/<12sha>-<provenance-run>` tag, that live tag-to-SHA mapping
-  remains authoritative when `main` advances. The suffix records tag-creation
-  provenance; it is not the current parent run id.
+  `release-publish/<12sha>-<creation-run>` tag, that live tag-to-SHA mapping
+  remains authoritative when `main` advances. The suffix records how the tag was created; it is not the current parent run id.
 - Touch `main` only for an operator-requested change or the smallest critical
   main-owned blocker that prevents this release and cannot be handled from the
   release branch. If the required main landing policy is blocked by unrelated
@@ -167,7 +166,7 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   task-owned box and warm a fresh one before testing. Testbox source sync is
   relative to the warmed source tree; continuing can mix an old base file with
   a new candidate diff and produce false lockfile or Docker failures.
-- Reused Testboxes are provenance-gated after their first successful run.
+- Reused Testboxes are checked against their recorded source after their first successful run.
   Source-only edits may reuse the lease; base, dependency, wrapper, or Testbox
   workflow drift requires a fresh lease. Do not set
   `OPENCLAW_TESTBOX_ALLOW_STALE=1` for release evidence.
@@ -182,7 +181,7 @@ Record Validation SHA, Tooling SHA/ref, target context ref, parent run id,
 attempt, and phase before watching or recovering Full Release Validation. Keep
 Code SHA and Release SHA as lifecycle roles in the ledger; they may name the
 same commit. Record the
-immutable Release Publish parent receipt separately from tag provenance.
+immutable Release Publish parent receipt separately from the tag's recorded source.
 
 For the core and plugin npm mutations enforced by this foundation, re-read the
 exact protected lightweight tag and revalidate the exact parent run tuple
@@ -339,7 +338,7 @@ before cancellation. Preflight is read-only and does not authorize publication,
 cancel children, or prove a repository secret from local credentials. Bootstrap
 candidates need a read-only `npm whoami` probe using the repository's actual
 `NPM_TOKEN`; follow the secret-isolated step in
-[Release policy](https://docs.openclaw.ai/reference/RELEASING#probe-the-bootstrap-token)
+[bootstrap token probe](../release-openclaw-maintainer/references/publication-recovery.md#check-the-bootstrap-token)
 and retain its run URL. Do not rotate credentials as part of a diagnostic check.
 
 ## Dispatch
@@ -519,6 +518,9 @@ when survivor lanes in the same child passed, requires `lane_waiver` at publish,
 and must be cleared after the release.
 
 ### Publish children
+
+Use the maintainer [publication recovery guide](../release-openclaw-maintainer/references/publication-recovery.md)
+for publication ordering and prepared/direct recovery.
 
 - npm children (`Plugin NPM Release`, `openclaw-npm-release.yml`) need their
   own `npm-release` approval; the parent's approval does not always propagate,
@@ -703,7 +705,7 @@ Interpret state precisely:
 - `blocked_complete`: publication is blocked and all selected diagnostics are
   terminal.
 - `orchestration_error`: GitHub API or collector failure prevented a verdict.
-  This is not a provenance mismatch. Recover the collector against the same
+  This does not mean the wrong source was used. Recover the collector against the same
   exact children; never redispatch tests to repair collection.
 - `cancelled_with_children`: the collector was cancelled while exact children
   remained active.
@@ -738,7 +740,7 @@ run-ID-cached bytes first.
 6. Classify before editing:
    - confirmed product/code failure: fix the release branch, freeze a new Code
      SHA, and invalidate product evidence
-   - harness/tooling/provenance failure: keep the Code SHA, fix the smallest
+   - harness, tooling, or source mismatch: keep the Code SHA, fix the smallest
      owning surface, and retry only the failed surface with the required Tooling
      SHA
    - infrastructure/credential failure: keep both SHAs, repair the external
@@ -751,13 +753,14 @@ run-ID-cached bytes first.
    - publish child/registry selector failure: keep Release SHA and resume the
      failed child; never rebuild an immutable version that already published
    - parent failed after core npm published (for example a stale `beta`
-     dist-tag failing the completion verify): flip the GitHub release public
-     immediately with
-     `gh release edit v<version> --repo openclaw/openclaw --draft=false --latest`;
-     never leave it drafted waiting for Docker, ClawHub, apps, or the resume.
-     Then run the beta-to-stable dist-tag sync, sweep stale children, and
-     dispatch a new parent with the same inputs: it recognizes published bytes
-     and only runs ClawHub, GitHub release evidence, and Docker
+     dist-tag failing the completion verify): retain the successful original
+     npm run and qualified bytes, repair the selector, and reconcile the exact
+     failed parent's children before resuming the selected publication route.
+     Direct finalization normally waits for npm and Docker verification; the
+     prepared button also verifies ClawHub downloads. Do not manually un-draft
+     a release to bypass those gates. Follow
+     [publication recovery](../release-openclaw-maintainer/references/publication-recovery.md#published-version-failed-parent)
+     for direct resume or a new prepared button run.
    - child stuck `waiting`, ClawHub `Artifact not found`, or parent failing
      `ClawHub dispatch blocked by waiting run`: see [Publish children](#publish-children)
      Only the first class changes the Code SHA. After one diagnosis/fix/narrow

@@ -4,6 +4,12 @@ This gate starts only after stable publication. It is a narrow shipped-state
 closeout, not permission to heal broader `main`. Stable publication is not
 complete until `main` carries the actual shipped release state.
 
+Closeout applies the current publication gates, including any approved waiver
+recorded for the exact release. Keep the operator's reason with the release
+evidence. Completion requires both the closeout manifest and its matching checksum. If only the checksum is missing,
+replay the recorded closeout to regenerate identical bytes; do not manufacture
+new evidence. Invalid or mismatched assets remain blocking.
+
 1. Start from fresh latest `main`. Use a same-repository PR targeting `main`,
    with branch `release/<version>-main-closeout` and exact title
    `chore(release): close out <version> on main`. `<version>` is the published
