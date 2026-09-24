@@ -38,7 +38,7 @@ describe("Gateway timed work", () => {
     await time.advanceTo(301_000);
     expect(periodic).toHaveBeenCalledTimes(1);
     expect(deadline).toHaveBeenCalledTimes(1);
-    expect(periodic.mock.invocationCallOrder[0]).toBeLessThan(deadline.mock.invocationCallOrder[0]);
+    expect(periodic).toHaveBeenCalledBefore(deadline);
     expect(scheduler.nextWakeAtMs).toBe(302_000);
     await time.advanceTo(302_000);
     expect(periodic).toHaveBeenCalledTimes(2);
