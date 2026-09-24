@@ -390,18 +390,7 @@ export function resolveSessionStorePathWithContext(
       throw new SessionStoreAgentIdRequiredError();
     }
     const agentId = normalizeAgentId(opts.agentId);
-    const expanded = store.replaceAll("{agentId}", agentId);
-    if (expanded.startsWith("~")) {
-      return path.resolve(
-        context.cwd,
-        expandHomePrefix(expanded, {
-          home: resolveRequiredHomeDir(env, homedir),
-          env,
-          homedir,
-        }),
-      );
-    }
-    return path.resolve(context.cwd, expanded);
+    store = store.replaceAll("{agentId}", agentId);
   }
   if (store.startsWith("~")) {
     return path.resolve(

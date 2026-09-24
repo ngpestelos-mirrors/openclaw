@@ -2368,7 +2368,7 @@ src/config/io.write-safety.ts	3
 src/config/io.write.ts	2
 src/config/issue-location.ts	2
 src/config/legacy.default-agent-roles.ts	1
-src/config/legacy.roster.ts	13
+src/config/legacy.roster.ts	8
 src/config/legacy.ts	3
 src/config/markdown-tables.ts	3
 src/config/materialize.ts	2
@@ -2407,7 +2407,7 @@ src/config/sessions/session-accessor.sqlite-entry-availability.ts	1
 src/config/sessions/session-accessor.sqlite-entry.ts	1
 src/config/sessions/session-accessor.sqlite-message-cut.ts	1
 src/config/sessions/session-accessor.sqlite-parent-fork.ts	1
-src/config/sessions/session-accessor.sqlite-read.ts	11
+src/config/sessions/session-accessor.sqlite-read.ts	10
 src/config/sessions/session-accessor.sqlite-recovery.ts	1
 src/config/sessions/session-accessor.sqlite-reset-window.ts	2
 src/config/sessions/session-accessor.sqlite-transcript-message-append.ts	1
@@ -3205,15 +3205,14 @@ src/secrets/channel-contract-api.ts	1
 src/secrets/configure.ts	2
 src/secrets/egress-proxy/stream-substitution.ts	2
 src/secrets/legacy-secretref-env-marker.ts	1
-src/secrets/plan.ts	4
+src/secrets/plan.ts	2
 src/secrets/private-plan-file.ts	1
-src/secrets/provider-env-vars.ts	1
 src/secrets/resolve.ts	1
 src/secrets/runtime-command-secrets.ts	4
 src/secrets/runtime-config-collectors-core.ts	7
 src/secrets/runtime-config-collectors-memory.ts	1
 src/secrets/runtime-config-collectors-sandbox.ts	2
-src/secrets/runtime-fast-path.ts	7
+src/secrets/runtime-fast-path.ts	2
 src/secrets/runtime-gateway-auth-surfaces.ts	1
 src/secrets/runtime-openai-file-fixture.test-helper.ts	1
 src/secrets/runtime-owner-assignments.ts	1
