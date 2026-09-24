@@ -3,7 +3,10 @@ import { InputFile } from "grammy";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { isDiagnosticsEnabled } from "openclaw/plugin-sdk/diagnostic-runtime";
-import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
+import {
+  classifyGatewayProbePath,
+  resolveGatewayPort,
+} from "openclaw/plugin-sdk/gateway-config-runtime";
 import {
   logWebhookError,
   logWebhookProcessed,
@@ -23,7 +26,6 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   applyBasicWebhookRequestGuards,
-  classifyGatewayProbePath,
   createFixedWindowRateLimiter,
   getWebhookLegacyListener,
   normalizeWebhookPath,

@@ -1,4 +1,4 @@
-import { classifyGatewayProbePath } from "openclaw/plugin-sdk/webhook-ingress";
+import { classifyGatewayProbePath } from "openclaw/plugin-sdk/gateway-config-runtime";
 
 export const DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH = "/nextcloud-talk-webhook";
 

@@ -8,13 +8,15 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
+import {
+  classifyGatewayProbePath,
+  resolveGatewayPort,
+} from "openclaw/plugin-sdk/gateway-config-runtime";
 import {
   asObjectRecord,
   collectChannelAccountScopes,
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { classifyGatewayProbePath } from "openclaw/plugin-sdk/webhook-ingress";
 import { inspectTelegramAccount } from "./account-inspect.js";
 import {
   listEnabledTelegramAccounts,

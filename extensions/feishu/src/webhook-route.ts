@@ -1,4 +1,4 @@
-import { classifyGatewayProbePath } from "openclaw/plugin-sdk/webhook-ingress";
+import { classifyGatewayProbePath } from "openclaw/plugin-sdk/gateway-config-runtime";
 import { DEFAULT_FEISHU_WEBHOOK_PATH, normalizeFeishuWebhookPath } from "./webhook-path.js";
 
 export function describeFeishuWebhookPathConflict(path: string): string | undefined {

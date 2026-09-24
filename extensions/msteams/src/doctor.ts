@@ -4,8 +4,10 @@ import {
   createDangerousNameMatchingMutableAllowlistWarningCollector,
 } from "openclaw/plugin-sdk/channel-policy";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
-import { classifyGatewayProbePath } from "openclaw/plugin-sdk/webhook-ingress";
+import {
+  classifyGatewayProbePath,
+  resolveGatewayPort,
+} from "openclaw/plugin-sdk/gateway-config-runtime";
 
 const isMSTeamsMutableAllowEntry = buildMutableAllowEntryDetector({
   prefixes: ["msteams:", "user:"],

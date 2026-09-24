@@ -294,8 +294,10 @@ from `openclaw/plugin-sdk/webhook-ingress`. Gateway owns the listener, connectio
 admission, request scope, and route lease handoff; the channel owns its signature
 verification and bounded body read. Do not open a separate HTTP server.
 
-For callback setup and Doctor guidance, `classifyGatewayProbePath(pathname)` from
-the same SDK subpath identifies Gateway probe paths. Normalize callback input
+For bundled callback setup and Doctor guidance, `classifyGatewayProbePath(pathname)`
+from the private `openclaw/plugin-sdk/gateway-config-runtime` facade identifies
+Gateway probe paths without loading webhook execution code. This facade is not
+part of the third-party SDK. Normalize callback input
 through `new URL(rawPath, "http://localhost").pathname` first. Results `live`,
 `ready`, and `startup` identify exact paths owned by probes on the Gateway port;
 choose a different webhook path. Results `namespace` and `outside` do not identify

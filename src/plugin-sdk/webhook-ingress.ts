@@ -6,7 +6,6 @@ import { resolveRequestClientIpFromHeaders } from "../gateway/net.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 
 export { getWebhookLegacyListener } from "../plugins/http-legacy-listener.js";
-export { classifyGatewayProbePath } from "../gateway/gateway-http-route-contracts.js";
 
 export {
   createBoundedCounter,
