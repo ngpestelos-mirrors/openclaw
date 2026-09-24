@@ -185,23 +185,26 @@ describe("legacy channel webhook ports", () => {
       name: "protected namespace",
       path: "/api/channels/telegram",
       primaryStatus: 401,
+      forwardedPrimaryStatus: 403,
       primaryBody: undefined,
     },
     {
       name: "capability rewrite",
       path: "/__openclaw__/cap/vendor/webhook",
       primaryStatus: 200,
+      forwardedPrimaryStatus: 200,
       primaryBody: "rewritten sibling: /webhook?oc_cap=vendor",
     },
     {
       name: "incomplete capability",
       path: "/__openclaw__/cap/vendor",
       primaryStatus: 401,
+      forwardedPrimaryStatus: 401,
       primaryBody: undefined,
     },
   ])(
     "preserves the $name callback on its legacy port and the primary listener's policy",
-    async ({ path, primaryStatus, primaryBody }) => {
+    async ({ path, primaryStatus, forwardedPrimaryStatus, primaryBody }) => {
       expect(() =>
         register({ auth: "gateway", legacyListener: endpoint(1), throwOnFailure: true }),
       ).toThrow("legacy webhook listeners require plugin authentication");
@@ -256,8 +259,11 @@ describe("legacy channel webhook ports", () => {
           ).status,
         ).toBe(401);
         const primary = await fetch(url(0, path), { method: "POST", headers: signed });
-        expect(primary.status).toBe(primaryStatus);
+        expect(primary.status).toBe(forwarded ? forwardedPrimaryStatus : primaryStatus);
         const primaryText = await primary.text();
+        if (forwarded && forwardedPrimaryStatus === 403) {
+          expect(primaryText).toContain("proxy_attribution_required");
+        }
         if (primaryBody !== undefined) {
           expect(primaryText).toBe(primaryBody);
         }

@@ -50,6 +50,7 @@ import {
   expectSingleNearLimitUpdate,
   expectStatusCall,
   expectWebhookBotScopesAborted,
+  mockMessages,
   requireMockCall,
   requireRecord,
   telegramMessageUpdate,
@@ -2135,17 +2136,21 @@ describe("startTelegramWebhook", () => {
       runtime: { log: runtimeLog, error: vi.fn(), exit: vi.fn() },
     });
 
-    await waitForWebhookState(() =>
-      expect(mockMessages(runtimeLog).join("\n")).toMatch(
-        /completion retry 1 scheduled|tombstone retry 1\//,
-      ),
-    );
-    await started.stop();
-    const attemptsAfterStop = completeAttempts;
-    await vi.advanceTimersByTimeAsync(400);
+    try {
+      await waitForWebhookState(() =>
+        expect(mockMessages(runtimeLog).join("\n")).toMatch(
+          /completion retry 1 scheduled|tombstone retry 1\//,
+        ),
+      );
+      await started.stop();
+      const attemptsAfterStop = completeAttempts;
+      await vi.advanceTimersByTimeAsync(400);
 
-    // Stop must abort in-flight tombstone retries (composed webhookAbortSignal).
-    expect(completeAttempts).toBe(attemptsAfterStop);
+      // Stop must abort in-flight tombstone retries (composed webhookAbortSignal).
+      expect(completeAttempts).toBe(attemptsAfterStop);
+    } finally {
+      await started.stop();
+    }
   });
 
   it("returns non-200 when the webhook update cannot be spooled durably", async () => {
