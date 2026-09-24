@@ -122,8 +122,8 @@ jobs:
           if ($replay.nodeVersion -cnotmatch '^24\.[0-9]+\.[0-9]+$' -or $replay.vitestVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
             throw "Replay requires exact supported Node 24 and Vitest versions."
           }
-          if (($replay.maxWorkers -isnot [long] -and $replay.maxWorkers -isnot [int]) -or $replay.maxWorkers -notin 1..4) {
-            throw "Replay requires an integer worker count from 1 through 4."
+          if (($replay.maxWorkers -isnot [long] -and $replay.maxWorkers -isnot [int]) -or $replay.maxWorkers -notin 1..8) {
+            throw "Replay requires an integer worker count from 1 through 8."
           }
           $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
           if ($replay.packageManager -cnotmatch '^pnpm@[0-9]+\.[0-9]+\.[0-9]+\+sha512\.[0-9a-f]{128}$' -or $replay.packageManager -cne $package.packageManager -or $replay.vitestVersion -cne $package.devDependencies.vitest) {
@@ -596,7 +596,7 @@ jobs:
           node --input-type=module <<'WINDOWS_REPLAY' 2>&1 | tee "$evidence_dir/replay.log"
           import { spawnSync, execFileSync } from "node:child_process";
           import { createHash } from "node:crypto";
-          import { readFileSync, writeFileSync } from "node:fs";
+          import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
           import { createRequire } from "node:module";
           import os from "node:os";
           import path from "node:path";
@@ -616,7 +616,11 @@ jobs:
           for (const [file, expected] of Object.entries(identity.dependencySha256)) {
             if (hash(file) !== expected) throw new Error(`Frozen dependency input changed: ${file}`);
           }
-          const args = ["--import", "./scripts/tsx.mjs", "scripts/test-projects.mts", ...binding.files, "--fileParallelism"];
+          const focused = "src/agents/cli-executable-identity.test.ts";
+          const focusedReplay = binding.files.length === 1 && binding.files[0] === focused;
+          const args = focusedReplay
+            ? ["scripts/run-vitest.mjs", focused]
+            : ["--import", "./scripts/tsx.mjs", "scripts/test-projects.mts", ...binding.files, "--fileParallelism"];
           const environment = Object.fromEntries(["CI", "NODE_OPTIONS", "OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD", "OPENCLAW_TEST_PROJECTS_PARALLEL", "OPENCLAW_VITEST_MAX_WORKERS"].map((key) => [key, process.env[key]]));
           writeFileSync(path.join(evidence, "runtime.json"), JSON.stringify({
             sourceSha, node: process.versions.node, nodeSha256: hash(process.execPath),
@@ -628,13 +632,63 @@ jobs:
             osTotalMemoryBytes: os.totalmem(), osFreeMemoryBytes: os.freemem(),
             args, environment,
           }, null, 2) + "\n");
-          const result = spawnSync(process.execPath, args, { stdio: "inherit" });
-          writeFileSync(path.join(evidence, "process-result.json"), JSON.stringify({
-            status: result.status, signal: result.signal, spawnError: result.error?.code ?? null,
-            descendantSettlement: "not-attested; frozen runner owns test lifetime; Actions owns final runner teardown",
+          const nativeImage = realpathSync.native(execFileSync(process.execPath, [
+            "--import", "./scripts/tsx.mjs", "--input-type=module", "-e",
+            'import { getWindowsCmdExePath } from "./src/infra/windows-install-roots.ts"; process.stdout.write(getWindowsCmdExePath());',
+          ], { encoding: "utf8" }).trim());
+          const nativeImageSha256 = hash(nativeImage);
+          const junctionRoot = mkdtempSync(path.join(os.tmpdir(), "mv1-cli-junction-"));
+          const junction = path.join(junctionRoot, "native");
+          try {
+            symlinkSync(path.dirname(nativeImage), junction, "junction");
+            if (!lstatSync(junction).isSymbolicLink() || realpathSync.native(path.join(junction, path.basename(nativeImage))) !== nativeImage) {
+              throw new Error("Native image junction did not bind the installed target");
+            }
+          } finally {
+            rmSync(junctionRoot, { recursive: true, force: true });
+          }
+          if (existsSync(junctionRoot) || hash(nativeImage) !== nativeImageSha256) {
+            throw new Error("Junction cleanup changed the installed target or retained fixture state");
+          }
+          writeFileSync(path.join(evidence, "native-junction-cleanup.json"), JSON.stringify({
+            nativeImage, nativeImageSha256, removedJunctionRoot: junctionRoot, targetUnchanged: true,
           }, null, 2) + "\n");
-          if (result.error) throw result.error;
-          process.exit(result.status ?? 1);
+          console.log("MV1_NATIVE_JUNCTION_CLEANUP " + JSON.stringify({ removed: !existsSync(junctionRoot), targetUnchanged: true }));
+          const outcomes = [];
+          function execute(label, commandArgs, env = {}) {
+            const started = performance.now();
+            const result = spawnSync(process.execPath, commandArgs, {
+              env: { ...process.env, ...env }, encoding: "utf8", maxBuffer: 32 * 1024 * 1024,
+            });
+            const output = (result.stdout ?? "") + (result.stderr ?? "");
+            process.stdout.write(output);
+            writeFileSync(path.join(evidence, label + ".log"), output);
+            const nativeImageUnchanged = hash(nativeImage) === nativeImageSha256;
+            const outcome = { label, status: result.status, signal: result.signal, seconds: (performance.now() - started) / 1000, nativeImageUnchanged };
+            outcomes.push(outcome);
+            writeFileSync(path.join(evidence, "mv1-outcomes.json"), JSON.stringify(outcomes, null, 2) + "\n");
+            console.log("MV1_OUTCOME " + JSON.stringify(outcome));
+            if (result.error) throw result.error;
+            if (!nativeImageUnchanged) throw new Error("Fixture changed the installed native image");
+            return { ...outcome, output };
+          }
+          if (focusedReplay) {
+            for (let iteration = 1; iteration <= 20; iteration++) {
+              if (execute(`focused-${iteration}`, args).status !== 0) {
+                throw new Error(`Focused repetition ${iteration} failed`);
+              }
+            }
+          } else {
+            for (let iteration = 1; iteration <= 3; iteration++) {
+              if (execute(`shard-${iteration}`, args).status !== 0) {
+                throw new Error(`Original shard repetition ${iteration} failed`);
+              }
+            }
+          }
+          writeFileSync(path.join(evidence, "process-result.json"), JSON.stringify({
+            status: 0, signal: null, spawnError: null,
+            descendantSettlement: "frozen runner owns test lifetime; Actions owns final runner teardown",
+          }, null, 2) + "\n");
           WINDOWS_REPLAY
           result=("${PIPESTATUS[@]}")
           if [[ "${result[0]}" != 0 ]]; then exit "${result[0]}"; fi
@@ -649,22 +703,27 @@ jobs:
           $ErrorActionPreference = "Stop"
           $binding = Get-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "binding.json") -Raw | ConvertFrom-Json
           $identity = Get-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "identity.json") -Raw | ConvertFrom-Json -AsHashtable
-          $logPath = Join-Path $env:REPLAY_EVIDENCE "replay.log"
-          $log = if (Test-Path -LiteralPath $logPath) { [string](Get-Content -LiteralPath $logPath -Raw) } else { "" }
-          $observed = @([regex]::Matches($log, '(?m)^\[test\] starting (test/vitest/vitest\.[a-z0-9-]+\.config\.ts)\r?$') | ForEach-Object { $_.Groups[1].Value })
-          $orderedPrefix = $observed.Count -le $binding.projects.Count
-          for ($i = 0; $i -lt $observed.Count -and $orderedPrefix; $i++) { $orderedPrefix = $observed[$i] -ceq $binding.projects[$i] }
-          $complete = $orderedPrefix -and $observed.Count -eq $binding.projects.Count
-          $dependencyInputsUnchanged = $true
-          foreach ($file in $identity.dependencySha256.Keys) {
-            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.dependencySha256[$file]) { $dependencyInputsUnchanged = $false }
-          }
-          $sourceSha = (git rev-parse HEAD).Trim()
-          $sourceUnchanged = $LASTEXITCODE -eq 0 -and $sourceSha -ceq $identity.sourceSha
-          $retainedNamespaces = @([regex]::Matches($log, '(?m)^\[vitest\] retained temporary namespace .*$') | ForEach-Object { $_.Value })
-          @{ stepOutcome = $env:REPLAY_OUTCOME; expectedProjects = $binding.projects; observedProjects = $observed; orderedPrefix = $orderedPrefix; complete = $complete; dependencyInputsUnchanged = $dependencyInputsUnchanged; sourceUnchanged = $sourceUnchanged; retainedNamespaces = $retainedNamespaces; cleanupOwner = "Actions runner job teardown; no persistent Testbox lease" } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "outcome.json")
-          if (-not $orderedPrefix -or -not $dependencyInputsUnchanged -or -not $sourceUnchanged -or ($env:REPLAY_OUTCOME -eq "success" -and -not $complete)) {
-            throw "Replay identity or observed project order differs; retained output is diagnostic only."
+          $focused = $binding.files.Count -eq 1 -and $binding.files[0] -eq "src/agents/cli-executable-identity.test.ts"
+          $iterations = if ($focused) { 1..20 } else { 1..3 }
+          $prefix = if ($focused) { "focused" } else { "shard" }
+          foreach ($iteration in $iterations) {
+            $logPath = Join-Path $env:REPLAY_EVIDENCE "$prefix-$iteration.log"
+            $log = if (Test-Path -LiteralPath $logPath) { [string](Get-Content -LiteralPath $logPath -Raw) } else { "" }
+            $observed = @([regex]::Matches($log, '(?m)^\[test\] starting (test/vitest/vitest\.[a-z0-9-]+\.config\.ts)\r?$') | ForEach-Object { $_.Groups[1].Value })
+            $orderedPrefix = $observed.Count -le $binding.projects.Count
+            for ($i = 0; $i -lt $observed.Count -and $orderedPrefix; $i++) { $orderedPrefix = $observed[$i] -ceq $binding.projects[$i] }
+            $complete = $orderedPrefix -and $observed.Count -eq $binding.projects.Count
+            $dependencyInputsUnchanged = $true
+            foreach ($file in $identity.dependencySha256.Keys) {
+              if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.dependencySha256[$file]) { $dependencyInputsUnchanged = $false }
+            }
+            $sourceSha = (git rev-parse HEAD).Trim()
+            $sourceUnchanged = $LASTEXITCODE -eq 0 -and $sourceSha -ceq $identity.sourceSha
+            $retainedNamespaces = @([regex]::Matches($log, '(?m)^\[vitest\] retained temporary namespace .*$') | ForEach-Object { $_.Value })
+            @{ stepOutcome = $env:REPLAY_OUTCOME; expectedProjects = $binding.projects; observedProjects = $observed; orderedPrefix = $orderedPrefix; complete = $complete; dependencyInputsUnchanged = $dependencyInputsUnchanged; sourceUnchanged = $sourceUnchanged; retainedNamespaces = $retainedNamespaces; cleanupOwner = "Actions runner job teardown; no persistent Testbox lease" } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "outcome-$prefix-$iteration.json")
+            if (-not $orderedPrefix -or -not $dependencyInputsUnchanged -or -not $sourceUnchanged -or ($env:REPLAY_OUTCOME -eq "success" -and -not $complete)) {
+              throw "Replay identity or observed project order differs; retained output is diagnostic only."
+            }
           }
 
       - name: Upload exact Windows replay evidence
