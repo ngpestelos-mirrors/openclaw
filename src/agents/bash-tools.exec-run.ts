@@ -674,13 +674,13 @@ export function createExecTool(
         // that settles before this timer fires must stay out of the task ledger.
         const registration = settlement.register(run, notifySessionKey, agentId);
         const finishPromotion = () => {
-          // A fast exit joins registration and its terminal write before returning.
-          if (!run.session.finalizing && !settlement.outcome) {
-            backgrounded.resolve({ status: "backgrounded" });
-          }
+          // Promotion owns the process handle even if it exits during registration.
+          backgrounded.resolve({ status: "backgrounded" });
         };
         if (registration) {
-          void withoutGatewayToolCallerIdentity(() => registration.then(finishPromotion));
+          void withoutGatewayToolCallerIdentity(() =>
+            registration.then(finishPromotion, backgrounded.reject),
+          );
         } else {
           finishPromotion();
         }

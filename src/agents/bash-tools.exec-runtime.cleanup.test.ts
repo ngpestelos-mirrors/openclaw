@@ -489,7 +489,7 @@ describe("exec settlement recovery", () => {
                 ) {
                   throw failure;
                 }
-                return;
+                return undefined;
               }
               if (outcome.status === "failed") {
                 correctionStarted.resolve();

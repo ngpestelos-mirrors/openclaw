@@ -184,10 +184,12 @@ describe("exec background task wiring", () => {
     }
   });
 
-  it("joins a fast process exit with pending task registration before returning its outcome", async () => {
+  it("keeps a fast background process handle while joining registration and terminal settlement", async () => {
     const registrationStarted = createDeferred();
     const registration = createDeferred<{ taskId: string }>();
     const processExited = createDeferred();
+    const finalizationStarted = createDeferred();
+    const finalization = createDeferred();
     const scopeKey = "exec-registration-race";
     const workspace = tempDirs.make("exec-registration-race-");
     const releaseFile = path.join(workspace, "release");
@@ -196,6 +198,10 @@ describe("exec background task wiring", () => {
     taskTracking.createBackgroundExecTask.mockImplementation(() => {
       registrationStarted.resolve();
       return registration.promise;
+    });
+    taskTracking.finalizeBackgroundExecTask.mockImplementation(() => {
+      finalizationStarted.resolve();
+      return finalization.promise;
     });
     const tool = createExecTool({
       host: "sandbox",
@@ -233,9 +239,20 @@ describe("exec background task wiring", () => {
       expect(returned).not.toHaveBeenCalled();
       expect(scopeReleased).not.toHaveBeenCalled();
       registration.resolve(handle);
+      await finalizationStarted.promise;
+      await vi.waitFor(() => expect(returned).toHaveBeenCalledOnce());
+      expect(scopeReleased).not.toHaveBeenCalled();
       const result = await execution;
+      expect(result.details.status).toBe("running");
+      if (result.details.status !== "running") {
+        throw new Error("Expected the promoted background process handle");
+      }
+      finalization.resolve();
       await joined;
-      expect(result.details.status).toBe("completed");
+      expect(getFinishedSession(result.details.sessionId)).toMatchObject({
+        exitCode: 0,
+        terminalStatus: "completed",
+      });
       expect(taskTracking.finalizeBackgroundExecTask).toHaveBeenCalledExactlyOnceWith({
         handle,
         outcome: expect.objectContaining({ status: "completed", exitCode: 0 }),
@@ -243,6 +260,7 @@ describe("exec background task wiring", () => {
     } finally {
       await fs.writeFile(releaseFile, "");
       registration.resolve(handle);
+      finalization.resolve();
       await Promise.allSettled([execution, joined]);
     }
   });

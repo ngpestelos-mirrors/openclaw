@@ -61,7 +61,7 @@ export function createExecProcessSettlement() {
           registration = created.then(accept);
           return registration;
         }
-        accept(created);
+        return accept(created);
       });
     },
     activity(at) {
