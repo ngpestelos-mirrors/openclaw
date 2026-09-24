@@ -211,119 +211,127 @@ console.log(${JSON.stringify(JSON.stringify({ postCoreExecutor: "fd3-pid-start-v
   };
 }
 
-it("retains native descendant exclusion in the captured continuing authority and succeeds after actual child settlement", async () => {
-  const f = await fixture();
-  let retained!: () => void;
-  await f.execute(async (fence) => {
-    retained = captureUpdateCommandRecoveryGenerationAuthority(fence, f.runId);
-    await withUpdateCommandExecutorChild(fence, f.packageRoot, async (_grant, bindChild) => {
-      const child = spawn(
-        process.execPath,
-        ["--require", f.childGuard, "-e", "process.stdin.resume()"],
-        {
-          stdio: ["pipe", "ignore", "pipe"],
-        },
-      );
-      const closed = once(child, "close");
-      try {
-        await once(child, "spawn");
-        if (!child.pid) {
-          throw new Error("Missing child PID");
-        }
-        bindChild(child.pid, child.spawnargs);
-        expect(retained).toThrow(/still running/);
-        expect(() => publishUpdateCommandPackageGeneration(fence, f.runId, "not-admitted")).toThrow(
-          /still running/,
+it.skipIf(process.platform === "win32")(
+  "retains native descendant exclusion in the captured continuing authority and succeeds after actual child settlement",
+  async () => {
+    const f = await fixture();
+    let retained!: () => void;
+    await f.execute(async (fence) => {
+      retained = captureUpdateCommandRecoveryGenerationAuthority(fence, f.runId);
+      await withUpdateCommandExecutorChild(fence, f.packageRoot, async (_grant, bindChild) => {
+        const child = spawn(
+          process.execPath,
+          ["--require", f.childGuard, "-e", "process.stdin.resume()"],
+          {
+            stdio: ["pipe", "ignore", "pipe"],
+          },
         );
-        expect(identity(f.packageRoot)).toBe(f.selection.installation.identity);
-        child.stdin.end();
-        expect((await closed)[0]).toBe(0);
-      } finally {
-        if (child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGKILL");
+        const closed = once(child, "close");
+        try {
+          await once(child, "spawn");
+          if (!child.pid) {
+            throw new Error("Missing child PID");
+          }
+          bindChild(child.pid, child.spawnargs);
+          expect(retained).toThrow(/still running/);
+          expect(() =>
+            publishUpdateCommandPackageGeneration(fence, f.runId, "not-admitted"),
+          ).toThrow(/still running/);
+          expect(identity(f.packageRoot)).toBe(f.selection.installation.identity);
+          child.stdin.end();
+          expect((await closed)[0]).toBe(0);
+        } finally {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+          }
+          await closed;
         }
-        await closed;
-      }
-    });
-    retained();
-    const prepared = await f.prepare(fence);
-    expect((await prepared.publish(false)).phase).toBe("publication-complete");
-    retained();
-  });
-  expect(retained).toThrow(/outlived/);
-  expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
-});
-
-it("publishes the real prepared provider across displacement under the same native owner and selects only the recorded after-image", async () => {
-  const f = await fixture();
-  let old!: NonNullable<ReturnType<typeof currentUpdateInitialStoreAdmission>>;
-  let observedGap = false;
-  await f.execute(
-    async (fence) => {
-      const original = captureUpdateCommandExecutorAuthority(fence, f.runId);
-      const continuing = captureUpdateCommandRecoveryGenerationAuthority(fence, f.runId);
+      });
+      retained();
       const prepared = await f.prepare(fence);
-      const descriptor = prepared.journal.read().descriptor;
-      expect(() =>
-        createPackageActivationForwardProvider(
-          prepared.anchor,
-          prepared.journal,
-          () => {},
-          prepared.journal.read(),
-        ),
-      ).toThrow(/prepared inline owner/);
-      old = currentUpdateInitialStoreAdmission()!;
-      const rename = fsp.rename;
-      vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
-        await rename(from, to);
-        if (String(from) === f.packageRoot) {
-          observedGap = true;
-          expect(fs.existsSync(f.packageRoot)).toBe(false);
-          expect(old.assertCurrent).toThrow(/settled/);
-          expect(fence.assertCurrent).toThrow(/unresolved/);
-          expect(currentUpdateInitialStoreAdmission).toThrow(/publication has not settled/);
-          continuing();
-          const live = f.store.read(f.packageRoot);
-          expect(live.kind === "current" && live.lease.owner).toBe(original.owner);
-        }
-      });
-      let displacedCalls = 0;
-      await prepared.publish(false, async () => {
-        displacedCalls++;
-        expect(fs.existsSync(f.packageRoot)).toBe(false);
-        prepared.assertCurrent();
-        expect(prepared.status().phase).toBe("publishing");
-        await Promise.resolve();
-        prepared.assertCurrent();
-      });
-      expect(displacedCalls).toBe(1);
-      prepared.assertCurrent();
-      expect(prepared.status().phase).toBe("publication-complete");
-      fence.assertCurrent();
-      expect(captureUpdateCommandExecutorAuthority(fence, f.runId)).toEqual(original);
-      const selected = captureUpdateCommandExecutorCurrentStores(fence, f.runId)!.selection;
-      expect(selected).toEqual({
-        ...f.selection,
-        installation: { path: f.packageRoot, identity: descriptor.candidate.identity },
-      });
-      expect(identity(f.packageRoot)).toBe(descriptor.candidate.identity);
-      expect(fs.readFileSync(f.launcher, "utf8")).toBe("candidate launcher\n");
-      const db = new DatabaseSync(f.state, { readOnly: true });
-      try {
-        currentUpdateInitialStoreAdmission()!.observeConnection("state", db);
-        expect(db.prepare("SELECT value FROM acknowledged").get()?.value).toBe("newer write");
-      } finally {
-        db.close();
-      }
-    },
-    () => currentUpdateInitialStoreAdmission()!.assertCurrent(),
-  );
-  expect(observedGap).toBe(true);
-  expect(old.assertCurrent).toThrow(/settled/);
-  expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
-});
+      expect((await prepared.publish(false)).phase).toBe("publication-complete");
+      retained();
+    });
+    expect(retained).toThrow(/outlived/);
+    expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
+  },
+);
 
-it.each(["operation", "cancelled", "displaced-package", "replaced-handoff"] as const)(
+it.skipIf(process.platform === "win32")(
+  "publishes the real prepared provider across displacement under the same native owner and selects only the recorded after-image",
+  async () => {
+    const f = await fixture();
+    let old!: NonNullable<ReturnType<typeof currentUpdateInitialStoreAdmission>>;
+    let observedGap = false;
+    await f.execute(
+      async (fence) => {
+        const original = captureUpdateCommandExecutorAuthority(fence, f.runId);
+        const continuing = captureUpdateCommandRecoveryGenerationAuthority(fence, f.runId);
+        const prepared = await f.prepare(fence);
+        const descriptor = prepared.journal.read().descriptor;
+        expect(() =>
+          createPackageActivationForwardProvider(
+            prepared.anchor,
+            prepared.journal,
+            () => {},
+            prepared.journal.read(),
+          ),
+        ).toThrow(/prepared inline owner/);
+        old = currentUpdateInitialStoreAdmission()!;
+        const rename = fsp.rename;
+        vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
+          await rename(from, to);
+          if (String(from) === f.packageRoot) {
+            observedGap = true;
+            expect(fs.existsSync(f.packageRoot)).toBe(false);
+            expect(old.assertCurrent).toThrow(/settled/);
+            expect(fence.assertCurrent).toThrow(/unresolved/);
+            expect(currentUpdateInitialStoreAdmission).toThrow(/publication has not settled/);
+            continuing();
+            const live = f.store.read(f.packageRoot);
+            expect(live.kind === "current" && live.lease.owner).toBe(original.owner);
+          }
+        });
+        let displacedCalls = 0;
+        await prepared.publish(false, async () => {
+          displacedCalls++;
+          expect(fs.existsSync(f.packageRoot)).toBe(false);
+          prepared.assertCurrent();
+          expect(prepared.status().phase).toBe("publishing");
+          await Promise.resolve();
+          prepared.assertCurrent();
+        });
+        expect(displacedCalls).toBe(1);
+        prepared.assertCurrent();
+        expect(prepared.status().phase).toBe("publication-complete");
+        fence.assertCurrent();
+        expect(captureUpdateCommandExecutorAuthority(fence, f.runId)).toEqual(original);
+        const selected = captureUpdateCommandExecutorCurrentStores(fence, f.runId)!.selection;
+        expect(selected).toEqual({
+          ...f.selection,
+          installation: { path: f.packageRoot, identity: descriptor.candidate.identity },
+        });
+        expect(identity(f.packageRoot)).toBe(descriptor.candidate.identity);
+        expect(fs.readFileSync(f.launcher, "utf8")).toBe("candidate launcher\n");
+        const db = new DatabaseSync(f.state, { readOnly: true });
+        try {
+          currentUpdateInitialStoreAdmission()!.observeConnection("state", db);
+          expect(db.prepare("SELECT value FROM acknowledged").get()?.value).toBe("newer write");
+        } finally {
+          db.close();
+        }
+      },
+      () => currentUpdateInitialStoreAdmission()!.assertCurrent(),
+    );
+    expect(observedGap).toBe(true);
+    expect(old.assertCurrent).toThrow(/settled/);
+    expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
+  },
+);
+
+it
+  .skipIf(process.platform === "win32")
+  .each(["operation", "cancelled", "displaced-package", "replaced-handoff"] as const)(
   "rejects %s before publication and never refreshes the selected owner",
   async (mode) => {
     const f = await fixture();
@@ -365,178 +373,193 @@ it.each(["operation", "cancelled", "displaced-package", "replaced-handoff"] as c
   },
 );
 
-it("keeps a failed displacement excluded and preserves the native owner for cleanup", async () => {
-  const f = await fixture();
-  const failed = new Error("publication interrupted after displacement");
-  let prepared!: Awaited<ReturnType<typeof f.prepare>>;
-  await expect(
-    f.execute(async (fence) => {
-      prepared = await f.prepare(fence);
-      const retained = captureUpdateCommandRecoveryGenerationAuthority(fence, f.runId);
-      const rename = fsp.rename;
-      vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
-        await rename(from, to);
-        if (String(from) === f.packageRoot) {
-          throw failed;
-        }
-      });
-      await expect(prepared.publish(false)).rejects.toBe(failed);
-      expect(fence.assertCurrent).toThrow(/unresolved/);
-      expect(retained).toThrow(/unresolved/);
-      expect(currentUpdateInitialStoreAdmission).toThrow(/publication has not settled/);
-    }),
-  ).rejects.toBe(failed);
-  expect(openPackageActivationJournal(prepared.anchor).read().phase).toBe("publishing");
-  expect(fs.existsSync(path.join(prepared.anchor, "previous"))).toBe(true);
-  expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
-});
-
-it("joins an unawaited forward publication before releasing the original owner", async () => {
-  const f = await fixture();
-  const reached = createDeferredCore();
-  const returned = createDeferredCore();
-  const resume = createDeferredCore();
-  let settled = false;
-  let publishing: Promise<unknown> | undefined;
-  const rename = fsp.rename;
-  vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
-    await rename(from, to);
-    if (String(from) === f.packageRoot) {
-      reached.resolve();
-      await resume.promise;
-    }
-  });
-  const operation = f
-    .execute(async (fence) => {
-      const prepared = await f.prepare(fence);
-      publishing = prepared.publish(false);
-      // The executor must join its native task; separately consume the retained
-      // wrapper promise so a regression cannot hide as an unhandled rejection.
-      void publishing.catch(() => {});
-      await reached.promise;
-      try {
+it.skipIf(process.platform === "win32")(
+  "keeps a failed displacement excluded and preserves the native owner for cleanup",
+  async () => {
+    const f = await fixture();
+    const failed = new Error("publication interrupted after displacement");
+    let prepared!: Awaited<ReturnType<typeof f.prepare>>;
+    await expect(
+      f.execute(async (fence) => {
+        prepared = await f.prepare(fence);
+        const retained = captureUpdateCommandRecoveryGenerationAuthority(fence, f.runId);
+        const rename = fsp.rename;
+        vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
+          await rename(from, to);
+          if (String(from) === f.packageRoot) {
+            throw failed;
+          }
+        });
+        await expect(prepared.publish(false)).rejects.toBe(failed);
         expect(fence.assertCurrent).toThrow(/unresolved/);
+        expect(retained).toThrow(/unresolved/);
         expect(currentUpdateInitialStoreAdmission).toThrow(/publication has not settled/);
-      } finally {
-        returned.resolve();
+      }),
+    ).rejects.toBe(failed);
+    expect(openPackageActivationJournal(prepared.anchor).read().phase).toBe("publishing");
+    expect(fs.existsSync(path.join(prepared.anchor, "previous"))).toBe(true);
+    expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "joins an unawaited forward publication before releasing the original owner",
+  async () => {
+    const f = await fixture();
+    const reached = createDeferredCore();
+    const returned = createDeferredCore();
+    const resume = createDeferredCore();
+    let settled = false;
+    let publishing: Promise<unknown> | undefined;
+    const rename = fsp.rename;
+    vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(from) === f.packageRoot) {
+        reached.resolve();
+        await resume.promise;
       }
-    })
-    .finally(() => {
-      settled = true;
-      reached.resolve();
-      returned.resolve();
     });
-  try {
-    await reached.promise;
-    await returned.promise;
-    expect(settled).toBe(false);
-    expect(f.store.read(f.packageRoot).kind).toBe("current");
-  } finally {
-    resume.resolve();
-    await operation;
-    await publishing;
-  }
-  expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
-  expect(
-    JSON.parse(fs.readFileSync(path.join(f.packageRoot, "package.json"), "utf8")).version,
-  ).toBe("2.0.0");
-});
-
-it("releases its original native owner if the lexical invocation ends during publication", async () => {
-  const f = await fixture();
-  const reached = createDeferredCore();
-  const resume = createDeferredCore();
-  const maintenance = createOpenClawDatabaseMaintenanceScope();
-  let pending: Promise<void> | undefined;
-  const rename = fsp.rename;
-  vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
-    await rename(from, to);
-    if (String(from) === f.packageRoot) {
-      reached.resolve();
-      await resume.promise;
-    }
-  });
-  try {
-    await withStateDatabaseCoordinatorRuntimeDirectory(f.coordinator, async () => {
-      await maintenance.run(() =>
-        withUpdateInitialStoreInvocation({ version: 1, selection: f.selection }, async () => {
-          // Deliberately end the lexical caller while its admitted native executor
-          // still owns publication. It must reject reopening, but join and release
-          // its exact native owner before the separate maintenance scope closes.
-          pending = withUpdateCommandExecutor(
-            f.runId,
-            async (executor) => {
-              const fence = await executor.enter(f.packageRoot);
-              const prepared = await f.prepare(fence);
-              await prepared.publish(false);
-            },
-            {
-              directOriginal: { databasePath: f.handoff },
-              initialStores: { protocol: "initial-pair-v1", selection: f.selection },
-            },
-          );
-          void pending.catch(() => {
-            reached.resolve();
-          });
-          await reached.promise;
-        }),
-      );
-      expect(f.store.read(f.packageRoot).kind).toBe("current");
-      resume.resolve();
-      await expect(pending).rejects.toThrow("Publication outlived its original invocation.");
-    });
-  } finally {
-    resume.resolve();
-    await pending?.catch(() => {});
-    await maintenance.close();
-  }
-  expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
-});
-
-it("does not revive a retired inline owner with a replacement original fence assertion", async () => {
-  const f = await fixture();
-  let retained!: Awaited<ReturnType<typeof f.prepare>>;
-  let original!: UpdateRecoveryFence;
-  await f.execute(async (fence) => {
-    original = fence;
-    retained = await f.prepare(fence);
-    await retained.publish(false);
-  });
-  const before = retained.journal.read();
-  expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
-  original.assertCurrent = () => {};
-  expect(() => retained.assertCurrent()).toThrow();
-  await expect(retained.retire()).rejects.toThrow();
-  expect(retained.journal.read()).toEqual(before);
-  expect(identity(f.packageRoot)).toBe(before.descriptor.candidate.identity);
-});
-
-it("rejects provider dispatch from the caller while the original native publication is registered", async () => {
-  const f = await fixture();
-  await f.execute(async (fence) => {
-    const prepared = await f.prepare(fence);
-    const initial = prepared.journal.read();
-    const original = prepared.publish(false);
-    let foreign: Promise<unknown> | undefined;
-    let refusal: unknown;
+    const operation = f
+      .execute(async (fence) => {
+        const prepared = await f.prepare(fence);
+        publishing = prepared.publish(false);
+        // The executor must join its native task; separately consume the retained
+        // wrapper promise so a regression cannot hide as an unhandled rejection.
+        void publishing.catch(() => {});
+        await reached.promise;
+        try {
+          expect(fence.assertCurrent).toThrow(/unresolved/);
+          expect(currentUpdateInitialStoreAdmission).toThrow(/publication has not settled/);
+        } finally {
+          returned.resolve();
+        }
+      })
+      .finally(() => {
+        settled = true;
+        reached.resolve();
+        returned.resolve();
+      });
     try {
-      const provider = createPackageActivationForwardProvider(
-        prepared.anchor,
-        prepared.journal,
-        () => {},
-        initial,
-      );
-      foreign = provider.publish(false);
-    } catch (error) {
-      refusal = error;
+      await reached.promise;
+      await returned.promise;
+      expect(settled).toBe(false);
+      expect(f.store.read(f.packageRoot).kind).toBe("current");
+    } finally {
+      resume.resolve();
+      await operation;
+      await publishing;
     }
-    // A failing regression must still join both issued operations. The correct
-    // implementation never issues the foreign operation at all.
-    await Promise.allSettled([original, foreign]);
-    expect(refusal).toBeInstanceOf(Error);
-    expect((refusal as Error).message).toMatch(/native dispatch/);
-    expect((await original).phase).toBe("publication-complete");
-    prepared.assertCurrent();
-  });
-  expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
-});
+    expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
+    expect(
+      JSON.parse(fs.readFileSync(path.join(f.packageRoot, "package.json"), "utf8")).version,
+    ).toBe("2.0.0");
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "releases its original native owner if the lexical invocation ends during publication",
+  async () => {
+    const f = await fixture();
+    const reached = createDeferredCore();
+    const resume = createDeferredCore();
+    const maintenance = createOpenClawDatabaseMaintenanceScope();
+    let pending: Promise<void> | undefined;
+    const rename = fsp.rename;
+    vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(from) === f.packageRoot) {
+        reached.resolve();
+        await resume.promise;
+      }
+    });
+    try {
+      await withStateDatabaseCoordinatorRuntimeDirectory(f.coordinator, async () => {
+        await maintenance.run(() =>
+          withUpdateInitialStoreInvocation({ version: 1, selection: f.selection }, async () => {
+            // Deliberately end the lexical caller while its admitted native executor
+            // still owns publication. It must reject reopening, but join and release
+            // its exact native owner before the separate maintenance scope closes.
+            pending = withUpdateCommandExecutor(
+              f.runId,
+              async (executor) => {
+                const fence = await executor.enter(f.packageRoot);
+                const prepared = await f.prepare(fence);
+                await prepared.publish(false);
+              },
+              {
+                directOriginal: { databasePath: f.handoff },
+                initialStores: { protocol: "initial-pair-v1", selection: f.selection },
+              },
+            );
+            void pending.catch(() => {
+              reached.resolve();
+            });
+            await reached.promise;
+          }),
+        );
+        expect(f.store.read(f.packageRoot).kind).toBe("current");
+        resume.resolve();
+        await expect(pending).rejects.toThrow("Publication outlived its original invocation.");
+      });
+    } finally {
+      resume.resolve();
+      await pending?.catch(() => {});
+      await maintenance.close();
+    }
+    expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "does not revive a retired inline owner with a replacement original fence assertion",
+  async () => {
+    const f = await fixture();
+    let retained!: Awaited<ReturnType<typeof f.prepare>>;
+    let original!: UpdateRecoveryFence;
+    await f.execute(async (fence) => {
+      original = fence;
+      retained = await f.prepare(fence);
+      await retained.publish(false);
+    });
+    const before = retained.journal.read();
+    expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
+    original.assertCurrent = () => {};
+    expect(() => retained.assertCurrent()).toThrow();
+    await expect(retained.retire()).rejects.toThrow();
+    expect(retained.journal.read()).toEqual(before);
+    expect(identity(f.packageRoot)).toBe(before.descriptor.candidate.identity);
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "rejects provider dispatch from the caller while the original native publication is registered",
+  async () => {
+    const f = await fixture();
+    await f.execute(async (fence) => {
+      const prepared = await f.prepare(fence);
+      const initial = prepared.journal.read();
+      const original = prepared.publish(false);
+      let foreign: Promise<unknown> | undefined;
+      let refusal: unknown;
+      try {
+        const provider = createPackageActivationForwardProvider(
+          prepared.anchor,
+          prepared.journal,
+          () => {},
+          initial,
+        );
+        foreign = provider.publish(false);
+      } catch (error) {
+        refusal = error;
+      }
+      // A failing regression must still join both issued operations. The correct
+      // implementation never issues the foreign operation at all.
+      await Promise.allSettled([original, foreign]);
+      expect(refusal).toBeInstanceOf(Error);
+      expect((refusal as Error).message).toMatch(/native dispatch/);
+      expect((await original).phase).toBe("publication-complete");
+      prepared.assertCurrent();
+    });
+    expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
+  },
+);

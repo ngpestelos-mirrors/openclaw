@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { requireDirectorySync, syncDirectory } from "./directory-durability.js";
 import { hasErrnoCode } from "./errors.js";
 import {
   completePackageActivationCustody,
@@ -497,8 +498,10 @@ export function createPublicationOwner(
         }
         await fsp.rmdir(anchor);
       }
-      // A lost rmdir acknowledgement is reconciled only against the recorded
-      // exact-anchor intent. Positive completion precedes the final helper intent.
+      // Persist removal even when resuming its lost acknowledgement. The journal
+      // must not outlive the directory entry change and skip a resurrected anchor.
+      assertCurrent();
+      requireDirectorySync(await syncDirectory(path.dirname(anchor)), "Package anchor retirement");
       assertCurrent();
       if (entryIdentity(anchor, true) !== null) {
         throw new Error("Package anchor was not retired.");

@@ -33,6 +33,46 @@ async function recover(anchor: string) {
 }
 
 describe.skipIf(process.platform === "win32")("package preparation durability", () => {
+  it("keeps anchor removal resumable until its parent is persisted", async () => {
+    const f = await fixture.prepare();
+    await runPackageActivationRecovery(f.anchor, "repair", f.operationId);
+    const journal = openPackageActivationJournal(f.anchor);
+    const failure = new Error("anchor removal persistence failed");
+    const sync = durability.syncDirectory;
+    let refused = 0;
+    const spy = vi.spyOn(durability, "syncDirectory").mockImplementation(async (directory) => {
+      if (directory === path.dirname(f.anchor) && !fs.existsSync(f.anchor)) {
+        expect(journal.read()).toMatchObject({
+          phase: "retiring",
+          intent: { kind: "remove-anchor", selected: "previous" },
+        });
+        refused++;
+        throw failure;
+      }
+      return sync(directory);
+    });
+    await expect(runPackageActivationRecovery(f.anchor, "retire", f.operationId)).rejects.toBe(
+      failure,
+    );
+    const pending = journal.read();
+    expect(fs.existsSync(f.anchor)).toBe(false);
+    expect(fs.existsSync(resolvePackageActivationHelper(f.anchor))).toBe(true);
+    // An already absent anchor still requires the failed durability step on resume.
+    await expect(runPackageActivationRecovery(f.anchor, "retire", f.operationId)).rejects.toBe(
+      failure,
+    );
+    expect(journal.read()).toEqual(pending);
+    expect(refused).toBe(2);
+    spy.mockRestore();
+    await expect(
+      runPackageActivationRecovery(f.anchor, "retire", f.operationId),
+    ).resolves.toMatchObject({ phase: "complete" });
+    expect(fs.existsSync(resolvePackageActivationHelper(f.anchor))).toBe(false);
+    expect(fs.readFileSync(path.join(f.packageRoot, "package.json"), "utf8")).toContain(
+      '"version":"1.0.0"',
+    );
+  });
+
   it.each(["source", "destination"] as const)(
     "retains and retries custody when the %s parent cannot be persisted",
     async (side) => {

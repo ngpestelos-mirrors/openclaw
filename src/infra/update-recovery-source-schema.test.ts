@@ -60,11 +60,11 @@ it("admits complete physical inventory and refuses unknown, duplicate, omitted o
       operationId: "op",
       candidateManifestSha256: attestation.candidateManifestSha256,
       entries: [
-        { kind: "directory" as const, sourcePath: live, mode: 0o700 },
+        { kind: "directory" as const, sourcePath: live, mode: fs.statSync(live).mode & 0o7777 },
         {
           kind: "file" as const,
           sourcePath: file,
-          mode: 0o600,
+          mode: fs.statSync(file).mode & 0o7777,
           sqlite: true,
           sha256: "b".repeat(64),
           size: 12,
@@ -161,9 +161,21 @@ it("admits complete physical inventory and refuses unknown, duplicate, omitted o
       readUpdateRecoverySourceAttestation({ ...ref, sha256: sha256(omittedRaw) }, expected),
     ).toThrow("paths, kinds or metadata");
     fs.writeFileSync(ref.path, serialized);
-    fs.chmodSync(ref.path, 0o644);
-    expect(() => readUpdateRecoverySourceAttestation(ref, expected)).toThrow("private immutable");
-    fs.chmodSync(ref.path, 0o600);
+    if (process.platform !== "win32") {
+      fs.chmodSync(ref.path, 0o644);
+      expect(() => readUpdateRecoverySourceAttestation(ref, expected)).toThrow("private immutable");
+    }
+    // libuv reports writable Windows files as 0666, even when created with 0600.
+    // Exercise that policy with real file bytes; this is not native Windows proof.
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    try {
+      fs.chmodSync(ref.path, 0o666);
+      Object.defineProperty(process, "platform", { value: "win32" });
+      expect(readUpdateRecoverySourceAttestation(ref, expected)).toEqual(attestation);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      fs.chmodSync(ref.path, 0o600);
+    }
     fs.linkSync(ref.path, path.join(root, "hardlink"));
     expect(() => readUpdateRecoverySourceAttestation(ref, expected)).toThrow("private immutable");
     fs.unlinkSync(path.join(root, "hardlink"));

@@ -51,7 +51,7 @@ export function readUpdateRecoverySourceAttestation(
     fs.realpathSync(ref.path) !== ref.path ||
     !named.isFile() ||
     named.nlink !== 1n ||
-    (named.mode & 0o777n) !== 0o600n ||
+    (process.platform !== "win32" && (named.mode & 0o777n) !== 0o600n) ||
     (process.getuid && named.uid !== BigInt(process.getuid())) ||
     named.size > BigInt(MAX_SOURCE_ATTESTATION_BYTES)
   ) {

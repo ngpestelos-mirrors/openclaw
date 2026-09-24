@@ -54,6 +54,8 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         slot,
         slotChild,
       } = resolveUpdateCommandChildBinding(grant, runId, root, identityWarnings.warn);
+      using readConnections = new DisposableStack();
+      readConnections.use(store.retainReadConnection());
       let active = true;
       const isLive = (identity: ManagedHandoffLease["executor"]) =>
         store.isProcessIdentityCurrent(identity);

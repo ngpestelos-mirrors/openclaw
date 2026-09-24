@@ -9,6 +9,7 @@ import {
 } from "../commands/backup-verify-manifest.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
+import { sha256Hex } from "./crypto-digest.js";
 import { pinDirectory } from "./directory-durability.js";
 import { formatErrorMessage } from "./errors.js";
 import { sameFileMutationFingerprint } from "./file-descriptor.js";
@@ -18,7 +19,6 @@ import {
   backupStore,
   canonicalEntryPath,
   captureDirectory,
-  digest,
   fileDigest,
   MAX_MANIFEST_BYTES,
   statOrMissing,
@@ -103,7 +103,7 @@ async function withRecoveryMetadata<T>(
       symlinks: "reject",
       hardlinks: "reject",
     });
-    if (digest(bytes.buffer) !== ref.manifestSha256) {
+    if (sha256Hex(bytes.buffer) !== ref.manifestSha256) {
       throw new Error("Update recovery manifest changed before metadata access.");
     }
     const manifest = parseUpdateRecoveryBackupManifest(bytes.buffer.toString("utf8"));
@@ -191,7 +191,7 @@ async function fingerprintIncompleteRecoveryGeneration(
     ]);
   }
   assertOwned();
-  return digest(JSON.stringify(inventory));
+  return sha256Hex(JSON.stringify(inventory));
 }
 /** This records repair of current state, never reverse publication or permission to delete B/C/T. */
 async function readBinding(ref: UpdateRecoveryBackupRef, authority: Authority) {
@@ -267,9 +267,9 @@ async function readBinding(ref: UpdateRecoveryBackupRef, authority: Authority) {
         throw new Error("Forward recovery generation identity changed.");
       }
       if (kind === "candidate") {
-        generations.candidateSha256 = digest(raw);
+        generations.candidateSha256 = sha256Hex(raw);
       } else {
-        generations.preparedSha256 = digest(raw);
+        generations.preparedSha256 = sha256Hex(raw);
       }
     }
     await pin.assertCurrent();
@@ -380,7 +380,7 @@ async function listBackups(installRoot?: string): Promise<
     if (installRoot && manifest.installRoot !== path.resolve(installRoot)) {
       continue;
     }
-    const ref = { directory, manifestPath, manifestSha256: digest(raw) };
+    const ref = { directory, manifestPath, manifestSha256: sha256Hex(raw) };
     assertManifestLocation(ref, manifest);
     const capture = (await getUpdateRunAsync(manifest.runId))?.origin.updateRecoveryCapture;
     if (capture && capture.manifestSha256 !== ref.manifestSha256) {

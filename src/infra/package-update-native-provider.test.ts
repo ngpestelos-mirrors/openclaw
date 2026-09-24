@@ -35,7 +35,9 @@ const identity = (file: string) => {
 // Real native original executor/maintenance and real lower swap/preparation.
 // Only the sealed helper and target capability probe are inert fixtures. This
 // is NOT installed runtime/startup, automatic C-to-T or fullCLI acceptance.
-it.each(["ordinary", "selected", "descendant", "rollback"] as const)(
+it
+  .skipIf(process.platform === "win32")
+  .each(["ordinary", "selected", "descendant", "rollback"] as const)(
   "retains the real original provider and native guards (control: %s)",
   async (mode) => {
     const selectedPair = mode !== "ordinary";

@@ -5,10 +5,15 @@ import { sql } from "kysely";
 import { requireDirectorySync, syncDirectorySync } from "./directory-durability.js";
 import { acquireFileLockSyncWithRetry } from "./file-lock-sync.js";
 import { sameFileIdentity } from "./fs-safe-advanced.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  getNodeSqliteKysely,
+  prepareSqliteQuerySync,
+} from "./kysely-sync.js";
 import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "./node-sqlite.js";
 import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import {
+  createExistingSqliteRollbackReader,
   withExistingSqliteRollbackDatabase,
   type ExistingSqliteTransaction,
 } from "./sqlite-existing-database.js";
@@ -237,6 +242,35 @@ export function createManagedHandoffLeaseDatabase(
     }
   }
   const existingTransactions = new WeakMap<HandoffDatabase, ExistingSqliteTransaction>();
+  const validations = new WeakMap<HandoffDatabase, () => void>();
+  const existingOptions = existingIdentity
+    ? {
+        busyTimeoutMs: 5000,
+        assertIdentity: () => {
+          initialStoreAdmission?.assertCurrent();
+          assertManagedUpdateLeaseDatabaseIdentity(existingIdentity);
+        },
+        observeConnection: initialStoreAdmission
+          ? (db: HandoffDatabase) => {
+              initialStoreAdmission.observeConnection("handoff", db);
+            }
+          : undefined,
+        validate: (db: HandoffDatabase) => {
+          let validate = validations.get(db);
+          if (!validate) {
+            const query = prepareSqliteQuerySync<void, LeaseTable>(db, () =>
+              leaseQueries(db).selectFrom("managed_update_handoffs").selectAll().limit(0),
+            );
+            validate = () => {
+              query();
+            };
+            validations.set(db, validate);
+          }
+          validate();
+        },
+      }
+    : undefined;
+  let readExisting: ReturnType<typeof createExistingSqliteRollbackReader> | undefined;
   /**
    * The store keeps its directory at 0700, so drift on a directory we own is its
    * own interrupted work. Ownership and type stay the temp-root resolver's call.
@@ -298,37 +332,18 @@ export function createManagedHandoffLeaseDatabase(
   }
 
   function withDatabase<T>(write: boolean, operation: (db: HandoffDatabase) => T): T {
-    if (existingIdentity) {
-      return withExistingSqliteRollbackDatabase(
-        databasePath,
-        {
-          write,
-          busyTimeoutMs: 5000,
-          assertIdentity: () => {
-            initialStoreAdmission?.assertCurrent();
-            assertManagedUpdateLeaseDatabaseIdentity(existingIdentity);
-          },
-          observeConnection: initialStoreAdmission
-            ? (db) => {
-                initialStoreAdmission.observeConnection("handoff", db);
-              }
-            : undefined,
-          validate: (db) => {
-            executeSqliteQuerySync(
-              db,
-              leaseQueries(db).selectFrom("managed_update_handoffs").selectAll().limit(0),
-            );
-          },
-        },
-        (db, transact) => {
-          existingTransactions.set(db, transact);
-          try {
-            return operation(db);
-          } finally {
-            existingTransactions.delete(db);
-          }
-        },
-      );
+    if (existingOptions) {
+      const run = (db: HandoffDatabase, transact: ExistingSqliteTransaction) => {
+        existingTransactions.set(db, transact);
+        try {
+          return operation(db);
+        } finally {
+          existingTransactions.delete(db);
+        }
+      };
+      return !write && readExisting
+        ? readExisting(run)
+        : withExistingSqliteRollbackDatabase(databasePath, { ...existingOptions, write }, run);
     }
     const dir = path.dirname(databasePath);
     if (write) {
@@ -382,6 +397,21 @@ export function createManagedHandoffLeaseDatabase(
     }
   }
   return Object.assign(withDatabase, {
+    retainReadConnection(this: void) {
+      if (!existingOptions || readExisting) {
+        throw new Error("Existing SQLite reader requires an unretained identity-bound store.");
+      }
+      const reader = createExistingSqliteRollbackReader(databasePath, existingOptions);
+      readExisting = reader;
+      return {
+        [Symbol.dispose]() {
+          if (readExisting === reader) {
+            readExisting = undefined;
+          }
+          reader[Symbol.dispose]();
+        },
+      };
+    },
     transact<T>(db: HandoffDatabase, operation: () => T, options: SqliteTransactionOptions): T {
       const assertCurrent = () => {
         if (existingIdentity) {

@@ -136,7 +136,10 @@ export function admitUpdateInitialStores(input: UpdateInitialStoreSelection) {
       const main = rows.find((row) => row.name === "main");
       const binding = selection[store];
       if (
-        main?.file !== binding.databasePath ||
+        typeof main?.file !== "string" ||
+        !main.file ||
+        // SQLite may report a namespaced Windows filename for this same native target.
+        fs.realpathSync.native(main.file) !== fs.realpathSync.native(binding.databasePath) ||
         rows.some((row) => row.name !== "main" && row.name !== "temp")
       ) {
         refuse("connection uses a divergent or attached database");

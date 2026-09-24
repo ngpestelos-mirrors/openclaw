@@ -675,6 +675,7 @@ export function createManagedHandoffLeaseStore(
     return !result.error && result.status === 0 && (ownPlacement || nativeClosed(life));
   }
   return {
+    retainReadConnection: withDatabase.retainReadConnection,
     transact,
     read,
     readLegacyParent,
