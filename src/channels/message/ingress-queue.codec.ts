@@ -16,7 +16,7 @@ export const FAILED_NULL_PAYLOAD_SENTINEL = "OPENCLAW_CHANNEL_INGRESS_FAILED_NUL
 
 type ParseJsonResult = { ok: true; value: unknown } | { ok: false };
 
-export function parseJson(value: string): ParseJsonResult {
+function parseJson(value: string): ParseJsonResult {
   try {
     return { ok: true, value: JSON.parse(value) };
   } catch {

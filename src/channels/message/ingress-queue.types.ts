@@ -63,7 +63,7 @@ export type ChannelIngressQueueCompletedRecord<TCompletedMetadata = unknown> = {
 };
 
 /** Failed ingress event tombstone retained for duplicate detection. */
-export type ChannelIngressQueueFailedRecord = {
+type ChannelIngressQueueFailedRecord = {
   id: string;
   channelId: string;
   accountId: string;
