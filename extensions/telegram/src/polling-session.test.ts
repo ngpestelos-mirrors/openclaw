@@ -1113,7 +1113,7 @@ describe("TelegramPollingSession", () => {
         actualWorker = worker;
         const task = new Promise<void>((resolve, reject) => {
           worker.once("error", (cause) => {
-            const error = toErrorObject(cause);
+            const error = toErrorObject(cause, "Telegram test worker failed");
             pollErrorReceived.reject(error);
             reject(error);
           });
