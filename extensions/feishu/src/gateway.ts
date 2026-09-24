@@ -23,8 +23,7 @@ export const feishuGatewayAdapter: NonNullable<ChannelPlugin<ResolvedFeishuAccou
     return monitorFeishuProvider({
       config: ctx.cfg,
       runtime: ctx.runtime,
-      // Gateway provides the full channel runtime here; the public SDK type
-      // stays context-only for external compatibility.
+      // SAFETY: Gateway supplies the full runtime behind the SDK's narrower context type.
       channelRuntime: ctx.channelRuntime as PluginRuntime["channel"] | undefined,
       abortSignal: ctx.abortSignal,
       accountId: ctx.accountId,

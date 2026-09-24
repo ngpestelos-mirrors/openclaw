@@ -333,7 +333,6 @@ export function createGatewayHttpServer(opts: {
         }
         return;
       }
-      const requestClientIp = ingressAttribution.clientIp;
       const resolvedAuthValue = getResolvedAuth();
       const routeAuth = {
         auth: resolvedAuthValue,
@@ -680,7 +679,7 @@ export function createGatewayHttpServer(opts: {
               gatewayAuthSatisfied: pluginGatewayAuthSatisfied,
               gatewayRequestAuth: pluginGatewayRequestAuth,
               gatewayRequestOperatorScopes: pluginRequestOperatorScopes,
-              gatewayRequestClientIp: requestClientIp,
+              gatewayRequestClientIp: ingressAttribution.clientIp,
             });
           },
         );
