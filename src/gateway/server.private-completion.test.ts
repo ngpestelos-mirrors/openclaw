@@ -17,6 +17,7 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   runExclusiveSessionLifecycleMutation,
   SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
@@ -29,6 +30,7 @@ import {
   ensureSessionInputCompletionsSchema,
   ensureSessionPendingInputsSchema,
 } from "../state/openclaw-agent-pending-inputs-schema.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { setAbortedAgentDedupeEntries } from "./agent-turn/agent-dedupe.js";
 import * as agentJobs from "./agent-turn/agent-job.js";
 import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
@@ -726,17 +728,19 @@ describe("private subagent completion processing receipts", () => {
       const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
       const { createGatewayMaintenanceStateForTest } =
         await import("./test-helpers.maintenance-state.js");
-      vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+      const clock = createGatewaySchedulerClock(Date.now());
+      const now = vi.spyOn(Date, "now").mockImplementation(clock.clock.now);
       const timers = startGatewayMaintenanceTimers({
         ...createGatewayMaintenanceStateForTest(),
         ...kernel.gatewayRequestContext,
+        scheduler: new GatewayScheduler({ clock: clock.clock }),
         logHealth: { info: vi.fn(), error: vi.fn() },
         runWorktreeGc: async () => undefined,
         runDeliveryQueueMediaGc: async () => undefined,
         runManagedOutgoingMediaGc: async () => undefined,
       });
       try {
-        await vi.advanceTimersByTimeAsync(60_000);
+        await clock.advanceBy(60_000);
         expect(active.controller.signal.aborted).toBe(true);
         expect(active.abortStopReason).toBe("timeout");
         expect(kernel.gatewayRequestContext.chatAbortControllers.get(runId)).toBe(active);
@@ -744,7 +748,7 @@ describe("private subagent completion processing receipts", () => {
         if (kind === "abandoned") {
           // Keep the real terminal write pending through maintenance retirement.
           expect(terminalWrite).toBeInstanceOf(Promise);
-          await vi.advanceTimersByTimeAsync(60_000);
+          await clock.advanceBy(60_000);
           expect(kernel.gatewayRequestContext.chatAbortControllers.has(runId)).toBe(false);
           expect(active.projectSessionTerminalPending).toBe(true);
           expect(active.projectSessionTerminalPersistence).toBe(terminalWrite);
@@ -757,7 +761,7 @@ describe("private subagent completion processing receipts", () => {
       } finally {
         await timers.stopPeriodicTasks();
         await timers.skillUsageCleanup();
-        vi.useRealTimers();
+        now.mockRestore();
         releaseTerminalWrite.resolve();
         release.resolve();
         try {

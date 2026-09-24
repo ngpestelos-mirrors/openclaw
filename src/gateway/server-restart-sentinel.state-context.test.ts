@@ -4,6 +4,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { captureDeliveryQueueStateContext } from "../infra/delivery-queue-state-context.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { findDeliveryIntentOwner } from "../infra/outbound/delivery-queue-storage.js";
 import * as restartSentinel from "../infra/restart-sentinel.js";
 import { readRestartSentinel, writeRestartSentinel } from "../infra/restart-sentinel.js";
@@ -25,6 +26,7 @@ import {
   createTestRegistry,
 } from "../test-utils/channel-plugins.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 
 const mocks = vi.hoisted(() => ({
   loadSessionEntry: vi.fn<typeof import("./session-utils.js").loadSessionEntry>(),
@@ -388,12 +390,17 @@ it.each([
         return work;
       });
     const testMode = captureEnv(["VITEST", "NODE_ENV"]);
+    const clock = createGatewaySchedulerClock();
+    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    sidecars.push(scheduler);
+    // Pending-update retries retain native timers; startup uses the injected scheduler clock.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     setTestEnvValue("VITEST", "");
     setTestEnvValue("NODE_ENV", "production");
     setTestEnvValue("OPENCLAW_SKIP_CHANNELS", "");
     setTestEnvValue("OPENCLAW_SKIP_PROVIDERS", "");
     await startGatewaySidecars({
+      scheduler,
       cfg,
       defaultWorkspaceDir: originalRoot,
       deps: {},
@@ -411,10 +418,9 @@ it.each([
     });
     setTestEnvValue("OPENCLAW_STATE_DIR", unrelatedRoot);
     await startupCompleted.promise;
-    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    expect(scheduler.nextWakeAtMs).toBe(750);
     testMode.restore();
-    await vi.advanceTimersByTimeAsync(750);
-    await admittedWork.mock.results.at(-1)?.value;
+    await clock.advanceBy(750);
     expect(getUpdateRun(run.runId, { env: originalEnv })?.verification.booted).toBe(true);
     expect(await readRestartSentinel(originalEnv)).not.toBeNull();
     expect(mocks.sendDurableMessageBatchCore).toHaveBeenCalledTimes(initialNoticeCount);

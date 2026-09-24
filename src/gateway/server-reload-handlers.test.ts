@@ -33,6 +33,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { CronService } from "../cron/service.js";
 import { skillCollectionReviewMonitorAgentId } from "../cron/skill-collection-review-monitor.js";
 import { loadCronJobsStore } from "../cron/store.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   consumeGatewayRestartIntent,
   isGatewayRestartExternallyAllowed,
@@ -91,6 +92,7 @@ import {
 } from "../secrets/runtime.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
+import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { isRecord } from "../utils.js";
 import { diffConfigPaths, diffGatewayReloadPaths } from "./config-diff.js";
 import {
@@ -2498,7 +2500,8 @@ describe("gateway hot reload model state", () => {
   it.each(["rejected", "noop"] as const)(
     "keeps partial monitor writes aligned with accepted config through a %s successor",
     async (successor) => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const clock = createGatewaySchedulerClock(Date.now());
+      const scheduler = new GatewayScheduler({ clock: clock.clock });
       const fixtureDir = autoCleanupTempDirs.make("openclaw-monitor-publication-");
       const initialConfig = {
         agents: {
@@ -2523,6 +2526,7 @@ describe("gateway hot reload model state", () => {
       const { buildGatewayCronService } =
         await vi.importActual<typeof import("./server-cron.js")>("./server-cron.js");
       const cronState = buildGatewayCronService({
+        scheduler,
         cfg: initialConfig,
         deps: {} as never,
         env: { ...process.env, OPENCLAW_STATE_DIR: fixtureDir, OPENCLAW_SKIP_CRON: "0" },
@@ -2616,24 +2620,18 @@ describe("gateway hot reload model state", () => {
             ),
           ).resolves.toBe("applied");
         }
-        await vi.advanceTimersByTimeAsync(30_000);
-        // The retry spans real event-loop turns; keep fake time fixed so this
-        // observes that retry's result without starting another retry.
-        await waitForFast(
-          async () => {
-            expect(await readIntervals()).toEqual([7_200_000, 7_200_000]);
-            expect(
-              (await loadCronJobsStore(cronState.storePath)).jobs
-                .filter((job) => skillCollectionReviewMonitorAgentId(job) !== undefined)
-                .map((job) => job.enabled),
-            ).toEqual([false, false]);
-          },
-          { interval: 0 },
-        );
+        await clock.advanceBy(30_000);
+        expect(await readIntervals()).toEqual([7_200_000, 7_200_000]);
+        expect(
+          (await loadCronJobsStore(cronState.storePath)).jobs
+            .filter((job) => skillCollectionReviewMonitorAgentId(job) !== undefined)
+            .map((job) => job.enabled),
+        ).toEqual([false, false]);
       } finally {
         db.exec("DROP TRIGGER IF EXISTS monitor_publication_failure");
         handlers.stopRestartRetries();
         cronState.cron.stop();
+        await scheduler.stop();
       }
     },
   );
