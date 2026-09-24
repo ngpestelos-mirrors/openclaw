@@ -7955,6 +7955,36 @@ public struct ExternalPostApprovalScope: Codable, Sendable {
     }
 }
 
+public struct ExternalSupervisorGuidance: Codable, Sendable {
+    public let version: Double
+    public let action: String
+    public let name: String
+    public let runfrom: String?
+    public let command: String
+
+    public init(
+        version: Double,
+        action: String,
+        name: String,
+        runfrom: String? = nil,
+        command: String)
+    {
+        self.version = version
+        self.action = action
+        self.name = name
+        self.runfrom = runfrom
+        self.command = command
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case action
+        case name
+        case runfrom = "runFrom"
+        case command
+    }
+}
+
 public struct FsDirEntry: Codable, Sendable {
     public let name: String
     public let path: String
@@ -24215,6 +24245,7 @@ public struct UpdateRunResult: Codable, Sendable {
     public let ackdelivered: Bool?
     public let ackqueued: Bool?
     public let acknowledgement: String?
+    public let externalsupervisorguidance: ExternalSupervisorGuidance?
     public let code: String?
     public let message: String?
     public let handoff: AnyCodable?
@@ -24228,6 +24259,7 @@ public struct UpdateRunResult: Codable, Sendable {
         ackdelivered: Bool? = nil,
         ackqueued: Bool? = nil,
         acknowledgement: String? = nil,
+        externalsupervisorguidance: ExternalSupervisorGuidance? = nil,
         code: String? = nil,
         message: String? = nil,
         handoff: AnyCodable? = nil,
@@ -24240,6 +24272,7 @@ public struct UpdateRunResult: Codable, Sendable {
         self.ackdelivered = ackdelivered
         self.ackqueued = ackqueued
         self.acknowledgement = acknowledgement
+        self.externalsupervisorguidance = externalsupervisorguidance
         self.code = code
         self.message = message
         self.handoff = handoff
@@ -24254,6 +24287,7 @@ public struct UpdateRunResult: Codable, Sendable {
         case ackdelivered = "ackDelivered"
         case ackqueued = "ackQueued"
         case acknowledgement
+        case externalsupervisorguidance = "externalSupervisorGuidance"
         case code
         case message
         case handoff
@@ -24357,6 +24391,7 @@ public struct UpdateStatusResult: Codable, Sendable {
     public let lastrun: UpdateRunRecord?
     public let effectivechannel: AnyCodable?
     public let schedule: UpdateScheduleState?
+    public let externalsupervisorguidance: ExternalSupervisorGuidance?
 
     public init(
         sentinel: AnyCodable,
@@ -24364,7 +24399,8 @@ public struct UpdateStatusResult: Codable, Sendable {
         activerun: UpdateRunRecord? = nil,
         lastrun: UpdateRunRecord? = nil,
         effectivechannel: AnyCodable? = nil,
-        schedule: UpdateScheduleState? = nil)
+        schedule: UpdateScheduleState? = nil,
+        externalsupervisorguidance: ExternalSupervisorGuidance? = nil)
     {
         self.sentinel = sentinel
         self.updateavailable = updateavailable
@@ -24372,6 +24408,7 @@ public struct UpdateStatusResult: Codable, Sendable {
         self.lastrun = lastrun
         self.effectivechannel = effectivechannel
         self.schedule = schedule
+        self.externalsupervisorguidance = externalsupervisorguidance
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -24381,6 +24418,7 @@ public struct UpdateStatusResult: Codable, Sendable {
         case lastrun = "lastRun"
         case effectivechannel = "effectiveChannel"
         case schedule
+        case externalsupervisorguidance = "externalSupervisorGuidance"
     }
 }
 

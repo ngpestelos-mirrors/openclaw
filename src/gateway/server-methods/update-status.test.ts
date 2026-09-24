@@ -8,6 +8,7 @@ import * as ledger from "../../infra/update-run-ledger.js";
 import { createUpdateRun, finishUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { readUpdateRunStatus } from "../../infra/update-run-status.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { resolveExternalSupervisorGuidance } from "../../plugins/supervisor-guidance-runtime.js";
 import {
   beginGatewayRestartSignalAdmission,
   getActiveGatewayRootWorkCount,
@@ -30,6 +31,10 @@ import { updateStatusHandlers } from "./update-status.js";
 vi.mock("../../infra/update-status-state.js", () => ({
   getUpdateAvailable: () => null,
   getUpdateSchedule: () => null,
+}));
+
+vi.mock("../../plugins/supervisor-guidance-runtime.js", () => ({
+  resolveExternalSupervisorGuidance: vi.fn(async () => undefined),
 }));
 
 vi.mock("../../infra/update-startup.js", () => ({
@@ -78,10 +83,35 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   warn.mockClear();
+  vi.mocked(resolveExternalSupervisorGuidance).mockReset();
   await home.restore();
 });
 
 describe("update history RPCs", () => {
+  it("projects current supervisor guidance without retaining commands in update history", async () => {
+    const guidance = {
+      version: 1 as const,
+      action: "update" as const,
+      name: "Deployment manager",
+      runFrom: "Host",
+      command: "deploy update gateway",
+    };
+    const run = createUpdateRun({ trigger: "api" });
+    vi.mocked(resolveExternalSupervisorGuidance).mockResolvedValue(guidance);
+    const first = await requestUpdateRead("update.status");
+    expect(first).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        externalSupervisorGuidance: guidance,
+      }),
+    );
+    expect(getUpdateRun(run.runId)).not.toHaveProperty("externalSupervisorGuidance");
+    const history = await requestUpdateRead("update.runs.get", { runId: run.runId });
+    expect(JSON.stringify(history.mock.calls)).not.toContain(guidance.command);
+    vi.mocked(resolveExternalSupervisorGuidance).mockResolvedValue(undefined);
+    const refreshed = await requestUpdateRead("update.status");
+    expect(refreshed.mock.calls[0]?.[1]).not.toHaveProperty("externalSupervisorGuidance");
+  });
   it("keeps private recovery receipts durable while status and history stay public", async () => {
     const capture = {
       manifestSha256: "a".repeat(64),
