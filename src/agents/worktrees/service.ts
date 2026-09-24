@@ -47,6 +47,7 @@ import { canonicalPathKey, shouldPreserveOrphanCandidate } from "./orphan-paths.
 import { worktreeOwnerMatches } from "./owner.js";
 import { provisionIncludedFiles } from "./provisioned-files.js";
 import { readRegistryWorktrees, readWorktreeCleanupState } from "./registry-read.js";
+import { retireMissingRegistryWorktree } from "./registry-retirement.js";
 import {
   clearRegistryWorktreeProvisionedChunks,
   findLiveRegistryWorktreeByOwner,
@@ -55,7 +56,6 @@ import {
   getRegistryWorktreeProvisionedPaths,
   insertRegistryWorktree,
   listRegistryWorktrees,
-  retireMissingRegistryWorktree,
   assertWorktreeRemovalClaim,
   updateRegistryWorktree,
   WorktreeRemovalContentionError,
@@ -1315,7 +1315,10 @@ export class ManagedWorktreeService {
       let retiredOwner = false;
       try {
         if (record.removedAt === undefined && !(await worktreePathExists(record.path))) {
-          if (retireMissingRegistryWorktree(this.env, record, now)?.removedAt === now) {
+          const retired = await retireMissingRegistryWorktree(this.env, record, now);
+          if (retired.protection) {
+            progress.protect("idle", record.id, retired.protection);
+          } else if (retired.record?.removedAt === now) {
             result.orphansRetired += 1;
           }
           continue;

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
@@ -5,6 +6,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { registerWorktreesCli } from "../../cli/worktrees-cli.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../../config/config.js";
+import { withLocalWorkspaceProjection } from "../../gateway/worker-environments/local-workspace-projection.js";
+import { localWorkspaceStore } from "../../gateway/worker-environments/local-workspace-store.js";
 import { defaultRuntime, ExitError } from "../../runtime.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -18,11 +21,17 @@ import { requireGit } from "./git.js";
 import {
   admitWorktreeRunLeaseRow,
   getRegistryWorktree,
+  deleteRegistryWorktree,
   insertRegistryWorktree,
   updateRegistryWorktree,
 } from "./registry.js";
 import { resolveRepository } from "./service-preparation.js";
-import { IDLE_GC_MS, ManagedWorktreeService, managedWorktrees } from "./service.js";
+import {
+  IDLE_GC_MS,
+  SNAPSHOT_RETENTION_MS,
+  ManagedWorktreeService,
+  managedWorktrees,
+} from "./service.js";
 import {
   materializeManagedWorktreeFixtures,
   useManagedWorktreeTestRepository,
@@ -246,5 +255,68 @@ it.each([
     expect(result).toMatchObject({ orphansRetired: 0, outcome });
     expect(getRegistryWorktree(env, record!.id)?.removedAt).toBeUndefined();
     expect(await fs.readFile(path.join(record!.path, "README.md"), "utf8")).toBe("base\n");
+  },
+);
+
+it.each(["gitdir", "checkout"])(
+  "preserves projection-only files when the %s disappears",
+  async (missing) => {
+    const root = tempDirs.make("openclaw-gc-projection-");
+    const repo = await initializeRepository(root);
+    const stateDir = path.join(root, "state");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    let now = 1_700_000_000_000;
+    const [record] = await materializeManagedWorktreeFixtures({
+      env,
+      repoRoot: repo,
+      stateDir,
+      now: now - IDLE_GC_MS - 1,
+      ownerKind: "session",
+      ownerId: "agent:main:projection",
+      names: ["projection"],
+    });
+    deleteRegistryWorktree(env, record!.id);
+    record!.id = randomUUID();
+    insertRegistryWorktree(env, record!);
+    await bindFixtureRepository(env, repo, [record!.id]);
+    const projection = await withLocalWorkspaceProjection(
+      {
+        worktree: record!,
+        env,
+        agentId: "main",
+        sessionKey: record!.ownerId!,
+        sessionId: "projection-session",
+        lifecycleRevision: null,
+        assertCurrent: () => {
+          if (getRegistryWorktree(env, record!.id)?.removedAt !== undefined) {
+            throw new Error("Projection owner retired");
+          }
+        },
+      },
+      (state) => state.prepare(),
+    );
+    const uniqueFile = path.join(projection, "projection-only.txt");
+    await fs.writeFile(uniqueFile, "unique projection bytes\n");
+    await fs.rm(
+      missing === "gitdir"
+        ? await requireGit(record!.path, ["rev-parse", "--absolute-git-dir"])
+        : record!.path,
+      { recursive: true },
+    );
+    const service = new ManagedWorktreeService({ env, now: () => now });
+    for (let pass = 0; pass < 2; pass++) {
+      const result = await service.gc();
+      expect(result).toMatchObject({
+        outcome: "deferred",
+        orphansRetired: 0,
+        snapshotsPruned: 0,
+        protectionReasons: { "local-workspace-projection": 1 },
+      });
+      expect((await service.list()).some((item) => item.id === record!.id)).toBe(true);
+      expect(getRegistryWorktree(env, record!.id)?.removedAt).toBeUndefined();
+      expect(localWorkspaceStore(env).get(record!.id)?.projection_path).toBe(projection);
+      expect(await fs.readFile(uniqueFile, "utf8")).toBe("unique projection bytes\n");
+      now += SNAPSHOT_RETENTION_MS + 1;
+    }
   },
 );

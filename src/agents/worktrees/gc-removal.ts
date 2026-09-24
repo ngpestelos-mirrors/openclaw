@@ -3,10 +3,10 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { withWorktreeAllocationLease } from "./allocation.js";
 import { hasMissingManagedWorktreeGitdir } from "./checkout-inspection.js";
 import type { WorktreeGcProgress } from "./gc-progress.js";
+import { retireMissingRegistryWorktree } from "./registry-retirement.js";
 import {
   assertWorktreeRemovalClaim,
   getRegistryWorktree,
-  retireMissingRegistryWorktree,
   WorktreeRemovalContentionError,
 } from "./registry.js";
 import { WorktreeBranchMovedError, WorktreeRemovalLockError } from "./removal-errors.js";
@@ -70,10 +70,15 @@ export function createWorktreeGcErrorHandler(context: {
                     "worktree Git metadata changed during cleanup",
                   );
                 }
-                guard.commitGuard?.();
-                assertWorktreeRemovalClaim(env, record.id, token);
-                const retired = retireMissingRegistryWorktree(env, record, now);
-                if (retired?.removedAt !== now) {
+                const retired = await retireMissingRegistryWorktree(env, record, now, () => {
+                  guard.commitGuard?.();
+                  assertWorktreeRemovalClaim(env, record.id, token);
+                });
+                if (retired.protection) {
+                  progress.protect(stage, record.id, retired.protection);
+                  return;
+                }
+                if (retired.record?.removedAt !== now) {
                   throw new WorktreeRemovalLockError(
                     "busy",
                     "worktree retirement was not admitted",
