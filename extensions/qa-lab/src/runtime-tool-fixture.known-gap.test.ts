@@ -3,7 +3,7 @@ import {
   cleanupRuntimeToolFixtureTempRoots,
   mockToolRequests,
   runMockRuntimeToolFixture,
-} from "./runtime-tool-fixture.test.helpers.js";
+} from "../test/runtime-tool-fixture-helpers.js";
 
 afterEach(cleanupRuntimeToolFixtureTempRoots);
 

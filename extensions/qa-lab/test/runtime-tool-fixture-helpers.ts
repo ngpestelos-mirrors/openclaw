@@ -2,10 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { vi } from "vitest";
-import { createQaBusState } from "./bus-state.js";
-import { createQaChannelTransport } from "./qa-channel-transport.js";
-import { runRuntimeToolFixture } from "./runtime-tool-fixture.js";
-import type { QaSuiteRuntimeEnv } from "./suite-runtime-types.js";
+import { createQaBusState } from "../src/bus-state.js";
+import { createQaChannelTransport } from "../src/qa-channel-transport.js";
+import { runRuntimeToolFixture } from "../src/runtime-tool-fixture.js";
+import type { QaSuiteRuntimeEnv } from "../src/suite-runtime-types.js";
 
 const tempRoots: string[] = [];
 

@@ -6,8 +6,6 @@ import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { QaSuiteInfraError } from "./errors.js";
-import { runRuntimeToolFixture } from "./runtime-tool-fixture.js";
 import {
   cleanupRuntimeToolFixtureTempRoots,
   makeEnv,
@@ -18,7 +16,9 @@ import {
   runtimeToolFixtureDeps,
   type RuntimeToolFixtureConfig,
   type RuntimeToolFixtureDeps,
-} from "./runtime-tool-fixture.test.helpers.js";
+} from "../test/runtime-tool-fixture-helpers.js";
+import { QaSuiteInfraError } from "./errors.js";
+import { runRuntimeToolFixture } from "./runtime-tool-fixture.js";
 import { readRawQaSessionStore } from "./suite-runtime-agent-session.js";
 import type { QaSuiteRuntimeEnv } from "./suite-runtime-types.js";
 
