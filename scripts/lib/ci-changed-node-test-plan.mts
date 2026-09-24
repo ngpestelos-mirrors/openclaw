@@ -84,6 +84,10 @@ type ChangedNodeTestShard = {
 };
 type ChangedExtensionConfigShard = ChangedNodeTestShard & { predictedSeconds: number };
 type CwdOptions = { cwd?: string };
+type ExtensionRuntimeSelection = {
+  changedPaths?: readonly string[];
+  includeReleaseOnlyRuntimeTests?: boolean;
+};
 type PlanDiagnostic = (reason: string) => void;
 type ChangedTargetValidation = {
   baseRef?: string;
@@ -507,7 +511,11 @@ function resolveChangedExtensionRoots(changedPaths: string[]) {
 
 function createChangedExtensionConfigShards(
   extensionRoots: string[],
-  options: CwdOptions & { fullConfigInventory?: boolean; targets?: ReadonlySet<string> } = {},
+  options: CwdOptions &
+    ExtensionRuntimeSelection & {
+      fullConfigInventory?: boolean;
+      targets?: ReadonlySet<string>;
+    } = {},
 ): ChangedExtensionConfigShard[] {
   const selectedRoots = new Set(extensionRoots);
   const rootsByConfig = new Map<string, string[]>();
@@ -536,9 +544,16 @@ function createChangedExtensionConfigShards(
     pretestBuildMode?: VitestPretestBuildMode;
     predictedSeconds: number;
   }> = [...rootsByConfig].flatMap(([config, roots]) => {
+    const configFiles = filesByConfig.get(config) ?? [];
+    const selectedFiles = configFiles.filter((file) =>
+      isRuntimeTestFileIncluded(file, options, options.cwd),
+    );
+    const hasDeferredFiles = selectedFiles.length < configFiles.length;
     const splitProcesses =
-      options.targets !== undefined || shouldSplitExtensionTestProcesses(config);
-    const testFiles = (filesByConfig.get(config) ?? []).filter(
+      options.targets !== undefined ||
+      shouldSplitExtensionTestProcesses(config) ||
+      hasDeferredFiles;
+    const testFiles = selectedFiles.filter(
       (file) =>
         !isCiProofTestFile(file) &&
         (!options.targets || options.targets.has(file)) &&
@@ -546,7 +561,7 @@ function createChangedExtensionConfigShards(
           options.fullConfigInventory ||
           roots.some((root) => file.startsWith(`${root}/`))),
     );
-    if (options.targets && testFiles.length === 0) {
+    if ((options.targets || hasDeferredFiles) && testFiles.length === 0) {
       return [];
     }
     const buildModes = new Map(
@@ -633,7 +648,11 @@ function createChangedExtensionConfigShards(
   );
 }
 
-function createChangedExtensionConfigShardsForPaths(changedPaths: string[], cwd: string) {
+function createChangedExtensionConfigShardsForPaths(
+  changedPaths: string[],
+  cwd: string,
+  runtimeSelection: ExtensionRuntimeSelection = {},
+) {
   const relevantPaths = changedPaths.filter(
     (changedPath) =>
       changedPath.startsWith("extensions/") &&
@@ -642,6 +661,7 @@ function createChangedExtensionConfigShardsForPaths(changedPaths: string[], cwd:
   );
   const roots = resolveChangedExtensionRoots(relevantPaths);
   return createChangedExtensionConfigShards(roots, {
+    ...runtimeSelection,
     cwd,
     targets: new Set(listExtensionTestFilesForRoots(roots, cwd)),
   });
@@ -686,12 +706,13 @@ export function createChangedExtensionFallbackShards(
   options: CwdOptions = {},
 ): ChangedNodeTestShard[] {
   const cwd = options.cwd ?? process.cwd();
+  const runtimeSelection = { changedPaths, includeReleaseOnlyRuntimeTests: false };
   const shards = hasCoreExtensionImpact(changedPaths, { cwd })
     ? createChangedExtensionConfigShards(
         listAvailableExtensionIds(cwd).map((extensionId) => `extensions/${extensionId}`),
-        { fullConfigInventory: true, cwd },
+        { ...runtimeSelection, fullConfigInventory: true, cwd },
       )
-    : createChangedExtensionConfigShardsForPaths(changedPaths, cwd);
+    : createChangedExtensionConfigShardsForPaths(changedPaths, cwd, runtimeSelection);
   const jobs = packChangedExtensionConfigShards(shards);
   if (jobs.length > MAX_CHANGED_EXTENSION_FALLBACK_JOBS) {
     throw new Error(
@@ -1268,7 +1289,7 @@ export function createChangedNodeTestShards(
     ...configShards,
     ...canonicalShards.map((shard) => Object.assign({}, shard, { configs: [] })),
     ...packChangedExtensionConfigShards(
-      createChangedExtensionConfigShardsForPaths(extensionFallbackPaths, cwd),
+      createChangedExtensionConfigShardsForPaths(extensionFallbackPaths, cwd, runtimeSelection),
     ),
     ...packChangedExtensionConfigShards(
       createChangedExtensionConfigShards(
