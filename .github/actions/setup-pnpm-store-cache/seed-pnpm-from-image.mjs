@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 
 const packageManager = process.argv[2];
 const imageVersion = "12.3.4";
@@ -13,15 +13,15 @@ const imageNativeHashes = {
   arm64:
     "b7bd40540ecb46a88a4f2679c4c61a65cda7e437dda4c6dfa2466e8883971c138cd371029c5d2de226306810ea26056394a6143b0685fdb4506a318d038709e3",
 };
-// The repository already selects 12.4.0. Authenticate both stages of its
+// The repository already selects 12.4.2. Authenticate both stages of its
 // bootstrap without changing that pin or routing downloads through Node fetch.
-const currentVersion = "12.4.0";
+const currentVersion = "12.4.2";
 const currentWrapperHash =
-  "37536c26ed40ab4134b6511e09f6b27f3ebb45687468f2406ca3805279a4e5ca158c1931350ad9774d6ab2108d71b3dbaeb39943159294375e4d053e8e05685c";
+  "08adc6613180275c7c9edada39dcf08c9c61ad4e7eaf330a4f3461f102b0f907423454d117f98e72d47fef0616070644d7bffc973a6a57f5090a6d7c368b07c9";
 const currentNativeHashes = {
-  x64: "490560464711e17caa7fcf9535bb58d2bb5c1277c3ab8f11847df41d6a36fd47ea2847e57b6ace3321993a63750db330e19cc6e66598a02f353bb66a1c565c3f",
+  x64: "fe96edd145536bc34c0e1cce58b4117d9e86f5138a5e524f66dc7ce3906ac967dcee10ab5978532c177bd323b6cbcf84f8858dde81ccd6cfc9b0840d1a4d72be",
   arm64:
-    "ea7a50530ab70ff5976d3811e1ebc0a44290f484f39d9e88cff769b5c8c1cc0efec122d369890af7c39ddb0b070a83e61056fdb46b4cf9cbc6f36fb0cb4a3db8",
+    "d9d4a20d7ca1c7e4531ec7b0c5ec7c7ff8d58ea417589da8a30e240951c459d64a781a60331bd9e9f1e44c050125782a85b2880c7bee3656413fb8097d458be4",
 };
 const current = packageManager === `pnpm@${currentVersion}+sha512.${currentWrapperHash}`;
 const version = current ? currentVersion : imageVersion;
@@ -33,8 +33,8 @@ const cachedArchives = process.env.PNPM_CONFIG_STORE_DIR
   : undefined;
 const registry = "https://registry.npmjs.org";
 const registryConfigured = (process.env.COREPACK_NPM_REGISTRY || registry).replace(/\/$/u, "");
-// These approved native archives are glibc builds. Other platforms/registries
-// retain ordinary Corepack/pnpm selection rather than receiving the wrong binary.
+// These native archives are glibc builds. Windows seeds only the authenticated
+// wrapper; pnpm owns its native binary selection and signature verification.
 let supportedCurrentHost = !current;
 if (current && process.platform === "linux") {
   try {
@@ -49,19 +49,18 @@ const canDownload =
   process.env.COREPACK_ENABLE_NETWORK !== "0" &&
   process.env.COREPACK_INTEGRITY_KEYS === undefined;
 
+const seedNative = process.platform === "linux" && supportedCurrentHost && nativeHash;
 if (
-  process.platform === "linux" &&
-  supportedCurrentHost &&
-  nativeHash &&
+  (seedNative || (current && process.platform === "win32")) &&
   packageManager === `pnpm@${version}+sha512.${wrapperHash}`
 ) {
   const staging = await mkdtemp(join(process.env.RUNNER_TEMP || tmpdir(), "pnpm-image-"));
   let corepackHome;
   try {
-    const archives = [
-      [`pnpm-${version}.tgz`, wrapperHash],
-      [`exe.linux-${process.arch}-${version}.tgz`, nativeHash],
-    ];
+    const archives = [[`pnpm-${version}.tgz`, wrapperHash]];
+    if (seedNative) {
+      archives.push([`exe.linux-${process.arch}-${version}.tgz`, nativeHash]);
+    }
     let valid = true;
     for (const [name, hash] of archives) {
       const destination = join(staging, name);
@@ -133,8 +132,12 @@ if (
         await mkdir(roots[index], { recursive: true });
         const result = spawnSync(
           "tar",
-          ["-xzf", join(staging, name), "-C", roots[index], "--strip-components=1"],
-          { stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" },
+          [
+            "-xzf",
+            relative(roots[index], join(staging, name)).split(sep).join("/"),
+            "--strip-components=1",
+          ],
+          { cwd: roots[index], stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" },
         );
         if (result.error || result.status !== 0) {
           throw new Error(`Cannot extract authenticated pnpm image archive: ${result.stderr}`, {

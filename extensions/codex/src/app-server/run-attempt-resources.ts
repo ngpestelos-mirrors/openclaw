@@ -1,16 +1,24 @@
 import {
   embeddedAgentLog,
+  formatErrorMessage,
   runAgentCleanupStep,
   type AgentHarnessRuntimeArtifactBinding,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { isIncognitoSessionKey } from "../incognito-session.js";
+import {
+  CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
+  closeCodexStartupClientBestEffort,
+  unsubscribeCodexThreadBestEffort,
+} from "./attempt-client-cleanup.js";
 import { resolveCodexStartupTimeoutMs } from "./attempt-timeouts.js";
 import { protectCodexAppServerLiveThread } from "./client-runtime.js";
-import type { CodexAppServerClient } from "./client.js";
+import { resolveCodexAppServerClientInstanceId, type CodexAppServerClient } from "./client.js";
 import { shouldAutoApproveCodexAppServerApprovals } from "./config.js";
 import { resolveCodexToolAbortTerminalReason } from "./dynamic-tool-execution.js";
 import { CodexAppServerEventProjector } from "./event-projector.js";
 import { buildCodexHookRequester } from "./hook-requester.js";
+import { getCodexInferenceThreadQualification } from "./inference-routing.js";
 import {
   buildCodexNativeHookRelayDisabledConfig,
   buildCodexNativeHookRelayConfig,
@@ -20,25 +28,35 @@ import {
   type CodexNativePreToolUseFailure,
   type CodexNativeHookRelay,
 } from "./native-hook-relay.js";
+import {
+  CodexNativeProcessAuthority,
+  hasCodexNativeBackgroundProcesses,
+} from "./native-process-authority.js";
 import { createCodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import type { CodexNativeSubagentSubmissionStore } from "./native-subagent-submission.js";
 import type { CodexSandboxPolicy, CodexTurnEnvironmentParams } from "./protocol.js";
+import { emitCodexAppServerEvent } from "./run-attempt-lifecycle.js";
 import type { CodexAttemptPrompt } from "./run-attempt-prompt.js";
 import {
   releaseCodexSandboxExecServerEnvironment,
   type CodexSandboxExecEnvironment,
 } from "./sandbox-exec-server.js";
-import {
-  matchesCodexNativeSubagentSubmissionBinding,
-  type CodexAppServerThreadBinding,
-} from "./session-binding-record.js";
+import { matchesCodexNativeSubagentSubmissionBinding } from "./session-binding-record.js";
 import {
   clearSharedCodexAppServerClientIfCurrentAndUnclaimed,
   createIsolatedCodexAppServerClient,
   retainSharedCodexAppServerClientIfCurrent,
 } from "./shared-client.js";
+import type {
+  CodexStartOrResumeThreadParams,
+  CodexThreadFinalConfigPatchDecision,
+} from "./thread-lifecycle-types.js";
 import type { CodexAppServerThreadLifecycleBinding } from "./thread-lifecycle.js";
+import {
+  isSameCodexAppServerThreadOwner,
+  retainCodexAppServerBindingSubscription,
+} from "./thread-ownership.js";
 import { createCodexTrajectoryRecorder } from "./trajectory.js";
 import type { CodexAppServerTurnRouter, CodexThreadRouteReservation } from "./turn-router.js";
 
@@ -58,6 +76,28 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     nativeHookRelayEvents,
   } = connection;
   const { toolBridge } = attemptTools;
+  const modelAdmissionSource = runtime.nativeToolSurfaceEnabled
+    ? params.hostCapabilities.retainSourceAuthority?.()
+    : undefined;
+  let nativeModelAdmission: CodexStartOrResumeThreadParams["nativeModelAdmission"];
+  try {
+    nativeModelAdmission = modelAdmissionSource
+      ? modelAdmissionSource.modelPolicyRequired !== false
+        ? "required"
+        : options.nativeHookRelay?.enabled === false
+          ? "disabled"
+          : "optional"
+      : undefined;
+  } finally {
+    modelAdmissionSource?.release();
+  }
+  let nativeProcessAuthorityReleased = false;
+  const releaseNativeProcessAuthority = () => {
+    if (!nativeProcessAuthorityReleased) {
+      nativeProcessAuthorityReleased = true;
+      nativeProcessAuthority?.release();
+    }
+  };
   const trajectoryRecorder = createCodexTrajectoryRecorder({
     attempt: params,
     cwd: effectiveCwd,
@@ -95,6 +135,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       | undefined,
     releaseSharedClientLease: undefined as (() => void) | undefined,
     startupClientUnsafe: false,
+    turnStartAttempted: false,
     sharedCodexClientRetiredForOneShotCleanup: false,
     ...initialResourceState,
     codexEnvironmentSelection: undefined as CodexTurnEnvironmentParams[] | undefined,
@@ -278,28 +319,43 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
             ),
         }
       : undefined;
-    state.nativeSubagentMonitor = codexNativeSubagentMonitorRuntime.register({
-      client: state.client,
-      parentThreadId,
-      requesterSessionKey: params.sessionKey,
-      taskRuntimeScope: params.agentHarnessTaskRuntimeScope,
-      historyOwner,
-      submissionStore,
-      agentId: sessionAgentId,
-      retainClient: () => retainSharedCodexAppServerClientIfCurrent(state.client),
-      retainParentThread: (protectedThreadId) =>
-        protectCodexAppServerLiveThread(state.client, protectedThreadId),
-      claimDirectChild: (childThreadId) => state.nativeHookRelay?.claimDirectChild(childThreadId),
-      rejectPendingDirectChild: (childThreadId, reason) =>
-        state.nativeHookRelay?.rejectPendingDirectChild(childThreadId, reason),
-      ...(params.sessionKey && params.agentHarnessTaskRuntimeScope
-        ? {
-            onDirectChildAccepted: () => {
-              state.runtimeContinuationStarted = true;
-            },
-          }
-        : {}),
-    });
+    const retainModelSource = params.hostCapabilities.retainSourceAuthority;
+    const modelSource = retainModelSource?.();
+    try {
+      const configurationQualification = getCodexInferenceThreadQualification(
+        state.client,
+        parentThreadId,
+      );
+      state.nativeSubagentMonitor = codexNativeSubagentMonitorRuntime.register({
+        client: state.client,
+        parentThreadId,
+        ...(retainModelSource ? { modelSource } : {}),
+        configurationQualification,
+        unqualifiedModelExecution: modelSource && !configurationQualification ? true : undefined,
+        onUnqualifiedModelCancelled: connection.abortExplicitly,
+        requesterSessionKey: params.sessionKey,
+        taskRuntimeScope: params.agentHarnessTaskRuntimeScope,
+        historyOwner,
+        submissionStore,
+        agentId: sessionAgentId,
+        retainClient: () => retainSharedCodexAppServerClientIfCurrent(state.client),
+        retainParentThread: (protectedThreadId) =>
+          protectCodexAppServerLiveThread(state.client, protectedThreadId),
+        claimDirectChild: (childThreadId) => state.nativeHookRelay?.claimDirectChild(childThreadId),
+        rejectPendingDirectChild: (childThreadId, reason) =>
+          state.nativeHookRelay?.rejectPendingDirectChild(childThreadId, reason),
+        ...(params.sessionKey && params.agentHarnessTaskRuntimeScope
+          ? {
+              onDirectChildAccepted: () => {
+                state.runtimeContinuationStarted = true;
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      modelSource?.release();
+      throw error;
+    }
   };
   const releaseCurrentRoute = async () => {
     state.releaseInferenceContext?.();
@@ -311,6 +367,126 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     state.routeActivated = false;
     await unregisterNativeSubagentMonitor();
   };
+  // Startup transfers the claim with state.thread. Both pre-turn failure and
+  // active-turn cleanup settle it here; neither may unsubscribe a successor.
+  let subscriptionSettlement:
+    | { thread: CodexAppServerThreadLifecycleBinding; retained: boolean }
+    | undefined;
+  const retainThreadSubscription = async (): Promise<boolean> => {
+    const { client, thread } = state;
+    if (subscriptionSettlement?.thread === thread) {
+      return subscriptionSettlement.retained;
+    }
+    if (!thread || thread.clientId !== resolveCodexAppServerClientInstanceId(client)) {
+      return false;
+    }
+    const { bindingStore, bindingIdentity } = connection;
+    const retained = await bindingStore.withLease(bindingIdentity, async () => {
+      if (!isSameCodexAppServerThreadOwner(bindingStore.read(bindingIdentity), thread)) {
+        return false;
+      }
+      try {
+        if (!state.turnStartAttempted) {
+          runAbortController.signal.throwIfAborted();
+        }
+        // Retaining the existing subscription is cleanup custody for concrete
+        // background work; revoking this foreground source cannot evict a peer.
+        if (!hasCodexNativeBackgroundProcesses(client, thread.threadId)) {
+          params.hostCapabilities.assertActive();
+          connection.assertCurrent();
+        }
+        thread.liveThreadOwnership?.assertCurrent();
+      } catch {
+        return false;
+      }
+      return await retainCodexAppServerBindingSubscription(client, thread.threadId, {
+        release: thread.liveThreadOwnership?.release,
+        configFingerprint: thread.liveThreadConfigFingerprint,
+        serviceTier: state.turnStartAttempted
+          ? connection.mutable.pluginAppServer.serviceTier
+          : thread.liveThreadOwnership?.serviceTier,
+        ephemeralPolicy: thread.liveThreadEphemeralPolicy,
+      });
+    });
+    if (retained) {
+      subscriptionSettlement = { thread, retained: true };
+    }
+    return retained;
+  };
+  const releaseThreadSubscription = async (assertCurrent?: () => void): Promise<boolean> => {
+    const { client, thread } = state;
+    if (!thread || subscriptionSettlement?.thread === thread) {
+      return true;
+    }
+    // Record the attempted settlement before awaiting; failed acknowledgments
+    // retire the client, not a second unsubscribe from a competing cleanup path.
+    subscriptionSettlement = { thread, retained: false };
+    if (thread.liveThreadOwnership) {
+      try {
+        await thread.liveThreadOwnership.release(thread.threadId, assertCurrent);
+        return true;
+      } catch (error) {
+        await closeCodexStartupClientBestEffort(client);
+        throw error;
+      }
+    }
+    const released = await unsubscribeCodexThreadBestEffort(client, {
+      threadId: thread.threadId,
+      timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
+      assertCurrent,
+    });
+    if (!released) {
+      await closeCodexStartupClientBestEffort(client);
+    }
+    return released;
+  };
+  const cleanupBeforeActiveTurn = async () => {
+    await runCleanupStep("codex-pre-turn-hook-fallback", activateNativePreToolUseFailureFallback);
+    await runCleanupStep("codex-pre-turn-subscription", async () => {
+      const { thread } = state;
+      if (!thread || subscriptionSettlement?.thread === thread || state.startupClientUnsafe) {
+        return;
+      }
+      let retained = false;
+      try {
+        // Only a pre-write failure may restore an unchanged warm claim. A
+        // rejected/ambiguous turn start keeps its existing release semantics.
+        retained = Boolean(
+          !state.turnStartAttempted &&
+          !runAbortController.signal.aborted &&
+          params.cleanupBundleMcpOnRunEnd !== true &&
+          thread.liveThreadOwnership &&
+          (await retainThreadSubscription()),
+        );
+      } finally {
+        if (!retained) {
+          const bindingReleased =
+            !isIncognitoSessionKey(params.sessionKey) ||
+            (await connection.bindingStore.mutate(connection.bindingIdentity, {
+              kind: "clear",
+              threadId: thread.threadId,
+            }));
+          if (bindingReleased) {
+            await releaseThreadSubscription();
+          }
+        }
+      }
+    });
+    await runCleanupStep("codex-pre-turn-route-release", releaseCurrentRoute);
+    const relay = state.nativeHookRelay;
+    state.nativeHookRelay = undefined;
+    await runCleanupStep("codex-pre-turn-native-hook-relay", async () => {
+      relay?.unregister();
+      await relay?.drain();
+    });
+    await runCleanupStep("codex-pre-turn-sandbox-release", releaseSandboxExecEnvironment);
+    await runCleanupStep("codex-pre-turn-source-release", releaseNativeProcessAuthority);
+    await runCleanupStep("codex-pre-turn-trajectory-flush", () => trajectoryRecorder?.flush());
+    await runCleanupStep(
+      "codex-pre-turn-shared-client-release",
+      releaseSharedClientLeaseAndRetireOneShotClient,
+    );
+  };
   const startupTimeoutMs = resolveCodexStartupTimeoutMs({
     timeoutMs: params.timeoutMs,
     timeoutFloorMs: options.startupTimeoutFloorMs,
@@ -318,12 +494,20 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
   const requesterChannel = params.messageChannel ?? params.messageProvider;
   const requester = buildCodexHookRequester(params);
   const buildNativeHookRelayFinalConfigPatch = async (
-    decision: { action: "resume"; binding: CodexAppServerThreadBinding } | { action: "start" },
+    decision: CodexThreadFinalConfigPatchDecision,
   ) => {
     const previousRelay = state.nativeHookRelay;
     previousRelay?.unregister();
     await previousRelay?.drain();
     connection.assertCurrent();
+    const requiresProcessAdmission = nativeProcessAuthority && runtime.nativeToolSurfaceEnabled;
+    const requiresModelAdmission =
+      nativeModelAdmission !== undefined && decision.nativeModelInputTools !== undefined;
+    const requiresExecutionAdmission = requiresProcessAdmission || requiresModelAdmission;
+    const relayEvents =
+      requiresExecutionAdmission && !nativeHookRelayEvents.includes("pre_tool_use")
+        ? [...nativeHookRelayEvents, "pre_tool_use" as const]
+        : nativeHookRelayEvents;
     if (params.pluginHarnessToolPolicyRestricted === true) {
       state.nativeHookRelay = undefined;
       return {
@@ -332,14 +516,16 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       };
     }
     state.nativeHookRelay = createCodexNativeHookRelay({
-      options: options.nativeHookRelay,
+      options: requiresExecutionAdmission
+        ? { ...options.nativeHookRelay, enabled: true }
+        : options.nativeHookRelay,
       generation:
         decision.action === "resume" ? decision.binding.nativeHookRelayGeneration : undefined,
       generationMismatchGraceMs:
         decision.action === "resume" && !decision.binding.nativeHookRelayGeneration
           ? CODEX_NATIVE_HOOK_RELAY_TTL_GRACE_MS
           : undefined,
-      events: nativeHookRelayEvents,
+      events: relayEvents,
       agentId: sessionAgentId,
       sessionId: params.sessionId,
       sessionKey: contextSessionKey,
@@ -363,6 +549,18 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       loopDetectionPreToolUseRelay: appServer.loopDetectionPreToolUseRelay,
       signal: runAbortController.signal,
       hostCapabilities: params.hostCapabilities,
+      nativeProcessAuthority: requiresProcessAdmission
+        ? { owner: nativeProcessAuthority, client: () => state.client }
+        : undefined,
+      nativeModelAdmission: requiresModelAdmission
+        ? {
+            client: () => state.client,
+            threadId: () => state.thread?.threadId,
+            tools: decision.nativeModelInputTools,
+            readQualification: (threadId) =>
+              getCodexInferenceThreadQualification(state.client, threadId),
+          }
+        : undefined,
       assertCurrent: connection.assertCurrent,
       onPreToolUseFailure: (failure) => {
         const projector = projectorRef.current;
@@ -381,7 +579,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       configPatch: state.nativeHookRelay
         ? buildCodexNativeHookRelayConfig({
             relay: state.nativeHookRelay,
-            events: nativeHookRelayEvents,
+            events: relayEvents,
             hookTimeoutSec: options.nativeHookRelay?.hookTimeoutSec,
           })
         : options.nativeHookRelay?.enabled === false
@@ -390,12 +588,30 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       nativeHookRelayGeneration: state.nativeHookRelay?.generation,
     };
   };
+  const nativeProcessAuthority =
+    sandbox?.enabled && sandbox.backend && params.hostCapabilities.retainSourceAuthority
+      ? new CodexNativeProcessAuthority(params.hostCapabilities, (error) => {
+          const message = formatErrorMessage(error);
+          embeddedAgentLog.warn("codex native background work remains unsettled", {
+            runId: params.runId,
+            sessionId: params.sessionId,
+            error: message,
+          });
+          void emitCodexAppServerEvent(params, {
+            stream: "codex_app_server.lifecycle",
+            data: { phase: "background_cleanup_failed", error: message },
+          });
+        })
+      : undefined;
   return {
     prompt,
     trajectoryRecorder,
     state,
     projectorRef,
     pendingNativePreToolUseFailures,
+    nativeModelAdmission,
+    nativeProcessAuthority,
+    releaseNativeProcessAuthority,
     markTrajectoryEndRecorded: () => {
       state.trajectoryEndRecorded = true;
     },
@@ -406,6 +622,9 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     runCleanupStep,
     registerNativeSubagentMonitor,
     releaseCurrentRoute,
+    retainThreadSubscription,
+    releaseThreadSubscription,
+    cleanupBeforeActiveTurn,
     startupTimeoutMs,
     buildNativeHookRelayFinalConfigPatch,
   };

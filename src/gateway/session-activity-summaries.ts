@@ -106,7 +106,7 @@ export type SessionActivitySummaryService = {
 
 export function createSessionActivitySummaries(deps: {
   getConfig: () => OpenClawConfig;
-  onChanged: (target: ActivitySummaryTarget) => void;
+  onChanged: (target: ActivitySummaryTarget & { storePath: string }) => void;
   prepareModel?: typeof defaultPrepareModel;
   completeModel?: typeof defaultCompleteModel;
 }): SessionActivitySummaryService {
@@ -128,7 +128,8 @@ export function createSessionActivitySummaries(deps: {
       agentId: target.agentId,
     }),
   });
-  const read = (target: ActivitySummaryTarget) => loadSessionEntryReadOnly(scope(target));
+  const read = (target: ActivitySummaryTarget) =>
+    loadSessionEntryReadOnly({ ...scope(target), projection: "list" });
   const current = (state: Tracked) =>
     !disposed &&
     states.get(activitySummaryScope(state)) === state &&

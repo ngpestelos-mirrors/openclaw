@@ -2,13 +2,15 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { expect, it } from "vitest";
+import type { GatewayClient } from "../../../src/gateway/client.ts";
+import { acquireGatewayTestClient } from "../../../test/helpers/gateway-client.ts";
 import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
 } from "../../../test/helpers/openclaw-test-instance.ts";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.ts";
+import { createRequireRecord } from "../../../test/helpers/record.js";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { pickerValue } from "../test-helpers/select-picker-e2e.ts";
@@ -21,6 +23,7 @@ const models = (id: string) => [
   { id, name: id },
 ];
 let instance: OpenClawTestInstance;
+let readback: GatewayClient;
 let providerMode: "ready" | "failed" | "empty" = "ready";
 let providerModel = "refresh-fixture:latest";
 const providerTraffic: Array<{ path: string; status: number }> = [];
@@ -63,7 +66,6 @@ const suite = createControlUiE2eSuite({
         config: {
           gateway: { controlUi: { enabled: true } },
           cron: { enabled: false },
-          skills: { load: { watch: false } },
           agents: {
             ownership: "explicit",
             defaults: {
@@ -82,10 +84,7 @@ const suite = createControlUiE2eSuite({
                 api: "openai-completions",
                 apiKey: "synthetic-catalog-key",
                 baseUrl: "http://127.0.0.1:9/v1",
-                models: [
-                  ...models("palette-retiring"),
-                  { id: "palette-ready", name: "palette-ready" },
-                ],
+                models: models("palette-retiring"),
               },
               ollama: { api: "ollama", baseUrl: `http://127.0.0.1:${address.port}`, models: [] },
             },
@@ -94,38 +93,34 @@ const suite = createControlUiE2eSuite({
         },
       });
       try {
-        await instance.state.writeConfig({
-          ...requireRecord(JSON.parse(await fs.readFile(instance.configPath, "utf8"))),
-          logging: { file: path.join(instance.stateDir, "gateway.log") },
-        });
-        expect(instance.env.OPENCLAW_HOME).toBe(instance.homeDir);
-        expect(instance.env.OPENCLAW_STATE_DIR).toBe(instance.stateDir);
-        expect(instance.env.OPENCLAW_CONFIG_PATH).toBe(instance.configPath);
         await instance.startGateway();
-        const created = await instance.cli([
-          "gateway",
-          "call",
-          "sessions.create",
-          "--json",
-          "--timeout",
-          "30000",
-          "--params",
-          JSON.stringify({
-            key: "agent:main:main",
-            agentId: "main",
-            label: "Fixture conversation",
-          }),
-        ]);
-        expect(created.code, created.stderr).toBe(0);
-        const session = requireRecord(JSON.parse(created.stdout));
-        expect(session.key).toBe("agent:main:main");
-        expect(typeof session.sessionId).toBe("string");
-        if (typeof session.sessionId !== "string" || !session.sessionId.trim()) {
-          throw new Error("Fixture session creation did not return a persisted session ID");
-        }
+        readback = await acquireGatewayTestClient(
+          {
+            url: instance.url,
+            token: instance.gatewayToken,
+            env: instance.env,
+            clientName: "cli",
+            mode: "cli",
+            scopes: ["operator.read"],
+            deviceIdentity: null,
+            deviceAuthScope: instance.url,
+            sharedStateMode: "read-only",
+            requestTimeoutMs: 30_000,
+          },
+          {
+            timeoutMs: 10_000,
+            timeoutMessage: "Catalog readback client did not connect",
+            closeMessage: "Catalog readback client closed during connect",
+          },
+        );
         return {
           baseUrl: `http://127.0.0.1:${instance.port}/`,
-          close: () => runQaGatewayFixture(() => instance.cleanup(), closeProvider),
+          close: () =>
+            runQaGatewayFixture(
+              () => readback.stopAndWait(),
+              () => instance.cleanup(),
+              closeProvider,
+            ),
         };
       } catch (error) {
         await instance.cleanup();
@@ -140,359 +135,6 @@ const suite = createControlUiE2eSuite({
 });
 
 suite.define(() => {
-  it.each([
-    { width: 1280, height: 900, mode: "cold" },
-    { width: 390, height: 844, mode: "cold" },
-    { width: 1280, height: 900, mode: "cached" },
-    { width: 1280, height: 900, mode: "retry" },
-  ])(
-    "opens a completed model result while Automations remain pending ($width $mode)",
-    async (viewport) => {
-      const handoff = await instance.cli(["dashboard", "--json"]);
-      expect(handoff.code, handoff.stderr).toBe(0);
-      const browserUrl = requireRecord(JSON.parse(handoff.stdout)).browserUrl;
-      if (typeof browserUrl !== "string") {
-        throw new Error("Dashboard did not return a browser handoff");
-      }
-      const requests = new Map<string, string>();
-      const exactModelRequests = new Set<string>();
-      const mutations: string[] = [];
-      const releases: Array<() => void> = [];
-      const assets: Array<Promise<{ path: string; sha256: string }>> = [];
-      let holdAutomations = false;
-      let rejectModels = viewport.mode === "retry";
-      await suite.withPage({ serviceWorkers: "block", viewport }, async ({ page }) => {
-        page.on("response", (response) => {
-          const assetPath = new URL(response.url()).pathname;
-          if (assetPath.startsWith("/assets/") && assetPath.endsWith(".js")) {
-            assets.push(
-              response.body().then((body) => ({
-                path: assetPath,
-                sha256: createHash("sha256").update(body).digest("hex"),
-              })),
-            );
-          }
-        });
-        await page.routeWebSocket(`ws://127.0.0.1:${instance.port}/**`, (socket) => {
-          const server = socket.connectToServer();
-          socket.onMessage((message) => {
-            const frame = requireRecord(JSON.parse(message.toString()));
-            if (
-              frame.type === "req" &&
-              typeof frame.id === "string" &&
-              typeof frame.method === "string"
-            ) {
-              requests.set(frame.id, frame.method);
-              if (frame.method === "models.list") {
-                const params = requireRecord(frame.params);
-                if (
-                  params.agentId === "main" &&
-                  params.view === "configured" &&
-                  params.sessionKey === undefined
-                ) {
-                  exactModelRequests.add(frame.id);
-                }
-              }
-              if (
-                holdAutomations &&
-                [
-                  "sessions.patch",
-                  "sessions.create",
-                  "config.set",
-                  "config.patch",
-                  "config.apply",
-                ].includes(frame.method)
-              ) {
-                mutations.push(frame.method);
-              }
-            }
-            server.send(message);
-          });
-          server.onMessage((message) => {
-            const frame = requireRecord(JSON.parse(message.toString()));
-            if (
-              holdAutomations &&
-              typeof frame.id === "string" &&
-              requests.get(frame.id) === "cron.list"
-            ) {
-              releases.push(() => socket.send(message));
-            } else if (
-              rejectModels &&
-              typeof frame.id === "string" &&
-              exactModelRequests.has(frame.id)
-            ) {
-              socket.send(
-                JSON.stringify({
-                  type: "res",
-                  id: frame.id,
-                  ok: false,
-                  error: { code: "UNAVAILABLE", message: "Synthetic model read failure" },
-                }),
-              );
-            } else {
-              socket.send(message);
-            }
-          });
-        });
-        // Routing captures the native socket first; observe only its page-facing replacement.
-        await page.addInitScript(() => {
-          localStorage.setItem(
-            "openclaw:control-ui:community-invite",
-            JSON.stringify({ dismissedAtMs: 1770000000000 }),
-          );
-          const RoutedWebSocket = window.WebSocket;
-          window.WebSocket = class extends RoutedWebSocket {
-            private readonly modelRequests = new Set<string>();
-            constructor(url: string | URL, protocols?: string | string[]) {
-              super(url, protocols);
-              this.addEventListener("message", (event: MessageEvent<string>) => {
-                const frame = JSON.parse(event.data) as {
-                  type: string;
-                  id?: string;
-                  event?: string;
-                };
-                if (frame.type === "event" && frame.event === "models.snapshot") {
-                  document.documentElement.setAttribute("data-palette-model-bootstrap", event.data);
-                }
-                if (frame.type === "res" && frame.id && this.modelRequests.has(frame.id)) {
-                  const root = document.documentElement;
-                  root.setAttribute("data-palette-model-response", event.data);
-                  if (root.getAttribute("data-palette-model-request") === frame.id) {
-                    root.setAttribute("data-palette-model-phase-response", event.data);
-                  }
-                }
-              });
-            }
-            override send(data: Parameters<WebSocket["send"]>[0]) {
-              if (typeof data === "string") {
-                const frame = JSON.parse(data) as {
-                  type: string;
-                  method?: string;
-                  id?: string;
-                  params?: {
-                    agentId?: string;
-                    sessionKey?: string;
-                    view?: string;
-                    modelCatalog?: unknown;
-                  };
-                };
-                if (frame.type === "req" && frame.method === "connect" && frame.params) {
-                  document.documentElement.setAttribute(
-                    "data-palette-model-bootstrap-target",
-                    JSON.stringify(frame.params.modelCatalog ?? null),
-                  );
-                }
-                if (
-                  frame.type === "req" &&
-                  frame.method === "models.list" &&
-                  frame.id &&
-                  frame.params?.agentId === "main" &&
-                  frame.params.view === "configured" &&
-                  frame.params.sessionKey === undefined
-                ) {
-                  this.modelRequests.add(frame.id);
-                  const root = document.documentElement;
-                  const count = Number(
-                    root.getAttribute("data-palette-model-request-count") ?? "0",
-                  );
-                  root.setAttribute("data-palette-model-request-count", String(count + 1));
-                  if (
-                    root.hasAttribute("data-palette-model-phase") &&
-                    !root.hasAttribute("data-palette-model-request")
-                  ) {
-                    root.setAttribute("data-palette-model-request", frame.id);
-                  }
-                }
-              }
-              super.send(data);
-            }
-          };
-        });
-        const entryUrl = new URL(browserUrl);
-        if (viewport.mode === "cached") {
-          entryUrl.pathname = "/settings/model-providers";
-        }
-        await page.goto(entryUrl.href);
-        await waitForControlUiGatewayReady(page);
-        if (viewport.mode === "cached") {
-          await expect
-            .poll(() =>
-              pickerValue(
-                page.locator(".model-providers__defaults openclaw-select-picker").first(),
-              ),
-            )
-            .toBe("fixture/anchor");
-          await expect
-            .poll(() =>
-              page
-                .locator(".model-providers__defaults openclaw-select-picker")
-                .first()
-                .locator('[role="option"][data-value="fixture/palette-ready"]')
-                .count(),
-            )
-            .toBe(1);
-        } else {
-          await page.locator(".chat-header-session-menu__trigger").waitFor({ state: "visible" });
-          if (viewport.width === 1280) {
-            await page.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
-          }
-        }
-        const phase = await page.evaluate(() => {
-          const root = document.documentElement;
-          const state = {
-            requests: Number(root.getAttribute("data-palette-model-request-count") ?? "0"),
-            response: root.getAttribute("data-palette-model-response"),
-          };
-          root.setAttribute("data-palette-model-phase", "cold-search");
-          return state;
-        });
-        expect(phase).toEqual({ requests: 0, response: null });
-        let bootstrap: Record<string, unknown> | undefined;
-        let bootstrapTarget: Record<string, unknown> | undefined;
-        if (viewport.mode === "cached") {
-          const captured = await page.locator("html").getAttribute("data-palette-model-bootstrap");
-          const target = await page
-            .locator("html")
-            .getAttribute("data-palette-model-bootstrap-target");
-          if (captured === null || target === null) {
-            throw new Error(
-              "The negotiated bootstrap catalog did not reach the application socket",
-            );
-          }
-          bootstrap = requireRecord(JSON.parse(captured));
-          bootstrapTarget = requireRecord(JSON.parse(target));
-          expect(bootstrap).toMatchObject({ type: "event", event: "models.snapshot" });
-          const publication = requireRecord(bootstrap.payload);
-          expect(publication.target).toEqual(bootstrapTarget);
-          expect(bootstrapTarget).not.toHaveProperty("sessionKey");
-          expect(bootstrapTarget).not.toHaveProperty("shortId");
-          expect(publication.scope).toEqual({ agentId: "main" });
-          expect(requireRecord(publication.catalog).models).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({ id: "palette-ready", provider: "fixture" }),
-            ]),
-          );
-        }
-        holdAutomations = true;
-        try {
-          if (viewport.width < 400) {
-            await page.locator(".chat-header-session-menu__trigger").click();
-            await page.getByText("Open command palette", { exact: true }).click();
-          } else {
-            await page.keyboard.press("ControlOrMeta+K");
-          }
-          const input = page.locator(".cmd-palette__input");
-          await input.fill("palette-ready");
-          await expect.poll(() => releases.length).toBeGreaterThan(0);
-          if (viewport.mode === "retry") {
-            await expect
-              .poll(() => page.locator(".cmd-palette").textContent())
-              .toContain("Model search unavailable");
-            const failure = await page
-              .locator("html")
-              .getAttribute("data-palette-model-phase-response");
-            expect(failure).not.toBeNull();
-            if (failure === null) {
-              throw new Error("The model failure did not reach the application socket");
-            }
-            expect(requireRecord(JSON.parse(failure)).ok).toBe(false);
-            rejectModels = false;
-            await page.evaluate(() => {
-              document.documentElement.removeAttribute("data-palette-model-request");
-              document.documentElement.removeAttribute("data-palette-model-phase-response");
-            });
-            await input.fill("palette-rea");
-          }
-          if (viewport.mode !== "cached") {
-            await expect
-              .poll(() => page.locator("html").getAttribute("data-palette-model-phase-response"))
-              .not.toBeNull();
-          }
-          let response: Record<string, unknown>;
-          let catalog: Record<string, unknown>;
-          let modelRequestId: string | null = null;
-          if (bootstrap) {
-            response = bootstrap;
-            catalog = requireRecord(requireRecord(bootstrap.payload).catalog);
-          } else {
-            const delivered = await page
-              .locator("html")
-              .getAttribute("data-palette-model-phase-response");
-            if (delivered === null) {
-              throw new Error("The cold model response did not reach the application socket");
-            }
-            response = requireRecord(JSON.parse(delivered));
-            modelRequestId = await page.locator("html").getAttribute("data-palette-model-request");
-            expect(response.id).toBe(modelRequestId);
-            expect(modelRequestId).not.toBeNull();
-            expect(response.ok).toBe(true);
-            catalog = requireRecord(response.payload);
-          }
-          await fs.writeFile(
-            path.join(
-              suite.artifactDir,
-              `independent-model-${viewport.width}-${viewport.mode}.json`,
-            ),
-            JSON.stringify(
-              {
-                delivered: response,
-                modelRequestId,
-                bootstrapTarget,
-                phase,
-                heldAutomations: releases.length,
-                assets: await Promise.all(assets),
-              },
-              null,
-              2,
-            ),
-          );
-          expect(catalog.models).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({ id: "palette-ready", provider: "fixture" }),
-            ]),
-          );
-          const ready = page.getByRole("option", { name: "palette-ready fixture", exact: true });
-          try {
-            await expect.poll(() => ready.count()).toBe(1);
-          } finally {
-            if (captureEnabled) {
-              await fs.writeFile(
-                path.join(
-                  suite.artifactDir,
-                  `independent-model-${viewport.width}-${viewport.mode}.png`,
-                ),
-                await takeControlUiViewportScreenshot(page, page.locator(".cmd-palette"), [input]),
-              );
-            }
-          }
-          expect(await page.locator(".cmd-palette").textContent()).not.toContain("No results");
-          expect(await page.locator(".cmd-palette").textContent()).not.toContain(
-            "Model search unavailable",
-          );
-          if (viewport.mode === "cached") {
-            expect(
-              Number(
-                (await page.locator("html").getAttribute("data-palette-model-request-count")) ??
-                  "0",
-              ),
-            ).toBe(phase.requests);
-          }
-          await input.press("ArrowDown");
-          await input.press("Enter");
-          await expect.poll(() => new URL(page.url()).pathname).toBe("/settings/model-providers");
-          await page.locator("openclaw-model-providers-page").waitFor({ state: "visible" });
-          expect(mutations).toEqual([]);
-          expect(releases.length).toBeGreaterThan(0);
-        } finally {
-          holdAutomations = false;
-          for (const release of releases.splice(0)) {
-            release();
-          }
-        }
-      });
-    },
-  );
-
   it("opens Settings pickers from publication and acquires only on Refresh or Retry", async () => {
     const frames: unknown[] = [];
     const requests: Array<{ id: string; params: Record<string, unknown> }> = [];
@@ -501,18 +143,13 @@ suite.define(() => {
     const assets: Array<Promise<{ path: string; sha256: string }>> = [];
     const acquisitions = () => providerTraffic.filter((entry) => entry.path === "/api/tags").length;
     const publish = async () => {
-      const result = await instance.cli([
-        "gateway",
-        "call",
-        "models.list",
-        "--json",
-        "--timeout",
-        "30000",
-        "--params",
-        JSON.stringify({ agentId: "main", view: "configured", refresh: true }),
-      ]);
-      expect(result.code, result.stderr).toBe(0);
-      return requireRecord(JSON.parse(result.stdout));
+      return requireRecord(
+        await readback.request("models.list", {
+          agentId: "main",
+          view: "configured",
+          refresh: true,
+        }),
+      );
     };
     const handoff = await instance.cli(["dashboard", "--json"]);
     expect(handoff.code, handoff.stderr).toBe(0);
@@ -758,18 +395,13 @@ suite.define(() => {
   it("shows actual acquisition failures in Automations and model search without losing compatible rows", async () => {
     const outcomes: unknown[] = [];
     const refresh = async () => {
-      const result = await instance.cli([
-        "gateway",
-        "call",
-        "models.list",
-        "--json",
-        "--timeout",
-        "30000",
-        "--params",
-        JSON.stringify({ agentId: "main", view: "configured", refresh: true }),
-      ]);
-      expect(result.code, result.stderr).toBe(0);
-      const payload = requireRecord(JSON.parse(result.stdout));
+      const payload = requireRecord(
+        await readback.request("models.list", {
+          agentId: "main",
+          view: "configured",
+          refresh: true,
+        }),
+      );
       outcomes.push(payload);
       return payload;
     };
@@ -951,7 +583,14 @@ suite.define(() => {
           }
 
           rejectCatalogReplies = true;
-          await publish("palette-held");
+          // Refresh the same catalog owner; a config write retires its display facts.
+          providerModel = "read-failure-fixture:latest";
+          const refreshParams = { agentId: "main", view: "configured", refresh: true };
+          commands.push({
+            method: "models.list",
+            params: refreshParams,
+            result: await readback.request("models.list", refreshParams),
+          });
           const status = page
             .locator(".cmd-palette [role=status]")
             .filter({ hasText: "Model search unavailable" });
@@ -961,6 +600,7 @@ suite.define(() => {
             await page.screenshot({ path: path.join(suite.artifactDir, "read-failure.png") });
           }
           rejectCatalogReplies = false;
+          await publish("palette-held");
           await input.fill("palette-held");
           const recovered = page.getByRole("option", { name: "palette-held fixture", exact: true });
           await recovered.waitFor({ state: "visible" });

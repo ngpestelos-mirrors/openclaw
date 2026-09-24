@@ -615,6 +615,11 @@ function manifestContextFromEnvironment(source) {
       "PLUGIN_PRERELEASE_NODE_EXCLUDE_PATTERNS_JSON",
       "plugin_prerelease_node_exclude_patterns_json",
     ],
+    [
+      "extensionTestExcludePatternsJson",
+      "EXTENSION_TEST_EXCLUDE_PATTERNS_JSON",
+      "extension_test_exclude_patterns_json",
+    ],
   ]) {
     inputs[key] = env[variable] ?? coverage[sourceKey] ?? "";
   }
@@ -811,7 +816,14 @@ async function publicationMode(mode) {
       "publication request",
     );
     const { restoreOriginalPublicationAdmission } = await import("./release-ci-summary.mjs");
-    const restored = await restoreOriginalPublicationAdmission({ request });
+    const planPath = requiredString(
+      process.env.FULL_RELEASE_EXECUTION_PLAN_PATH,
+      "execution plan path",
+    );
+    const restored = await restoreOriginalPublicationAdmission({
+      request,
+      cachedPlan: existsSync(planPath) ? readArtifact(planPath, "execution plan") : undefined,
+    });
     writeArtifact(sourcePath, restored.source);
     writeArtifact(admissionPath, {
       sourceAdmissionContract: "1",
@@ -819,6 +831,7 @@ async function publicationMode(mode) {
       publicationAdmissionContract: "1",
       publicationAdmission: restored.admission,
     });
+    writeArtifact(planPath, restored.plan);
     return;
   }
   if (positiveInteger(process.env.GITHUB_RUN_ATTEMPT, "parent attempt") !== 1) {
@@ -972,15 +985,10 @@ async function planMode() {
         requiredString(process.env.SOURCE_ADMISSION_JSON, "restored source admission"),
       );
       const { restoreOriginalPublicationAdmission } = await import("./release-ci-summary.mjs");
-      const original = await restoreOriginalPublicationAdmission({
+      await restoreOriginalPublicationAdmission({
         request: { ...source, runAttempt: currentAttempt },
+        cachedPlan: restored,
       });
-      if (
-        JSON.stringify(sortJsonValueKeys(original.plan)) !==
-        JSON.stringify(sortJsonValueKeys(restored))
-      ) {
-        throw new Error("cached publication plan differs from its authenticated original");
-      }
     }
     writeExecutionPlan(outputPath, restored);
     return;

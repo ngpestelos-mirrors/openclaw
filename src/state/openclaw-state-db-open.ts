@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { formatErrorMessage } from "../infra/errors.js";
 import { enableNodeSqliteKyselyStatementCache } from "../infra/kysely-sync.js";
@@ -15,6 +16,7 @@ import {
   isTerminalSqliteIntegrityError,
 } from "../infra/sqlite-integrity.js";
 import { isSqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
+import { createSqliteWalReclamationResult } from "../infra/sqlite-wal-reclamation.js";
 import {
   configureSqliteConnectionPragmas,
   configureSqlitePreSchemaPragmas,
@@ -31,6 +33,10 @@ import {
   type OpenClawStateDatabase,
 } from "./openclaw-state-db-contract.js";
 import { openTrackedStateDatabase } from "./openclaw-state-db-handle.js";
+import {
+  prepareStateDatabaseInitialization,
+  type StateDatabaseInitialization,
+} from "./openclaw-state-db-initialization.js";
 import { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
 import {
   assertSupportedStateSchemaVersion,
@@ -68,17 +74,52 @@ export function openUnpublishedStateDatabase(params: {
   env: NodeJS.ProcessEnv;
   busyTimeoutMs: number;
   lockFailureReporting: SqliteLockFailureReporting;
-  ensureSchema: (database: DatabaseSync) => void;
+  ensureSchema: (database: DatabaseSync, initialization: StateDatabaseInitialization) => void;
   recordOpenFailure: (pathname: string, error: Error) => void;
+  existingSchema?: boolean;
+  initializationAgentPaths?: readonly string[];
 }): OpenClawStateDatabase {
   const { busyTimeoutMs, lockFailureReporting } = params;
+  const initialization = prepareStateDatabaseInitialization(
+    params.pathname,
+    params.env,
+    params.initializationAgentPaths,
+  );
   const runtimeDirectory = resolveStateLifecycleRuntimeDirectory();
-  ensureOpenClawStatePermissions(params.pathname, params.env);
-  const db = openTrackedStateDatabase(params.pathname);
+  const original = params.existingSchema ? statSync(params.pathname) : undefined;
+  if (original && !original.isFile()) {
+    throw new Error(`Existing shared-state database must be a regular file: ${params.pathname}`);
+  }
+  const assertSameFile = () => {
+    if (original) {
+      const current = statSync(params.pathname);
+      if (!current.isFile() || current.dev !== original.dev || current.ino !== original.ino) {
+        throw new Error(`Existing shared-state database generation changed: ${params.pathname}`);
+      }
+    }
+  };
+  if (!params.existingSchema) {
+    ensureOpenClawStatePermissions(params.pathname, params.env);
+  }
+  const db = openTrackedStateDatabase(params.pathname, { existingOnly: params.existingSchema });
   let walMaintenance: SqliteWalMaintenance | undefined;
   try {
     enableNodeSqliteKyselyStatementCache(db);
     setSqliteBusyTimeout(db, busyTimeoutMs);
+    if (params.existingSchema) {
+      assertSameFile();
+      params.ensureSchema(db, initialization);
+      assertSameFile();
+      return {
+        db,
+        path: params.pathname,
+        walMaintenance: {
+          checkpoint: () => false,
+          close: () => true,
+          reclaimFreePages: createSqliteWalReclamationResult,
+        },
+      };
+    }
     const maintenance = runWithSqliteBusyTimeout(
       db,
       busyTimeoutMs,
@@ -109,7 +150,7 @@ export function openUnpublishedStateDatabase(params: {
           foreignKeys: true,
           synchronous: "NORMAL",
         });
-        params.ensureSchema(db);
+        params.ensureSchema(db, initialization);
         return walMaintenance;
       },
       { lockFailureReporting },

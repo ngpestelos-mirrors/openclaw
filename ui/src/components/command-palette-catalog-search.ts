@@ -2,7 +2,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type {
   AgentsListResult,
-  CronJobsListResult,
+  GatewaySessionRow,
   ModelCatalogResult,
   SkillStatusReport,
 } from "../api/types.ts";
@@ -13,13 +13,16 @@ import {
   visibleSettingsNavigationGroups,
 } from "../app-navigation.ts";
 import type { RouteId } from "../app-route-paths.ts";
-import type { ApplicationContext } from "../app/context.ts";
 import type { NativeDeviceSettingsCapability } from "../app/native-device-settings.ts";
 import { t } from "../i18n/index.ts";
 import { registerAppsEnglish } from "../i18n/locales/en-apps.ts";
+import { registerCommandPaletteEnglish } from "../i18n/locales/en-command-palette.ts";
+import { loadCronCatalog } from "../lib/cron/catalog.ts";
 import type { PluginListResult } from "../lib/plugins/index.ts";
 import { SETTINGS_SEARCH_TARGETS } from "../pages/config/settings-targets.ts";
 import type { IconName } from "./icons.ts";
+
+registerCommandPaletteEnglish();
 
 registerAppsEnglish();
 
@@ -43,93 +46,15 @@ type CommandPaletteCatalogItem = {
   agentId?: string;
   description?: string;
   searchText?: string;
+  /** Searchable only while the current model catalog permits unrestricted selection. */
+  primaryModel?: string;
 };
 
 export type CommandPaletteItem = Omit<CommandPaletteCatalogItem, "routeId" | "category"> & {
-  category: "search" | "navigation" | "chats" | CommandPaletteCatalogCategory;
+  category: "search" | "navigation" | "chats" | "messages" | CommandPaletteCatalogCategory;
   action: string;
+  session?: GatewaySessionRow;
 };
-
-export type CommandPaletteActions = {
-  basePath: string;
-  onToggle: () => void;
-  onActiveIdChange: (id: string) => void;
-  onNavigate?: ApplicationContext<RouteId>["navigate"];
-  onSelectSession?: (sessionKey: string) => void;
-  onSlashCommand?: (command: string) => void;
-};
-
-export function groupCommandPaletteItems(
-  items: CommandPaletteItem[],
-): Array<[string, CommandPaletteItem[]]> {
-  const map = new Map<string, CommandPaletteItem[]>();
-  for (const item of items) {
-    const group = map.get(item.category) ?? [];
-    group.push(item);
-    map.set(item.category, group);
-  }
-  return [...map.entries()];
-}
-
-export function focusCommandPaletteInput(el: Element | undefined) {
-  if (el instanceof HTMLInputElement) {
-    requestAnimationFrame(() => {
-      if (el.isConnected) {
-        el.focus();
-      }
-    });
-  }
-}
-
-function scrollActiveIntoView() {
-  requestAnimationFrame(() => {
-    const el = document.querySelector(".cmd-palette__item--active");
-    el?.scrollIntoView({ block: "nearest" });
-  });
-}
-
-export function handleCommandPaletteKeydown(
-  e: KeyboardEvent,
-  props: CommandPaletteActions,
-  items: CommandPaletteItem[],
-  activeIndex: number,
-  selectItem: (item: CommandPaletteItem) => void,
-) {
-  if (e.isComposing || e.keyCode === 229) {
-    // Keep composition keys out of document shortcuts and the modal's Escape handler.
-    e.stopPropagation();
-    return;
-  }
-  if (items.length === 0 && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter")) {
-    return;
-  }
-  switch (e.key) {
-    case "ArrowDown":
-      e.preventDefault();
-      props.onActiveIdChange(items[(activeIndex + 1) % items.length]!.id);
-      scrollActiveIntoView();
-      break;
-    case "ArrowUp":
-      e.preventDefault();
-      props.onActiveIdChange(items[(activeIndex - 1 + items.length) % items.length]!.id);
-      scrollActiveIntoView();
-      break;
-    case "Enter":
-      e.preventDefault();
-      {
-        const item = items[activeIndex];
-        if (item) {
-          selectItem(item);
-        }
-      }
-      break;
-    case "Escape":
-      e.preventDefault();
-      e.stopPropagation();
-      props.onToggle();
-      break;
-  }
-}
 
 export function commandPaletteCategoryLabel(category: string): string {
   switch (category) {
@@ -153,6 +78,8 @@ export function commandPaletteCategoryLabel(category: string): string {
       return t("palette.items.settings");
     case "chats":
       return t("sessionsView.title");
+    case "messages":
+      return t("palette.categories.messages");
     default:
       return category;
   }
@@ -160,75 +87,38 @@ export function commandPaletteCategoryLabel(category: string): string {
 
 const CATALOG_SEARCH_LIMIT = 10;
 
+function navigationItem(
+  routeId: RouteId,
+  label: string,
+  icon: IconName,
+  options: { id?: string; description?: string } = {},
+): CommandPaletteItem {
+  return {
+    ...options,
+    id: `nav-${options.id ?? routeId}`,
+    label,
+    icon,
+    category: "navigation",
+    action: `nav:${routeId}`,
+  };
+}
+
 function getCommandPaletteBaseItems(
   desktopAvailable: boolean,
   custodianAvailable: boolean,
 ): CommandPaletteItem[] {
   return [
-    {
-      id: "nav-new-session",
-      label: t("newSession.title"),
-      icon: "plus",
-      category: "navigation",
-      action: "nav:new-session",
-    },
-    {
-      id: "nav-sessions",
-      label: t("palette.items.sessions"),
-      icon: "fileText",
-      category: "navigation",
-      action: "nav:sessions",
-    },
-    {
-      id: "nav-meetings",
-      label: t("tabs.meetings"),
+    navigationItem("new-session", t("newSession.title"), "plus"),
+    navigationItem("sessions", t("palette.items.sessions"), "fileText"),
+    navigationItem("meetings", t("tabs.meetings"), "book", {
       description: t("subtitles.meetings"),
-      icon: "book",
-      category: "navigation",
-      action: "nav:meetings",
-    },
-    {
-      id: "nav-cron",
-      label: t("palette.items.scheduled"),
-      icon: "scrollText",
-      category: "navigation",
-      action: "nav:cron",
-    },
-    {
-      id: "nav-skills",
-      label: t("palette.items.skills"),
-      icon: "zap",
-      category: "navigation",
-      action: "nav:skills",
-    },
-    {
-      id: "nav-plugins",
-      label: t("palette.items.plugins"),
-      icon: "plug",
-      category: "navigation",
-      action: "nav:plugins",
-    },
-    {
-      id: "nav-apps",
-      label: t("palette.items.apps"),
-      icon: "layoutGrid",
-      category: "navigation",
-      action: "nav:apps",
-    },
-    {
-      id: "nav-config",
-      label: t("palette.items.settings"),
-      icon: "settings",
-      category: "navigation",
-      action: "nav:config",
-    },
-    {
-      id: "nav-agents",
-      label: t("palette.items.agents"),
-      icon: "folder",
-      category: "navigation",
-      action: "nav:agents",
-    },
+    }),
+    navigationItem("cron", t("palette.items.scheduled"), "scrollText"),
+    navigationItem("skills", t("palette.items.skills"), "zap"),
+    navigationItem("plugins", t("palette.items.plugins"), "plug"),
+    navigationItem("apps", t("palette.items.apps"), "layoutGrid"),
+    navigationItem("appearance", t("palette.items.settings"), "settings", { id: "settings" }),
+    navigationItem("agents", t("palette.items.agents"), "folder"),
     {
       id: "slash:verbose",
       label: "/verbose",
@@ -269,6 +159,7 @@ export function filterCommandPaletteItems(params: {
   catalogItems: readonly CommandPaletteItem[];
   desktopAvailable: boolean;
   custodianAvailable: boolean;
+  primaryModelSearch?: boolean;
 }): CommandPaletteItem[] {
   const baseItems = getCommandPaletteBaseItems(
     params.desktopAvailable,
@@ -288,7 +179,9 @@ export function filterCommandPaletteItems(params: {
     }
     return label.includes(query) ||
       normalizeLowercaseStringOrEmpty(item.description).includes(query) ||
-      normalizeLowercaseStringOrEmpty(item.searchText).includes(query)
+      normalizeLowercaseStringOrEmpty(item.searchText).includes(query) ||
+      (params.primaryModelSearch &&
+        normalizeLowercaseStringOrEmpty(item.primaryModel).includes(query))
       ? 1
       : 0;
   };
@@ -318,6 +211,7 @@ export function toCommandPaletteItems(
     agentId: item.agentId,
     description: item.description,
     searchText: item.searchText,
+    primaryModel: item.primaryModel,
   }));
 }
 
@@ -394,14 +288,7 @@ export async function loadCommandPaletteCatalogItems(params: {
       : null;
   const [agents, automations, skills, plugins] = await Promise.all([
     params.agents().catch(() => null),
-    requestIfAvailable<CronJobsListResult>("cron.list", {
-      includeDisabled: true,
-      limit: 200,
-      offset: 0,
-      sortBy: "name",
-      sortDir: "asc",
-      compact: true,
-    }),
+    params.methodAvailable("cron.list") ? loadCronCatalog(params.client).catch(() => null) : null,
     requestIfAvailable<SkillStatusReport>("skills.status", { agentId: params.agentId }),
     requestIfAvailable<PluginListResult>("plugins.list", {}),
   ]);
@@ -415,9 +302,8 @@ export async function loadCommandPaletteCatalogItems(params: {
       routeId: "agents" as const,
       agentId: agent.id,
       description: agent.id,
-      searchText: [agent.id, agent.workspace, agent.model?.primary, agent.identity?.theme]
-        .filter(Boolean)
-        .join(" "),
+      searchText: [agent.id, agent.workspace, agent.identity?.theme].filter(Boolean).join(" "),
+      primaryModel: agent.model?.primary,
     })),
     ...(automations?.jobs ?? []).map((job) => ({
       id: `automation-${job.id}`,
@@ -425,7 +311,6 @@ export async function loadCommandPaletteCatalogItems(params: {
       icon: "calendarClock" as const,
       category: "automations" as const,
       routeId: "cron" as const,
-      description: job.description,
       searchText: [job.id, job.declarationKey, job.name, job.agentId].filter(Boolean).join(" "),
     })),
     ...(skills?.skills ?? []).map((skill) => ({
@@ -452,9 +337,9 @@ export async function loadCommandPaletteCatalogItems(params: {
 }
 
 export function getCommandPaletteModelItems(
-  result: ModelCatalogResult | undefined,
+  catalog: Pick<ModelCatalogResult, "models">,
 ): CommandPaletteCatalogItem[] {
-  return (result?.models ?? []).map((model) => ({
+  return catalog.models.map((model) => ({
     // Both IDs can contain separators; selection needs a lossless pair.
     id: `model-${JSON.stringify([model.provider, model.id])}`,
     label: model.name || model.id,

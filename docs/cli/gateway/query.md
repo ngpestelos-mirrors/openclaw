@@ -14,6 +14,11 @@ The WebSocket RPC query subcommands and their shared options. Part of the [`open
 
 All query commands use WebSocket RPC.
 
+With token, password, or `none` authentication, ordinary RPC calls to the
+configured local loopback Gateway do not open the shared state database for device
+authentication. Explicit URL targets and paired remote connections retain their
+device authentication rules.
+
 <Tabs>
   <Tab title="Output modes">
     - Default: human-readable (colored in TTY).
@@ -327,6 +332,9 @@ openclaw gateway call health --port 18999
 openclaw gateway call logs.tail --params '{"limit": 200}'
 ```
 
+To add an existing checkout to the Control UI's Place picker, use the
+[project registration and listing examples](/web/control-ui/sessions-and-sidebar#register-an-existing-repository).
+
 For `sessions.send` and `chat.send`, JSON `timeoutMs` is the receiving agent's
 execution budget, not an acknowledgment timeout. Omit it for ordinary
 coordination; `--timeout` independently limits how long this CLI waits:
@@ -341,6 +349,10 @@ are for operators and external automation. Agents use their exposed
 never a shell or direct RPC substitute. An unavailable messaging tool is not
 permission to use the CLI. Subagents return results through their accepted task
 completion path; the parent relays any necessary coordination with other sessions.
+
+In an agent's `exec` subprocess (`OPENCLAW_SHELL=exec`), message RPCs are
+refused before connecting so worker reports cannot appear as fresh human input.
+Ordinary operator terminals and non-message Gateway diagnostics are unchanged.
 
 <ParamField path="--params <json>" type="string" default="{}">
   JSON object string for params.

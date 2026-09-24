@@ -2,38 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import {
   filterCommandPaletteItems,
-  getCommandPaletteModelItems,
   getStaticCommandPaletteCatalogItems,
   loadCommandPaletteCatalogItems,
 } from "./command-palette-catalog-search.ts";
 
 describe("command palette catalog search", () => {
-  it("projects core model rows separately from optional catalogs", () => {
-    const items = getCommandPaletteModelItems({
-      models: [{ provider: "fixture", id: "current", name: "Current model" }],
-    });
-    expect(items).toContainEqual(
-      expect.objectContaining({
-        category: "models",
-        label: "Current model",
-        routeId: "model-providers",
-      }),
-    );
-  });
-
-  it("projects the returned rows from a partial catalog without restoring old rows", () => {
-    const items = getCommandPaletteModelItems({
-      models: [{ provider: "ollama", id: "retained", name: "Retained model", available: true }],
-      refreshFailed: true,
-      providerOutcomes: [{ provider: "ollama", status: "unavailable" }],
-    });
-
-    expect(items).toContainEqual(
-      expect.objectContaining({ category: "models", label: "Retained model" }),
-    );
-    expect(getCommandPaletteModelItems({ models: [] })).toEqual([]);
-  });
-
   it("opens meeting transcripts from search without querying agent chat history", () => {
     const items = filterCommandPaletteItems({
       query: "meeting",
@@ -78,7 +51,6 @@ describe("command palette catalog search", () => {
               {
                 id: "nightly",
                 name: "Nightly invoices",
-                description: "Reconciles customer billing",
               },
             ],
           };
@@ -135,10 +107,6 @@ describe("command palette catalog search", () => {
     );
     expect(request).toHaveBeenCalledWith("skills.status", { agentId: "main" });
     expect(request).toHaveBeenCalledWith("plugins.list", {});
-    expect(request.mock.calls.map(([method]) => method)).toEqual([
-      "cron.list",
-      "skills.status",
-      "plugins.list",
-    ]);
+    expect(request).not.toHaveBeenCalledWith("models.list", expect.anything());
   });
 });

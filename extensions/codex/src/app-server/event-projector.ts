@@ -25,8 +25,9 @@ import {
   isCodexNotificationForTurn,
   readCodexNotificationThreadId,
 } from "./notification-correlation.js";
+import { CODEX_APP_SERVER_OPT_OUT_NOTIFICATION_METHODS } from "./notification-policy.js";
 import type { CodexApprovalKind } from "./plugin-approval-roundtrip.js";
-import { readCodexTurn } from "./protocol-validators.js";
+import { readCodexTurnCompletedNotification } from "./protocol-validators.js";
 import {
   isJsonObject,
   type CodexDynamicToolCallOutputContentItem,
@@ -37,9 +38,21 @@ import {
   type JsonValue,
 } from "./protocol.js";
 
+const optedOutNotificationMethods = new Set<string>(CODEX_APP_SERVER_OPT_OUT_NOTIFICATION_METHODS);
+
 export class CodexAppServerEventProjector extends CodexTurnProjection {
   getCompletedTurnStatus(): CodexTurn["status"] | undefined {
     return this.completedTurn?.status;
+  }
+
+  getPendingNativeCommands(): ReadonlyMap<string, string | null> {
+    return !this.projectionClosed &&
+      !this.aborted &&
+      !this.options.runAbortSignal?.aborted &&
+      this.completedTurn?.status === "completed" &&
+      !this.terminalFailure.promptError
+      ? this.nativeToolLifecycleProjector.pendingCommands()
+      : new Map();
   }
 
   /** Native completion owns the answer independently of unfinished host projection. */
@@ -244,25 +257,27 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
         this.terminalFailure.record({
           message: readCodexErrorNotificationMessage(params),
           codexErrorInfo,
+          misalignment: isJsonObject(params.error) ? params.error.misalignment : undefined,
+          nativeThreadId: this.threadId,
+          nativeTurnId: this.turnId,
           rateLimits: this.options.readRecentRateLimits?.(),
           fallbackMessage: "codex app-server error",
           promptErrorSource: compactionFailure ? "compaction" : "prompt",
         });
         break;
       }
-      case "thread/compacted":
       case "turn/started":
-      case "turn/diff/updated":
       case "item/reasoning/summaryPartAdded":
       case "item/commandExecution/terminalInteraction":
-      case "item/fileChange/outputDelta":
       case "item/fileChange/patchUpdated":
       case "item/mcpToolCall/progress":
       case "model/verification":
       case "turn/moderationMetadata":
         break;
       default:
-        this.diagnostics.warnUnknownEvent(notification, params);
+        if (!optedOutNotificationMethods.has(notification.method)) {
+          this.diagnostics.warnUnknownEvent(notification, params);
+        }
         break;
     }
     if (
@@ -505,7 +520,7 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
   }
 
   private async handleTurnCompleted(params: JsonObject): Promise<void> {
-    const turn = readCodexTurn(params.turn);
+    const turn = readCodexTurnCompletedNotification(params)?.turn;
     if (!turn || turn.id !== this.turnId) {
       return;
     }
@@ -527,6 +542,9 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
       this.terminalFailure.record({
         message: turn.error?.message,
         codexErrorInfo,
+        misalignment: turn.error?.misalignment,
+        nativeThreadId: this.threadId,
+        nativeTurnId: this.turnId,
         rateLimits: this.options.readRecentRateLimits?.(),
         fallbackMessage: "codex app-server turn failed",
         promptErrorSource: compactionFailure ? "compaction" : "prompt",
@@ -542,7 +560,7 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
         this.eventProjection.emitCompactionEnd(itemId, false);
       }
     }
-    const turnItems = turn.items ?? [];
+    const turnItems = turn.items;
     // Upstream terminal summaries contain only the last assistant item. Keep
     // earlier unsettled deliveries at their producer instead of inferring them.
     const unsettledAsyncDeliveries = this.asyncDeliveryProjection.pending();
