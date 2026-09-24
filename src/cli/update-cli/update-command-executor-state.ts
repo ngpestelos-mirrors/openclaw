@@ -15,7 +15,6 @@ export const admittedAuthorities = new WeakMap<
     assertPublicationCurrent?: () => void;
     currentStores?: () => UpdateInitialStoreTransport;
     managedHandoff: boolean;
-    requestManagedCancellation?: (cause: Error) => Promise<void>;
   }
 >();
 export const admittedRunIds = new WeakMap<UpdateRecoveryFence, string>();
@@ -36,8 +35,4 @@ export const childOwners = new WeakMap<
 export const originalCancellations = new WeakMap<
   UpdateRecoveryFence,
   (runId: string, cause: Error) => void
->();
-export const originalSettlements = new WeakMap<
-  UpdateRecoveryFence,
-  { runId: string; joined: Promise<void> }
 >();

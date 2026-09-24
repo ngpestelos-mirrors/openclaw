@@ -18,11 +18,13 @@ import {
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
-import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { UpdateActivationTimeoutError } from "./update-command-activation.js";
 import { createUpdateCommandOriginalCancellation } from "./update-command-executor-cancellation.js";
-import { reserveUpdateCommandExecutorSlot } from "./update-command-executor-capabilities.js";
+import {
+  requestUpdateCommandExecutorCancellation,
+  reserveUpdateCommandExecutorSlot,
+} from "./update-command-executor-capabilities.js";
 import { createChildOwner } from "./update-command-executor-children.js";
 import { registerUpdateCommandGenerationOwner } from "./update-command-executor-generation.js";
 import {
@@ -48,7 +50,6 @@ import {
 } from "./update-command-executor-options.js";
 import {
   originalCancellations,
-  originalSettlements,
   admittedAuthorities,
   admittedRunIds,
   retainedOwners,
@@ -83,12 +84,13 @@ export async function withUpdateCommandExecutor<T>(
       : undefined;
   const directDatabasePath = captureUpdateCommandDirectLocation(options);
   let initialStoreAdmission: ReturnType<typeof admitUpdateInitialStoreTransport> | undefined;
-  const activation = createUpdateOperationDeadline();
-  const cancellationSignal = new AbortController();
-  const settlement = createDeferredCore();
-  void settlement.promise.catch(() => {});
-  let settled = false;
   let originalFence: UpdateRecoveryFence | undefined;
+  const activation = createUpdateOperationDeadline((cause) => {
+    if (originalFence) {
+      requestUpdateCommandExecutorCancellation(originalFence, runId, cause);
+    }
+  });
+  const cancellationSignal = new AbortController();
   const operationSignal = AbortSignal.any([activation.signal, cancellationSignal.signal]);
   return await activation.run(async () => {
     try {
@@ -492,7 +494,6 @@ export async function withUpdateCommandExecutor<T>(
                   assertCurrent: assertBase,
                   assertPublicationCurrent,
                   managedHandoff,
-                  requestManagedCancellation: managed?.requestCancellation,
                   ...(initialStores
                     ? {
                         currentStores: () => {
@@ -547,7 +548,7 @@ export async function withUpdateCommandExecutor<T>(
                 }
                 if (originalOwner) {
                   originalFence = fence;
-                  cancellation.register(fence, settlement.promise);
+                  cancellation.register(fence);
                 }
                 if (serviceLease) {
                   retainedOwners.set(fence, serviceLease.key);
@@ -560,6 +561,7 @@ export async function withUpdateCommandExecutor<T>(
                         "Preflight executor release failed.",
                       );
                     }
+                    originalFence = undefined;
                     originalCancellations.delete(fence);
                     generation?.closeAdmission();
                     active = false;
@@ -624,6 +626,7 @@ export async function withUpdateCommandExecutor<T>(
           );
           outcome = managed ? await completeManagedUpdateCommandOutcome(managed, outcome) : outcome;
           outcome = cancellation.mergeOutcome(outcome);
+          originalFence = undefined;
           originalCancellations.delete(fence);
           generation?.closeAdmission();
           active = false;
@@ -695,23 +698,13 @@ export async function withUpdateCommandExecutor<T>(
             }
             throw cause;
           }
-          settled = true;
-          settlement.resolve();
           if ("error" in outcome) {
             throw outcome.error;
           }
           return outcome.result;
         }, operationSignal),
       );
-    } catch (error) {
-      if (!settled) {
-        settlement.reject(error);
-      }
-      throw error;
     } finally {
-      if (originalFence) {
-        originalSettlements.delete(originalFence);
-      }
       // The native operation, not its bounded deadline caller, owns this guard.
       // It must remain open through later cleanup when the callback ignores abort.
       initialStoreAdmission?.close();

@@ -4,11 +4,7 @@ import type {
   ManagedHandoffParent,
 } from "../../infra/update-managed-service-handoff-lease.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
-import {
-  originalCancellations,
-  originalSettlements,
-  preflightReleases,
-} from "./update-command-executor-state.js";
+import { originalCancellations, preflightReleases } from "./update-command-executor-state.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 
 type Store = ReturnType<typeof createManagedHandoffLeaseStore>;
@@ -34,9 +30,8 @@ export function createUpdateCommandOriginalCancellation(params: {
     get successor() {
       return cancellation.successor;
     },
-    register(fence: UpdateRecoveryFence, joined: Promise<void>) {
+    register(fence: UpdateRecoveryFence) {
       const runId = params.runId;
-      originalSettlements.set(fence, { runId, joined });
       originalCancellations.set(fence, (requestedRunId, cause) => {
         const { active, store, lease, serviceLease } = params.current();
         if (

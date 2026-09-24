@@ -3,7 +3,6 @@ import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import type { ChildOperation, ChildPurpose } from "./update-command-executor-children.js";
 import {
   originalCancellations,
-  originalSettlements,
   admittedAuthorities,
   admittedRunIds,
   retainedOwners,
@@ -13,19 +12,6 @@ import {
   type ManagedUpdateLeaseAuthority,
 } from "./update-command-executor-state.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
-
-export function waitForUpdateCommandExecutorSettlement(
-  fence: UpdateRecoveryFence,
-  runId: string,
-): Promise<void> {
-  const owner = originalSettlements.get(fence);
-  if (!owner || owner.runId !== runId) {
-    throw new UpdateCommandRecoveryPendingError(
-      "Settlement requires its direct original executor.",
-    );
-  }
-  return owner.joined;
-}
 
 /** Revoke effects now; the owning invocation retains physical custody until it
  * and every admitted descendant join. Never returns a settlement capability. */
@@ -41,24 +27,6 @@ export function requestUpdateCommandExecutorCancellation(
     );
   }
   cancel(runId, cause);
-}
-
-/** Managed child closes its effects synchronously, then awaits only committed
- * native revocation. Final helper settlement must not be awaited by its own child. */
-export function requestManagedUpdateCommandExecutorRevocation(
-  fence: UpdateRecoveryFence,
-  runId: string,
-  cause: Error,
-): Promise<void> {
-  const admitted = admittedAuthorities.get(fence);
-  if (
-    !admitted?.managedHandoff ||
-    admittedRunIds.get(fence) !== runId ||
-    !admitted.requestManagedCancellation
-  ) {
-    throw new UpdateCommandRecoveryPendingError("Revocation requires its admitted helper route.");
-  }
-  return admitted.requestManagedCancellation(cause);
 }
 
 export function captureUpdateCommandExecutorAuthority(
