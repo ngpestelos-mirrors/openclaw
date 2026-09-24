@@ -21,7 +21,7 @@ import {
 import type { CoreConfig } from "./types.js";
 import {
   DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH,
-  describeNextcloudTalkWebhookProbeConflict,
+  describeNextcloudTalkWebhookRouteConflict,
 } from "./webhook-route.js";
 
 function sanitizeLegacyReplaySegment(value: string): string {
@@ -45,10 +45,10 @@ async function collectNextcloudTalkBotResponseWarnings(params: {
     const gatewayPort = resolveGatewayPort({ gateway: params.cfg.gateway }, params.env);
     const webhookPath = account.config.webhookPath ?? DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH;
     const destination = `Gateway port ${gatewayPort}${webhookPath}`;
-    const probeConflict = describeNextcloudTalkWebhookProbeConflict(webhookPath, gatewayPort);
-    if (probeConflict) {
+    const routeConflict = describeNextcloudTalkWebhookRouteConflict(webhookPath, gatewayPort);
+    if (routeConflict) {
       warnings.push(
-        `- channels.nextcloud-talk.${account.accountId}: ${probeConflict}` +
+        `- channels.nextcloud-talk.${account.accountId}: ${routeConflict}` +
           (account.config.legacyWebhook
             ? " The configured legacy webhook listener remains available; verify the new route before removing legacyWebhook."
             : " This account cannot start until the callback path is changed."),

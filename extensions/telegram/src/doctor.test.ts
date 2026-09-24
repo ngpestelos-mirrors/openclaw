@@ -646,6 +646,27 @@ describe("telegram doctor", () => {
     expect((await collectPreviewWarnings(disabledCfg)).join("\n")).not.toContain("reserved");
   });
 
+  it.each(["/api/channels/telegram", "/%61pi/channels/telegram"])(
+    "explains Gateway authentication for webhook path %s",
+    async (webhookPath) => {
+      const warnings = await collectPreviewWarnings({
+        channels: {
+          telegram: {
+            botToken: "tok",
+            webhookUrl: "https://example.test/hook",
+            webhookPath,
+            webhookSecret: "secret",
+          },
+        },
+      });
+      expect(warnings).toContainEqual(
+        expect.stringContaining(
+          "requires Gateway authentication. Set webhookPath to /telegram-webhook",
+        ),
+      );
+    },
+  );
+
   it("keeps preview warnings available for a malformed webhook path", async () => {
     const warnings = await collectPreviewWarnings({
       channels: {

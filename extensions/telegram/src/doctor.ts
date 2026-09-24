@@ -10,6 +10,8 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   classifyGatewayProbePath,
+  isProtectedPluginRoutePathFromContext,
+  resolvePluginRoutePathContext,
   resolveGatewayPort,
 } from "openclaw/plugin-sdk/gateway-config-runtime";
 import {
@@ -595,11 +597,16 @@ export const telegramDoctor: ChannelDoctorAdapter = {
       .filter(({ config }) => Boolean(config.webhookUrl))
       .map(({ accountId, config }) => {
         const path = config.webhookPath ?? "/telegram-webhook";
-        const probe = classifyGatewayProbePath(
-          URL.parse(path, "http://localhost")?.pathname ?? path,
-        );
-        if (probe === "live" || probe === "ready" || probe === "startup") {
-          return `- Telegram account "${accountId}" resolves webhookPath to ${path}, which is reserved for Gateway probes. Set webhookPath to /telegram-webhook and update webhookUrl or its reverse-proxy mapping. ${config.legacyWebhook ? "The configured legacy listener remains available; verify delivery on the new route before removing legacyWebhook." : "This account cannot start until its webhook path is changed."}`;
+        const pathname = URL.parse(path, "http://localhost")?.pathname ?? path;
+        const probe = classifyGatewayProbePath(pathname);
+        const pathConflict =
+          probe === "live" || probe === "ready" || probe === "startup"
+            ? "is reserved for Gateway probes"
+            : isProtectedPluginRoutePathFromContext(resolvePluginRoutePathContext(pathname))
+              ? "requires Gateway authentication"
+              : undefined;
+        if (pathConflict) {
+          return `- Telegram account "${accountId}" resolves webhookPath to ${path}, which ${pathConflict}. Set webhookPath to /telegram-webhook and update webhookUrl or its reverse-proxy mapping. ${config.legacyWebhook ? "The configured legacy listener remains available; verify delivery on the new route before removing legacyWebhook." : "This account cannot start until its webhook path is changed."}`;
         }
         const destination = `Gateway port ${resolveGatewayPort(cfg, env)}${path}`;
         return config.legacyWebhook

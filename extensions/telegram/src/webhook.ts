@@ -5,6 +5,8 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { isDiagnosticsEnabled } from "openclaw/plugin-sdk/diagnostic-runtime";
 import {
   classifyGatewayProbePath,
+  isProtectedPluginRoutePathFromContext,
+  resolvePluginRoutePathContext,
   resolveGatewayPort,
 } from "openclaw/plugin-sdk/gateway-config-runtime";
 import {
@@ -224,11 +226,17 @@ export async function startTelegramWebhook(opts: {
   const { targets: webhookTargets, rateLimiter } = state;
   const readConfig = createRuntimeConfigReader(opts.config ?? {});
   const path = opts.path ?? "/telegram-webhook";
-  const probe = classifyGatewayProbePath(URL.parse(path, "http://localhost")?.pathname ?? path);
-  const reservedProbe = probe === "live" || probe === "ready" || probe === "startup";
-  if (reservedProbe && !opts.legacyWebhook) {
+  const pathname = URL.parse(path, "http://localhost")?.pathname ?? path;
+  const probe = classifyGatewayProbePath(pathname);
+  const pathConflict =
+    probe === "live" || probe === "ready" || probe === "startup"
+      ? "is reserved for Gateway probes"
+      : isProtectedPluginRoutePathFromContext(resolvePluginRoutePathContext(pathname))
+        ? "requires Gateway authentication"
+        : undefined;
+  if (pathConflict && !opts.legacyWebhook) {
     throw new Error(
-      `Telegram webhook path "${path}" is reserved for Gateway probes. Set webhookPath to /telegram-webhook and update webhookUrl or its reverse-proxy mapping before restarting.`,
+      `Telegram webhook path "${path}" ${pathConflict}. Set webhookPath to /telegram-webhook and update webhookUrl or its reverse-proxy mapping before restarting.`,
     );
   }
   const secret = normalizeOptionalString(opts.secret) ?? "";
@@ -245,9 +253,9 @@ export async function startTelegramWebhook(opts: {
     );
   }
   const runtime = opts.runtime ?? defaultRuntime;
-  if (reservedProbe) {
+  if (pathConflict) {
     runtime.log?.(
-      `Telegram webhook path "${path}" is reserved on the Gateway port; its configured legacy listener remains available. Set webhookPath to /telegram-webhook and update webhookUrl or its reverse-proxy mapping before removing legacyWebhook.`,
+      `Telegram webhook path "${path}" ${pathConflict} on the Gateway port; its configured legacy listener remains available. Set webhookPath to /telegram-webhook and update webhookUrl or its reverse-proxy mapping before removing legacyWebhook.`,
     );
   }
   const status = createTelegramStatusPublisher("webhook", opts.setStatus);

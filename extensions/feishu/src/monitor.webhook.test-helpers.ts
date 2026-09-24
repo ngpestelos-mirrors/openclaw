@@ -9,13 +9,18 @@ import {
 import { canonicalizeWebhookRouteKey } from "openclaw/plugin-sdk/webhook-ingress";
 import { afterAll, vi } from "vitest";
 import type { ClawdbotConfig, RuntimeEnv } from "../runtime-api.js";
+import { FeishuConfigSchema } from "./config-schema.js";
 import type { FeishuStatusSink, monitorFeishuProvider } from "./monitor.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
 const registry = createEmptyPluginRegistry();
 const pendingRoutes = new Map<string, Set<() => void>>();
 const routeSplice = registry.httpRoutes.splice.bind(registry.httpRoutes);
-registry.httpRoutes.splice = (start, deleteCount, ...items) => {
+registry.httpRoutes.splice = (
+  start: number,
+  deleteCount?: number,
+  ...items: typeof registry.httpRoutes
+) => {
   const result = routeSplice(start, deleteCount ?? registry.httpRoutes.length - start, ...items);
   for (const route of registry.httpRoutes) {
     for (const resolve of pendingRoutes.get(route.path) ?? []) {
@@ -26,9 +31,8 @@ registry.httpRoutes.splice = (start, deleteCount, ...items) => {
   return result;
 };
 const gatewayServer = createServer((req, res) => {
-  const rawPath = (req.url ?? "/").split("?", 1)[0];
   const route = registry.httpRoutes.find(
-    (entry) => entry.path === canonicalizeWebhookRouteKey(rawPath),
+    (entry) => entry.path === canonicalizeWebhookRouteKey(req.url ?? "/"),
   );
   if (!route) {
     res.statusCode = 404;
@@ -85,13 +89,20 @@ export function createFeishuWebhookTestAccount(
 ): ResolvedFeishuAccount {
   return {
     accountId,
+    selectionSource: "explicit",
+    enabled: true,
+    configured: true,
+    domain: "feishu",
     encryptKey: "encrypt_key",
-    config: {
+    verificationToken: "verify_token",
+    config: FeishuConfigSchema.parse({
       enabled: true,
       connectionMode: "webhook",
       webhookPath,
-    },
-  } as ResolvedFeishuAccount;
+      encryptKey: "encrypt_key",
+      verificationToken: "verify_token",
+    }),
+  };
 }
 
 export function signFeishuPayload(params: {

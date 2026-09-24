@@ -18,9 +18,16 @@ const config = {
 };
 
 describe("Nextcloud Talk monitor abort", () => {
-  it.each(["/health", "/healthz", "/ready", "/readyz", "/startup", "/startupz"])(
-    "blocks Gateway probe path %s without a legacy endpoint and preserves its legacy endpoint",
-    async (probePath) => {
+  it.each([
+    ...["/health", "/healthz", "/ready", "/readyz", "/startup", "/startupz"].map((path) => ({
+      path,
+      reason: "reserved for Gateway probes",
+    })),
+    { path: "/api/channels/talk", reason: "requires Gateway authentication" },
+    { path: "/%61pi/channels/talk", reason: "requires Gateway authentication" },
+  ])(
+    "blocks incompatible Gateway path $path without a legacy endpoint and preserves its legacy endpoint",
+    async ({ path, reason }) => {
       const core = createPluginRuntimeMock();
       const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
       vi.mocked(core.logging.getChildLogger).mockReturnValue(logger);
@@ -34,7 +41,7 @@ describe("Nextcloud Talk monitor abort", () => {
         stop: vi.fn(async () => {}),
         waitForIdle: vi.fn(async () => {}),
       }));
-      for (const webhookPath of [probePath, `${probePath}?tenant=a`]) {
+      for (const webhookPath of [path, `${path}?tenant=a`]) {
         const options = {
           config: {
             gateway: { port: 19001 },
@@ -44,8 +51,10 @@ describe("Nextcloud Talk monitor abort", () => {
           statusSink,
           createSpool,
         };
-        await expect(monitorNextcloudTalkProvider(options)).rejects.toThrow(
-          /reserved for Gateway probes.*Set webhookPath to "\/nextcloud-talk-webhook".*Gateway port 19001\/nextcloud-talk-webhook/,
+        const starting = monitorNextcloudTalkProvider(options);
+        await expect(starting).rejects.toThrow(reason);
+        await expect(starting).rejects.toThrow(
+          /Set webhookPath to "\/nextcloud-talk-webhook".*Gateway port 19001\/nextcloud-talk-webhook/,
         );
         expect(createSpool).not.toHaveBeenCalled();
         expect(registry.httpRoutes).toHaveLength(0);
@@ -57,7 +66,7 @@ describe("Nextcloud Talk monitor abort", () => {
           channels: {
             "nextcloud-talk": {
               ...config.channels["nextcloud-talk"],
-              webhookPath: `${probePath}?tenant=a`,
+              webhookPath: `${path}?tenant=a`,
               legacyWebhook: { port: 8788 },
             },
           },

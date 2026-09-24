@@ -301,13 +301,22 @@ part of the third-party SDK. Normalize callback input
 through `new URL(rawPath, "http://localhost").pathname` first. Results `live`,
 `ready`, and `startup` identify exact paths owned by probes on the Gateway port;
 choose a different webhook path. Results `namespace` and `outside` do not identify
-an exact probe route. An explicit legacy listener can still serve its old path
-while the operator updates the external callback.
+an exact probe route. The same private facade exports `resolvePluginRoutePathContext`
+and `isProtectedPluginRoutePathFromContext` for canonical protected-path checks.
+If the callback falls under a protected namespace, choose the channel's safe default
+path before moving the external callback or reverse proxy to the Gateway port.
+An explicit legacy listener can still serve its old path during that migration.
 
 For a shipped, explicitly configured channel port, registration can temporarily
 include `legacyListener: { port, host? }`. The Gateway forwards only requests for
 that registration's paths through the same HTTP dispatch, preserving the original
-socket and body. It never exposes core HTTP endpoints on the compatibility port.
+socket and body. It leaves the callback URL intact, including paths that resemble
+Gateway node-capability URLs. It never exposes core HTTP endpoints on the compatibility port.
+Legacy listeners require `auth: "plugin"`: the channel continues authenticating
+its old callback path, including paths under `/api/channels`. The Gateway port
+keeps its protected-path authentication policy. This exception applies only to
+requests received on the explicitly configured retired port; it grants no Gateway
+operator scopes and does not waive channel signature checks or work admission.
 `getWebhookLegacyListener(req)` returns its frozen configured `{ port, host? }`
 endpoint, or `undefined` for an ordinary Gateway request; headers cannot set it.
 Filter account targets by this endpoint before signature resolution when old ports

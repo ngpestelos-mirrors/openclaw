@@ -11,7 +11,7 @@ import { getNextcloudTalkRuntime } from "./runtime.js";
 import type { CoreConfig, NextcloudTalkInboundMessage } from "./types.js";
 import {
   DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH,
-  describeNextcloudTalkWebhookProbeConflict,
+  describeNextcloudTalkWebhookRouteConflict,
 } from "./webhook-route.js";
 import {
   createNextcloudTalkWebhookSpool,
@@ -59,9 +59,9 @@ export async function monitorNextcloudTalkProvider(
 
   const path = account.config.webhookPath ?? DEFAULT_NEXTCLOUD_TALK_WEBHOOK_PATH;
   const gatewayPort = resolveGatewayPort({ gateway: cfg.gateway });
-  const probeConflict = describeNextcloudTalkWebhookProbeConflict(path, gatewayPort);
-  if (probeConflict && !account.config.legacyWebhook) {
-    throw new Error(`[nextcloud-talk:${account.accountId}] ${probeConflict}`);
+  const routeConflict = describeNextcloudTalkWebhookRouteConflict(path, gatewayPort);
+  if (routeConflict && !account.config.legacyWebhook) {
+    throw new Error(`[nextcloud-talk:${account.accountId}] ${routeConflict}`);
   }
 
   const logger = core.logging.getChildLogger({
@@ -149,9 +149,9 @@ export async function monitorNextcloudTalkProvider(
   }
   opts.statusSink?.(channelReadyPatch());
 
-  if (probeConflict) {
+  if (routeConflict) {
     logger.warn(
-      `[nextcloud-talk:${account.accountId}] ${probeConflict} ` +
+      `[nextcloud-talk:${account.accountId}] ${routeConflict} ` +
         "The configured legacy webhook listener remains available; verify the new route before removing legacyWebhook.",
     );
     return { stop };

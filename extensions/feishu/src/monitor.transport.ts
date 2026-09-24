@@ -119,13 +119,8 @@ function isFeishuWebhookTimestampFresh(timestamp: string): boolean {
 function isFeishuWebhookSignatureValid(params: {
   headers: http.IncomingHttpHeaders;
   rawBody: string;
-  encryptKey?: string;
+  encryptKey: string;
 }): boolean {
-  const encryptKey = params.encryptKey?.trim();
-  if (!encryptKey) {
-    return false;
-  }
-
   const timestampHeader = params.headers["x-lark-request-timestamp"];
   const nonceHeader = params.headers["x-lark-request-nonce"];
   const signatureHeader = params.headers["x-lark-signature"];
@@ -142,7 +137,7 @@ function isFeishuWebhookSignatureValid(params: {
 
   const computedSignature = crypto
     .createHash("sha256")
-    .update(timestamp + nonce + encryptKey + params.rawBody)
+    .update(timestamp + nonce + params.encryptKey + params.rawBody)
     .digest("hex");
   return safeEqualSecret(computedSignature, signature);
 }
@@ -387,6 +382,7 @@ export async function monitorWebSocket({
 type FeishuWebhookTarget = MonitorTransportParams & {
   path: string;
   rawPath: string;
+  encryptKey: string;
   preAuthInFlightLimiter: ReturnType<typeof createWebhookInFlightLimiter>;
 };
 const webhookTargetsStore = createPluginRuntimeStore<Map<string, FeishuWebhookTarget[]>>(
@@ -411,11 +407,12 @@ async function handleFeishuWebhook(
           target.account.config.legacyWebhook.host === legacyListener.host)) &&
       (target.rawPath.includes("?") ? requestUrl : requestPath) === target.rawPath,
   );
-  if (!requestPath?.startsWith("/") || requestUrl.includes("#") || targets.length === 0) {
+  const firstTarget = targets[0];
+  if (!requestPath?.startsWith("/") || requestUrl.includes("#") || !firstTarget) {
     respondText(res, 404, "Not Found");
     return;
   }
-  const { accountId, rawPath: path, runtime, preAuthInFlightLimiter } = targets[0];
+  const { accountId, rawPath: path, runtime, preAuthInFlightLimiter } = firstTarget;
   const error = runtime?.error ?? console.error;
   const preAuthInFlightKey = canonicalizeWebhookRouteKey(requestPath);
   let selectedTarget: FeishuWebhookTarget | null = null;
@@ -509,7 +506,7 @@ async function handleFeishuWebhook(
           isFeishuWebhookSignatureValid({
             headers: req.headers,
             rawBody,
-            encryptKey: target.account.encryptKey,
+            encryptKey: target.encryptKey,
           }),
         unauthorizedMessage: "Invalid signature",
       });
@@ -523,8 +520,7 @@ async function handleFeishuWebhook(
       preAuthInFlightLimiter.release(preAuthInFlightKey);
     }
 
-    const { account, eventDispatcher, invokeWebhookEvent } = selectedTarget;
-    const encryptKey = account.encryptKey?.trim();
+    const { encryptKey, eventDispatcher, invokeWebhookEvent } = selectedTarget;
     const payload = parseFeishuWebhookPayload(rawBody);
     if (!payload) {
       respondText(res, 400, "Invalid JSON");
@@ -568,7 +564,8 @@ async function handleFeishuWebhook(
 
 export async function monitorWebhook(params: MonitorTransportParams): Promise<void> {
   const { account, accountId, runtime, abortSignal, statusSink } = params;
-  if (!account.encryptKey?.trim()) {
+  const encryptKey = account.encryptKey?.trim();
+  if (!encryptKey) {
     throw new Error(`Feishu account "${accountId}" webhook mode requires encryptKey`);
   }
   const rawPath = account.config.webhookPath ?? DEFAULT_FEISHU_WEBHOOK_PATH;
@@ -590,7 +587,7 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
     webhookTargets = new Map();
     webhookTargetsStore.setRuntime(webhookTargets);
   }
-  const path = canonicalizeWebhookRouteKey(rawPath.split("?", 1)[0]);
+  const path = canonicalizeWebhookRouteKey(rawPath);
   const preAuthInFlightLimiter =
     webhookTargets.get(path)?.[0]?.preAuthInFlightLimiter ??
     createWebhookInFlightLimiter({
@@ -601,6 +598,7 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
     ...params,
     path,
     rawPath,
+    encryptKey,
     preAuthInFlightLimiter,
   });
   let unregisterRoute: (() => void) | undefined;

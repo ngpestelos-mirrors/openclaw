@@ -103,3 +103,9 @@ Azure Bot or the proxy upstream to match. Doctor reports this conflict, and
 startup refuses the unusable route unless an explicit legacy listener preserves
 the old endpoint. That legacy port continues serving the old path during the
 migration; verify the replacement before removing it.
+
+Paths under `/api/channels` require Gateway authentication on the main listener,
+including encoded spellings. Teams callbacks authenticate with Azure JWTs, so
+use `/api/messages` instead. Doctor and startup report the same callback-change
+action; an explicitly retained legacy listener continues serving the old path
+until that cutover is complete.

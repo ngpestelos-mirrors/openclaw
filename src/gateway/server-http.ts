@@ -61,7 +61,10 @@ import {
   type GatewayIngressTransport,
   type GatewayUnattributableProxyReporter,
 } from "./ingress-attribution.js";
-import { normalizePluginNodeCapabilityScopedUrl } from "./plugin-node-capability.js";
+import {
+  normalizePluginNodeCapabilityScopedUrl,
+  type NormalizedPluginNodeCapabilityUrl,
+} from "./plugin-node-capability.js";
 import {
   handleProviderOAuthCallback,
   PROVIDER_OAUTH_CALLBACK_PATH,
@@ -293,7 +296,10 @@ export function createGatewayHttpServer(opts: {
         tailscaleWhois: (ip) =>
           readTailscaleWhoisIdentity(ip, undefined, { cacheTtlMs: 0, errorTtlMs: 0 }),
       });
-      const scopedNodeCapability = normalizePluginNodeCapabilityScopedUrl(req.url ?? "/");
+      // Retired channel ports keep the literal callback URL registered by their plugin.
+      const scopedNodeCapability: NormalizedPluginNodeCapabilityUrl = legacyPluginRequest
+        ? { pathname: requestPath, scopedPath: false, malformedScopedPath: false }
+        : normalizePluginNodeCapabilityScopedUrl(req.url ?? "/");
       if (scopedNodeCapability.malformedScopedPath) {
         sendGatewayAuthFailure(res, { ok: false, reason: "unauthorized" });
         return;
@@ -305,20 +311,26 @@ export function createGatewayHttpServer(opts: {
       }
       const scopedRequestPath = scopedNodeCapability.pathname;
       const pluginPathContext = resolvePluginRoutePathContext(scopedRequestPath);
-      const nodeCapability = resolvePluginNodeCapabilityRoute?.(pluginPathContext);
+      const nodeCapability = legacyPluginRequest
+        ? undefined
+        : resolvePluginNodeCapabilityRoute?.(pluginPathContext);
       if (ingressAttribution.kind === "unattributable-proxy") {
         opts.reportUnattributableProxy?.(ingressAttribution);
         if (
-          !nodeCapability &&
           handlePluginRequest &&
-          opts.isPluginAuthenticatedRoute?.(pluginPathContext) &&
+          (legacyPluginRequest ||
+            (!nodeCapability && opts.isPluginAuthenticatedRoute?.(pluginPathContext))) &&
           (await handlePluginRequest(req, res, pluginPathContext, {
             gatewayRequestClientIp: ingressAttribution.remoteAddress,
           }))
         ) {
           return;
         }
-        sendGatewayAuthFailure(res, { ok: false, reason: ingressAttribution.reason });
+        if (legacyPluginRequest) {
+          respondNotFound(res);
+        } else {
+          sendGatewayAuthFailure(res, { ok: false, reason: ingressAttribution.reason });
+        }
         return;
       }
       const requestClientIp = ingressAttribution.clientIp;
@@ -631,6 +643,7 @@ export function createGatewayHttpServer(opts: {
         requestStages.push(
           async () => {
             if (
+              legacyPluginRequest ||
               !(shouldEnforcePluginGatewayAuth ?? shouldEnforceDefaultPluginGatewayAuth)(
                 pluginPathContext,
               ) ||

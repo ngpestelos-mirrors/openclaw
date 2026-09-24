@@ -288,6 +288,9 @@ export function registerPluginHttpRoute(params: {
     }
     return noopUnregister;
   };
+  if (params.legacyListener && params.auth !== "plugin") {
+    return rejectRegistration("legacy webhook listeners require plugin authentication");
+  }
   // AsyncLocalStorage survives timed-out lifecycle callbacks; expired continuations must not
   // regain route authority, even when they retained an explicit registry reference.
   if (scope?.leases.some((lease) => !lease.isActive())) {

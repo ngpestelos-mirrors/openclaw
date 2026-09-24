@@ -7,7 +7,6 @@ import type {
 } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { isPathStrictlyInside } from "openclaw/plugin-sdk/file-access-runtime";
-import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
   isValidAgentHarnessSessionStoreEntry,
@@ -22,10 +21,8 @@ import {
   isRecord,
   normalizeLowercaseStringOrEmpty,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { listFeishuAccountIds, resolveFeishuAccount } from "./accounts.js";
 import { legacyConfigRules, normalizeCompatibilityConfig } from "./doctor-contract.js";
-import { DEFAULT_FEISHU_WEBHOOK_PATH } from "./webhook-path.js";
-import { describeFeishuWebhookPathConflict } from "./webhook-route.js";
+import { collectFeishuWebhookWarnings } from "./webhook-route.js";
 
 const FEISHU_STATE_DIR = "feishu";
 const BACKUP_PREFIX = "feishu-state-repair";
@@ -899,16 +896,12 @@ function formatRepairChange(report: FeishuDoctorRepairReport): string {
   ].join("\n");
 }
 
-function hasConfiguredFeishuChannel(cfg: OpenClawConfig): boolean {
-  return Boolean(cfg.channels?.feishu);
-}
-
 async function runFeishuDoctorSequence(params: {
   cfg: OpenClawConfig;
   env: NodeJS.ProcessEnv;
   shouldRepair: boolean;
 }): Promise<ChannelDoctorSequenceResult> {
-  if (!hasConfiguredFeishuChannel(params.cfg)) {
+  if (!params.cfg.channels?.feishu) {
     return { changeNotes: [], warningNotes: [] };
   }
 
@@ -938,24 +931,7 @@ async function runFeishuDoctorSequence(params: {
 export const feishuDoctor: ChannelDoctorAdapter = {
   legacyConfigRules,
   normalizeCompatibilityConfig,
-  collectPreviewWarnings: ({ cfg, env }) =>
-    listFeishuAccountIds(cfg).flatMap((accountId) => {
-      const account = resolveFeishuAccount({ cfg, accountId });
-      if (account.config.connectionMode !== "webhook") {
-        return [];
-      }
-      const route = account.config.webhookPath ?? DEFAULT_FEISHU_WEBHOOK_PATH;
-      const pathConflict = describeFeishuWebhookPathConflict(route);
-      if (pathConflict) {
-        return [
-          `Feishu account "${accountId}" ${pathConflict} ${account.config.legacyWebhook ? "The configured legacyWebhook listener keeps the old path working. Move webhookPath and the callback or proxy before deleting legacyWebhook." : "Webhook startup is blocked until the path is changed."} Use Gateway port ${resolveGatewayPort(cfg, env)}.`,
-        ];
-      }
-      const upstream = `Gateway port ${resolveGatewayPort(cfg, env)}, path ${route}`;
-      return [
-        `Feishu account "${accountId}" uses ${upstream}. Point the Feishu callback URL or reverse-proxy upstream there; accounts sharing a path need distinct encrypt keys. ${account.config.legacyWebhook ? `The explicitly configured legacy listener on ${account.config.legacyWebhook.host ?? "127.0.0.1"}:${account.config.legacyWebhook.port} forwards into that same route. Remove legacyWebhook after updating the upstream; retirement is planned after a two-month migration window with no automatic cutoff.` : "No separate webhook listener is opened; the former default port 3000 is no longer used."}`,
-      ];
-    }),
+  collectPreviewWarnings: collectFeishuWebhookWarnings,
   runConfigSequence: async ({ cfg, env, shouldRepair }) =>
     await runFeishuDoctorSequence({ cfg, env, shouldRepair }),
 };

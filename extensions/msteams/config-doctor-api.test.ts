@@ -41,15 +41,24 @@ describe("Microsoft Teams Gateway webhook migration", () => {
     ).toContain("3978");
   });
 
-  it.each(["/health", "/healthz", "/ready", "/readyz", "/startup", "/startupz"])(
-    "diagnoses reserved %s callbacks with and without explicit legacy forwarding",
-    (path) => {
+  it.each([
+    ["/health", "is reserved for Gateway probes"],
+    ["/healthz", "is reserved for Gateway probes"],
+    ["/ready", "is reserved for Gateway probes"],
+    ["/readyz", "is reserved for Gateway probes"],
+    ["/startup", "is reserved for Gateway probes"],
+    ["/startupz", "is reserved for Gateway probes"],
+    ["/api/channels/teams", "requires Gateway authentication"],
+    ["/%61pi/channels/teams", "requires Gateway authentication"],
+  ])(
+    "diagnoses unavailable %s callbacks with and without explicit legacy forwarding",
+    (path, reason) => {
       for (const legacyWebhook of [undefined, { port: 3978 }]) {
         const cfg: OpenClawConfig = {
           channels: { msteams: { webhook: { path: `${path}?tenant=one` }, legacyWebhook } },
         };
         const warning = collectMSTeamsWebhookWarnings({ cfg, env: {} }).join(" ");
-        expect(warning).toContain(`${path}?tenant=one is reserved`);
+        expect(warning).toContain(`${path}?tenant=one ${reason}`);
         expect(warning).toContain("18789/api/messages");
         expect(warning).toContain(
           legacyWebhook ? "legacy port 3978 continues" : "cannot receive Teams callbacks",

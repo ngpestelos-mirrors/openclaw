@@ -111,3 +111,9 @@ legacy listener continues serving the old path. Change `webhookPath` to
 `/feishu/events` (or another unreserved path), update the Feishu callback URL or
 reverse-proxy path, verify delivery on the Gateway, and only then remove
 `legacyWebhook`. Paths nested below a probe path are not reserved by this rule.
+
+Paths under `/api/channels` require Gateway authentication and cannot receive
+ordinary Feishu callbacks on the Gateway port. This also applies to encoded
+forms of that prefix. Startup and Doctor give the same path-change instructions;
+explicit legacy listeners keep those callbacks working until the path and
+external callback or proxy are migrated.

@@ -6,7 +6,9 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   classifyGatewayProbePath,
+  isProtectedPluginRoutePathFromContext,
   resolveGatewayPort,
+  resolvePluginRoutePathContext,
 } from "openclaw/plugin-sdk/gateway-config-runtime";
 
 const isMSTeamsMutableAllowEntry = buildMutableAllowEntryDetector({
@@ -30,12 +32,21 @@ export function resolveMSTeamsWebhookPathIssue({
 }): string | undefined {
   const channel = cfg.channels?.msteams;
   const path = channel?.webhook?.path ?? "/api/messages";
-  const probe = classifyGatewayProbePath(URL.parse(path, "http://localhost")?.pathname ?? path);
-  if (probe === "namespace" || probe === "outside") {
+  const pathname = URL.parse(path, "http://localhost")?.pathname ?? path;
+  const probe = classifyGatewayProbePath(pathname);
+  const protectedPath = isProtectedPluginRoutePathFromContext(
+    resolvePluginRoutePathContext(pathname),
+  );
+  const reason = protectedPath
+    ? "requires Gateway authentication on the main HTTP listener"
+    : probe !== "namespace" && probe !== "outside"
+      ? "is reserved for Gateway probes"
+      : undefined;
+  if (!reason) {
     return undefined;
   }
   return (
-    `Microsoft Teams webhook path ${path} is reserved for Gateway probes. ` +
+    `Microsoft Teams webhook path ${path} ${reason}. ` +
     `Set channels.msteams.webhook.path to /api/messages and update the Azure Bot messaging endpoint or reverse-proxy upstream to Gateway port ${resolveGatewayPort(cfg, env)}/api/messages; verify delivery before removing legacyWebhook.` +
     (channel?.legacyWebhook
       ? ` The explicitly configured legacy port ${channel.legacyWebhook.port} continues serving the current path during migration.`

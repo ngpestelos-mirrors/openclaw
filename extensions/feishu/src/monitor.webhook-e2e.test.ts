@@ -110,25 +110,28 @@ afterAll(() => {
 });
 
 describe("Feishu webhook signed-request e2e", () => {
-  it.each(
-    ["/health", "/healthz", "/ready", "/readyz", "/startup", "/startupz"].flatMap((path) => [
-      path,
-      `${path}?tenant=test`,
-    ]),
-  )("requires an explicit legacy listener for reserved path %s", async (path) => {
+  it.each([
+    ...["/health", "/healthz", "/ready", "/readyz", "/startup", "/startupz"]
+      .flatMap((path) => [path, `${path}?tenant=test`])
+      .map((path) => ({ path, reason: "is reserved for Gateway probes" })),
+    { path: "/api/channels/feishu", reason: "requires Gateway authentication" },
+    { path: "/%61pi/channels/feishu?tenant=test", reason: "requires Gateway authentication" },
+  ])("requires an explicit legacy listener for restricted path $path", async ({ path, reason }) => {
     const port = await getGatewayPort();
     const abortController = new AbortController();
     const invoke = vi.fn(async () => ({ accepted: true }));
     const account = createFeishuWebhookTestAccount("reserved-path", path);
+    const eventDispatcher = new Lark.EventDispatcher({ encryptKey: "encrypt_key" });
+    vi.spyOn(eventDispatcher, "invoke").mockImplementation(invoke);
     const params = {
       account,
       accountId: account.accountId,
       abortSignal: abortController.signal,
-      eventDispatcher: { invoke } as Lark.EventDispatcher,
+      eventDispatcher,
       runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
     };
     await expect(monitorWebhook(params)).rejects.toThrow(
-      `webhookPath ${JSON.stringify(path)} is reserved for Gateway probes`,
+      `webhookPath ${JSON.stringify(path)} ${reason}`,
     );
     legacyListener.value = { port: 3000, host: "127.0.0.1" };
     const monitor = monitorWebhook({
@@ -156,24 +159,32 @@ describe("Feishu webhook signed-request e2e", () => {
   it("dispatches shared Gateway routes and honors trusted legacy-listener metadata", async () => {
     const path = "/hook-shared-accounts";
     const port = await getGatewayPort();
-    const controllers = [new AbortController(), new AbortController(), new AbortController()];
+    const controllers = [
+      new AbortController(),
+      new AbortController(),
+      new AbortController(),
+    ] as const;
     const dispatchers = [
       vi.fn(async () => ({ account: "first" })),
       vi.fn(async () => ({ account: "second" })),
-      vi.fn(),
-    ];
-    const start = (index: number, encryptKey: string) =>
-      monitorWebhook({
+      vi.fn(async () => ({ account: "third" })),
+    ] as const;
+    const start = (index: 0 | 1 | 2, encryptKey: string) => {
+      const account = createFeishuWebhookTestAccount(`shared-${index}`, path);
+      const eventDispatcher = new Lark.EventDispatcher({ encryptKey });
+      vi.spyOn(eventDispatcher, "invoke").mockImplementation(dispatchers[index]);
+      return monitorWebhook({
         account: {
-          ...createFeishuWebhookTestAccount(`shared-${index}`, path),
+          ...account,
           encryptKey,
-          config: { webhookPath: path, legacyWebhook: { port: 3000 + index, host: "127.0.0.1" } },
+          config: { ...account.config, legacyWebhook: { port: 3000 + index, host: "127.0.0.1" } },
         },
         accountId: `shared-${index}`,
         abortSignal: controllers[index].signal,
-        eventDispatcher: { invoke: dispatchers[index] } as Lark.EventDispatcher,
+        eventDispatcher,
         runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       });
+    };
     const monitors = [start(0, "first-key"), start(1, "second-key")];
     const rawBody = JSON.stringify({ schema: "2.0", event: {} });
     const post = (encryptKey: string) =>

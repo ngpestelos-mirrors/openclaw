@@ -25,8 +25,9 @@ export function permitsLegacyPluginRoute(
   const endpoint = getWebhookLegacyListener(req);
   return (
     !endpoint ||
-    route.legacyListeners?.some(
-      (candidate) => candidate.port === endpoint.port && candidate.host === endpoint.host,
-    ) === true
+    (route.auth === "plugin" &&
+      route.legacyListeners?.some(
+        (candidate) => candidate.port === endpoint.port && candidate.host === endpoint.host,
+      ) === true)
   );
 }

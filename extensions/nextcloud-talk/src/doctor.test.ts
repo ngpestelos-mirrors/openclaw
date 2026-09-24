@@ -99,6 +99,20 @@ describe("nextcloud-talk doctor", () => {
       expectedWarning:
         '- channels.nextcloud-talk.default: Webhook path "/healthz?tenant=a" is reserved for Gateway probes and cannot receive Nextcloud callbacks on the Gateway port. Set webhookPath to "/nextcloud-talk-webhook" and update the Nextcloud bot callback and reverse-proxy upstream to Gateway port 19801/nextcloud-talk-webhook. The configured legacy webhook listener remains available; verify the new route before removing legacyWebhook.',
     },
+    {
+      label: "blocked Gateway-authenticated path",
+      webhookPath: "/api/channels/talk?tenant=a",
+      legacyWebhook: undefined,
+      expectedWarning:
+        '- channels.nextcloud-talk.default: Webhook path "/api/channels/talk?tenant=a" requires Gateway authentication and cannot receive Nextcloud callbacks on the Gateway port. Set webhookPath to "/nextcloud-talk-webhook" and update the Nextcloud bot callback and reverse-proxy upstream to Gateway port 19801/nextcloud-talk-webhook. This account cannot start until the callback path is changed.',
+    },
+    {
+      label: "legacy encoded Gateway-authenticated path",
+      webhookPath: "/%61pi/channels/talk?tenant=a",
+      legacyWebhook: { port: 8788 },
+      expectedWarning:
+        '- channels.nextcloud-talk.default: Webhook path "/%61pi/channels/talk?tenant=a" requires Gateway authentication and cannot receive Nextcloud callbacks on the Gateway port. Set webhookPath to "/nextcloud-talk-webhook" and update the Nextcloud bot callback and reverse-proxy upstream to Gateway port 19801/nextcloud-talk-webhook. The configured legacy webhook listener remains available; verify the new route before removing legacyWebhook.',
+    },
   ])(
     "warns about $label and a missing response feature",
     async ({ webhookPath, legacyWebhook, expectedWarning }) => {

@@ -121,6 +121,8 @@ accounts have the same backend and secret.
 Webhook paths retain exact request matching, including query strings, case, and
 trailing slashes. `/health`, `/healthz`, `/ready`, `/readyz`, `/startup`, and
 `/startupz` belong to Gateway probes, including when a query string follows.
+Paths under `/api/channels` require Gateway authentication, including encoded
+aliases; Nextcloud's signature does not supply that authentication.
 Doctor warns about these paths, and an account without a legacy listener cannot
 start with one. Set `webhookPath` to `/nextcloud-talk-webhook` and update the
 Nextcloud bot callback and reverse-proxy upstream to the Gateway port and that

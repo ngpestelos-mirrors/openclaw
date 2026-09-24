@@ -22,6 +22,10 @@ import { acquireTestPortBlock, type TestPortClaim } from "../../test-utils/port-
 import { createGatewayHttpServer } from "../server-http.js";
 import { startPluginLegacyListeners } from "./plugin-legacy-listeners.js";
 import { createGatewayPluginRequestHandler } from "./plugins-http.js";
+import {
+  isPluginAuthenticatedRoutePath,
+  shouldEnforceGatewayAuthForPluginPath,
+} from "./plugins-http/route-auth.js";
 
 describe("legacy channel webhook ports", () => {
   let claim: TestPortClaim;
@@ -49,7 +53,9 @@ describe("legacy channel webhook ports", () => {
         getRouteRegistry: () => registry,
         log: createSubsystemLogger("legacy-webhook-test"),
       }),
-      shouldEnforcePluginGatewayAuth: () => false,
+      shouldEnforcePluginGatewayAuth: (context) =>
+        shouldEnforceGatewayAuthForPluginPath(registry, context),
+      isPluginAuthenticatedRoute: (context) => isPluginAuthenticatedRoutePath(registry, context),
     });
     gatewayServer.listen(claim.port, "127.0.0.1");
     await once(gatewayServer, "listening");
@@ -173,6 +179,95 @@ describe("legacy channel webhook ports", () => {
     ).toBe(503);
     expect(warn).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      name: "protected namespace",
+      path: "/api/channels/telegram",
+      primaryStatus: 401,
+      primaryBody: undefined,
+    },
+    {
+      name: "capability rewrite",
+      path: "/__openclaw__/cap/vendor/webhook",
+      primaryStatus: 200,
+      primaryBody: "rewritten sibling: /webhook?oc_cap=vendor",
+    },
+    {
+      name: "incomplete capability",
+      path: "/__openclaw__/cap/vendor",
+      primaryStatus: 401,
+      primaryBody: undefined,
+    },
+  ])(
+    "preserves the $name callback on its legacy port and the primary listener's policy",
+    async ({ path, primaryStatus, primaryBody }) => {
+      expect(() =>
+        register({ auth: "gateway", legacyListener: endpoint(1), throwOnFailure: true }),
+      ).toThrow("legacy webhook listeners require plugin authentication");
+      expect(registry.httpRoutes).toHaveLength(0);
+      register({
+        path,
+        legacyListener: endpoint(1),
+        handler: (req, res) => {
+          expect(req.url).toBe(path);
+          if (req.headers["x-webhook-secret"] !== "synthetic-secret") {
+            res.writeHead(401).end();
+            return;
+          }
+          expect(getPluginRuntimeGatewayRequestScope()?.client?.connect.scopes).toEqual([]);
+          res.end("vendor accepted");
+        },
+      });
+      register({
+        path: "/webhook",
+        legacyListener: endpoint(1),
+        handler: (req, res) => {
+          res.end(`rewritten sibling: ${req.url}`);
+        },
+      });
+      const gatewayOnlyHandler = vi.fn();
+      registry.httpRoutes.push({
+        path,
+        auth: "gateway",
+        match: "exact",
+        legacyListeners: [endpoint(1)],
+        handler: gatewayOnlyHandler,
+      });
+      await listening();
+      for (const forwarded of [false, true]) {
+        const headers: Record<string, string> = forwarded
+          ? {
+              "x-forwarded-for": "203.0.113.20",
+              "x-forwarded-proto": "https",
+              "x-forwarded-host": "callbacks.example",
+            }
+          : {};
+        const signed = { ...headers, "x-webhook-secret": "synthetic-secret" };
+        const accepted = await fetch(url(1, path), { method: "POST", headers: signed });
+        expect(accepted.status).toBe(200);
+        expect(await accepted.text()).toBe("vendor accepted");
+        expect(
+          (
+            await fetch(url(1, path), {
+              method: "POST",
+              headers: { ...headers, "x-webhook-secret": "wrong" },
+            })
+          ).status,
+        ).toBe(401);
+        const primary = await fetch(url(0, path), { method: "POST", headers: signed });
+        expect(primary.status).toBe(primaryStatus);
+        const primaryText = await primary.text();
+        if (primaryBody !== undefined) {
+          expect(primaryText).toBe(primaryBody);
+        }
+        expect(
+          (await fetch(url(1, "/tools/invoke"), { method: "POST", headers: signed })).status,
+        ).toBe(404);
+      }
+      expect(gatewayOnlyHandler).not.toHaveBeenCalled();
+    },
+  );
 
   it("retains only the restarting account's port across route handoff and registry replacement", async () => {
     const lease = createPluginRuntimeCapabilityLease("old-account");

@@ -512,7 +512,12 @@ describe("Feishu doctor state repair", () => {
 });
 
 describe("Feishu webhook path guidance", () => {
-  it.each([false, true])("explains reserved paths with legacy listener %s", async (legacy) => {
+  it.each(
+    [
+      { path: "/readyz?tenant=test", reason: "is reserved for Gateway probes" },
+      { path: "/%61pi/channels/feishu", reason: "requires Gateway authentication" },
+    ].flatMap((route) => [false, true].map((legacy) => ({ ...route, legacy }))),
+  )("explains $path with legacy listener $legacy", async ({ path, reason, legacy }) => {
     const warnings = await feishuDoctor.collectPreviewWarnings?.({
       cfg: {
         channels: {
@@ -520,7 +525,7 @@ describe("Feishu webhook path guidance", () => {
             appId: "cli_test",
             appSecret: "secret_test",
             connectionMode: "webhook",
-            webhookPath: "/readyz?tenant=test",
+            webhookPath: path,
             ...(legacy ? { legacyWebhook: { port: 3000, host: "127.0.0.1" } } : {}),
           },
         },
@@ -529,7 +534,7 @@ describe("Feishu webhook path guidance", () => {
       env: {},
     });
     expect(warnings).toEqual([
-      expect.stringContaining('webhookPath "/readyz?tenant=test" is reserved for Gateway probes'),
+      expect.stringContaining(`webhookPath ${JSON.stringify(path)} ${reason}`),
     ]);
     expect(warnings?.[0]).toContain("/feishu/events");
     expect(warnings?.[0]).toContain("callback");
