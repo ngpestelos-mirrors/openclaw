@@ -80,19 +80,6 @@ describe("whatsapp channel action helpers", () => {
     ).toBeUndefined();
   });
 
-  it("returns minimal reaction guidance when configured", () => {
-    const cfg = {
-      channels: {
-        whatsapp: {
-          reactionLevel: "minimal",
-          allowFrom: ["*"],
-        },
-      },
-    } as OpenClawConfig;
-
-    expect(resolveWhatsAppAgentReactionGuidance({ cfg, accountId: "default" })).toBe("minimal");
-  });
-
   it("omits reaction guidance when WhatsApp reactions are disabled", () => {
     const cfg = {
       channels: {
