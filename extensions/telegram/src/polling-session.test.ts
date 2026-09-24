@@ -6,6 +6,7 @@ import { Worker } from "node:worker_threads";
 import { expectDefined } from "@openclaw/normalization-core";
 import { Bot } from "grammy";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
+import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -1111,7 +1112,8 @@ describe("TelegramPollingSession", () => {
         });
         actualWorker = worker;
         const task = new Promise<void>((resolve, reject) => {
-          worker.once("error", (error) => {
+          worker.once("error", (cause) => {
+            const error = toErrorObject(cause);
             pollErrorReceived.reject(error);
             reject(error);
           });
