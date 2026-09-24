@@ -25,3 +25,11 @@ export type GatewayWizardSettings = {
   gatewayToken?: string;
   tailscaleMode: "off" | "serve" | "funnel";
 };
+
+export type GatewayServiceSetupOutcome =
+  | {
+      status: "ready";
+      action: "installed" | "started" | "reused" | "restarted" | "restart-scheduled";
+    }
+  | { status: "skipped"; reason: "explicit" | "systemd-unavailable" | "external" }
+  | { status: "failed"; error: string };
