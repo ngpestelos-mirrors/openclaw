@@ -3,9 +3,25 @@ import { toErrorObject as toLintErrorObject } from "openclaw/plugin-sdk/error-ru
 import { vi } from "vitest";
 
 const POLLING_TEST_WATCHDOG_INTERVAL_MS = 30_000;
+const watchdogClock = vi.hoisted(() => ({ now: undefined as number | undefined }));
 
-export function installPollingStallWatchdogHarness(dateNowSequence: readonly number[] = [0, 0]) {
-  let monotonicNow = dateNowSequence[0] ?? 0;
+vi.mock("./polling-liveness.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./polling-liveness.js")>();
+  return {
+    ...actual,
+    TelegramPollingLivenessTracker: class extends actual.TelegramPollingLivenessTracker {
+      constructor() {
+        super({
+          now: () => watchdogClock.now ?? Date.now(),
+          monotonicNow: () => watchdogClock.now ?? performance.now(),
+        });
+      }
+    },
+  };
+});
+
+export function installPollingStallWatchdogHarness(initialNow = 0) {
+  watchdogClock.now = initialNow;
   let watchdog: (() => void) | undefined;
   let resolveWatchdog: ((fn: () => void) => void) | undefined;
   const watchdogReady = new Promise<() => void>((resolve) => {
@@ -55,13 +71,6 @@ export function installPollingStallWatchdogHarness(dateNowSequence: readonly num
     .mockImplementation((fn, delay, ...args) =>
       realSetTimeout(fn, delay === 15_000 ? 0 : delay, ...args),
     );
-  const dateNowSpy = vi.spyOn(Date, "now");
-  const performanceNowSpy = vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
-  for (const value of dateNowSequence) {
-    dateNowSpy.mockImplementationOnce(() => value);
-  }
-  dateNowSpy.mockImplementation(() => 0);
-
   return {
     async waitForWatchdog() {
       if (watchdog) {
@@ -96,16 +105,13 @@ export function installPollingStallWatchdogHarness(dateNowSequence: readonly num
       });
     },
     setNow(now: number) {
-      monotonicNow = now;
-      dateNowSpy.mockReset();
-      dateNowSpy.mockImplementation(() => now);
+      watchdogClock.now = now;
     },
     restore() {
       setIntervalSpy.mockRestore();
       clearIntervalSpy.mockRestore();
       setTimeoutSpy.mockRestore();
-      dateNowSpy.mockRestore();
-      performanceNowSpy.mockRestore();
+      watchdogClock.now = undefined;
     },
   };
 }

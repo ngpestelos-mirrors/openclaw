@@ -88,7 +88,7 @@ export type ChannelIngressQueueDeadLetterRecord<
 };
 
 /** Outcome of asking a channel/account queue to re-enqueue one failed event. */
-export type ChannelIngressQueueResubmitResult<
+type ChannelIngressQueueResubmitResult<
   TPayload,
   TMetadata = unknown,
   TCompletedMetadata = unknown,
@@ -122,7 +122,7 @@ export type ChannelIngressQueuePruneOptions = {
 };
 
 /** Result of enqueueing a possibly duplicate ingress event id. */
-export type ChannelIngressQueueEnqueueResult<TPayload, TMetadata, TCompletedMetadata> =
+type ChannelIngressQueueEnqueueResult<TPayload, TMetadata, TCompletedMetadata> =
   | {
       kind: "accepted";
       duplicate: false;

@@ -41,8 +41,14 @@ export function baseRecord<TPayload, TMetadata>(
     channelId: row.channel_id,
     accountId: row.account_id,
     queueName: row.queue_name,
+    // SAFETY: The channel codec owns payload validation; the queue preserves its opaque JSON.
     payload: payloadResult.value as TPayload,
-    ...(metaResult === null || !metaResult.ok ? {} : { metadata: metaResult.value as TMetadata }),
+    ...(metaResult === null || !metaResult.ok
+      ? {}
+      : {
+          // SAFETY: Metadata round-trips the channel-owned value supplied at enqueue.
+          metadata: metaResult.value as TMetadata,
+        }),
     receivedAt: row.received_at,
     updatedAt: row.updated_at,
     ...(row.lane_key === null ? {} : { laneKey: row.lane_key }),
@@ -104,7 +110,10 @@ export function completedRecord<TCompletedMetadata>(
     completedAt: row.completed_at ?? row.updated_at,
     ...(metaResult === null || !metaResult.ok
       ? {}
-      : { metadata: metaResult.value as TCompletedMetadata }),
+      : {
+          // SAFETY: Completion metadata round-trips the value supplied by this queue's consumer.
+          metadata: metaResult.value as TCompletedMetadata,
+        }),
   };
 }
 
@@ -119,9 +128,17 @@ export function failedRecord<TPayload, TMetadata>(
     accountId: row.account_id,
     queueName: row.queue_name,
     ...(payloadResult.ok && row.payload_json !== "null"
-      ? { payload: payloadResult.value as TPayload }
+      ? {
+          // SAFETY: Retained payloads keep the same channel-owned codec contract after failure.
+          payload: payloadResult.value as TPayload,
+        }
       : {}),
-    ...(metadataResult?.ok ? { metadata: metadataResult.value as TMetadata } : {}),
+    ...(metadataResult?.ok
+      ? {
+          // SAFETY: Failure retains the original channel-owned enqueue metadata unchanged.
+          metadata: metadataResult.value as TMetadata,
+        }
+      : {}),
     receivedAt: row.received_at,
     updatedAt: row.updated_at,
     ...(row.lane_key === null ? {} : { laneKey: row.lane_key }),
