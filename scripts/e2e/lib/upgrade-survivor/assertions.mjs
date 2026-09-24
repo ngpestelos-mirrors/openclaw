@@ -16,11 +16,6 @@ import {
   assertExecApprovalPolicySurvived,
   seedLegacyExecApprovalPolicy,
 } from "./exec-approval-fixture.mjs";
-import {
-  seedMSTeamsPollMigration,
-  assertMSTeamsPollMigration,
-  assertMSTeamsPluginFiles,
-} from "./msteams-polls.mjs";
 import * as sessionSourceFixture from "./session-source-fixture.mjs";
 import { assertUpgradeVolumeMigrated, seedUpgradeVolume } from "./sqlite-volume.mjs";
 
@@ -365,9 +360,6 @@ function seedState() {
   seedLegacySessionMetadata(stateDir, scenario === "sqlite-volume");
   sessionSourceFixture.recordLegacySessionSources(stateDir);
   seedLegacyExecApprovalPolicy(stateDir);
-  if (scenario === "msteams-polls") {
-    seedMSTeamsPollMigration(stateDir, requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"));
-  }
   if (scenario === "meeting-transcripts-sqlite") {
     seedLegacyMeetingTranscripts(stateDir);
   }
@@ -670,13 +662,6 @@ function assertStateSurvived() {
   );
   if (stage !== "baseline") {
     assertSessionMetadataMigrated(stateDir, stage);
-  }
-  if (scenario === "msteams-polls") {
-    assertMSTeamsPollMigration(
-      stateDir,
-      requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"),
-      stage,
-    );
   }
   if (scenario === "meeting-transcripts-sqlite") {
     assertMeetingTranscriptsMigrated(stateDir, stage);
@@ -1384,9 +1369,6 @@ function assertNpmPluginInstall([
   const archive = fs.readFileSync(expectedTarball);
   const integrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;
   assert(record.integrity === integrity, `${pluginId} plugin registry artifact integrity changed`);
-  if (getScenario() === "msteams-polls" && pluginId === "msteams") {
-    assertMSTeamsPluginFiles(resolveHomePath(record.installPath), expectedTarball);
-  }
 }
 
 function assertCompanionPluginInstalls([expectedVersion, capabilityConsentSupported]) {
@@ -1555,9 +1537,6 @@ function assertRecoverableUpdateJson([file, expectedVersion, , baselineVersion])
   // These are the reviewed packages in the base and scenario recipes.
   // Any other plugin or failure needs investigation before accepting it.
   const reviewed = new Set(["acpx", "brave", "codex", "discord", "feishu", "matrix", "whatsapp"]);
-  if (getScenario() === "msteams-polls") {
-    reviewed.add("msteams");
-  }
   const denied = new Set();
   assertStrict.ok(Array.isArray(plugins.npm?.outcomes));
   for (const outcome of plugins.npm.outcomes) {
@@ -1827,16 +1806,6 @@ if (command === "list-scenarios") {
   await import("./missing-load-path.mjs");
 } else if (command === "seed") {
   seedState();
-} else if (command === "seed-msteams-doctor") {
-  assert(
-    getScenario() === "msteams-polls",
-    "Teams Doctor seed requires the msteams-polls scenario",
-  );
-  seedMSTeamsPollMigration(
-    requireEnv("OPENCLAW_STATE_DIR"),
-    requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"),
-    "doctor",
-  );
 } else if (command === "seed-legacy-operator") {
   legacyOperator.seedLegacyOperatorState();
 } else if (command === "seed-legacy-operator-external-plugin") {

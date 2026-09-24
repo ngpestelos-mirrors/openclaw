@@ -13,7 +13,10 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { validateFullReleaseCandidateRequest } from "./full-release-candidate-contract.mjs";
+import {
+  validateFullReleaseCandidateRequest,
+  validateRecordedFullReleaseCandidateRequest,
+} from "./full-release-candidate-contract.mjs";
 import {
   createPublicationAdmission,
   publicationObservationJson,
@@ -976,7 +979,13 @@ async function planMode() {
     const restored = validateReleaseExecutionPlanArtifact(restoredPayload, {
       ...expected,
       ...(restoredPayload.attemptEvidenceVersion !== undefined
-        ? { candidateRequest: candidateRequestFromEnvironment() }
+        ? {
+            candidateRequest: validateRecordedFullReleaseCandidateRequest(
+              JSON.parse(
+                requiredString(process.env.CANDIDATE_REQUEST_JSON, "candidate request JSON"),
+              ),
+            ),
+          }
         : {}),
       sourceParentRunAttempt: 1,
     });
