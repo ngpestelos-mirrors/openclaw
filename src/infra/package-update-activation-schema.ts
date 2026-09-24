@@ -31,6 +31,8 @@ export const PackageActivationDescriptorSchema = z.strictObject({
     .string()
     .regex(/^[a-zA-Z0-9_-]{1,128}$/u)
     .optional(),
+  // Older receipts may omit the executable; new preparation always records it.
+  recoveryNodePath: absolutePath.optional(),
   previousRuntime: packageActivationPreviousRuntimeSchema.optional(),
   reverse: packageActivationReverseBindingSchema.optional(),
   authority: z.strictObject({

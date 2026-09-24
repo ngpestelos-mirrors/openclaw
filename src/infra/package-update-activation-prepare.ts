@@ -76,7 +76,9 @@ export function resolvePackageActivationRecoveryCommand(record: PackageActivatio
     }
     helper = custody.moved ? custody.destination : custody.source;
   }
-  return packageActivationRecoveryCommand("node", anchor, record.descriptor.operationId, helper);
+  const node =
+    record.descriptor.recoveryNodePath ?? record.descriptor.previousRuntime?.nodePath ?? "node";
+  return packageActivationRecoveryCommand(node, anchor, record.descriptor.operationId, helper);
 }
 
 export async function preparePackageActivationJournal(params: PackageActivationPreparation) {
@@ -222,6 +224,7 @@ export async function preparePackageActivationJournal(params: PackageActivationP
     version: 1 as const,
     layout: "external-helper" as const,
     operationId: randomUUID(),
+    recoveryNodePath: node,
     ...(params.options.runId ? { originalRunId: params.options.runId, previousRuntime } : {}),
     authority,
     anchorIdentity,

@@ -123,7 +123,7 @@ await withStateDatabaseCoordinatorRuntimeDirectory({directory:${JSON.stringify(c
         { directOriginal: { databasePath: handoff } },
       ),
     );
-  return { root, install, slot, store, env, crash, retry };
+  return { root, install, slot, handoff, store, env, crash, retry };
 }
 
 it("reclaims a crashed original and its occupied slot together, then releases the new pair", async () => {
@@ -167,3 +167,57 @@ it("does not reclaim original cancellation custody after the process dies", asyn
   expect(f.store.read(f.install)).toEqual(before.original);
   expect(f.store.read(f.slot)).toEqual(before.occupied);
 });
+
+it.each(["release", "releaseAll"] as const)(
+  "%s preserves an original until its exact occupied generation settles",
+  (method) => {
+    const f = fixture();
+    const store = createManagedHandoffLeaseStore({
+      databasePath: f.handoff,
+      serviceManagerEnv: f.env,
+      originalUpdateKey: f.install,
+    });
+    const original = store.acquire(f.install, "original", { kind: "update" });
+    if (original.kind !== "acquired") {
+      throw new Error("Original acquisition failed");
+    }
+    const occupied = store.acquire(
+      f.slot,
+      "original",
+      { kind: "update" },
+      false,
+      undefined,
+      original.lease,
+    );
+    if (occupied.kind !== "acquired") {
+      throw new Error("Occupied acquisition failed");
+    }
+    const beforeOriginal = store.read(f.install);
+    const beforeOccupied = store.read(f.slot);
+    expect(
+      method === "release" ? store.release(original.lease) : store.releaseAll([original.lease]),
+    ).toBe(false);
+    expect(store.read(f.install)).toEqual(beforeOriginal);
+    expect(store.read(f.slot)).toEqual(beforeOccupied);
+    expect(store.current(original.lease)).toBe(true);
+    expect(store.current(occupied.lease)).toBe(true);
+    expect(store.acquire(f.install, "contender", { kind: "update" }).kind).toBe("busy");
+
+    const rebound = store.bind(occupied.lease, process.pid);
+    if (!rebound) {
+      throw new Error("Occupied rebinding failed");
+    }
+    expect(store.releaseAll([original.lease, occupied.lease])).toBe(false);
+    expect(store.read(f.install)).toEqual(beforeOriginal);
+    expect(store.current(rebound)).toBe(true);
+    expect(store.releaseAll([original.lease, rebound])).toBe(true);
+    expect(store.read(f.install).kind).toBe("absent");
+    expect(store.read(f.slot).kind).toBe("absent");
+    const next = store.acquire(f.install, "next", { kind: "update" });
+    expect(next.kind).toBe("acquired");
+    if (next.kind !== "acquired") {
+      throw new Error("Next generation acquisition failed");
+    }
+    expect(store.release(next.lease)).toBe(true);
+  },
+);

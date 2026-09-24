@@ -73,7 +73,12 @@ import { VERSION } from "../../version.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "../signal-exit-barrier.js";
 import type { UpdateDisplayProgress } from "./progress.js";
-import { parseUpdateTimeoutMs, resolveUpdateRoot, type UpdateCommandOptions } from "./shared.js";
+import {
+  parseUpdateTimeoutMs,
+  resolveUpdateRoot,
+  usesCandidateUpdateAdmission,
+  type UpdateCommandOptions,
+} from "./shared.js";
 import { suppressDeprecations } from "./suppress-deprecations.js";
 import { resolveForegroundUpdateAdmission } from "./update-command-handoff.js";
 import { revalidateUpdateDatabaseContext } from "./update-command-managed-context.js";
@@ -240,6 +245,7 @@ export async function admitUpdateCommandRun(params: {
     target: {
       configSnapshot: ConfigFileSnapshot;
       legacyConfigPlan?: LegacyConfigUpdatePlan;
+      updateInstallKind?: "git" | "package" | "unknown";
     };
   };
 }): Promise<NonNullable<UpdateCommandOptions["run"]>> {
@@ -275,6 +281,10 @@ export async function admitUpdateCommandRun(params: {
       readEnv: env,
       config: initialized.target.configSnapshot.sourceConfig,
       configSnapshot: initialized.target.configSnapshot,
+      ...(initialized.target.updateInstallKind === "package" &&
+      usesCandidateUpdateAdmission(params.opts, params.installKind ?? "unknown")
+        ? { configValidation: "candidate" as const }
+        : {}),
       ...(initialized.target.legacyConfigPlan
         ? { legacyConfigPlan: initialized.target.legacyConfigPlan }
         : {}),
@@ -302,7 +312,7 @@ export async function admitUpdateCommandRun(params: {
       runId: env[UPDATE_RUN_ID_ENV]?.trim() || params.initialization?.runId,
       trigger: "cli",
       preview: params.opts.dryRun === true,
-      origin: { driver },
+      origin: { driver, admission: { owner: "installed" } },
       supersedeStaleIdentityless:
         !env[UPDATE_RUN_ID_ENV]?.trim() && env[POST_CORE_UPDATE_ENV] !== "1",
       target: {

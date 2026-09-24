@@ -24,6 +24,7 @@ import { createManagedHandoffOriginalAcquisition } from "./update-managed-servic
 import {
   createManagedHandoffOriginalOwner,
   hasOriginalUpdateExecutorCustody,
+  readOriginalUpdateDependents,
   type ManagedHandoffOriginalAdmission,
 } from "./update-managed-service-handoff-original-owner.js";
 import { createManagedHandoffProcessIdentityReader } from "./update-managed-service-handoff-process.js";
@@ -571,7 +572,7 @@ export function createManagedHandoffLeaseStore(
               (lease.version === 2 &&
                 lease.action.kind === "update" &&
                 lease.action.mutationProtocol === "original-cancellation-v1" &&
-                childAliases(lease.key, db).some(
+                [...childAliases(lease.key, db), ...readOriginalUpdateDependents(lease, db)].some(
                   (key) => !leases.some((paired) => paired.key === key),
                 )) ||
               !sameRow(row(db, lease.key), {
