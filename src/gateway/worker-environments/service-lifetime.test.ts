@@ -190,11 +190,11 @@ describe("worker environment service", () => {
     workerService.start();
     await workerService.reconcileOnce();
     expect(maintain).toHaveBeenCalledOnce();
-    time.advanceBy(250);
+    await time.advanceBy(250);
     await scheduledMaintenance.promise;
     expect(maintain).toHaveBeenCalledTimes(2);
     await workerService.stop();
-    time.advanceBy(25);
+    await time.advanceBy(25);
     expect(maintain).toHaveBeenCalledTimes(2);
   });
 
@@ -523,9 +523,8 @@ describe("worker environment service", () => {
     workerService.start();
     workerService.start();
     await workerService.reconcileOnce();
-    time.advanceBy(25);
+    await time.advanceBy(25);
     await periodicInspection.promise;
-    await workerService.reconcileOnce();
     expect(guardedEnvironmentIds).toEqual([environmentId, environmentId, environmentId]);
     expect(inspect).toHaveBeenCalledTimes(3);
     await uninstallGuard();
@@ -536,7 +535,7 @@ describe("worker environment service", () => {
 
     expect(liveEvents.clear).toHaveBeenCalledTimes(2);
     expect(unsubscribeTurnClaimClosed).toHaveBeenCalledOnce();
-    time.advanceBy(25);
+    await time.advanceBy(25);
     expect(inspect).toHaveBeenCalledTimes(4);
   });
 

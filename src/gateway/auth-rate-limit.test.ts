@@ -27,7 +27,7 @@ describe("auth rate limiter", () => {
     return createGatewayAuthRateLimiter(config, { scheduler });
   }
   async function advancePenaltyClock(delayMs: number) {
-    clock.advanceBy(delayMs);
+    await clock.advanceBy(delayMs);
     await vi.advanceTimersByTimeAsync(delayMs);
   }
   const baseConfig = { maxAttempts: 2, windowMs: 60_000, lockoutMs: 60_000 };
@@ -101,20 +101,20 @@ describe("auth rate limiter", () => {
 
   // ---------- lockout expiry ----------
 
-  it("unblocks after the lockout period expires", () => {
+  it("unblocks after the lockout period expires", async () => {
     createLimiter({ lockoutMs: 5_000 });
     limiter.recordFailure("10.0.0.3");
     limiter.recordFailure("10.0.0.3");
     expect(limiter.check("10.0.0.3").allowed).toBe(false);
 
     // Advance just past the lockout.
-    clock.advanceBy(5_001);
+    await clock.advanceBy(5_001);
     const result = limiter.check("10.0.0.3");
     expect(result.allowed).toBe(true);
     expect(result.remaining).toBe(2);
   });
 
-  it("does not extend lockout when failures are recorded while already locked", () => {
+  it("does not extend lockout when failures are recorded while already locked", async () => {
     createLimiter({ lockoutMs: 5_000 });
     limiter.recordFailure("10.0.0.33");
     limiter.recordFailure("10.0.0.33");
@@ -122,7 +122,7 @@ describe("auth rate limiter", () => {
     expect(locked.allowed).toBe(false);
     const initialRetryAfter = locked.retryAfterMs;
 
-    clock.advanceBy(1_000);
+    await clock.advanceBy(1_000);
     limiter.recordFailure("10.0.0.33");
     const afterExtraFailure = limiter.check("10.0.0.33");
     expect(afterExtraFailure.retryAfterMs).toBeLessThanOrEqual(initialRetryAfter - 1_000);
@@ -142,18 +142,18 @@ describe("auth rate limiter", () => {
 
   // ---------- sliding window expiry ----------
 
-  it("expires old failures outside the window", () => {
+  it("expires old failures outside the window", async () => {
     limiter = createClockedAuthRateLimiter({ maxAttempts: 3, windowMs: 10_000, lockoutMs: 60_000 });
     limiter.recordFailure("10.0.0.4");
     limiter.recordFailure("10.0.0.4");
     expect(limiter.check("10.0.0.4").remaining).toBe(1);
 
     // Move past the window so the two old failures expire.
-    clock.advanceBy(11_000);
+    await clock.advanceBy(11_000);
     expect(limiter.check("10.0.0.4").remaining).toBe(3);
   });
 
-  it("applies new limits to retained scope history without releasing earned lockouts", () => {
+  it("applies new limits to retained scope history without releasing earned lockouts", async () => {
     createLimiter({ maxAttempts: 5, windowMs: 10_000, pruneIntervalMs: 0 });
     const ip = "10.0.0.5";
     limiter.recordFailure(ip, AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET);
@@ -168,7 +168,7 @@ describe("auth rate limiter", () => {
     });
     expect(limiter.check(ip, AUTH_RATE_LIMIT_SCOPE_DEVICE_TOKEN).remaining).toBe(1);
 
-    clock.advanceBy(1_000);
+    await clock.advanceBy(1_000);
     limiter.updateConfig({ maxAttempts: 4, windowMs: 10_000, lockoutMs: 9_000 });
     expect(limiter.check(ip, AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET).retryAfterMs).toBe(3_000);
     expect(limiter.check(ip, AUTH_RATE_LIMIT_SCOPE_DEVICE_TOKEN).remaining).toBe(3);
@@ -177,7 +177,7 @@ describe("auth rate limiter", () => {
     }
     expect(limiter.check(ip, AUTH_RATE_LIMIT_SCOPE_DEVICE_TOKEN).retryAfterMs).toBe(9_000);
 
-    clock.advanceBy(3_000);
+    await clock.advanceBy(3_000);
     expect(limiter.check(ip, AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET)).toEqual({
       allowed: true,
       remaining: 4,
@@ -186,7 +186,7 @@ describe("auth rate limiter", () => {
     expect(limiter.check(ip, AUTH_RATE_LIMIT_SCOPE_DEVICE_TOKEN).retryAfterMs).toBe(6_000);
   });
 
-  it("replaces window settings and restores omitted defaults without erasing history", () => {
+  it("replaces window settings and restores omitted defaults without erasing history", async () => {
     createLimiter({
       maxAttempts: 5,
       windowMs: 1_000,
@@ -195,7 +195,7 @@ describe("auth rate limiter", () => {
     });
     const ip = "10.0.0.6";
     limiter.recordFailure(ip);
-    clock.advanceBy(1_500);
+    await clock.advanceBy(1_500);
 
     limiter.updateConfig({ maxAttempts: 3, windowMs: 5_000 });
     expect(limiter.check(ip).remaining).toBe(2);
@@ -204,7 +204,7 @@ describe("auth rate limiter", () => {
     expect(limiter.check(ip).remaining).toBe(3);
 
     limiter.recordFailure(ip);
-    clock.advanceBy(1_500);
+    await clock.advanceBy(1_500);
     limiter.updateConfig();
     expect(limiter.check(ip).remaining).toBe(9);
     for (let attempt = 0; attempt < 9; attempt += 1) {
@@ -256,7 +256,7 @@ describe("auth rate limiter", () => {
     expect(limiter.check("10.0.2.4").remaining).toBe(1);
   });
 
-  it("preserves overflow and tracked lockouts when policy changes while the table is full", () => {
+  it("preserves overflow and tracked lockouts when policy changes while the table is full", async () => {
     limiter = createClockedAuthRateLimiter({
       maxAttempts: 1,
       windowMs: 60_000,
@@ -276,7 +276,7 @@ describe("auth rate limiter", () => {
     expect(overflowResult.allowed).toBe(false);
     expect(overflowResult.retryAfterMs).toBeGreaterThan(0);
 
-    clock.advanceBy(1_000);
+    await clock.advanceBy(1_000);
     limiter.updateConfig({ maxAttempts: 20, windowMs: 1, lockoutMs: 1 });
     for (const ip of ["10.0.3.1", "10.0.3.2", "10.0.3.3"]) {
       expect(limiter.check(ip)).toEqual({
@@ -287,7 +287,7 @@ describe("auth rate limiter", () => {
     }
     expect(limiter.size()).toBe(2);
 
-    clock.advanceBy(59_001);
+    await clock.advanceBy(59_001);
     expect(limiter.check("10.0.3.3").allowed).toBe(true);
   });
 
@@ -416,20 +416,23 @@ describe("auth rate limiter", () => {
     { policy: "exempt", config: { maxAttempts: 2, exemptLoopback: true }, remaining: 1 },
     { policy: "nonexempt", config: { maxAttempts: 2, exemptLoopback: false }, remaining: 1 },
     { policy: "default", config: undefined, remaining: 9 },
-  ])("retires expired locks before counting fresh $policy failures", ({ config, remaining }) => {
-    createLimiter({ lockoutMs: 1_000, exemptLoopback: false, pruneIntervalMs: 0 });
-    const ip = "127.0.0.1";
-    limiter.recordFailure(ip);
-    limiter.recordFailure(ip);
-    expect(limiter.check(ip).retryAfterMs).toBe(1_000);
+  ])(
+    "retires expired locks before counting fresh $policy failures",
+    async ({ config, remaining }) => {
+      createLimiter({ lockoutMs: 1_000, exemptLoopback: false, pruneIntervalMs: 0 });
+      const ip = "127.0.0.1";
+      limiter.recordFailure(ip);
+      limiter.recordFailure(ip);
+      expect(limiter.check(ip).retryAfterMs).toBe(1_000);
 
-    limiter.updateConfig(config);
-    clock.advanceBy(1_000);
-    limiter.recordFailure(ip);
-    limiter.updateConfig({ ...config, exemptLoopback: false });
+      limiter.updateConfig(config);
+      await clock.advanceBy(1_000);
+      limiter.recordFailure(ip);
+      limiter.updateConfig({ ...config, exemptLoopback: false });
 
-    expect(limiter.check(ip)).toEqual({ allowed: true, remaining, retryAfterMs: 0 });
-  });
+      expect(limiter.check(ip)).toEqual({ allowed: true, remaining, retryAfterMs: 0 });
+    },
+  );
 
   it("reset clears the loopback penalty history", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -564,39 +567,39 @@ describe("auth rate limiter", () => {
 
   // ---------- prune ----------
 
-  it("prune removes stale entries", () => {
+  it("prune removes stale entries", async () => {
     limiter = createClockedAuthRateLimiter({ maxAttempts: 5, windowMs: 5_000, lockoutMs: 5_000 });
     limiter.recordFailure("10.0.0.30");
     expect(limiter.size()).toBe(1);
 
-    clock.advanceBy(6_000);
+    await clock.advanceBy(6_000);
     limiter.prune();
     expect(limiter.size()).toBe(0);
   });
 
   it.each([5_000, 60_000])(
     "prune retires expired lock histories with a %sms window",
-    (windowMs) => {
+    async (windowMs) => {
       limiter = createClockedAuthRateLimiter({ maxAttempts: 1, windowMs, lockoutMs: 30_000 });
       limiter.recordFailure("10.0.0.31");
       expect(limiter.check("10.0.0.31").allowed).toBe(false);
 
-      clock.advanceBy(6_000);
+      await clock.advanceBy(6_000);
       limiter.prune();
       expect(limiter.size()).toBe(1); // Still locked-out, not pruned.
-      clock.advanceBy(24_000);
+      await clock.advanceBy(24_000);
       limiter.prune();
       expect(limiter.size()).toBe(0);
     },
   );
 
-  it("clamps oversized positive auto-prune intervals", () => {
+  it("clamps oversized positive auto-prune intervals", async () => {
     limiter = createClockedAuthRateLimiter({ pruneIntervalMs: Number.MAX_SAFE_INTEGER });
 
     limiter.recordFailure("10.0.0.32");
-    clock.advanceBy(MAX_TIMER_TIMEOUT_MS - 1);
+    await clock.advanceBy(MAX_TIMER_TIMEOUT_MS - 1);
     expect(limiter.size()).toBe(1);
-    clock.advanceBy(1);
+    await clock.advanceBy(1);
     expect(limiter.size()).toBe(0);
   });
 

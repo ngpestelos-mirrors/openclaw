@@ -676,14 +676,14 @@ describe("cron durable run ownership", () => {
       await waitForLine(second, "started");
       const secondReceiptId = receipts(storePath, job.id)[0]?.receiptId;
       expect(secondReceiptId).toBeDefined();
-      clock.advanceBy(2_000);
+      await clock.advanceBy(2_000);
       await waitForImmediate(
         () => listForeignReceipts(replacementState)[0]?.receiptId === secondReceiptId,
         "replacement foreign receipt enrollment",
       );
       second.kill("SIGKILL");
       await waitForExit(second);
-      clock.advanceBy(2_000);
+      await clock.advanceBy(2_000);
 
       await vi.waitFor(
         async () => {

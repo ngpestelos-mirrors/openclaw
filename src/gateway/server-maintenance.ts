@@ -308,7 +308,7 @@ export function startGatewayMaintenanceTimers(params: {
   void waitForMediaCleanupDrainsToSettle().then(() => {
     if (!mediaCleanupStopped) {
       scheduleMedia("delivery-queue-media", () =>
-        runDeliveryQueueMediaGc().catch((error) => {
+        runDeliveryQueueMediaGc().catch((error: unknown) => {
           params.logHealth.error(`delivery queue maintenance failed: ${formatError(error)}`);
         }),
       );
@@ -510,12 +510,12 @@ export function startGatewayMaintenanceTimers(params: {
         return;
       }
       scheduleMedia("playback-cache", () =>
-        prunePlaybackTranscodeCache().catch((err) => {
+        prunePlaybackTranscodeCache().catch((err: unknown) => {
           params.logHealth.error(`playback transcode cache cleanup failed: ${formatError(err)}`);
         }),
       );
       scheduleMedia("managed-outgoing", () =>
-        runManagedOutgoingMediaGc().catch((err) => {
+        runManagedOutgoingMediaGc().catch((err: unknown) => {
           params.logHealth.error(`managed outgoing media cleanup failed: ${formatError(err)}`);
         }),
       );

@@ -84,14 +84,17 @@ describe("ExecApprovalManager", () => {
     return deadlines;
   }
 
-  function runTimer(timer: ApprovalClockWake | undefined, preserveNow = false): void {
+  async function runTimer(
+    timer: ApprovalClockWake | undefined,
+    preserveNow = false,
+  ): Promise<void> {
     if (!timer) {
       throw new Error("expected scheduled wake");
     }
     if (!preserveNow) {
       vi.spyOn(Date, "now").mockReturnValue(Math.max(Date.now(), timer.atMs));
     }
-    timer.run();
+    await timer.run();
   }
 
   it("expires resolved approval grace after elapsed time despite a wall-clock rollback", async (testContext) => {
@@ -107,7 +110,7 @@ describe("ExecApprovalManager", () => {
     const cleanupTimer = timers.find((timer) => timer.delayMs === 15_000);
     expect(cleanupTimer).toBeDefined();
     vi.mocked(Date.now).mockReturnValue(500);
-    runTimer(cleanupTimer, true);
+    await runTimer(cleanupTimer, true);
     expect(manager.getLocalSnapshot(record.id)).toBeNull();
     expect(await manager.consumeAllowOnce(record.id)).toBe(false);
   });
@@ -137,7 +140,7 @@ describe("ExecApprovalManager", () => {
 
     const cleanupTimer = timers.find((timer) => timer.delayMs === 15_000);
     expect(cleanupTimer).toBeDefined();
-    runTimer(cleanupTimer);
+    await runTimer(cleanupTimer);
     expect(manager.getLocalSnapshot(record.id)).toBeNull();
   });
 
@@ -192,7 +195,7 @@ describe("ExecApprovalManager", () => {
     releaseSecond?.();
     expect(timers.filter((timer) => timer.delayMs === 15_000)).toHaveLength(1);
 
-    runTimer(cleanupTimers[0]);
+    await runTimer(cleanupTimers[0]);
     expect(manager.getLiveSnapshot(record.id)).toBeNull();
   });
 
@@ -211,9 +214,9 @@ describe("ExecApprovalManager", () => {
     const cleanupTimers = timers.filter((timer) => timer.delayMs === 15_000);
     expect(cleanupTimers).toHaveLength(2);
 
-    runTimer(staleCleanup);
+    await runTimer(staleCleanup);
     expect(manager.getLiveSnapshot(record.id)).toMatchObject({ decision: "allow-once" });
-    runTimer(cleanupTimers[1]);
+    await runTimer(cleanupTimers[1]);
     expect(manager.getLiveSnapshot(record.id)).toBeNull();
   });
 
@@ -233,7 +236,7 @@ describe("ExecApprovalManager", () => {
     expect(await manager.resolve(record.id, "allow-always")).toBe(true);
     expect(manager.projectDecisionIfActive(record.id, "allow-always")).toBe("allow-always");
 
-    runTimer(timers.find((timer) => timer.delayMs === 15_000));
+    await runTimer(timers.find((timer) => timer.delayMs === 15_000));
     expect(manager.projectDecisionIfActive(record.id, "allow-always")).toBeNull();
     expect(
       createTestApprovalManager(testContext).projectDecisionIfActive(record.id, "allow-always"),
@@ -281,14 +284,14 @@ describe("ExecApprovalManager", () => {
     const decisionPromise = (await manager.register(record, 60_000)).decision;
     vi.mocked(Date.now).mockReturnValue(500);
 
-    runTimer(deadlineTimers(timers, [60_000])[0], true);
+    await runTimer(deadlineTimers(timers, [60_000])[0], true);
 
     expect(await getOperatorApproval({ id: record.id, databaseOptions })).toMatchObject({
       status: "pending",
     });
     const rescheduled = deadlineTimers(timers, [60_000, 60_500]);
     vi.mocked(Date.now).mockReturnValue(record.expiresAtMs);
-    runTimer(rescheduled[1]);
+    await runTimer(rescheduled[1]);
     await expect(decisionPromise).resolves.toBeNull();
     expect(await getOperatorApproval({ id: record.id, databaseOptions })).toMatchObject({
       status: "expired",
@@ -455,7 +458,7 @@ describe("ExecApprovalManager", () => {
     const decisionPromise = (await manager.register(record, 60_000)).decision;
     vi.mocked(Date.now).mockReturnValue(record.expiresAtMs);
 
-    runTimer(deadlineTimers(timers, [60_000])[0]);
+    await runTimer(deadlineTimers(timers, [60_000])[0]);
 
     await expect(decisionPromise).resolves.toBeNull();
     expect(lifecycleEvents.map((event) => event.phase)).toEqual(["pending", "terminal"]);
@@ -783,7 +786,7 @@ describe("ExecApprovalManager", () => {
     databaseOptions.path = path.join(blocker, "state.sqlite");
 
     const deadline = deadlineTimers(timers, [60_000])[0];
-    expect(() => runTimer(deadline)).not.toThrow();
+    await expect(runTimer(deadline)).resolves.toBeUndefined();
     await expect(decisionPromise).resolves.toBe("deny");
     expect(onError).toHaveBeenCalledWith(
       expect.any(Error),
@@ -1027,7 +1030,7 @@ describe("ExecApprovalManager", () => {
     expect(sameEpochManager.getLiveSnapshot(record.id)).toBeNull();
     expect(await sameEpochManager.consumeAllowOnce(record.id)).toBe(false);
 
-    runTimer(timers.find((timer) => timer.delayMs === 15_000));
+    await runTimer(timers.find((timer) => timer.delayMs === 15_000));
     expect(await manager.getSnapshot(record.id)).toBeNull();
     expect(await manager.consumeAllowOnce(record.id)).toBe(false);
     expect(await getOperatorApproval({ id: record.id, databaseOptions })).toMatchObject({

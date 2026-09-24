@@ -34,7 +34,7 @@ it("refreshes once after sleep while personal maintenance is pending, then stops
   vi.spyOn(Date, "now").mockImplementation(time.clock.now);
   const config = configForScope("system", identity(OLD_PROFILE, { oauth: true }));
   writeGitHubOAuthRecord(oauthRecord(OLD_PROFILE));
-  let scheduled = createDeferredCore();
+  const scheduled = createDeferredCore();
   const scheduler = new GatewayScheduler({
     clock: {
       ...time.clock,
@@ -54,28 +54,30 @@ it("refreshes once after sleep while personal maintenance is pending, then stops
     scheduler,
   });
   const personal = createDeferredCore();
-  vi.spyOn(lifecycle.personal, "maintain").mockReturnValue(personal.promise);
+  const maintainPersonal = vi
+    .spyOn(lifecycle.personal, "maintain")
+    .mockReturnValue(personal.promise);
 
+  lifecycle.start();
+  const initialWake = time.wake();
   try {
-    lifecycle.start();
-    time.wake();
     await scheduled.promise;
     expect(refreshToken).toHaveBeenCalledOnce();
 
     writeGitHubOAuthRecord(oauthRecord(OLD_PROFILE));
-    scheduled = createDeferredCore();
-    time.advanceBy(5 * 60_000);
-    await scheduled.promise;
+    await time.advanceBy(5 * 60_000);
     expect(refreshToken).toHaveBeenCalledTimes(2);
-    expect(lifecycle.personal.maintain).toHaveBeenCalledOnce();
+    expect(maintainPersonal).toHaveBeenCalledOnce();
 
     personal.resolve();
+    await initialWake;
     await lifecycle.stop();
     writeGitHubOAuthRecord(oauthRecord(OLD_PROFILE));
-    time.advanceBy(60_000);
+    await time.advanceBy(60_000);
     expect(refreshToken).toHaveBeenCalledTimes(2);
   } finally {
     personal.resolve();
+    await initialWake;
     await lifecycle.stop();
   }
 });

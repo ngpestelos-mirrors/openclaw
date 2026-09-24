@@ -71,45 +71,45 @@ function startWatcher() {
 }
 
 describe("Gateway schema publication timer", () => {
-  it("anchors a restarted watcher's timer to the existing terminal timestamp", () => {
+  it("anchors a restarted watcher's timer to the existing terminal timestamp", async () => {
     const { db, runId } = createDeferredState();
     finishUpdateRun(runId, { status: "succeeded" });
     clock.setTime(now + 2 * 60_000);
     const log = startWatcher();
     expectVersion(db, 15);
-    clock.advanceBy(3 * 60_000 - 1);
+    await clock.advanceBy(3 * 60_000 - 1);
     expectVersion(db, 15);
-    clock.advanceBy(1);
+    await clock.advanceBy(1);
     expectVersion(db, OPENCLAW_STATE_SCHEMA_VERSION);
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it("publishes after observing the old updater finish without another database open", () => {
+  it("publishes after observing the old updater finish without another database open", async () => {
     const { db, runId } = createDeferredState();
     const log = startWatcher();
-    clock.advanceBy(10_000);
+    await clock.advanceBy(10_000);
     finishUpdateRun(runId, { status: "succeeded" });
-    clock.advanceBy(graceMs - 1);
+    await clock.advanceBy(graceMs - 1);
     expectVersion(db, 15);
-    clock.advanceBy(1);
+    await clock.advanceBy(1);
     expectVersion(db, OPENCLAW_STATE_SCHEMA_VERSION);
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it("rechecks new running rows at the deadline and reschedules for their terminal grace", () => {
+  it("rechecks new running rows at the deadline and reschedules for their terminal grace", async () => {
     const { db, runId } = createDeferredState();
     finishUpdateRun(runId, { status: "succeeded" });
     const log = startWatcher();
-    clock.advanceBy(graceMs - 1);
+    await clock.advanceBy(graceMs - 1);
     const next = createUpdateRun({ trigger: "cli", before: { version: "2026.9.2" } });
     // No wake: the already scheduled timer must discover this new driver itself.
-    clock.advanceBy(1);
+    await clock.advanceBy(1);
     expectVersion(db, 15);
     wakeUpdateRunWatcher();
     finishUpdateRun(next.runId, { status: "succeeded" });
-    clock.advanceBy(graceMs - 1);
+    await clock.advanceBy(graceMs - 1);
     expectVersion(db, 15);
-    clock.advanceBy(1);
+    await clock.advanceBy(1);
     expectVersion(db, OPENCLAW_STATE_SCHEMA_VERSION);
     expect(log.warn).not.toHaveBeenCalled();
   });
@@ -120,7 +120,7 @@ describe("Gateway schema publication timer", () => {
     const log = startWatcher();
     await watcher?.stop();
     wakeUpdateRunWatcher();
-    clock.advanceBy(graceMs + 1);
+    await clock.advanceBy(graceMs + 1);
     expectVersion(db, 15);
     expect(log.warn).not.toHaveBeenCalled();
   });

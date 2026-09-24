@@ -50,7 +50,7 @@ export function scheduleGatewayIdleTask(params: {
       delayMs,
       run: () => {
         if (isClosing()) {
-          return;
+          return undefined;
         }
         // Optional work retries admission instead of waiting behind a suspend fence
         // that shutdown may never reopen.
@@ -59,7 +59,7 @@ export function scheduleGatewayIdleTask(params: {
           : tryBeginGatewayIndependentRootWorkAdmission("idle-task");
         if (!admission) {
           schedule(params.retryDelayMs);
-          return;
+          return undefined;
         }
         // Publish the join before callbacks can synchronously initiate shutdown.
         running = Promise.resolve()

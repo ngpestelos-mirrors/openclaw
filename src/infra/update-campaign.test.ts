@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../shared/deferred.js";
 import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
 import { GatewayScheduler } from "./gateway-scheduler.js";
@@ -59,11 +60,6 @@ describe("UpdateCampaignController", () => {
     return controller;
   }
 
-  async function advance(ms: number) {
-    clock.advanceBy(ms);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-
   it("keeps the countdown deadline absolute across a clock rollback and applies once", async () => {
     const controller = createController();
     const apply = vi.fn(async () => "applied" as const);
@@ -81,14 +77,14 @@ describe("UpdateCampaignController", () => {
       applyAtMs: 1_060_000,
       forceAtMs: 1_900_000,
     });
-    await advance(59_000);
+    await clock.advanceBy(59_000);
     clock.setTime(1_050_000);
     await clock.wake();
     expect(apply).not.toHaveBeenCalled();
-    await advance(10_000);
+    await clock.advanceBy(10_000);
     expect(controller.getState()?.state).toBe("applying");
     expect(apply).toHaveBeenCalledWith({ forced: false });
-    await advance(5 * 60_000);
+    await clock.advanceBy(5 * 60_000);
     expect(apply).toHaveBeenCalledOnce();
   });
 
@@ -115,10 +111,10 @@ describe("UpdateCampaignController", () => {
     await clock.wake();
     expect(controller.getState()?.state).toBe("waiting-for-idle");
     queueSize = 0;
-    await advance(5_000);
+    await clock.advanceBy(5_000);
     expect(controller.getState()?.state).toBe("countdown");
 
-    await advance(60_000);
+    await clock.advanceBy(60_000);
     expect(controller.getState()?.state).toBe("applying");
     expect(apply).toHaveBeenCalledWith({ forced: false });
   });
@@ -136,10 +132,10 @@ describe("UpdateCampaignController", () => {
     });
     const applyAtMs = controller.getState()?.applyAtMs;
     busy = 1;
-    await advance(5_000);
+    await clock.advanceBy(5_000);
     expect(controller.getState()).toMatchObject({ state: "countdown", applyAtMs });
 
-    await advance(55_000);
+    await clock.advanceBy(55_000);
     expect(controller.getState()?.state).toBe("applying");
     expect(apply).toHaveBeenCalledWith({ forced: false });
   });
@@ -194,7 +190,7 @@ describe("UpdateCampaignController", () => {
     });
     expect(controller.getState()?.state).toBe("applying");
     expect(controller.hold()).toBe(false);
-    await advance(15 * 60_000);
+    await clock.advanceBy(15 * 60_000);
     expect(apply).not.toHaveBeenCalled();
   });
 
@@ -283,7 +279,7 @@ describe("UpdateCampaignController", () => {
         apply,
         onChange,
       });
-      await advance(60_000);
+      await clock.advanceBy(60_000);
       const transitionCount = onChange.mock.calls.length;
       const requestedTarget =
         targetRelation === "untargeted"
@@ -322,7 +318,7 @@ describe("UpdateCampaignController", () => {
     expect(controller.getState()?.applyAtMs).toBeUndefined();
     expect(controller.hold()).toBe(false);
 
-    await advance(60 * 60_000);
+    await clock.advanceBy(60 * 60_000);
     expect(controller.getState()).toMatchObject({
       state: "waiting-for-idle",
       holdUntilMs: 4_600_000,
@@ -330,7 +326,7 @@ describe("UpdateCampaignController", () => {
     expect(controller.hold()).toBe(false);
     expect(scheduler.nextWakeAtMs).toBe(4_605_000);
     expect(apply).not.toHaveBeenCalled();
-    await advance(15 * 60_000);
+    await clock.advanceBy(15 * 60_000);
     expect(controller.getState()?.state).toBe("applying");
     expect(apply).toHaveBeenCalledWith({ forced: true });
   });
@@ -354,7 +350,7 @@ describe("UpdateCampaignController", () => {
       forceAtMs: 1_910_000,
     });
     expect(controller.getState()?.applyAtMs).toBeUndefined();
-    await advance(9_999);
+    await clock.advanceBy(9_999);
     expect(controller.getState()?.state).toBe("waiting-for-idle");
     expect(apply).not.toHaveBeenCalled();
 
@@ -364,7 +360,7 @@ describe("UpdateCampaignController", () => {
       target: { kind: "package", version: "2.0.0" },
     });
     expect(controller.getState()?.state).toBe("applying");
-    await advance(20 * 60_000);
+    await clock.advanceBy(20 * 60_000);
     expect(apply).not.toHaveBeenCalled();
   });
 
@@ -380,7 +376,7 @@ describe("UpdateCampaignController", () => {
     });
     expect(controller.hold(10_000)).toBe(true);
 
-    await advance(10_000);
+    await clock.advanceBy(10_000);
     expect(controller.getState()).toMatchObject({
       state: "countdown",
       holdUntilMs: 1_010_000,
@@ -406,7 +402,7 @@ describe("UpdateCampaignController", () => {
     };
 
     controller.announce(announcement);
-    await advance(60_000);
+    await clock.advanceBy(60_000);
 
     expect(controller.getState()).toBeUndefined();
     expect(onChange).toHaveBeenLastCalledWith(undefined);
@@ -428,7 +424,7 @@ describe("UpdateCampaignController", () => {
     };
 
     controller.announce(announcement);
-    await advance(60_000);
+    await clock.advanceBy(60_000);
 
     expect(controller.getState()).toBeUndefined();
     expect(onChange).toHaveBeenLastCalledWith(undefined);
@@ -448,7 +444,7 @@ describe("UpdateCampaignController", () => {
         apply: vi.fn(async () => outcome),
         onChange: vi.fn(),
       });
-      await advance(60_000);
+      await clock.advanceBy(60_000);
 
       expect(controller.getState()).toMatchObject({ id: "campaign-1", state: "applying" });
     },
@@ -466,7 +462,7 @@ describe("UpdateCampaignController", () => {
       apply: firstApply,
       onChange,
     });
-    await advance(60_000);
+    await clock.advanceBy(60_000);
     const applying = controller.getState();
     onChange.mockClear();
 
@@ -476,7 +472,7 @@ describe("UpdateCampaignController", () => {
       apply: nextApply,
       onChange,
     });
-    await advance(15 * 60_000);
+    await clock.advanceBy(15 * 60_000);
 
     expect(controller.getState()).toEqual(applying);
     expect(onChange).not.toHaveBeenCalled();
@@ -487,13 +483,12 @@ describe("UpdateCampaignController", () => {
 
   it("does not clear a replacement campaign when an earlier apply fails", async () => {
     const controller = createController();
-    let resolveApply!: (outcome: "failed") => void;
-    const apply = vi.fn(
-      async () =>
-        await new Promise<"failed">((resolve) => {
-          resolveApply = resolve;
-        }),
-    );
+    const applying = createDeferredCore();
+    const outcome = createDeferredCore<"failed">();
+    const apply = vi.fn(() => {
+      applying.resolve();
+      return outcome.promise;
+    });
 
     controller.announce({
       target: { kind: "package", version: "2.0.0" },
@@ -501,8 +496,9 @@ describe("UpdateCampaignController", () => {
       apply,
       onChange: vi.fn(),
     });
+    const wake = clock.advanceBy(60_000);
     try {
-      await advance(60_000);
+      await applying.promise;
       expect(controller.getState()).toMatchObject({ id: "campaign-1", state: "applying" });
 
       controller.clear();
@@ -514,9 +510,9 @@ describe("UpdateCampaignController", () => {
       });
       expect(controller.getState()).toMatchObject({ id: "campaign-2", state: "countdown" });
     } finally {
-      resolveApply?.("failed");
+      outcome.resolve("failed");
+      await wake;
     }
-    await apply.mock.results[0]?.value;
     expect(controller.getState()).toMatchObject({ id: "campaign-2", state: "countdown" });
   });
 });

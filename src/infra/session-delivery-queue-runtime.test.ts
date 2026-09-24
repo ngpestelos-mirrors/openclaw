@@ -335,7 +335,7 @@ describe("session delivery queue runtime", () => {
       expect(time.scheduler.nextWakeAtMs).toBe(time.scheduler.now());
       expect(time.clock.wakes.at(-1)?.delayMs).toBe(0);
 
-      time.clock.advanceBy(0);
+      await time.clock.advanceBy(0);
       await entered.promise;
       await stop();
       expect(deliver).toHaveBeenCalledTimes(1);
@@ -361,16 +361,17 @@ describe("session delivery queue runtime", () => {
         return delivery.promise;
       });
       let stopping: Promise<void> | undefined;
+      const wakes: Promise<void>[] = [];
       const stop = startRuntime({ deliver, log: logger });
 
       try {
         await scheduleSessionDelivery(id, queueContext);
-        time.clock.advanceBy(0);
+        wakes.push(Promise.resolve(time.clock.advanceBy(0)));
         await entered.promise;
         expect(deliver).toHaveBeenCalledTimes(1);
 
         await scheduleSessionDelivery(id, queueContext);
-        time.clock.advanceBy(0);
+        wakes.push(Promise.resolve(time.clock.advanceBy(0)));
         expect(deliver).toHaveBeenCalledTimes(1);
 
         let stopped = false;
@@ -390,6 +391,7 @@ describe("session delivery queue runtime", () => {
         delivery.resolve();
         await cleanup;
         await stopping;
+        await Promise.all(wakes);
       }
     });
   });
@@ -612,14 +614,15 @@ describe("session delivery queue runtime", () => {
       );
       const stopOld = startRuntime({ deliver: oldDeliver, log: logger });
       let stopNew: ReturnType<typeof startSessionDeliveryRuntime> | undefined;
+      const wakes: Promise<void>[] = [];
       try {
         await scheduleSessionDelivery(oldId, queueContext);
-        time.clock.advanceBy(0);
+        wakes.push(Promise.resolve(time.clock.advanceBy(0)));
         await oldEntered.promise;
         expect(oldDeliver).toHaveBeenCalledOnce();
         stopNew = startRuntime({ deliver: newDeliver, log: logger });
         await scheduleSessionDelivery(newId, queueContext);
-        time.clock.advanceBy(0);
+        wakes.push(Promise.resolve(time.clock.advanceBy(0)));
         await newEntered.promise;
         expect(newDeliver).toHaveBeenCalledOnce();
 
@@ -637,7 +640,7 @@ describe("session delivery queue runtime", () => {
       } finally {
         oldDelivery.resolve();
         newDelivery.resolve();
-        await Promise.all([stopOld(), stopNew?.()]);
+        await Promise.all([stopOld(), stopNew?.(), ...wakes]);
       }
     });
   });
@@ -706,7 +709,7 @@ describe("session delivery queue runtime", () => {
         await scheduling;
         await stopping;
         expect(logger.error).toHaveBeenCalledTimes(failure ? 1 : 0);
-        time.clock.advanceBy(1_000);
+        await time.clock.advanceBy(1_000);
         expect(deliver).not.toHaveBeenCalled();
         expect(await loadPendingSessionDelivery(id, queueContext)).not.toBeNull();
 

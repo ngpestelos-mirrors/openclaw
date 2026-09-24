@@ -115,7 +115,7 @@ describe("gateway lifetime sidecars", () => {
         logWarning: vi.fn(),
         publishSidecars: owner.publish,
       });
-      clock.wake();
+      await clock.wake();
       expect(await Promise.all(sweeps)).toEqual([0]);
       const context = captureOpenClawStateWorkerContext();
       const openIndex = openingMessages.mock.calls.findIndex(([message]) => {
@@ -154,10 +154,11 @@ describe("gateway lifetime sidecars", () => {
             })
           : undefined;
       let stopping: Promise<void> | undefined;
+      let scheduledSweep: void | Promise<void> = undefined;
       try {
         await holder.ready;
         checkpoint.port2.postMessage(null);
-        clock.advanceBy(60_000);
+        scheduledSweep = clock.advanceBy(60_000);
         await withEnvAsync({ OPENCLAW_STATE_DIR: createStateDir() }, async () => {
           expect(
             await withTestTimeout(hostYielded.promise, 10_000, "Expiry did not yield to the host"),
@@ -168,7 +169,7 @@ describe("gateway lifetime sidecars", () => {
             5_000,
             "Expiry did not reach its shared-state worker",
           );
-          clock.advanceBy(60_000);
+          await clock.advanceBy(60_000);
           expect(sweeps).toHaveLength(2);
           let stopped = false;
           stopping = owner.stop().then(() => {
@@ -187,9 +188,10 @@ describe("gateway lifetime sidecars", () => {
           holder.release();
           await expect(holder.joined).resolves.toBe(0);
           await stopping;
+          await scheduledSweep;
           expect(await sweeps[1]).toBe(1);
 
-          clock.advanceBy(60_000);
+          await clock.advanceBy(60_000);
           expect(sweeps).toHaveLength(2);
         });
         expect(countStoredRows(handoff)).toBe(0);
@@ -197,7 +199,7 @@ describe("gateway lifetime sidecars", () => {
         checkpoint.port1.close();
         checkpoint.port2.close();
         holder.release();
-        await Promise.allSettled([...sweeps, holder.joined, stopping]);
+        await Promise.allSettled([...sweeps, holder.joined, stopping, scheduledSweep]);
         await owner.stop();
         observeDispatch?.mockRestore();
         observePurge.mockRestore();

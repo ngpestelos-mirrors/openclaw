@@ -451,7 +451,7 @@ export function startSessionUpstreamMonitor(
   const missingCounts = new Map<string, SessionUpstreamMissingCounter>();
   const run = () => {
     if (stopped || running) {
-      return;
+      return undefined;
     }
     running = runSessionUpstreamMonitorTick(tickOptions, missingCounts)
       .catch((error: unknown) => {

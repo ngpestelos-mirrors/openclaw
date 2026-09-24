@@ -49,11 +49,6 @@ afterEach(async () => {
   await scheduler.stop();
 });
 
-async function advance(ms: number) {
-  clock.advanceBy(ms);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-}
-
 function beginRun() {
   ledger.run = {
     runId: "b7150827-8222-4c12-bd20-9bfd6ae8e852",
@@ -73,15 +68,18 @@ describe("Gateway update run watcher", () => {
   it("joins an entered notice during shutdown and retires queued notices", async () => {
     beginRun();
     const notice = createDeferredCore();
+    const noticeStarted = createDeferredCore();
     const events: string[] = [];
     ledger.notice.mockImplementationOnce(async () => {
       events.push("notice-started");
+      noticeStarted.resolve();
       await notice.promise;
       events.push("notice-completed");
     });
     watcher = startUpdateRunWatcher({ scheduler, broadcast: vi.fn(), log: { warn: vi.fn() } });
     ledger.run = { ...ledger.run!, phase: "activating", updatedAtMs: 2 };
-    await advance(2_000);
+    await clock.advanceBy(2_000);
+    await noticeStarted.promise;
     ledger.run = {
       ...ledger.run!,
       phase: "finished",
@@ -89,10 +87,10 @@ describe("Gateway update run watcher", () => {
       updatedAtMs: 3,
       steps: [{ step: "notice:ack", status: "completed" }],
     };
-    await advance(2_000);
+    await clock.advanceBy(2_000);
     const stopping = Promise.resolve(watcher.stop()).then(() => events.push("stopped"));
     try {
-      await advance(0);
+      await clock.advanceBy(0);
       expect(events).toEqual(["notice-started"]);
       notice.resolve();
       await stopping;
@@ -108,18 +106,29 @@ describe("Gateway update run watcher", () => {
     beginRun();
     ledger.run!.steps = [{ step: "notice:ack", status: "completed" }];
     const verification = createDeferredCore<UpdateRunRecord[]>();
+    const activatingNotice = createDeferredCore();
+    const finishedNotice = createDeferredCore();
     ledger.reconcile.mockReturnValueOnce(verification.promise);
+    ledger.notice
+      .mockImplementationOnce(async () => {
+        activatingNotice.resolve();
+      })
+      .mockImplementationOnce(async () => {
+        finishedNotice.resolve();
+      });
     const broadcast = vi.fn();
     watcher = startUpdateRunWatcher({ scheduler, broadcast, log: { warn: vi.fn() } });
     try {
       ledger.run = { ...ledger.run!, phase: "activating", updatedAtMs: 2 };
-      await advance(2_000);
+      await clock.advanceBy(2_000);
+      await activatingNotice.promise;
       expect(ledger.notice).toHaveBeenCalledOnce();
       ledger.run = { ...ledger.run!, updatedAtMs: 3 };
-      await advance(4_000);
+      await clock.advanceBy(4_000);
       expect(ledger.notice).toHaveBeenCalledOnce();
       ledger.run = { ...ledger.run!, phase: "finished", status: "succeeded", updatedAtMs: 4 };
-      await advance(2_000);
+      await clock.advanceBy(2_000);
+      await finishedNotice.promise;
       expect(ledger.notice.mock.calls.map(([run]) => run.phase)).toEqual([
         "activating",
         "finished",
@@ -136,7 +145,7 @@ describe("Gateway update run watcher", () => {
     const broadcast = vi.fn();
     watcher = startUpdateRunWatcher({ scheduler, broadcast, log: { warn: vi.fn() } });
     ledger.run = { ...ledger.run!, phase: "finished", status: "failed", updatedAtMs: 2 };
-    await advance(2_000);
+    await clock.advanceBy(2_000);
     expect(broadcast).toHaveBeenLastCalledWith("update.run.changed", {
       runId: ledger.run.runId,
       phase: "finished",
@@ -148,24 +157,24 @@ describe("Gateway update run watcher", () => {
   it("wakes for admission, broadcasts changed rows, and stops polling after the terminal event", async () => {
     const broadcast = vi.fn();
     watcher = startUpdateRunWatcher({ scheduler, broadcast, log: { warn: vi.fn() } });
-    await advance(10_000);
+    await clock.advanceBy(10_000);
     expect(ledger.reads).toHaveBeenCalledOnce();
     expect(broadcast).not.toHaveBeenCalled();
 
     beginRun();
     wakeUpdateRunWatcher();
-    await advance(0);
+    await clock.advanceBy(0);
     expect(broadcast).toHaveBeenLastCalledWith("update.run.changed", currentRunEvent());
-    await advance(2_000);
+    await clock.advanceBy(2_000);
     expect(broadcast).toHaveBeenCalledOnce();
     ledger.run = { ...ledger.run!, phase: "staging", updatedAtMs: 2 };
-    await advance(2_000);
+    await clock.advanceBy(2_000);
     expect(broadcast).toHaveBeenLastCalledWith("update.run.changed", currentRunEvent());
     ledger.run = { ...ledger.run!, phase: "finished", status: "succeeded", updatedAtMs: 3 };
-    await advance(2_000);
+    await clock.advanceBy(2_000);
     expect(broadcast).toHaveBeenLastCalledWith("update.run.changed", currentRunEvent());
     const reads = ledger.reads.mock.calls.length;
-    await advance(60_000);
+    await clock.advanceBy(60_000);
     expect(ledger.reads).toHaveBeenCalledTimes(reads);
     expect(broadcast).toHaveBeenCalledTimes(3);
   });
@@ -174,17 +183,23 @@ describe("Gateway update run watcher", () => {
     beginRun();
     ledger.run!.steps = [{ step: "notice:ack", status: "completed" }];
     const broadcast = vi.fn();
+    const delivered = createDeferredCore();
+    ledger.notice.mockImplementationOnce(async () => {
+      delivered.resolve();
+    });
     watcher = startUpdateRunWatcher({ scheduler, broadcast, log: { warn: vi.fn() } });
-    await advance(0);
+    await clock.advanceBy(0);
     const beforeSleep = ledger.reads.mock.calls.length;
-    clock.advanceBy(46 * 60_000);
+    const catchUp = clock.advanceBy(46 * 60_000);
     expect(ledger.reads).toHaveBeenCalledTimes(beforeSleep + 1);
+    await catchUp;
     ledger.run = { ...ledger.run!, phase: "finished", status: "failed", updatedAtMs: 2 };
-    await advance(2_000);
+    await clock.advanceBy(2_000);
+    await delivered.promise;
     expect(broadcast).toHaveBeenLastCalledWith("update.run.changed", currentRunEvent());
     expect(ledger.notice).toHaveBeenCalledExactlyOnceWith(ledger.run);
     const reads = ledger.reads.mock.calls.length;
-    clock.advanceBy(60_000);
+    await clock.advanceBy(60_000);
     expect(ledger.reads).toHaveBeenCalledTimes(reads);
   });
 
@@ -192,10 +207,10 @@ describe("Gateway update run watcher", () => {
     beginRun();
     const broadcast = vi.fn();
     watcher = startUpdateRunWatcher({ scheduler, broadcast, log: { warn: vi.fn() } });
-    await advance(0);
+    await clock.advanceBy(0);
     await watcher.stop();
     const reads = ledger.reads.mock.calls.length;
-    clock.advanceBy(60_000);
+    await clock.advanceBy(60_000);
     expect(ledger.reads).toHaveBeenCalledTimes(reads);
     expect(broadcast).toHaveBeenCalledOnce();
     wakeUpdateRunWatcher();

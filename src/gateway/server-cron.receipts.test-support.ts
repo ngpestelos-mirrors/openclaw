@@ -203,7 +203,7 @@ export function registerGatewayCronReceiptTests({
         if (action === "run" || action === "replace") {
           // The registered receipt owner rechecks active fences every two seconds.
           await vi.advanceTimersByTimeAsync(2_000);
-          clock.advanceBy(2_000);
+          await clock.advanceBy(2_000);
           await vi.waitFor(() => expect(runCommandJob).toHaveBeenCalledTimes(2), {
             timeout: 5_000,
           });

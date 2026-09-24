@@ -460,7 +460,7 @@ describe("cron run receipt settlement", () => {
         }
         // Allow the retained receipt retry and foreign-owner reconciliation to run.
         await vi.advanceTimersByTimeAsync(2_000);
-        clock.advanceBy(2_000);
+        await clock.advanceBy(2_000);
         await expect(settlement).resolves.toEqual({ ok: true, ran: true });
         expect(onReserved).toHaveBeenCalledOnce();
         expect((await successor.readJob(job.id))?.enabled).toBe(false);
@@ -543,7 +543,7 @@ describe("cron run receipt settlement", () => {
       await service.update(job.id, { payload: { kind: "command", argv: ["updated"] } });
       releaseManual.resolve({ status: "ok" });
       await manual;
-      clock.advanceBy(2_000);
+      await clock.advanceBy(2_000);
       await expect(observedExit).resolves.toEqual({ ok: true, ran: true });
       expect(onReserved).toHaveBeenCalledOnce();
       expect(runCommandJob).toHaveBeenCalledTimes(2);

@@ -187,7 +187,9 @@ export class GatewayScheduler {
     const elapsedMs = this.clock.monotonicNow();
     const due = [...this.jobs.values()]
       .filter((job) => job.pending.size === 0 && this.remaining(job, nowMs, elapsedMs) <= 0)
-      .sort((a, b) => this.remaining(a, nowMs, elapsedMs) - this.remaining(b, nowMs, elapsedMs));
+      .toSorted(
+        (a, b) => this.remaining(a, nowMs, elapsedMs) - this.remaining(b, nowMs, elapsedMs),
+      );
     const started: Promise<void>[] = [];
     if (nowMs - expectedAtMs > 60_000) {
       log.debug(`late wake by ${nowMs - expectedAtMs}ms; coalescing ${due.length} due jobs`);

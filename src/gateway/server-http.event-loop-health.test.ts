@@ -67,13 +67,13 @@ describe("Gateway HTTP event-loop sampling", () => {
             }
             const url = `http://127.0.0.1:${address.port}/readyz`;
             for (let index = 0; index < 50; index++) {
-              clock.advanceBy(20);
+              await clock.advanceBy(20);
             }
             const initial = await readJson(url);
             expect(initial.ready).toBe(true);
             blockNextRead = true;
             await readJson(url);
-            clock.wake();
+            await clock.wake();
             const after = await readJson(url);
             expect(after).toMatchObject({
               ready: true,

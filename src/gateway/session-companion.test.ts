@@ -560,7 +560,7 @@ describe("session companion asks", () => {
       question: "Before idle?",
       connId: "conn-1",
     });
-    clock.advanceBy(2 * 60 * 60_000);
+    await clock.advanceBy(2 * 60 * 60_000);
     expect(harness.service.state({ agentId: "main", sessionKey: "agent:main:main" })).toEqual({
       exchanges: [],
     });

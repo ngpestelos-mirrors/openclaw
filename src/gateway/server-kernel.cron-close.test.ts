@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { abortActiveCronTaskRuns } from "../cron/service/active-run-cancellation.js";
 import { waitForAbortSignal } from "../infra/abort-signal.js";
@@ -70,79 +70,7 @@ it("cancels scheduled cron before public close joins it and retries a retained c
   const captured: { kernel?: Awaited<ReturnType<typeof kernelModule.createGatewayKernel>> } = {};
   let server: GatewayServer | undefined;
   let pendingWake: void | Promise<void> = undefined;
-  try {
-    const token = "synthetic-cron-close-token";
-    await state.writeConfig({
-      gateway: { auth: { mode: "token", token }, controlUi: { enabled: false }, port },
-      agents: { defaults: { heartbeat: { every: "0m" } } },
-      skills: { workshop: { autonomous: { mode: "off" } } },
-      plugins: { enabled: false },
-      cron: { enabled: true },
-    });
-    state.applyEnv();
-    const createKernel = kernelModule.createGatewayKernel;
-    const factory = vi
-      .spyOn(kernelModule, "createGatewayKernel")
-      .mockImplementation(async (...args) => {
-        const kernel = await createKernel(...args);
-        captured.kernel = kernel;
-        return kernel;
-      });
-    try {
-      server = await startGatewayServerCore(port, {
-        auth: { mode: "token", token },
-        bind: "loopback",
-        controlUiEnabled: false,
-        sidecarStartup: "defer",
-      });
-      await server.startupSettled;
-    } finally {
-      factory.mockRestore();
-    }
-    const kernel = captured.kernel;
-    if (!kernel) {
-      throw new Error("Expected the public server's real Gateway kernel");
-    }
-    const cron = kernel.runtimeState.cronState.cron;
-    await cron.start();
-    await cron.add({
-      name: "controlled shutdown command",
-      enabled: true,
-      schedule: { kind: "at", at: new Date(clock.clock.now() + 1_000).toISOString() },
-      payload: { kind: "command", argv: ["synthetic-controlled-command"] },
-      sessionTarget: "isolated",
-      wakeMode: "now",
-      delivery: { mode: "none" },
-    });
-    pendingWake = clock.advanceBy(1_000);
-    await started.promise;
-    const stopAndDrain = cron.stopAndDrain?.bind(cron);
-    if (!stopAndDrain) {
-      throw new Error("Expected the Gateway cron drain owner");
-    }
-    const drainFailure = new Error("Controlled cron drain failure after cancellation");
-    const drain = vi.spyOn(cron, "stopAndDrain").mockImplementation(stopAndDrain);
-    drain.mockImplementationOnce(async () => {
-      await stopAndDrain();
-      throw drainFailure;
-    });
-    const completeClose = vi.spyOn(kernel.shutdownRuntime, "completeGatewayClose");
-
-    await expect(server.close()).rejects.toMatchObject({
-      name: "PluginRuntimeCloseRetainedError",
-      cause: drainFailure,
-    });
-    await cancelled.promise;
-    await pendingWake;
-    expect(completeClose).not.toHaveBeenCalled();
-    expect(drain).toHaveBeenCalledOnce();
-
-    await server.close();
-    expect(completeClose).toHaveBeenCalledOnce();
-    expect(drain).toHaveBeenCalledTimes(2);
-    expect(fixture.runCommand).toHaveBeenCalledOnce();
-    expect(emergencyUsed).toBe(false);
-  } finally {
+  onTestFinished(async () => {
     abortActiveCronTaskRuns("Fixture cleanup");
     try {
       await pendingWake;
@@ -158,5 +86,76 @@ it("cancels scheduled cron before public close joins it and retries a retained c
       vi.restoreAllMocks();
       await state.cleanup();
     }
+  });
+  const token = "synthetic-cron-close-token";
+  await state.writeConfig({
+    gateway: { auth: { mode: "token", token }, controlUi: { enabled: false }, port },
+    agents: { defaults: { heartbeat: { every: "0m" } } },
+    skills: { workshop: { autonomous: { mode: "off" } } },
+    plugins: { enabled: false },
+    cron: { enabled: true },
+  });
+  state.applyEnv();
+  const createKernel = kernelModule.createGatewayKernel;
+  const factory = vi
+    .spyOn(kernelModule, "createGatewayKernel")
+    .mockImplementation(async (...args) => {
+      const kernel = await createKernel(...args);
+      captured.kernel = kernel;
+      return kernel;
+    });
+  try {
+    server = await startGatewayServerCore(port, {
+      auth: { mode: "token", token },
+      bind: "loopback",
+      controlUiEnabled: false,
+      sidecarStartup: "defer",
+    });
+    await server.startupSettled;
+  } finally {
+    factory.mockRestore();
   }
+  const kernel = captured.kernel;
+  if (!kernel) {
+    throw new Error("Expected the public server's real Gateway kernel");
+  }
+  const cron = kernel.runtimeState.cronState.cron;
+  await cron.start();
+  await cron.add({
+    name: "controlled shutdown command",
+    enabled: true,
+    schedule: { kind: "at", at: new Date(clock.clock.now() + 1_000).toISOString() },
+    payload: { kind: "command", argv: ["synthetic-controlled-command"] },
+    sessionTarget: "isolated",
+    wakeMode: "now",
+    delivery: { mode: "none" },
+  });
+  pendingWake = clock.advanceBy(1_000);
+  await started.promise;
+  const stopAndDrain = cron.stopAndDrain?.bind(cron);
+  if (!stopAndDrain) {
+    throw new Error("Expected the Gateway cron drain owner");
+  }
+  const drainFailure = new Error("Controlled cron drain failure after cancellation");
+  const drain = vi.spyOn(cron, "stopAndDrain").mockImplementation(stopAndDrain);
+  drain.mockImplementationOnce(async () => {
+    await stopAndDrain();
+    throw drainFailure;
+  });
+  const completeClose = vi.spyOn(kernel.shutdownRuntime, "completeGatewayClose");
+
+  await expect(server.close()).rejects.toMatchObject({
+    name: "PluginRuntimeCloseRetainedError",
+    cause: drainFailure,
+  });
+  await cancelled.promise;
+  await pendingWake;
+  expect(completeClose).not.toHaveBeenCalled();
+  expect(drain).toHaveBeenCalledOnce();
+
+  await server.close();
+  expect(completeClose).toHaveBeenCalledOnce();
+  expect(drain).toHaveBeenCalledTimes(2);
+  expect(fixture.runCommand).toHaveBeenCalledOnce();
+  expect(emergencyUsed).toBe(false);
 });

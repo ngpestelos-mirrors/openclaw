@@ -121,18 +121,18 @@ it("expires Incognito at creation plus 24 hours, cancels work, and deletes witho
       eventId: "private-input",
       message: { role: "user", content: "Ephemeral conversation", timestamp: Date.now() },
     });
-    time.advanceBy(23 * 60 * 60_000);
+    await time.advanceBy(23 * 60 * 60_000);
     await patchSessionEntryCore(scope, () => ({ label: "Recent activity", updatedAt: Date.now() }));
     await resetSessionEntryLifecycle({
       ...scope,
       target: { canonicalKey: scope.sessionKey, storeKeys: [scope.sessionKey] },
       buildNextEntry: ({ currentEntry }) => ({ ...currentEntry!, lifecycleRevision: "rewound" }),
     });
-    time.advanceBy(60 * 60_000 - 1);
+    await time.advanceBy(60 * 60_000 - 1);
     expect(loadSessionEntryReadOnly(scope)).toBeDefined();
     const active = replyRunRegistry.begin({ ...scope, resetTriggered: false });
     try {
-      time.advanceBy(1);
+      await time.advanceBy(1);
       await expect(deleted.promise).resolves.toMatchObject({
         ok: true,
         result: { deleted: true, archived: [] },
@@ -185,11 +185,11 @@ it("does not replace its deadline or delete another Gateway's Incognito publicat
         incognito: true,
       });
       expect(loadSessionEntryReadOnly(scope)?.sessionId).toBe(scope.sessionId);
-      time.advanceBy(1);
+      await time.advanceBy(1);
       expect(deletes).not.toHaveBeenCalled();
       expect(logWarning).not.toHaveBeenCalled();
       expect(loadSessionEntryReadOnly(foreign)?.sessionId).toBe("foreign-incognito");
-      time.advanceBy(DAY_MS - 1);
+      await time.advanceBy(DAY_MS - 1);
       await deleted.promise;
       expect(deletes).toHaveBeenCalledOnce();
       expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
@@ -221,7 +221,7 @@ it.each(["provided", "omitted", "legacy"] as const)(
             deleted.resolve();
           }
         });
-      time.advanceBy(DAY_MS - 1);
+      await time.advanceBy(DAY_MS - 1);
       await patchSessionEntryCore(scope, () => ({ createdAt: Date.now(), updatedAt: Date.now() }));
       expect(loadSessionEntryReadOnly(scope)?.createdAt).toBe(createdAt);
       const siblingTime = createGatewaySchedulerClock(time.clock.now());
@@ -238,8 +238,8 @@ it.each(["provided", "omitted", "legacy"] as const)(
       try {
         await owner.stop();
         expect(loadSessionEntryReadOnly(scope)?.sessionId).toBe(scope.sessionId);
-        time.advanceBy(1);
-        siblingTime.advanceBy(1);
+        await time.advanceBy(1);
+        await siblingTime.advanceBy(1);
         await deleted.promise;
         expect(deletes).toHaveBeenCalledOnce();
         expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
@@ -271,8 +271,8 @@ it.each(["session replacement", "database replacement", "Gateway stop"] as const
           }
         });
       let stopping: Promise<void> | undefined;
+      const expiry = time.advanceBy(DAY_MS);
       try {
-        time.advanceBy(DAY_MS);
         await entered.promise;
         if (replacement === "session replacement") {
           await deleteSessionEntryLifecycle({
@@ -299,16 +299,18 @@ it.each(["session replacement", "database replacement", "Gateway stop"] as const
         const before = loadSessionEntryReadOnly(scope);
         release.resolve();
         await finished.promise;
+        await expiry;
         await Promise.allSettled(deletes.mock.results.map((result) => result.value));
         await stopping;
         expect(loadSessionEntryReadOnly(scope)).toEqual(before);
         expect(logWarning).not.toHaveBeenCalled();
         if (replacement === "Gateway stop") {
-          time.advanceBy(DAY_MS);
+          await time.advanceBy(DAY_MS);
           expect(deletes).toHaveBeenCalledOnce();
         }
       } finally {
         release.resolve();
+        await expiry;
         await stopping;
       }
     });
@@ -332,7 +334,7 @@ it.each(["provided", "legacy"] as const)(
           void operation.then(deleted.resolve, deleted.reject);
           return operation;
         });
-      time.advanceBy(DAY_MS);
+      await time.advanceBy(DAY_MS);
       await retrying.promise;
       expect(logWarning).toHaveBeenCalledOnce();
       expect(loadSessionEntryReadOnly(scope)).toBeDefined();
@@ -365,7 +367,7 @@ it.each(["provided", "legacy"] as const)(
       );
       expect(await loadTranscriptEvents(scope)).toEqual([]);
       expect(context.chatAbortControllers.size).toBe(0);
-      time.advanceBy(60_000);
+      await time.advanceBy(60_000);
       await expect(deleted.promise).resolves.toMatchObject({ ok: true, result: { deleted: true } });
       expect(deletes).toHaveBeenCalledTimes(2);
       expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
