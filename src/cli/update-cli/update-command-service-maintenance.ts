@@ -14,7 +14,7 @@ import {
   resolveManagedGatewayServiceCommand,
   type GatewayServiceState,
 } from "../../daemon/service-types.js";
-import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
+import { resolveGatewayService } from "../../daemon/service.js";
 import { readSystemdServiceExecStart } from "../../daemon/systemd-service-files.js";
 import { captureSystemdServiceIdentity } from "../../daemon/systemd-service-identity.js";
 import { parseTcpPortFromArgs } from "../../infra/tcp-port.js";
@@ -34,10 +34,10 @@ import type {
 } from "./update-command-service-context-types.js";
 import {
   assertGatewayServiceAdmissionUnchanged,
-  assertGatewayServiceManagementAllowedForUpdate,
   GATEWAY_SERVICE_INSPECTION_WARNING,
   GatewayServiceUpdateOwnershipError,
   observedSystemdManagerUid,
+  readGatewayServiceStateForUpdate,
   resolveGatewayServiceManagementBlockMessageForUpdate,
 } from "./update-command-service-plan.js";
 import { isManagedGatewayServiceOffline } from "./update-command-service-publication.js";
@@ -75,13 +75,11 @@ export function createWindowsTaskAutoStartGuard(params: {
 }): () => Promise<void> {
   const before = params.before;
   return async () => {
-    const state = await readGatewayServiceState(resolveGatewayService(), {
-      env: before.serviceEnv,
-      requireEffective: true,
-      requireLoadedCommand: true,
-      validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-      timeoutMs: params.timeoutMs,
-    });
+    const state = await readGatewayServiceStateForUpdate(
+      resolveGatewayService(),
+      before.serviceEnv,
+      params.timeoutMs,
+    );
     const verdict = await revalidateManagedGatewayServiceAfterUpdate({
       state,
       root: params.root,
@@ -296,13 +294,7 @@ async function stopManagedServiceBeforeMutableUpdate(
       const retryTimeout = process.platform === "win32" && attempt === 0;
       try {
         serviceState = await withCommandProcessScope(() =>
-          readGatewayServiceState(inspectedService, {
-            env: serviceEnv,
-            requireEffective: true,
-            requireLoadedCommand: true,
-            validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-            timeoutMs: params.timeoutMs,
-          }),
+          readGatewayServiceStateForUpdate(inspectedService, serviceEnv, params.timeoutMs),
         );
       } catch (error) {
         if (
@@ -511,13 +503,7 @@ async function stopManagedServiceBeforeMutableUpdate(
     // Ownership inspection and native preparation await work. Recheck the exact
     // launcher before stopping so a replacement service cannot inherit authority.
     const readCurrentService = async (env: NodeJS.ProcessEnv) => {
-      const state = await readGatewayServiceState(service, {
-        env,
-        requireEffective: true,
-        requireLoadedCommand: true,
-        validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-        timeoutMs: params.timeoutMs,
-      });
+      const state = await readGatewayServiceStateForUpdate(service, env, params.timeoutMs);
       const verdict = await revalidateManagedGatewayServiceAfterUpdate({
         state,
         root: params.root,
