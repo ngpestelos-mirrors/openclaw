@@ -17,7 +17,7 @@ const isolatedRuntimeNodeExecPath = resolveTestNodeExecPath();
 // The fixture owns its package assets; resolving linked source back to the checkout
 // makes Doctor repair that checkout instead, including building its Control UI.
 // Dependency realpaths still own their transitive packages under isolated installs.
-const ISOLATED_RUNTIME_NODE_ARGS = [
+export const ISOLATED_RUNTIME_NODE_ARGS = [
   "--preserve-symlinks",
   "--preserve-symlinks-main",
   "--import",

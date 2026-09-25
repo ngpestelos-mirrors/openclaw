@@ -22,6 +22,7 @@ import {
 import {
   createBuiltRuntime,
   createSourceRuntime,
+  ISOLATED_RUNTIME_NODE_ARGS,
   runBuiltRuntime,
   runIsolatedModuleScript,
   runSourceRuntime,
@@ -335,8 +336,13 @@ describe("doctor invalid config process exit", () => {
 // Synchronous CLI probes must not consume neighboring cases' timeout budgets.
 describe("Doctor repair followed by gateway readiness", () => {
   it("serves canonical state after Doctor repairs cron and preserves retired plugin sidecars", async () => {
+    const runtimeRoot = createBuiltRuntime(
+      tempDirs.createTempDir("openclaw-cron-upgrade-runtime-"),
+    );
     const instance = await createOpenClawTestInstance({
       name: "cron-upgrade-ready",
+      cwd: runtimeRoot,
+      entrypoint: [...ISOLATED_RUNTIME_NODE_ARGS, path.join(runtimeRoot, "dist", "entry.js")],
       startTimeoutMs: 30_000,
       stopTimeoutMs: 1_500,
       env: {
@@ -415,6 +421,7 @@ describe("Doctor repair followed by gateway readiness", () => {
       );
       const doctorOutput = `${doctor.stdout}\n${doctor.stderr}`;
       expect(doctor.code, doctorOutput).toBe(0);
+      expect(doctorOutput).not.toContain("Building Control UI assets");
       expect(doctorOutput).not.toContain("Left plugin-state sidecar in place");
       expect(fs.readFileSync(sidecarPath)).toEqual(preservedSidecar);
       expect(readCanonicalPluginState()).toEqual({ value_json: '{"ok":false}', created_at: 2_000 });
