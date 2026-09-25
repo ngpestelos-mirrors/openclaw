@@ -25,9 +25,10 @@ describe("QA CLI server shutdown", () => {
     ["Lab UI", startQaLabServer, () => runQaLabUiCommand({})],
     ["provider", startQaProviderServer, () => runQaProviderServerCommand("mock-openai", {})],
   ] as const)(
-    "%s joins interrupted shutdown without removing foreign handlers",
+    "%s joins the first interrupted shutdown and preserves foreign handlers",
     async (_label, start, run) => {
       for (const mode of ["resolve", "reject", "throw"] as const) {
+        const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
         const signals = ["SIGINT", "SIGTERM"] as const;
         const foreign = vi.fn();
         for (const signal of signals) {
@@ -86,12 +87,15 @@ describe("QA CLI server shutdown", () => {
           }
           await entered.promise;
           expect(stop).toHaveBeenCalledOnce();
+          expect(stderrWrite).toHaveBeenCalledExactlyOnceWith(
+            "Stopping. Interrupt again to exit immediately; cleanup and report completion will be unconfirmed.\n",
+          );
+          for (const signal of signals) {
+            expect(process.rawListeners(signal)).toEqual(before[signal]);
+          }
           if (mode !== "throw") {
             expect(settled).not.toHaveBeenCalled();
             expect(exit).not.toHaveBeenCalled();
-            for (const signal of signals) {
-              expect(process.rawListeners(signal)).toEqual([...before[signal], owned.get(signal)]);
-            }
             if (mode === "reject") {
               release.reject(failure);
             } else {
@@ -116,6 +120,7 @@ describe("QA CLI server shutdown", () => {
             process.off(signal, foreign);
           }
           exit.mockRestore();
+          stderrWrite.mockRestore();
         }
       }
     },

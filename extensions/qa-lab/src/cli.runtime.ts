@@ -18,6 +18,7 @@ import { resolveQaParityPackScenarioIds } from "./agentic-parity.js";
 import { createQaArtifactRunId } from "./artifact-run-id.js";
 import { runQaCharacterEval, type QaCharacterModelOptions } from "./character-eval.js";
 import { resolveRepoRelativeOutputDir } from "./cli-paths.js";
+import { runInterruptibleServer } from "./cli-server-lifecycle.js";
 import {
   buildQaConfidenceReport,
   readQaConfidenceManifestFile,
@@ -128,10 +129,6 @@ const QA_CREDENTIAL_PAYLOAD_MAX_BYTES_ENV = "OPENCLAW_QA_CREDENTIAL_PAYLOAD_MAX_
 const DEFAULT_QA_CREDENTIAL_PAYLOAD_MAX_BYTES = 64 * 1024 * 1024;
 const QA_HARNESS_ROOT_MAX_PARENT_HOPS = 8;
 
-type InterruptibleServer = {
-  baseUrl: string;
-  stop(): Promise<void>;
-};
 export {
   runQaLabSelfCheckCommand,
   type QaLabSelfCheckCommandOptions,
@@ -548,29 +545,6 @@ function parseQaModelSpecs(label: string, entries: readonly string[] | undefined
     models,
     optionsByModel: Object.keys(optionsByModel).length > 0 ? optionsByModel : undefined,
   };
-}
-
-async function runInterruptibleServer(label: string, server: InterruptibleServer) {
-  process.stdout.write(`${label}: ${server.baseUrl}\n`);
-  process.stdout.write("Press Ctrl+C to stop.\n");
-
-  let onSignal: () => void;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      let shutdown: Promise<void> | undefined;
-      onSignal = () => {
-        shutdown ??= Promise.resolve().then(() => server.stop());
-        void shutdown.then(resolve, reject);
-      };
-      // Repeated interrupts must not bypass accepted-run/report cleanup.
-      process.on("SIGINT", onSignal);
-      process.on("SIGTERM", onSignal);
-    });
-  } finally {
-    process.off("SIGINT", onSignal!);
-    process.off("SIGTERM", onSignal!);
-  }
-  process.exit(0);
 }
 
 function resolveQaCredentialPayloadFileMaxBytes(env: NodeJS.ProcessEnv = process.env) {
