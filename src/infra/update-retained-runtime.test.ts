@@ -11,7 +11,7 @@ import { captureRuntimeWorkerSource } from "./runtime-worker-generation.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { openSqliteWorkerStore, type SqliteWorkerStore } from "./sqlite-worker-store.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
-import { withRetainedUpdateRuntime } from "./update-retained-runtime.js";
+import { type RetainUpdateRuntime, withRetainedUpdateRuntime } from "./update-retained-runtime.js";
 
 type Operations = { append: { input: string; output: string[] } };
 const stores = new Set<SqliteWorkerStore<Operations>>();
@@ -36,6 +36,7 @@ it.each([false, true])(
     const remove = fs.rm;
     let denyRemoval = false;
     let directory: Parameters<typeof fs.rm>[0] | undefined;
+    const receipt: { metrics?: Awaited<ReturnType<RetainUpdateRuntime>> } = {};
     const cleanup = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
       if (denyRemoval) {
         directory = args[0];
@@ -46,18 +47,24 @@ it.each([false, true])(
     });
     try {
       const result = withRetainedUpdateRuntime(moduleUrl, async (retain) => {
-        await retain({ mutationRoots: [root], timeoutMs: 30_000, assertCurrent() {} });
+        receipt.metrics = await retain({
+          mutationRoots: [root],
+          timeoutMs: 30_000,
+          assertCurrent() {},
+        });
         denyRemoval = true;
         if (failed) {
           throw original;
         }
-        return { status: "ok" };
+        return receipt.metrics;
       });
       if (failed) {
         await expect(result).rejects.toBe(original);
       } else {
-        await expect(result).resolves.toEqual({ status: "ok" });
+        expect(await result).toBe(receipt.metrics);
       }
+      assert.ok(receipt.metrics);
+      expect(receipt.metrics.linked + receipt.metrics.copied).toBe(6);
       assert.ok(typeof directory === "string");
       expect(directory).toContain("openclaw-update-runtime-");
       expect((await stat(directory)).isDirectory()).toBe(true);
@@ -79,10 +86,15 @@ it("reports the retained runtime and reason when a borrowed worker cannot settle
   await writeFile(log, "");
   const previousLoggerOverride = loggingState.overrideSettings;
   let retained: string | undefined;
+  const receipt: { metrics?: Awaited<ReturnType<RetainUpdateRuntime>> } = {};
   try {
     setLoggerOverride({ level: "warn", consoleLevel: "silent", file: log });
     const operation = withRetainedUpdateRuntime(moduleUrl.href, async (retain) => {
-      await retain({ mutationRoots: [root], timeoutMs: 30_000, assertCurrent() {} });
+      receipt.metrics = await retain({
+        mutationRoots: [root],
+        timeoutMs: 30_000,
+        assertCurrent() {},
+      });
       const directory = (await fs.readdir(base)).find((entry) =>
         entry.startsWith("openclaw-update-runtime-"),
       );
@@ -95,6 +107,8 @@ it("reports the retained runtime and reason when a borrowed worker cannot settle
       });
     });
     await expect(operation).rejects.toMatchObject({ errors: [failure] });
+    assert.ok(receipt.metrics);
+    expect(receipt.metrics.linked + receipt.metrics.copied).toBe(6);
     assert.ok(retained);
     expect((await stat(retained)).isDirectory()).toBe(true);
     await flushLogger();

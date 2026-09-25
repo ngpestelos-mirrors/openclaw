@@ -50,9 +50,14 @@ async function fixture(setup?: (source: string) => Promise<void>) {
   };
 }
 
-it.each([false, true])(
-  "copies checked plugin files but hardlinks payloads (existing manifest twin=%s)",
-  async (existingTwin) => {
+it.each([
+  { filesystem: "native", existingTwin: false },
+  { filesystem: "native", existingTwin: true },
+  { filesystem: "overlay", existingTwin: false },
+  { filesystem: "overlay", existingTwin: true },
+])(
+  "preserves plugin safety on $filesystem filesystems (existing manifest twin=$existingTwin)",
+  async ({ filesystem, existingTwin }) => {
     const controlUi = { entry: "dist/control-ui/index.js", styles: ["dist/control-ui/theme.css"] };
     const nestedBrowser = "dist/control-ui/@scope/nested";
     const files = new Map([
@@ -154,7 +159,14 @@ it.each([false, true])(
     const rank = (file: string) =>
       file.endsWith(nestedManifest) ? 0 : file === outerManifest ? 1 : 2;
     f.plan.entries.sort((left, right) => rank(left.path) - rank(right.path));
-    await f.link();
+    const overlay = filesystem === "overlay";
+    const disk = await fs.statfs(f.source);
+    // Pin both routes so an OverlayFS host cannot hide broken plugin-specific copying.
+    disk.type = overlay ? 0x794c7630 : 0xef53;
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    vi.spyOn(fs, "statfs").mockResolvedValue(disk);
+    const link = vi.spyOn(fs, "link");
+    const counts = await f.link();
     for (const base of [f.source, f.destination]) {
       const rootDir = path.join(base, relativePlugin);
       withPluginCache(createPluginCache(), () => {
@@ -190,11 +202,19 @@ it.each([false, true])(
         ).assets.keys(),
       ]).toEqual(["index.js"]);
     }
+    expect(counts).toEqual(
+      overlay
+        ? { linked: 0, copied: files.size + payloads.length + 3 }
+        : { linked: payloads.length + 2, copied: files.size + 1 },
+    );
+    expect(link).toHaveBeenCalledTimes(counts.linked);
     for (const relative of payloads) {
       const original = fsSync.statSync(path.join(f.source, relativePlugin, relative));
       const retained = fsSync.statSync(path.join(f.destination, relativePlugin, relative));
-      expect(retained.ino).toBe(original.ino);
-      expect(original.nlink).toBe(2);
+      expect(retained.ino === original.ino).toBe(!overlay);
+      expect(original.nlink).toBe(overlay ? 1 : 2);
+      expect(retained.nlink).toBe(overlay ? 1 : 2);
+      expect(retained.size).toBe(original.size);
     }
     const sourcePlugin = path.join(f.source, relativePlugin);
     await fs.link(
