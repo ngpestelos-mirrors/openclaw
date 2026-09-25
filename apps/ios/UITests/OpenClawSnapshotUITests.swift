@@ -1029,14 +1029,14 @@ final class OpenClawSnapshotUITests: XCTestCase {
         for index in 0..<3 {
             let seedMarker = "OPENCLAW_E2E_SEED_\(index)_\(Int(Date().timeIntervalSince1970 * 1000))"
             let seedContext = String(repeating: "Reader context \(index). ", count: 6)
-            self.sendLiveGatewayMessage(
+            try self.sendLiveGatewayMessage(
                 "\(seedContext)Reply exactly with \(seedMarker) and no other text.",
                 expecting: seedMarker,
                 in: app)
         }
 
         let replyMarker = "OPENCLAW_E2E_OK_\(Int(Date().timeIntervalSince1970 * 1000))"
-        self.sendLiveGatewayMessage(
+        try self.sendLiveGatewayMessage(
             "Reply exactly with \(replyMarker) and no other text.",
             expecting: replyMarker,
             in: app)
@@ -1050,7 +1050,7 @@ final class OpenClawSnapshotUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.5)
         self.attachScreenshot(named: "live-gateway-chat-jumped-to-latest")
 
-        let transcript = app.scrollViews.firstMatch
+        let transcript = try self.chatTranscript(in: app)
         XCTAssertTrue(transcript.exists)
         transcript.swipeDown()
         XCTAssertTrue(jumpToLatest.waitForExistence(timeout: 3))
@@ -1859,10 +1859,21 @@ extension OpenClawSnapshotUITests {
         return app
     }
 
+    private func chatTranscript(in app: XCUIApplication) throws -> XCUIElement {
+        // Keyboard predictions expose another scroll view below the composer.
+        let composerTop = self.chatMessageInput(in: app).frame.minY
+        let candidates = app.scrollViews.allElementsBoundByIndex.filter {
+            $0.isHittable && $0.frame.maxY <= composerTop
+        }
+        return try XCTUnwrap(
+            candidates.count == 1 ? candidates.first : nil,
+            "Expected one hittable chat transcript above the composer")
+    }
+
     private func sendLiveGatewayMessage(
         _ text: String,
         expecting replyMarker: String,
-        in app: XCUIApplication)
+        in app: XCUIApplication) throws
     {
         let input = self.chatMessageInput(in: app)
         XCTAssertTrue(input.waitForExistence(timeout: 8))
@@ -1873,7 +1884,7 @@ extension OpenClawSnapshotUITests {
         XCTAssertTrue(send.waitForExistence(timeout: 3))
         XCTAssertTrue(send.isEnabled)
         // Dismiss before sending to preserve turn anchoring without tapping a starter prompt.
-        let transcript = app.scrollViews.firstMatch
+        let transcript = try self.chatTranscript(in: app)
         XCTAssertTrue(transcript.exists)
         transcript.swipeDown()
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
