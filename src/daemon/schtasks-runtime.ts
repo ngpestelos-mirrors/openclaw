@@ -238,6 +238,10 @@ export async function readStartupEntryState(
   startupEntryPath: string,
   args: ReadGatewayServiceStateArgs,
 ): Promise<GatewayServiceState> {
+  const deadline =
+    args.timeoutMs !== undefined && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0
+      ? performance.now() + args.timeoutMs
+      : undefined;
   const capture = async () => {
     const contents: string[] = [];
     const command = await readStartupEntryCommand(startupEntryPath, {
@@ -248,11 +252,20 @@ export async function readStartupEntryState(
   const captured = await capture();
   const env = mergeGatewayServiceEnv(args.env ?? process.env, captured.command);
   args.validateEnvBeforeStatusRead?.(env);
-  const runtime = await resolveFallbackRuntime(env, captured.command, "control").catch(
-    (error: unknown) => createServiceRuntimeInspectionFailure(error),
-  );
+  let runtime = await resolveFallbackRuntime(
+    env,
+    captured.command,
+    "control",
+    deadline === undefined ? undefined : Math.max(0, deadline - performance.now()),
+  ).catch((error: unknown) => createServiceRuntimeInspectionFailure(error, args.timeoutMs));
   if (!isDeepStrictEqual(await capture(), captured)) {
     throw new Error("Startup launcher changed during runtime inspection.");
+  }
+  if (deadline !== undefined && performance.now() >= deadline) {
+    runtime = createServiceRuntimeInspectionFailure(
+      "Startup runtime inspection timed out.",
+      args.timeoutMs,
+    );
   }
   return {
     installed: true,
@@ -269,7 +282,20 @@ export async function resolveFallbackRuntime(
   env: GatewayServiceEnv,
   installedCommand?: GatewayServiceCommandConfig | null,
   mode: "observe" | "control" = "observe",
+  timeoutMs?: number,
 ): Promise<GatewayServiceRuntime> {
+  const deadline = timeoutMs === undefined ? undefined : performance.now() + timeoutMs;
+  const remainingTimeoutMs = () => {
+    if (deadline === undefined) {
+      return undefined;
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) {
+      throw new Error("Startup runtime inspection timed out.");
+    }
+    return remaining;
+  };
+  remainingTimeoutMs();
   const command =
     installedCommand === undefined
       ? await readScheduledTaskCommand(env).catch(() => null)
@@ -285,7 +311,8 @@ export async function resolveFallbackRuntime(
   }
   const installedArguments = command?.programArguments;
   if (!shouldManageGatewayListenerPort(env)) {
-    const snapshot = readWindowsProcessSnapshot();
+    const snapshot = readWindowsProcessSnapshot(remainingTimeoutMs());
+    remainingTimeoutMs();
     if (!snapshot) {
       return {
         status: "unknown",
@@ -308,7 +335,8 @@ export async function resolveFallbackRuntime(
   }
 
   const shouldInspectProcess = process.platform === "win32" && Boolean(installedArguments?.length);
-  const snapshot = shouldInspectProcess ? readWindowsProcessSnapshot() : null;
+  const snapshot = shouldInspectProcess ? readWindowsProcessSnapshot(remainingTimeoutMs()) : null;
+  remainingTimeoutMs();
   const processPid =
     snapshot && installedArguments
       ? findInstalledGatewayChildPid(snapshot, port, installedArguments)
@@ -337,7 +365,20 @@ export async function resolveFallbackRuntime(
     }
   }
   const probeHosts = await resolveGatewayServiceProbeHosts({ env, command });
-  const diagnostics = await inspectPortUsage(port, { probeHosts }).catch(() => null);
+  const remaining = remainingTimeoutMs();
+  const controller = remaining === undefined ? undefined : new AbortController();
+  const timeout =
+    remaining === undefined
+      ? undefined
+      : setTimeout(
+          () => controller?.abort(new Error("Startup runtime inspection timed out.")),
+          remaining,
+        );
+  const diagnostics = await inspectPortUsage(port, { probeHosts, signal: controller?.signal })
+    .catch(() => null)
+    .finally(() => clearTimeout(timeout));
+  controller?.signal.throwIfAborted();
+  remainingTimeoutMs();
   if (!diagnostics) {
     return {
       status: "unknown",
@@ -353,6 +394,13 @@ export async function resolveFallbackRuntime(
         status === "unknown" && diagnostics.status === "free"
           ? `Startup-folder login item installed; no listener detected on port ${port}, but process inspection was unavailable.`
           : `Startup-folder login item installed; no gateway listener detected on port ${port}.`,
+    };
+  }
+  // The exact snapshot already excluded this command; a listener-only lookup cannot prove it.
+  if (deadline !== undefined && requireCommandOwnership) {
+    return {
+      status: "unknown",
+      detail: `Startup-folder login item installed; gateway listener on port ${port} does not match the persisted command.`,
     };
   }
   const matchedGatewayPids = resolveGatewayListenerPids(diagnostics.listeners);

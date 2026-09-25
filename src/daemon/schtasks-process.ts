@@ -604,7 +604,9 @@ export async function waitForGatewayPortRelease(
   return false;
 }
 
-export function readWindowsProcessSnapshot(): WindowsProcessSnapshotEntry[] | null {
+export function readWindowsProcessSnapshot(
+  timeoutMs = 5_000,
+): WindowsProcessSnapshotEntry[] | null {
   if (process.platform !== "win32") {
     return null;
   }
@@ -615,7 +617,12 @@ export function readWindowsProcessSnapshot(): WindowsProcessSnapshotEntry[] | nu
       "-Command",
       "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
     ],
-    { env: resolveServiceManagerEnv(), encoding: "utf8", timeout: 5_000, windowsHide: true },
+    {
+      env: resolveServiceManagerEnv(),
+      encoding: "utf8",
+      timeout: Math.max(1, Math.floor(Math.min(5_000, timeoutMs))),
+      windowsHide: true,
+    },
   );
   if (processSnapshot.error || processSnapshot.status !== 0) {
     return null;

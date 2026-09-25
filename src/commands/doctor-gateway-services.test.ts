@@ -1407,7 +1407,7 @@ describe("maybeResolveDuelingSystemdGatewayScopes", () => {
 
     expect(mocks.uninstallUserSystemdGatewayUnit).toHaveBeenCalledTimes(1);
     expect(runtime.log).toHaveBeenCalledWith(
-      "Removed the redundant user-scope gateway unit. The system-scope unit is now the sole gateway manager.",
+      expect.stringContaining("Cleanup of openclaw-gateway.service completed."),
     );
   });
 

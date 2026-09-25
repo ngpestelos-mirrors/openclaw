@@ -355,7 +355,7 @@ async function scanWindowsStartupEntries(
       gateway = hasGatewaySubcommandArg(command.programArguments) || serviceMarker;
       marker = serviceMarker ? "openclaw" : (commandMarker ?? undefined);
       const label = command.environment?.OPENCLAW_WINDOWS_TASK_NAME?.trim() || name;
-      if (!marker || !gateway) {
+      if (!marker || (!gateway && marker !== "clawdbot")) {
         continue;
       }
       services.push({
@@ -366,7 +366,7 @@ async function scanWindowsStartupEntries(
         marker,
         legacy: marker !== "openclaw",
         windowsStartupEntry: pathname,
-        extra: !selectedStartupEntries.has(pathIdentity),
+        extra: marker !== "openclaw" || !selectedStartupEntries.has(pathIdentity),
         managedGateway: marker === "openclaw" && gateway,
       });
     } catch {

@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Writable } from "node:stream";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { z } from "zod";
 import { hashFile } from "../../scripts/lib/gateway-bench-installed-package.ts";
 import type { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { normalizeWindowsTaskIdentity } from "./constants.js";
-import type { CommandRecord } from "./schtasks.installed-command.test-support.js";
+import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 import {
   assertInstalledSiblingBuildRefusal,
   type doctorReportSchema,
@@ -379,7 +378,6 @@ export async function inspectInstalledStartupAliasBuildRefusal(params: {
   const { readTaskXml, readRelatedProcessDiagnostics } =
     await import("./schtasks.integration-observation.test-support.js");
   const { mergeGatewayServiceEnv } = await import("./service-env-merge.js");
-  const { resolveGatewayService } = await import("./service.js");
   const originalXml = await readTaskXml(peer.taskName);
   assert.ok(originalXml);
   assert.equal(probeScheduledTaskState(peer.taskName).status, "found");
@@ -457,18 +455,16 @@ export async function inspectInstalledStartupAliasBuildRefusal(params: {
       } catch (error) {
         cleanupErrors.push(error);
       }
-      const stdout = new Writable({
-        write(_chunk, _encoding, callback) {
-          callback();
-        },
-      });
       try {
-        // Restored Tasks may be Ready; the source owner still settles the exact owned processes.
-        await resolveGatewayService().stop({ env: peer.env, stdout });
+        // Run the guarded owner in the installed profile, outside Vitest's synthetic account.
+        await run(
+          [peer.entry, "--profile", peer.profile, "gateway", "stop", "--force", "--json"],
+          peer.env,
+          peer.rootDir,
+          commands,
+        );
       } catch (error) {
         cleanupErrors.push(error);
-      } finally {
-        stdout.end();
       }
       try {
         await waitForLoopbackPortRelease(peer.gatewayPort);
