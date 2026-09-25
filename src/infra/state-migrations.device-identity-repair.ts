@@ -9,6 +9,7 @@ import {
 import { formatErrorMessage } from "./errors.js";
 import { pathMayExistSync } from "./path-existence.js";
 import type { LegacyDeviceIdentityDetection } from "./state-migrations.device-identity.types.js";
+import { listLegacyMigrationSourceCopies } from "./state-migrations.source-copy.js";
 import type { MigrationMessages } from "./state-migrations.types.js";
 
 const LEGACY_IDENTITY_RELATIVE_PATH = path.join("identity", "device.json");
@@ -47,16 +48,27 @@ export function detectLegacyDeviceIdentity(params: {
       importAuthorized &&
       (pathMayExistSync(claimPath) ||
         pathMayExistSync(nativeClaimPath) ||
-        pathMayExistSync(sourcePath)),
+        pathMayExistSync(sourcePath) ||
+        listLegacyMigrationSourceCopies(sourcePath).length > 0),
     hasInvalidCanonical,
   };
+}
+
+export function legacyDeviceIdentitySourcePaths(detected: LegacyDeviceIdentityDetection): string[] {
+  return [
+    detected.sourcePath,
+    detected.claimPath,
+    detected.nativeClaimPath,
+    ...(detected.hasLegacy ? listLegacyMigrationSourceCopies(detected.sourcePath) : []),
+  ];
 }
 
 export function hasLegacyDeviceIdentityPath(detected: LegacyDeviceIdentityDetection): boolean {
   return (
     pathMayExistSync(detected.claimPath) ||
     pathMayExistSync(detected.nativeClaimPath) ||
-    pathMayExistSync(detected.sourcePath)
+    pathMayExistSync(detected.sourcePath) ||
+    listLegacyMigrationSourceCopies(detected.sourcePath).length > 0
   );
 }
 

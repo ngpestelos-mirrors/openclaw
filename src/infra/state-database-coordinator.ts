@@ -1,5 +1,6 @@
 // Coordinates Gateway presence and shared-state lifecycle operations outside removable state.
 import { AsyncLocalStorage } from "node:async_hooks";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { MessagePort } from "node:worker_threads";
@@ -91,9 +92,12 @@ export function resolveStateLifecycleRuntimeDirectory(): string {
   if (captured !== undefined) {
     return captured.directory;
   }
+  // Preserve the shipped coordinator namespace; stock Termux has no /tmp.
   return process.platform === "win32"
     ? path.join(os.homedir(), "AppData", "Local", "OpenClaw", "locks")
-    : "/tmp";
+    : fs.existsSync("/tmp")
+      ? "/tmp"
+      : os.tmpdir();
 }
 
 /** Capture the directory owner's retention policy before crossing an async or worker boundary. */

@@ -1,20 +1,19 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { Root } from "@openclaw/fs-safe";
-import { createDirectorySync } from "@openclaw/fs-safe/advanced";
+import { assertDirectoryIdentitySync, createDirectorySync } from "@openclaw/fs-safe/advanced";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { pinDirectory, requireDirectorySync } from "./directory-durability.js";
+import { hasErrnoCode } from "./errno.js";
 import {
   copyFileHandle,
   hashFileDescriptorSync,
   sameFileMutationFingerprint,
 } from "./file-descriptor.js";
-import { assertDirectoryIdentitySync } from "./fs-safe-advanced.js";
 
 export type LegacyMigrationSourceCopy = {
-  readonly recoveryPath?: string;
   verify(): Promise<void>;
   removeSource(removeSource?: (sourcePath: string) => Promise<void> | void): Promise<void>;
   discard(): Promise<void>;
@@ -67,6 +66,93 @@ function hashGeneration(filePath: string, expected: fs.BigIntStats, maxBytes: nu
     return content.sha256;
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+/** Discover recovery artifacts only; the import owner must authorize their removal. */
+export function listLegacyMigrationSourceCopies(sourcePath: string): string[] {
+  const parent = path.dirname(sourcePath);
+  try {
+    return fs
+      .readdirSync(parent)
+      .filter((name) =>
+        /^\.doctor-source-copy-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(name),
+      )
+      .map((name) => path.join(parent, name));
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT")) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+/** Retire a stranded copy only while its receipt and canonical data remain verified. */
+export async function cleanupLegacyMigrationSourceCopy(params: {
+  stateRoot: Root;
+  directory: string;
+  verify: (buffer: Buffer, sha256: string) => void;
+}): Promise<void> {
+  const root = params.stateRoot;
+  const parent = await pinDirectory(await root.resolve(path.dirname(params.directory)));
+  try {
+    const parentIdentity = fs.lstatSync(parent.receipt.realPath, { bigint: true });
+    await parent.assertCurrent();
+    const stagePath = await root.resolve(params.directory);
+    const stageIdentity = fs.lstatSync(stagePath, { bigint: true });
+    const assertPrivate = (stat: fs.BigIntStats) => {
+      if (
+        (typeof process.getuid === "function" && stat.uid !== BigInt(process.getuid())) ||
+        (stat.mode & 0o077n) !== 0n
+      ) {
+        mismatch("recovery material is not privately owned");
+      }
+    };
+    const assertStage = () => {
+      assertDirectoryIdentitySync(parent.receipt.path, {
+        ...parentIdentity,
+        realPath: parent.receipt.realPath,
+      });
+      assertDirectoryIdentitySync(stagePath, { ...stageIdentity, realPath: stagePath });
+      assertPrivate(fs.lstatSync(stagePath, { bigint: true }));
+    };
+    assertStage();
+    const entries = fs.readdirSync(stagePath);
+    if (entries.length > 0) {
+      if (entries.length !== 1 || entries[0] !== "payload") {
+        mismatch("recovery directory contains incomplete or unknown material");
+      }
+      const relativePayload = path.join(params.directory, "payload");
+      const payloadPath = path.join(stagePath, "payload");
+      const identity = fs.lstatSync(payloadPath, { bigint: true });
+      assertFile(payloadPath, identity);
+      assertPrivate(identity);
+      const { buffer } = await root.read(relativePayload, {
+        hardlinks: "reject",
+        symlinks: "reject",
+      });
+      const sha256 = createHash("sha256").update(buffer).digest("hex");
+      const assertPayload = () => {
+        assertStage();
+        if (hashGeneration(payloadPath, identity, buffer.length) !== sha256) {
+          mismatch("recovery payload changed");
+        }
+        params.verify(buffer, sha256);
+      };
+      assertPayload();
+      await root.remove(relativePayload, { assertBeforeMutation: assertPayload });
+    }
+    await root.remove(params.directory, {
+      assertBeforeMutation: () => {
+        assertStage();
+        if (fs.readdirSync(stagePath).length !== 0) {
+          mismatch("recovery directory is not empty");
+        }
+      },
+    });
+    requireDirectorySync(await parent.sync(), "Legacy migration copy recovery directory");
+  } finally {
+    await parent.close();
   }
 }
 
@@ -253,7 +339,6 @@ export async function prepareLegacyMigrationSourceCopy(params: {
       discarded = true;
     };
     const copy: LegacyMigrationSourceCopy = {
-      recoveryPath,
       async verify() {
         await checkLogicalSource();
         assertCopies();

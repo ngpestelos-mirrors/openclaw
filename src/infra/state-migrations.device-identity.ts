@@ -38,6 +38,10 @@ import {
   type LegacyMigrationReceipt,
 } from "./state-migrations.receipts.js";
 import {
+  cleanupLegacyMigrationSourceCopy,
+  listLegacyMigrationSourceCopies,
+} from "./state-migrations.source-copy.js";
+import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceSnapshotsMatch as snapshotsMatch,
   readLegacyMigrationSourceSnapshot,
@@ -76,7 +80,10 @@ type LegacySourceSnapshot = LegacyMigrationSourceSnapshot & {
   identity: NormalizedLegacyDeviceIdentity;
 };
 
-export { detectLegacyDeviceIdentity } from "./state-migrations.device-identity-repair.js";
+export {
+  detectLegacyDeviceIdentity,
+  legacyDeviceIdentitySourcePaths,
+} from "./state-migrations.device-identity-repair.js";
 
 function relativeLegacyPath(stateDir: string, filePath: string): string {
   return resolveLegacyMigrationRelativePath(stateDir, filePath, "device identity", false);
@@ -326,12 +333,48 @@ async function cleanupReceiptSources(params: {
       warnings.push(`Retired device identity cleanup failed for ${candidate}: ${String(error)}`);
     }
   }
+  let removedCopies = 0;
+  for (const directory of listLegacyMigrationSourceCopies(params.detected.sourcePath)) {
+    try {
+      await cleanupLegacyMigrationSourceCopy({
+        stateRoot: params.stateRoot,
+        directory: relativeLegacyPath(params.stateDir, directory),
+        verify: (buffer, sha256) => {
+          if (sha256 !== params.receipt.sourceSha256) {
+            throw new Error("staged copy differs from the device identity migration receipt");
+          }
+          const identity = normalizeLegacyDeviceIdentity(JSON.parse(utf8Decoder.decode(buffer)));
+          if (!identity) {
+            throw new Error("staged device identity is invalid or unsupported");
+          }
+          verifyCanonicalIdentity(identity, params.env);
+        },
+      });
+      removedCopies += 1;
+    } catch (error) {
+      const message = `Interrupted device identity copy cleanup preserved ${directory}: ${String(error)}`;
+      try {
+        if (readStoredDeviceIdentityReadOnly({ env: params.env, identityKey: IDENTITY_KEY })) {
+          notices.push(`${message}; the canonical SQLite identity remains authoritative.`);
+          continue;
+        }
+      } catch {
+        // Invalid canonical state still needs a readiness-blocking warning.
+      }
+      warnings.push(message);
+    }
+  }
+  if (removedCopies > 0) {
+    changes.push(
+      "Removed interrupted private device identity copies covered by the verified SQLite import.",
+    );
+  }
   // A divergent preserved claim cannot complete its interrupted receipt unless
   // receipt-covered original bytes were actually removed during this pass.
   if (
     warnings.length === 0 &&
-    (!params.receipt.removedSource || removed > 0) &&
-    (notices.length === 0 || removed > 0)
+    (!params.receipt.removedSource || removed > 0 || removedCopies > 0) &&
+    (notices.length === 0 || removed > 0 || removedCopies > 0)
   ) {
     markLegacyMigrationSourceRemoved(params.receipt.sourceKey, params.env);
   }
@@ -398,7 +441,15 @@ async function migrateWithExclusiveStateOwnership(params: {
       ? params.detected.claimPath
       : null;
   if (!activePath) {
-    return { changes: [], warnings: [] };
+    return {
+      changes: [],
+      warnings:
+        listLegacyMigrationSourceCopies(params.detected.sourcePath).length > 0
+          ? [
+              "Preserved interrupted device identity copies without a verified migration receipt. Inspect the identity directory before retrying Doctor.",
+            ]
+          : [],
+    };
   }
 
   let snapshot: LegacySourceSnapshot;

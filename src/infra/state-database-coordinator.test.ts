@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,20 @@ import {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("state database coordinator", () => {
+  it.each([true, false])("uses the platform temp root only when /tmp is absent (%s)", (hasTmp) => {
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    const exists = vi.spyOn(fsSync, "existsSync").mockReturnValue(hasTmp);
+    const temporary = vi.spyOn(os, "tmpdir").mockReturnValue("/termux/tmp");
+    try {
+      expect(resolveStateLifecycleRuntimeDirectory()).toBe(hasTmp ? "/tmp" : "/termux/tmp");
+      expect(exists).toHaveBeenCalledWith("/tmp");
+    } finally {
+      temporary.mockRestore();
+      exists.mockRestore();
+      platform.mockRestore();
+    }
+  });
+
   it("retains final-reference cleanup without treating its rolled-back handle as ownership", () => {
     const root = tempDirs.make("openclaw-coordinator-reference-retry-");
     const params = { databasePath: path.join(root, "state.sqlite"), runtimeDirectory: root };

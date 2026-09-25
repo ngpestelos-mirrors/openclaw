@@ -15,6 +15,7 @@ import {
   type NormalizedLegacyDeviceIdentity,
 } from "./device-identity-legacy.js";
 import { deriveDeviceIdFromPublicKey } from "./device-identity.js";
+import * as durability from "./directory-durability.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import {
   executeSqliteQuerySync,
@@ -750,6 +751,77 @@ describe.each(["auto", "off"])("legacy device identity Doctor migration (native=
     expect(fs.existsSync(`${sourcePath}.doctor-importing`)).toBe(false);
     expect(receipt(env)).toMatchObject({ removed_source: 1 });
   });
+
+  if (mode === "off") {
+    it.each([false, true])(
+      "cleans an interrupted private copy on the next Doctor run (modified=%s)",
+      async (modified) => {
+        const { env, stateDir } = useStateDir();
+        const sourcePath = await writeLegacy({ stateDir });
+        const original = await fsp.readFile(sourcePath);
+        const listCopies = () =>
+          fs
+            .readdirSync(path.dirname(sourcePath))
+            .filter((name) => name.startsWith(".doctor-source-copy-"))
+            .map((name) => path.join(path.dirname(sourcePath), name));
+        vi.spyOn(fsp, "link").mockRejectedValue(
+          Object.assign(new Error("Android denied the hardlink"), {
+            code: "EACCES",
+            syscall: "link",
+          }),
+        );
+        const requireSync = durability.requireDirectorySync;
+        const failedSync = vi
+          .spyOn(durability, "requireDirectorySync")
+          .mockImplementation((outcome, label) => {
+            if (label === "Legacy migration source directory" && !fs.existsSync(sourcePath)) {
+              throw new Error("directory sync failed after original removal");
+            }
+            requireSync(outcome, label);
+          });
+
+        const first = await migrate(stateDir, env);
+        expect(first.warnings.join("\n")).toContain("directory sync failed after original removal");
+        expect(fs.existsSync(sourcePath)).toBe(false);
+        const copies = listCopies();
+        expect(copies).toHaveLength(1);
+        const directory = copies[0];
+        if (!directory) {
+          throw new Error("Expected the interrupted private identity copy");
+        }
+        const payload = path.join(directory, "payload");
+        expect(await fsp.readFile(payload)).toEqual(original);
+        const canonical = identityRow(env);
+        expect(canonical?.device_id).toBe(SWIFT_RAW_DEVICE_ID);
+        expect(receipt(env)?.removed_source).toBe(0);
+        failedSync.mockRestore();
+        closeOpenClawStateDatabaseForTest();
+
+        if (modified) {
+          await fsp.writeFile(payload, "changed recovery material");
+          const refused = await migrate(stateDir, env);
+          expect(refused.warnings).toEqual([]);
+          expect(refused.notices?.join("\n")).toContain(
+            "differs from the device identity migration receipt",
+          );
+          expect(await fsp.readFile(payload, "utf8")).toBe("changed recovery material");
+          expect(identityRow(env)).toEqual(canonical);
+          await fsp.writeFile(payload, original);
+          closeOpenClawStateDatabaseForTest();
+        }
+
+        const retry = await migrate(stateDir, env);
+        expect(retry.warnings).toEqual([]);
+        expect(retry.changes).toEqual([
+          "Removed interrupted private device identity copies covered by the verified SQLite import.",
+        ]);
+        expect(listCopies()).toEqual([]);
+        expect(identityRow(env)).toEqual(canonical);
+        expect(receipt(env)?.removed_source).toBe(1);
+        expect((await migrate(stateDir, env)).changes).toEqual([]);
+      },
+    );
+  }
 
   it("preserves a divergent recreated identity as a boot-safe notice while the canonical row is valid", async () => {
     const { env, stateDir } = useStateDir();

@@ -5,6 +5,10 @@ import path from "node:path";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { requireDirectorySync, syncDirectory } from "../infra/directory-durability.js";
 import {
+  isUnpublishedDeferredSessionMove,
+  withdrawUnpublishedMigrationMoves,
+} from "../infra/session-sqlite-migration-archive-deferral.js";
+import {
   isPendingMigrationArtifactClaim,
   moveMigrationArtifact,
   readMigrationArtifactIdentity,
@@ -314,6 +318,27 @@ export async function retireSessionSqliteRecovery(params: {
           }
         }
       }
+      // After the same confirmation and currentness checks, retire only unpublished
+      // intentions backed by completed imports. No original is moved or disposed.
+      const withdrawn = new Set<string>();
+      for (const [archivePath, refs] of references) {
+        if (
+          !refs.every(
+            (ref) => ref.trusted && isUnpublishedDeferredSessionMove(ref.run, ref.move, params.env),
+          )
+        ) {
+          continue;
+        }
+        for (const run of new Set(refs.map((ref) => ref.run))) {
+          authority.assertCurrent();
+          withdrawUnpublishedMigrationMoves(
+            run,
+            refs.filter((ref) => ref.run === run).map((ref) => ref.move),
+          );
+        }
+        withdrawn.add(archivePath);
+      }
+      report.artifacts = report.artifacts.filter((item) => !withdrawn.has(item.path));
       await disposeRecoveryArtifacts({
         selected,
         references,

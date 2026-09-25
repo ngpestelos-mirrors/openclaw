@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Root } from "@openclaw/fs-safe";
 import { readRegularFileSync } from "@openclaw/fs-safe/advanced";
+import { getFsSafeNativeConfig } from "@openclaw/fs-safe/config";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
 import {
   pinDirectory,
@@ -11,7 +12,6 @@ import {
   type PinnedDirectory,
 } from "./directory-durability.js";
 import { hasErrnoCode, isErrno } from "./errno.js";
-import { getFsSafeNativeConfig } from "./fs-safe-defaults.js";
 import { pathMayExistSync } from "./path-existence.js";
 import {
   prepareLegacyMigrationSourceCopy,
