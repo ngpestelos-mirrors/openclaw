@@ -1782,6 +1782,55 @@ describe("openclaw launcher", () => {
     },
   );
 
+  it("finishes a packaged command while compile-cache maintenance is stalled", async () => {
+    const fixtureRoot = await makeLauncherFixture(fixtures);
+    const marker = path.join(fixtureRoot, "maintenance-started");
+    const preload = path.join(fixtureRoot, "stall-cache.mjs");
+    await fs.writeFile(
+      preload,
+      [
+        'import fs from "node:fs/promises";',
+        'import path from "node:path";',
+        'import { writeFileSync } from "node:fs";',
+        "const lstat = fs.lstat;",
+        "fs.lstat = function (target, ...args) {",
+        '  if (path.basename(String(target)) === "openclaw") {',
+        `    writeFileSync(${JSON.stringify(marker)}, "started");`,
+        "    return new Promise(() => setInterval(() => {}, 1000));",
+        "  }",
+        "  return lstat.call(this, target, ...args);",
+        "};",
+      ].join("\n"),
+    );
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "entry.js"),
+      [
+        'import { existsSync } from "node:fs";',
+        "await new Promise((resolve) => {",
+        "  const poll = setInterval(() => {",
+        `    if (existsSync(${JSON.stringify(marker)})) {`,
+        "      clearInterval(poll);",
+        "      resolve();",
+        "    }",
+        "  }, 10);",
+        "});",
+        'process.stdout.write("command-completed");',
+      ].join("\n"),
+    );
+    const result = spawnSync(testNodeExecPath, [path.join(fixtureRoot, "openclaw.mjs")], {
+      cwd: fixtureRoot,
+      env: launcherEnv({
+        NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+        NODE_COMPILE_CACHE: path.join(fixtureRoot, ".node-compile-cache"),
+      }),
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    expect(result.stdout).toBe("command-completed");
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+  });
+
   it("scopes packaged launcher compile cache inside configured cache roots", async () => {
     const fixtureRoot = await makeLauncherFixture(fixtures);
     await fs.writeFile(path.join(fixtureRoot, "package.json"), '{"version":"2026.4.29"}\n');

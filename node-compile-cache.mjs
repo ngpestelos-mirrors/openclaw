@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { isMainThread, Worker, workerData } from "node:worker_threads";
 
 const MAX_BYTES = 512 * 1024 * 1024;
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -52,7 +53,16 @@ export async function maintainOpenClawCompileCache(directory) {
   if (pending.has(directory)) {
     return pending.get(directory);
   }
-  const task = maintain(directory)
+  const task = new Promise((resolve) => {
+    const worker = new Worker(new URL(import.meta.url), {
+      workerData: { openclawCompileCacheDirectory: directory },
+    });
+    worker.on("error", () => {});
+    worker.once("exit", () => resolve());
+    // Callers can await completed cleanup, but unawaited cache work must not
+    // extend a command's lifetime. A Promise alone does not keep Node alive.
+    worker.unref();
+  })
     .catch(() => {
       // Disposable bytecode must never prevent startup or command completion.
     })
@@ -125,4 +135,10 @@ async function maintain(directory) {
       bytes -= file.size;
     }
   }
+}
+
+if (!isMainThread && typeof workerData?.openclawCompileCacheDirectory === "string") {
+  void maintain(workerData.openclawCompileCacheDirectory).catch(() => {
+    // Disposable bytecode cleanup is best-effort inside the worker too.
+  });
 }
