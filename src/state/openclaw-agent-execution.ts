@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { formatErrorMessage } from "../infra/errors.js";
+import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import { retainSqliteWorkerErrorCode } from "../infra/sqlite-worker-contract.js";
 import {
   assertExistingDatabaseIdentity,
@@ -76,7 +77,6 @@ const executionState = resolveGlobalSingleton<{
   idle?: ExecutionOwner;
 }>(Symbol.for("openclaw.agentDatabaseExecutionOwners"), () => ({ owners: new Map() }));
 const executions = executionState.owners;
-const IDLE_EXECUTION_MS = 60_000;
 const runInExecutionOwnerContext = AsyncLocalStorage.snapshot();
 
 /** These native-only scopes still need their complete owning caller cutover. */
@@ -488,7 +488,7 @@ export function captureOpenClawAgentDatabaseExecution(
                     return;
                   }
                   void owner.closeIdle().catch(reportCleanupFailure);
-                }, IDLE_EXECUTION_MS),
+                }, SQLITE_IDLE_HANDLE_TTL_MS),
               );
               idleTimer = timer;
               timer.unref();
