@@ -161,8 +161,8 @@ export async function publishMaintenanceArchivesInWorker(
     options,
     () =>
       publishSessionStateArchives(scope, requested, {
-        prepare: (archives) =>
-          run((worker) =>
+        prepare: async (archives) => {
+          const plans = await run((worker) =>
             worker.execute({
               type: "session.archives.preparePublication",
               input: {
@@ -170,7 +170,11 @@ export async function publishMaintenanceArchivesInWorker(
                 requested: archives,
               },
             }),
-          ),
+          );
+          assertCurrent();
+          // The file worker must read the same physical database as metadata preparation.
+          return plans.map((plan) => ({ ...plan, databaseIdentity }));
+        },
         record: (results) =>
           run((worker) =>
             worker.execute({
