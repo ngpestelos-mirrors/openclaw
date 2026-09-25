@@ -38,24 +38,17 @@ describe("registered sessions_spawn binding discovery", () => {
         disablePluginTools: true,
       }).find((candidate) => candidate.name === "sessions_spawn");
       expect(tool).toBeDefined();
-      expect(tool?.parameters).toMatchObject({
-        properties: { mode: { enum: available ? ["run", "session"] : ["run"] } },
-      });
-      if (available) {
-        expect(tool?.parameters).toHaveProperty("properties.thread.type", "boolean");
-      } else {
-        expect(tool?.parameters).not.toHaveProperty("properties.thread");
-      }
+      // Agent-started subagents never bind a conversation, whatever the channel offers.
+      expect(tool?.parameters).toMatchObject({ properties: { mode: { enum: ["run"] } } });
+      expect(tool?.parameters).not.toHaveProperty("properties.thread");
       const capabilities = collectRuntimeChannelCapabilities({
         cfg: config,
         channel: "binding-chat",
       });
+      expect(capabilities ?? []).not.toContain("threadbound-subagent-spawn");
       if (available) {
-        expect(capabilities).toEqual(
-          expect.arrayContaining(["threadbound-subagent-spawn", "threadbound-acp-spawn"]),
-        );
+        expect(capabilities).toContain("threadbound-acp-spawn");
       } else {
-        expect(capabilities ?? []).not.toContain("threadbound-subagent-spawn");
         expect(capabilities ?? []).not.toContain("threadbound-acp-spawn");
       }
     },

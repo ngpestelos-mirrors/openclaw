@@ -243,49 +243,6 @@ export async function loadSubagentSpawnModuleForTest(params: {
     cfg?: Record<string, unknown>;
     sessionKey?: string;
   }) => { sandboxed: boolean };
-  getSessionBindingService?: () => {
-    getCapabilities?: (params: { channel?: string; accountId?: string }) => {
-      adapterAvailable: boolean;
-      bindSupported: boolean;
-      placements: Array<"current" | "child">;
-    };
-    bind?: (params: {
-      targetSessionKey: string;
-      targetKind?: string;
-      conversation: {
-        channel: string;
-        accountId?: string;
-        conversationId: string;
-        parentConversationId?: string;
-      };
-      placement: "current" | "child";
-      metadata?: Record<string, unknown>;
-    }) => Promise<{
-      targetSessionKey: string;
-      targetKind?: string;
-      status?: string;
-      conversation: {
-        channel: string;
-        accountId?: string;
-        conversationId: string;
-        parentConversationId?: string;
-      };
-    }>;
-    listBySession: (targetSessionKey: string) => Array<{
-      status?: string;
-      conversation: {
-        channel: string;
-        accountId?: string;
-        conversationId: string;
-        parentConversationId?: string;
-      };
-    }>;
-  };
-  resolveConversationDeliveryTarget?: (params: {
-    channel?: string;
-    conversationId?: string | number;
-    parentConversationId?: string | number;
-  }) => { to?: string; threadId?: string };
   workspaceDir?: string;
   sessionStorePath?: string;
   resetModules?: boolean;
@@ -419,33 +376,6 @@ export async function loadSubagentSpawnModuleForTest(params: {
       });
       return updated ?? null;
     },
-    getSessionBindingService:
-      params.getSessionBindingService ??
-      (() => ({
-        getCapabilities: () => ({
-          adapterAvailable: false,
-          bindSupported: false,
-          placements: [],
-        }),
-        bind: async () => {
-          throw new Error("session binding adapter unavailable");
-        },
-        listBySession: () => [],
-      })),
-    resolveConversationDeliveryTarget:
-      params.resolveConversationDeliveryTarget ??
-      ((targetParams: { channel?: string; conversationId?: string | number }) => ({
-        to: targetParams.conversationId
-          ? `channel:${String(targetParams.conversationId)}`
-          : undefined,
-      })),
-    mergeDeliveryContext: (
-      primary?: Record<string, unknown>,
-      fallback?: Record<string, unknown>,
-    ) => ({
-      ...fallback,
-      ...primary,
-    }),
     resolveGatewaySessionStoreTarget: (targetParams: { key: string }) => ({
       agentId: "main",
       storePath: params.sessionStorePath ?? "/tmp/subagent-spawn-model-session.json",

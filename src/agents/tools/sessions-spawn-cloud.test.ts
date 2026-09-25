@@ -134,7 +134,6 @@ describe("visible session placement and authority", () => {
         expect.objectContaining({
           task: request.task,
           cwd: request.cwd,
-          mode: "run",
           completionTarget: "parent",
           expectsCompletionMessage: true,
         }),

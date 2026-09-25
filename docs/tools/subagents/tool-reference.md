@@ -9,10 +9,9 @@ read_when:
 
 ## Context modes
 
-Non-thread native sub-agents start isolated unless the caller explicitly asks
-to fork the current transcript. Thread-bound spawns follow
-`threadBindings.defaultSpawnContext`, which defaults to `fork`. Pass
-`context: "isolated"` explicitly when the child must start with clean context.
+Native sub-agents start isolated unless the caller explicitly asks to fork the
+current transcript. Pass `context: "isolated"` explicitly when the child must
+start with clean context.
 
 | Mode       | When to use it                                                                                                                         | Behavior                                                                                |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -182,11 +181,10 @@ In either mode, internal QA, research, coding, review, and test lanes use ordina
   Override thinking level for the sub-agent run. Not available with `visible: true`.
 </ParamField>
 <ParamField path="thread" type="boolean" default="false">
-  When `true`, requests channel thread binding for this sub-agent session.
+  ACP only. Native sub-agents never bind a chat thread or conversation. A sub-agent request with `thread: true` still succeeds: the child runs unbound in the background, its result returns to the requester, and the result `note` says that thread binding is not available.
 </ParamField>
 <ParamField path="mode" type='"run" | "session"' default="run">
-  If `thread: true` and `mode` is omitted, default becomes `session`. `mode: "session"` requires `thread: true`.
-  If thread binding is unavailable for the requester channel, use `mode: "run"` instead.
+  Native sub-agents always run as `"run"`. A sub-agent request with `mode: "session"` runs as a one-shot unbound run and says so in the result `note`. `mode: "session"` applies to ACP with `thread: true`.
   With `visible: true`, omit `mode` or use the default `"run"`; the visible session remains persistent. `mode: "session"` is unavailable on this path.
 </ParamField>
 <ParamField path="cleanup" type='"delete" | "keep"' default="keep">
@@ -196,13 +194,13 @@ In either mode, internal QA, research, coding, review, and test lanes use ordina
   Set `false` for fire-and-forget children. When the child finishes, OpenClaw skips the completion handoff to the requester (no announce or steer turn), records the delivery as not required, and still runs child cleanup. Inspect such children with `subagents` or `sessions_history`. `collect: true` always uses `false`.
 </ParamField>
 <ParamField path="completionTarget" type='"parent"'>
-  Return the result in a private requester turn with no automatic channel delivery. The parent may continue work or remain silent. Supported only for hidden native `mode: "run"` children; unavailable with ACP, `collect`, `visible`, `thread`, session mode, or `expectsCompletionMessage: false`. Omit to keep normal completion delivery. See [Private parent completion](/tools/subagents/announce#private-parent-completion).
+  Return the result in a private requester turn with no automatic channel delivery. The parent may continue work or remain silent. Supported only for hidden native children; unavailable with ACP, `collect`, `visible`, or `expectsCompletionMessage: false`. Omit to keep normal completion delivery. See [Private parent completion](/tools/subagents/announce#private-parent-completion).
 </ParamField>
 <ParamField path="sandbox" type='"inherit" | "require"' default="inherit">
   `require` rejects the spawn unless the target child runtime is sandboxed.
 </ParamField>
 <ParamField path="context" type='"isolated" | "fork"'>
-  `fork` branches the requester's current transcript into the child session, including the in-progress user turn and completed tool results. The requester can keep running while its visible or hidden child starts. Native sub-agents only. Non-thread spawns default to `isolated`; thread-bound spawns follow `threadBindings.defaultSpawnContext`, which defaults to `fork`. Pass `isolated` explicitly to guarantee clean context. All native forks, hidden or visible, must target the same agent as the requester.
+  `fork` branches the requester's current transcript into the child session, including the in-progress user turn and completed tool results. The requester can keep running while its visible or hidden child starts. Native sub-agents only. Omitted context is `isolated`. All native forks, hidden or visible, must target the same agent as the requester.
   Codex-backed forked children receive completed tool output with secrets redacted and historical tool inputs summarized. Context size limits still apply.
 </ParamField>
 <ParamField path="visible" type="boolean" default="false">

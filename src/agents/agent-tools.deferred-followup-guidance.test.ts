@@ -321,8 +321,8 @@ describe("createOpenClawCodingTools availability guidance", () => {
       {
         name: "sessions_spawn",
         description: describeSessionsSpawnTool({
-          acpAvailable: false,
-          threadAvailable: true,
+          acpAvailable: true,
+          acpThreadAvailable: true,
           sessionToolsVisibility: "self",
           swarmEnabled: true,
         }),
@@ -337,7 +337,6 @@ describe("createOpenClawCodingTools availability guidance", () => {
     expect(tool?.description).not.toContain("subagents");
     expect(tool?.description).toContain("persistent/thread-bound");
     expect(tool?.description).toContain("(self: current session only)");
-    expect(tool?.description).not.toContain('runtime="acp"');
     // Transcript access alone does not expose execution/delivery diagnostics.
     expect(tool?.description).not.toContain("When diagnosing a missing result");
   });

@@ -73,83 +73,10 @@ export function resolveSpawnChannelAccountId(params: {
   return normalizeOptionalString(channels?.[channel]?.defaultAccount) ?? "default";
 }
 
-function resolveRequesterBoundConversationRef(params: {
-  bindingService: SessionBindingService;
-  requesterSessionKey?: string;
-  channel: string;
-  accountId: string;
-  fallback?: { conversationId: string; parentConversationId?: string } | null;
-}): { conversationId: string; parentConversationId?: string } | null | undefined {
-  const requesterSessionKey = normalizeOptionalString(params.requesterSessionKey);
-  if (!requesterSessionKey) {
-    return undefined;
-  }
-  const activeBindings = params.bindingService
-    .listBySession(requesterSessionKey)
-    .filter(
-      (record) =>
-        record.status !== "ended" &&
-        record.conversation.channel === params.channel &&
-        (record.conversation.accountId ?? params.accountId) === params.accountId,
-    );
-  if (activeBindings.length === 0) {
-    return undefined;
-  }
-  if (activeBindings.length === 1) {
-    const conversation = activeBindings[0]?.conversation;
-    return conversation
-      ? {
-          conversationId: conversation.conversationId,
-          ...(conversation.parentConversationId
-            ? { parentConversationId: conversation.parentConversationId }
-            : {}),
-        }
-      : undefined;
-  }
-  if (!params.fallback?.conversationId) {
-    return null;
-  }
-  const matched = activeBindings.filter(
-    (record) =>
-      record.conversation.conversationId === params.fallback?.conversationId &&
-      normalizeOptionalString(record.conversation.parentConversationId) ===
-        normalizeOptionalString(params.fallback?.parentConversationId),
-  );
-  const conversation = matched.length === 1 ? matched[0]?.conversation : undefined;
-  return conversation
-    ? {
-        conversationId: conversation.conversationId,
-        ...(conversation.parentConversationId
-          ? { parentConversationId: conversation.parentConversationId }
-          : {}),
-      }
-    : null;
-}
-
-function buildThreadBindingUnavailableError(kind: SpawnBackendKind, mode: SpawnMode): string {
-  if (kind === "acp") {
-    return "thread=true for ACP sessions requires a channel context.";
-  }
-  if (mode === "session") {
-    return (
-      'sessions_spawn(mode="session") is only available on channels that expose thread bindings (e.g. Discord threads, Slack threads, Telegram forum topics). ' +
-      "This request is not running on a channel that can bind a subagent thread. " +
-      'Use mode="run" for one-shot subagent work.'
-    );
-  }
-  return (
-    "thread=true is only available on channels that expose thread bindings (e.g. Discord threads, Slack threads, Telegram forum topics). " +
-    "This request is not running on a channel that can bind a subagent thread. " +
-    "Retry without thread=true, or re-run sessions_spawn from a channel that supports threads."
-  );
-}
-
+/** Prepares the conversation binding for an ACP spawn that requested thread=true. */
 export function prepareSpawnThreadBinding(params: {
   cfg: OpenClawConfig;
-  kind: SpawnBackendKind;
-  mode: SpawnMode;
   bindingService: SessionBindingService;
-  requesterSessionKey?: string;
   channel?: string;
   accountId?: string;
   to?: string;
@@ -158,7 +85,7 @@ export function prepareSpawnThreadBinding(params: {
 }): { ok: true; binding: PreparedSpawnThreadBinding } | { ok: false; error: string } {
   const channel = normalizeOptionalLowercaseString(params.channel);
   if (!channel) {
-    return { ok: false, error: buildThreadBindingUnavailableError(params.kind, params.mode) };
+    return { ok: false, error: "thread=true for ACP sessions requires a channel context." };
   }
   const accountId = resolveSpawnChannelAccountId({
     cfg: params.cfg,
@@ -169,40 +96,20 @@ export function prepareSpawnThreadBinding(params: {
     cfg: params.cfg,
     channel,
     accountId,
-    kind: params.kind,
+    kind: "acp",
   });
   if (!policy.enabled) {
-    return {
-      ok: false,
-      error: formatThreadBindingDisabledError({
-        channel: policy.channel,
-        accountId: policy.accountId,
-        kind: params.kind,
-      }),
-    };
+    return { ok: false, error: formatThreadBindingDisabledError({ ...policy, kind: "acp" }) };
   }
   if (!policy.spawnEnabled) {
-    return {
-      ok: false,
-      error: formatThreadBindingSpawnDisabledError({
-        channel: policy.channel,
-        accountId: policy.accountId,
-        kind: params.kind,
-      }),
-    };
+    return { ok: false, error: formatThreadBindingSpawnDisabledError({ ...policy, kind: "acp" }) };
   }
   const capabilities = params.bindingService.getCapabilities({
     channel: policy.channel,
     accountId: policy.accountId,
   });
   if (!capabilities.adapterAvailable) {
-    return {
-      ok: false,
-      error:
-        params.kind === "acp"
-          ? `Thread bindings are unavailable for ${policy.channel}.`
-          : buildThreadBindingUnavailableError(params.kind, params.mode),
-    };
+    return { ok: false, error: `Thread bindings are unavailable for ${policy.channel}.` };
   }
   const placement =
     resolveChannelDefaultBindingPlacement(policy.channel) ??
@@ -213,7 +120,7 @@ export function prepareSpawnThreadBinding(params: {
       error: `Thread bindings do not support ${placement} placement for ${policy.channel}.`,
     };
   }
-  const fallback = resolveInboundConversationResolution({
+  const conversation = resolveInboundConversationResolution({
     cfg: params.cfg,
     channel: policy.channel,
     accountId: policy.accountId,
@@ -221,27 +128,10 @@ export function prepareSpawnThreadBinding(params: {
     threadId: params.threadId,
     groupId: params.groupId,
   });
-  const requesterConversation =
-    params.kind === "subagent"
-      ? resolveRequesterBoundConversationRef({
-          bindingService: params.bindingService,
-          requesterSessionKey: params.requesterSessionKey,
-          channel: policy.channel,
-          accountId: policy.accountId,
-          fallback,
-        })
-      : undefined;
-  if (requesterConversation === null) {
-    return {
-      ok: false,
-      error: `Could not resolve a unique ${policy.channel} requester conversation for subagent thread spawn.`,
-    };
-  }
-  const conversation = requesterConversation ?? fallback;
   if (!conversation?.conversationId) {
     return {
       ok: false,
-      error: `Could not resolve a ${policy.channel} conversation for ${params.kind} thread spawn.`,
+      error: `Could not resolve a ${policy.channel} conversation for acp thread spawn.`,
     };
   }
   return {

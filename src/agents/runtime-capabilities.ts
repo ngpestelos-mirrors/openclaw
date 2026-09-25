@@ -13,7 +13,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
 import { resolveChannelPromptCapabilities } from "./channel-tools.js";
 
-const THREAD_BOUND_SUBAGENT_SPAWN_CAPABILITY = "threadbound-subagent-spawn";
 const THREAD_BOUND_ACP_SPAWN_CAPABILITY = "threadbound-acp-spawn";
 
 function mergeRuntimeCapabilities(
@@ -48,22 +47,18 @@ export function collectRuntimeChannelCapabilities(params: {
   // This capability is core-owned because webchat has no channel plugin.
   const internalChannelCapabilities =
     params.channel === INTERNAL_MESSAGE_CHANNEL ? ["markdownDetails"] : [];
+  // Only ACP spawns can bind a conversation; agent-started subagents always run unbound.
   const threadSpawnCapabilities: string[] = [];
   if (params.cfg && supportsThreadBindingSpawn(params.channel)) {
-    for (const [kind, capability] of [
-      ["subagent", THREAD_BOUND_SUBAGENT_SPAWN_CAPABILITY],
-      ["acp", THREAD_BOUND_ACP_SPAWN_CAPABILITY],
-    ] as const) {
-      const policy = resolveThreadBindingSpawnPolicy({
-        cfg: params.cfg,
-        channel: params.channel,
-        accountId: params.accountId ?? undefined,
-        kind,
-      });
-      if (policy.enabled && policy.spawnEnabled) {
-        // Thread-bound spawn is only advertised when both policy gates are enabled.
-        threadSpawnCapabilities.push(capability);
-      }
+    const policy = resolveThreadBindingSpawnPolicy({
+      cfg: params.cfg,
+      channel: params.channel,
+      accountId: params.accountId ?? undefined,
+      kind: "acp",
+    });
+    if (policy.enabled && policy.spawnEnabled) {
+      // Thread-bound spawn is only advertised when both policy gates are enabled.
+      threadSpawnCapabilities.push(THREAD_BOUND_ACP_SPAWN_CAPABILITY);
     }
   }
   const channelPromptCapabilities = params.cfg ? resolveChannelPromptCapabilities(params) : [];

@@ -67,14 +67,13 @@ read_when:
   </Accordion>
 
   <Accordion title="How do thread-bound subagent sessions work on Discord?">
-    Bind a Discord thread to a subagent or session target so follow-up messages there stay on that bound session.
+    Agent-started subagents never bind a thread or take over a chat. They run in the background and their result returns to the agent that started them. Only user commands, such as `/acp spawn --bind here` or `--thread auto`, bind a conversation to another session.
 
-    - Spawn with `sessions_spawn` using `thread: true` (optionally `mode: "session"` for persistent follow-up).
     - `/agents` inspects binding state.
     - `/session idle <duration|off>` and `/session max-age <duration|off>` control automatic expiry.
     - `/session unbind` detaches the thread without closing the agent session.
 
-    Config: `session.threadBindings.enabled` (global switch), `session.threadBindings.idleHours` (default `24`, `0` disables), `session.threadBindings.maxAgeHours` (default `0` = no hard cap), and `session.threadBindings.spawnSessions` for auto-bind on spawn (default `true`).
+    Config: `session.threadBindings.enabled` (global switch), `session.threadBindings.idleHours` (default `24`, `0` disables), `session.threadBindings.maxAgeHours` (default `0` = no hard cap), and `session.threadBindings.spawnSessions` for ACP thread spawns (default `true`).
 
     Docs: [Sub-agents](/tools/subagents), [Discord](/channels/discord), [Configuration Reference](/gateway/configuration-reference), [Slash commands](/tools/slash-commands).
 

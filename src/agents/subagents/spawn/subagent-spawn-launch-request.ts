@@ -69,7 +69,7 @@ export function buildSubagentLaunchRequest(params: {
               : undefined,
         }),
     idempotencyKey: params.childIdem,
-    deliver: params.completionMode === "thread-direct",
+    deliver: false,
     lane: AGENT_LANE_SUBAGENT,
     disableMessageTool: true,
     swarmCollector: collect,

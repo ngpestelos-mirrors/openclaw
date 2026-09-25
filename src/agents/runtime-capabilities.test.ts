@@ -11,7 +11,7 @@ describe("collectRuntimeChannelCapabilities", () => {
     expect(collectRuntimeChannelCapabilities({ channel: "heartbeat" })).toBeUndefined();
   });
 
-  it("adds thread-bound spawn capabilities when the channel account allows unified spawns", () => {
+  it("adds only the ACP thread-bound spawn capability when spawns are allowed", () => {
     const capabilities = collectRuntimeChannelCapabilities({
       channel: "discord",
       accountId: "default",
@@ -24,7 +24,7 @@ describe("collectRuntimeChannelCapabilities", () => {
       },
     });
 
-    expect(capabilities).toEqual(["threadbound-subagent-spawn", "threadbound-acp-spawn"]);
+    expect(capabilities).toEqual(["threadbound-acp-spawn"]);
   });
 
   it("omits thread-bound spawn capabilities when unified spawns are disabled", () => {

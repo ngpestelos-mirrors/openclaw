@@ -44,7 +44,7 @@ import {
 import { resolveSwarmConfig } from "../subagents/swarm/swarm-config.js";
 import {
   describeSessionsSpawnTool,
-  describeSubagentSpawnContext,
+  SUBAGENT_SPAWN_CONTEXT_DESCRIPTION,
   SESSIONS_SPAWN_SUBAGENT_TOOL_DISPLAY_SUMMARY,
   SESSIONS_SPAWN_TOOL_DISPLAY_SUMMARY,
 } from "../tool-description-presets.js";
@@ -121,43 +121,35 @@ function recordAcceptedSessionSpawn(
   });
 }
 
-type SessionsSpawnThreadAvailability = {
-  subagent: boolean;
-  acp: boolean;
-};
-
-function resolveSessionsSpawnThreadAvailability(opts?: {
-  config?: OpenClawConfig;
+/** Only ACP spawns may bind a conversation; agent-started subagents always run unbound. */
+function resolveAcpThreadSpawnAvailable(opts: {
+  config: OpenClawConfig;
   agentChannel?: string;
   agentAccountId?: string;
-}): SessionsSpawnThreadAvailability {
-  const channel = opts?.agentChannel;
-  const cfg = opts?.config;
-  if (!channel || !cfg || !supportsThreadBindingSpawn(channel)) {
-    return { subagent: false, acp: false };
+  acpAvailable: boolean;
+}): boolean {
+  const channel = opts.agentChannel;
+  if (!opts.acpAvailable || !channel || !supportsThreadBindingSpawn(channel)) {
+    return false;
   }
-  const resolve = (kind: "subagent" | "acp") => {
-    const policy = resolveThreadBindingSpawnPolicy({
-      cfg,
-      channel,
-      accountId: opts?.agentAccountId,
-      kind,
-    });
-    return policy.enabled && policy.spawnEnabled;
-  };
-  return {
-    subagent: resolve("subagent"),
-    acp: resolve("acp"),
-  };
+  const policy = resolveThreadBindingSpawnPolicy({
+    cfg: opts.config,
+    channel,
+    accountId: opts.agentAccountId,
+    kind: "acp",
+  });
+  return policy.enabled && policy.spawnEnabled;
 }
+
+const SUBAGENT_THREAD_BINDING_UNAVAILABLE_NOTE =
+  "Thread binding is not available for agent-started subagents; the subagent runs in the background and its result returns here.";
 
 function createSessionsSpawnToolSchema(params: {
   acpAvailable: boolean;
-  threadAvailable: boolean;
-  subagentThreadAvailable: boolean;
+  acpThreadAvailable: boolean;
   swarmEnabled: boolean;
 }) {
-  const spawnModes = params.threadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
+  const spawnModes = params.acpThreadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
   const schema = {
     task: Type.String(),
     taskName: Type.Optional(
@@ -193,19 +185,19 @@ function createSessionsSpawnToolSchema(params: {
           "Child working directory. Visible paths outside configured agent workspaces require operator.admin. Mutually exclusive with projectId/projectGitUrl. With no source selector and worktree=true: inherit the same-agent parent managed repository; otherwise use the target agent workspace.",
       }),
     ),
-    ...(params.threadAvailable
+    ...(params.acpThreadAvailable
       ? {
           thread: Type.Optional(
             Type.Boolean({
               description:
-                'Bind to the current conversation or a new thread, as supported by the channel; true defaults mode="session"; unavailable with visible=true.',
+                'ACP only: bind the ACP session to the current conversation or a new thread, as supported by the channel; true defaults mode="session". Subagents never bind a conversation.',
             }),
           ),
         }
       : {}),
     mode: optionalStringEnum(spawnModes, {
-      description: params.threadAvailable
-        ? '"run" one-shot; "session" persistent/thread-bound. Visible sessions accept only omitted/default "run" and remain persistent.'
+      description: params.acpThreadAvailable
+        ? '"run" one-shot; "session" persistent/thread-bound (ACP only). Visible sessions accept only omitted/default "run" and remain persistent.'
         : '"run" one-shot. Visible sessions accept omitted/default "run" and remain persistent.',
     }),
     cleanup: optionalStringEnum(["delete", "keep"] as const, {
@@ -219,13 +211,13 @@ function createSessionsSpawnToolSchema(params: {
     ),
     completionTarget: optionalStringEnum(["parent"] as const, {
       description:
-        "parent: return results in a private requester turn; no automatic channel delivery. Native hidden run only; unavailable with ACP, collect, visible, thread, session mode, or expectsCompletionMessage=false.",
+        "parent: return results in a private requester turn; no automatic channel delivery. Native hidden run only; unavailable with ACP, collect, visible, or expectsCompletionMessage=false.",
     }),
     sandbox: optionalStringEnum(SESSIONS_SPAWN_SANDBOX_MODES, {
       description: '"inherit" parent sandbox policy; "require" fails unless child is sandboxed.',
     }),
     context: optionalStringEnum(SUBAGENT_SPAWN_CONTEXT_MODES, {
-      description: describeSubagentSpawnContext(params.subagentThreadAvailable),
+      description: SUBAGENT_SPAWN_CONTEXT_DESCRIPTION,
     }),
     lightContext: Type.Optional(
       Type.Boolean({
@@ -340,11 +332,12 @@ export function createSessionsSpawnTool(
     config: effectiveConfig,
     sandboxed: opts?.sandboxed,
   });
-  const threadAvailability = resolveSessionsSpawnThreadAvailability({
-    ...opts,
+  const acpThreadAvailable = resolveAcpThreadSpawnAvailable({
     config: effectiveConfig,
+    agentChannel: opts?.agentChannel,
+    agentAccountId: opts?.agentAccountId,
+    acpAvailable,
   });
-  const threadAvailable = threadAvailability.subagent || threadAvailability.acp;
   const requesterAgentId =
     opts?.requesterAgentIdOverride ?? parseAgentSessionKey(opts?.agentSessionKey)?.agentId;
   const swarmConfig = resolveSwarmConfig(effectiveConfig, requesterAgentId);
@@ -360,8 +353,7 @@ export function createSessionsSpawnTool(
   });
   const parameters = createSessionsSpawnToolSchema({
     acpAvailable,
-    threadAvailable,
-    subagentThreadAvailable: threadAvailability.subagent,
+    acpThreadAvailable,
     swarmEnabled: swarmConfig.enabled,
   });
   const tool: AnyAgentTool = {
@@ -372,8 +364,7 @@ export function createSessionsSpawnTool(
       : SESSIONS_SPAWN_SUBAGENT_TOOL_DISPLAY_SUMMARY,
     description: describeSessionsSpawnTool({
       acpAvailable,
-      threadAvailable,
-      subagentThreadAvailable: threadAvailability.subagent,
+      acpThreadAvailable,
       swarmEnabled: swarmConfig.enabled,
       sessionToolsVisibility,
       spawnRestricted: restrictToSpawned,
@@ -650,8 +641,6 @@ export function createSessionsSpawnTool(
                 ? params[SWARM_CODE_MODE_REQUEST_FINGERPRINT]
                 : undefined,
             cwd,
-            thread,
-            mode,
             cleanup,
             sandbox,
             context,
@@ -697,7 +686,22 @@ export function createSessionsSpawnTool(
         );
 
         recordAcceptedSessionSpawn(result, result.context);
-        return jsonResult(addRoleToFailureResult(result, requestedAgentId));
+        // Older callers may still ask for a thread-bound subagent. Run it unbound
+        // and say so; only user commands such as /focus bind a conversation.
+        const bindingRequested = thread || mode === "session";
+        return jsonResult(
+          addRoleToFailureResult(
+            bindingRequested && result.status === "accepted"
+              ? {
+                  ...result,
+                  note: [SUBAGENT_THREAD_BINDING_UNAVAILABLE_NOTE, result.note]
+                    .filter(Boolean)
+                    .join(" "),
+                }
+              : result,
+            requestedAgentId,
+          ),
+        );
       }),
   };
   return bindCollectorSpawnTool(tool, parameters.properties, opts?.signal);

@@ -4,7 +4,6 @@ import { buildSubagentSpawnEnvelope } from "./subagent-system-prompt.js";
 function buildEnvelope(overrides: Partial<Parameters<typeof buildSubagentSpawnEnvelope>[0]> = {}) {
   return buildSubagentSpawnEnvelope({
     completionMode: "announce",
-    spawnMode: overrides.completionMode === "thread-direct" ? "session" : "run",
     childSessionKey: "agent:main:subagent:child",
     task: "UNIQUE_SUBAGENT_TASK\n  preserve indentation",
     ...overrides,
@@ -16,7 +15,6 @@ describe("subagent spawn envelope", () => {
     ["announce", /returns to the requester as a completion event/],
     ["collector", /Collector run: no completion notification/],
     ["quiet", /Quiet run: no completion notification/],
-    ["thread-direct", /delivered directly to the bound thread/],
   ] as const)("gives child and requester the same %s contract", (completionMode, expected) => {
     const { systemPrompt, message, acceptedNote } = buildEnvelope({ completionMode });
     expect(systemPrompt).toMatch(expected);
@@ -101,15 +99,6 @@ describe("subagent spawn envelope", () => {
     },
   );
 
-  it("keeps persistent thread follow-ups in both sides of the envelope", () => {
-    const envelope = buildEnvelope({ spawnMode: "session", completionMode: "thread-direct" });
-    expect(envelope.message).toContain("persistent and remains available for thread follow-up");
-    expect(envelope.acceptedNote).toContain(
-      "persistent and remains available for thread follow-up",
-    );
-    expect(envelope.systemPrompt).not.toContain("Ephemeral");
-  });
-
   it.each([
     ["agent:main:cron:job:run:attempt", true],
     ["agent:main:telegram:chat", false],
@@ -118,11 +107,8 @@ describe("subagent spawn envelope", () => {
   ])("limits cron receipt suppression to announcing runs: %s", (requesterSessionKey, omitted) => {
     const envelope = buildEnvelope({ requesterSessionKey });
     expect(envelope.acceptedNote === undefined).toBe(omitted);
-    for (const completionMode of ["collector", "quiet", "thread-direct"] as const) {
+    for (const completionMode of ["collector", "quiet"] as const) {
       expect(buildEnvelope({ requesterSessionKey, completionMode }).acceptedNote).toBeDefined();
     }
-    expect(buildEnvelope({ requesterSessionKey, spawnMode: "session" }).acceptedNote).toContain(
-      "completion event",
-    );
   });
 });

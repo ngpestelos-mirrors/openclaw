@@ -6,12 +6,11 @@ import { listAgentIds } from "../../agent-scope-config.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
 import { summarizeSpawnError } from "../../spawn-pipeline.js";
-import { resolveSpawnAdmission, resolveSpawnMode } from "../../spawn-plan.js";
+import { resolveSpawnAdmission } from "../../spawn-plan.js";
 import { listSwarmRunsForGroup } from "../registry/subagent-registry.js";
 import { resolveSwarmConfig } from "../swarm/swarm-config.js";
 import { validateStructuredOutputSchema } from "../swarm/swarm-output-schema.js";
 import { reserveSwarmRun } from "../swarm/swarm-scheduler.js";
-import { resolveSubagentContextMode } from "./subagent-spawn-context.js";
 import type {
   SpawnSubagentContext,
   SpawnSubagentParams,
@@ -54,42 +53,18 @@ export function resolveSubagentSpawnRequest(
       `Invalid agentId "${requestedAgentId}". Agent IDs must match [a-z0-9][a-z0-9_-]{0,63}.`,
     );
   }
-  const requestThreadBinding = params.thread === true;
-  const spawnMode = resolveSpawnMode({
-    requestedMode: params.mode,
-    threadRequested: requestThreadBinding,
-  });
+  // Agent-started subagents never own a chat, so every spawn is a one-shot run.
+  const spawnMode = "run" as const;
   if (
     params.completionTarget === "parent" &&
-    (params.collect ||
-      requestThreadBinding ||
-      spawnMode !== "run" ||
-      params.expectsCompletionMessage === false)
+    (params.collect || params.expectsCompletionMessage === false)
   ) {
     return rejectSubagentSpawnRequest(
       "error",
-      'sessions_spawn completionTarget="parent" requires mode="run", thread=false, collect=false, and completion notifications enabled.',
+      'sessions_spawn completionTarget="parent" requires collect=false and completion notifications enabled.',
     );
   }
-  if (params.collect && (requestThreadBinding || spawnMode === "session")) {
-    return rejectSubagentSpawnRequest(
-      "error",
-      "sessions_spawn collect=true requires mode=run and thread=false.",
-    );
-  }
-  if (spawnMode === "session" && !requestThreadBinding) {
-    return rejectSubagentSpawnRequest(
-      "error",
-      'sessions_spawn(mode="session") requires thread=true so the subagent can stay bound to a channel thread. ' +
-        'Retry with { mode: "session", thread: true } on a channel that supports threads, or use mode="run" for one-shot work.',
-    );
-  }
-  const cleanup: "delete" | "keep" =
-    spawnMode === "session"
-      ? "keep"
-      : params.cleanup === "keep" || params.cleanup === "delete"
-        ? params.cleanup
-        : "keep";
+  const cleanup: "delete" | "keep" = params.cleanup === "delete" ? "delete" : "keep";
   const expectsCompletionMessage = params.collect
     ? false
     : params.expectsCompletionMessage !== false;
@@ -103,15 +78,7 @@ export function resolveSubagentSpawnRequest(
     cfg,
     runTimeoutSeconds: params.runTimeoutSeconds,
   });
-  const contextMode = resolveSubagentContextMode({
-    requestedContext: params.context,
-    threadRequested: requestThreadBinding,
-    cfg,
-    requester: {
-      channel: ctx.agentChannel,
-      accountId: ctx.agentAccountId,
-    },
-  });
+  const contextMode = params.context ?? "isolated";
   const { mainKey, alias } = resolveMainSessionAlias(cfg);
   const requesterSessionKey = ctx.agentSessionKey;
   const requesterInternalKey = requesterSessionKey

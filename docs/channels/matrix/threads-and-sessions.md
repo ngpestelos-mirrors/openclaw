@@ -66,11 +66,11 @@ Matrix inherits global defaults from `session.threadBindings` and supports per-c
 - `threadBindings.enabled`
 - `threadBindings.idleHours`
 - `threadBindings.maxAgeHours`
-- `threadBindings.spawnSessions`: gates both subagent and ACP thread spawns.
+- `threadBindings.spawnSessions`: gates ACP thread spawns. Native subagents never bind a thread.
 - Deprecated `threadBindings.spawnSubagentSessions` / `threadBindings.spawnAcpSessions` keys are migrated to `spawnSessions` by `openclaw doctor --fix`.
-- `threadBindings.defaultSpawnContext`
+- `threadBindings.defaultSpawnContext`: no longer used.
 
-Matrix thread-bound session spawns default on. Set `threadBindings.spawnSessions: false` to block native subagent and ACP thread spawns from creating/binding Matrix threads. Set `threadBindings.defaultSpawnContext: "isolated"` when native subagent thread spawns should not fork the parent transcript.
+Matrix thread-bound ACP spawns default on. Set `threadBindings.spawnSessions: false` to block ACP thread spawns from creating/binding Matrix threads.
 
 ## History context
 

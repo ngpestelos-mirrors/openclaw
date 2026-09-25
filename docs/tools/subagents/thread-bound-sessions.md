@@ -1,5 +1,5 @@
 ---
-summary: "Bind a sub-agent to a channel thread, and the allowlist, discovery, and auto-archive rules"
+summary: "Why sub-agents never bind a chat, plus the allowlist, discovery, and auto-archive rules"
 title: "Thread-bound sub-agent sessions"
 read_when:
   - You are implementing or troubleshooting thread-bound subagent sessions
@@ -9,31 +9,35 @@ read_when:
 
 ## Thread-bound sessions
 
-When thread bindings are enabled for a channel, a sub-agent can stay bound
-to a thread so follow-up user messages in that thread keep routing to the
-same sub-agent session.
+An agent-started sub-agent never binds a chat thread or conversation. It runs
+in the background, and its result returns to the agent that started it. The
+chat where you talk to your agent stays with that agent.
+
+A `sessions_spawn` call with `thread: true` or `mode: "session"` still succeeds
+for a native sub-agent. The child runs unbound, and the result `note` says that
+thread binding is not available for agent-started sub-agents.
+
+Only a user command binds a conversation to another session. Existing
+bindings stay in place until you detach them or they expire.
 
 ### Thread supporting channels
 
-A channel supports persistent thread-bound subagent sessions
-(`sessions_spawn` with `thread: true`) when it registers a conversation
-binding adapter. Bundled channels with that support: **Discord**,
-**iMessage**, **Matrix**, and **Telegram**. Discord and Matrix default to
-creating a child thread; Telegram and iMessage default to binding the
-current conversation. Use the per-channel `threadBindings` config keys for
-enablement, timeouts, and `spawnSessions`.
+Channels that register a conversation binding adapter support user-started
+bindings, such as `/acp spawn <harness> --bind here` or `--thread auto`.
+Bundled channels with that support: **Discord**, **iMessage**, **Matrix**, and
+**Telegram**. See [ACP bindings](/tools/acp-agents/bindings#current-conversation-binds).
 
 ### Quick flow
 
 <Steps>
   <Step title="Spawn">
-    `sessions_spawn` with `thread: true` (and optionally `mode: "session"`).
+    The agent calls `sessions_spawn`. The sub-agent runs in the background and does not bind the chat.
   </Step>
   <Step title="Bind">
-    OpenClaw creates or binds a thread to that session target in the active channel.
+    To talk to another session in a chat, bind it yourself with a user command such as `/acp spawn <harness> --bind here`.
   </Step>
   <Step title="Route follow-ups">
-    Replies and follow-up messages in that thread route to the bound session.
+    Replies and follow-up messages in a bound conversation route to the bound session.
   </Step>
   <Step title="Inspect timeouts">
     Use `/session idle` to inspect/update inactivity expiry and

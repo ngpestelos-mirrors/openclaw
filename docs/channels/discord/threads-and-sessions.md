@@ -123,8 +123,8 @@ failed chunk may have been delivered, so inspect the thread before retrying.
     Notes:
 
     - `session.threadBindings.*` is the canonical policy for Discord and Telegram.
-    - `spawnSessions` controls auto-create/bind threads for `sessions_spawn({ thread: true })` and ACP thread spawns. Default: `true`.
-    - `defaultSpawnContext` controls native subagent context for thread-bound spawns. Default: `"fork"`.
+    - `spawnSessions` controls auto-create/bind threads for ACP thread spawns. Default: `true`.
+    - Native subagents started by an agent never bind a thread. `defaultSpawnContext` is no longer used.
     - Deprecated `spawnSubagentSessions`/`spawnAcpSessions` keys are migrated by `openclaw doctor --fix`.
     - If thread bindings are disabled, thread-bound spawns are unavailable.
 

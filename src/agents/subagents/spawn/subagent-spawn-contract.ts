@@ -23,8 +23,6 @@ export type SpawnSubagentParams = {
   swarmLaunchRequestFingerprint?: string;
   cwd?: string;
   runTimeoutSeconds?: number;
-  thread?: boolean;
-  mode?: SpawnSubagentMode;
   cleanup?: "delete" | "keep";
   sandbox?: SpawnSubagentSandboxMode;
   context?: SpawnSubagentContextMode;

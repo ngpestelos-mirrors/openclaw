@@ -395,8 +395,6 @@ export async function spawnAcpDirect(
   if (requestThreadBinding) {
     const prepared = prepareSpawnThreadBinding({
       cfg,
-      kind: "acp",
-      mode: spawnMode,
       bindingService: getSessionBindingService(),
       channel: requesterState.origin?.channel,
       accountId: requesterState.origin?.accountId,
