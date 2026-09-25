@@ -48,6 +48,7 @@ public actor GatewayChannelActor {
     private var shouldReconnect = true
     private nonisolated let socketAdmission = Mutex(true)
     private var lastSeq: Int?
+    private var liveTextProjection = GatewayLiveTextProjection()
     private var lastTick: Date?
     private var tickIntervalMs: Double = 30000
     private var lastAuthSource: GatewayAuthSource = .none
@@ -143,6 +144,7 @@ public actor GatewayChannelActor {
         self.retireSocketAdmission()
         self.shouldReconnect = false
         self.connected = false
+        self.liveTextProjection.reset()
         self.acceptedHTTPBearer = nil
         self.activeConnectAttemptID = nil
         self.automaticReconnectRequested = false
@@ -403,6 +405,7 @@ public actor GatewayChannelActor {
         self.backoffMs = 500
         self.connectFailureBackoff.reset()
         self.lastSeq = nil
+        self.liveTextProjection.reset()
         self.listen(connectionGeneration: connectionGeneration)
         self.startTickWatchdog(connectionGeneration: connectionGeneration)
         self.startKeepalive(connectionGeneration: connectionGeneration)
@@ -1086,6 +1089,7 @@ extension GatewayChannelActor {
         // receive failure. Only the owner notifies lifecycle cleanup or reconnects.
         self.disconnectedConnectionGeneration = connectionGeneration
         self.connected = false
+        self.liveTextProjection.reset()
         self.acceptedHTTPBearer = nil
         self.activeConnectAttemptID = nil
         if shouldReconnect {
@@ -1143,15 +1147,33 @@ extension GatewayChannelActor {
                     await self.pushHandler?(
                         .seqGap(expected: last + 1, received: seq),
                         connectionGeneration)
-                    // The gap callback can suspend for UI/state recovery. A socket
-                    // loss during that hop must not admit the old socket's event
-                    // under the replacement connection's fresh lifecycle epoch.
-                    guard self.isConnected(connectionGeneration: connectionGeneration) else { return }
+                    let error = NSError(
+                        domain: "Gateway",
+                        code: 8,
+                        userInfo: [NSLocalizedDescriptionKey: "gateway event sequence gap"])
+                    await self.transitionToDisconnected(
+                        reason: error.localizedDescription,
+                        error: error,
+                        connectionGeneration: connectionGeneration,
+                        shouldReconnect: true)
+                    return
                 }
                 self.lastSeq = seq
             }
             if evt.event == "tick" { self.lastTick = Date() }
-            await self.pushHandler?(.event(evt), connectionGeneration)
+            guard let projected = self.liveTextProjection.project(evt) else {
+                let error = NSError(
+                    domain: "Gateway",
+                    code: 8,
+                    userInfo: [NSLocalizedDescriptionKey: "gateway live text baseline missing"])
+                await self.transitionToDisconnected(
+                    reason: error.localizedDescription,
+                    error: error,
+                    connectionGeneration: connectionGeneration,
+                    shouldReconnect: true)
+                return
+            }
+            await self.pushHandler?(.event(projected), connectionGeneration)
         default:
             break
         }

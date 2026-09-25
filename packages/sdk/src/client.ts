@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { mergeChatStreamMessage } from "@openclaw/gateway-client";
 import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonEmptyStringPreservingWhitespace as readNonEmptyString } from "@openclaw/normalization-core/string-coerce";
+import {
+  isAssistantRunEvent,
+  isTerminalRunEvent,
+  normalizeChatProjectionEvent,
+  readChatProjection,
+  readChatProjectionText,
+} from "./chat-projection.js";
 import { EventHub } from "./event-hub.js";
 import { normalizeGatewayEvent } from "./normalize.js";
-import {
-  readSdkRunTimestamp,
-  resolveSdkLifecycleEventType,
-  resolveSdkRunWaitStatus,
-} from "./run-terminal.js";
+import { readSdkRunTimestamp, resolveSdkRunWaitStatus } from "./run-terminal.js";
 import { GatewayClientTransport, isConnectableTransport } from "./transport.js";
 import type {
   AgentsCreateParams,
@@ -138,13 +142,6 @@ function unsupportedGatewayApi(api: string): never {
   throw new Error(`${api} is not supported by the current OpenClaw Gateway yet`);
 }
 
-type ChatProjectionState = "delta" | "final" | "error" | "aborted";
-
-type ChatProjection = {
-  state: ChatProjectionState;
-  payload: Record<string, unknown>;
-};
-
 type RunTerminalSource = { kind: "canonical" } | { kind: "chat"; eventType: OpenClawEvent["type"] };
 
 function hasArtifactQueryScope(params: unknown): params is ArtifactQuery {
@@ -173,95 +170,6 @@ function requireToolsEffectiveSessionKey(params: unknown): ToolsEffectiveParams 
   return params;
 }
 
-function readChatProjection(event: OpenClawEvent): ChatProjection | undefined {
-  const raw = event.raw;
-  if (event.type !== "raw" || raw?.event !== "chat") {
-    return undefined;
-  }
-  const payload = asRecord(raw.payload);
-  const state = payload.state;
-  return state === "delta" || state === "final" || state === "error" || state === "aborted"
-    ? { state, payload }
-    : undefined;
-}
-
-function readChatProjectionText(payload: Record<string, unknown>): string | undefined {
-  const message = asRecord(payload.message);
-  const content = message.content;
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const text = content
-    .map((part) => {
-      const record = asRecord(part);
-      return record.type === "text" && typeof record.text === "string" ? record.text : "";
-    })
-    .join("");
-  return text.length > 0 ? text : undefined;
-}
-
-function isAssistantRunEvent(event: OpenClawEvent): boolean {
-  return event.type === "assistant.delta" || event.type === "assistant.message";
-}
-
-function isTerminalRunEvent(event: OpenClawEvent): boolean {
-  return (
-    event.type === "run.completed" ||
-    event.type === "run.failed" ||
-    event.type === "run.cancelled" ||
-    event.type === "run.timed_out"
-  );
-}
-
-function normalizeChatProjectionEvent(
-  event: OpenClawEvent,
-  projection: ChatProjection,
-  previousText: string | undefined,
-): OpenClawEvent {
-  const { payload, state } = projection;
-  const text = readChatProjectionText(payload);
-  if (state === "delta") {
-    const deltaText = typeof payload.deltaText === "string" ? payload.deltaText : undefined;
-    return {
-      ...event,
-      type: "assistant.delta",
-      data:
-        text === undefined
-          ? event.data
-          : {
-              text,
-              delta: previousText !== undefined ? (deltaText ?? text) : text,
-              ...(payload.replace === true ? { replace: true } : {}),
-            },
-    };
-  }
-  const error = readNonEmptyString(payload.errorMessage);
-  const stopReason = readNonEmptyString(payload.stopReason);
-  // Gateway timeout aborts publish this mechanical chat frame before lifecycle.
-  const type =
-    state === "final"
-      ? "run.completed"
-      : state === "aborted"
-        ? resolveSdkLifecycleEventType({ aborted: true, status: "cancelled", stopReason }, "end")
-        : payload.errorKind === "timeout"
-          ? "run.timed_out"
-          : "run.failed";
-  return {
-    ...event,
-    type,
-    data: {
-      phase: state === "error" ? "error" : "end",
-      ...(state === "aborted" ? { aborted: true } : {}),
-      ...(text !== undefined ? { outputText: text } : {}),
-      ...(error ? { error } : {}),
-      ...(stopReason ? { stopReason } : {}),
-    },
-  };
-}
-
 /** Root SDK client with namespaces for agents, sessions, runs, and gateway APIs. */
 export class OpenClaw {
   readonly agents: AgentsNamespace;
@@ -276,7 +184,10 @@ export class OpenClaw {
 
   private readonly transport: OpenClawTransport;
   private readonly normalizedEvents = new EventHub<OpenClawEvent>();
-  private readonly replayByRunId = new Map<string, OpenClawEvent[]>();
+  private readonly replayByRunId = new Map<
+    string,
+    { events: OpenClawEvent[]; chatMessage?: unknown }
+  >();
   private connected = false;
   private closed = false;
   private eventPumpPromise: Promise<void> | null = null;
@@ -367,6 +278,7 @@ export class OpenClaw {
     return this.iterateRunEvents(runId, filter);
   }
 
+  /** Received wire events, without the cumulative chat projection used by runEvents(). */
   rawEvents(filter?: (event: GatewayEvent) => boolean): AsyncIterable<GatewayEvent> {
     this.assertOpen();
     return this.transport.events(filter);
@@ -501,8 +413,7 @@ export class OpenClaw {
           if (result.done) {
             break;
           }
-          const normalized = normalizeGatewayEvent(result.value);
-          this.recordReplayEvent(normalized);
+          const normalized = this.recordReplayEvent(normalizeGatewayEvent(result.value));
           this.normalizedEvents.publish(normalized);
         }
       } catch (error) {
@@ -531,29 +442,49 @@ export class OpenClaw {
     return this.eventPumpReady;
   }
 
-  private recordReplayEvent(event: OpenClawEvent): void {
+  private recordReplayEvent(event: OpenClawEvent): OpenClawEvent {
     if (!event.runId) {
-      return;
+      return event;
     }
-    let events = this.replayByRunId.get(event.runId);
-    if (!events) {
-      if (this.replayByRunId.size >= MAX_REPLAY_RUNS) {
-        const oldestRunId = this.replayByRunId.keys().next().value;
-        if (oldestRunId) {
-          this.replayByRunId.delete(oldestRunId);
-        }
+    let replay = this.replayByRunId.get(event.runId);
+    let trimReplayRuns = !replay;
+    if (!replay) {
+      replay = { events: [] };
+      this.replayByRunId.set(event.runId, replay);
+    }
+    const projection = readChatProjection(event);
+    if (projection?.state === "delta") {
+      replay.chatMessage = mergeChatStreamMessage(replay.chatMessage, projection.payload);
+      if (replay.chatMessage !== undefined) {
+        // Retained normalized events keep a baseline even when the raw prefix is
+        // evicted. `raw` and rawEvents() still describe the received wire frame.
+        event = { ...event, data: { ...projection.payload, message: replay.chatMessage } };
       }
-      events = [];
-      this.replayByRunId.set(event.runId, events);
+    } else if (projection || isTerminalRunEvent(event)) {
+      delete replay.chatMessage;
+      this.replayByRunId.delete(event.runId);
+      this.replayByRunId.set(event.runId, replay);
+      trimReplayRuns = true;
     }
+    const { events } = replay;
     events.push(event);
     if (events.length > MAX_REPLAY_EVENTS_PER_RUN) {
       events.splice(0, events.length - MAX_REPLAY_EVENTS_PER_RUN);
     }
+    if (trimReplayRuns && this.replayByRunId.size > MAX_REPLAY_RUNS) {
+      let retained = 0;
+      // Active baselines cannot be evicted: later wire frames contain only suffixes.
+      for (const [runId, candidate] of [...this.replayByRunId].reverse()) {
+        if (candidate.chatMessage === undefined && ++retained > MAX_REPLAY_RUNS) {
+          this.replayByRunId.delete(runId);
+        }
+      }
+    }
+    return event;
   }
 
   private replaySnapshot(runId: string): OpenClawEvent[] {
-    return [...(this.replayByRunId.get(runId) ?? [])];
+    return [...(this.replayByRunId.get(runId)?.events ?? [])];
   }
 }
 

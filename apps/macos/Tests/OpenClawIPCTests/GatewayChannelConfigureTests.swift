@@ -363,7 +363,7 @@ struct GatewayConnectionTests {
         #expect(snap.type == "hello-ok")
     }
 
-    @Test func `subscribe emits seq gap before event`() async throws {
+    @Test func `subscribe emits seq gap then disconnects without the gapped event`() async throws {
         let session = self.makeSession()
         let (conn, _) = try makeConnection(session: session)
 
@@ -393,18 +393,19 @@ struct GatewayConnectionTests {
         session.latestTask()?.emitReceiveSuccess(.data(evt3))
 
         let gap = await iterator.next()
-        guard gap?.isCurrent == true, case let .seqGap(expected, received) = gap?.push else {
+        guard case let .seqGap(expected, received) = gap?.push else {
             Issue.record("expected seqGap, got \(String(describing: gap))")
             return
         }
         #expect(expected == 2)
         #expect(received == 3)
 
-        let secondEvent = await iterator.next()
-        guard secondEvent?.isCurrent == true, case let .event(secondFrame) = secondEvent?.push else {
-            Issue.record("expected event, got \(String(describing: secondEvent))")
+        let disconnected = await iterator.next()
+        guard case .disconnected = disconnected?.event else {
+            Issue.record("expected disconnect, got \(String(describing: disconnected))")
+            await conn.shutdown()
             return
         }
-        #expect(secondFrame.seq == 3)
+        await conn.shutdown()
     }
 }

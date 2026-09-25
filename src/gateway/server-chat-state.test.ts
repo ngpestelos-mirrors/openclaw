@@ -730,7 +730,10 @@ describe("createSessionMessageSubscriberRegistry", () => {
       expect([...subscribers.getApprovals("agent:main:main")]).toEqual(
         includeApprovals ? ["conn"] : [],
       );
-      expect(onChange.mock.calls).toEqual([["agent:main:main"], ["agent:main:child"]]);
+      expect(onChange.mock.calls).toEqual([
+        ["agent:main:main", "conn"],
+        ["agent:main:child", "conn"],
+      ]);
     },
   );
 

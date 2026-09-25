@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
+import { OpenClaw } from "./client.js";
 import { GatewayClientTransport } from "./transport.js";
 
 describe("GatewayClientTransport live WebSocket lifecycle", () => {
@@ -52,8 +53,12 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
       deviceIdentity: null,
       requestTimeoutMs: 2_000,
     });
+    const oc = new OpenClaw({ transport });
     try {
-      await transport.connect();
+      await oc.connect();
+      const run = await oc.runs.get("stream-1");
+      const normalized = run.events()[Symbol.asyncIterator]();
+      const normalizedFirst = normalized.next();
       const failedStream = transport.events(() => {
         throw new Error("subscriber filter failed");
       });
@@ -70,21 +75,35 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
         socket.send(
           JSON.stringify({
             type: "event",
-            event: "sessions.changed",
+            event: "chat",
             seq,
-            payload: { seq },
+            payload: {
+              runId: "stream-1",
+              state: "delta",
+              deltaText: seq === 1 ? "hello" : " world",
+              ...(seq === 1 ? { message: { role: "assistant", content: "hello" } } : {}),
+            },
           }),
         );
       }
 
       await failedRead;
       await expect(Promise.all([first, second])).resolves.toMatchObject([
-        { done: false, value: { event: "sessions.changed", payload: { seq: 1 } } },
-        { done: false, value: { event: "sessions.changed", payload: { seq: 2 } } },
+        { done: false, value: { event: "chat", payload: { deltaText: "hello" } } },
+        { done: false, value: { event: "chat", payload: { deltaText: " world" } } },
       ]);
+      await expect(normalizedFirst).resolves.toMatchObject({
+        value: { type: "assistant.delta", data: { text: "hello", delta: "hello" } },
+      });
+      const normalizedSecond = await normalized.next();
+      expect(normalizedSecond).toMatchObject({
+        value: { type: "assistant.delta", data: { text: "hello world", delta: " world" } },
+      });
+      expect(normalizedSecond.value?.raw?.payload).not.toHaveProperty("message");
+      await normalized.return?.();
       await healthy.return?.();
     } finally {
-      await transport.close();
+      await oc.close();
       for (const socket of server.clients) {
         socket.terminate();
       }

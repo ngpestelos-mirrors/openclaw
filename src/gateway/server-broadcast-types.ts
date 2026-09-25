@@ -24,6 +24,15 @@ export type GatewayBroadcastOpts = {
     group: AbortSignal;
     isCurrent?: () => boolean;
     coalesce?: { key: string; merge: (previous: unknown, next: unknown) => unknown };
+    /** Full internal payloads become append-only only after this socket has a baseline. */
+    projection?: {
+      key: string;
+      delta: (payload: unknown) => unknown;
+      /** Upper bound for encoded full payload bytes, without encoding cumulative text. */
+      snapshotBytes?: (payload: unknown, deltaPayloadBytes: number) => number;
+      version?: unknown;
+      snapshot?: boolean;
+    };
   };
 };
 

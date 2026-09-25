@@ -55,6 +55,19 @@ Frame shapes:
 - Response: `{type:"res", id, ok, payload|error}`
 - Event: `{type:"event", event, payload, seq?, stateVersion?, recipientProfileId?}`
 
+Live text uses append deltas after an initial recipient snapshot. An outer event
+sequence gap means a client may have lost part of that baseline: retire the
+connection and reconnect before applying more deltas. Renew session subscriptions
+after reconnect; the Gateway sends a complete snapshot with the next text frame
+for each observed run. Run-local payload sequences can skip numbers because text
+is paced and coalesced; they are not the outer connection sequence.
+
+Clients that share one connection among several views must keep reconstruction
+with their local stream owner. A new local listener may join after the wire
+snapshot was delivered to another view. Seed it from that owner's current state,
+or deliver reconstructed local snapshots, and clear that state when its connection
+or run retires. Durable history alone is not an ordered live-text baseline.
+
 After authentication, a client may include a W3C `traceparent` string on each
 request frame. The Gateway continues a valid value as a child trace context for
 that request. Missing or syntactically malformed values within the

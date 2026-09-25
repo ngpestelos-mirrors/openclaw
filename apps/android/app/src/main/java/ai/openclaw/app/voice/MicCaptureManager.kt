@@ -345,9 +345,9 @@ internal class MicCaptureManager(
 
     when (payload["state"].asStringOrNull()) {
       "delta" -> {
-        val deltaText = parseAssistantText(payload)
-        if (!deltaText.isNullOrBlank()) {
-          upsertPendingAssistant(text = deltaText.trim(), isStreaming = true)
+        val text = ChatEventText.assistantStreamTextFromPayload(payload)
+        if (text != null) {
+          upsertPendingAssistant(text = text, isStreaming = true)
         }
       }
 

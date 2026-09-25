@@ -11,6 +11,8 @@ import type {
 import { readBool, readMetadataString, readNonNegativeInteger } from "@openclaw/acp-core/meta";
 import type { AcpSessionStore } from "@openclaw/acp-core/session";
 import type { AcpServerOptions } from "@openclaw/acp-core/types";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { mergeChatStreamMessage } from "../../packages/gateway-client/src/chat-stream-message.js";
 import type { EventFrame } from "../../packages/gateway-protocol/src/index.js";
 import type { GatewayClient } from "../gateway/client.js";
 import { normalizeTerminalChatSendAckStatus } from "../shared/chat-send-ack-status.js";
@@ -475,7 +477,6 @@ export class AcpTranslatorPromptStream {
     const sessionKey = payload.sessionKey as string | undefined;
     const state = payload.state as string | undefined;
     const runId = payload.runId as string | undefined;
-    const messageData = payload.message as Record<string, unknown> | undefined;
     if (!sessionKey || !state) {
       return;
     }
@@ -485,11 +486,11 @@ export class AcpTranslatorPromptStream {
       return;
     }
 
-    const shouldHandleMessageSnapshot = messageData && (state === "delta" || state === "final");
-    if (shouldHandleMessageSnapshot) {
-      // Gateway chat events can carry the latest full assistant snapshot on both
-      // incremental updates and the terminal final event. Process the snapshot
-      // first so ACP clients never drop the last visible assistant text.
+    const messageData =
+      state === "delta" ? mergeChatStreamMessage(pending.streamMessage, payload) : payload.message;
+    if (isRecord(messageData) && (state === "delta" || state === "final")) {
+      pending.streamMessage = messageData;
+      // Consume the terminal snapshot before settling the append-only ACP stream.
       const ownsSnapshot = await this.handleDeltaEvent(pending, messageData);
       if (
         !ownsSnapshot ||

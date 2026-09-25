@@ -167,6 +167,11 @@ connect-challenge timeout, and exponential reconnect delays from 1 second to 30
 seconds with a multiplier of 2. Server-provided startup retry hints may override
 the next delay.
 
+A sequence gap calls `onGap` and retires the socket unless the callback already
+replaced it. The gapped frame and subsequent frames from that socket are not
+delivered. Reconnect restores a fresh live-text baseline; applications should
+also refresh durable state and restore their session subscriptions.
+
 The canonical defaults table and the server policy fields that can replace
 pre-handshake values are documented in the
 [Gateway protocol specification](https://docs.openclaw.ai/gateway/protocol#client-constants).
@@ -174,6 +179,26 @@ pre-handshake values are documented in the
 Use the `./timeouts` entry point when a host must align readiness or watchdog
 budgets with these defaults. Use the `./readiness` entry point when startup must
 wait for an event-loop probe before opening the socket.
+
+## Streaming chat
+
+Event callbacks receive the wire payload unchanged. A `chat` delta's optional
+`message` is an authoritative snapshot that already includes `deltaText`.
+Without `message`, append `deltaText` to the run's existing text. `replace: true`
+replaces the text, including an empty replacement. The first frame received for
+a run and frames that change canvas or media content supply a snapshot.
+
+Both public entries export `mergeChatStreamMessage(previousMessage, payload)`
+for clients that own their run state. The helper preserves nontext content and
+message metadata and never appends a snapshot's delta twice. An append without
+a baseline returns `undefined`; recover the connection instead of displaying
+an incomplete answer. `reduceSessionProjectionRunEvent` uses the same merge
+operation for clients using the shared session projection.
+
+The high-level `@openclaw/sdk` retains reconstructed chat in its normalized
+run-event replay, so late readers can recover the text after the initial wire
+snapshot is evicted. Its `rawEvents()` and each normalized event's `raw` field
+still expose the original wire event, including omitted `message` fields.
 
 ## Bundled internals
 

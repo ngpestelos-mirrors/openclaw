@@ -353,6 +353,10 @@ private final class FakeGatewayWebSocketTask: WebSocketTasking, @unchecked Senda
         self.emitInbound(.success(.data(data)))
     }
 
+    func emitEvent(_ event: EventFrame) throws {
+        try self.emitInbound(.success(.data(JSONEncoder().encode(event))))
+    }
+
     func emitInvokeCancel(id: String) {
         let frame: [String: Any] = [
             "type": "event",
@@ -819,6 +823,55 @@ extension GatewayChannelActor {
 
 @Suite(.serialized)
 struct GatewayNodeSessionTests {
+    @Test(arguments: [false, true])
+    func `wire text is projected before bounded native delivery and loss retires the socket`(
+        missingBaseline: Bool) async throws
+    {
+        let session = FakeGatewayWebSocketSession()
+        let events = AsyncStream<EventFrame>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let appended = AsyncGate()
+        let disconnected = AsyncGate()
+        let channel = try GatewayChannelActor(
+            url: testURL("ws://gateway.example.invalid"), token: nil,
+            session: WebSocketSessionBox(session: session),
+            pushHandler: { push, _ in
+                guard case let .event(event) = push else { return }
+                events.continuation.yield(event)
+                if event.seq == 2 { await appended.markStarted() }
+            },
+            connectOptions: nodeConnectOptions(),
+            disconnectHandler: { _, _ in await disconnected.markStarted() })
+        do {
+            try await channel.connect()
+            let socket = try #require(session.latestTask())
+            try socket.emitEvent(EventFrame(type: "event", event: "chat", payload: AnyCodable([
+                "runId": "run", "state": "delta", "deltaText": "hello ",
+                "message": ["role": "assistant", "content": [["type": "text", "text": "hello "]]],
+            ]), seq: 1))
+            try socket.emitEvent(EventFrame(type: "event", event: "chat", payload: AnyCodable([
+                "runId": "run", "state": "delta", "deltaText": "world",
+            ]), seq: 2))
+            try await appended.waitUntilStarted()
+            var iterator = events.stream.makeAsyncIterator()
+            let event = try #require(await iterator.next())
+            #expect(event.payload?.dictionaryValue?["message"]?.dictionaryValue?["content"]?
+                .arrayValue?.first?.dictionaryValue?["text"]?.stringValue == "hello world")
+
+            try socket.emitEvent(EventFrame(type: "event", event: "chat", payload: AnyCodable([
+                "runId": missingBaseline ? "unseen" : "run", "state": "delta", "deltaText": "lost suffix",
+            ]), seq: missingBaseline ? 3 : 4))
+            try await disconnected.waitUntilStarted()
+            #expect(socket.state == .canceling)
+            await channel.shutdown()
+            events.continuation.finish()
+            #expect(await iterator.next() == nil)
+        } catch {
+            await channel.shutdown()
+            events.continuation.finish()
+            throw error
+        }
+    }
+
     @Test func `authenticated invoke metadata reaches the native dispatcher unchanged`() async throws {
         let gateway = GatewayNodeSession()
         let capture = StringCapture()

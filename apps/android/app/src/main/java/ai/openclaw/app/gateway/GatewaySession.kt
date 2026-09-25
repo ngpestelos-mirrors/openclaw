@@ -1080,6 +1080,7 @@ class GatewaySession(
     private val loggerTag = "OpenClawGateway"
     private val incomingMessages = Channel<String>(Channel.UNLIMITED)
     private var lastEventSequence: Long? = null
+    private val liveTextProjection = GatewayLiveTextProjection()
 
     // RPC waiters belong to this socket generation. Closing it must not touch a replacement connection.
     private val pending = ConcurrentHashMap<String, CompletableDeferred<RpcResponse>>()
@@ -2103,9 +2104,8 @@ class GatewaySession(
       gatewayEvent.seq?.let { sequence ->
         val previous = lastEventSequence
         if (previous != null && sequence > previous + 1) {
-          onEvent("seqGap", null)
-          // Recovery can retire this socket before its triggering event is delivered.
-          if (currentConnection !== this || !isReady()) return
+          recoverLiveEvents()
+          return
         }
         lastEventSequence = sequence
       }
@@ -2113,7 +2113,31 @@ class GatewaySession(
         handleInvokeEvent(payloadJson)
         return
       }
-      onEvent(event, payloadJson)
+      val projectedPayload =
+        if ((event == "chat" || event == "agent") && payloadJson != null) {
+          val payload = frame["payload"].asObjectOrNull() ?: parseJsonOrNull(payloadJson).asObjectOrNull()
+          if (payload == null) {
+            payloadJson
+          } else {
+            val projected = liveTextProjection.project(event, payload)
+            if (projected == null) {
+              recoverLiveEvents()
+              return
+            }
+            projected.toString()
+          }
+        } else {
+          payloadJson
+        }
+      onEvent(event, projectedPayload)
+    }
+
+    private fun recoverLiveEvents() {
+      onEvent("seqGap", null)
+      synchronized(lifecycleLock) {
+        // A recovery callback can disconnect or replace this connection itself.
+        if (currentConnection === this && state.get() != ConnectionState.CLOSED) reconnect()
+      }
     }
 
     private suspend fun awaitConnectChallenge(): ConnectChallenge =

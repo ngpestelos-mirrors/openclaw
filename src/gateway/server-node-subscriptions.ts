@@ -1,6 +1,11 @@
 // Gateway node subscription manager.
 // Maintains bidirectional node/session fanout indexes.
-import { serializeEventPayload, type SerializedEventPayload } from "./node-registry.js";
+import {
+  serializeEventPayload,
+  type NodeEventPayloadPreparation,
+  type SerializedEventPayload,
+} from "./node-registry.js";
+import type { GatewayBroadcastOpts } from "./server-broadcast-types.js";
 
 // Node subscription manager keeps bidirectional node/session indexes so gateway
 // events can fan out by session and all node cleanup paths remove reverse links.
@@ -9,6 +14,7 @@ type NodeSendEventFn = (opts: {
   pairingGeneration: string;
   event: string;
   payloadJSON?: SerializedEventPayload | null;
+  preparePayload?: NodeEventPayloadPreparation;
 }) => void | Promise<unknown>;
 
 type NodeSubscriptionManager = {
@@ -27,6 +33,7 @@ type NodeSubscriptionManager = {
     event: string,
     payload: unknown,
     sendEvent?: NodeSendEventFn | null,
+    opts?: GatewayBroadcastOpts,
   ) => Promise<void>;
   sendToAllSubscribed: (
     event: string,
@@ -37,11 +44,21 @@ type NodeSubscriptionManager = {
 
 /** Manages node subscriptions to gateway session events. */
 export function createNodeSubscriptionManager(): NodeSubscriptionManager {
+  type Subscription = { pairingGeneration: string };
+  type Publication = { version: unknown };
+  type Receipt = { connId: string; publication: Publication };
   const nodeSubscriptions = new Map<
     string,
-    { pairingGeneration: string; sessionKeys: Set<string> }
+    { pairingGeneration: string; sessionKeys: Map<string, Subscription> }
   >();
-  const sessionSubscribers = new Map<string, Map<string, string>>();
+  const sessionSubscribers = new Map<string, Map<string, Subscription>>();
+  const liveTextGroups = new WeakMap<
+    AbortSignal,
+    {
+      publications: Map<string, Publication>;
+      receipts: WeakMap<Subscription, Map<string, Receipt>>;
+    }
+  >();
 
   const toPayloadJSON = (payload: unknown): SerializedEventPayload | null | undefined => {
     try {
@@ -78,21 +95,22 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
     if (!nodeEntry) {
       nodeEntry = {
         pairingGeneration: normalizedPairingGeneration,
-        sessionKeys: new Set<string>(),
+        sessionKeys: new Map(),
       };
       nodeSubscriptions.set(normalizedNodeId, nodeEntry);
     }
     if (nodeEntry.sessionKeys.has(normalizedSessionKey)) {
       return;
     }
-    nodeEntry.sessionKeys.add(normalizedSessionKey);
+    const subscription = { pairingGeneration: normalizedPairingGeneration };
+    nodeEntry.sessionKeys.set(normalizedSessionKey, subscription);
 
     let sessionMap = sessionSubscribers.get(normalizedSessionKey);
     if (!sessionMap) {
-      sessionMap = new Map<string, string>();
+      sessionMap = new Map();
       sessionSubscribers.set(normalizedSessionKey, sessionMap);
     }
-    sessionMap.set(normalizedNodeId, normalizedPairingGeneration);
+    sessionMap.set(normalizedNodeId, subscription);
   };
 
   const unsubscribe = (nodeId: string, pairingGeneration: string, sessionKey: string) => {
@@ -113,7 +131,7 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
     }
 
     const sessionMap = sessionSubscribers.get(normalizedSessionKey);
-    if (sessionMap?.get(normalizedNodeId) === normalizedPairingGeneration) {
+    if (sessionMap?.get(normalizedNodeId)?.pairingGeneration === normalizedPairingGeneration) {
       sessionMap.delete(normalizedNodeId);
     }
     if (sessionMap?.size === 0) {
@@ -132,9 +150,9 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
     }
     // Remove reverse session indexes before deleting the node index so session
     // fanout cannot retain disconnected node ids.
-    for (const sessionKey of nodeEntry.sessionKeys) {
+    for (const sessionKey of nodeEntry.sessionKeys.keys()) {
       const sessionMap = sessionSubscribers.get(sessionKey);
-      if (sessionMap?.get(normalizedNodeId) === nodeEntry.pairingGeneration) {
+      if (sessionMap?.get(normalizedNodeId)?.pairingGeneration === nodeEntry.pairingGeneration) {
         sessionMap.delete(normalizedNodeId);
       }
       if (sessionMap?.size === 0) {
@@ -166,8 +184,8 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
       return;
     }
     nodeEntry.pairingGeneration = nextPairingGeneration;
-    for (const sessionKey of nodeEntry.sessionKeys) {
-      sessionSubscribers.get(sessionKey)?.set(normalizedNodeId, nextPairingGeneration);
+    for (const subscription of nodeEntry.sessionKeys.values()) {
+      subscription.pairingGeneration = nextPairingGeneration;
     }
   };
 
@@ -176,28 +194,101 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
     event: string,
     payload: unknown,
     sendEvent?: NodeSendEventFn | null,
+    opts?: GatewayBroadcastOpts,
   ) => {
     const normalizedSessionKey = sessionKey.trim();
     if (!normalizedSessionKey || !sendEvent) {
       return;
     }
     const subscribers = sessionSubscribers.get(normalizedSessionKey);
-    if (!subscribers || subscribers.size === 0) {
+    const liveText = opts?.liveText;
+    if (!liveText?.projection) {
+      if (!subscribers?.size) {
+        return;
+      }
+      const payloadJSON = toPayloadJSON(payload);
+      if (payloadJSON === undefined) {
+        return;
+      }
+      return settleFanout(subscribers, ([nodeId, subscription]) => {
+        const pairingGeneration = subscription.pairingGeneration;
+        return () => sendEvent({ nodeId, pairingGeneration, event, payloadJSON });
+      });
+    }
+    if (liveText.group.aborted) {
+      return;
+    }
+    const projection = liveText.projection;
+    const streamKey = `${normalizedSessionKey}\0${projection.key}`;
+    let group = liveTextGroups.get(liveText.group);
+    if (!group) {
+      group = { publications: new Map(), receipts: new WeakMap() };
+      liveTextGroups.set(liveText.group, group);
+      const retiredGroup = group;
+      liveText.group.addEventListener(
+        "abort",
+        () => {
+          retiredGroup.publications.clear();
+          retiredGroup.receipts = new WeakMap();
+          liveTextGroups.delete(liveText.group);
+        },
+        { once: true },
+      );
+    }
+    const previousPublication = group.publications.get(streamKey);
+    const publication = { version: projection.version };
+    group.publications.set(streamKey, publication);
+    if (!subscribers?.size) {
       return;
     }
 
-    const payloadJSON = toPayloadJSON(payload);
-    if (payloadJSON === undefined) {
-      return;
-    }
-    // Serialize once per event and reuse across all subscribed nodes to keep
-    // fanout deterministic and avoid repeated JSON conversion.
-    await settleFanout(
-      subscribers,
-      ([nodeId, pairingGeneration]) =>
-        () =>
-          sendEvent({ nodeId, pairingGeneration, event, payloadJSON }),
-    );
+    // Each representation is serialized only if a current recipient needs it.
+    let snapshotJSON: SerializedEventPayload | null | undefined;
+    let deltaJSON: SerializedEventPayload | null | undefined;
+    await settleFanout(subscribers, ([nodeId, subscription]) => {
+      const pairingGeneration = subscription.pairingGeneration;
+      return () =>
+        sendEvent({
+          nodeId,
+          pairingGeneration,
+          event,
+          preparePayload: (connId) => {
+            if (
+              sessionSubscribers.get(normalizedSessionKey)?.get(nodeId) !== subscription ||
+              subscription.pairingGeneration !== pairingGeneration ||
+              liveText.group.aborted ||
+              liveText.isCurrent?.() === false
+            ) {
+              return undefined;
+            }
+            const receipt = group.receipts.get(subscription)?.get(streamKey);
+            const append =
+              !projection.snapshot &&
+              receipt?.connId === connId &&
+              receipt.publication === previousPublication &&
+              Object.is(previousPublication?.version, publication.version);
+            const payloadJSON = append
+              ? (deltaJSON ??= toPayloadJSON(projection.delta(payload)))
+              : (snapshotJSON ??= toPayloadJSON(payload));
+            if (payloadJSON === undefined) {
+              return undefined;
+            }
+            return {
+              payloadJSON,
+              onSent: () => {
+                if (!liveText.group.aborted) {
+                  let receipts = group.receipts.get(subscription);
+                  if (!receipts) {
+                    receipts = new Map();
+                    group.receipts.set(subscription, receipts);
+                  }
+                  receipts.set(streamKey, { connId, publication });
+                }
+              },
+            };
+          },
+        });
+    });
   };
 
   const sendToAllSubscribed = async (

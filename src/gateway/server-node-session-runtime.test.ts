@@ -4,6 +4,7 @@ import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-i
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../infra/node-runner-inventory.js";
 import { GATEWAY_EVENT_NODE_RUNNER_INVENTORY_CHANGED } from "./events.js";
 import { updateNodeRunnerInventory } from "./node-registry-private.js";
+import type { GatewayBroadcastOpts } from "./server-broadcast-types.js";
 import {
   createSessionEventSubscriberRegistry,
   createSessionMessageSubscriberRegistry,
@@ -77,9 +78,160 @@ function registerNode(
     pairingIdentity: "identity-a",
     pairingGeneration,
   });
+  return socket;
+}
+
+function liveTextPublisher(runtime: ReturnType<typeof createRuntime>, event: "chat" | "agent") {
+  const group = new AbortController();
+  return {
+    group,
+    send: (
+      text: string,
+      delta: string,
+      boundary: { version?: unknown; snapshot?: boolean; isCurrent?: () => boolean } = {},
+    ) => {
+      const payload =
+        event === "chat"
+          ? {
+              runId: "run-a",
+              state: "delta",
+              deltaText: delta,
+              message: { role: "assistant", content: [{ type: "text", text }] },
+            }
+          : { runId: "run-a", stream: "assistant", data: { text, delta } };
+      const deltaPayload =
+        event === "chat"
+          ? { runId: "run-a", state: "delta", deltaText: delta }
+          : { runId: "run-a", stream: "assistant", data: { delta } };
+      const opts: GatewayBroadcastOpts = {
+        liveText: {
+          group: group.signal,
+          isCurrent: boundary.isCurrent,
+          projection: {
+            key: event,
+            delta: () => deltaPayload,
+            version: boundary.version,
+            snapshot: boundary.snapshot,
+          },
+        },
+      };
+      return runtime.nodeSendToSession("main", event, payload, opts);
+    },
+  };
 }
 
 describe("gateway node session runtime", () => {
+  test.each(["chat", "agent"] as const)(
+    "%s snapshots attach, resubscribe, and changed projections while preserving append ordering",
+    async (event) => {
+      const frames: string[] = [];
+      const runtime = createRuntime(async () => "generation-a");
+      registerNode(runtime, "conn-original", "generation-a", frames);
+      const publisher = liveTextPublisher(runtime, event);
+      await publisher.send("before", "before");
+      runtime.nodeSubscribe("node-a", "main", "conn-original");
+      const first = publisher.send("before attach", " attach");
+      const append = publisher.send("before attach append", " append");
+      const tool = runtime.nodeSendToSession("main", "agent", { stream: "tool" });
+      await Promise.all([first, append, tool]);
+      runtime.nodeUnsubscribe("node-a", "main", "conn-original");
+      runtime.nodeSubscribe("node-a", "main", "conn-original");
+      await publisher.send("before attach append again", " again");
+      await publisher.send("canvas changed", " changed", { version: "canvas-1" });
+      await publisher.send("canvas changed more", " more", { version: "canvas-1" });
+      await publisher.send("rewrite", "rewrite", { version: "canvas-1", snapshot: true });
+      publisher.group.abort();
+      await publisher.send("stale", "stale");
+      await runtime.nodeSendToSession(
+        "main",
+        "chat",
+        {
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "rewrite" }] },
+        },
+        { liveText: { group: publisher.group.signal } },
+      );
+
+      const payloads = frames.map((frame) => JSON.parse(frame).payload);
+      const snapshot = (index: number) =>
+        event === "chat" ? payloads[index].message?.content[0].text : payloads[index].data?.text;
+      expect(payloads).toHaveLength(8);
+      expect(snapshot(0)).toBe("before attach");
+      expect(snapshot(1)).toBeUndefined();
+      expect(event === "chat" ? payloads[1].deltaText : payloads[1].data.delta).toBe(" append");
+      expect(payloads[2]).toEqual({ stream: "tool" });
+      expect(snapshot(3)).toBe("before attach append again");
+      expect(snapshot(4)).toBe("canvas changed");
+      expect(snapshot(5)).toBeUndefined();
+      expect(snapshot(6)).toBe("rewrite");
+      expect(payloads[7]).toMatchObject({
+        state: "final",
+        message: { content: [{ text: "rewrite" }] },
+      });
+    },
+  );
+
+  test("re-baselines after a failed send or a skipped publication", async () => {
+    const frames: string[] = [];
+    const runtime = createRuntime(async () => "generation-a");
+    const socket = registerNode(runtime, "conn-original", "generation-a", frames);
+    runtime.nodeSubscribe("node-a", "main", "conn-original");
+    const publisher = liveTextPublisher(runtime, "chat");
+    await publisher.send("one", "one");
+    vi.mocked(socket.send).mockImplementationOnce(() => {
+      throw new Error("send failed");
+    });
+    await publisher.send("one two", " two");
+    await publisher.send("one two three", " three");
+    await publisher.send("one two three four", " four", { isCurrent: () => false });
+    await publisher.send("one two three four five", " five");
+
+    expect(frames.map((frame) => JSON.parse(frame).payload.message.content[0].text)).toEqual([
+      "one",
+      "one two three",
+      "one two three four five",
+    ]);
+  });
+
+  test("does not inherit receipts when a connection is replaced during pairing verification", async () => {
+    const entered = Promise.withResolvers<void>();
+    const pairing = Promise.withResolvers<string>();
+    let delayed = false;
+    const runtime = createRuntime(() => {
+      if (delayed) {
+        entered.resolve();
+        return pairing.promise;
+      }
+      return Promise.resolve("generation-a");
+    });
+    const originalFrames: string[] = [];
+    registerNode(runtime, "conn-original", "generation-a", originalFrames);
+    runtime.nodeSubscribe("node-a", "main", "conn-original");
+    const publisher = liveTextPublisher(runtime, "chat");
+    await publisher.send("one", "one");
+    delayed = true;
+    const pending = publisher.send("one two", " two");
+    await entered.promise;
+    const replacementFrames: string[] = [];
+    registerNode(runtime, "conn-replacement", "generation-a", replacementFrames);
+    pairing.resolve("generation-a");
+    await pending;
+    delayed = false;
+    await publisher.send("one two three", " three");
+    await publisher.send("one two three four", " four");
+
+    expect(originalFrames).toHaveLength(1);
+    expect(replacementFrames.map((frame) => JSON.parse(frame).payload)).toEqual([
+      {
+        runId: "run-a",
+        state: "delta",
+        deltaText: " three",
+        message: { role: "assistant", content: [{ type: "text", text: "one two three" }] },
+      },
+      { runId: "run-a", state: "delta", deltaText: " four" },
+    ]);
+  });
+
   test("publishes pairing-generation transitions to lifecycle consumers", () => {
     const onPairingGenerationChanged = vi.fn();
     const runtime = createGatewayNodeSessionRuntime({
