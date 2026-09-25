@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Writable } from "node:stream";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { z } from "zod";
 import {
@@ -11,6 +12,9 @@ import {
   prepareInstalledPackage,
 } from "../../scripts/lib/gateway-bench-installed-package.ts";
 import type { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
+import { waitForGatewayHttpReadiness } from "../cli/daemon-cli/restart-health-probe.js";
+import { DEFAULT_RESTART_HEALTH_DELAY_MS } from "../cli/daemon-cli/restart-health.constants.js";
+import { resolveGatewayStartupTiming } from "../commands/gateway-startup-timing.js";
 import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 import {
   doctorReportSchema,
@@ -35,6 +39,7 @@ import {
   samePath,
   verifyPreparedInstall,
 } from "./schtasks.installed-package.test-support.js";
+import { resolveGatewayService } from "./service.js";
 
 type Lifetime = ReturnType<typeof createFixtureLifetime>;
 type Owners = {
@@ -64,7 +69,8 @@ export async function runInstalledLifecycle(
   const { execSchtasks } = await import("./schtasks-exec.js");
   const { setScheduledTaskXmlEnabled } = await import("./schtasks-control.js");
   const { resolveTaskScriptPath } = await import("./schtasks.js");
-  const { probeScheduledTaskExists } = await import("./schtasks-state-probe.js");
+  const { probeScheduledTaskExists, probeScheduledTaskState, ScheduledTaskInspectionError } =
+    await import("./schtasks-state-probe.js");
   const {
     assertInteractiveLeastPrivilegeTask,
     readTaskPrincipal,
@@ -161,6 +167,23 @@ export async function runInstalledLifecycle(
       throw commandFailure;
     }
     return output;
+  };
+  const awaitReadiness = async (task: Task, phase: string) => {
+    const { deadlineMs } = resolveGatewayStartupTiming();
+    const started = performance.now();
+    await recordProgress(`${phase}:waiting`);
+    const readiness = await waitForGatewayHttpReadiness({
+      port: task.gatewayPort,
+      attempts: Math.ceil(deadlineMs / DEFAULT_RESTART_HEALTH_DELAY_MS),
+      deadlineAt: Date.now() + deadlineMs,
+      delayMs: DEFAULT_RESTART_HEALTH_DELAY_MS,
+      signal,
+      onObservation: (value) => {
+        observations[phase] = { ...value, elapsedMs: performance.now() - started };
+      },
+    });
+    assert.deepEqual(readiness, { healthz: 200, readyz: 200 });
+    await recordProgress(`${phase}:ready`);
   };
   const doctor = async (task: Task, expectedExit = 1) =>
     doctorReportSchema.parse(
@@ -267,6 +290,8 @@ export async function runInstalledLifecycle(
       String(gatewayPort),
       "--json",
     ]);
+    // Installation acknowledges activation; the service owner has not checked readiness yet.
+    await awaitReadiness(task, `${role}-startup`);
     return task;
   };
   const status = async (
@@ -356,6 +381,7 @@ export async function runInstalledLifecycle(
         installRoot,
         input.candidate.version,
       );
+      await awaitReadiness(selected, "candidate-startup");
       const after = await status(selected, candidateIdentity);
       assert.notEqual(after.service.runtime.pid, before.service.runtime.pid);
       observations.after = after;
@@ -502,6 +528,27 @@ export async function runInstalledLifecycle(
   }
   for (const task of tasks.toReversed()) {
     try {
+      await lifetime.verifyCleanup(async () => {
+        const registration = probeScheduledTaskState(task.taskName);
+        if (registration.status === "unknown") {
+          throw new ScheduledTaskInspectionError(registration);
+        }
+        // Successful uninstall or failed registration leaves no definition to stop.
+        if (registration.status === "missing") {
+          return;
+        }
+        const stdout = new Writable({
+          write(_chunk, _encoding, callback) {
+            callback();
+          },
+        });
+        try {
+          // Installed supervisors have no probe PID file; stop them before deleting authority.
+          await resolveGatewayService().stop({ env: task.env, stdout });
+        } finally {
+          stdout.end();
+        }
+      });
       await cleanupTask(task, packageRoot(task.installRoot), path.join(rootDir, "commands.json"));
       await owners.waitForLoopbackPortRelease(task.gatewayPort);
     } catch (error) {
