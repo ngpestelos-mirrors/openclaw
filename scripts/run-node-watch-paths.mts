@@ -4,6 +4,7 @@ import {
   BUNDLED_PLUGIN_PATH_PREFIX,
   BUNDLED_PLUGIN_ROOT_DIR,
 } from "./lib/bundled-plugin-paths.mjs";
+import { isRuntimePublicationStagingPath } from "./lib/runtime-publication.mts";
 import { listGeneratedExtensionAssetSources } from "./lib/static-extension-assets.mts";
 
 const RUN_NODE_PACKAGE_SOURCE_ROOTS = [
@@ -70,6 +71,7 @@ const isRelevantRunNodePath = (
 ): boolean => {
   const normalizedPath = normalizeRunNodePath(repoPath);
   if (
+    isRuntimePublicationStagingPath(normalizedPath) ||
     generatedPluginAssetPaths.has(normalizedPath) ||
     ignoredRunNodeRepoPathPatterns.some((pattern) => pattern.test(normalizedPath))
   ) {

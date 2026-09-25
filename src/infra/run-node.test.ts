@@ -664,7 +664,7 @@ describe("run-node script", () => {
       }
       if (mode === "metadata") {
         expect(runRuntimePostBuild).toHaveBeenCalledExactlyOnceWith({
-          cwd: tmp,
+          cwd: expect.stringContaining(path.join(tmp, ".artifacts", "source-build-")),
           env: expect.objectContaining(expectedEnv),
         });
       } else {
@@ -955,13 +955,13 @@ describe("run-node script", () => {
         releasePostbuild = resolve;
       });
       const { promise: waitingForLock, resolve: markWaiting } = createDeferred();
-      const runRuntimePostBuild = vi.fn(async () => {
+      const runRuntimePostBuild = vi.fn(async (params?: { cwd?: string }) => {
         markPostbuildStarted();
         await postbuildRelease;
         if (missing === "overlay") {
-          const runtimePath = resolvePath(tmp, DIST_RUNTIME_EXTENSION_INDEX);
+          const runtimePath = resolvePath(params!.cwd!, DIST_RUNTIME_EXTENSION_INDEX);
           await fs.mkdir(path.dirname(runtimePath), { recursive: true });
-          await fs.copyFile(resolvePath(tmp, DIST_EXTENSION_INDEX), runtimePath);
+          await fs.copyFile(resolvePath(params!.cwd!, DIST_EXTENSION_INDEX), runtimePath);
         }
       });
       const { spawn, spawnSync } = createCurrentGitSpawnRecorder();
@@ -1027,9 +1027,9 @@ describe("run-node script", () => {
       return createExitedProcess(0);
     });
 
-    const exitCode = await runNodeCommand(tmp, { env: { OPENCLAW_FORCE_BUILD: "1" }, spawn });
-
-    expect(exitCode).toBe(1);
+    await expect(
+      runNodeCommand(tmp, { env: { OPENCLAW_FORCE_BUILD: "1" }, spawn }),
+    ).rejects.toThrow("spawn failed");
     expect(spawn).toHaveBeenCalledOnce();
     expect(fsSync.existsSync(path.join(tmp, ".artifacts", "run-node-build.lock"))).toBe(false);
   });
@@ -1057,59 +1057,55 @@ describe("run-node script", () => {
     },
   );
 
-  it.for([false, true])(
-    "forwards SIGTERM to the active child and returns 143 (rebuild: %s)",
-    async (rebuild, { tmp }) => {
-      await setupStampedProject(tmp, { oldPaths: [ROOT_SRC, ROOT_TSCONFIG, ROOT_PACKAGE] });
+  // Compiler trees now belong to runManagedCommand; the real lifecycle suite covers them.
+  it("forwards SIGTERM to the active CLI child and returns 143", async ({ tmp }) => {
+    await setupStampedProject(tmp, { oldPaths: [ROOT_SRC, ROOT_TSCONFIG, ROOT_PACKAGE] });
 
-      const fakeProcess = Object.assign(createFakeProcess(), {
-        stdin: {
-          isTTY: true,
-        },
-      });
-      const child = Object.assign(new EventEmitter(), {
-        kill: vi.fn((_signal: string) => {
-          queueMicrotask(() => child.emit("exit", 0, null));
-          return true;
-        }),
-      });
-      const { promise: childSpawned, resolve: markChildSpawned } = createDeferred();
-      const spawn = vi.fn((_cmd: string, _args: string[], _options: SpawnOptions) => {
-        markChildSpawned();
-        return child;
-      });
+    const fakeProcess = Object.assign(createFakeProcess(), {
+      stdin: {
+        isTTY: true,
+      },
+    });
+    const child = Object.assign(new EventEmitter(), {
+      kill: vi.fn((_signal: string) => {
+        queueMicrotask(() => child.emit("exit", 0, null));
+        return true;
+      }),
+    });
+    const { promise: childSpawned, resolve: markChildSpawned } = createDeferred();
+    const spawn = vi.fn((_cmd: string, _args: string[], _options: SpawnOptions) => {
+      markChildSpawned();
+      return child;
+    });
 
-      const exitCodePromise = runNodeCommand(tmp, {
-        env: { OPENCLAW_FORCE_BUILD: rebuild ? "1" : "0" },
-        process: fakeProcess,
-        spawn,
-        runRuntimePostBuild: skipRuntimePostBuild,
-      });
+    const exitCodePromise = runNodeCommand(tmp, {
+      env: { OPENCLAW_FORCE_BUILD: "0" },
+      process: fakeProcess,
+      spawn,
+      runRuntimePostBuild: skipRuntimePostBuild,
+    });
 
-      await Promise.race([childSpawned, exitCodePromise]);
-      expect(spawn).toHaveBeenCalled();
-      fakeProcess.emit("SIGTERM");
-      const exitCode = await exitCodePromise;
+    await Promise.race([childSpawned, exitCodePromise]);
+    expect(spawn).toHaveBeenCalled();
+    fakeProcess.emit("SIGTERM");
+    const exitCode = await exitCodePromise;
 
-      expect(exitCode).toBe(143);
-      expect(spawn).toHaveBeenCalledTimes(1);
-      const spawnCall = firstMockCall(spawn) as [string, string[], { stdio?: unknown }] | undefined;
-      expect(spawnCall?.[0]).toBe(process.execPath);
-      expect(spawnCall?.[1]).toEqual(
-        rebuild ? expectedBuildSpawn().slice(1) : ["openclaw.mjs", "status"],
-      );
-      expect(spawnCall?.[2].stdio).toEqual(rebuild ? ["inherit", "pipe", "pipe"] : "inherit");
-      expect(spawnCall?.[2]).toMatchObject({ detached: false });
-      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
-      expect(fsSync.existsSync(path.join(tmp, ".artifacts", "run-node-build.lock"))).toBe(false);
-      expect(fakeProcess.listenerCount("SIGINT")).toBe(0);
-      expect(fakeProcess.listenerCount("SIGTERM")).toBe(0);
-    },
-  );
+    expect(exitCode).toBe(143);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const spawnCall = firstMockCall(spawn) as [string, string[], { stdio?: unknown }] | undefined;
+    expect(spawnCall?.[0]).toBe(process.execPath);
+    expect(spawnCall?.[1]).toEqual(["openclaw.mjs", "status"]);
+    expect(spawnCall?.[2].stdio).toEqual("inherit");
+    expect(spawnCall?.[2]).toMatchObject({ detached: false });
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(fsSync.existsSync(path.join(tmp, ".artifacts", "run-node-build.lock"))).toBe(false);
+    expect(fakeProcess.listenerCount("SIGINT")).toBe(0);
+    expect(fakeProcess.listenerCount("SIGTERM")).toBe(0);
+  });
 
-  it.runIf(process.platform !== "win32").for([false, true])(
-    "force-cleans the active child process group after SIGTERM (rebuild: %s)",
-    async (rebuild, { tmp }) => {
+  it.runIf(process.platform !== "win32")(
+    "force-cleans the active CLI child process group after SIGTERM",
+    async ({ tmp }) => {
       await setupStampedProject(tmp, { oldPaths: [ROOT_SRC, ROOT_TSCONFIG, ROOT_PACKAGE] });
 
       const fakeProcess = Object.assign(createFakeProcess(), {
@@ -1129,7 +1125,7 @@ describe("run-node script", () => {
       });
 
       const exitCodePromise = runNodeCommand(tmp, {
-        env: { OPENCLAW_FORCE_BUILD: rebuild ? "1" : "0" },
+        env: { OPENCLAW_FORCE_BUILD: "0" },
         platform: "darwin",
         process: fakeProcess,
         signalProcess: (pid: number, signal?: string | number) => {
@@ -1152,12 +1148,10 @@ describe("run-node script", () => {
       const spawnCall = firstMockCall(spawn) as
         | [string, string[], { detached?: boolean; stdio?: unknown }]
         | undefined;
-      expect(spawnCall?.[1]).toEqual(
-        rebuild ? expectedBuildSpawn().slice(1) : ["openclaw.mjs", "status"],
-      );
+      expect(spawnCall?.[1]).toEqual(["openclaw.mjs", "status"]);
       expect(spawnCall?.[2]).toMatchObject({
         detached: true,
-        stdio: rebuild ? ["inherit", "pipe", "pipe"] : "inherit",
+        stdio: "inherit",
       });
       expect(spawn).toHaveBeenCalledOnce();
       expect(fsSync.existsSync(path.join(tmp, ".artifacts", "run-node-build.lock"))).toBe(false);
@@ -1702,10 +1696,10 @@ describe("run-node script", () => {
     await fs.rm(resolvePath(tmp, DIST_RUNTIME_EXTENSION_INDEX));
 
     const { spawnCalls, spawn, spawnSync } = createCurrentGitSpawnRecorder();
-    const runRuntimePostBuild = vi.fn(async () => {
+    const runRuntimePostBuild = vi.fn(async (params?: { cwd?: string }) => {
       await fs.copyFile(
-        resolvePath(tmp, DIST_EXTENSION_INDEX),
-        resolvePath(tmp, DIST_RUNTIME_EXTENSION_INDEX),
+        resolvePath(params!.cwd!, DIST_EXTENSION_INDEX),
+        resolvePath(params!.cwd!, DIST_RUNTIME_EXTENSION_INDEX),
       );
     });
     const exitCode = await runStatusCommand({ tmp, spawn, spawnSync, runRuntimePostBuild });

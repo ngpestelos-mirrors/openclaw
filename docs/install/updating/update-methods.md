@@ -83,6 +83,30 @@ service's Node path, and checks that Node version against the target release's
 
 ## Source-checkout servers (reference script)
 
+Automatic source rebuilds and runtime restaging prepare outputs in a private
+copy of the checkout and its dependencies. Compiler, plugin asset, package-local
+output, and build-cache writes stay private until the writers finish. Publication
+then rechecks the same Gateway and physical output paths before each replacement;
+a failed build or revoked publication authority does not authorize a later write.
+Allow temporary disk space for the source, dependencies, and existing output.
+If interrupted writers or rollback cannot be verified, the error names retained
+artifacts instead of deleting them.
+
+If `pnpm openclaw` refuses to rebuild stale runtime artifacts while the affected
+Gateway is running, do not use `pnpm openclaw gateway stop`: it would try the same
+rebuild before reaching the stop command. From that checkout, use the existing
+build directly, with the same account and state/config environment:
+
+```bash
+node openclaw.mjs gateway status --deep
+node openclaw.mjs gateway stop
+```
+
+Keep any profile selector, for example `node openclaw.mjs --profile work gateway stop`.
+These commands do not rebuild the checkout. If the existing build is missing or
+cannot start, stop the Gateway through its actual supervisor or foreground process
+owner instead. After verifying it is stopped, retry the original source command.
+
 Teams running a gateway directly from a git checkout on a server can update it
 with `scripts/update-gateway.sh` from inside that checkout. It is the reference
 for a source-server update: it fails closed on all tracked local changes,

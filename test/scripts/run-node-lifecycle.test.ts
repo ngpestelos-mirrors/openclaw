@@ -73,6 +73,7 @@ fs.appendFileSync(${JSON.stringify(invocationsPath)}, JSON.stringify(process.arg
 // Let a regressed watcher finish after recording its doctor or restart invocation.
 if (fs.existsSync(${JSON.stringify(childPidPath)})) process.exit(0);
 const outcome = await runNodeMain({
+  runBuild: async () => 0,
   spawn: (command, args, options) => {
     if (!args.includes("openclaw.mjs")) return spawn(process.execPath, [...${JSON.stringify(nodeArgs)}, "--eval", ""], options);
     const child = spawn(command, [...${JSON.stringify(nodeArgs)}, ...args], options);
@@ -101,6 +102,7 @@ else process.exit(outcome);
       );
       const env: NodeJS.ProcessEnv = {
         ...process.env,
+        TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
         HOME: path.join(fixtureRoot, "home"),
         OPENCLAW_HOME: path.join(fixtureRoot, "home"),
         OPENCLAW_STATE_DIR: path.join(fixtureRoot, "state"),
@@ -178,6 +180,7 @@ it.runIf(process.platform !== "win32").each(["runner", "watch"] as const)(
     writeFileSync(path.join(checkout, "src/index.ts"), "export {};\n");
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
       HOME: path.join(root, "home"),
       OPENCLAW_STATE_DIR: path.join(root, "state"),
       OPENCLAW_CONFIG_PATH: path.join(root, "state/openclaw.json"),
@@ -288,9 +291,10 @@ fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, String(process.ppid));
 const outcome = await runNodeMain({
   cwd: ${JSON.stringify(checkoutRoot)},
   env: { ...process.env, OPENCLAW_FORCE_BUILD: "1", OPENCLAW_RUNNER_LOG: "0" },
-  spawn: (_command, _args, options) => spawn(process.execPath, [${JSON.stringify(childPath)}], {
-    ...options, stdio: "ignore",
-  }),
+  runBuild: async (options) => {
+    const { runManagedCommand } = await import(${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/managed-child-process.mts")).href)});
+    return await runManagedCommand({ ...options, bin: process.execPath, args: [${JSON.stringify(childPath)}], stdio: "ignore" });
+  },
 });
 if (typeof outcome === "string") process.kill(process.pid, outcome);
 else process.exit(outcome);
@@ -298,6 +302,7 @@ else process.exit(outcome);
       );
       const env: NodeJS.ProcessEnv = {
         ...process.env,
+        TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
         PNPM_CONFIG_MODULES_DIR: path.dirname(
           path.dirname(createRequire(import.meta.url).resolve("tsx/package.json")),
         ),

@@ -19,6 +19,21 @@ export function resolveDistArtifactLockPath(rootDir: string) {
   return path.join(findRepoRoot(rootDir) ?? rootDir, DIST_ARTIFACT_LOCK_PATH);
 }
 
+/** A joined private build must also settle its detached nested writer claims. */
+export function assertDistArtifactOwnershipSettled(rootDir: string) {
+  const directory = resolveDistArtifactLockPath(rootDir);
+  if (
+    fs.existsSync(directory) &&
+    fs
+      .readdirSync(directory)
+      .some((name) => name === "owner.json" || name === "unjoined" || name.startsWith("child-"))
+  ) {
+    throw Object.assign(new Error("Private build ownership has not settled: " + directory), {
+      processTreeState: "indeterminate",
+    });
+  }
+}
+
 function retainUnjoinedDistArtifactWork(directory: string, error: unknown) {
   if (hasUnjoinedWork(error)) {
     fs.writeFileSync(path.join(directory, "unjoined"), "Child cleanup was not verified.\n");

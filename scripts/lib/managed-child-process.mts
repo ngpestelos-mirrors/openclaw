@@ -680,7 +680,8 @@ export async function finalizeManagedChild(
   // killing their leader, then join inherited pipes as well as our own group.
   // POSIX normal exit has no grace period: surviving group members are a failure.
   const startedAt = Date.now();
-  const forceDelay = signal ? forceKillDelayMs : 0;
+  // SIGKILL has already forced termination; only pipe/group drainage remains.
+  const forceDelay = signal && signal !== "SIGKILL" ? forceKillDelayMs : 0;
   const signalErrors: unknown[] = [];
   const recordSignalError = (error: unknown) => {
     if (!isMissingProcessError(error)) {
@@ -734,7 +735,7 @@ export async function finalizeManagedChild(
     // retains its existing post-taskkill allowance; POSIX probes remain bounded too.
     const forceAt = (platform === "win32" && !normalJobExit ? Date.now() : startedAt) + forceDelay;
     const deadline = forceAt + drainTimeoutMs;
-    let forced = !signal || platform === "win32";
+    let forced = !signal || signal === "SIGKILL" || platform === "win32";
     let groupState: "dead" | "indeterminate" | "live" = "indeterminate";
     let survivingPids: number[] | undefined;
     let observationError: Error | undefined;

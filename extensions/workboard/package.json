@@ -34,6 +34,7 @@
       "build": "node --import ../../scripts/tsx.mjs ../../scripts/build-plugin-control-ui.mts",
       "copy": "node --import ../../scripts/tsx.mjs ../../scripts/build-plugin-control-ui.mts --copy",
       "buildOutputs": [
+        "dist/control-ui",
         "openclaw.plugin.json"
       ]
     },

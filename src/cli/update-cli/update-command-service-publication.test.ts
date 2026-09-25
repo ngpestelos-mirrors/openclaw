@@ -99,9 +99,13 @@ async function withRuntimePublicationFixture(
   });
 }
 
-it.each([undefined, "stale-profile"])(
-  "preserves the serving installation when a source command requests an automatic rebuild (profile=%s)",
-  (profile) =>
+it.each(
+  [undefined, "stale-profile"].flatMap((profile) =>
+    [["doctor"], ["gateway", "stop"]].map((args) => ({ profile, args })),
+  ),
+)(
+  "preserves the serving installation and offers non-building recovery (profile=$profile, args=$args)",
+  ({ profile, args }) =>
     withRuntimePublicationFixture(async ({ root, env, service }) => {
       vi.mocked(service.readRuntime).mockResolvedValue({
         status: "running",
@@ -113,14 +117,16 @@ it.each([undefined, "stale-profile"])(
       const spawn = vi.fn(() => {
         throw new Error("Automatic build started under the serving Gateway");
       });
-      await expect(
-        runNodeMain({
-          cwd: root,
-          args: [...(profile ? ["--profile", profile] : []), "doctor"],
-          env: { ...env, OPENCLAW_RUNNER_LOG: "0" },
-          spawn,
-        }),
-      ).rejects.toThrow(/affected Gateway.*running/);
+      const attempt = runNodeMain({
+        cwd: root,
+        args: [...(profile ? ["--profile", profile] : []), ...args],
+        env: { ...env, OPENCLAW_RUNNER_LOG: "0" },
+        spawn,
+      });
+      await expect(attempt).rejects.toThrow(/affected Gateway.*running/);
+      await expect(attempt).rejects.toThrow(
+        `node openclaw.mjs${profile ? ` --profile ${profile}` : ""} gateway stop`,
+      );
       expect(spawn).not.toHaveBeenCalled();
       expect(
         vi
@@ -155,6 +161,10 @@ it("holds Gateway startup custody until the automatic source build exits", () =>
         args: ["doctor"],
         env: { ...env, OPENCLAW_RUNNER_LOG: "0" },
         spawn,
+        runBuild: async ({ args = [] }) => {
+          spawn(process.execPath, args);
+          return 0;
+        },
       }),
     ).toBe(0);
     expect(builds).toBe(1);
@@ -286,7 +296,7 @@ it.each([
         publish,
       ),
     ).rejects.toThrow(
-      /affected Gateway.*openclaw gateway status --deep.*openclaw gateway stop.*retry the update/,
+      /affected Gateway.*openclaw gateway status --deep.*openclaw gateway stop.*retry the original command/,
     );
     expect(publish).not.toHaveBeenCalled();
   }),
@@ -598,3 +608,67 @@ it("holds native and Gateway exclusion through publication rollback and closes i
     expect(released).not.toBeNull();
     released?.release();
   }));
+
+it.each(["offline", "reassigned", "redirected", "failed"] as const)(
+  "publishes joined private source output only with current authority: %s",
+  (scenario) =>
+    withRuntimePublicationFixture(async ({ home, root, env, service }) => {
+      const stamp = path.join(root, "dist", ".buildstamp");
+      await fs.writeFile(stamp, "original");
+      const redirected = path.join(home, "replacement");
+      const runBuild = vi.fn<
+        NonNullable<NonNullable<Parameters<typeof runNodeMain>[0]>["runBuild"]>
+      >(async ({ cwd }) => {
+        expect(cwd).not.toBe(root);
+        expect(await fs.readFile(stamp, "utf8")).toBe("original");
+        if (scenario === "reassigned") {
+          vi.mocked(service.readCommand).mockResolvedValue({
+            programArguments: [
+              process.execPath,
+              path.join(root, "dist", "entry.js"),
+              "gateway",
+              "--verbose",
+            ],
+          });
+        } else if (scenario === "redirected") {
+          await fs.mkdir(redirected);
+          await fs.writeFile(path.join(redirected, ".buildstamp"), "original");
+          await fs.writeFile(path.join(redirected, "entry.js"), "export {};\n");
+          await fs.rename(path.join(root, "dist"), path.join(root, "dist-before"));
+          await fs.symlink(redirected, path.join(root, "dist"), "junction");
+        }
+        // This late writer acts after the transition, but only in its private build.
+        await fs.writeFile(path.join(cwd!, "dist", ".buildstamp"), "candidate");
+        return scenario === "failed" ? 1 : 0;
+      });
+      const spawn = vi.fn(() => ({
+        on(event: string, listener: (code: number, signal: null) => void) {
+          if (event === "exit") {
+            queueMicrotask(() => listener(0, null));
+          }
+        },
+      }));
+      const attempt = runNodeMain({
+        cwd: root,
+        args: ["doctor"],
+        env: { ...env, OPENCLAW_FORCE_BUILD: "1", OPENCLAW_RUNNER_LOG: "0" },
+        runBuild,
+        spawn,
+      });
+      if (scenario === "reassigned" || scenario === "redirected") {
+        await expect(attempt).rejects.toThrow(/affected Gateway/);
+      } else {
+        expect(await attempt).toBe(scenario === "offline" ? 0 : 1);
+      }
+      expect(await fs.readFile(stamp, "utf8")).toBe(
+        scenario === "offline" ? "candidate" : "original",
+      );
+      expect(runBuild).toHaveBeenCalledTimes(1);
+      expect(spawn).toHaveBeenCalledTimes(scenario === "offline" ? 1 : 0);
+      expect(
+        (await fs.readdir(path.join(root, ".artifacts"))).filter((name) =>
+          name.startsWith("source-build-"),
+        ),
+      ).toEqual([]);
+    }),
+);

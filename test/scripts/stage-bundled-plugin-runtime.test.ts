@@ -359,3 +359,82 @@ describe("prepareBundledPluginRuntime", () => {
     });
   });
 });
+
+describe("private source-build publication", () => {
+  it.each([false, true])(
+    "isolates dependency caches and preserves source edits (drift=%s)",
+    async (drift) => {
+      const { prepareSourceBuild } = await import("../../scripts/lib/source-build-stage.mts");
+      await withTempDir(async (parent) => {
+        const root = path.join(parent, "checkout");
+        const modules = path.join(parent, "external-modules");
+        fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+        fs.mkdirSync(path.join(modules, "dependency"), { recursive: true });
+        fs.writeFileSync(path.join(modules, "dependency", "index.js"), "dependency");
+        fs.symlinkSync(modules, path.join(root, "node_modules"), "junction");
+        const files = {
+          "dist/entry.js": "original runtime",
+          "extensions/demo/dist/control-ui/index.js": "original UI",
+          "packages/ai/dist/index.js": "original package",
+          "extensions/demo/package.json": JSON.stringify({
+            openclaw: {
+              assetScripts: {
+                build: "fixture",
+                buildOutputs: ["dist/control-ui", "generated.txt"],
+              },
+            },
+          }),
+          "extensions/demo/generated.txt": "original generated",
+        };
+        for (const [relative, content] of Object.entries(files)) {
+          fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+          fs.writeFileSync(path.join(root, relative), content);
+        }
+        const staged = await prepareSourceBuild(root, {});
+        try {
+          expect(fs.realpathSync(path.join(staged.cwd, "node_modules"))).not.toBe(modules);
+          fs.writeFileSync(
+            path.join(staged.cwd, "node_modules/dependency/index.js"),
+            "private cache write",
+          );
+          expect(fs.readFileSync(path.join(modules, "dependency/index.js"), "utf8")).toBe(
+            "dependency",
+          );
+          for (const relative of [
+            "dist/entry.js",
+            "packages/ai/dist/index.js",
+            "extensions/demo/dist/control-ui/index.js",
+            "extensions/demo/generated.txt",
+          ]) {
+            fs.writeFileSync(path.join(staged.cwd, relative), "candidate");
+          }
+          if (drift) {
+            fs.writeFileSync(path.join(root, "extensions/demo/generated.txt"), "operator edit");
+          }
+          const publish = staged.publish(async () => {});
+          if (drift) {
+            await expect(publish).rejects.toThrow("Generated source input changed");
+          } else {
+            await publish;
+          }
+          expect(
+            fs.readFileSync(path.join(root, "extensions/demo/dist/control-ui/index.js"), "utf8"),
+          ).toBe(drift ? "original UI" : "candidate");
+          expect(fs.readFileSync(path.join(root, "dist/entry.js"), "utf8")).toBe(
+            drift ? "original runtime" : "candidate",
+          );
+          expect(fs.readFileSync(path.join(root, "packages/ai/dist/index.js"), "utf8")).toBe(
+            drift ? "original package" : "candidate",
+          );
+          expect(fs.readFileSync(path.join(root, "extensions/demo/generated.txt"), "utf8")).toBe(
+            drift ? "operator edit" : "candidate",
+          );
+        } finally {
+          await staged.cleanup();
+        }
+        expect(fs.existsSync(staged.cwd)).toBe(false);
+        await expect(staged.publish(async () => {})).rejects.toThrow("no longer available");
+      });
+    },
+  );
+});

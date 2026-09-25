@@ -12,16 +12,14 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { getCommandArgsWithRootOptions } from "../src/infra/cli-root-options.ts";
-import {
-  distArtifactEntryArgs,
-  withDistArtifactOwnership,
-} from "./lib/dist-artifact-ownership.mts";
+import { withDistArtifactOwnership } from "./lib/dist-artifact-ownership.mts";
 import {
   BUILD_STAMP_FILE,
   RUNTIME_POSTBUILD_STAMP_FILE,
   resolveGitHead,
   writeRuntimePostBuildStamp as writeDistRuntimePostBuildStamp,
 } from "./lib/local-build-metadata.mts";
+import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
 import {
   collectRunNodeBundledPluginBuildEntries,
   hasDirtySourceTree,
@@ -32,6 +30,7 @@ import {
   type BundledPluginBuildEntry,
 } from "./lib/run-node-input-state.mts";
 import { sleep } from "./lib/sleep.mjs";
+import { listSourceBuildOutputs, prepareSourceBuild } from "./lib/source-build-stage.mts";
 import {
   discoverStaticExtensionAssets,
   shouldCopyStaticExtensionAssets,
@@ -44,7 +43,6 @@ import {
   runNodeWatchedPaths,
 } from "./run-node-watch-paths.mts";
 import { listCoreRuntimePostBuildOutputs, runRuntimePostBuild } from "./runtime-postbuild.mts";
-import { listTsdownOutputRoots } from "./tsdown-build.mts";
 
 type RunNodeInjectedChild = {
   kill?: (signal?: NodeJS.Signals) => boolean | void;
@@ -57,6 +55,11 @@ type RunNodeInjectedChild = {
 
 type RunNodeChild = RunNodeInjectedChild;
 type RunNodeSpawn = (command: string, args: string[], options: SpawnOptions) => unknown;
+type RunNodeBuild = (
+  params: Omit<Parameters<typeof runManagedCommand>[0], "onReady"> & {
+    onReady?: (child: RunNodeChild) => void;
+  },
+) => Promise<number>;
 type RunNodeSpawnSync = (
   command: string,
   args: string[],
@@ -71,6 +74,7 @@ type RunNodeRuntimePostBuild = (
 ) => void | Promise<void>;
 type RunNodeMainParams = {
   spawn?: RunNodeSpawn;
+  runBuild?: RunNodeBuild;
   spawnSync?: RunNodeSpawnSync;
   fs?: typeof fs;
   stderr?: RunNodeWritable;
@@ -110,7 +114,9 @@ type RunNodeOutputTee = {
   close(): Promise<void>;
 };
 type RunNodeMutableState = {
+  cancellation: AbortController;
   outputTee: RunNodeOutputTee | null;
+  lostBuildSignal: NodeJS.Signals | null;
   runNodeProgress: RunNodeProgress | undefined;
 };
 type RunNodeLogDeps = Pick<RunNodeDeps, "env" | "stderr"> &
@@ -130,7 +136,7 @@ type SpawnedProcessResult = {
 };
 type RunNodeExit = number | NodeJS.Signals;
 
-function asRunNodeChild(value: unknown): RunNodeChild {
+export function asRunNodeChild(value: unknown): RunNodeChild {
   if (!value || typeof value !== "object" || !("on" in value) || typeof value.on !== "function") {
     throw new Error("spawn implementation returned an invalid child process");
   }
@@ -642,7 +648,7 @@ const formatBuildReason = (reason: BuildRequirement["reason"]) => BUILD_REASON_L
 const formatRuntimePostBuildReason = (reason: RuntimePostBuildRequirement["reason"]) =>
   RUNTIME_POSTBUILD_REASON_LABELS[reason];
 
-const refuseImmutableDeploymentMutation = async (
+const refuseImmutableDeploymentMutation = (
   deps: RunNodeDeps,
   artifactKind: "build" | "runtime",
   reason: string,
@@ -652,7 +658,7 @@ const refuseImmutableDeploymentMutation = async (
     "Replace this deployment with a complete release, then use its installed `openclaw` command or run `node openclaw.mjs ...` from that release.\n";
   deps.stderr.write(message);
   deps.outputTee?.write(message);
-  return await closeRunNodeOutputTee(deps, 1);
+  return 1;
 };
 
 const SIGNAL_EXIT_CODES = {
@@ -1079,6 +1085,7 @@ const getInterruptedSpawnOutcome = (
 };
 
 const runNodeChild = async (deps: RunNodeDeps, args: string[]) => {
+  deps.cancellation.signal.throwIfAborted();
   const useProcessGroup = shouldUseRunNodeChildProcessGroup(deps);
   // The parent route grants lifecycle IPC; generic children must not extend
   // the launcher's five-second force-kill boundary with a shaped message.
@@ -1202,11 +1209,8 @@ const createSyncIoTraceStderrFilter = (deps: RunNodeDeps) => {
 };
 
 const closeRunNodeOutputTee = async (deps: RunNodeDeps, exitCode: RunNodeExit) => {
-  if (!deps.outputTee) {
-    return exitCode;
-  }
   try {
-    await deps.outputTee.close();
+    await deps.outputTee?.close();
   } catch (error) {
     deps.stderr.write(`[openclaw] Failed to write output log: ${getErrorMessage(error)}\n`);
     return exitCode === 0 ? 1 : exitCode;
@@ -1348,7 +1352,10 @@ const withRunNodeBuildLock = async <T,>(deps: RunNodeDeps, callback: () => Promi
   }
 };
 
-const withRunNodeRuntimePublication = async <T,>(deps: RunNodeDeps, publish: () => Promise<T>) => {
+const withRunNodeRuntimePublication = async <T,>(
+  deps: RunNodeDeps,
+  publish: (assertCurrent: () => Promise<void>, outputs: string[]) => Promise<T>,
+) => {
   const [{ withGatewayRuntimeArtifactPublication }, { parseCliProfileArgs, applyCliProfileEnv }] =
     await Promise.all([
       import("../src/cli/update-cli/update-command-service-publication.ts"),
@@ -1362,15 +1369,16 @@ const withRunNodeRuntimePublication = async <T,>(deps: RunNodeDeps, publish: () 
   if (selected.profile) {
     applyCliProfileEnv({ profile: selected.profile, env });
   }
+  const outputs = listSourceBuildOutputs(deps.cwd, deps.env);
   return await withGatewayRuntimeArtifactPublication(
     {
       root: deps.cwd,
       env,
       timeoutMs: 60_000,
-      outputPaths: listTsdownOutputRoots(),
+      outputPaths: outputs,
       assertCurrent() {},
     },
-    publish,
+    (assertCurrent) => publish(assertCurrent, outputs),
   );
 };
 
@@ -1378,6 +1386,9 @@ const syncRuntimeArtifacts = async (deps: RunNodeDeps) => {
   try {
     await deps.runRuntimePostBuild({ cwd: deps.cwd, env: deps.env });
   } catch (error) {
+    if (hasUnjoinedWork(error)) {
+      throw error;
+    }
     logRunner(`Failed to write runtime build artifacts: ${getErrorMessage(error)}`, deps);
     return false;
   }
@@ -1402,12 +1413,30 @@ const syncRuntimeArtifactsAndStamp = async (deps: RunNodeDeps) =>
     if (!resolveRuntimePostBuildRequirement(deps).shouldSync) {
       return true;
     }
-    return await withRunNodeRuntimePublication(deps, async () => {
-      const synced = await syncRuntimeArtifacts(deps);
-      if (synced) {
-        writeRuntimePostBuildStamp(deps);
+    return await withRunNodeRuntimePublication(deps, async (assertCurrent, outputs) => {
+      const staged = await prepareSourceBuild(
+        deps.cwd,
+        deps.env,
+        outputs,
+        deps.cancellation.signal,
+      );
+      try {
+        deps.cancellation.signal.throwIfAborted();
+        const privateDeps = createRunNodeDeps({ ...deps, cwd: staged.cwd, env: staged.env });
+        const synced = await syncRuntimeArtifacts(privateDeps);
+        staged.assertWritersJoined();
+        deps.cancellation.signal.throwIfAborted();
+        if (synced) {
+          writeRuntimePostBuildStamp(privateDeps);
+          await staged.publish(assertCurrent);
+        }
+        return synced;
+      } catch (error) {
+        staged.retainIfUnjoined(error);
+        throw error;
+      } finally {
+        await staged.cleanup();
       }
-      return synced;
     });
   });
 
@@ -1485,17 +1514,27 @@ const runQaReportFromSource = (deps: RunNodeDeps, script: QaReportScript) => {
 };
 
 function createRunNodeDeps(params: RunNodeMainParams) {
+  const runBuild: RunNodeBuild =
+    params.runBuild ??
+    ((options) =>
+      runManagedCommand({
+        ...options,
+        onReady: (child) => options.onReady?.(asRunNodeChild(child)),
+      }));
   const cwd = params.cwd ?? process.cwd();
   const distRoot = path.join(cwd, "dist");
   const env = params.env ? { ...params.env } : { ...process.env };
   // Select this checkout's plugins over tracked installs without changing source/dist loading.
   env.OPENCLAW_DEV_SOURCE_ROOT ??= cwd;
   const mutableState: RunNodeMutableState = {
+    cancellation: new AbortController(),
     outputTee: null,
+    lostBuildSignal: null,
     runNodeProgress: undefined,
   };
   return {
     spawn: params.spawn ?? spawn,
+    runBuild,
     spawnSync: params.spawnSync ?? spawnSync,
     fs: params.fs ?? fs,
     stderr: params.stderr ?? process.stderr,
@@ -1530,20 +1569,53 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
     deps.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS ??= "0";
   }
   deps.outputTee = createRunNodeOutputTee(deps);
+  // Managed children own forwarding and joining while they run. Keep the
+  // interruption alive across their async preparation/publication/cleanup gaps;
+  // never race those private writers against cleanup or fold it into authority
+  // checks, which must remain usable for rollback.
+  let interruptedSignal: NodeJS.Signals | undefined;
+  const signalHandlers = FORWARDED_SIGNALS.map(
+    (signal) =>
+      [
+        signal,
+        () => {
+          interruptedSignal ??= signal;
+          deps.cancellation.abort(new Error("Source runner interrupted by " + signal));
+        },
+      ] as const,
+  );
+  for (const [signal, handler] of signalHandlers) {
+    deps.process.on(signal, handler);
+  }
+  const finishRun = async (exitCode: RunNodeExit): Promise<RunNodeExit> => {
+    const outcome = await closeRunNodeOutputTee(deps, exitCode);
+    // Log failures stay visible, but cannot turn a late cancellation into a
+    // retryable exit. Preserve already-classified child signal outcomes.
+    if (
+      !interruptedSignal ||
+      typeof outcome === "string" ||
+      outcome === getSignalExitCode(interruptedSignal)
+    ) {
+      return outcome;
+    }
+    return deps.platform === "win32" ? getSignalExitCode(interruptedSignal) : interruptedSignal;
+  };
 
   try {
     let exitCode: RunNodeExit = 1;
     if (shouldFastPathExistingDistForGatewayClient(deps)) {
       exitCode = await runOpenClaw(deps);
-      return await closeRunNodeOutputTee(deps, exitCode);
+      return await finishRun(exitCode);
     }
     const buildRequirement = resolveBuildRequirement(deps);
     const immutableDeployment = isImmutableGitDeployment(deps);
     if (immutableDeployment && buildRequirement.shouldBuild) {
-      return await refuseImmutableDeploymentMutation(
-        deps,
-        "build",
-        formatBuildReason(buildRequirement.reason),
+      return await finishRun(
+        refuseImmutableDeploymentMutation(
+          deps,
+          "build",
+          formatBuildReason(buildRequirement.reason),
+        ),
       );
     }
     const qaReportScript = resolveQaReportSourceScript(deps, buildRequirement);
@@ -1554,15 +1626,17 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
         deps,
       );
       exitCode = await runQaReportFromSource(deps, qaReportScript);
-      return await closeRunNodeOutputTee(deps, exitCode);
+      return await finishRun(exitCode);
     }
     if (!buildRequirement.shouldBuild) {
       const runtimePostBuildRequirement = resolveRuntimePostBuildRequirement(deps);
       if (immutableDeployment && runtimePostBuildRequirement.shouldSync) {
-        return await refuseImmutableDeploymentMutation(
-          deps,
-          "runtime",
-          formatRuntimePostBuildReason(runtimePostBuildRequirement.reason),
+        return await finishRun(
+          refuseImmutableDeploymentMutation(
+            deps,
+            "runtime",
+            formatRuntimePostBuildReason(runtimePostBuildRequirement.reason),
+          ),
         );
       }
       if (
@@ -1581,11 +1655,11 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
           return await syncRuntimeArtifactsAndStamp(deps);
         });
         if (!synced) {
-          return await closeRunNodeOutputTee(deps, 1);
+          return await finishRun(1);
         }
       }
       exitCode = await runOpenClaw(deps);
-      return await closeRunNodeOutputTee(deps, exitCode);
+      return await finishRun(exitCode);
     }
 
     const buildExitCode = await withRunNodeBuildLock(deps, async () => {
@@ -1610,38 +1684,104 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNo
         deps,
       );
       return await withDistArtifactOwnership(deps.cwd, () =>
-        withRunNodeRuntimePublication(deps, () =>
+        withRunNodeRuntimePublication(deps, (assertCurrent, outputs) =>
           withRunNodeProgress(deps, "Building local CLI artifacts", async () => {
-            const build = asRunNodeChild(
-              deps.spawn(
-                deps.execPath,
-                distArtifactEntryArgs(path.join(deps.cwd, "scripts/build-all.mts"), ["qaRuntime"]),
-                {
-                  cwd: deps.cwd,
-                  detached: shouldUseRunNodeChildProcessGroup(deps),
-                  env: {
-                    ...deps.env,
-                    [RUN_NODE_SKIP_DTS_BUILD_ENV]: deps.env[RUN_NODE_SKIP_DTS_BUILD_ENV] ?? "1",
-                  },
-                  stdio: ["inherit", "pipe", "pipe"],
-                },
-              ),
+            const staged = await prepareSourceBuild(
+              deps.cwd,
+              deps.env,
+              outputs,
+              deps.cancellation.signal,
             );
-            pipeSpawnedOutput(build, deps, { stdoutTarget: "stderr" });
-            const result = await waitForSpawnedProcess(build, deps);
-            return getInterruptedSpawnOutcome(result, deps.platform) ?? result.exitCode ?? 1;
+            let buildSignal: NodeJS.Signals | undefined;
+            let forwardedSignal: NodeJS.Signals | null = null;
+            try {
+              deps.cancellation.signal.throwIfAborted();
+              const code = await deps.runBuild({
+                bin: deps.execPath,
+                args: [
+                  "--import",
+                  new URL("./tsx.mjs", import.meta.url).href,
+                  path.join(staged.cwd, "scripts/build-all.mts"),
+                  "qaRuntime",
+                ],
+                cwd: staged.cwd,
+                env: {
+                  ...staged.env,
+                  [RUN_NODE_SKIP_DTS_BUILD_ENV]: deps.env[RUN_NODE_SKIP_DTS_BUILD_ENV] ?? "1",
+                },
+                stdio: ["inherit", "pipe", "pipe"],
+                shell: false,
+                requireProcessTreeExit: deps.platform !== "win32",
+                onSignal: (signal) => {
+                  forwardedSignal = signal;
+                },
+                onReady: (build) => {
+                  build.on("exit", (_code, signal) => {
+                    if (signal) {
+                      buildSignal = signal;
+                    }
+                  });
+                  pipeSpawnedOutput(build, deps, { stdoutTarget: "stderr" });
+                },
+              });
+              staged.assertWritersJoined();
+              const interruption = getInterruptedSpawnOutcome(
+                { exitCode: code, exitSignal: buildSignal ?? null, forwardedSignal },
+                deps.platform,
+              );
+              if (interruption != null) {
+                return interruption;
+              }
+              if (buildSignal) {
+                return 1;
+              }
+              deps.cancellation.signal.throwIfAborted();
+              if (code === 0) {
+                await staged.publish(assertCurrent);
+              }
+              return code;
+            } catch (error) {
+              staged.retainIfUnjoined(error);
+              if (
+                hasUnjoinedWork(error) &&
+                buildSignal &&
+                !forwardedSignal &&
+                deps.platform !== "win32"
+              ) {
+                deps.lostBuildSignal = buildSignal;
+              }
+              throw error;
+            } finally {
+              await staged.cleanup();
+            }
           }),
         ),
       );
     });
     if (buildExitCode !== 0) {
-      return await closeRunNodeOutputTee(deps, buildExitCode);
+      return await finishRun(buildExitCode);
     }
     exitCode = await runOpenClaw(deps);
-    return await closeRunNodeOutputTee(deps, exitCode);
+    return await finishRun(exitCode);
   } catch (error) {
     await closeRunNodeOutputTee(deps, 1);
+    // The artifact owner has already retained uncertain work. Preserve an actual
+    // lost compiler signal so watch cannot mistake it for an ordinary CLI error
+    // and run doctor/restart while its private writers still need recovery.
+    if (deps.lostBuildSignal && hasUnjoinedWork(error)) {
+      return deps.lostBuildSignal;
+    }
+    if (interruptedSignal) {
+      if (error !== deps.cancellation.signal.reason) {
+        console.error(error);
+      }
+      return deps.platform === "win32" ? getSignalExitCode(interruptedSignal) : interruptedSignal;
+    }
     throw error;
+  } finally {
+    for (const [signal, handler] of signalHandlers) {
+      deps.process.off(signal, handler);
+    }
   }
 }
 

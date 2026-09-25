@@ -251,6 +251,12 @@ describe("watch-node script", () => {
       expect(watchOptions.ignored("extensions")).toBe(false);
       expect(watchOptions.ignored("extensions/voice-call")).toBe(false);
       expect(watchOptions.ignored("extensions/voice-call/dist")).toBe(true);
+      expect(watchOptions.ignored("extensions/demo/.openclaw-runtime-proof")).toBe(true);
+      expect(
+        watchOptions.ignored(
+          "extensions/demo/.openclaw-runtime-proof/candidate/openclaw.plugin.json",
+        ),
+      ).toBe(true);
       expect(watchOptions.ignored("extensions/voice-call/node_modules")).toBe(true);
       expect(watchOptions.ignored("extensions/voice-call/node_modules/chokidar/index.js")).toBe(
         true,

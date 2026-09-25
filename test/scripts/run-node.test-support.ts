@@ -24,14 +24,14 @@ import {
   UPDATE_COMPATIBILITY_INVENTORY_FILE,
   writeUpdateCompatibilityChunks,
 } from "../../scripts/lib/update-compat-chunks.mts";
-import { runNodeMain } from "../../scripts/run-node.mts";
+import { asRunNodeChild, runNodeMain } from "../../scripts/run-node.mts";
 import { withTestDir } from "../../src/test-helpers/temp-dir.js";
 // These launcher fixtures have no service. Publication custody is covered at its owner.
 vi.mock("../../src/cli/update-cli/update-command-service-publication.js", () => ({
   withGatewayRuntimeArtifactPublication: async (
     _params: unknown,
-    publish: () => Promise<unknown>,
-  ) => publish(),
+    publish: (assertCurrent: () => Promise<void>) => Promise<unknown>,
+  ) => publish(async () => {}),
 }));
 import {
   previousReleaseInventory,
@@ -227,7 +227,6 @@ export function expectedBuildSpawn() {
     process.execPath,
     "--import",
     expect.stringMatching(/\/scripts\/tsx\.mjs$/),
-    expect.stringMatching(/[\\/]scripts[\\/]lib[\\/]dist-artifact-ownership\.mts$/),
     expect.stringMatching(/\/scripts\/build-all\.mts$/),
     "qaRuntime",
   ];
@@ -442,10 +441,37 @@ export async function runNodeCommand(
   options: RunNodeTestOptions,
 ): Promise<RunNodeResult> {
   const { env, ...overrides } = options;
+  // Fixtures own a project boundary; never inherit an unrelated temp ancestor's
+  // checkout lock or Git metadata when they intentionally fake Git commands.
+  if (!fsSync.existsSync(path.join(tmp, ".git"))) {
+    await fs.mkdir(path.join(tmp, ".git"), { recursive: true });
+  }
   return await runNodeMain({
     cwd: tmp,
     args: ["status"],
     ...overrides,
+    runBuild:
+      options.runBuild ??
+      (async ({ bin, args = [], cwd, env: buildEnv, stdio, onReady }) => {
+        // Cheap launcher fixtures inject compiler completion; production uses the
+        // managed command owner's full process-tree settlement contract.
+        const child = asRunNodeChild(
+          options.spawn?.(bin, args, {
+            cwd,
+            env: buildEnv,
+            stdio,
+            detached: process.platform !== "win32",
+          }),
+        );
+        if (!child) {
+          throw new Error("Missing fixture build process");
+        }
+        onReady?.(child);
+        return await new Promise<number>((resolve, reject) => {
+          child.on("exit", (code: number | null) => resolve(code ?? 1));
+          child.on("error", reject);
+        });
+      }),
     env: { ...process.env, OPENCLAW_RUNNER_LOG: "0", ...env },
     execPath: process.execPath,
     platform: options.platform ?? process.platform,

@@ -36,8 +36,8 @@ import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 vi.mock("../../src/cli/update-cli/update-command-service-publication.js", () => ({
   withGatewayRuntimeArtifactPublication: async (
     _params: unknown,
-    publish: () => Promise<unknown>,
-  ) => publish(),
+    publish: (assertCurrent: () => Promise<void>) => Promise<unknown>,
+  ) => publish(async () => {}),
 }));
 
 const testNodeExecPath = resolveTestNodeExecPath();
@@ -877,6 +877,12 @@ describe("resolveBuildAllSteps", () => {
             env: childEnv,
             args: ["status"],
             spawn,
+            runBuild: async ({ bin, args = [], cwd: buildRoot, env, stdio }) => {
+              const child = spawn(bin, args, { cwd: buildRoot, env, stdio });
+              return await new Promise<number>((resolve) => {
+                child.on("exit", resolve);
+              });
+            },
             spawnSync: () => ({ status: 1 }),
             stderr: { write: () => true },
             runRuntimePostBuild: postbuild,
@@ -886,7 +892,6 @@ describe("resolveBuildAllSteps", () => {
           [
             "--import",
             expect.stringMatching(/\/scripts\/tsx\.mjs$/),
-            expect.stringMatching(/[\\/]scripts[\\/]lib[\\/]dist-artifact-ownership\.mts$/),
             expect.stringMatching(/\/scripts\/build-all\.mts$/),
             "qaRuntime",
           ],

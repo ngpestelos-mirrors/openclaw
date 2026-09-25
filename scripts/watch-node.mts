@@ -7,6 +7,7 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { toErrorObject } from "./lib/error-format.mts";
+import { isRuntimePublicationStagingPath } from "./lib/runtime-publication.mts";
 import { sleep } from "./lib/sleep.mjs";
 import {
   createRunNodePathClassifier,
@@ -145,7 +146,7 @@ const isIgnoredWatchPath = (
   stats?: WatchPathStats,
 ) => {
   const repoPath = resolveRepoPath(filePath, cwd);
-  if (hasIgnoredPathSegment(repoPath)) {
+  if (hasIgnoredPathSegment(repoPath) || isRuntimePublicationStagingPath(repoPath)) {
     return true;
   }
   if (isDirectoryLikeWatchedPath(repoPath, watchPaths)) {
