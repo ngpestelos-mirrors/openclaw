@@ -181,8 +181,56 @@ describe("resolveSettledTurnFinalizationRequest", () => {
           sessionKey: "session:settled-policy",
         }),
       }),
-    ).toContain(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+    ).toContain("Explain the outcome to the user");
   });
+
+  it.each([
+    {
+      name: "active tool",
+      patch: { itemLifecycle: { startedCount: 2, completedCount: 1, activeCount: 1 } },
+    },
+    { name: "approval prompt", patch: { didSendDeterministicApprovalPrompt: true } },
+    { name: "yielded work", patch: { yieldDetected: true } },
+    { name: "background tool", patch: { toolMetas: [{ toolName: "exec", asyncStarted: true }] } },
+  ])(
+    "keeps $name under its existing owner instead of explaining a terminal warning",
+    ({ patch }) => {
+      const assistant = buildEmbeddedRunnerAssistant({
+        content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
+      });
+      const attempt = makeEmbeddedRunnerAttempt({
+        assistantTexts: [SILENT_REPLY_TOKEN],
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        toolMetas: [{ toolName: "exec", isError: true }],
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastToolError: { toolName: "exec", error: "command failed" },
+        ...patch,
+      });
+      expect(
+        resolveSettledTurnFinalizationRequest({
+          runParams: {
+            sessionId: "session:failure",
+            runId: "run:failure",
+            trigger: "heartbeat",
+          } as never,
+          attempt,
+          activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+          modelApi: "openai-responses",
+          executionContract: undefined,
+          payloadsWithToolMedia: [
+            setReplyPayloadMetadata(
+              { text: "A required command failed.", isError: true },
+              { toolErrorWarning: { toolName: "exec" } },
+            ),
+          ],
+          hasTerminalToolPresentation: false,
+          terminalState: resolveEmbeddedRunAttemptTerminalState({ attempt, assistant }),
+          settledTurnFinalizationAvailable: true,
+        }),
+      ).toBeNull();
+    },
+  );
 
   it("finalizes after successful tools despite pre-tool progress and a stale error (#132762)", () => {
     const failedAssistant = buildEmbeddedRunnerAssistant({

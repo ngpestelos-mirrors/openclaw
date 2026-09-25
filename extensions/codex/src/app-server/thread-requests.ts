@@ -117,16 +117,23 @@ const CODEX_RING_ZERO_RESTRICTED_FEATURES = new Set([
   "workspace_dependencies",
 ]);
 
-const CODEX_RING_ZERO_THREAD_CONFIG: JsonObject = {
+const CODEX_RESTRICTED_TOOL_THREAD_CONFIG: JsonObject = {
   ...CODEX_DELEGATION_DISABLED_THREAD_CONFIG,
   ...Object.fromEntries(
-    [...CODEX_RING_ZERO_RESTRICTED_FEATURES].map((feature) => [`features.${feature}`, false]),
+    [...CODEX_RING_ZERO_RESTRICTED_FEATURES]
+      .filter((feature) => feature !== "hooks")
+      .map((feature) => [`features.${feature}`, false]),
   ),
   "orchestrator.mcp.enabled": false,
   "orchestrator.skills.enabled": false,
   "skills.bundled.enabled": false,
   "skills.include_instructions": false,
   "tools.experimental_request_user_input.enabled": false,
+  web_search: "disabled",
+};
+
+const CODEX_DISABLED_HOOK_THREAD_CONFIG: JsonObject = {
+  "features.hooks": false,
   hooks: {
     PreToolUse: [],
     PermissionRequest: [],
@@ -140,7 +147,6 @@ const CODEX_RING_ZERO_THREAD_CONFIG: JsonObject = {
     Stop: [],
   },
   notify: [],
-  web_search: "disabled",
 };
 
 const CODEX_RING_ZERO_RESTRICTED_FEATURE_ALIASES = new Map<string, string>([
@@ -455,7 +461,7 @@ export function buildCodexRuntimeThreadConfigForRun(
         ? CODEX_DELEGATION_DISABLED_THREAD_CONFIG
         : undefined,
       messageOnlySourceReply || params.pluginHarnessToolPolicyRestricted === true
-        ? buildRestrictedToolConfigPatch(restrictedToolSurfaceMcpServerNames)
+        ? buildCodexRestrictedToolConfigPatch(restrictedToolSurfaceMcpServerNames)
         : buildCodexRingZeroThreadConfigPatch(
             params,
             options.hostSystemAgentActive,
@@ -486,12 +492,15 @@ export function buildCodexRingZeroThreadConfigPatch(
     return undefined;
   }
   return {
-    ...buildRestrictedToolConfigPatch(inheritedMcpServerNames),
+    ...buildCodexRestrictedToolConfigPatch(inheritedMcpServerNames),
     ...CODEX_NO_PROJECT_DOCS_CONFIG,
   };
 }
 
-function buildRestrictedToolConfigPatch(inheritedMcpServerNames: readonly string[]): JsonObject {
+export function buildCodexRestrictedToolConfigPatch(
+  inheritedMcpServerNames: readonly string[],
+  options: { preserveConfiguredHooks?: boolean } = {},
+): JsonObject {
   // Restricted turns already send environments: [] and disable native code mode.
   // Remove Codex-owned tool sources here; project-document suppression belongs to
   // ring-zero, message-only, and tool-disabled context policy at the caller.
@@ -499,7 +508,10 @@ function buildRestrictedToolConfigPatch(inheritedMcpServerNames: readonly string
     [...new Set(inheritedMcpServerNames)].toSorted().map((name) => [name, { enabled: false }]),
   );
   return {
-    ...CODEX_RING_ZERO_THREAD_CONFIG,
+    ...CODEX_RESTRICTED_TOOL_THREAD_CONFIG,
+    // Configured and administrator hooks are separate from model-callable tools.
+    // Strict callers continue to disable every hook and legacy notify.
+    ...(options.preserveConfiguredHooks ? {} : CODEX_DISABLED_HOOK_THREAD_CONFIG),
     ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
   };
 }

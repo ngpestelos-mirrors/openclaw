@@ -730,7 +730,7 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
     expect(payloads[0]?.text).toBe("HEARTBEAT_OK");
     expect(payloads[1]).toMatchObject({
       isError: true,
-      text: expect.stringContaining("Message failed"),
+      text: "The Message step failed",
     });
     expect(resolveHeartbeatToolResponseFromReplyResult(payloads)).toEqual({
       outcome: "no_change",
@@ -803,7 +803,7 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
     expect(payloads).toHaveLength(2);
     expect(payloads[0]).toMatchObject({ text: "Private reasoning only.", isReasoning: true });
     expect(resolveHeartbeatReplyPayload(payloads)).toMatchObject({
-      text: "⚠️ Message failed",
+      text: "The Message step failed",
       isError: true,
     });
     for (const payload of payloads) {

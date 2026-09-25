@@ -1,11 +1,20 @@
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  resolveHeartbeatReplyPayload,
+  resolveHeartbeatTerminalToolFailure,
+} from "../../../auto-reply/heartbeat-reply-payload.js";
+import { resolveHeartbeatToolResponseFromReplyResult } from "../../../auto-reply/heartbeat-tool-response.js";
 import { getReplyPayloadMetadata } from "../../../auto-reply/reply-payload.js";
+import { buildReplyPayloads } from "../../../auto-reply/reply/agent-runner-payloads.js";
 import { shouldDeliverDespiteSourceReplySuppression } from "../../../auto-reply/reply/dispatch-from-config.payloads.js";
+import { normalizeReplyPayload } from "../../../auto-reply/reply/normalize-reply.js";
 import { resolveStrandedReplyRecovery } from "../../../auto-reply/reply/stranded-reply-recovery.js";
 import { createMockFollowupRun } from "../../../auto-reply/reply/test-helpers.js";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../../config/sessions/transcript-write-context.js";
+import { resolveCronPayloadOutcome } from "../../../cron/isolated-agent/helpers.js";
+import { classifyHeartbeatAgentOutcome } from "../../../infra/heartbeat-delivery-normalization.js";
 import {
   prepareSystemAgentRunAdmission,
   type AdmittedRunContext,
@@ -15,13 +24,14 @@ import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
-import type { EmbeddedRunAttemptWithReceiptEvidence } from "./attempt-result.js";
 import { EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS } from "./lane-runtime.js";
 import { prepareTerminalWithSettledTurnFinalization } from "./settled-turn-finalization.js";
 import {
   createSettledFinalizationTestInput,
   createSettledProviderFailureAttempt,
   projectSettledProviderFailureAttempt,
+  settledFailedAttempt,
+  settledSuccessfulAttempt,
 } from "./settled-turn-finalization.test-support.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
@@ -74,68 +84,6 @@ vi.mock("../../run-session-target.js", () => ({
     }),
   ),
 }));
-
-function settledFailedAttempt(): EmbeddedRunAttemptWithReceiptEvidence {
-  const assistant = buildEmbeddedRunnerAssistant({
-    stopReason: "toolUse",
-    content: [
-      { type: "toolCall", id: "tool-read", name: "read", arguments: {} },
-      { type: "toolCall", id: "tool-exec", name: "exec", arguments: {} },
-    ],
-  });
-  const messagesSnapshot = [
-    assistant,
-    { role: "toolResult", toolCallId: "tool-read", toolName: "read", isError: false },
-    { role: "toolResult", toolCallId: "tool-exec", toolName: "exec", isError: true },
-  ] as never;
-  const attempt = makeEmbeddedRunnerAttempt({
-    terminal: {
-      kind: "failed",
-      source: "compaction",
-      error: new Error("native context compaction failed"),
-    },
-    sessionIdUsed: "session-settled",
-    sessionFileUsed: "/tmp/session-settled.jsonl",
-    assistantTexts: [],
-    toolMetas: [
-      { toolName: "read", isError: false, replaySafe: true },
-      { toolName: "exec", isError: true, replaySafe: false },
-    ],
-    successfulCronAdds: 1,
-    latestMcpAppChannelView: { viewId: "view-after-tools" },
-    itemLifecycle: { startedCount: 2, completedCount: 2, activeCount: 0 },
-    messagesSnapshot,
-    lastAssistant: assistant,
-    currentAttemptAssistant: assistant,
-    currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
-    replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
-    settledTurnFinalizationContext: { source: "openclaw-transcript", messages: messagesSnapshot },
-    lastToolError: {
-      toolName: "exec",
-      error: "post-processing error",
-      errorCode: "SYSTEM_RUN_DENIED",
-    },
-    codeModeEngaged: true,
-    assistantTurns: 1,
-    bridgeCalls: { search: 1, describe: 2, call: 3 },
-  });
-  return { ...attempt, successfulNestedToolNames: ["memory_search"] };
-}
-
-function settledSuccessfulAttempt(): EmbeddedRunAttemptWithReceiptEvidence {
-  const attempt = settledFailedAttempt();
-  attempt.terminal = { kind: "ok" };
-  attempt.lastToolError = undefined;
-  for (const tool of attempt.toolMetas) {
-    tool.isError = false;
-  }
-  for (const message of attempt.messagesSnapshot) {
-    if (message.role === "toolResult") {
-      message.isError = false;
-    }
-  }
-  return attempt;
-}
 
 let admittedRunContext: AdmittedRunContext;
 
@@ -362,7 +310,52 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     },
   );
 
-  it("keeps a failed command followed by NO_REPLY out of summary recovery", async () => {
+  it.each(["user", "heartbeat"] as const)(
+    "delivers an interrupted tool rate-limit explanation for a %s turn",
+    async (trigger) => {
+      const attempt = settledFailedAttempt();
+      attempt.terminal = {
+        kind: "failed",
+        source: "prompt",
+        error: new Error("codex app-server client closed before turn completed"),
+      };
+      attempt.lastToolError = {
+        toolName: "slack_read_thread",
+        error: "429 Too Many Requests",
+      };
+      const explanation =
+        "The lookup failed because Slack received too many requests. Slack advised waiting one second before retrying, but no retry was made, so the lookup remains incomplete.";
+      backendMocks.runSettledFinalization.mockResolvedValueOnce({
+        outcome: "answered",
+        result: {
+          assistant: buildEmbeddedRunnerAssistant({
+            content: [{ type: "text", text: explanation }],
+          }),
+          assistantTranscriptOwned: true,
+        },
+      });
+      const input = finalizationInput(attempt);
+      input.terminalBase.runParams.trigger = trigger;
+      const result = await prepareTerminalWithSettledTurnFinalization(input);
+      expect(result.finalizationOutcome).toBe("answered");
+      expect(getReplyPayloadMetadata(result.prepared.payloadsWithToolMedia![0])).toMatchObject({
+        toolFailureExplanation: true,
+      });
+      const { replyPayloads } = await buildReplyPayloads({
+        payloads: result.prepared.payloadsWithToolMedia ?? [],
+        isHeartbeat: trigger === "heartbeat",
+        didLogHeartbeatStrip: false,
+        blockStreamingEnabled: false,
+        blockReplyPipeline: null,
+        replyToMode: "off",
+      });
+      expect(replyPayloads.map((payload) => normalizeReplyPayload(payload))).toEqual([
+        expect.objectContaining({ text: explanation, isError: true }),
+      ]);
+    },
+  );
+
+  it("explains a failed command followed by NO_REPLY without repeating its tools", async () => {
     const attempt = settledFailedAttempt();
     const assistant = buildEmbeddedRunnerAssistant({
       content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
@@ -374,14 +367,185 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     attempt.currentAttemptAssistant = assistant;
     attempt.currentAttemptCompletedAssistant = assistant;
     attempt.lastToolError = { toolName: "exec", error: "Command exited with code 127" };
+    const explanation =
+      "I could not finish the update because the required command is unavailable.";
+    backendMocks.runSettledFinalization.mockResolvedValueOnce({
+      outcome: "answered",
+      result: {
+        assistant: buildEmbeddedRunnerAssistant({ content: [{ type: "text", text: explanation }] }),
+      },
+    });
 
     const result = await prepareTerminalWithSettledTurnFinalization(finalizationInput(attempt));
 
-    expect(backendMocks.runSettledFinalization).not.toHaveBeenCalled();
-    expect(result.finalizationOutcome).toBe("not-attempted");
-    expect(result.prepared.finalAssistantRawText).toBe(SILENT_REPLY_TOKEN);
+    expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
+    expect(backendMocks.runSettledFinalization).toHaveBeenCalledWith(
+      expect.objectContaining({ disableTools: true, operation: "settled-tool-finalization" }),
+      attempt,
+      expect.anything(),
+    );
+    expect(result.finalizationOutcome).toBe("answered");
+    expect(result.prepared.finalAssistantRawText).toBe(explanation);
     expect(result.prepared.payloadsWithToolMedia).toEqual([
-      expect.objectContaining({ text: expect.stringContaining("failed"), isError: true }),
+      expect.objectContaining({ text: explanation, isError: true }),
+    ]);
+    expect(result.attempt.lastToolError).toEqual(attempt.lastToolError);
+    expect(
+      resolveCronPayloadOutcome({
+        payloads: result.prepared.payloadsWithToolMedia ?? [],
+        failureSignal: result.prepared.failureSignal,
+        finalAssistantVisibleText: result.prepared.finalAssistantVisibleText,
+      }),
+    ).toMatchObject({
+      hasFatalErrorPayload: true,
+      embeddedRunError: explanation,
+      deliveryPayloads: [{ text: explanation, isError: true }],
+    });
+  });
+
+  it("explains the heartbeat failure when the only assistant text was pre-tool commentary", async () => {
+    const attempt = settledFailedAttempt();
+    const commentary = "I will update your heartbeat now.";
+    const toolAssistant = attempt.currentAttemptAssistant;
+    if (!toolAssistant) {
+      throw new Error("Missing tool assistant fixture");
+    }
+    toolAssistant.content.unshift({ type: "text", text: commentary });
+    attempt.terminal = { kind: "ok" };
+    attempt.assistantTexts = [commentary];
+    attempt.currentAttemptCompletedAssistant = toolAssistant;
+    attempt.lastToolError = { toolName: "exec", error: "command not found", mutatingAction: true };
+    attempt.heartbeatToolResponse = {
+      outcome: "blocked",
+      notify: false,
+      summary: "Private monitor diagnostic",
+    };
+    const explanation =
+      "I could not update the heartbeat because the required command is unavailable.";
+    backendMocks.runSettledFinalization.mockResolvedValueOnce({
+      outcome: "answered",
+      result: {
+        assistant: buildEmbeddedRunnerAssistant({ content: [{ type: "text", text: explanation }] }),
+      },
+    });
+    const input = finalizationInput(attempt);
+    input.terminalBase.runParams.trigger = "heartbeat";
+
+    const result = await prepareTerminalWithSettledTurnFinalization(input);
+
+    expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
+    expect(result.finalizationOutcome).toBe("answered");
+    expect(resolveHeartbeatReplyPayload(result.prepared.payloadsWithToolMedia)).toMatchObject({
+      text: explanation,
+      isError: true,
+    });
+  });
+
+  it("keeps a recovered heartbeat quiet while retaining its explanation and failure diagnostic", async () => {
+    const attempt = settledFailedAttempt();
+    const recovery = buildEmbeddedRunnerAssistant({
+      stopReason: "toolUse",
+      content: [{ type: "toolCall", id: "cleanup", name: "gateway_exec", arguments: {} }],
+    });
+    const silent = buildEmbeddedRunnerAssistant({
+      content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
+    });
+    attempt.terminal = { kind: "ok" };
+    attempt.assistantTexts = [SILENT_REPLY_TOKEN];
+    attempt.lastToolError = {
+      toolName: "exec",
+      error: "command not found: openclaw",
+      mutatingAction: true,
+    };
+    attempt.messagesSnapshot.push(
+      recovery,
+      {
+        role: "toolResult",
+        toolCallId: "cleanup",
+        toolName: "gateway_exec",
+        content: [{ type: "text", text: "Temporary instruction removed" }],
+        isError: false,
+        timestamp: 1,
+      },
+      silent,
+    );
+    attempt.toolMetas.push({ toolName: "gateway_exec", isError: false, replaySafe: false });
+    attempt.itemLifecycle = { startedCount: 3, completedCount: 3, activeCount: 0 };
+    attempt.lastAssistant = silent;
+    attempt.currentAttemptAssistant = silent;
+    attempt.currentAttemptCompletedAssistant = silent;
+    attempt.heartbeatToolResponse = {
+      outcome: "done",
+      notify: false,
+      summary: "Private monitor state and revision details",
+    };
+    attempt.didSendViaMessagingTool = true;
+    attempt.messagingToolSentTexts = ["TEST_DELIVERED"];
+    const explanation =
+      "I sent the test message and removed the temporary instruction. The first cleanup command was unavailable, but the later cleanup succeeded.";
+    backendMocks.runSettledFinalization.mockResolvedValueOnce({
+      outcome: "answered",
+      result: {
+        assistant: buildEmbeddedRunnerAssistant({ content: [{ type: "text", text: explanation }] }),
+      },
+    });
+    const input = finalizationInput(attempt);
+    input.terminalBase.runParams.trigger = "heartbeat";
+
+    const result = await prepareTerminalWithSettledTurnFinalization(input);
+    const payloads = result.prepared.payloadsWithToolMedia;
+    const selected = resolveHeartbeatReplyPayload(payloads);
+    const outcome = classifyHeartbeatAgentOutcome({
+      agentRun: {
+        agentRunFailed: false,
+        heartbeatTerminalToolFailure: resolveHeartbeatTerminalToolFailure(payloads),
+        heartbeatToolResponse: resolveHeartbeatToolResponseFromReplyResult(payloads),
+        replyPayload: selected,
+      },
+      suppressUnmarkedSourceReplies: true,
+      hasRelayableExecCompletion: false,
+      responsePrefix: undefined,
+      ackMaxChars: 300,
+    });
+
+    expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
+    expect(result.finalizationOutcome).toBe("answered");
+    expect(selected?.text).toBe(explanation);
+    expect(getReplyPayloadMetadata(selected ?? {})).toMatchObject({
+      heartbeatTerminalToolFailure: { toolName: "exec" },
+      deliverDespiteSourceReplySuppression: true,
+    });
+    expect(outcome).toMatchObject({
+      kind: "failure",
+      reason: "agent-tool-failure",
+      shouldSkipMain: true,
+      normalized: { text: explanation },
+    });
+    expect(result.attempt.heartbeatToolResponse).toEqual(attempt.heartbeatToolResponse);
+  });
+
+  it("preserves an existing authored failure explanation in a conversation", async () => {
+    const attempt = settledFailedAttempt();
+    const explanation =
+      "I could not finish the update because the required command is unavailable.";
+    const assistant = buildEmbeddedRunnerAssistant({
+      content: [{ type: "text", text: explanation }],
+    });
+    attempt.terminal = { kind: "ok" };
+    attempt.assistantTexts = [explanation];
+    attempt.lastAssistant = assistant;
+    attempt.currentAttemptAssistant = assistant;
+    attempt.currentAttemptCompletedAssistant = assistant;
+    attempt.messagesSnapshot.push(assistant);
+    attempt.lastToolError = { toolName: "exec", error: "command not found", mutatingAction: true };
+    const input = finalizationInput(attempt);
+    input.terminalBase.runParams.trigger = "user";
+
+    const result = await prepareTerminalWithSettledTurnFinalization(input);
+
+    expect(result.finalizationOutcome).toBe("not-attempted");
+    expect(result.prepared.payloadsWithToolMedia).toEqual([
+      expect.objectContaining({ text: explanation }),
     ]);
   });
 
@@ -402,7 +566,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
 
       const result = await prepareTerminalWithSettledTurnFinalization(finalizationInput(attempt));
 
-      expect(backendMocks.runSettledFinalization).toHaveBeenCalled();
+      expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
       expect(result.finalizationOutcome).toBe("failed");
       expect(result.attempt).toBe(attempt);
       expect(result.prepared.payloadsWithToolMedia).toEqual([
@@ -468,7 +632,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
 
   it("retries empty finalization with fresh controls and retires prior timeout and Stop callbacks", async () => {
     vi.useFakeTimers();
-    const attempt = settledFailedAttempt();
+    const attempt = settledSuccessfulAttempt();
     const input = finalizationInput(attempt);
     const factory = vi.mocked(input.finalization.createAttemptControls);
     const { close, ...retiredControls } = factory({ admittedRunContext });
@@ -623,7 +787,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     expect(result.prepared.agentMeta).toMatchObject({ assistantTurns: 3 });
   });
 
-  it("preserves exhausted silent helper failure without synthesizing a fallback", async () => {
+  it("preserves silent helper failure after one empty explanation attempt", async () => {
     const attempt = settledFailedAttempt();
     const emptyAssistant = buildEmbeddedRunnerAssistant({
       content: [{ type: "text", text: "" }],
@@ -637,7 +801,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
 
     const result = await prepareTerminalWithSettledTurnFinalization(input);
 
-    expect(backendMocks.runSettledFinalization).toHaveBeenCalledTimes(2);
+    expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
     expect(transcriptMocks.appendAssistantMirrorMessageByIdentity).not.toHaveBeenCalled();
     expect(result.finalizationOutcome).toBe("failed");
     expect(result.attempt).toBe(attempt);

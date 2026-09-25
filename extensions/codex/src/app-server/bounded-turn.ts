@@ -39,7 +39,7 @@ import { buildCodexRuntimeThreadConfig } from "./thread-lifecycle.js";
 import {
   assertCodexManagedRequirementsDoNotOverrideToolPolicy,
   attestCodexRestrictedToolSurfaceMcpServersDisabled,
-  buildCodexRingZeroThreadConfigPatch,
+  buildCodexRestrictedToolConfigPatch,
   readCodexInheritedMcpServerNames,
 } from "./thread-requests.js";
 
@@ -59,6 +59,7 @@ const CODEX_PRIVATE_BOUNDED_THREAD_CONFIG: JsonObject = {
   notify: [],
 };
 const CODEX_SETTLED_FINALIZER_THREAD_CONFIG: JsonObject = {
+  project_doc_max_bytes: 0,
   "skills.include_instructions": false,
   include_environment_context: false,
 };
@@ -107,7 +108,8 @@ type CodexBoundedTurnParams = {
   isolation: "configured-transport" | "private-stdio";
   threadConfig?: JsonObject;
   historyItems?: JsonValue[];
-  requireNoExternalCapabilities?: boolean;
+  /** Restrict model tools; configured transport may retain configured and administrator hooks. */
+  capabilityPolicy?: "no-external-capabilities" | "configured-hooks-only";
   /** Finalizer-only: preserve a completed turn whose protocol carries no answer item. */
   allowEmptyText?: boolean;
 };
@@ -116,6 +118,12 @@ export async function runBoundedCodexAppServerTurn(
   params: CodexBoundedTurnParams,
 ): Promise<CodexBoundedTurnResult> {
   params.assertCurrent?.();
+  if (
+    params.capabilityPolicy === "configured-hooks-only" &&
+    params.isolation !== "configured-transport"
+  ) {
+    throw new Error("Preserving configured Codex hooks requires configured transport.");
+  }
   const appServer = resolveCodexAppServerRuntimeOptions({
     pluginConfig: params.options.pluginConfig,
     managedCommandOrder: params.isolation === "private-stdio" ? "package-first" : undefined,
@@ -236,13 +244,16 @@ async function runBoundedCodexAppServerTurnInWorkspace(
       requiredModalities: params.requiredModalities,
       ...requestOptions,
     });
-    const inheritedMcpServerNames = params.requireNoExternalCapabilities
+    const inheritedMcpServerNames = params.capabilityPolicy
       ? await readCodexInheritedMcpServerNames(client, workspace.cwd, abortController.signal)
       : [];
-    if (params.requireNoExternalCapabilities) {
+    if (params.capabilityPolicy) {
       await assertCodexManagedRequirementsDoNotOverrideToolPolicy(
         client,
-        { restrictedToolSurface: true },
+        {
+          restrictedToolSurface: true,
+          allowConfiguredManagedHooks: params.capabilityPolicy === "configured-hooks-only",
+        },
         abortController.signal,
       );
     }
@@ -261,7 +272,7 @@ async function runBoundedCodexAppServerTurnInWorkspace(
           approvalPolicy: "on-request",
           sandbox: "read-only",
           serviceName: "OpenClaw",
-          ...(params.requireNoExternalCapabilities ? { baseInstructions: "" } : {}),
+          ...(params.capabilityPolicy ? { baseInstructions: "" } : {}),
           developerInstructions: params.developerInstructions,
           config: threadConfig,
           environments: [],
@@ -276,7 +287,7 @@ async function runBoundedCodexAppServerTurnInWorkspace(
     if (abortController.signal.aborted) {
       requestInterrupt();
     }
-    if (params.requireNoExternalCapabilities) {
+    if (params.capabilityPolicy) {
       // Attest the started thread before injecting historical tool evidence.
       // Otherwise inherited MCP state could act on a finalization-only turn.
       await attestCodexRestrictedToolSurfaceMcpServersDisabled(
@@ -393,18 +404,16 @@ function resolveBoundedThreadConfig(
   const privateConfig = workspace.codexHome
     ? (mergeCodexThreadConfigs(boundedConfig, CODEX_PRIVATE_BOUNDED_THREAD_CONFIG) ?? boundedConfig)
     : boundedConfig;
-  if (!params.requireNoExternalCapabilities) {
+  if (!params.capabilityPolicy) {
     return privateConfig;
   }
   return (
     mergeCodexThreadConfigs(
       privateConfig,
       CODEX_SETTLED_FINALIZER_THREAD_CONFIG,
-      buildCodexRingZeroThreadConfigPatch(
-        { toolsAllow: ["openclaw"] },
-        true,
-        inheritedMcpServerNames,
-      ),
+      buildCodexRestrictedToolConfigPatch(inheritedMcpServerNames, {
+        preserveConfiguredHooks: params.capabilityPolicy === "configured-hooks-only",
+      }),
     ) ?? privateConfig
   );
 }

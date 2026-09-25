@@ -41,7 +41,7 @@ function formatToolErrorWarningText(params: {
     const errorSuffix =
       params.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : "";
     const recoveryHint = params.includeDetails ? "" : ". Use /verbose full for complete output";
-    return `⚠️ ${toolLabel} failed (${reason})${errorSuffix}${recoveryHint}.`;
+    return `The ${toolLabel} step failed (${reason})${errorSuffix}${recoveryHint}.`;
   }
 
   const includeError =
@@ -56,9 +56,11 @@ function formatToolErrorWarningText(params: {
       : formatConciseExecExitSuffix(params.lastToolError.error);
     const errorSuffix =
       includeError && params.lastToolError.error ? `: ${params.lastToolError.error}` : "";
+    const failureDescription =
+      failureVerb === "blocked" ? "was blocked before it could run" : "failed";
     return subject
-      ? `⚠️ ${toolLabel} ${failureVerb}: ${subject}${conciseExitSuffix}${errorSuffix}`
-      : `⚠️ ${toolLabel} ${failureVerb}${conciseExitSuffix}${errorSuffix}`;
+      ? `The ${toolLabel} step ${failureDescription}: ${subject}${conciseExitSuffix}${errorSuffix}`
+      : `The ${toolLabel} step ${failureDescription}${conciseExitSuffix}${errorSuffix}`;
   }
 
   const toolSummary = formatWarningToolLabel(
@@ -68,7 +70,8 @@ function formatToolErrorWarningText(params: {
   );
   const errorSuffix =
     includeError && params.lastToolError.error ? `: ${params.lastToolError.error}` : "";
-  return `⚠️ ${toolSummary} ${failureVerb}${errorSuffix}`;
+  const failureDescription = failureVerb === "blocked" ? "was blocked" : "failed";
+  return `The ${toolSummary} step ${failureDescription}${errorSuffix}`;
 }
 
 function formatExecLikeFailureSubject(meta: string | undefined, markdown: boolean): string {

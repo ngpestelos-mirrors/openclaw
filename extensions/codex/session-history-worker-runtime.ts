@@ -101,6 +101,7 @@ export async function projectCodexSettledHistoryInWorker(
         mirroredMessages: target.mirroredMessages,
         settledMessages: target.settledMessages,
         turnId: target.turnId,
+        toolFailureExplanation: target.toolFailureExplanation,
       },
     },
     undefined,

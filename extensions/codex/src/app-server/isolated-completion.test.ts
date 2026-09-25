@@ -119,7 +119,7 @@ describe("runCodexIsolatedCompletion", () => {
         authRequirement: "subscription",
         isolation: "configured-transport",
         assertCurrent: params.assertCurrent,
-        requireNoExternalCapabilities: true,
+        capabilityPolicy: "no-external-capabilities",
         developerInstructions: "Name the conversation.",
         input: [{ type: "text", text: "Help me plan a garden.", text_elements: [] }],
       }),

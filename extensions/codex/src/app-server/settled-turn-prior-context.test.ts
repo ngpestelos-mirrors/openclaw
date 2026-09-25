@@ -48,6 +48,69 @@ function project(prior: AgentMessage[]) {
 }
 
 describe("settled prior-history validation", () => {
+  it("retains a historical failure note between a paired tool call and result", () => {
+    const prior = exchange("prior", "prior-call");
+    prior.splice(
+      2,
+      0,
+      message(
+        {
+          role: "custom",
+          customType: "run-failed-before-reply",
+          content: "This turn ended before a reply: connection interrupted.",
+          display: true,
+        },
+        "prior:failure-note",
+      ),
+    );
+
+    expect(project(prior)).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Check the result." }],
+      },
+      { type: "function_call", call_id: "prior-call", name: "lookup", arguments: "{}" },
+      {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "This turn ended before a reply: connection interrupted." },
+        ],
+      },
+      { type: "function_call_output", call_id: "prior-call", output: "Verified." },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Check the result." }],
+      },
+      { type: "function_call", call_id: "current-call", name: "lookup", arguments: "{}" },
+      { type: "function_call_output", call_id: "current-call", output: "Verified." },
+    ]);
+  });
+
+  it("rejects custom notes that reuse current-turn provenance", () => {
+    expect(() =>
+      project([
+        message(
+          { role: "custom", customType: "run-failed-before-reply", content: "Prior failure." },
+          "current:prompt",
+        ),
+      ]),
+    ).toThrow(new CodexHistoryRejection("provenance_rejected"));
+  });
+
+  it("keeps pairing validation across durable custom notes", () => {
+    const prior = exchange("prior", "prior-call").slice(0, 2);
+    prior.push(
+      message(
+        { role: "custom", customType: "run-failed-before-reply", content: "Prior failure." },
+        "prior:failure-note",
+      ),
+    );
+    expect(() => project(prior)).toThrow(new CodexHistoryRejection("incomplete_pairing"));
+  });
+
   it.each([
     { location: "evicted prior exchanges", currentDuplicate: false },
     { location: "current evidence after eviction", currentDuplicate: true },
@@ -61,6 +124,17 @@ describe("settled prior-history validation", () => {
   });
 
   it.each([
+    {
+      name: "durable custom block after oversized text in the same note",
+      reason: "unsupported_content",
+      records: [
+        {
+          role: "custom",
+          customType: "run-failed-before-reply",
+          content: [{ type: "text", text: "x".repeat(65537) }, { type: "future-block" }],
+        },
+      ],
+    },
     {
       name: "assistant block after an oversized block in the same message",
       reason: "unsupported_content",

@@ -201,7 +201,7 @@ describe("settled-turn finalization after an earlier tool failure", () => {
         fatalForCron: true,
       });
       expect(backendMocks.runSettledFinalization).toHaveBeenCalledTimes(
-        outcome === "unavailable" ? 0 : outcome === "empty" ? 2 : 1,
+        outcome === "unavailable" ? 0 : outcome === "empty" && retainProgress ? 2 : 1,
       );
       for (const [preparedAttempt, settledAttempt] of backendMocks.runSettledFinalization.mock
         .calls) {

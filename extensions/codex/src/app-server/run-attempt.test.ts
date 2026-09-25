@@ -5559,6 +5559,72 @@ describe("runCodexAppServerAttempt", () => {
       }
     },
   );
+  it.each([
+    { finalText: "", expectedContext: true },
+    { finalText: "NO_REPLY", expectedContext: true },
+    {
+      finalText: "The cleanup command failed, so the instructions are still saved.",
+      expectedContext: false,
+    },
+  ])(
+    "captures silent tool failures for finalization: $finalText",
+    async ({ finalText, expectedContext }) => {
+      const storePath = path.join(tempDir, "settled-silent-tool-failure.sqlite");
+      const sessionId = "session-settled-silent-tool-failure";
+      const sessionFile = `agent:main:${sessionId}`;
+      const workspaceDir = path.join(tempDir, "workspace-settled-silent-tool-failure");
+      const harness = createStartedThreadHarness();
+      const params = createParams(sessionFile, workspaceDir);
+      await attachSqliteSessionTarget(params, storePath, sessionId);
+      params.prompt = "Clean up the temporary heartbeat instructions.";
+      const run = runCodexAppServerAttempt(params);
+      await harness.waitForMethod("turn/start");
+      const preambleText = "I will clean up the temporary instruction now.";
+      const preamble = { type: "agentMessage", id: "cleanup-preamble", text: preambleText };
+      await harness.notify(itemNotification("item/started", preamble));
+      await harness.notify(itemNotification("item/completed", preamble));
+      const command = {
+        type: "commandExecution",
+        id: "cleanup-failed",
+        command: "openclaw automations scratch heartbeat-test --unset",
+        cwd: workspaceDir,
+      };
+      await harness.notify(itemNotification("item/started", { ...command, status: "inProgress" }));
+      await harness.notify(
+        itemNotification("item/completed", {
+          ...command,
+          status: "failed",
+          aggregatedOutput: "zsh:1: command not found: openclaw\n",
+          exitCode: 127,
+          durationMs: 12,
+        }),
+      );
+      const assistant = { type: "agentMessage", id: "silent-answer", text: finalText };
+      await harness.notify(itemNotification("item/started", assistant));
+      await harness.notify(itemNotification("item/completed", assistant));
+      await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+
+      const result = await run;
+
+      expect(result.lastToolError).toMatchObject({ toolName: "bash" });
+      expect(result.assistantTexts).toEqual([finalText || preambleText]);
+      expect(result.currentAttemptAssistant?.content).toEqual([{ type: "text", text: finalText }]);
+      expect(Boolean(result.settledTurnFinalizationContext)).toBe(expectedContext);
+      if (expectedContext) {
+        expect(result.settledTurnFinalizationContext).toMatchObject({
+          source: "harness",
+          data: expect.arrayContaining([
+            expect.objectContaining({ type: "function_call", call_id: "cleanup-failed" }),
+            expect.objectContaining({
+              type: "function_call_output",
+              call_id: "cleanup-failed",
+              output: expect.stringContaining("command not found: openclaw"),
+            }),
+          ]),
+        });
+      }
+    },
+  );
   it("captures settled tool evidence when an active native compaction fails terminally", async () => {
     const storePath = path.join(tempDir, "settled-compaction-failure.sqlite");
     const sessionId = "session-settled-compaction-failure";

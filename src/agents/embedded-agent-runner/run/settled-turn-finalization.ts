@@ -1,4 +1,5 @@
 import {
+  getReplyPayloadMetadata,
   markReplyPayloadForSourceSuppressionDelivery,
   setReplyPayloadMetadata,
   type ReplyPayloadMetadata,
@@ -112,6 +113,11 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     settledTurnFinalizationAvailable:
       typeof input.finalization.harness.finalizeSettledTurn === "function",
   });
+  const toolFailureExplanation = Boolean(
+    prepared.payloadsWithToolMedia?.some(
+      (payload) => getReplyPayloadMetadata(payload)?.toolErrorWarning,
+    ),
+  );
   if (!prompt) {
     return {
       ...initial,
@@ -151,6 +157,9 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       `provider=${errorContext.provider}/${errorContext.model} — running isolated finalization`,
   );
   let finalizationOutcome: "answered" | "empty" | "failed" = "failed";
+  const maxFinalizationAttempts = toolFailureExplanation
+    ? 1
+    : MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS;
   try {
     let finalization: Awaited<ReturnType<typeof runPreparedSettledTurnFinalization>>;
     let finalizationAttempt = 0;
@@ -177,24 +186,18 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       mergeUsageIntoAccumulator(input.terminalBase.usageAccumulator, attempt.attemptUsage);
       mergeAttemptRunStatsIntoAccumulator(input.terminalBase.usageAccumulator, attempt);
       lastRunPromptUsage = attempt.attemptUsage ?? lastRunPromptUsage;
-      if (
-        finalization.outcome === "empty" &&
-        finalizationAttempt < MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS
-      ) {
+      if (finalization.outcome === "empty" && finalizationAttempt < maxFinalizationAttempts) {
         log.warn(
           `settled-turn finalization completed without a visible answer: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
-            `provider=${errorContext.provider}/${errorContext.model} — retrying ${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS - 1} with tools disabled`,
+            `provider=${errorContext.provider}/${errorContext.model} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
         );
       }
-    } while (
-      finalization.outcome === "empty" &&
-      finalizationAttempt < MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS
-    );
+    } while (finalization.outcome === "empty" && finalizationAttempt < maxFinalizationAttempts);
     finalizationOutcome = finalization.outcome;
     if (finalization.outcome === "empty") {
       log.warn(
         `settled-turn finalization completed without a visible answer: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
-          `provider=${errorContext.provider}/${errorContext.model} attempts=${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS} — ${terminalFallbackAllowed ? "using terminal fallback reply" : "preserving original failure"}`,
+          `provider=${errorContext.provider}/${errorContext.model} attempts=${finalizationAttempt}/${maxFinalizationAttempts} — ${terminalFallbackAllowed ? "using terminal fallback reply" : "preserving original failure"}`,
       );
     }
   } catch (error) {
@@ -256,7 +259,11 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       transcriptIdempotencyKey,
     });
   }
-  // Only an actual recovery replaces a failed tool turn's terminal ownership.
+  // A prose explanation changes presentation, never the settled tool outcome.
+  if (toolFailureExplanation && finalizationOutcome === "answered") {
+    attempt = { ...attempt, lastToolError: initial.attempt.lastToolError };
+  }
+  // An unanswered finalization leaves the original failed turn authoritative.
   const completion =
     finalizationOutcome !== "answered" && initial.attempt.lastToolError
       ? initial
@@ -279,6 +286,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     ...input.terminalBase,
     ...completion,
     lastRunPromptUsage,
+    toolFailureExplanation: toolFailureExplanation && finalizationOutcome === "answered",
   });
   // Only a real finalizer answer may cross source-reply suppression. The
   // synthetic fallback remains a private diagnostic on message-tool-only runs.

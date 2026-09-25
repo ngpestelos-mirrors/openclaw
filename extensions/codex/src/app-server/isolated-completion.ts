@@ -58,7 +58,7 @@ export async function runCodexIsolatedCompletion(
     input: [{ type: "text", text: params.prompt, text_elements: [] }],
     requiredModalities: ["text"],
     isolation: "configured-transport",
-    requireNoExternalCapabilities: true,
+    capabilityPolicy: "no-external-capabilities",
   });
   params.assertCurrent?.();
   assertCodexPassiveTurnItems(result.items, params.prompt, "isolated completion");

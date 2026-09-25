@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isCodexDurableCustomMessage } from "./context-engine-projection.js";
 import { CodexHistoryRejection } from "./history-rejection.js";
 import type { JsonValue } from "./protocol.js";
 import { readUpstreamUserText } from "./upstream-prompt-provenance.js";
@@ -8,12 +10,11 @@ import { readUpstreamUserText } from "./upstream-prompt-provenance.js";
 const MAX_RESPONSE_ITEMS = 200;
 const MAX_PROJECTION_BYTES = 512 * 1024;
 const MAX_TEXT_BYTES = 64 * 1024;
-// Projected names replay as function_call history items, which Codex
-// thread/inject_items deserializes as free-form strings (ResponseItem::FunctionCall).
-// Codex records MCP and connector calls under dotted namespaced ids
-// ("codex_apps.slack.slack_send"), so "." must stay projectable or any turn
-// that used such a tool can never finalize.
+// The mirror flattens MCP routing identities into dotted names. Responses
+// function-call history requires a narrower identifier, so retain the original
+// for pairing and project a safe alias only at the outbound boundary.
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9._-]{1,128}$/u;
+const TOOL_NAME_ALIAS_PREFIX = "openclaw_history_";
 const TOOL_ERROR_STATUS_PREFIX = "[Tool result status: error]\n";
 
 function readBoundedText(
@@ -182,7 +183,7 @@ function projectAssistantMessage(
         projection.appendItem({
           type: "function_call",
           call_id: id,
-          name,
+          name: projectToolName(name),
           arguments: args,
         });
       }
@@ -256,12 +257,15 @@ function projectToolResult(
   const resultText =
     parts.join("\n") ||
     (isError ? "Tool failed without textual output." : "Tool completed without textual output.");
-  // Codex function-call output has no status field. Preserve failure truth in
-  // the text boundary so the final answer cannot reinterpret errors as success.
+  // Codex function-call output has no status field. Preserve failure truth and
+  // the original identity whenever the outbound call uses an API-safe alias.
+  const prefix =
+    (isError ? TOOL_ERROR_STATUS_PREFIX : "") +
+    (projectToolName(name) === name ? "" : `[Recorded tool: ${name}]\n`);
   const output = requireBoundedText(
-    isError ? `${TOOL_ERROR_STATUS_PREFIX}${resultText}` : resultText,
+    `${prefix}${resultText}`,
     projection,
-    isError ? MAX_TEXT_BYTES + Buffer.byteLength(TOOL_ERROR_STATUS_PREFIX, "utf8") : MAX_TEXT_BYTES,
+    MAX_TEXT_BYTES + Buffer.byteLength(prefix, "utf8"),
   );
   projection.recordResult(id, name);
   projection.appendItem({ type: "function_call_output", call_id: id, output });
@@ -286,6 +290,15 @@ class HistoryProjection {
       projectAssistantMessage(message, this);
     } else if (message.role === "toolResult") {
       projectToolResult(message, this);
+    } else if (message.role === "custom") {
+      if (isCodexDurableCustomMessage(message)) {
+        // Canonical harness replay treats durable custom notes as user context.
+        // Preserve their content without borrowing actual-user prompt metadata.
+        projectUserMessage(
+          { role: "user", content: message.content, timestamp: message.timestamp },
+          this,
+        );
+      }
     } else {
       throw new CodexHistoryRejection("unsupported_content");
     }
@@ -345,7 +358,23 @@ export function projectSettledCodexMessages(
   messages: Iterable<AgentMessage>,
   seenCallIds = new Set<string>(),
 ): JsonValue[] {
-  const projection = new HistoryProjection(seenCallIds, "reject");
+  return readSettledProjection(messages, seenCallIds, "reject").items;
+}
+
+/** Validate every exchange even when its payload is too large to replay. */
+export function validateSettledCodexMessages(
+  messages: Iterable<AgentMessage>,
+  seenCallIds = new Set<string>(),
+): void {
+  readSettledProjection(messages, seenCallIds, "omit");
+}
+
+function readSettledProjection(
+  messages: Iterable<AgentMessage>,
+  seenCallIds: Set<string>,
+  oversized: "reject" | "omit",
+): HistoryProjection {
+  const projection = new HistoryProjection(seenCallIds, oversized);
   for (const message of messages) {
     projection.append(message);
   }
@@ -353,7 +382,7 @@ export function projectSettledCodexMessages(
   if (projection.completedResults === 0) {
     throw new CodexHistoryRejection("incomplete_pairing");
   }
-  return projection.items;
+  return projection;
 }
 
 const OMITTED_HISTORY: JsonValue = {
@@ -441,4 +470,16 @@ export class SettledTurnPriorContext {
       ...current,
     ];
   }
+}
+
+function projectToolName(name: string): string {
+  if (!name.includes(".") && !name.startsWith(TOOL_NAME_ALIAS_PREFIX)) {
+    return name;
+  }
+  // Reserve the alias prefix even for already-valid source names, so they
+  // cannot impersonate an alias. The hash distinguishes names whose readable
+  // parts normalize or truncate alike; the result stays below 128 characters.
+  const readable = name.replaceAll(".", "_").slice(0, 32);
+  const hash = createHash("sha256").update(name).digest("hex");
+  return `${TOOL_NAME_ALIAS_PREFIX}${readable}_${hash}`;
 }

@@ -435,7 +435,7 @@ describe.skipIf(process.platform === "win32")(
             input: [{ type: "text", text: "Start the request.", text_elements: [] }],
             requiredModalities: ["text"],
             isolation: "configured-transport",
-            requireNoExternalCapabilities: true,
+            capabilityPolicy: "no-external-capabilities",
             options: {
               pluginConfig,
               clientFactory: async (options) => {
@@ -646,7 +646,7 @@ describe.skipIf(process.platform === "win32")(
             input: [{ type: "text", text: "Verify the host account.", text_elements: [] }],
             requiredModalities: ["text"],
             isolation: "private-stdio",
-            requireNoExternalCapabilities: true,
+            capabilityPolicy: "no-external-capabilities",
           });
           expect(hostProbe.text).toBe("Ready.");
           expect(requests.map(({ body, account }) => ({ model: body.model, account }))).toEqual([
