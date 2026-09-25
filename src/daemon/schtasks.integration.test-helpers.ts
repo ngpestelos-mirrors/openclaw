@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   getWindowsCmdExePath,
@@ -435,4 +437,51 @@ export async function waitForExactProbeRun(
     );
   }
   return startedEvent;
+}
+
+export async function createIntegrationRoot(
+  configuredRoot: string | undefined,
+  id: string,
+): Promise<string> {
+  if (!configuredRoot) {
+    return fs.mkdtemp(path.join(os.tmpdir(), `openclaw-schtasks-int-${id}-`));
+  }
+  const rootDir = path.resolve(configuredRoot);
+  try {
+    // Cleanup may only remove a directory this exact run created.
+    await fs.mkdir(rootDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`CI_WINDOWS_SCHTASKS_ROOT must not already exist: ${rootDir}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+  return rootDir;
+}
+
+export type NativeScheduledTaskProof = { path: string; value: Record<string, unknown> };
+
+export function prepareNativeProof(
+  value: Record<string, unknown>,
+): NativeScheduledTaskProof | undefined {
+  const proofPath = process.env.CI_WINDOWS_SCHTASKS_PROOF_PATH?.trim();
+  if (!proofPath) return undefined;
+  const head = process.env.CI_WINDOWS_SCHTASKS_HEAD?.trim();
+  if (!head || !/^[0-9a-f]{40}$/u.test(head)) {
+    throw new Error("CI_WINDOWS_SCHTASKS_HEAD must identify the exact 40-character checkout SHA");
+  }
+  return { path: proofPath, value: { ...value, head } };
+}
+
+export function resolveTestId(): string {
+  const configured = process.env.CI_WINDOWS_SCHTASKS_TEST_ID?.trim();
+  if (!configured) {
+    return randomUUID().slice(0, 8);
+  }
+  if (!/^[a-z0-9-]{1,48}$/u.test(configured)) {
+    throw new Error("CI_WINDOWS_SCHTASKS_TEST_ID must use lowercase letters, digits, or -");
+  }
+  return configured;
 }

@@ -888,6 +888,38 @@ jobs:
       - *windows_node_path
       - *windows_install
 
+      - name: Install authenticated released Scheduled Task driver
+        if: ${{ inputs.run_windows_ci }}
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:EXPECTED_HEAD) { throw "Released driver preparation has a different candidate head." }
+          $contract = Get-Content -LiteralPath test/fixtures/windows-schtasks-released-package.json -Raw | ConvertFrom-Json
+          $root = Join-Path $env:RUNNER_TEMP "openclaw-schtasks-released-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $tarball = Join-Path $root "openclaw-$($contract.version).tgz"
+          Invoke-WebRequest -Uri $contract.tarball -OutFile $tarball -ConnectionTimeoutSeconds 15 -OperationTimeoutSeconds 120
+          $integrity = "sha512-" + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($tarball)))
+          if ($integrity -cne $contract.integrity) { throw "Released Scheduled Task package integrity differs." }
+          $prefix = Join-Path $root "installed"
+          npm install --prefix $prefix --no-audit --no-fund --ignore-scripts=false $tarball
+          if ($LASTEXITCODE -ne 0) { throw "Released Scheduled Task package installation failed." }
+          $packageRoot = Join-Path $prefix "node_modules/openclaw"
+          $package = Get-Content -LiteralPath (Join-Path $packageRoot "package.json") -Raw | ConvertFrom-Json
+          $lockPath = Join-Path $prefix "package-lock.json"
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ($package.version -cne $contract.version -or $lock.packages.'node_modules/openclaw'.integrity -cne $contract.integrity) { throw "Installed released package differs from the authenticated input." }
+          foreach ($marker in @(".openclaw-lifecycle-pending", "dist/openclaw-install-guard")) {
+            if (Test-Path -LiteralPath (Join-Path $packageRoot $marker)) { throw "Released package lifecycle has not settled: $marker" }
+          }
+          $evidence = Join-Path $env:GITHUB_WORKSPACE ".artifacts/windows-schtasks"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          Copy-Item -LiteralPath $lockPath -Destination (Join-Path $evidence "released-package-lock.json")
+          @{ version = $contract.version; integrity = $integrity; tarball = $tarball; packageRoot = $packageRoot; candidateHead = $head; packageLockSha256 = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLowerInvariant() } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence "released-package.json")
+
       - name: Run native Scheduled Task lifecycle proof
         id: native_schtasks
         if: ${{ inputs.run_windows_ci }}
@@ -895,7 +927,8 @@ jobs:
         shell: bash
         env:
           CI_WINDOWS_SCHTASKS_PROOF_PATH: ${{ github.workspace }}\.artifacts\windows-schtasks\proof.json
-          CI_WINDOWS_SCHTASKS_ROOT: ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}
+          CI_WINDOWS_SCHTASKS_RELEASED_BINDING: ${{ github.workspace }}\.artifacts\windows-schtasks\released-package.json
+          CI_WINDOWS_SCHTASKS_ROOT: ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}
           CI_WINDOWS_SCHTASKS_TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           EXPECTED_HEAD: ${{ inputs.target_ref }}
         run: |
@@ -913,6 +946,17 @@ jobs:
           export CI_WINDOWS_SCHTASKS_HEAD
           mkdir -p .artifacts/windows-schtasks
           pnpm test:windows:schtasks:integration
+          node --input-type=module <<'RELEASED_TASK_PROOF'
+          import assert from "node:assert/strict";
+          import fs from "node:fs";
+          const contract = JSON.parse(fs.readFileSync("test/fixtures/windows-schtasks-released-package.json", "utf8"));
+          const proof = JSON.parse(fs.readFileSync(process.env.CI_WINDOWS_SCHTASKS_PROOF_PATH, "utf8"));
+          assert.equal(proof.head, process.env.CI_WINDOWS_SCHTASKS_HEAD);
+          assert.equal(proof.releasedLauncher?.head, proof.head);
+          assert.equal(proof.releasedLauncher?.result, "pass");
+          assert.equal(proof.releasedLauncher?.version, contract.version);
+          assert.equal(proof.releasedLauncher?.integrity, contract.integrity);
+          RELEASED_TASK_PROOF
 
       # Qualification/setup failures cannot have created this run's native task.
       - name: Clean native Scheduled Task residue
@@ -921,7 +965,7 @@ jobs:
         shell: pwsh
         env:
           TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-          TEST_ROOT: ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}
+          TEST_ROOT: ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $ErrorActionPreference = "Continue"
           $cleanupErrors = @()
@@ -1013,11 +1057,11 @@ jobs:
         with:
           name: windows-schtasks-proof-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            .artifacts/windows-schtasks/proof.json
+            .artifacts/windows-schtasks/*.json
             ${{ runner.temp }}\windows-schtasks-isolation.json
-            ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}\runs.txt.hosted-stop
-            ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}\failure-diagnostics.json
-            ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}\cleanup-summary.txt
+            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\runs.txt.hosted-stop
+            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\failure-diagnostics.json
+            ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\cleanup-summary.txt
           if-no-files-found: warn
           retention-days: 7
 
@@ -1026,8 +1070,10 @@ jobs:
         shell: pwsh
         env:
           TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-          TEST_ROOT: ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}
+          TEST_ROOT: ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $profile = "schtasks-int-$env:TEST_ID"
           Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".openclaw-$profile") -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $env:TEST_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+          $releasedRoot = Join-Path $env:RUNNER_TEMP "openclaw-schtasks-released-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $releasedRoot) { Remove-Item -LiteralPath $releasedRoot -Recurse -Force -ErrorAction Stop }
