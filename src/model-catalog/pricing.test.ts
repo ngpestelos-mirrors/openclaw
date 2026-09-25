@@ -12,6 +12,10 @@ import {
 } from "../config/runtime-snapshot.js";
 import type { ModelDefinitionConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  createUsageCostResolver,
+  prepareUsageCostPricing,
+} from "../infra/session-cost-usage-pricing-context.js";
 import { clearLoadInstalledPluginIndexInstallRecordsCache } from "../plugins/installed-plugin-index-record-cache.js";
 import { resolveInstalledPluginIndexStorePath } from "../plugins/installed-plugin-index-store-path.js";
 import * as manifestNormalization from "../plugins/manifest-model-id-normalization.js";
@@ -34,6 +38,7 @@ import {
   resolveModelCostConfigFingerprint,
 } from "../utils/usage-format.js";
 import { prepareModelPricingContext } from "./pricing.js";
+import * as pricing from "./pricing.js";
 import { setRemoteModelCatalogOverlaySourcesForTest } from "./remote-overlay.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -127,6 +132,51 @@ function configFor(baseUrl: string): OpenClawConfig {
 }
 
 describe("hosted model pricing", () => {
+  it("keeps one usage operation's prices and fingerprint when pricing is republished", async () => {
+    const agentDir = tempDirs.make("openclaw-operation-pricing-");
+    vi.spyOn(pluginMetadata, "resolvePluginMetadataSnapshotAsync").mockResolvedValue(
+      createPluginMetadataSnapshotFixture(),
+    );
+    const config: OpenClawConfig = {};
+    await prepareModelPricingContext(config);
+    const original = pricing.resolveModelPricingContext(config);
+    readStoredCatalog.mockReturnValue({
+      source_url: "https://catalog.openclaw.ai/models/v2/catalog.json",
+      bundle_json: JSON.stringify({
+        schemaVersion: 1,
+        generatedAt: 300,
+        sourceCommit: "next-pricing",
+        providers: {},
+        pricing: {
+          "openai/gpt-external": { input: 25, output: 100 },
+          "openai/pricing-hosted": { input: 40, output: 80 },
+        },
+      }),
+    });
+    setRemoteModelCatalogOverlaySourcesForTest({
+      bundledGeneratedAt: () => 100,
+      readStoredCatalog,
+    });
+    const nextConfig: OpenClawConfig = {};
+    await prepareModelPricingContext(nextConfig);
+    const next = pricing.resolveModelPricingContext(nextConfig);
+    const publication = vi.spyOn(pricing, "resolveModelPricingContext").mockReturnValue(original);
+    const operation = await prepareUsageCostPricing(config, agentDir);
+    const fingerprint = operation.fingerprint();
+    const resolveCost = createUsageCostResolver({ config, agentDir }, operation);
+    expect(resolveCost({ provider: "openai", model: "gpt-external" })?.input).toBe(2.5);
+
+    publication.mockReturnValue(next);
+    // This model has not been looked up or memoized by the original operation.
+    expect(resolveCost({ provider: "openai", model: "pricing-hosted" })?.input).toBe(4);
+    expect(operation.fingerprint()).toBe(fingerprint);
+    const nextOperation = await prepareUsageCostPricing(config, agentDir);
+    const nextResolveCost = createUsageCostResolver({ config, agentDir }, nextOperation);
+    expect(nextResolveCost({ provider: "openai", model: "gpt-external" })?.input).toBe(25);
+    expect(nextResolveCost({ provider: "openai", model: "pricing-hosted" })?.input).toBe(40);
+    expect(nextOperation.fingerprint()).not.toBe(fingerprint);
+  });
+
   it("keeps normalized indexes scoped to their policy while observing configured price changes", async () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-prepared-pricing-"));
     const model = {
