@@ -886,14 +886,24 @@ describe("grouped chat rendering", () => {
     });
 
     const userContainer = document.createElement("div");
-    renderGroupedMessage(
+    render(
+      renderTestMessageGroup(
+        prepareMessageGroup(
+          createMessageEntry(
+            "user-message",
+            createUserMessage("User reply context.", {
+              timestamp: 1001,
+              __openclaw: {
+                id: "user-entry-1",
+                senderId: "jason",
+                senderIdentity: { type: "profile", id: "jason" },
+              },
+            }),
+          ),
+        ),
+        { onReply, userId: "jason", userName: "Jason" },
+      ),
       userContainer,
-      createUserMessage("User reply context.", {
-        timestamp: 1001,
-        __openclaw: { id: "user-entry-1" },
-      }),
-      "user",
-      { onReply, userName: "Jason" },
     );
     userContainer.querySelector<HTMLButtonElement>('[aria-label="Reply to message"]')?.click();
 
@@ -1969,7 +1979,7 @@ describe("grouped chat rendering", () => {
     expect(statusFor(8_000)).toEqual(expected);
   });
 
-  it("renders configured local user names", () => {
+  it("does not assign unattributed messages to the configured viewer", () => {
     const renderUser = (opts: Partial<RenderMessageGroupOptions>) => {
       const container = document.createElement("div");
       renderGroupedMessage(
@@ -1983,10 +1993,91 @@ describe("grouped chat rendering", () => {
 
     const named = renderUser({ userName: "Buns" });
     const sender = named.querySelector<HTMLElement>(".chat-group.user .chat-sender-name");
-    expect(sender?.textContent).toBe("Buns");
+    expect(sender?.textContent).toBe("User");
 
     const avatar = named.querySelector<HTMLElement>(".chat-avatar.user");
     expect(avatar?.tagName).toBe("DIV");
+  });
+
+  it.each(["viewer", null])(
+    "keeps agent, human, and unknown authors distinct for viewer %s",
+    (userId) => {
+      vi.mocked(chatAvatar.renderChatAvatar).mockRestore();
+      const fixtures = [
+        {
+          id: "viewer",
+          type: "profile",
+          name: "Recorded viewer",
+          expected: userId ? "Current viewer" : "Recorded viewer",
+          peer: !userId,
+        },
+        { id: "peer", type: "profile", name: "Peer human", expected: "Peer human", peer: true },
+        { id: "viewer", type: "agent", name: "viewer", expected: "Task agent", peer: true },
+        {
+          id: "viewer",
+          type: undefined,
+          name: "Historical label",
+          expected: "Historical label",
+          peer: true,
+        },
+        { id: undefined, type: undefined, name: undefined, expected: "User", peer: false },
+      ];
+      for (const fixture of fixtures) {
+        const message = createUserMessage("Inspect the workspace", {
+          __openclaw: {
+            senderId: fixture.id,
+            senderName: fixture.name,
+            ...(fixture.type ? { senderIdentity: { type: fixture.type, id: fixture.id } } : {}),
+          },
+        });
+        const container = document.createElement("div");
+        render(
+          renderTestMessageGroup(prepareMessageGroup(createMessageEntry("authorship", message)), {
+            userId,
+            userName: "Current viewer",
+            userAvatar: "https://example.test/viewer.png",
+            agents: [{ id: "viewer", identity: { name: "Task agent" } }],
+            personActivity: { basePath: "", navigate: vi.fn() },
+          }),
+          container,
+        );
+        expect(container.querySelector(".chat-sender-name")?.textContent).toBe(fixture.expected);
+        expect(Boolean(container.querySelector(".chat-group--peer"))).toBe(fixture.peer);
+        expect(Boolean(container.querySelector("a.chat-sender-name"))).toBe(
+          fixture.type === "profile" && fixture.peer,
+        );
+        if (fixture.type === "agent") {
+          expect(container.querySelector(".chat-avatar.assistant")).not.toBeNull();
+          expect(container.querySelector(".chat-avatar--sender-initials")).toBeNull();
+        }
+        expect(container.querySelector('img[src="https://example.test/viewer.png"]')).toBeNull();
+      }
+    },
+  );
+
+  it.each(["current", "other"])("uses the %s agent's configured task avatar", (source) => {
+    vi.mocked(chatAvatar.renderChatAvatar).mockRestore();
+    const message = createUserMessage("Delegated task", {
+      __openclaw: {
+        senderId: source,
+        senderName: source,
+        senderIdentity: { type: "agent", id: source },
+      },
+    });
+    const container = document.createElement("div");
+    render(
+      renderTestMessageGroup(prepareMessageGroup(createMessageEntry("agent-avatar", message)), {
+        agentId: "current",
+        assistantAvatar: "blob:current-avatar",
+        agents: [{ id: "other", identity: { name: "Other agent" } }],
+        senderAgentAvatars: new Map([["other", "blob:other-avatar"]]),
+      }),
+      container,
+    );
+    expect(container.querySelector("img.chat-avatar.assistant")?.getAttribute("src")).toBe(
+      "blob:" + source + "-avatar",
+    );
+    expect(container.querySelector(".chat-avatar--sender-initials")).toBeNull();
   });
 
   it.each([
@@ -2213,7 +2304,7 @@ describe("grouped chat rendering", () => {
       label: "attributed sender without a viewer",
       sender: { id: "other-user" },
       userId: null,
-      peer: false,
+      peer: true,
     },
   ])("sets peer alignment for $label", ({ sender, userId, peer }) => {
     const container = document.createElement("div");

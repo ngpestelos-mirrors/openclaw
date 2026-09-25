@@ -14,6 +14,7 @@ import { t } from "../../../i18n/index.ts";
 import type { MessageGroup, ToolCard } from "../../../lib/chat/chat-types.ts";
 import { messageClientSourcesLabel } from "../../../lib/chat/message-client-source.ts";
 import { normalizeRoleForGrouping } from "../../../lib/chat/message-normalizer.ts";
+import { formatSenderLabel } from "../../../lib/chat/sender-label.ts";
 import {
   readToolApprovalReviewOutcome,
   readToolApprovalReviews,
@@ -398,7 +399,10 @@ export function resolveMessageGroupSenderLabel(
   group: Pick<MessageGroup, "role" | "sender" | "senderLabel" | "sourceClients"> & {
     messages: ReadonlyArray<{ message: unknown }>;
   },
-  opts: Pick<RenderMessageGroupOptions, "assistantName" | "userId" | "userName">,
+  opts: Pick<
+    RenderMessageGroupOptions,
+    "assistantName" | "agentId" | "agents" | "userId" | "userName"
+  >,
 ): string {
   const normalizedRole = normalizeRoleForGrouping(group.role);
   if (isSourceOnlyUserGroup(group)) {
@@ -425,12 +429,17 @@ export function resolveMessageGroupSenderLabel(
       ? t("chat.workspaceConflict.eventSender")
       : t("common.system");
   }
+  const authorAgentId =
+    group.sender?.identity?.type === "agent" ? group.sender.identity.id : undefined;
+  if (normalizedRole === "user" && authorAgentId) {
+    return formatSenderLabel(group.sender, opts) ?? authorAgentId;
+  }
   const resolvedUserName = resolveLocalUserName({ name: opts.userName });
   const userLabel = group.senderLabel?.trim();
   return normalizedRole === "user"
     ? isOwnSenderGroup(group, opts.userId)
       ? resolvedUserName
-      : (userLabel ?? resolvedUserName)
+      : (userLabel ?? t("sessionsView.user"))
     : normalizedRole === "assistant"
       ? (userLabel ?? opts.assistantName ?? "Assistant")
       : normalizedRole === "tool"
@@ -476,9 +485,7 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
   const sourceOnly = isSourceOnlyUserGroup(group);
   const assistantName = opts.assistantName ?? "Assistant";
   const isPeerGroup =
-    normalizedRole === "user" &&
-    Boolean(opts.userId && group.sender) &&
-    !isOwnSenderGroup(group, opts.userId);
+    normalizedRole === "user" && Boolean(group.sender) && !isOwnSenderGroup(group, opts.userId);
   const forwardedSource = hasForwardedSource(group);
   const isForwarded = normalizedRole === "assistant" && forwardedSource;
   const showSenderName =
@@ -565,13 +572,18 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
     normalizedRole === "user" &&
     avatarPlacement === "gutter" &&
     Boolean(preparedMessages[lastMessageIndex]?.source.displayMarkdown);
+  const authorAgentId =
+    group.sender?.identity?.type === "agent" ? group.sender.identity.id : undefined;
+  const hasKnownAuthorAgent =
+    authorAgentId &&
+    (authorAgentId === opts.agentId || opts.agents?.some((agent) => agent.id === authorAgentId));
   const avatar =
     !sourceOnly &&
     normalizedRole !== "tool" &&
     avatarPlacement === "gutter" &&
     (isForwarded || normalizedRole !== "assistant" || opts.showAssistantAvatar !== false)
-      ? isForwarded
-        ? renderForwardedAvatar(group.senderSession?.agentId, opts)
+      ? isForwarded || hasKnownAuthorAgent
+        ? renderForwardedAvatar(isForwarded ? group.senderSession?.agentId : authorAgentId, opts)
         : renderChatAvatar(
             group.role,
             {
@@ -580,7 +592,9 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
               avatar: opts.assistantAvatar ?? null,
               textAvatar: opts.assistantTextAvatar,
             },
-            { name: opts.userName ?? null, avatar: opts.userAvatar ?? null },
+            isOwnSenderGroup(group, opts.userId)
+              ? { name: opts.userName ?? null, avatar: opts.userAvatar ?? null }
+              : undefined,
             group.sender,
           )
       : nothing;
@@ -598,7 +612,7 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
       ${inlineUserAvatar ? nothing : avatar}
       <div class="chat-group-messages">
         ${forwardedSource ? renderForwardedAttribution(group, opts) : nothing}
-        ${normalizedRole === "assistant" ? renderChatReplyAttribution(group.replyToSender) : nothing}
+        ${normalizedRole === "assistant" ? renderChatReplyAttribution(group.replyToSender, opts) : nothing}
         ${
           opts.frameContent ??
           repeat(
