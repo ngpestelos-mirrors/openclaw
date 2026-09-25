@@ -2,7 +2,7 @@ import {
   isFutureDateTimestampMs,
   resolveTimerTimeoutMs,
 } from "@openclaw/normalization-core/number-coercion";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   DEFAULT_CHANNEL_CONNECT_GRACE_MS,
@@ -36,7 +36,7 @@ type ChannelHealthTimingPolicy = {
 
 type ChannelHealthMonitorDeps = {
   channelManager: ChannelManager;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   checkIntervalMs?: number;
   timing?: Partial<ChannelHealthTimingPolicy>;
   cooldownCycles?: number;
@@ -78,7 +78,7 @@ export function startChannelHealthMonitor(deps: ChannelHealthMonitorDeps): Chann
   } = deps;
   const checkIntervalMs = resolveTimerTimeoutMs(deps.checkIntervalMs, DEFAULT_CHECK_INTERVAL_MS);
   const timing = resolveTimingPolicy(deps);
-  const scheduler = deps.scheduler ?? new GatewayScheduler();
+  const { scheduler } = deps;
 
   const cooldownMs = cooldownCycles * checkIntervalMs;
   const restartRecords = new Map<string, RestartRecord>();

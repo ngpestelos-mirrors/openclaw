@@ -14,14 +14,16 @@ import {
   deleteSessionEntryLifecycle,
   resetSessionEntryLifecycle,
 } from "../config/sessions/session-accessor.sqlite-lifecycle.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db-lifecycle.js";
 import {
   getOpenClawAgentDatabaseIfOpen,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { attachInitialGatewayLifetimeSidecars } from "./server-lifetime-sidecars.js";
@@ -54,7 +56,7 @@ async function withLifetime(
     await state.writeConfig(config);
     const time = createGatewaySchedulerClock(Date.now());
     vi.spyOn(Date, "now").mockImplementation(time.clock.now);
-    const scheduler = new GatewayScheduler({ clock: time.clock });
+    const scheduler = createTestGatewayScheduler(time.clock);
     await upsertSessionEntryCore(ordinary, {
       sessionId: "ordinary",
       updatedAt: Date.now() - DAY_MS,
@@ -225,7 +227,7 @@ it.each(["provided", "omitted", "legacy"] as const)(
       await patchSessionEntryCore(scope, () => ({ createdAt: Date.now(), updatedAt: Date.now() }));
       expect(loadSessionEntryReadOnly(scope)?.createdAt).toBe(createdAt);
       const siblingTime = createGatewaySchedulerClock(time.clock.now());
-      const siblingScheduler = new GatewayScheduler({ clock: siblingTime.clock });
+      const siblingScheduler = createTestGatewayScheduler(siblingTime.clock);
       await attachInitialGatewayLifetimeSidecars({
         scheduler: siblingScheduler,
         chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,

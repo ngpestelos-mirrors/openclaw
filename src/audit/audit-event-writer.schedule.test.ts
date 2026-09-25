@@ -1,7 +1,9 @@
 import { expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createAuditEventWriter } from "./audit-event-writer.js";
 
 const worker = vi.hoisted(() => ({
@@ -21,7 +23,7 @@ vi.mock("../state/openclaw-state-worker-store.js", () => ({
 it("runs hourly retention without new records and retires the schedule on stop", async () => {
   const hour = 60 * 60_000;
   const time = createGatewaySchedulerClock();
-  const scheduler = new GatewayScheduler({ clock: time.clock });
+  const scheduler = createTestGatewayScheduler(time.clock);
   const writer = createAuditEventWriter({ scheduler, stateDir: "/synthetic/audit-state" });
   try {
     await writer.ready;

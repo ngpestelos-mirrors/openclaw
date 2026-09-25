@@ -17,7 +17,6 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   runExclusiveSessionLifecycleMutation,
   SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
@@ -30,7 +29,10 @@ import {
   ensureSessionInputCompletionsSchema,
   ensureSessionPendingInputsSchema,
 } from "../state/openclaw-agent-pending-inputs-schema.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { setAbortedAgentDedupeEntries } from "./agent-turn/agent-dedupe.js";
 import * as agentJobs from "./agent-turn/agent-job.js";
 import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
@@ -733,7 +735,7 @@ describe("private subagent completion processing receipts", () => {
       const timers = startGatewayMaintenanceTimers({
         ...createGatewayMaintenanceStateForTest(),
         ...kernel.gatewayRequestContext,
-        scheduler: new GatewayScheduler({ clock: clock.clock }),
+        scheduler: createTestGatewayScheduler(clock.clock),
         logHealth: { info: vi.fn(), error: vi.fn() },
         runWorktreeGc: async () => undefined,
         runDeliveryQueueMediaGc: async () => undefined,

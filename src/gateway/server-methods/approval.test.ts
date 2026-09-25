@@ -17,7 +17,6 @@ import {
   resolveExecApprovalRequestAllowedDecisions,
   type ExecApprovalRequestPayload,
 } from "../../infra/exec-approvals.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import {
   resolvePluginApprovalRequestAllowedDecisions,
   type PluginApprovalRequestPayload,
@@ -25,16 +24,15 @@ import {
 import type { SystemAgentApprovalRequestPayload } from "../../infra/system-agent-approvals.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
-import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
 import {
   createTestApprovalManager,
@@ -54,7 +52,11 @@ import {
   cancelUnboundRunApprovals,
 } from "./approval-run-cancellation.js";
 import { createApprovalHandlers } from "./approval.js";
-import { createContext, deleteDurableApproval } from "./approval.test-support.js";
+import {
+  createContext,
+  deleteDurableApproval,
+  corruptDurableApprovalPresentation,
+} from "./approval.test-support.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const prepareApprovalChannelCustodyMock = vi.hoisted(() => vi.fn());
@@ -64,7 +66,6 @@ vi.mock("../approval-channel-custody.js", () => ({
 }));
 
 const tempDirs: string[] = [];
-type OperatorApprovalDatabase = Pick<OpenClawStateKyselyDatabase, "operator_approvals">;
 const managersForCleanup: Array<{
   listPendingRecords(): Promise<Array<{ id: string }>>;
   expire(id: string, resolvedBy?: string | null): Promise<boolean>;
@@ -79,8 +80,10 @@ function createDatabaseOptions(): OpenClawStateDatabaseOptions {
 }
 
 function createManagers(databaseOptions: OpenClawStateDatabaseOptions) {
+  const scheduler = createTestGatewayScheduler();
   const persistence = { runtimeEpoch: "approval-handler-test", databaseOptions };
   const execOptions: ExecApprovalManagerOptions<ExecApprovalRequestPayload> = {
+    scheduler,
     approvalKind: "exec",
     persistence,
     resolveAllowedDecisions: resolveExecApprovalRequestAllowedDecisions,
@@ -89,12 +92,14 @@ function createManagers(databaseOptions: OpenClawStateDatabaseOptions) {
   const managers = {
     exec: new ExecApprovalManager(execOptions),
     plugin: new ExecApprovalManager<PluginApprovalRequestPayload>({
+      scheduler,
       approvalKind: "plugin",
       persistence,
       resolveAllowedDecisions: resolvePluginApprovalRequestAllowedDecisions,
       resolveAudienceSessionKeys: (source) => [source, "agent:main:parent"],
     }),
     systemAgent: new ExecApprovalManager<SystemAgentApprovalRequestPayload>({
+      scheduler,
       approvalKind: "system-agent",
       persistence,
       resolveAllowedDecisions: (request) => request.allowedDecisions,
@@ -103,21 +108,6 @@ function createManagers(databaseOptions: OpenClawStateDatabaseOptions) {
   };
   managersForCleanup.push(managers.exec, managers.plugin, managers.systemAgent);
   return managers;
-}
-
-function corruptDurableApprovalPresentation(
-  databaseOptions: OpenClawStateDatabaseOptions,
-  id: string,
-): void {
-  const database = openOpenClawStateDatabase(databaseOptions);
-  const stateDb = getNodeSqliteKysely<OperatorApprovalDatabase>(database.db);
-  executeSqliteQuerySync(
-    database.db,
-    stateDb
-      .updateTable("operator_approvals")
-      .set({ presentation_json: "{}" })
-      .where("approval_id", "=", id),
-  );
 }
 
 async function registerExec(

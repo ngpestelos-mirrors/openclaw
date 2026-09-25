@@ -1,6 +1,6 @@
+import path from "node:path";
 // Register the shared tool mocks before any runtime dependency is evaluated.
 import "./worker-session-tool-executor.test-support.js";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionReceiptV1 } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -15,6 +15,7 @@ import {
 import { createMockPluginRegistry } from "../../plugins/hooks.test-helpers.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { readAgentRuntimeExecutionLineage } from "../agent-runtime-execution-lineage.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import { bindWorkerTurnOwner } from "./placement-turn-claim-events.js";
@@ -581,6 +582,7 @@ describe("worker spawn startup composition", () => {
           const startup = await loadGatewayWorkerEnvironmentStartupState();
           const registry = createEmptyPluginRegistry();
           const runtime = await createGatewayWorkerEnvironmentRuntime({
+            scheduler: createTestGatewayScheduler(),
             getPluginRegistry: () => registry,
             getPortalRuntime: () => undefined,
             resolveGatewayContext,

@@ -1,4 +1,3 @@
-// Stuck session recovery integration tests cover end-to-end recovery diagnostics.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveEmbeddedSessionLane } from "../agents/embedded-agent-runner/lanes.js";
@@ -20,6 +19,8 @@ import {
 } from "../infra/diagnostic-events.js";
 import { enqueueCommandInLane, getQueueSize, resetCommandLane } from "../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../process/command-queue.test-support.js";
+// Stuck session recovery integration tests cover end-to-end recovery diagnostics.
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import {
   beginDiagnosticBackendActivity,
   closeDiagnosticEmbeddedRunOwner,
@@ -69,6 +70,7 @@ describe("stuck session recovery integration", () => {
     const events: DiagnosticEventPayload[] = [];
     const unsubscribe = onDiagnosticEvent((event) => events.push(event));
     startDiagnosticHeartbeat(
+      createTestGatewayScheduler("fake-timers"),
       { diagnostics: { enabled: true } },
       {
         recoverStuckSession: recoverStuckDiagnosticSession,
@@ -199,6 +201,7 @@ describe("stuck session recovery integration", () => {
     const events: DiagnosticEventPayload[] = [];
     const unsubscribe = onDiagnosticEvent((event) => events.push(event));
     startDiagnosticHeartbeat(
+      createTestGatewayScheduler("fake-timers"),
       { diagnostics: { enabled: true } },
       {
         recoverStuckSession: recoverStuckDiagnosticSession,
@@ -546,6 +549,7 @@ describe("stuck session recovery integration", () => {
       await activeStarted;
 
       startDiagnosticHeartbeat(
+        createTestGatewayScheduler("fake-timers"),
         {
           diagnostics: { enabled: true },
           agents: { defaults: { compaction: { timeoutSeconds: 600 } } },

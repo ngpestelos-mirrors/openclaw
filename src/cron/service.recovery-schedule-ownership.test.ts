@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { listTaskRegistryRecordsByRuntimeSourceIdFromSqlite } from "../tasks/task-registry.store.sqlite.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import type { CronServiceDeps } from "./service/state.js";
@@ -37,6 +38,8 @@ async function createHarness(input: Partial<CronJobCreate> = {}) {
     status: "ok",
   }));
   const deps: CronServiceDeps = {
+    scheduler: createTestGatewayScheduler(),
+    nowMs: () => Date.now(),
     storePath,
     cronEnabled: true,
     cronConfig: { triggers: { enabled: true } },

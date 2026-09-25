@@ -5,7 +5,7 @@ import { isNixMode } from "../config/paths.js";
 import type { GatewayTailscaleMode } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayActiveWorkInspectors } from "../infra/gateway-active-work.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import type { GatewayDiscovery } from "./server-discovery-runtime.js";
 import type { GatewayPluginRuntimeClaim } from "./server-plugin-runtime-generation.js";
@@ -19,7 +19,7 @@ const loadRemoteSkillsRuntimeModule = async () => await import("../skills/runtim
 
 /** Start early Gateway side runtimes before the main server is fully ready. */
 export async function startGatewayEarlyRuntime(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   minimalTestGateway: boolean;
   isClosing: () => boolean;
   updateCanary?: boolean;
@@ -63,7 +63,7 @@ export async function startGatewayEarlyRuntime(params: {
   getRuntimeConfig: () => OpenClawConfig;
   startupTrace?: GatewayStartupTrace;
 }) {
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const { scheduler } = params;
   await setSessionMcpRuntimeScheduler(scheduler);
   const startSideRuntimes = !params.minimalTestGateway && !params.updateCanary;
   if (startSideRuntimes) {

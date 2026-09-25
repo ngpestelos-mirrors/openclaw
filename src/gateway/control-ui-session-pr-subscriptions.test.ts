@@ -1,9 +1,11 @@
 import { getEventListeners } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createRetainedCache } from "../infra/retained-cache.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import type { ControlUiSessionPullRequests } from "./control-ui-contract.js";
 import { parseControlUiSessionPullRequestsSubscribeParams } from "./control-ui-session-pr-subscriptions.js";
 import { createTestControlUiSessionPrSubscriptions } from "./control-ui-session-pr-subscriptions.test-support.js";
@@ -40,6 +42,7 @@ describe("control UI session PR subscriptions", () => {
       const held = createDeferred();
       const signals: AbortSignal[] = [];
       active = createTestControlUiSessionPrSubscriptions({
+        scheduler: createTestGatewayScheduler(),
         broadcastToConnIds: vi.fn(),
         load: async ({ sessionKey }, signal) => {
           if (!signal) {
@@ -144,7 +147,11 @@ describe("control UI session PR subscriptions", () => {
       rateLimited: false,
     }));
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
 
     await active.replace("conn-a", ["agent:main:demo"]);
     expect(broadcastToConnIds).toHaveBeenCalledTimes(1);
@@ -177,7 +184,11 @@ describe("control UI session PR subscriptions", () => {
       (params: ControlUiSessionPullRequestsParams) => Promise<ControlUiSessionPullRequests>
     >(async () => READY);
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
 
     await active.replace("conn-a", ["shared", "only-a"]);
     await active.replace("conn-b", ["shared", "only-b"]);
@@ -200,7 +211,11 @@ describe("control UI session PR subscriptions", () => {
     let revision = 0;
     const load = vi.fn(async () => ({ ...READY, rateLimited: revision > 0 }));
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
     await active.replace("conn-a", ["shared"]);
     await active.replace("conn-b", ["shared"]);
     broadcastToConnIds.mockClear();
@@ -237,6 +252,7 @@ describe("control UI session PR subscriptions", () => {
     );
     active = createTestControlUiSessionPrSubscriptions({
       broadcastToConnIds: vi.fn(),
+      scheduler: createTestGatewayScheduler(),
       load,
     });
     const sessionKeys = Array.from({ length: 6 }, (_value, index) => `session-${index}`);
@@ -270,7 +286,11 @@ describe("control UI session PR subscriptions", () => {
     vi.useFakeTimers();
     const load = vi.fn(async () => READY);
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
     await active.replace("conn-a", ["first", "second"]);
     load.mockClear();
     broadcastToConnIds.mockClear();
@@ -309,7 +329,11 @@ describe("control UI session PR subscriptions", () => {
         sessionKey.startsWith("blocked-") ? await blocked.promise : READY,
       );
       const broadcastToConnIds = vi.fn();
-      active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+      active = createTestControlUiSessionPrSubscriptions({
+        broadcastToConnIds,
+        load,
+        scheduler: createTestGatewayScheduler(),
+      });
       if (polling) {
         await active.replace("old", ["session"]);
         load.mockClear();
@@ -353,7 +377,11 @@ describe("control UI session PR subscriptions", () => {
     const normal = createDeferred<ControlUiSessionPullRequests>();
     const load = vi.fn(() => normal.promise);
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
     const initial = active.replace("old", ["session"]);
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
     const forced = active.replace("old", ["session"], new Set(["session"]));
@@ -384,7 +412,11 @@ describe("control UI session PR subscriptions", () => {
       .mockImplementationOnce(() => retired.promise)
       .mockImplementationOnce(() => fresh.promise);
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
     const initial = active.replace("old", ["session"]);
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
     const forced = active.replace("old", ["session"], new Set(["session"]));
@@ -414,6 +446,7 @@ describe("control UI session PR subscriptions", () => {
     const load = vi.fn(async () => READY);
     active = createTestControlUiSessionPrSubscriptions({
       broadcastToConnIds: vi.fn(),
+      scheduler: createTestGatewayScheduler(),
       load,
     });
 
@@ -433,7 +466,11 @@ describe("control UI session PR subscriptions", () => {
       rateLimited: refresh === true,
     }));
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
     await active.replace("conn-a", ["refresh-me", "leave-cached"]);
     await active.replace("conn-b", ["refresh-me"]);
     load.mockClear();
@@ -468,7 +505,11 @@ describe("control UI session PR subscriptions", () => {
         return READY;
       });
       const broadcastToConnIds = vi.fn();
-      active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+      active = createTestControlUiSessionPrSubscriptions({
+        broadcastToConnIds,
+        load,
+        scheduler: createTestGatewayScheduler(),
+      });
       await active.replace("requester", ["session"]);
       await active.replace("sibling", ["session"]);
       broadcastToConnIds.mockClear();
@@ -491,7 +532,7 @@ describe("control UI session PR subscriptions", () => {
     active = createTestControlUiSessionPrSubscriptions({
       broadcastToConnIds,
       load,
-      scheduler: new GatewayScheduler({ clock: clock.clock }),
+      scheduler: createTestGatewayScheduler(clock.clock),
     });
     await active.replace("first", ["shared", "independent"]);
     await active.replace("second", ["shared"]);
@@ -543,7 +584,7 @@ describe("control UI session PR subscriptions", () => {
         broadcastToConnIds,
         load,
         isConnectionActive: () => connected,
-        scheduler: new GatewayScheduler({ clock: clock.clock }),
+        scheduler: createTestGatewayScheduler(clock.clock),
       });
       await active.replace("requester", ["session"], new Set(["session"]));
       const refresh = active.replace("requester", ["session"], new Set(["session"]));
@@ -583,7 +624,11 @@ describe("control UI session PR subscriptions", () => {
       .mockImplementationOnce(async () => await normal)
       .mockImplementationOnce(async () => await forced);
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
     await active.replace("conn-a", ["session"]);
     await active.replace("conn-b", ["session"]);
     broadcastToConnIds.mockClear();
@@ -610,8 +655,8 @@ describe("control UI session PR subscriptions", () => {
   it.each(["initial hydration", "poll"] as const)(
     "joins %s and fences queued forced refreshes when stopped",
     async (phase) => {
-      vi.useFakeTimers();
       const loadStarted = createDeferred();
+      const clock = createGatewaySchedulerClock();
       const replacementEntered = createDeferred();
       const heldSnapshot = createDeferred<ControlUiSessionPullRequests>();
       let blockLoads = phase === "initial hydration";
@@ -628,6 +673,7 @@ describe("control UI session PR subscriptions", () => {
       });
       const broadcastToConnIds = vi.fn();
       const subscriptions = createTestControlUiSessionPrSubscriptions({
+        scheduler: createTestGatewayScheduler(clock.clock),
         broadcastToConnIds,
         load,
       });
@@ -657,7 +703,7 @@ describe("control UI session PR subscriptions", () => {
         }
         await subscriptions.replace("conn-late", ["late"]);
         await subscriptions.pollNow();
-        await vi.advanceTimersByTimeAsync(60_000);
+        await clock.advanceBy(60_000);
         const completedBeforeRelease = stopCompletions;
         heldSnapshot.resolve(READY);
         await Promise.all(operations);
@@ -691,7 +737,7 @@ describe("control UI session PR subscriptions", () => {
     active = createTestControlUiSessionPrSubscriptions({
       broadcastToConnIds,
       load,
-      scheduler: new GatewayScheduler({ clock: clock.clock }),
+      scheduler: createTestGatewayScheduler(clock.clock),
     });
 
     await active.replace("conn-a", ["replace-orphan"]);
@@ -718,7 +764,11 @@ describe("control UI session PR subscriptions", () => {
         .mockImplementationOnce(() => pending.promise)
         .mockResolvedValue(READY);
       const broadcastToConnIds = vi.fn();
-      active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+      active = createTestControlUiSessionPrSubscriptions({
+        broadcastToConnIds,
+        load,
+        scheduler: createTestGatewayScheduler(),
+      });
       await active.replace("conn-a", ["session"]);
       const pendingLoad =
         kind === "poll"
@@ -750,7 +800,11 @@ describe("control UI session PR subscriptions", () => {
         .mockImplementationOnce(() => normal.promise)
         .mockResolvedValue(READY);
       const broadcastToConnIds = vi.fn();
-      active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+      active = createTestControlUiSessionPrSubscriptions({
+        broadcastToConnIds,
+        load,
+        scheduler: createTestGatewayScheduler(),
+      });
       await active.replace("conn-a", ["session"]);
       const poll = active.pollNow();
       await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
@@ -781,6 +835,7 @@ describe("control UI session PR subscriptions", () => {
       broadcastToConnIds,
       load,
       isConnectionActive: () => false,
+      scheduler: createTestGatewayScheduler(),
     });
 
     const onAdmitted = vi.fn();
@@ -799,7 +854,11 @@ describe("control UI session PR subscriptions", () => {
       .mockResolvedValueOnce(READY)
       .mockImplementationOnce(() => pending.promise);
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
     await active.replace("conn-a", ["session"]);
     const poll = active.pollNow();
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
@@ -825,7 +884,11 @@ describe("control UI session PR subscriptions", () => {
       sessionKey === "old" ? await first : READY,
     );
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
 
     const oldReplace = active.replace("conn-a", ["old", "current"]);
     await vi.waitFor(() =>
@@ -852,7 +915,11 @@ describe("control UI session PR subscriptions", () => {
       sessionKey.startsWith("blocked") ? await blocked : READY,
     );
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
 
     const oldReplace = active.replace("conn-a", [
       "blocked-1",
@@ -899,7 +966,11 @@ describe("control UI session PR subscriptions", () => {
       },
     );
     const broadcastToConnIds = vi.fn();
-    active = createTestControlUiSessionPrSubscriptions({ broadcastToConnIds, load });
+    active = createTestControlUiSessionPrSubscriptions({
+      broadcastToConnIds,
+      load,
+      scheduler: createTestGatewayScheduler(),
+    });
 
     await active.replace("conn-a", ["limited", "failed", "repository-only"]);
     expect(broadcastToConnIds).toHaveBeenCalledTimes(3);

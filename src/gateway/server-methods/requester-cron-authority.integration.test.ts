@@ -62,6 +62,7 @@ import {
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { getPluginToolMeta } from "../../plugins/tool-metadata.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-approval-authority.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
@@ -317,6 +318,8 @@ function createCronFixture(
 ) {
   const storePath = path.join(stateDir, "cron", "jobs.json");
   cron = new CronService({
+    scheduler: createTestGatewayScheduler(),
+    nowMs: () => Date.now(),
     storePath,
     cronEnabled: false,
     defaultAgentId: "main",
@@ -337,11 +340,8 @@ function createCronFixture(
   return { context, read: async () => (await loadCronStore(storePath)).jobs };
 }
 
-async function createStoredJob(
-  listConfiguredChannels: () => Promise<string[]> = async () => [],
-  config: OpenClawConfig = cfg,
-) {
-  const { context, read } = createCronFixture(listConfiguredChannels, config);
+async function createStoredJob(...args: Parameters<typeof createCronFixture>) {
+  const { context, read } = createCronFixture(...args);
   const job = await cron.add(
     {
       name: "Maintenance",

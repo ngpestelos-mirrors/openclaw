@@ -1,9 +1,11 @@
 import { cpus } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import { getTrackedWorkerCpuSources } from "../../infra/worker-cpu.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../../test-utils/gateway-scheduler-clock.js";
 import { createGatewayEventLoopHealthMonitor } from "./event-loop-health.js";
 
 vi.mock("node:os", async (importOriginal) => ({
@@ -51,7 +53,7 @@ afterEach(() => {
 
 async function createMonitor() {
   const monitor = createGatewayEventLoopHealthMonitor({
-    scheduler: new GatewayScheduler({ clock: clock.clock }),
+    scheduler: createTestGatewayScheduler(clock.clock),
     now: () => now,
     cpuUsage: (previous) => ({ user: now * 2_000 - (previous?.user ?? 0), system: 0 }),
     eventLoopUtilization: () => ({ idle: now, active: 0, utilization: 0.05 }),

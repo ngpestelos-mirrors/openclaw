@@ -1,14 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createUpdateRun, finishUpdateRun } from "../infra/update-run-ledger.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { startUpdateRunWatcher, wakeUpdateRunWatcher } from "./update-run-watcher.js";
 
 vi.mock("./update-run-notice.runtime.js", () => ({ notifyUpdateRunPhase: vi.fn() }));
@@ -27,11 +29,11 @@ const now = Date.parse("2026-09-07T12:00:00Z");
 const graceMs = 5 * 60_000;
 let watcher: ReturnType<typeof startUpdateRunWatcher> | undefined;
 let clock: ReturnType<typeof createGatewaySchedulerClock>;
-let scheduler: GatewayScheduler;
+let scheduler: ReturnType<typeof createTestGatewayScheduler>;
 
 beforeEach(() => {
   clock = createGatewaySchedulerClock(now);
-  scheduler = new GatewayScheduler({ clock: clock.clock });
+  scheduler = createTestGatewayScheduler(clock.clock);
   vi.spyOn(Date, "now").mockImplementation(clock.clock.now);
   vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-watcher-publication-"));
 });

@@ -17,7 +17,7 @@ export async function startGmailWatcherWithLogs(params: {
   log: GMailWatcherLog;
   onSkipped?: () => void;
   signal?: AbortSignal;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
 }) {
   if (isTruthyEnvValue(process.env.OPENCLAW_SKIP_GMAIL_WATCHER)) {
     // Test and local recovery paths use the env skip to avoid starting a long

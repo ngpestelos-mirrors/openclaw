@@ -4,6 +4,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { SqliteWorkerError, type SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import type { AuditEventInput } from "./audit-event-types.js";
 import { createAuditEventWriter } from "./audit-event-writer.js";
 import type { AuditWriterOperations, AuditWriterResult } from "./audit-event-writer.types.js";
@@ -79,6 +80,7 @@ describe("audit writer async settlement", () => {
     });
     const errors: string[] = [];
     const writer = createAuditEventWriter({
+      scheduler: createTestGatewayScheduler(),
       stateDir: tempDirs.make("audit-writer-settlement-"),
       maxPending: 2,
       onError: (error) => errors.push(error),
@@ -146,6 +148,7 @@ describe("audit writer async settlement", () => {
     });
     const errors: string[] = [];
     const writer = createAuditEventWriter({
+      scheduler: createTestGatewayScheduler(),
       stateDir: tempDirs.make("audit-writer-unknown-outcome-"),
       onError: (error) => errors.push(error),
     });
@@ -200,6 +203,7 @@ describe("audit writer async settlement", () => {
     let offered = false;
     let followUpAccepted: boolean | undefined;
     const writer = createAuditEventWriter({
+      scheduler: createTestGatewayScheduler(),
       stateDir: tempDirs.make("audit-writer-error-notification-"),
       maxPending: 1,
       onError: (error) => {

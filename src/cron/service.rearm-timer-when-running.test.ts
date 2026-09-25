@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createNoopLogger, createCronStoreHarness } from "./service.test-harness.js";
 import { stop } from "./service/ops-lifecycle.js";
 import { createCronServiceState } from "./service/state.js";
@@ -33,7 +35,7 @@ describe("cron wakes during active execution", () => {
     const store = await makeStorePath();
     const now = Date.parse("2026-02-06T10:05:00.000Z");
     const clock = createGatewaySchedulerClock(now);
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const started = createDeferred();
     const deferredRun = createDeferred<{ status: "ok"; summary: string }>();
     const laterFinished = createDeferred();

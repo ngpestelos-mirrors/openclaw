@@ -19,7 +19,6 @@ import {
 } from "../agents/github-tool-identity.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GitHubToolIdentityConfig } from "../config/types.tools.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { writeHiddenGitHubSecretRecord } from "../secrets/store/secret-store.js";
 import { createDeferredCore as deferred } from "../shared/deferred.js";
 import {
@@ -28,7 +27,10 @@ import {
 } from "../state/agent-deletion-journal.js";
 import { recordAgentProvenance } from "../state/agent-provenance.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 
 const mocks = vi.hoisted(() => ({
   assertCli: vi.fn(),
@@ -170,7 +172,7 @@ function createLifecycle(
     getConfig: () => currentConfig,
     getPersistedConfig: options.getPersistedConfig ?? (() => currentConfig),
     warn: vi.fn(),
-    scheduler: new GatewayScheduler({ clock: time.clock }),
+    scheduler: createTestGatewayScheduler(time.clock),
   });
   lifecycleInstances.push(lifecycle);
   return lifecycle;

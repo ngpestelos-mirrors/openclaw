@@ -2,13 +2,16 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { DEFAULT_CRON_MAX_CONCURRENT_RUNS } from "../../config/cron-limits.js";
-import { GatewayScheduler } from "../../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import * as stateRead from "../../state/openclaw-state-db-readonly.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
-import { createGatewaySchedulerClock } from "../../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../../test-utils/gateway-scheduler-clock.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { CronService, type CronEvent } from "../service.js";
 import { setupCronServiceSuite } from "../service.test-harness.js";
@@ -51,7 +54,7 @@ function makeService(
   storePath: string,
   runCommandJob: NonNullable<ConstructorParameters<typeof CronService>[0]["runCommandJob"]>,
   onEvent?: ConstructorParameters<typeof CronService>[0]["onEvent"],
-  scheduler?: GatewayScheduler,
+  scheduler: GatewayScheduler = createTestGatewayScheduler(),
 ) {
   return new CronService({
     scheduler,
@@ -89,6 +92,7 @@ describe("cron run receipt settlement", () => {
         return { status: "ok" as const };
       };
       const service = new CronService({
+        scheduler: createTestGatewayScheduler(),
         storePath,
         cronEnabled: true,
         log: logger,
@@ -383,7 +387,7 @@ describe("cron run receipt settlement", () => {
         storePath,
         successorRunner,
         undefined,
-        new GatewayScheduler({ clock: clock.clock }),
+        createTestGatewayScheduler(clock.clock),
       );
       const stoppedObserver = makeService(storePath, successorRunner);
       const settlementAbort = new AbortController();
@@ -502,7 +506,7 @@ describe("cron run receipt settlement", () => {
       storePath,
       runCommandJob,
       undefined,
-      new GatewayScheduler({ clock: clock.clock }),
+      createTestGatewayScheduler(clock.clock),
     );
     const controller = new AbortController();
     let manual: ReturnType<CronService["run"]> | undefined;

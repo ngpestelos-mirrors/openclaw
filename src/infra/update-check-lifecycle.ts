@@ -1,13 +1,13 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "./gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "./gateway-scheduler.js";
 import type { UpdateCampaignController } from "./update-campaign.js";
 import type { resolveStartupInstallStatus } from "./update-install-status.js";
 
 export type UpdateCheckLifecycle = {
   scheduler: GatewayScheduler;
   signal: AbortSignal;
-  campaign?: Pick<UpdateCampaignController, "clear">;
+  campaign?: UpdateCampaignController;
   isCurrent: () => boolean;
   refreshes: WeakMap<OpenClawConfig, Promise<void>>;
   run: <T>(work: (signal: AbortSignal) => Promise<T>) => Promise<T>;
@@ -17,9 +17,7 @@ export type UpdateCheckLifecycle = {
 };
 let updateCheckLifecycle: UpdateCheckLifecycle | undefined;
 
-export function createGatewayUpdateLifecycle(
-  scheduler = new GatewayScheduler(),
-): UpdateCheckLifecycle {
+export function createGatewayUpdateLifecycle(scheduler: GatewayScheduler): UpdateCheckLifecycle {
   const predecessor = updateCheckLifecycle?.stop();
   const scope = new AsyncWorkScope();
   const { signal } = scope;
@@ -83,9 +81,7 @@ export function createGatewayUpdateLifecycle(
         job.cancel();
       }
       jobs.clear();
-      if (updateCheckLifecycle === lifecycle) {
-        lifecycle.campaign?.clear();
-      }
+      lifecycle.campaign?.clear();
       // Replacement owns the predecessor's drain too. Aborting alone does not
       // join a Git transport or maintenance process that is still shutting down.
       return (stopping ??= Promise.allSettled([predecessor, scope.drain()]).then(() => undefined));
@@ -96,5 +92,8 @@ export function createGatewayUpdateLifecycle(
 }
 
 export function currentUpdateCheckLifecycle() {
-  return updateCheckLifecycle ?? createGatewayUpdateLifecycle();
+  if (!updateCheckLifecycle) {
+    throw new Error("Gateway update lifecycle is not initialized");
+  }
+  return updateCheckLifecycle;
 }

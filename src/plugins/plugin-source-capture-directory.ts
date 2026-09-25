@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveStateDir } from "../config/state-dir.js";
 import { hasErrnoCode } from "../infra/errno.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import {
   tryAcquireExclusiveSqliteCoordinator,
   type SqliteCoordinatorLease,
@@ -21,10 +21,9 @@ import {
 const CAPTURE_GRACE_MS = 60 * 60 * 1_000;
 const LEASE_FILE = "owner.sqlite";
 type Instance = {
-  references: Set<{ scheduler?: GatewayScheduler }>;
+  references: Set<{ scheduler: GatewayScheduler | null }>;
   closing?: boolean;
   scheduler?: GatewayScheduler;
-  standaloneScheduler?: GatewayScheduler;
   cleanupJob?: GatewayScheduledJob;
   detachScheduler?: () => void;
   root?: string;
@@ -328,13 +327,10 @@ function createCaptureDirectory(instance: Instance, stateDir: string, prefix: st
 }
 
 function scheduleCaptureCleanup(key: string, instance: Instance): void {
-  const references = [...instance.references];
   const scheduler =
-    references.findLast((reference) => reference.scheduler && !reference.scheduler.signal.aborted)
-      ?.scheduler ??
-    (references.some((reference) => !reference.scheduler)
-      ? (instance.standaloneScheduler ??= new GatewayScheduler())
-      : undefined);
+    [...instance.references].findLast(
+      (reference) => reference.scheduler && !reference.scheduler.signal.aborted,
+    )?.scheduler ?? undefined;
   if (instance.scheduler === scheduler) {
     return;
   }
@@ -353,18 +349,15 @@ function scheduleCaptureCleanup(key: string, instance: Instance): void {
   instance.cleanupJob = runInPluginSourceCaptureContext(() =>
     scheduler.schedule({
       id: `plugin-source-captures:${key}`,
-      atMs: scheduler.now() + CAPTURE_GRACE_MS,
+      delayMs: 0,
       everyMs: CAPTURE_GRACE_MS,
       run: () => sweepPluginSourceCaptureDirectories(key),
     }),
   );
 }
 
-/** Metadata and its captures share custody; standalone CLI captures own their own lifetime. */
-export function retainPluginSourceCaptureInstance(
-  stateDir = resolveStateDir(),
-  scheduler?: GatewayScheduler,
-) {
+/** Artifact custody survives until every producer and metadata owner releases it. */
+export function retainPluginSourceCaptureInstance(stateDir = resolveStateDir()) {
   const key = path.resolve(stateDir);
   let instance = instances.get(key);
   if (instance?.closing) {
@@ -375,11 +368,9 @@ export function retainPluginSourceCaptureInstance(
   if (!instance) {
     instance = { references: new Set() };
     instances.set(key, instance);
-    void sweepPluginSourceCaptureDirectories(key);
   }
-  const reference = { scheduler };
+  const reference: { scheduler: GatewayScheduler | null } = { scheduler: null };
   instance.references.add(reference);
-  scheduleCaptureCleanup(key, instance);
   const retained = instance;
   let released = false;
   const retire = () => {
@@ -397,6 +388,14 @@ export function retainPluginSourceCaptureInstance(
     return root;
   };
   return {
+    startMaintenance(scheduler: GatewayScheduler) {
+      if (released || retained.closing) {
+        throw new Error("Plugin source instance has been released");
+      }
+      scheduler.signal.throwIfAborted();
+      reference.scheduler = scheduler;
+      scheduleCaptureCleanup(key, retained);
+    },
     get managedRoot() {
       return retained.managedRoot;
     },

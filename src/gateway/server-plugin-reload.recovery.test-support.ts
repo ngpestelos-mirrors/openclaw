@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
+import path from "node:path";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { expect, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { CronService } from "../cron/service.js";
 import { createSubsystemLogger, type SubsystemLogger } from "../logging/subsystem.js";
 import { adoptPluginHttpRouteHandoffs, registerPluginHttpRoute } from "../plugins/http-registry.js";
 import { activatePluginRegistry, PluginLoadFailureError } from "../plugins/loader-shared.js";
@@ -28,10 +30,12 @@ import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-reque
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import { startPluginServices, type PluginServicesHandle } from "../plugins/services.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
+import { makeTrackedTempDir } from "../plugins/test-helpers/fs-fixtures.js";
 import type { OpenClawPluginApi } from "../plugins/types.js";
 import { setActiveDegradedSecretOwners } from "../secrets/runtime-degraded-state.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createChannelTestPluginBase } from "../test-utils/channel-plugins.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createChannelManager } from "./server-channels.js";
 import { reloadGatewayPlugins } from "./server-plugin-reload.js";
 import { createGatewayPluginRuntimeGeneration } from "./server-plugin-runtime-generation.js";
@@ -211,7 +215,8 @@ export async function createPluginReloadRecoveryFixture(
   assert(metadataOwners === undefined || metadataOwners instanceof Set);
   const metadataOwnerSet: Set<unknown> | undefined = metadataOwners;
   const precedingMetadataOwners = new Set(metadataOwnerSet);
-  const metadata = retainGatewayPluginMetadata();
+  const scheduler = createTestGatewayScheduler();
+  const metadata = retainGatewayPluginMetadata(scheduler);
   const fixtureMetadataOwners = metadataOwnerSet
     ? [...metadataOwnerSet].filter((entry) => !precedingMetadataOwners.has(entry))
     : [];
@@ -223,6 +228,7 @@ export async function createPluginReloadRecoveryFixture(
     createPluginMetadataSnapshotFixture({ plugins: [{ id: "first" }, { id: "sibling" }] });
   metadata.publish(snapshot);
   const runtime = {
+    scheduler,
     requestEntryLifetime: new GatewayRequestEntryLifetime(),
     pluginMetadataSnapshot: snapshot,
     pluginRuntime: registryOwner,
@@ -672,4 +678,30 @@ export async function verifyChannelCleanupFailureFence(
     await manager.stopChannel("cleanup-sibling");
     vi.useRealTimers();
   }
+}
+
+export function createReloadCronServices({
+  tempDirs,
+  cleanups,
+  log,
+}: {
+  tempDirs: string[];
+  cleanups: Array<() => Promise<void>>;
+  log: ConstructorParameters<typeof CronService>[0]["log"];
+}) {
+  return ["first", "next"].map((name) => {
+    const cron = new CronService({
+      scheduler: createTestGatewayScheduler(),
+      nowMs: () => Date.now(),
+      storePath: path.join(makeTrackedTempDir(`reload-cron-${name}`, tempDirs), "jobs.sqlite"),
+      cronEnabled: false,
+      log,
+      enqueueSystemEvent: () => {},
+      requestHeartbeat: () => {},
+      runIsolatedAgentJob: async () => ({ status: "ok" as const }),
+    });
+    const list = vi.spyOn(cron, "list").mockResolvedValue([]);
+    cleanups.push(async () => cron.stop());
+    return { cron, list };
+  });
 }

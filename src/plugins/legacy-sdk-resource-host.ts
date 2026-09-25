@@ -28,12 +28,18 @@ export class LegacyPluginSdkResourceHost {
   private closing?: Promise<void>;
   private gatewayScheduler?: GatewayScheduler;
 
-  get scheduler(): GatewayScheduler | undefined {
+  get scheduler(): GatewayScheduler {
+    this.assertOpen();
+    if (!this.gatewayScheduler) {
+      throw new Error("Plugin SDK resource host has no Gateway scheduler");
+    }
+    this.gatewayScheduler.signal.throwIfAborted();
     return this.gatewayScheduler;
   }
 
   bindScheduler(scheduler: GatewayScheduler): void {
     this.assertOpen();
+    scheduler.signal.throwIfAborted();
     if (this.gatewayScheduler && this.gatewayScheduler !== scheduler) {
       throw new Error("Plugin SDK resource host already belongs to another Gateway scheduler");
     }

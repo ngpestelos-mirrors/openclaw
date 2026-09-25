@@ -21,6 +21,7 @@ import type { SystemPresence } from "../infra/system-presence.js";
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createPresenceRecipientProjection } from "./presence-projection.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
@@ -825,6 +826,7 @@ describe("presence recipient projection", () => {
       const admin = makeClient("admin");
       admin.client.connect.scopes = ["operator.admin"];
       const connection = createGatewayConnectionState({
+        scheduler: createTestGatewayScheduler(),
         bootId: "presence-projection",
         cfg,
         getRuntimeConfig: () => cfg,

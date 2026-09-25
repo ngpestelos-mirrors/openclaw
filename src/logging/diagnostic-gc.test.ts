@@ -8,13 +8,11 @@ import {
   setDiagnosticsEnabledForProcess,
   waitForDiagnosticEventsDrained,
 } from "../infra/diagnostic-events.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import {
-  configureDiagnosticHeartbeatScheduler,
-  startDiagnosticHeartbeat,
-  stopDiagnosticHeartbeat,
-} from "./diagnostic.js";
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
+import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "./diagnostic.js";
 import { resetDiagnosticStateForTest } from "./diagnostic.test-support.js";
 
 const native = vi.hoisted(() => {
@@ -49,10 +47,10 @@ afterEach(() => {
 
 it("owns demand, queued GC batches, and disable/re-enable through the existing heartbeat", async () => {
   const clock = createGatewaySchedulerClock(Date.now());
-  configureDiagnosticHeartbeatScheduler(new GatewayScheduler({ clock: clock.clock }));
+  const scheduler = createTestGatewayScheduler(clock.clock);
   const now = vi.spyOn(performance, "now").mockReturnValue(100);
   const durations: number[] = [];
-  const start = () => startDiagnosticHeartbeat({}, { sampleLiveness: () => null });
+  const start = () => startDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
   const publicUnsubscribe = onDiagnosticEvent(() => {});
   let unsubscribe = () => {};
   try {

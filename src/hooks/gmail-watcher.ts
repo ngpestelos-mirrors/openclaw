@@ -8,7 +8,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import process from "node:process";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { releaseChildProcessOutputAfterExit } from "../process/child-process.js";
 import { formatCommandResult } from "../process/command-error.js";
@@ -259,7 +259,7 @@ type GmailWatcherStartResult = {
 
 type GmailWatcherStartOptions = {
   signal?: AbortSignal;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
 };
 
 function cancelledGmailWatcherStart(
@@ -277,7 +277,7 @@ function cancelledGmailWatcherStart(
  */
 export async function startGmailWatcher(
   cfg: OpenClawConfig,
-  options: GmailWatcherStartOptions = {},
+  options: GmailWatcherStartOptions,
 ): Promise<GmailWatcherStartResult> {
   // Check if gmail hooks are configured
   if (!cfg.hooks?.enabled) {
@@ -305,7 +305,7 @@ export async function startGmailWatcher(
 /** Start the shared watcher lifecycle after the caller resolves config and prerequisites. */
 export async function startGmailWatcherService(
   runtimeConfig: GmailHookRuntimeConfig,
-  options: GmailWatcherStartOptions = {},
+  options: GmailWatcherStartOptions,
 ): Promise<GmailWatcherStartResult> {
   if (options.signal?.aborted) {
     return cancelledGmailWatcherStart(runtimeConfig);
@@ -372,7 +372,7 @@ export async function startGmailWatcherService(
   shuttingDown = false;
   watcherProcess = spawnGogServe(runtimeConfig);
   const renewMs = runtimeConfig.renewEveryMinutes * 60_000;
-  const scheduler = options.scheduler ?? new GatewayScheduler();
+  const { scheduler } = options;
   const renew = () => {
     const controller = new AbortController();
     renewalAbortController = controller;

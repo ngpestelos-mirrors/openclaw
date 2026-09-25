@@ -7,23 +7,19 @@ import { CronService } from "../cron/service.js";
 import type { CronServiceState } from "../cron/service/state.js";
 import { findActiveCronRunReceiptInDatabase } from "../cron/store/run-receipt-store.js";
 import type { CronJobCreate } from "../cron/types.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import type { HeartbeatRunResult } from "../infra/heartbeat-wake.js";
 import type { RunExit } from "../process/supervisor/types.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import type { buildGatewayCronService } from "./server-cron.js";
 
 type CronFixture = ReturnType<typeof buildGatewayCronService>;
-type WatchedRun = {
-  exit: ReturnType<typeof createDeferred<RunExit>>;
-  startedAtMs: number;
-  cancel: Mock<() => void>;
-  detachOutput: Mock;
-  wait: Mock<() => Promise<RunExit>>;
-};
+type WatchedRun = ReturnType<typeof createWatchedRun>;
 type GatewayCronReceiptTestHarness = {
-  createWatchedRun: (settleOnCancel: boolean) => WatchedRun;
   mockCronSupervisor: (...runs: WatchedRun[]) => {
     spawn: Mock<() => Promise<WatchedRun & { runId: string }>>;
   };
@@ -40,18 +36,44 @@ type GatewayCronReceiptTestHarness = {
     payload: CronJobCreate["payload"],
     overrides?: Partial<Omit<CronJobCreate, "name" | "payload">>,
   ) => ReturnType<CronFixture["cron"]["add"]>;
-  runExit: (overrides?: Partial<RunExit>) => RunExit;
 };
 
+export function runExit(overrides: Partial<RunExit> = {}): RunExit {
+  return {
+    reason: "manual-cancel",
+    exitCode: null,
+    exitSignal: null,
+    durationMs: 1,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    noOutputTimedOut: false,
+    ...overrides,
+  };
+}
+
+export function createWatchedRun(settleOnCancel = true, exitResult: Partial<RunExit> = {}) {
+  const exit = createDeferred<RunExit>();
+  return {
+    exit,
+    startedAtMs: Date.now(),
+    cancel: vi.fn(() => {
+      if (settleOnCancel) {
+        exit.resolve(runExit(exitResult));
+      }
+    }),
+    detachOutput: vi.fn(),
+    wait: vi.fn(() => exit.promise),
+  };
+}
+
 export function registerGatewayCronReceiptTests({
-  createWatchedRun,
   mockCronSupervisor,
   createCronConfig,
   loadCronService,
   getCronDeps,
   getConcreteCron,
   addCronJob,
-  runExit,
 }: GatewayCronReceiptTestHarness) {
   it.each([
     { rearm: "before timeout", action: "run" },
@@ -76,16 +98,14 @@ export function registerGatewayCronReceiptTests({
       const receiptRecheckRegistered = createDeferred();
       const { spawn } = mockCronSupervisor(...watched);
       const clock = createGatewaySchedulerClock(Date.now());
-      const scheduler = new GatewayScheduler({
-        clock: {
-          ...clock.clock,
-          arm: (run, delayMs) => {
-            const cancel = clock.clock.arm(run, delayMs);
-            if (delayMs === 2_000) {
-              receiptRecheckRegistered.resolve();
-            }
-            return cancel;
-          },
+      const scheduler = createTestGatewayScheduler({
+        ...clock.clock,
+        arm: (run, delayMs) => {
+          const cancel = clock.clock.arm(run, delayMs);
+          if (delayMs === 2_000) {
+            receiptRecheckRegistered.resolve();
+          }
+          return cancel;
         },
       });
       const state = loadCronService(createCronConfig("server-cron-on-exit-receipt"), { scheduler });
@@ -239,13 +259,11 @@ export function registerGatewayCronReceiptTests({
 }
 
 export function registerGatewayCronHandoffTests({
-  createWatchedRun,
   mockCronSupervisor,
   createCronConfig,
   loadCronService,
   getConcreteCron,
   addCronJob,
-  runExit,
   requestHeartbeatAndWaitMock,
   enqueueSystemEventMock,
 }: Omit<GatewayCronReceiptTestHarness, "getCronDeps"> & {

@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChannelAccountSnapshot } from "../channels/plugins/types.public.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
-import type { ChannelManager } from "./server-channels.js";
+import { createSnapshotManager } from "./channel-health-monitor.test-support.js";
 
 const STARTED_AT = 1_000_000;
 const CHECK_INTERVAL_MS = 1_000;
@@ -16,29 +19,7 @@ function createChannelManager(running: boolean) {
     enabled: true,
     configured: true,
   };
-  const snapshot = {
-    channels: { discord: account },
-    channelAccounts: { discord: { default: account } },
-  };
-  const manager: ChannelManager = {
-    getRuntimeSnapshot: vi.fn(() => snapshot),
-    pauseChannelStarts: vi.fn(() => () => {}),
-    startChannels: vi.fn(async () => {}),
-    startChannel: vi.fn(async () => new Map()),
-    stopChannel: vi.fn(async () => {}),
-    releaseChannelRouteHandoffs: vi.fn(),
-    setAutostartSuppression: vi.fn(),
-    getAutostartSuppression: vi.fn(() => null),
-    recoverAutostartSuppression: vi.fn(async () => false),
-    setAmbientAutostartSuppressedChannelIds: vi.fn(),
-    isAmbientAutostartSuppressed: vi.fn(() => false),
-    markChannelLoggedOut: vi.fn(),
-    isHealthMonitorEnabled: vi.fn(() => true),
-    isAccountListed: vi.fn(() => true),
-    isManuallyStopped: vi.fn(() => false),
-    isAutoRestartScheduled: vi.fn(() => false),
-    resetRestartAttempts: vi.fn(),
-  };
+  const manager = createSnapshotManager({ discord: { default: account } });
   return { account, manager };
 }
 
@@ -47,7 +28,7 @@ describe("channel-health-monitor clock rollback", () => {
   let scheduler: GatewayScheduler;
   beforeEach(() => {
     clock = createGatewaySchedulerClock(STARTED_AT);
-    scheduler = new GatewayScheduler({ clock: clock.clock });
+    scheduler = createTestGatewayScheduler(clock.clock);
   });
 
   afterEach(async () => {

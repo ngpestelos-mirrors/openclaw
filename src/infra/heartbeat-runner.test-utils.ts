@@ -30,6 +30,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { HeartbeatDeps } from "./heartbeat-runner.js";
@@ -91,6 +92,7 @@ export async function seedHeartbeatScratchForTest(params: {
   if (!job) {
     const noop = () => {};
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(),
       storePath,
       cronEnabled: false,
       defaultAgentId: "main",

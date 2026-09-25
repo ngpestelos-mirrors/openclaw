@@ -1,6 +1,7 @@
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it, vi } from "vitest";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import { start } from "./service/ops-lifecycle.js";
 import { status } from "./service/ops-read.js";
@@ -95,6 +96,7 @@ describe("CronService startup catch-up repair scoping", () => {
       const enqueueSystemEvent = vi.fn();
       const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
       const state = createCronServiceState({
+        scheduler: createTestGatewayScheduler(),
         cronEnabled: true,
         cronConfig: { skipMissedJobs: true },
         storePath: store.storePath,
@@ -154,6 +156,7 @@ describe("CronService startup catch-up repair scoping", () => {
 
     const createState = () =>
       createCronServiceState({
+        scheduler: createTestGatewayScheduler(),
         cronEnabled: true,
         storePath: store.storePath,
         log: noopLogger,
@@ -215,6 +218,7 @@ describe("CronService startup catch-up repair scoping", () => {
     });
 
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
@@ -286,6 +290,7 @@ describe("CronService startup catch-up repair scoping", () => {
       },
     );
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,

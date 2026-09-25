@@ -11,6 +11,7 @@ import {
   closeOpenClawStateDatabaseByPathAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../../state/openclaw-state-db.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
 import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
 import {
@@ -19,7 +20,7 @@ import {
   handlePendingApprovalRequest,
   isApprovalRecordVisibleToClient,
 } from "./approval-shared.js";
-import { handleApprovalResolve } from "./approval.test-support.js";
+import { createApprovalClientLookup, handleApprovalResolve } from "./approval.test-support.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
 const hasApprovalTurnSourceRouteMock = vi.hoisted(() => vi.fn(() => true));
@@ -32,8 +33,6 @@ vi.mock("../../infra/approval-turn-source.js", () => ({
 vi.mock("../approval-channel-custody.js", () => ({
   prepareApprovalChannelCustody: prepareApprovalChannelCustodyMock,
 }));
-
-type ApprovalClientLookup = NonNullable<GatewayRequestContext["getApprovalClientConnIds"]>;
 
 function createApprovalClient(params: {
   connId: string;
@@ -51,21 +50,6 @@ function createApprovalClient(params: {
     },
     ...(params.approvalRuntime ? { internal: { approvalRuntime: true } } : {}),
   } as GatewayClient;
-}
-
-function createApprovalClientLookup(clients: GatewayClient[]): ApprovalClientLookup {
-  return (opts = {}) =>
-    new Set(
-      clients
-        .filter((client) => {
-          if (opts.excludeConnId && client.connId === opts.excludeConnId) {
-            return false;
-          }
-          return opts.filter?.(client, opts.record) ?? true;
-        })
-        .map((client) => client.connId)
-        .filter((connId): connId is string => typeof connId === "string" && connId.length > 0),
-    );
 }
 
 describe("handlePendingApprovalRequest", () => {
@@ -1293,6 +1277,7 @@ describe("handlePendingApprovalRequest", () => {
   it("releases run-aborted waiters without changing timeout terminal state", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-approval-wait-terminal-"));
     const manager = new ExecApprovalManager({
+      scheduler: createTestGatewayScheduler(),
       approvalKind: "exec",
       persistence: {
         runtimeEpoch: "approval-shared-wait-terminal",

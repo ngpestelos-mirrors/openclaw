@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
-import { GatewayScheduler } from "./gateway-scheduler.js";
+import type { GatewayScheduler } from "./gateway-scheduler.js";
 import { UpdateCampaignController } from "./update-campaign.js";
 
 const randomUUIDMock = vi.hoisted(() => vi.fn());
@@ -47,7 +50,7 @@ describe("UpdateCampaignController", () => {
     randomUUIDMock.mockReset();
     randomUUIDMock.mockImplementation(() => `campaign-${++nextId}`);
     clock = createGatewaySchedulerClock(1_000_000);
-    scheduler = new GatewayScheduler({ clock: clock.clock });
+    scheduler = createTestGatewayScheduler(clock.clock);
   });
 
   afterEach(async () => {
@@ -55,9 +58,7 @@ describe("UpdateCampaignController", () => {
   });
 
   function createController() {
-    const controller = new UpdateCampaignController();
-    controller.attachScheduler(scheduler);
-    return controller;
+    return new UpdateCampaignController(scheduler);
   }
 
   it("keeps the countdown deadline absolute across a clock rollback and applies once", async () => {

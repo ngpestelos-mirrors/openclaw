@@ -1,9 +1,11 @@
 import type { IncomingMessage } from "node:http";
 import { describe, expect, it } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createAuthRateLimiter, resolveRequestClientIp } from "./webhook-ingress.js";
 
 function request(): IncomingMessage {
@@ -34,10 +36,11 @@ describe("resolveRequestClientIp", () => {
 it("prunes SDK limiters on their Gateway's clock without sharing their lifecycle", async () => {
   const firstClock = createGatewaySchedulerClock(1_000);
   const secondClock = createGatewaySchedulerClock(10_000);
-  const firstScheduler = new GatewayScheduler({ clock: firstClock.clock });
-  const secondScheduler = new GatewayScheduler({ clock: secondClock.clock });
+  const firstScheduler = createTestGatewayScheduler(firstClock.clock);
+  const secondScheduler = createTestGatewayScheduler(secondClock.clock);
   const firstHost = new LegacyPluginSdkResourceHost();
   const secondHost = new LegacyPluginSdkResourceHost();
+  const unboundHost = new LegacyPluginSdkResourceHost();
   firstHost.bindScheduler(firstScheduler);
   secondHost.bindScheduler(secondScheduler);
   const config = { windowMs: 100, pruneIntervalMs: 100 };
@@ -57,6 +60,9 @@ it("prunes SDK limiters on their Gateway's clock without sharing their lifecycle
     expect(() => firstHost.run(() => createAuthRateLimiter(config))).toThrow(
       "Plugin SDK resource host is closed",
     );
+    expect(() => unboundHost.run(() => createAuthRateLimiter(config))).toThrow(
+      "Plugin SDK resource host has no Gateway scheduler",
+    );
     const standalone = createAuthRateLimiter({ pruneIntervalMs: 0 });
     standalone.recordFailure("192.0.2.1");
     expect(standalone.size()).toBe(1);
@@ -70,6 +76,7 @@ it("prunes SDK limiters on their Gateway's clock without sharing their lifecycle
       secondScheduler.stop(),
       firstHost.close(),
       secondHost.close(),
+      unboundHost.close(),
     ]);
   }
 });

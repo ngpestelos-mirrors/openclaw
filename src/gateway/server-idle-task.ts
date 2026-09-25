@@ -1,4 +1,4 @@
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import {
   getGatewayRestartDrainSignal,
   isGatewayRestartDrainError,
@@ -12,7 +12,7 @@ export type GatewayIdleTaskHandle = {
 /** Runs low-priority work while idle, optionally repeating after completed passes. */
 export function scheduleGatewayIdleTask(params: {
   id: string;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   delayMs: number;
   retryDelayMs: number;
   repeatDelayMs?: number;
@@ -22,7 +22,7 @@ export function scheduleGatewayIdleTask(params: {
   log: { warn: (message: string) => void };
   errorMessage: string;
 }): GatewayIdleTaskHandle {
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const { scheduler } = params;
   let stopped = false;
   let job: GatewayScheduledJob | undefined;
   let running: Promise<void> | undefined;

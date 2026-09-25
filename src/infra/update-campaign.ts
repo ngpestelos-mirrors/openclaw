@@ -6,7 +6,7 @@ import {
   createGatewayActiveWorkSnapshot,
   type GatewayActiveWorkInspectors,
 } from "./gateway-active-work.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "./gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "./gateway-scheduler.js";
 import type { TrackedDevUpdateTarget } from "./update-dev-target.js";
 
 const CAMPAIGN_FORCE_DELAY_MS = 15 * 60_000;
@@ -52,15 +52,10 @@ export class UpdateCampaignController {
   private campaign: UpdateCampaignState | undefined;
   private target: UpdateCampaignTarget | undefined;
   private announcement: UpdateCampaignAnnouncement | undefined;
-  private scheduler = new GatewayScheduler();
   private job: GatewayScheduledJob | undefined;
   private held = false;
 
-  attachScheduler(scheduler: GatewayScheduler): void {
-    this.cancelJob();
-    this.scheduler = scheduler;
-    this.scheduleNext();
-  }
+  constructor(private readonly scheduler: GatewayScheduler) {}
 
   getState(): UpdateCampaignState | undefined {
     return this.campaign;
@@ -284,5 +279,3 @@ export class UpdateCampaignController {
     this.job = undefined;
   }
 }
-
-export const gatewayUpdateCampaign = new UpdateCampaignController();

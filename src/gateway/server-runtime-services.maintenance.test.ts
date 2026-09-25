@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { GatewayConnectionWork } from "./server-connection-work.js";
 import {
   createLog,
@@ -27,7 +29,7 @@ afterEach(resetGatewayWorkAdmission);
 describe("post-ready maintenance scheduling", () => {
   it("starts cron and records memory when post-ready maintenance fails", async () => {
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const cron = { start: vi.fn(async () => undefined) };
     const log = createLog();
     const recordPostReadyMemory = vi.fn();
@@ -54,7 +56,7 @@ describe("post-ready maintenance scheduling", () => {
 
   it("clears delayed maintenance handles when close starts during maintenance startup", async () => {
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const connectionWork = new GatewayConnectionWork();
     const started = createDeferredCore();
     const pendingMaintenance = createDeferredCore<ReturnType<typeof createMaintenanceHandles>>();
@@ -106,7 +108,7 @@ describe("post-ready maintenance scheduling", () => {
     signal,
   }) => {
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const connectionWork = new GatewayConnectionWork();
     const suspension = tryBeginGatewaySuspendAdmission(() => {});
     expect(suspension?.commit()).toBe(true);

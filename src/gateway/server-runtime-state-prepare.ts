@@ -479,6 +479,7 @@ export async function prepareGatewayKernelState(params: {
   );
   const transportBridge = createGatewayTransportBridge();
   const createHttpTransportOptions = () => ({
+    scheduler: params.scheduler,
     cfg: cfgAtStart,
     getRuntimeConfig,
     bindHost,

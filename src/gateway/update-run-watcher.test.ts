@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import type { UpdateRunRecord } from "../infra/update-run-record.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { startUpdateRunWatcher, wakeUpdateRunWatcher } from "./update-run-watcher.js";
 
 const ledger = vi.hoisted(() => ({
@@ -34,10 +36,10 @@ vi.mock("../infra/update-run-ledger.js", () => ({
 
 let watcher: ReturnType<typeof startUpdateRunWatcher> | undefined;
 let clock: ReturnType<typeof createGatewaySchedulerClock>;
-let scheduler: GatewayScheduler;
+let scheduler: ReturnType<typeof createTestGatewayScheduler>;
 beforeEach(() => {
   clock = createGatewaySchedulerClock();
-  scheduler = new GatewayScheduler({ clock: clock.clock });
+  scheduler = createTestGatewayScheduler(clock.clock);
   ledger.run = undefined;
   ledger.reads.mockClear();
   ledger.reconcile.mockReset().mockResolvedValue([]);

@@ -4,7 +4,7 @@ import type {
 } from "../../packages/gateway-protocol/src/schema/sessions.js";
 import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import type { ChatAttachment } from "./chat-attachments.js";
 import {
@@ -34,14 +34,14 @@ export type SessionCompanionService = {
 };
 
 type SessionCompanionDeps = SessionCompanionAskDeps & {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
 };
 
 const SESSION_COMPANION_IDLE_TTL_MS = 2 * 60 * 60_000;
 const SESSION_COMPANION_SWEEP_INTERVAL_MS = 10 * 60_000;
 
 export function createSessionCompanion(deps: SessionCompanionDeps): SessionCompanionService {
-  const scheduler = deps.scheduler ?? new GatewayScheduler();
+  const { scheduler } = deps;
   const now = deps.now ?? (() => scheduler.now());
   const threads = new Map<string, SessionCompanionThread>();
   let disposed = false;

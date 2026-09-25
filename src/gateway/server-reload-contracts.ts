@@ -142,7 +142,7 @@ export type GatewayRuntimePublication = {
 };
 
 export type GatewayReloadHandlerParams = {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   deps: CliDeps;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
   /** Kept across cron rebuilds so a hot reload does not drop scheduler gateway context. */

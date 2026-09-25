@@ -6,6 +6,11 @@ import {
   captureAgentRunLifecycleGeneration,
   withAgentRunLifecycleGeneration,
 } from "../infra/agent-events.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import {
+  getBoundLegacyPluginSdkResourceHost,
+  LegacyPluginSdkResourceHost,
+} from "../plugins/legacy-sdk-resource-host.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { runWithAgentCommandRecoveryOwner } from "./agent-command-recovery-owner.js";
@@ -38,86 +43,105 @@ export async function runLocalAgentCommand<TResult>(params: {
     resolvedDeps: ResolvedAgentCommandDeps,
   ) => Promise<TResult>;
 }): Promise<TResult> {
-  const resolvedDeps = await measureAgentStartup("command-dependencies", () =>
-    resolveAgentCommandDeps(params.deps),
-  );
-  const lifecycleGeneration =
-    params.opts.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(params.opts.runId ?? "");
-  return await withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
-    withLocalGatewayRequestScope(
-      { deps: resolvedDeps, getRuntimeConfig },
-      async () =>
-        await runWithAgentCommandRecoveryOwner({
-          lifecycleGeneration,
-          mode: "reject_uncoordinated",
-          opts: {
-            ...params.opts,
-            lifecycleGeneration,
-            senderIsOwner: params.opts.senderIsOwner ?? true,
-            allowModelOverride: params.opts.allowModelOverride ?? true,
-          },
-          prepare: async (preparedOpts) =>
-            await measureAgentStartup("command-prepare", () =>
-              prepareAgentCommandExecution(preparedOpts, params.runtime),
-            ),
-          run: async (prepared) => {
-            const capability =
-              params.operatorAuthority && prepared.opts.senderIsOwner === true
-                ? createCronCreatorAuthorityCapability(prepared.runId, { kind: "local" })
-                : undefined;
-            const admittedPrepared = capability
-              ? {
-                  ...prepared,
-                  opts: { ...prepared.opts, cronCreatorAuthorityCapability: capability },
-                }
-              : prepared;
-            const run = () =>
-              withAgentPluginRegistry({
-                config: admittedPrepared.cfg,
-                workspaceDir: admittedPrepared.workspaceDir,
-                run: async () => {
-                  await using lease = await acquireAgentRunPreparedModelRuntime(
-                    {
-                      config: admittedPrepared.cfg,
-                      agentId: admittedPrepared.sessionAgentId,
-                      agentDir: admittedPrepared.agentDir,
-                      workspaceDir: admittedPrepared.workspaceDir,
-                    },
-                    { abortSignal: admittedPrepared.opts.abortSignal },
-                  );
-                  let active = true;
-                  try {
-                    return await withPluginRuntimeGenerationScope(lease.snapshot, () =>
-                      withPreparedModelRuntimePluginGenerationScope(
-                        lease.pluginGeneration,
-                        () =>
-                          params.run(
-                            {
-                              ...admittedPrepared,
-                              commandRuntimeContext: {
-                                config: lease.snapshot.config,
-                                pluginGeneration: lease.pluginGeneration,
-                              },
-                            },
-                            resolvedDeps,
+  const existingHost = getBoundLegacyPluginSdkResourceHost();
+  const host = existingHost ?? new LegacyPluginSdkResourceHost();
+  const scheduler = existingHost ? undefined : new GatewayScheduler();
+  if (scheduler) {
+    host.bindScheduler(scheduler);
+  }
+  host.assertOpen();
+  try {
+    return await host.run(async () => {
+      const resolvedDeps = await measureAgentStartup("command-dependencies", () =>
+        resolveAgentCommandDeps(params.deps),
+      );
+      const lifecycleGeneration =
+        params.opts.lifecycleGeneration ??
+        captureAgentRunLifecycleGeneration(params.opts.runId ?? "");
+      return await withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
+        withLocalGatewayRequestScope(
+          { deps: resolvedDeps, getRuntimeConfig },
+          async () =>
+            await runWithAgentCommandRecoveryOwner({
+              lifecycleGeneration,
+              mode: "reject_uncoordinated",
+              opts: {
+                ...params.opts,
+                lifecycleGeneration,
+                senderIsOwner: params.opts.senderIsOwner ?? true,
+                allowModelOverride: params.opts.allowModelOverride ?? true,
+                // Standalone commands cannot retain transports after their idle scheduler closes.
+                cleanupBundleMcpOnRunEnd: scheduler ? true : params.opts.cleanupBundleMcpOnRunEnd,
+              },
+              prepare: async (preparedOpts) =>
+                await measureAgentStartup("command-prepare", () =>
+                  prepareAgentCommandExecution(preparedOpts, params.runtime),
+                ),
+              run: async (prepared) => {
+                const capability =
+                  params.operatorAuthority && prepared.opts.senderIsOwner === true
+                    ? createCronCreatorAuthorityCapability(prepared.runId, { kind: "local" })
+                    : undefined;
+                const admittedPrepared = capability
+                  ? {
+                      ...prepared,
+                      opts: { ...prepared.opts, cronCreatorAuthorityCapability: capability },
+                    }
+                  : prepared;
+                const run = () =>
+                  withAgentPluginRegistry({
+                    config: admittedPrepared.cfg,
+                    workspaceDir: admittedPrepared.workspaceDir,
+                    run: async () => {
+                      await using lease = await acquireAgentRunPreparedModelRuntime(
+                        {
+                          config: admittedPrepared.cfg,
+                          agentId: admittedPrepared.sessionAgentId,
+                          agentDir: admittedPrepared.agentDir,
+                          workspaceDir: admittedPrepared.workspaceDir,
+                        },
+                        { abortSignal: admittedPrepared.opts.abortSignal },
+                      );
+                      let active = true;
+                      try {
+                        return await withPluginRuntimeGenerationScope(lease.snapshot, () =>
+                          withPreparedModelRuntimePluginGenerationScope(
+                            lease.pluginGeneration,
+                            () =>
+                              params.run(
+                                {
+                                  ...admittedPrepared,
+                                  commandRuntimeContext: {
+                                    config: lease.snapshot.config,
+                                    pluginGeneration: lease.pluginGeneration,
+                                  },
+                                },
+                                resolvedDeps,
+                              ),
+                            () => (active ? lease.snapshot : undefined),
                           ),
-                        () => (active ? lease.snapshot : undefined),
-                      ),
-                    );
-                  } finally {
-                    active = false;
-                  }
-                },
-              });
-            return capability
-              ? await runWithCronCreatorAuthorityCapability(
-                  capability,
-                  run,
-                  admittedPrepared.opts.abortSignal,
-                )
-              : await run();
-          },
-        }),
-    ),
-  );
+                        );
+                      } finally {
+                        active = false;
+                      }
+                    },
+                  });
+                return capability
+                  ? await runWithCronCreatorAuthorityCapability(
+                      capability,
+                      run,
+                      admittedPrepared.opts.abortSignal,
+                    )
+                  : await run();
+              },
+            }),
+        ),
+      );
+    });
+  } finally {
+    if (scheduler) {
+      await scheduler.stop();
+      await host.close();
+    }
+  }
 }

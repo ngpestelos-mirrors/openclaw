@@ -495,8 +495,8 @@ describe("Gateway startup lifetime", () => {
       }> = [];
       const metadataSpy = vi
         .spyOn(metadataModule, "retainGatewayPluginMetadata")
-        .mockImplementation(() => {
-          const owner = retainMetadata();
+        .mockImplementation((...args) => {
+          const owner = retainMetadata(...args);
           const released = vi.fn();
           const close = owner.close.bind(owner);
           vi.spyOn(owner, "close").mockImplementation(async (...args) => {

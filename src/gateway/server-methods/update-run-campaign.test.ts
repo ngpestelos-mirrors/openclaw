@@ -6,14 +6,22 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import type { UpdateCampaignController } from "../../infra/update-campaign.js";
+import {
+  createGatewayUpdateLifecycle,
+  type UpdateCheckLifecycle,
+} from "../../infra/update-check-lifecycle.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
 
 let ledgerHome: TempHomeEnv | undefined;
+let lifecycle: UpdateCheckLifecycle;
 beforeEach(async () => {
   ledgerHome = await createTempHomeEnv("openclaw-update-campaign-rpc-");
+  lifecycle = createGatewayUpdateLifecycle(createTestGatewayScheduler());
 });
 afterEach(async () => {
+  await lifecycle.stop();
   await ledgerHome?.restore();
   ledgerHome = undefined;
 });
@@ -136,11 +144,26 @@ vi.mock("../../infra/gateway-owner-lease.js", () => ({
         },
 }));
 
+vi.mock("../../infra/update-check-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../infra/update-check-lifecycle.js")>();
+  return {
+    ...actual,
+    currentUpdateCheckLifecycle: () => ({
+      ...actual.currentUpdateCheckLifecycle(),
+      campaign: {
+        adopt: adoptCampaignMock,
+        clear: clearCampaignMock,
+        getState: getCampaignStateMock,
+      },
+    }),
+  };
+});
+
 vi.mock("../../infra/update-campaign.js", () => ({
-  gatewayUpdateCampaign: {
-    adopt: adoptCampaignMock,
-    clear: clearCampaignMock,
-    getState: getCampaignStateMock,
+  UpdateCampaignController: class {
+    constructor() {
+      throw new Error("update.run must consume its existing campaign owner");
+    }
   },
 }));
 

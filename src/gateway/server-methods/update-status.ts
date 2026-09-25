@@ -10,8 +10,8 @@ import {
 import { areDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
-import { gatewayUpdateCampaign } from "../../infra/update-campaign.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
+import { currentUpdateCheckLifecycle } from "../../infra/update-check-lifecycle.js";
 import {
   getUpdateRunAsync,
   getUpdateRunWithReconciliationAsync,
@@ -138,11 +138,12 @@ export const updateStatusHandlers: GatewayRequestHandlers = {
       return;
     }
     const actor = resolveControlPlaneActor(client);
-    const campaignBeforeHold = gatewayUpdateCampaign.getState();
-    const ok = gatewayUpdateCampaign.hold();
+    const campaign = currentUpdateCheckLifecycle().campaign;
+    const campaignBeforeHold = campaign?.getState();
+    const ok = campaign?.hold() ?? false;
     const schedule = getUpdateSchedule();
     if (ok) {
-      const heldCampaign = gatewayUpdateCampaign.getState();
+      const heldCampaign = campaign?.getState();
       context?.logGateway?.info(
         `update.hold granted ${formatControlPlaneActor(actor)} holdUntilMs=${heldCampaign?.holdUntilMs} forceAtMs=${heldCampaign?.forceAtMs}`,
       );

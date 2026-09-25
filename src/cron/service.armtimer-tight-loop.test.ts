@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   getActiveGatewayRootWorkCount,
   getGatewaySuspendAdmissionPhase,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createNoopLogger, createCronStoreHarness } from "./service.test-harness.js";
 import { stop } from "./service/ops-lifecycle.js";
 import { createCronServiceState, type CronServiceState } from "./service/state.js";
@@ -45,9 +47,7 @@ describe("cron scheduled wakes", () => {
       storePath,
       cronEnabled: true,
       log: createNoopLogger(),
-      scheduler: new GatewayScheduler({
-        clock: clock.clock,
-      }),
+      scheduler: createTestGatewayScheduler(clock.clock),
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),

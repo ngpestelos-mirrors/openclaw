@@ -38,7 +38,7 @@ describe("ExecApprovalManager", () => {
   });
   function createTestApprovalManager<TPayload = ExecApprovalRequestPayload>(
     test: Parameters<typeof createApprovalManager>[0],
-    options: Omit<ExecApprovalManagerOptions<TPayload>, "persistence"> = {},
+    options: Omit<ExecApprovalManagerOptions<TPayload>, "persistence" | "scheduler"> = {},
   ) {
     return createApprovalManager<TPayload>(test, { ...options, scheduler: scheduled.scheduler });
   }
@@ -649,6 +649,7 @@ describe("ExecApprovalManager", () => {
     tempDirs.push(dir);
     const databaseOptions = { path: path.join(dir, "state.sqlite") };
     const manager = new ExecApprovalManager<PluginApprovalRequestPayload>({
+      scheduler: scheduled.scheduler,
       approvalKind: "plugin",
       persistence: { runtimeEpoch: "runtime-plugin", databaseOptions },
     });

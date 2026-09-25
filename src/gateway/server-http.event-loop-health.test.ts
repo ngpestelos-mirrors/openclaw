@@ -1,7 +1,9 @@
 import { get } from "node:http";
 import { describe, expect, it } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { AUTH_NONE, withGatewayServer } from "./server-http.test-harness.js";
 import { createGatewayEventLoopHealthMonitor } from "./server/event-loop-health.js";
 
@@ -30,7 +32,7 @@ describe("Gateway HTTP event-loop sampling", () => {
   it("retains a blocked request interval when readiness is read before the sampler resumes", async () => {
     const clock = createGatewaySchedulerClock();
     const monitor = createGatewayEventLoopHealthMonitor({
-      scheduler: new GatewayScheduler({ clock: clock.clock }),
+      scheduler: createTestGatewayScheduler(clock.clock),
       now: clock.clock.now,
     });
     let blockNextRead = false;

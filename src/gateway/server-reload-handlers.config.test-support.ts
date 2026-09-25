@@ -7,7 +7,10 @@ import {
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayReloadPlan } from "./config-reload-plan.js";
 import type { GatewayCronState } from "./server-cron.js";
-import type { ManagedGatewayConfigReloaderParams } from "./server-reload-contracts.js";
+import type {
+  GatewayPluginReloadResult,
+  ManagedGatewayConfigReloaderParams,
+} from "./server-reload-contracts.js";
 
 type ConfigWriteListener = (event: ConfigWriteNotification) => void;
 type ConfigWriteListenerRef = { current: ConfigWriteListener | null };
@@ -247,5 +250,24 @@ export function createManagedRestartSequenceConfigs() {
     invalidHotConfig,
     invalidNoopConfig,
     replacementConfig,
+  };
+}
+
+export function makePluginReloadResult(
+  overrides: Partial<GatewayPluginReloadResult> = {},
+): GatewayPluginReloadResult {
+  return {
+    runtime: { operationId: "test-reload", generation: 1, pluginIds: [] },
+    activeChannels: new Set(),
+    ...overrides,
+  };
+}
+
+export function createTestCronReconciliation() {
+  const complete = vi.fn<() => Promise<void>>(async () => {});
+  return {
+    arm: vi.fn<() => { complete: () => Promise<void> }>(() => ({ complete })),
+    complete,
+    invalidate: vi.fn(),
   };
 }

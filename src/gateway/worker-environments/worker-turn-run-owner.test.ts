@@ -22,6 +22,7 @@ import {
   startDiagnosticHeartbeat,
   stopDiagnosticHeartbeat,
 } from "../../logging/diagnostic.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import { createWorkerLiveEventReceiver } from "./live-events.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
@@ -155,6 +156,7 @@ describe("cloud worker run ownership", () => {
         state: "processing",
       });
       startDiagnosticHeartbeat(
+        createTestGatewayScheduler("fake-timers"),
         { diagnostics: { enabled: true } },
         {
           recoverStuckSession: recoverStuckDiagnosticSession,

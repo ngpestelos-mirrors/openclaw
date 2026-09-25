@@ -13,6 +13,7 @@ import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { ExecApprovalManager, type ExecApprovalRecord } from "./exec-approval-manager.js";
 import { installTestApprovalClock } from "./exec-approval-manager.test-support.js";
 import { createOperatorApprovalSessionEventRuntime } from "./operator-approval-session-events.js";
@@ -800,6 +801,7 @@ describe("operator approval session events", () => {
       },
     });
     const manager = new ExecApprovalManager({
+      scheduler: createTestGatewayScheduler(),
       persistence: { runtimeEpoch: "replay-mutation-race", databaseOptions },
       onLifecycle: runtime.publish,
     });
@@ -902,6 +904,7 @@ describe("operator approval session events", () => {
     const runtime = harness.runtime;
     const onExpired = vi.fn();
     const manager = new ExecApprovalManager({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       approvalKind: "exec",
       persistence: { runtimeEpoch: "session-events", databaseOptions },
       resolveAllowedDecisions: () => ["allow-once", "deny"],

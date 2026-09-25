@@ -16,6 +16,16 @@ export type TestAccount = {
   }>;
 };
 
+export function firstStartAccountContext(
+  startAccount: ReturnType<typeof vi.fn>,
+): ChannelGatewayContext<TestAccount> {
+  const ctx = startAccount.mock.calls[0]?.[0];
+  if (!ctx || typeof ctx !== "object") {
+    throw new Error("expected channel start context");
+  }
+  return ctx as ChannelGatewayContext<TestAccount>;
+}
+
 export function healthOf(account: ChannelAccountSnapshot | undefined) {
   return evaluateChannelHealth(account ?? {}, {
     channelId: "discord",
@@ -85,3 +95,5 @@ export function createTestPlugin(params?: {
     gateway,
   };
 }
+import type { vi } from "vitest";
+import type { ChannelGatewayContext } from "../channels/plugins/types.adapters.js";

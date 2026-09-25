@@ -77,7 +77,7 @@ type GatewayAuxHandlerLogger = {
 /** Create auxiliary gateway handlers that are not part of the core descriptor set. */
 export function createGatewayAuxHandlers(
   params: GatewaySecretsReloaderParams & {
-    scheduler?: GatewayScheduler;
+    scheduler: GatewayScheduler;
     log: GatewayAuxHandlerLogger;
     onApprovalLifecycle?: (event: OperatorApprovalLifecycleEvent) => void;
     onAgentRunAuthorityClosed?: (

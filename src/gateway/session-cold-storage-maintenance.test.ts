@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import {
   getSessionColdStorageMaintenanceStatus,
   requestGatewaySessionColdStorageMaintenance,
@@ -21,7 +24,7 @@ let scheduler: GatewayScheduler;
 let maintenance: ReturnType<typeof startSessionColdStorageMaintenance> | undefined;
 beforeEach(() => {
   clock = createGatewaySchedulerClock();
-  scheduler = new GatewayScheduler({ clock: clock.clock });
+  scheduler = createTestGatewayScheduler(clock.clock);
   resetGatewayWorkAdmission();
   sweep.mockReset().mockResolvedValue({ archivedTranscripts: 2, externalizedTranscripts: 0 });
   inventory.mockReset().mockResolvedValue([]);

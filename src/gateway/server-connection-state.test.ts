@@ -13,6 +13,7 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
@@ -97,6 +98,7 @@ describe("gateway connection state", () => {
         );
       }
       const state = createGatewayConnectionState({
+        scheduler: createTestGatewayScheduler(),
         bootId: "committed-event-policy",
         cfg: restricted,
         getRuntimeConfig: () => runtimeConfig,
@@ -196,6 +198,7 @@ describe("gateway connection state", () => {
   it("advertises online people only through live operator connections", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const state = createGatewayConnectionState({
+        scheduler: createTestGatewayScheduler(),
         bootId: "online-recipients",
         cfg: { agents: { entries: { main: {} } } },
       });
@@ -268,7 +271,11 @@ describe("gateway connection state", () => {
         }
       });
       const projection = await createSessionRowProjection({ cfg: {}, modelCatalog: [] });
-      const state = createGatewayConnectionState({ bootId: "members", cfg: {} });
+      const state = createGatewayConnectionState({
+        scheduler: createTestGatewayScheduler(),
+        bootId: "members",
+        cfg: {},
+      });
       state.attachSessionRowProjection(projection);
       const peers = Array.from({ length: 50 }, (_, index) => {
         const peer = makeClient(`viewer-${index}`, { count: 0 });
@@ -387,6 +394,7 @@ describe("gateway connection state", () => {
 
   it("bounds targeted delivery and connection lookups to the requested connection", () => {
     const state = createGatewayConnectionState({
+      scheduler: createTestGatewayScheduler(),
       bootId: "targeted-delivery",
       cfg: {} as OpenClawConfig,
     });
@@ -445,6 +453,7 @@ describe("gateway connection state", () => {
 
   it("preserves connection insertion order for targeted fanout", () => {
     const state = createGatewayConnectionState({
+      scheduler: createTestGatewayScheduler(),
       bootId: "ordered-delivery",
       cfg: {} as OpenClawConfig,
     });

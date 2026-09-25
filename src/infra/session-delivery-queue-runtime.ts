@@ -2,7 +2,7 @@
 import { createDeferredCore } from "../shared/deferred.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { computeBackoffMs } from "./delivery-recovery.shared.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "./gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "./gateway-scheduler.js";
 import {
   drainPendingSessionDelivery,
   type DeliverSessionDeliveryFn,
@@ -16,7 +16,7 @@ import {
 import type { QueuedSessionDelivery } from "./session-delivery-queue.records.js";
 
 type SessionDeliveryRuntime = {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   queueContext: OpenClawStateWorkerContext;
   deliver: DeliverSessionDeliveryFn;
   drain?: typeof drainPendingSessionDelivery;
@@ -29,7 +29,6 @@ type SessionDeliveryRuntime = {
 const RUNTIME_RELOAD_RETRY_MS = 1_000;
 let runtime:
   | (SessionDeliveryRuntime & {
-      scheduler: GatewayScheduler;
       runningEntries: Map<string, Promise<void>>;
       pendingSchedules: Set<Promise<void>>;
     })
@@ -167,7 +166,6 @@ export function startSessionDeliveryRuntime(params: SessionDeliveryRuntime): () 
   clearScheduledEntries();
   const activeRuntime = {
     ...params,
-    scheduler: params.scheduler ?? new GatewayScheduler(),
     runningEntries: new Map<string, Promise<void>>(),
     pendingSchedules: new Set<Promise<void>>(),
   };

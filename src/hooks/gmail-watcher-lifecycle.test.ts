@@ -1,7 +1,6 @@
 // Gmail watcher lifecycle tests cover start, stop, and restart behavior.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 
 const { startGmailWatcherMock } = vi.hoisted(() => ({
   startGmailWatcherMock: vi.fn(),
@@ -33,7 +32,7 @@ describe("startGmailWatcherWithLogs", () => {
   });
 
   it("passes cancellation and schedule ownership to watcher startup", async () => {
-    const scheduler = new GatewayScheduler({ clock: createGatewaySchedulerClock().clock });
+    const scheduler = createTestGatewayScheduler();
     const abortController = new AbortController();
     abortController.abort();
     startGmailWatcherMock.mockResolvedValue({ started: false, reason: "startup cancelled" });
@@ -55,6 +54,7 @@ describe("startGmailWatcherWithLogs", () => {
     startGmailWatcherMock.mockResolvedValue({ started: true, reason: undefined });
 
     await startGmailWatcherWithLogs({
+      scheduler: createTestGatewayScheduler(),
       cfg: {},
       log,
     });
@@ -68,6 +68,7 @@ describe("startGmailWatcherWithLogs", () => {
     startGmailWatcherMock.mockResolvedValue({ started: false, reason: "auth failed" });
 
     await startGmailWatcherWithLogs({
+      scheduler: createTestGatewayScheduler(),
       cfg: {},
       log,
     });
@@ -82,6 +83,7 @@ describe("startGmailWatcherWithLogs", () => {
     });
 
     await startGmailWatcherWithLogs({
+      scheduler: createTestGatewayScheduler(),
       cfg: {},
       log,
     });
@@ -94,6 +96,7 @@ describe("startGmailWatcherWithLogs", () => {
     const onSkipped = vi.fn();
 
     await startGmailWatcherWithLogs({
+      scheduler: createTestGatewayScheduler(),
       cfg: {},
       log,
       onSkipped,
@@ -107,6 +110,7 @@ describe("startGmailWatcherWithLogs", () => {
     startGmailWatcherMock.mockRejectedValue(new Error("boom"));
 
     await startGmailWatcherWithLogs({
+      scheduler: createTestGatewayScheduler(),
       cfg: {},
       log,
     });

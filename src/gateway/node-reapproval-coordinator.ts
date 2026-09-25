@@ -81,8 +81,8 @@ function buildRequestFingerprint(input: NodePairingRequestInput): string {
 
 /** Creates the gateway-lifetime owner for paired-node reapproval write limits. */
 export function createNodeReapprovalCoordinator(
-  config?: RateLimitConfig,
-  { scheduler }: { scheduler?: GatewayScheduler } = {},
+  config: RateLimitConfig | undefined,
+  { scheduler }: { scheduler: GatewayScheduler },
 ): NodeReapprovalCoordinator & {
   updateConfig: (config?: GatewayAuthRateLimitConfig) => void;
 } {

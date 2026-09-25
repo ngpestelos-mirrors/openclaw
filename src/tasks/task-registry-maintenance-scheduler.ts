@@ -1,4 +1,4 @@
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import {
   isGatewayRestartDrainError,
   runWithGatewayIndependentRootWorkAdmission,
@@ -42,7 +42,7 @@ export function createTaskMaintenanceScheduler(
   }
 
   return {
-    start(scheduler = new GatewayScheduler()) {
+    start(scheduler: GatewayScheduler) {
       if (sweepJob) {
         return;
       }

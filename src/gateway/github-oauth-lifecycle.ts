@@ -43,7 +43,7 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GitHubToolIdentityConfig } from "../config/types.tools.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import { assertGitHubCliAvailable } from "./github-cli-preflight.js";
 import { pollGitHubDeviceFlow, startGitHubDeviceFlow } from "./github-oauth-device-flow.js";
@@ -89,9 +89,9 @@ export function createGitHubOAuthLifecycle(params: {
   getConfig: () => OpenClawConfig;
   getPersistedConfig?: () => OpenClawConfig;
   warn: (message: string) => void;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
 }) {
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const { scheduler } = params;
   const personal = createPersonalGitHubOAuthLifecycle();
   const deviceController = new AbortController();
   const devicePolls = new Map<string, Promise<ToolsGitHubAuthorizePollResult>>();

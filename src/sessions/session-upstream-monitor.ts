@@ -6,7 +6,7 @@ import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import { readRecentUserAssistantTextForSession } from "../config/sessions/transcript.js";
 import type { SessionEntry } from "../config/sessions/types.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import type { SessionCatalogProvider, SessionUpstreamProbe } from "../plugins/session-catalog.js";
@@ -437,9 +437,9 @@ async function runSessionUpstreamMonitorTick(
 }
 
 export function startSessionUpstreamMonitor(
-  options: SessionUpstreamMonitorOptions & { scheduler?: GatewayScheduler } = {},
+  options: SessionUpstreamMonitorOptions & { scheduler: GatewayScheduler },
 ): SessionUpstreamMonitor {
-  const scheduler = options.scheduler ?? new GatewayScheduler();
+  const { scheduler } = options;
   let stopped = false;
   let running: Promise<void> | undefined;
   const lifecycle = new AbortController();

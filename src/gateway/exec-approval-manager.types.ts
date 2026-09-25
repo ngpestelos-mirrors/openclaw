@@ -78,7 +78,7 @@ export type OperatorStandingGrantMintSpec =
   | ({ kind: "placement" } & PlacementStandingGrantMintSpec);
 
 export type ExecApprovalManagerOptions<TPayload> = {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   approvalKind?: OperatorApprovalKind;
   persistence: {
     runtimeEpoch: string;

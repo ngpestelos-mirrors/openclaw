@@ -19,6 +19,10 @@ import { createPluginRuntime } from "../plugins/runtime/index.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { listTaskRegistryRecordsByRuntimeSourceIdFromSqlite } from "../tasks/task-registry.store.sqlite.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { getGatewayProcessInstanceId } from "./process-instance.js";
 import type { GatewayCronState } from "./server-cron.js";
 import type { GatewayClient } from "./server-methods/types.js";
@@ -56,14 +60,7 @@ const sendCronAnnouncePayloadStrictMock = vi.hoisted(() =>
 const closeTrackedBrowserTabsForSessionsMock = vi.hoisted(() => vi.fn(async () => 0));
 
 vi.mock("../infra/net/fetch-guard.js", () => ({
-  fetchWithSsrFGuard: (...args: unknown[]) =>
-    (
-      fetchWithSsrFGuardMock as unknown as (...innerArgs: unknown[]) => Promise<{
-        response: Response;
-        finalUrl: string;
-        release: () => Promise<void>;
-      }>
-    )(...args),
+  fetchWithSsrFGuard: fetchWithSsrFGuardMock,
 }));
 
 vi.mock("../cron/delivery.js", async () => {
@@ -90,10 +87,6 @@ async function getCronSuiteTempRoot(): Promise<string> {
   return await cronSuiteTempRootPromise;
 }
 
-async function yieldToEventLoop() {
-  await setImmediatePromise();
-}
-
 async function rmTempDir(dir: string) {
   for (let i = 0; i < 100; i += 1) {
     try {
@@ -102,7 +95,7 @@ async function rmTempDir(dir: string) {
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
       if (code === "ENOTEMPTY" || code === "EBUSY" || code === "EPERM" || code === "EACCES") {
-        await yieldToEventLoop();
+        await setImmediatePromise();
         continue;
       }
       throw err;
@@ -201,6 +194,10 @@ async function createDirectCronState(params?: {
   ]);
   return {
     ...buildGatewayCronService({
+      scheduler: createTestGatewayScheduler({
+        ...createGatewaySchedulerClock().clock,
+        now: () => Date.now(),
+      }),
       cfg: getRuntimeConfig(),
       deps: {} as never,
       broadcast: params?.broadcast ?? vi.fn(),

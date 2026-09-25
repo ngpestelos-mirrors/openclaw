@@ -92,7 +92,7 @@ function dispatchEventHandler<TEvent>(params: {
 
 /** Register gateway runtime event subscriptions and return unsubscribe handles. */
 export function startGatewayEventSubscriptions(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   signal: AbortSignal;
   log: SubsystemLogger;
   broadcast: GatewayBroadcastFn;

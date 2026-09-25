@@ -143,9 +143,12 @@ Details: [Gateway protocol](/gateway/protocol), [Pairing](/channels/pairing),
 
 ## Timed work and shutdown
 
-Gateway-lifetime maintenance and durable deadline wakeups share one in-memory
-schedule and one armed host timer. Each job has a stable identity. The scheduler
-arms the earliest due job; changing or canceling a deadline updates that wake.
+Gateway-lifetime maintenance and durable deadline wakeups share one scheduler
+instance per Gateway process, enforced by required TypeScript dependencies.
+The Gateway kernel owns that instance and its single armed host timer. Standalone
+CLI and SDK entry points explicitly own and stop their schedules. Each job has a
+stable identity. The scheduler arms the earliest due job; changing or canceling a
+deadline updates that wake.
 Diagnostic heartbeat logs include `nextWakeAtMs` when diagnostics are enabled.
 
 After sleep or a forward clock jump, each overdue maintenance job runs once.

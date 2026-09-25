@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createSessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.test-support.js";
 
 type RuntimeParams = Parameters<
@@ -22,7 +23,9 @@ it.each([undefined, 0] as const)(
   "keeps session runtimes alive with TTL %s without scheduling idle maintenance",
   async (sessionIdleTtlMs) => {
     vi.useFakeTimers();
-    const manager = createSessionMcpRuntimeManager();
+    const manager = createSessionMcpRuntimeManager({
+      scheduler: createTestGatewayScheduler("fake-timers"),
+    });
     const params: RuntimeParams = {
       sessionId: "session-keep-alive",
       workspaceDir: "/workspace",
@@ -41,7 +44,9 @@ it.each([undefined, 0] as const)(
 
 it("changes idle policy on reuse and reload without replacing the runtime", async () => {
   vi.useFakeTimers();
-  const manager = createSessionMcpRuntimeManager();
+  const manager = createSessionMcpRuntimeManager({
+    scheduler: createTestGatewayScheduler("fake-timers"),
+  });
   const params: RuntimeParams = {
     sessionId: "session-policy",
     workspaceDir: "/workspace",
@@ -72,7 +77,10 @@ it("sweeps admitted runtimes only with an opt-in idle timer and stops maintenanc
   vi.useFakeTimers();
   vi.setSystemTime(100_000);
   const now = vi.fn(() => Date.now());
-  const manager = createSessionMcpRuntimeManager({ now });
+  const manager = createSessionMcpRuntimeManager({
+    now,
+    scheduler: createTestGatewayScheduler("fake-timers"),
+  });
   const params: RuntimeParams = {
     sessionId: "session-idle-timer",
     workspaceDir: "/workspace",

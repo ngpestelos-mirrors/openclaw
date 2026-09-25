@@ -1,5 +1,5 @@
 import { formatErrorMessage } from "../infra/errors.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { reconcileInterruptedUpdateRuns } from "../infra/update-run-interruption.js";
 import {
   findActiveUpdateRun,
@@ -22,12 +22,12 @@ export function wakeUpdateRunWatcher(): void {
 
 /** The update-check lifecycle joins notices and their transport tails before Gateway teardown. */
 export function startUpdateRunWatcher(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   broadcast: GatewayBroadcastFn;
   log: { warn: (message: string) => void };
 }): { stop: () => Promise<void> } {
   const work = new AsyncWorkScope();
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const scheduler = params.scheduler;
   let timer: GatewayScheduledJob | undefined;
   let publicationTimer: GatewayScheduledJob | undefined;
   let watched: { runId: string; revision?: number; phase?: UpdateRunPhase } | undefined;
