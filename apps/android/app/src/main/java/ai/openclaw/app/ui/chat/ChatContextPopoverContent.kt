@@ -92,7 +92,7 @@ internal fun ChatContextPopoverContent(
             .clip(RoundedCornerShape(percent = 50))
             .background(ClawTheme.colors.textMuted.copy(alpha = 0.22f))
             .semantics {
-              contentDescription = "${nativeString("Context window")}: ${it.detail}"
+              contentDescription = nativeString("\$label: \$value", nativeString("Context window"), it.detail)
               progressBarRangeInfo = ProgressBarRangeInfo(it.fraction, 0f..1f)
             },
       ) {
@@ -155,7 +155,7 @@ private fun ContextInlineStats(
         )
         if (index < stats.lastIndex) {
           Text(
-            text = "·",
+            text = nativeString("·"),
             modifier = Modifier.alignByBaseline().padding(start = 2.dp),
             style = ClawTheme.type.caption,
             color = ClawTheme.colors.textMuted,

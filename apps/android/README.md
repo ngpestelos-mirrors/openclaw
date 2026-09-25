@@ -26,6 +26,16 @@ OpenClaw Android is the officially released Google Play app. It connects to an O
 
 Long-press a row on the **Threads** page and choose **Color**, then select a swatch or **Default** to clear it. The eight colors are red, blue, green, yellow, purple, orange, pink, and cyan. Colored sessions show a narrow leading stripe in the sidebar and Threads page, plus a colored ring around the agent avatar in the open chat header. Unset colors add no indicator. Colors sync through the Gateway and remain visible in the local session cache while offline.
 
+## Camera attachments
+
+Tap **+ → Camera** to open the viewfinder directly. Switch between **Photo** and
+**Video** inside the camera; there is no separate mode-selection menu. Capture a
+photo, or start and stop a video recording, to add it to the original draft.
+Camera access is requested on first use, and video recording requests microphone
+access when needed. Closing the camera, leaving the app, or rotating the screen
+cancels capture and preserves the draft. Nothing is sent until you tap **Send**.
+**Gallery** selects both existing images and videos.
+
 ## Image previews in Chat
 
 Tap an image to open the full image. Pinch to zoom up to 4× and drag to pan;

@@ -4,6 +4,8 @@ import ai.openclaw.app.AndroidScreenshotFixture
 import ai.openclaw.app.AndroidScreenshotScene
 import ai.openclaw.app.GatewayAgentSummary
 import ai.openclaw.app.GatewayConnectionDisplay
+import ai.openclaw.app.GatewayModelSummary
+import ai.openclaw.app.GatewayModelUnavailableReason
 import ai.openclaw.app.GatewayTalkSetupIssue
 import ai.openclaw.app.GatewayTalkSetupReadiness
 import ai.openclaw.app.GatewayTalkSetupState
@@ -45,6 +47,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -4702,7 +4705,8 @@ class ChatComposerLayoutTest {
       GatewayRegistryEntry(stableId = AndroidScreenshotFixture.gatewayId, kind = GatewayRegistryEntryKind.MANUAL, name = "Test gateway"),
     )
     prefs.gatewayRegistry.setActive(AndroidScreenshotFixture.gatewayId)
-    val model = showChat(viewportWidth = 720.dp, viewportHeight = { 720.dp })
+    var providersOpened = 0
+    val model = showChat(viewportWidth = 720.dp, viewportHeight = { 720.dp }, onOpenProvidersModels = { providersOpened++ })
     val originalOwner = model.captureChatShareOwner()
     val originalSession = controller.sessionKey.value
     composeRule.runOnIdle { controllerFlow<String?>("_defaultModelRef").value = "openai/gpt-5.2" }
@@ -4732,6 +4736,61 @@ class ChatComposerLayoutTest {
     }
     try {
       requestField.set(controller, request)
+      val catalog = controllerFlow<List<GatewayModelSummary>>("_modelCatalog")
+      val availableCatalog = catalog.value
+
+      fun publishAvailability(reason: GatewayModelUnavailableReason?) {
+        composeRule.runOnIdle {
+          catalog.value =
+            availableCatalog.map {
+              if (it.providerQualifiedRef() == "openai/gpt-5.2") it.copy(available = reason == null, unavailableReason = reason) else it
+            }
+        }
+        composeRule.runOnIdle {
+          assertEquals(
+            reason,
+            model.chatModelCatalog.value
+              .first { it.providerQualifiedRef() == "openai/gpt-5.2" }
+              .unavailableReason,
+          )
+        }
+      }
+
+      fun openDefaultRow(): SemanticsNodeInteraction {
+        composeRule.onNodeWithContentDescription(nativeString("Model")).performClick()
+        composeRule.onNode(hasText("OpenAI") and SemanticsMatcher.keyIsDefined(SemanticsProperties.StateDescription)).performClick()
+        return composeRule.onNode(hasText(nativeString("Default")) and hasClickAction())
+      }
+
+      for (reason in listOf(GatewayModelUnavailableReason.MissingAuth, GatewayModelUnavailableReason.AuthFailed, GatewayModelUnavailableReason.Cooldown)) {
+        publishAvailability(reason)
+        val row = openDefaultRow()
+        val beforeProviders = providersOpened
+        if (reason == GatewayModelUnavailableReason.Cooldown) {
+          row.assertIsNotEnabled().performClick()
+          composeRule.runOnIdle { (checkNotNull(ShadowDialog.getLatestDialog()) as ComponentDialog).onBackPressedDispatcher.onBackPressed() }
+          assertEquals(beforeProviders, providersOpened)
+        } else {
+          row.assertIsEnabled().performClick()
+          composeRule.runOnIdle { assertEquals("An unavailable default must open Providers", beforeProviders + 1, providersOpened) }
+        }
+        composeRule.onNode(isDialog()).assertDoesNotExist()
+        assertTrue("An unavailable default must not clear the override", admitted.isEmpty())
+      }
+
+      publishAvailability(null)
+      val staleSelect = checkNotNull(openDefaultRow().fetchSemanticsNode().config[SemanticsActions.OnClick].action)
+      composeRule.mainClock.autoAdvance = false
+      publishAvailability(GatewayModelUnavailableReason.Cooldown)
+      composeRule.runOnUiThread {
+        assertTrue("The old row remains attached before recomposition", checkNotNull(ShadowDialog.getLatestDialog()).isShowing)
+        staleSelect()
+        assertTrue("A rendered default must revalidate current availability before clearing the override", admitted.isEmpty())
+      }
+      composeRule.mainClock.autoAdvance = true
+      composeRule.waitForIdle()
+      composeRule.runOnIdle { (checkNotNull(ShadowDialog.getLatestDialog()) as ComponentDialog).onBackPressedDispatcher.onBackPressed() }
+      publishAvailability(null)
       composeRule.onNodeWithContentDescription(nativeString("Model")).performClick()
       composeRule.onNode(hasText("OpenAI") and SemanticsMatcher.keyIsDefined(SemanticsProperties.StateDescription)).performClick()
       composeRule.onNode(hasText(nativeString("Default")) and hasClickAction()).performClick()
@@ -4761,6 +4820,7 @@ class ChatComposerLayoutTest {
       assertEquals(JsonPrimitive(originalSession), payload["key"])
       assertEquals(JsonPrimitive(originalOwner.agentId), payload["agentId"])
     } finally {
+      composeRule.mainClock.autoAdvance = true
       release.complete(Unit)
       requestField.set(controller, originalRequest)
     }
@@ -4998,11 +5058,6 @@ class ChatComposerLayoutTest {
       assertTrue("Every attachment row retains a complete touch target", row.right - row.left >= 48.dp && row.bottom - row.top >= 48.dp)
     }
     composeRule.onNode(hasText(nativeString("Videos")) and hasAnyAncestor(isDialog())).assertDoesNotExist()
-    composeRule.onNode(hasText(nativeString("Camera")) and hasClickAction()).performClick()
-    for (label in listOf("Photos", "Video")) {
-      composeRule.onNode(hasText(nativeString(label)) and hasClickAction()).assertIsDisplayed().assertIsEnabled()
-    }
-    composeRule.onNodeWithText(nativeString("Back")).performClick()
     composeRule.onNode(hasText(nativeString("Location")) and hasClickAction()).performClick()
     composeRule.onNodeWithText(nativeString("Add your current location to the draft. Review it before sending.")).assertIsDisplayed()
     composeRule
@@ -5181,10 +5236,9 @@ class ChatComposerLayoutTest {
     val files = mutableListOf<File>()
     val editor = composerEditor()
 
-    fun openCamera(mode: String = "Photos") {
+    fun openCamera() {
       composeRule.onNodeWithContentDescription(nativeString("Add attachment")).performClick()
       composeRule.onNode(hasText(nativeString("Camera")) and hasClickAction() and hasAnyAncestor(isDialog())).performClick()
-      composeRule.onNode(hasText(nativeString(mode)) and hasClickAction() and hasAnyAncestor(isDialog())).performClick()
     }
     try {
       shadowOf(app).denyPermissions(Manifest.permission.CAMERA)
@@ -5206,16 +5260,17 @@ class ChatComposerLayoutTest {
       shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
       for ((mode, outcome) in listOf("Photos" to "cancelled", "Photos" to "revoked", "Photos" to "captured", "Video" to "captured")) {
         editor.performTextReplacement(caption)
-        openCamera(mode)
+        openCamera()
         val request = checkNotNull(shadowOf(chatActivity).nextStartedActivityForResult)
-        assertEquals(if (mode == "Photos") MediaStore.ACTION_IMAGE_CAPTURE else MediaStore.ACTION_VIDEO_CAPTURE, request.intent.action)
-        val uri = checkNotNull(request.intent.getParcelableExtra(MediaStore.EXTRA_OUTPUT, Uri::class.java))
-        assertEquals("content", uri.scheme)
-        assertEquals("${app.packageName}.fileprovider", uri.authority)
-        assertEquals("chat_camera", uri.pathSegments.first())
-        val file = File(app.cacheDir, "chat-camera/${checkNotNull(uri.lastPathSegment)}")
-        files += file
-        assertTrue("The native camera receives a writable full-size output file", file.isFile)
+        assertEquals(ChatCameraActivity::class.java.name, checkNotNull(request.intent.component).className)
+        composeRule.onNode(isDialog()).assertDoesNotExist()
+        val captureId = checkNotNull(request.intent.getStringExtra(ChatCameraActivity.EXTRA_CAPTURE_ID))
+        assertEquals(captureId, UUID.fromString(captureId).toString())
+        val directory = File(app.cacheDir, "chat-camera/$captureId")
+        assertTrue("A single tap opens the camera with its own output directory", directory.isDirectory)
+        val file = File.createTempFile("capture-", if (mode == "Photos") ".jpg" else ".mp4", directory)
+        val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
+        files += directory
         checkNotNull(app.contentResolver.openOutputStream(uri)).use { it.write(if (mode == "Photos") photoBytes else videoBytes) }
         if (outcome == "revoked") {
           composeRule.runOnIdle { runBlocking { model.clearChatComposerGateway(checkNotNull(owner.gatewayStableId)) } }
@@ -5226,11 +5281,11 @@ class ChatComposerLayoutTest {
             (chatActivity as ComponentActivity).activityResultRegistry.dispatchResult(
               request.requestCode,
               if (outcome == "cancelled") Activity.RESULT_CANCELED else Activity.RESULT_OK,
-              null,
+              Intent().setData(uri),
             ),
           )
         }
-        composeRule.waitUntil { !file.exists() && !model.chatComposerState.hasPendingImport(owner) }
+        composeRule.waitUntil { !directory.exists() && !model.chatComposerState.hasPendingImport(owner) }
         editor.assertTextEquals(caption)
         assertFalse("Camera completion releases its media lease", model.chatComposerState.hasPendingGatewaySwitchWork(owner))
         if (outcome != "captured") {
@@ -5281,7 +5336,7 @@ class ChatComposerLayoutTest {
       }
       editor.assertTextEquals(caption)
     } finally {
-      files.forEach { it.delete() }
+      files.forEach { it.deleteRecursively() }
       if (permissionWasGranted) shadowOf(app).grantPermissions(Manifest.permission.CAMERA) else shadowOf(app).denyPermissions(Manifest.permission.CAMERA)
     }
   }
@@ -6239,6 +6294,7 @@ class ChatComposerLayoutTest {
     talkActive: Boolean = false,
     expectedMessageCount: Int? = null,
     onOpenSidebar: () -> Unit = {},
+    onOpenProvidersModels: () -> Unit = {},
     useChatShell: Boolean = false,
     chatVisible: () -> Boolean = { true },
     currentViewportWidth: () -> Dp = { viewportWidth },
@@ -6303,7 +6359,7 @@ class ChatComposerLayoutTest {
                       onOpenSidebar = onOpenSidebar,
                       onOpenDashboard = {},
                       onOpenGatewaySettings = {},
-                      onOpenProvidersModels = {},
+                      onOpenProvidersModels = onOpenProvidersModels,
                       tabletopPanes = panes,
                       features = features,
                     )
@@ -6322,6 +6378,7 @@ class ChatComposerLayoutTest {
                     onToggleTalk = {},
                     onOpenDashboard = {},
                     onOpenGatewaySettings = {},
+                    onOpenProvidersModels = onOpenProvidersModels,
                   )
                 }
               }

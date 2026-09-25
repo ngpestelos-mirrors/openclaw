@@ -29,7 +29,6 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -61,7 +60,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-private enum class AttachmentPage { Menu, Camera, Location }
+private enum class AttachmentPage { Menu, Location }
 
 /** One owner-bound opening; external results still pass through the composer's media leases. */
 @Composable
@@ -74,8 +73,7 @@ internal fun ChatAttachmentMenu(
   permissionModePending: Boolean,
   permissionsEnabled: Boolean,
   onOpenPermissions: () -> Unit,
-  onTakePhoto: () -> Unit,
-  onRecordVideo: () -> Unit,
+  onOpenCamera: () -> Unit,
   onBrowseGallery: () -> Unit,
   onPickFile: () -> Unit,
   onLocation: (String) -> Unit,
@@ -100,20 +98,10 @@ internal fun ChatAttachmentMenu(
           LocationAttachment(admit = admitAction, onLocation = onLocation)
         }
 
-        AttachmentPage.Camera -> {
-          AttachmentMenuAction(nativeString("Photos"), onClick = { if (admitAction()) onTakePhoto() }) {
-            Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(22.dp))
-          }
-          AttachmentMenuAction(nativeString("Video"), onClick = { if (admitAction()) onRecordVideo() }) {
-            Icon(Icons.Default.Videocam, contentDescription = null, modifier = Modifier.size(22.dp))
-          }
-        }
-
         AttachmentPage.Menu -> {
           AttachmentMenuAction(
             nativeString("Camera"),
-            description = "${nativeString("Photos")} · ${nativeString("Video")}",
-            onClick = { if (admitAction()) page = AttachmentPage.Camera },
+            onClick = { if (admitAction()) onOpenCamera() },
           ) {
             Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(22.dp))
           }

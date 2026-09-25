@@ -1267,15 +1267,9 @@ internal fun ChatScreen(
         permissionMode = activeSession?.permissionMode,
         permissionModePending = permissionModePending,
         permissionsEnabled = gatewayConnectionDisplay.isConnected && canWriteSessionSettings,
-        onTakePhoto = {
+        onOpenCamera = {
           if (attachmentPicker.admit(opening)) {
-            captureCamera(ChatCameraMode.Photo)
-            attachmentPicker.retire(opening)
-          }
-        },
-        onRecordVideo = {
-          if (attachmentPicker.admit(opening)) {
-            captureCamera(ChatCameraMode.Video)
+            captureCamera()
             attachmentPicker.retire(opening)
           }
         },
@@ -1439,7 +1433,10 @@ internal fun ChatScreen(
             (modelRef == null || model?.let(::chatModelPickerAction) == ChatModelPickerAction.Select)
           ) {
             modelPicker.retire(opening)
-            viewModel.setChatSessionModel(sessionKey = opening.sessionKey, modelRef = modelRef)
+            viewModel.setChatSessionModel(
+              sessionKey = opening.sessionKey,
+              modelRef = modelRef.takeUnless { it == viewModel.chatDefaultModelRef.value },
+            )
           }
         },
         onOpenProviders = { ref ->
@@ -4150,7 +4147,7 @@ private fun ChatModelPickerContent(
           pinned = ref in favorites,
           selected = ref == selectedModelRef,
           isDefault = isDefault,
-          onSelect = { if (admit()) onSelect(if (isDefault) null else ref) },
+          onSelect = { if (admit()) onSelect(ref) },
           onOpenProviders = { if (admit()) onOpenProviders(ref) },
           onToggleFavorite = { if (admit()) onToggleFavorite(ref) },
         )
@@ -4210,7 +4207,7 @@ private fun ChatModelPickerRow(
   onOpenProviders: () -> Unit,
   onToggleFavorite: () -> Unit,
 ) {
-  val action = if (isDefault) ChatModelPickerAction.Select else chatModelPickerAction(model)
+  val action = chatModelPickerAction(model)
   val unavailable = model.available == false
   val availabilityLabel =
     if (!unavailable) {
