@@ -32,10 +32,10 @@ import {
   GATEWAY_AUTH_SURFACE_PATHS,
   evaluateGatewayAuthSurfaceStates,
 } from "../secrets/runtime-gateway-auth-surfaces.js";
+import type { PreparedSecretsRuntimeSnapshot as PreparedRuntimeSecretsSnapshot } from "../secrets/runtime-state.js";
 import { resolveGatewayAuthForConfig } from "./auth-resolve.js";
 import { assertGatewayAuthNotKnownWeak } from "./known-weak-gateway-secrets.js";
 import { mergeActivationSectionsIntoRuntimeConfig } from "./plugin-activation-runtime-config.js";
-import type { ActivateRuntimeSecrets } from "./server-startup-config.js";
 import { resolveGatewayStartupSourceConfig } from "./server-startup-secret-surfaces.js";
 import {
   ensureGatewayStartupAuth,
@@ -58,6 +58,54 @@ export type GatewayStartupConfigMeasure = <T>(
 export type GatewayStartupConfigSnapshotLoadResult = {
   snapshot: ConfigFileSnapshot;
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
+};
+
+type RuntimeSecretsActivationParams = {
+  reason: "startup" | "reload" | "restart-check";
+  activate: boolean;
+  /** This preparation belongs to a live reload; publish failure against the active snapshot. */
+  publishFailureAsDegraded?: boolean;
+  /** Reject warning publication after a speculative reload loses transaction ownership. */
+  canPublishFailureAsDegraded?: () => boolean;
+  env?: NodeJS.ProcessEnv;
+  includeAuthStoreRefs?: boolean;
+  /** Raw config source paired with an otherwise fully activated prepared snapshot. */
+  runtimeSourceConfig?: OpenClawConfig;
+  /** Defer degradation/recovery publication until a larger transaction can no longer roll back. */
+  deferStatePublication?: boolean;
+  /** SecretRefs that must not retain last-known-good values during this reload. */
+  forceColdRefKeys?: ReadonlySet<string>;
+};
+
+/** Gateway startup hook that prepares secrets and optionally activates the prepared snapshot. */
+export type ActivateRuntimeSecrets = ((
+  config: OpenClawConfig,
+  params: RuntimeSecretsActivationParams,
+) => Promise<PreparedRuntimeSecretsSnapshot>) & {
+  activatePreparedSnapshot: (
+    snapshot: PreparedRuntimeSecretsSnapshot,
+    params: RuntimeSecretsActivationParams,
+  ) => Promise<PreparedRuntimeSecretsSnapshot>;
+  activatePreparedSnapshotIfCurrent: (
+    snapshot: PreparedRuntimeSecretsSnapshot,
+    expectedRevision: number,
+    params: RuntimeSecretsActivationParams,
+    onActivated?: (
+      restore: ActivateRuntimeSecrets["restoreSnapshotIfCurrent"],
+    ) => void | Promise<void>,
+    canActivate?: () => boolean,
+    checkpoint?: () => Promise<void>,
+  ) => Promise<PreparedRuntimeSecretsSnapshot | null>;
+  restoreSnapshotIfCurrent: (
+    snapshot: PreparedRuntimeSecretsSnapshot | null,
+    expectedRevision: number,
+    ownedSnapshot: PreparedRuntimeSecretsSnapshot,
+    options?: { onActivated?: () => void; runtimeSourceConfig?: OpenClawConfig },
+  ) => Promise<boolean>;
+  publishStateTransition: (
+    snapshot: PreparedRuntimeSecretsSnapshot,
+    options?: { sourceOnly?: boolean; expectedRevision?: number },
+  ) => void;
 };
 
 /** Throw a formatted startup error when the loaded config snapshot is invalid. */
