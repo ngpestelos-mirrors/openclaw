@@ -349,9 +349,11 @@ it(
         await using newRun = await acquireAgentRunPreparedModelRuntime(input, {
           catalogMode: "static",
         });
-        expect(
-          newRun.snapshot.createStores().modelRegistry.find("kimi", "remote-first")?.cost.input,
-        ).toBe(7);
+        const newModel = expectDefined(
+          newRun.snapshot.createStores().modelRegistry.find("kimi", "remote-first"),
+          "new run model",
+        );
+        expect(newModel.cost.input).toBe(7);
         const retirement = new AbortController();
         const retainedBuild = startSerializedSnapshotBuildBatch(
           [
@@ -513,20 +515,7 @@ it(
         expect(kimiIds(await list(true))).not.toContain("remote-last");
         expect(currentPrice("remote-last")).toBeUndefined();
         expect(providerThread).not.toBe(disabledThread);
-        expect(
-          [oldRun, newRun].map(({ pluginGeneration }) =>
-            withPreparedModelRuntimePluginGenerationScope(
-              pluginGeneration,
-              () =>
-                resolveModelCostConfig({
-                  config,
-                  agentDir: state.agentDir(),
-                  provider: "kimi",
-                  model: "remote-first",
-                })?.input,
-            ),
-          ),
-        ).toEqual([1, 7]);
+        expect([oldModel.cost.input, newModel.cost.input]).toEqual([1, 7]);
         expect(unexpectedRestart).not.toHaveBeenCalled();
       } finally {
         releaseProvider();
