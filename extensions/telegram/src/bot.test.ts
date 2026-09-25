@@ -424,14 +424,14 @@ async function writeDirectTelegramTranscriptContext(params: {
   timestamp: number;
 }) {
   const role = params.role ?? "user";
-  const route = resolveTelegramConversationRoute({
+  const { route } = await resolveTelegramConversationRoute({
     cfg: params.cfg,
     accountId: "default",
     chatId: params.chatId,
     isGroup: false,
     threadSpec: { scope: "none" },
     senderId: params.senderId,
-  }).route;
+  });
   const sessionKey = resolveTelegramConversationBaseSessionKey({
     cfg: params.cfg,
     route,

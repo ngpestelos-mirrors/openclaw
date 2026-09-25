@@ -4,11 +4,20 @@ import path from "node:path";
 import type { BotCommand } from "grammy/types";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
+  getSessionBindingService,
   registerSessionBindingAdapter,
   unregisterSessionBindingAdapter,
   type SessionBindingAdapter,
 } from "openclaw/plugin-sdk/conversation-runtime";
-import { addChannelAllowFromStoreEntry } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type {
+  OpenAsyncKeyedStoreOptions,
+  OpenKeyedStoreOptions,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
+import {
+  addChannelAllowFromStoreEntry,
+  createPluginStateKeyedStoreForTests,
+} from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { listSkillCommandsForAgents } from "openclaw/plugin-sdk/skill-commands-runtime";
 import { writeSkill } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
@@ -26,6 +35,13 @@ import {
 } from "./bot.create-telegram-bot.native-pipeline.test-support.js";
 import { beginTelegramPollRegistration } from "./poll-answer-context.js";
 import { recordTelegramPollRegistryEntry } from "./poll-registry.js";
+import { getTelegramRuntime, setTelegramRuntime } from "./runtime.js";
+import {
+  resolveStoredBindingKey,
+  TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
+  TELEGRAM_THREAD_BINDINGS_NAMESPACE,
+  type TelegramThreadBindingRecord,
+} from "./thread-bindings-store.js";
 
 const groupChat = { id: -42001, type: "supergroup", title: "Project", is_forum: true } as const;
 
@@ -95,7 +111,7 @@ describe("registered native command routing through the message pipeline", () =>
     { name: "forum topic", threadId: 42, conversationId: "-42001:topic:42" },
     { name: "top-level group", threadId: undefined, conversationId: "-42002" },
   ])(
-    "routes native commands through a bound $name session",
+    "routes native commands through a bound $name session with a synchronous external adapter",
     async ({ threadId, conversationId }) => {
       const bot = await createBot(true, true, {
         commands: { native: true },
@@ -161,6 +177,129 @@ describe("registered native command routing through the message pipeline", () =>
         });
       } finally {
         unregisterSessionBindingAdapter({ channel: "telegram", accountId: "default", adapter });
+      }
+    },
+  );
+
+  it.for(["ordinary message", "native command"] as const)(
+    "awaits durable worker activity before dispatching a bound %s",
+    async (kind, { signal }) => {
+      const runtime = getTelegramRuntime();
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      let holdNextWrite = false;
+      const syncBindingOpen = vi.fn();
+      setTelegramRuntime({
+        ...runtime,
+        state: {
+          ...runtime.state,
+          openKeyedStore: <T>(options: OpenAsyncKeyedStoreOptions) => {
+            const store = runtime.state.openKeyedStore<T>(options);
+            if (options.namespace !== TELEGRAM_THREAD_BINDINGS_NAMESPACE) {
+              return store;
+            }
+            return {
+              ...store,
+              register: async (...args: Parameters<typeof store.register>) => {
+                if (holdNextWrite) {
+                  holdNextWrite = false;
+                  entered.resolve();
+                  await release.promise;
+                }
+                await store.register(...args);
+              },
+            };
+          },
+          openSyncKeyedStore: <T>(options: OpenKeyedStoreOptions) => {
+            if (options.namespace === TELEGRAM_THREAD_BINDINGS_NAMESPACE) {
+              syncBindingOpen();
+              throw new Error("Bundled routing must not open synchronous binding storage");
+            }
+            return runtime.state.openSyncKeyedStore<T>(options);
+          },
+        },
+      });
+      const onAbort = () => release.resolve();
+      signal.addEventListener("abort", onAbort, { once: true });
+      let receiving: Promise<void> | undefined;
+      const clock = vi.spyOn(Date, "now");
+      try {
+        const bot = await createBot(true, true, {
+          commands: { native: true },
+          channels: {
+            telegram: {
+              threadBindings: { enabled: true },
+              groupPolicy: "open",
+              groupAllowFrom: [String(from.id)],
+              groups: { "*": { requireMention: false } },
+              streaming: { mode: "off" },
+            },
+          },
+        });
+        const conversation = {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "-42001:topic:42",
+        };
+        const sessionKey = "agent:main:subagent:worker-touch";
+        await getSessionBindingService().bind({
+          conversation,
+          targetKind: "subagent",
+          targetSessionKey: sessionKey,
+        });
+        const store = createPluginStateKeyedStoreForTests<TelegramThreadBindingRecord>("telegram", {
+          namespace: TELEGRAM_THREAD_BINDINGS_NAMESPACE,
+          maxEntries: TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
+        });
+        const key = resolveStoredBindingKey(conversation);
+        const initial = await store.lookup(key);
+        if (!initial) {
+          throw new Error("Expected the real manager to persist the topic binding");
+        }
+        const activityAt = initial.lastActivityAt + 1_000;
+        clock.mockReturnValue(activityAt);
+        const durableAtAdmission: Array<TelegramThreadBindingRecord | undefined> = [];
+        harness.replySpy.mockImplementation(async () => {
+          durableAtAdmission.push(await store.lookup(key));
+          return { text: "Bound response" };
+        });
+        holdNextWrite = true;
+        receiving = bot.handleUpdate({
+          update_id: 17001,
+          message: {
+            ...commandMessage(kind === "native command" ? "/status" : "Continue this topic"),
+            ...(kind === "ordinary message" ? { entities: [] } : {}),
+            chat: groupChat,
+            message_thread_id: 42,
+            is_topic_message: true,
+          },
+        });
+        expect(
+          await Promise.race([
+            entered.promise.then(() => "worker write"),
+            receiving.then(() => "update completed"),
+          ]),
+        ).toBe("worker write");
+        expect(syncBindingOpen).not.toHaveBeenCalled();
+        expect(harness.replySpy).not.toHaveBeenCalled();
+        expect((await store.lookup(key))?.lastActivityAt).toBe(initial.lastActivityAt);
+        release.resolve();
+        await receiving;
+        expect(syncBindingOpen).not.toHaveBeenCalled();
+        expect(harness.replySpy).toHaveBeenCalledOnce();
+        expect(harness.replySpy.mock.calls[0]?.[0]).toMatchObject({ SessionKey: sessionKey });
+        expect(durableAtAdmission).toEqual([
+          expect.objectContaining({ targetSessionKey: sessionKey, lastActivityAt: activityAt }),
+        ]);
+      } finally {
+        release.resolve();
+        try {
+          await receiving;
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+          clock.mockRestore();
+          setTelegramRuntime(runtime);
+        }
       }
     },
   );
