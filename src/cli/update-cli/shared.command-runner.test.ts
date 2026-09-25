@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateStepProgress } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
+import { runCliWithExitFinalization } from "../one-shot-exit.js";
 import {
   ensureGitCheckout,
   parseTimeoutMsOrExit,
@@ -43,24 +44,30 @@ describe("update CLI shared helpers", () => {
     runCommandWithTimeout.mockResolvedValue(successfulCommandResult);
   });
 
-  it("requires timeout values to be complete positive integer seconds", () => {
+  it("requires timeout values to be complete positive integer seconds", async () => {
     const error = vi.spyOn(defaultRuntime, "error").mockImplementation(() => undefined);
     const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation(() => undefined as never);
 
     try {
-      expect(parseTimeoutMsOrExit("")).toBeNull();
-      expect(parseTimeoutMsOrExit("1.5")).toBeNull();
-      expect(parseTimeoutMsOrExit("10abc")).toBeNull();
-      expect(parseTimeoutMsOrExit("0x10")).toBeNull();
-      expect(parseTimeoutMsOrExit("0")).toBeNull();
-      expect(parseTimeoutMsOrExit("-1")).toBeNull();
-      expect(parseTimeoutMsOrExit("   ")).toBeNull();
-      expect(parseTimeoutMsOrExit(String(Number.MAX_SAFE_INTEGER))).toBeNull();
+      await runCliWithExitFinalization({
+        run: async () => {
+          expect(parseTimeoutMsOrExit("")).toBeNull();
+          expect(parseTimeoutMsOrExit("1.5")).toBeNull();
+          expect(parseTimeoutMsOrExit("10abc")).toBeNull();
+          expect(parseTimeoutMsOrExit("0x10")).toBeNull();
+          expect(parseTimeoutMsOrExit("0")).toBeNull();
+          expect(parseTimeoutMsOrExit("-1")).toBeNull();
+          expect(parseTimeoutMsOrExit("   ")).toBeNull();
+          expect(parseTimeoutMsOrExit(String(Number.MAX_SAFE_INTEGER))).toBeNull();
 
-      expect(error).toHaveBeenCalledTimes(8);
-      expect(error).toHaveBeenCalledWith("--timeout must be a positive integer (seconds)");
-      expect(exit).toHaveBeenCalledTimes(8);
-      expect(exit).toHaveBeenCalledWith(1);
+          expect(error).toHaveBeenCalledTimes(8);
+          expect(error).toHaveBeenCalledWith("--timeout must be a positive integer (seconds)");
+          expect(exit).not.toHaveBeenCalled();
+        },
+        onError(failure) {
+          throw failure;
+        },
+      });
     } finally {
       error.mockRestore();
       exit.mockRestore();

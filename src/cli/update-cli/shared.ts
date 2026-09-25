@@ -45,6 +45,7 @@ import { UPDATE_INSTALL_SKIP_GUIDANCE } from "../../shared/update-outcome.js";
 import { pathExists } from "../../utils.js";
 import { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } from "../completion-runtime.js";
 import { isJsonOutputModeActive } from "../json-output-mode.js";
+import { requestExitAfterOneShotOutput } from "../one-shot-exit.js";
 import { resolveNodeRunner } from "./node-runner.js";
 
 export { resolveNodeRunner } from "./node-runner.js";
@@ -168,7 +169,7 @@ export function parseTimeoutMsOrExit(timeout?: string): number | undefined | nul
       throw error;
     }
     defaultRuntime.error(INVALID_TIMEOUT_ERROR);
-    defaultRuntime.exit(1);
+    requestExitAfterOneShotOutput(defaultRuntime, 1);
     return null;
   }
 }
@@ -655,7 +656,7 @@ export async function confirmUpdateDowngrade(params: {
     defaultRuntime.error(
       "Downgrade confirmation required.\nDowngrading can break configuration. Re-run in a TTY to confirm.",
     );
-    defaultRuntime.exit(1);
+    requestExitAfterOneShotOutput(defaultRuntime, 1);
     return false;
   }
   if (decision === "cancelled") {
@@ -663,7 +664,7 @@ export async function confirmUpdateDowngrade(params: {
     if (!opts.json) {
       defaultRuntime.log(theme.muted("Update cancelled."));
     }
-    defaultRuntime.exit(0);
+    requestExitAfterOneShotOutput(defaultRuntime, 0);
     return false;
   }
   return true;

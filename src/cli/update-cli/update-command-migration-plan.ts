@@ -3,6 +3,7 @@ import { planLegacyStateMigrationsReadOnly } from "../../infra/state-migrations.
 import { refuseLegacyStateMigrationPlan } from "../../infra/state-migrations.plan.js";
 import type { LegacyStateMigrationPlan } from "../../infra/state-migrations.types.js";
 import { defaultRuntime } from "../../runtime.js";
+import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { resolveUpdateRoot } from "./shared.js";
 
 type UpdateMigrationPlanCommandOptions = {
@@ -59,6 +60,6 @@ export async function updateMigrationPlanCommand(
   });
   defaultRuntime.writeJson(plan);
   if (plan.outcome === "refused") {
-    defaultRuntime.exit(1);
+    exitCliAfterOutput(defaultRuntime, 1);
   }
 }

@@ -5,10 +5,9 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import {
-  captureRuntimeWorkerSource,
-  withRuntimeWorkerGeneration,
-} from "./runtime-worker-generation.js";
+import { flushLogger, setLoggerOverride } from "../logging/logger.js";
+import { loggingState } from "../logging/state.js";
+import { captureRuntimeWorkerSource } from "./runtime-worker-generation.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { openSqliteWorkerStore, type SqliteWorkerStore } from "./sqlite-worker-store.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
@@ -71,29 +70,42 @@ it.each([false, true])(
   },
 );
 
-it("retains the runtime and its original error when a borrowed worker cannot settle", async () => {
+it("reports the retained runtime and reason when a borrowed worker cannot settle", async () => {
+  const base = tempDirs.make("openclaw-retained-runtime-unsettled-");
+  const root = await fixture(base, "npm");
+  const moduleUrl = pathToFileURL(path.join(root, "dist/updater.mjs"));
   const failure = new Error("native close unconfirmed");
-  const release = vi.fn(async () => {});
-  const retained = pathToFileURL(path.resolve("retained-runtime/backend.mjs"));
-  const operation = withRuntimeWorkerGeneration(
-    async (bind) => {
-      bind(() => retained);
-      const generation = captureRuntimeWorkerSource(
-        pathToFileURL(path.resolve("original/backend.mjs")),
-      ).runtimeGeneration;
-      assert.ok(generation);
-      generation.retain({}, async () => {
+  const log = path.join(base, "cleanup.log");
+  await writeFile(log, "");
+  const previousLoggerOverride = loggingState.overrideSettings;
+  let retained: string | undefined;
+  try {
+    setLoggerOverride({ level: "warn", consoleLevel: "silent", file: log });
+    const operation = withRetainedUpdateRuntime(moduleUrl.href, async (retain) => {
+      await retain({ mutationRoots: [root], timeoutMs: 30_000, assertCurrent() {} });
+      const directory = (await fs.readdir(base)).find((entry) =>
+        entry.startsWith("openclaw-update-runtime-"),
+      );
+      assert.ok(directory);
+      retained = path.join(base, directory);
+      const { runtimeGeneration } = captureRuntimeWorkerSource(moduleUrl);
+      assert.ok(runtimeGeneration);
+      runtimeGeneration.retain({}, async () => {
         throw failure;
       });
-    },
-    release,
-    () => path.dirname(fileURLToPath(retained)),
-  );
-  await expect(operation).rejects.toMatchObject({
-    message: expect.stringContaining(path.dirname(fileURLToPath(retained))),
-    errors: [failure],
-  });
-  expect(release).not.toHaveBeenCalled();
+    });
+    await expect(operation).rejects.toMatchObject({ errors: [failure] });
+    assert.ok(retained);
+    expect((await stat(retained)).isDirectory()).toBe(true);
+    await flushLogger();
+    expect(await readFile(log, "utf8")).toContain(
+      JSON.stringify(
+        `Runtime retained at ${retained}: retained updater workers did not settle; keep it until the workers stop`,
+      ),
+    );
+  } finally {
+    setLoggerOverride(previousLoggerOverride as Parameters<typeof setLoggerOverride>[0]);
+  }
 });
 
 const backend = `
