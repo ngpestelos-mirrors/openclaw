@@ -624,8 +624,14 @@ describe("session sources needed by deferred plugin migrations", () => {
             [...originals.keys()].map((file) => [file, readMigrationArtifactIdentity(file)]),
           );
           await autoMigrateLegacyState({
-            cfg,
-            env: state.env,
+            cfg:
+              layout === "legacy-root-custom-store"
+                ? { ...cfg, session: { store: "~/custom/sessions.json" } }
+                : cfg,
+            env:
+              layout === "legacy-root-custom-store"
+                ? { ...state.env, OPENCLAW_HOME: state.root, HOME: state.root }
+                : state.env,
             homedir: () => state.home,
             doctorOnlyStateMigrations: true,
             legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,

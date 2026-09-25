@@ -154,6 +154,7 @@ export async function migrateLegacySessions(
   now: () => number,
   options: {
     cfg: OpenClawConfig;
+    env: NodeJS.ProcessEnv;
     recoverCorruptTargetStore?: boolean;
     legacySessionSurfaces: PreparedLegacySessionSurfaces;
   },
@@ -170,7 +171,7 @@ export async function migrateLegacySessions(
       warnings: [...options.legacySessionSurfaces.failures],
     };
   }
-  const env = { ...process.env, OPENCLAW_STATE_DIR: detected.stateDir };
+  const env = { ...options.env, OPENCLAW_STATE_DIR: detected.stateDir };
   const pending = readDeferredPluginMigrations({ env });
   // The shared legacy index imports into configured stores, not a database beside the index.
   const legacyTargets = resolveSessionStoreTargets(options.cfg, { allAgents: true }, { env }).map(

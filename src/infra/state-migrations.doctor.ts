@@ -1653,6 +1653,7 @@ function buildLegacyStateMigrationSteps(
       finalStep("sessions", () =>
         migrateLegacySessions(detected, now, {
           cfg: params.sessionConfig ?? params.config,
+          env,
           recoverCorruptTargetStore: params.recoverCorruptTargetStore,
           legacySessionSurfaces: params.legacySessionSurfaces,
         }),
