@@ -237,6 +237,9 @@ describe("channel ingress drain ownership", () => {
       try {
         await drain.drainOnce();
         const [original] = await queue.listClaims();
+        if (!original) {
+          throw new Error("Expected the original ingress claim");
+        }
         expect(await queue.release(original)).toBe(true);
         const successor = await queue.claim("evt-reclaim", { ownerId: "replacement" });
         expect(successor).not.toBeNull();

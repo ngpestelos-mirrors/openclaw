@@ -15,6 +15,7 @@ function runtime() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   closeOpenClawStateDatabaseForTest();
   vi.restoreAllMocks();
 });
@@ -232,23 +233,38 @@ describe("Zalouser durable ingress", () => {
   });
 
   it("releases deferred bookkeeping for retry when the adoption watchdog aborts a claim", async () => {
+    vi.useFakeTimers();
     await withZalouserIngressTestQueue(async (queue) => {
-      let deferredLifecycle: ZalouserIngressLifecycle | undefined;
-      const dispatch = vi.fn(async (_message, lifecycle: ZalouserIngressLifecycle) => {
-        deferredLifecycle = lifecycle;
-        lifecycle.onDeferred();
-      });
+      const deferred = Promise.withResolvers<ZalouserIngressLifecycle>();
+      const released = Promise.withResolvers<void>();
+      const release = queue.release.bind(queue);
+      queue.release = async (...args) => {
+        const result = await release(...args);
+        released.resolve();
+        return result;
+      };
       const ingress = createZalouserIngressMonitor({
         accountId: "default",
         ownUserId: "owner-1",
         runtime: runtime(),
         queue,
-        dispatch,
+        dispatch: async (_message, lifecycle) => {
+          lifecycle.onDeferred();
+          deferred.resolve(lifecycle);
+        },
         pollIntervalMs: 60_000,
         adoptionStallTimeoutMs: 10,
       });
-      await ingress.receive(createRawZalouserMessage({ msgId: "deferred-timeout" }));
-      await vi.waitFor(async () => {
+      try {
+        await ingress.receive(createRawZalouserMessage({ msgId: "deferred-timeout" }));
+        const lifecycle = await deferred.promise;
+        await vi.advanceTimersByTimeAsync(9);
+        expect(lifecycle.abortSignal.aborted).toBe(false);
+        expect(await queue.listClaims()).toHaveLength(1);
+
+        await vi.advanceTimersByTimeAsync(1);
+        await released.promise;
+        expect(lifecycle.abortSignal.aborted).toBe(true);
         expect(await queue.listClaims()).toEqual([]);
         expect(await queue.listFailed?.({ limit: "all" })).toEqual([]);
         expect(await queue.listPending({ limit: "all" })).toMatchObject([
@@ -258,10 +274,9 @@ describe("Zalouser durable ingress", () => {
             lastError: expect.stringContaining("handler-timeout"),
           },
         ]);
-      });
-      expect(deferredLifecycle?.abortSignal.aborted).toBe(true);
-
-      await ingress.stop();
+      } finally {
+        await ingress.stop();
+      }
     });
   });
 
