@@ -310,8 +310,13 @@ export async function runGmailService(opts: GmailRunOptions) {
     }
     controller.abort();
     scheduler.beginClose();
-    shutdownTask = stopGmailWatcher()
-      .finally(() => scheduler.stop())
+    shutdownTask = (async () => {
+      try {
+        await stopGmailWatcher();
+      } finally {
+        await scheduler.stop();
+      }
+    })()
       .catch((err: unknown) => {
         defaultRuntime.error(`gmail watcher shutdown failed: ${String(err)}`);
       })

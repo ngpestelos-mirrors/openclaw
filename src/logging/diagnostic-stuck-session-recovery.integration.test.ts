@@ -33,7 +33,7 @@ import {
 import { markDiagnosticModelStartedForTest } from "./diagnostic-run-activity.test-support.js";
 import { logMessageQueuedWithBacklogPolicy } from "./diagnostic-runtime.js";
 import { recoverStuckDiagnosticSession } from "./diagnostic-stuck-session-recovery.runtime.js";
-import { logSessionStateChange, startDiagnosticHeartbeat } from "./diagnostic.js";
+import { logSessionStateChange, startGatewayDiagnosticHeartbeat } from "./diagnostic.js";
 import { resetDiagnosticStateForTest } from "./diagnostic.test-support.js";
 
 async function expectPendingAfterEventLoopTurn(promise: Promise<unknown>): Promise<void> {
@@ -69,7 +69,7 @@ describe("stuck session recovery integration", () => {
     const lane = resolveEmbeddedSessionLane(sessionKey);
     const events: DiagnosticEventPayload[] = [];
     const unsubscribe = onDiagnosticEvent((event) => events.push(event));
-    startDiagnosticHeartbeat(
+    startGatewayDiagnosticHeartbeat(
       createTestGatewayScheduler("fake-timers"),
       { diagnostics: { enabled: true } },
       {
@@ -200,7 +200,7 @@ describe("stuck session recovery integration", () => {
 
     const events: DiagnosticEventPayload[] = [];
     const unsubscribe = onDiagnosticEvent((event) => events.push(event));
-    startDiagnosticHeartbeat(
+    startGatewayDiagnosticHeartbeat(
       createTestGatewayScheduler("fake-timers"),
       { diagnostics: { enabled: true } },
       {
@@ -548,7 +548,7 @@ describe("stuck session recovery integration", () => {
       });
       await activeStarted;
 
-      startDiagnosticHeartbeat(
+      startGatewayDiagnosticHeartbeat(
         createTestGatewayScheduler("fake-timers"),
         {
           diagnostics: { enabled: true },

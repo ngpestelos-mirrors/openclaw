@@ -1,18 +1,18 @@
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
-import { startDiagnosticHeartbeat } from "./diagnostic.js";
+import { startGatewayDiagnosticHeartbeat } from "./diagnostic.js";
 
 export function startDiagnosticHeartbeatForTest(
-  config?: Parameters<typeof startDiagnosticHeartbeat>[1],
-  opts?: Parameters<typeof startDiagnosticHeartbeat>[2],
+  config?: Parameters<typeof startGatewayDiagnosticHeartbeat>[1],
+  opts?: Parameters<typeof startGatewayDiagnosticHeartbeat>[2],
 ) {
-  return startDiagnosticHeartbeat(createTestGatewayScheduler("fake-timers"), config, {
+  return startGatewayDiagnosticHeartbeat(createTestGatewayScheduler("fake-timers"), config, {
     testTimings: { stuckSessionWarnMs: 30_000, stuckSessionAbortMs: 60_000 },
     ...opts,
   });
 }
 
 export function startEnabledDiagnosticHeartbeatForTest(
-  opts?: Parameters<typeof startDiagnosticHeartbeat>[2],
+  opts?: Parameters<typeof startGatewayDiagnosticHeartbeat>[2],
 ) {
   return startDiagnosticHeartbeatForTest({ diagnostics: { enabled: true } }, opts);
 }

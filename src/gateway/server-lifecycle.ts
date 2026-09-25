@@ -6,7 +6,7 @@ import { listLoadedChannelPluginsForRegistry } from "../channels/plugins/registr
 import { getRuntimeConfig } from "../config/io.js";
 import { markGatewaySuspendExiting } from "../infra/gateway-suspend-coordinator.js";
 import { upsertPresence } from "../infra/system-presence.js";
-import { stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
+import { stopGatewayDiagnosticHeartbeat } from "../logging/diagnostic.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import type { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import type { GatewayPluginMetadataOwner } from "../plugins/plugin-metadata-lifecycle.js";
@@ -462,7 +462,7 @@ export async function prepareGatewayLifecycle(params: {
     disposeNodeConnectionNotifications(nodeRegistry);
     watchNodeHttpRuntime.close();
     await shutdownRuntime.runGatewayClosePrelude({
-      stopDiagnostics: stopDiagnosticHeartbeat,
+      stopDiagnostics: stopGatewayDiagnosticHeartbeat,
       clearSkillsRefreshTimer: () => {
         if (!runtimeState?.skillsRefreshTimer) {
           return;

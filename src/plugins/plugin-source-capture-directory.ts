@@ -193,7 +193,7 @@ async function reclaimInstances(
 }
 
 /** Coalesce active scans, but throttle diagnostics independently of cleanup retries. */
-export function sweepPluginSourceCaptureDirectories(stateDir = resolveStateDir()): Promise<void> {
+function sweepPluginSourceCaptureDirectories(stateDir: string): Promise<void> {
   const root = path.resolve(instanceDirectory(stateDir));
   let sweep = sweeps.get(root);
   if (!sweep) {

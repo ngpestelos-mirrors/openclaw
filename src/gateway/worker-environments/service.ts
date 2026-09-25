@@ -315,16 +315,14 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     }
     const guard = reconcileEnvironmentGuard;
     if (!guard) {
-      await reconcileEnvironmentCore(environmentId);
-      return;
+      return await reconcileEnvironmentCore(environmentId);
     }
     if (reconcileEnvironmentGuardClosing) {
       return;
     }
     const active = guardedReconcileInFlight.get(environmentId);
     if (active) {
-      await active;
-      return;
+      return await active;
     }
     const operation = guard(environmentId, async (signal, retainProviderSettlement) => {
       await reconcileEnvironmentCore(environmentId, signal, retainProviderSettlement);

@@ -81,7 +81,7 @@ export function createAuthRateLimiter(config?: RateLimitConfig): AuthRateLimiter
   }
   const scheduler = new GatewayScheduler();
   const limiter = createGatewayAuthRateLimiter(config, { scheduler, id: "auth:standalone" });
-  const dispose = limiter.dispose;
+  const dispose = limiter.dispose.bind(limiter);
   limiter.dispose = () => {
     // Only synchronous pruning uses this standalone owner. Dispose settles the
     // request-owned penalty waits before closing it; no asynchronous jobs remain.

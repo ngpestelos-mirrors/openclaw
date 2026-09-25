@@ -5,7 +5,10 @@ import {
   setDiagnosticsEnabledForProcess,
 } from "../infra/diagnostic-events.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
+import {
+  startGatewayDiagnosticHeartbeat,
+  stopGatewayDiagnosticHeartbeat,
+} from "../logging/diagnostic.js";
 import { resolveQaDiagnosticHeartbeatTimings } from "./server-qa-diagnostic-timings.js";
 import type { createGatewayEventLoopHealthMonitor } from "./server/event-loop-health.js";
 
@@ -14,7 +17,7 @@ export function createGatewayDiagnostics(params: {
   isClosing: () => boolean;
   eventLoopHealth: ReturnType<typeof createGatewayEventLoopHealthMonitor>;
 }) {
-  stopDiagnosticHeartbeat();
+  stopGatewayDiagnosticHeartbeat();
   const configureDiagnostics = (config: OpenClawConfig) => {
     if (params.isClosing()) {
       return;
@@ -22,12 +25,12 @@ export function createGatewayDiagnostics(params: {
     const enabled = isDiagnosticsEnabled(config);
     setDiagnosticsEnabledForProcess(enabled);
     if (!enabled) {
-      stopDiagnosticHeartbeat();
+      stopGatewayDiagnosticHeartbeat();
       return;
     }
     // Gateway lifecycle owns both this heartbeat job and the monitor
     // it samples, so startup failure and normal close tear them down together.
-    startDiagnosticHeartbeat(params.scheduler, undefined, {
+    startGatewayDiagnosticHeartbeat(params.scheduler, undefined, {
       getConfig: getRuntimeConfig,
       startupGraceMs: 60_000,
       testTimings: resolveQaDiagnosticHeartbeatTimings(process.env),

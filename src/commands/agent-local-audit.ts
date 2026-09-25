@@ -37,6 +37,10 @@ export function startAgentLocalAuditWriter(
     clearRuntimeActionSink();
     clearDecisionWorkSink();
     clearAdmissionSink();
-    await recorder.stop().finally(() => scheduler.stop());
+    try {
+      await recorder.stop();
+    } finally {
+      await scheduler.stop();
+    }
   };
 }
