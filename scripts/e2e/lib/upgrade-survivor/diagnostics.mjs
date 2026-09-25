@@ -31,6 +31,12 @@ const siblingRefusalLogs = [
   "sibling-refusal-cleanup.json",
   "sibling-refusal-registrations.jsonl",
 ];
+const restoredIndexLogs = [
+  "legacy-operator-restored-index.json",
+  "restored-index-post-update.json",
+  "restored-index-candidate-import.json",
+  "restored-index-rollback.json",
+];
 const logNames = [
   "baseline-install.log",
   "baseline-companion.json",
@@ -38,6 +44,7 @@ const logNames = [
   "update.json",
   "update.err",
   ...siblingRefusalLogs,
+  ...restoredIndexLogs,
   "repair.json",
   "repair.err",
   "recovery-update.json",
@@ -1673,6 +1680,11 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
         snapshot.updateRestartMode === "manual" &&
         ["2026.9.3", "2026.9.4"].includes(snapshot.baseline.version)
           ? ["legacy-operator-cron-history-proof.json"]
+          : []),
+        ...(snapshot.scenario === "legacy-operator-state" &&
+        snapshot.updateRestartMode === "manual" &&
+        snapshot.baseline.version === "2026.9.4"
+          ? restoredIndexLogs
           : []),
       ].map((name) => [name, sanitize(readOwned(artifactRoot, name, name), name)]),
     ),

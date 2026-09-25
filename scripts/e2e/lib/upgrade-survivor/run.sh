@@ -343,13 +343,6 @@ const summary = {
   backupRollback: process.env.SUMMARY_SCENARIO === "legacy-operator-state"
     ? readJsonOrNull(process.env.SUMMARY_BACKUP_ROLLBACK)
     : undefined,
-  restoredIndex: process.env.SUMMARY_SCENARIO === "legacy-operator-state"
-    ? {
-      update: readJsonOrNull(path.join(path.dirname(process.env.SUMMARY_JSON), "restored-index-post-update.json")),
-      reimport: readJsonOrNull(path.join(path.dirname(process.env.SUMMARY_JSON), "restored-index-candidate-import.json")),
-      rollback: readJsonOrNull(path.join(path.dirname(process.env.SUMMARY_JSON), "restored-index-rollback.json")),
-    }
-    : undefined,
   timings: {
     startupSeconds: numberOrNull(process.env.SUMMARY_START_SECONDS),
     updateRestartSeconds: numberOrNull(process.env.SUMMARY_UPDATE_RESTART_SECONDS),

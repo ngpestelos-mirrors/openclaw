@@ -108,12 +108,27 @@ async function publishSuccess(summary: unknown) {
   writeFileSync(join(artifacts, "summary.json"), JSON.stringify(summary));
   const { publishDiagnostics } = await import(observer);
   return {
+    artifacts,
     published,
     publish: () => publishDiagnostics(artifacts, published, (text: string) => text, "passed"),
   };
 }
 
 describe("upgrade survivor rollback publication", () => {
+  it("retains restored-index result evidence through host publication", async () => {
+    const { artifacts, publish, published } = await publishSuccess(rollbackSuccessSummary());
+    writeFileSync(
+      join(artifacts, "restored-index-post-update.json"),
+      JSON.stringify({ status: "passed", current: { label: "Renamed session", pinnedAt: 1234 } }),
+    );
+    publish();
+    const receipt = JSON.parse(readFileSync(join(published, "summary.json"), "utf8"));
+    expect(JSON.parse(receipt.logs["restored-index-post-update.json"])).toEqual({
+      status: "passed",
+      current: { label: "Renamed session", pinnedAt: 1234 },
+    });
+  });
+
   it("publishes the validated rollback schema, session counts and hashes without private state", async () => {
     const { publish, published } = await publishSuccess(rollbackSuccessSummary());
     publish();
