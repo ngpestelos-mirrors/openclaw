@@ -31,7 +31,7 @@ import {
   runCliTurnCompactionLifecycle,
   setCliCompactionTestDeps,
 } from "./cli-compaction.js";
-import { buildContextEngine } from "./cli-compaction.test-support.js";
+import { buildContextEngine, createPreparedRuntimeLease } from "./cli-compaction.test-support.js";
 import { recordCliCompactionInStore as recordCliCompactionInStoreImpl } from "./session-store.js";
 
 async function writeSessionFile(params: { sessionFile: string; sessionId: string }) {
@@ -85,34 +85,6 @@ const defaultPreemptiveCompaction = () => ({
   toolResultReducibleChars: 0,
   effectiveReserveTokens: 200,
 });
-
-function createPreparedRuntimeLease(input: {
-  config: OpenClawConfig;
-  agentDir: string;
-  agentId?: string;
-  workspaceDir?: string;
-}) {
-  const prepared = createModelGenerationFixture({
-    config: input.config,
-    label: "cli",
-    agentDir: input.agentDir,
-    workspaceDir: expectDefined(input.workspaceDir, "compaction fixture workspace"),
-  });
-  return {
-    snapshot: {
-      ...prepared.preparedModelRuntime,
-      ...(input.agentId ? { agentId: input.agentId } : {}),
-    },
-    pluginGeneration: {
-      remoteCatalog: null,
-      configuredCatalogEntries: [],
-      inlineProviderModels: [],
-      pluginMetadataSnapshot: prepared.metadataSnapshot,
-      pluginRegistry: prepared.pluginRegistry,
-    },
-    [Symbol.asyncDispose]: vi.fn(async () => {}),
-  };
-}
 
 async function prepareCompactionScenario(params: {
   tmpDir: string;
