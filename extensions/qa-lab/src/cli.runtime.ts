@@ -98,7 +98,6 @@ import {
   type QaScorecardChannelDriver,
   type QaScorecardEvidenceMode,
 } from "./scorecard-taxonomy.js";
-import { isQaSelfCheckSuccessful } from "./self-check.js";
 import {
   runQaFlowSuiteFromRuntime,
   runQaSuite,
@@ -133,10 +132,10 @@ type InterruptibleServer = {
   baseUrl: string;
   stop(): Promise<void>;
 };
-export type QaLabSelfCheckCommandOptions = {
-  repoRoot?: string;
-  output?: string;
-};
+export {
+  runQaLabSelfCheckCommand,
+  type QaLabSelfCheckCommandOptions,
+} from "./self-check-runner.js";
 type QaScenarioProviderCommandOptions = {
   transportId?: string;
   providerMode?: QaProviderModeInput;
@@ -656,23 +655,6 @@ function printQaCredentialDoctorTable(
     process.stdout.write(
       `${check.name.padEnd(nameWidth)}  ${check.status.padEnd(4)}  ${check.details ?? ""}\n`,
     );
-  }
-}
-
-export async function runQaLabSelfCheckCommand(opts: QaLabSelfCheckCommandOptions) {
-  const repoRoot = path.resolve(opts.repoRoot ?? process.cwd());
-  const server = await startQaLabServer({
-    repoRoot,
-    outputPath: opts.output ? path.resolve(repoRoot, opts.output) : undefined,
-  });
-  try {
-    const result = await server.runSelfCheck();
-    process.stdout.write(`QA self-check report: ${result.outputPath}\n`);
-    if (!isQaSelfCheckSuccessful(result)) {
-      throw new Error(`QA self-check failed. See ${result.outputPath}.`);
-    }
-  } finally {
-    await server.stop();
   }
 }
 
