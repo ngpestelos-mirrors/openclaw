@@ -1,10 +1,14 @@
 import { EventEmitter } from "node:events";
 import type { FSWatcher } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as desktopAppPaths from "./desktop-app-paths.js";
 import {
   createCodexDesktopGenerationService,
+  isCodexDesktopGenerationCurrent,
   waitForCodexDesktopGeneration,
 } from "./desktop-generation.js";
+import * as managedDesktopInstallation from "./managed-desktop-installation.js";
 
 class FakeWatcher extends EventEmitter {
   close = vi.fn();
@@ -19,7 +23,10 @@ type WatchRegistration = {
   watcher: FakeWatcher;
 };
 
-function createHarness(initialFingerprint: string) {
+function createHarness(
+  initialFingerprint: string,
+  resolveWatchPaths = () => ["/Applications", "/Applications/ChatGPT.app"],
+) {
   let fingerprint = initialFingerprint;
   const registrations: WatchRegistration[] = [];
   const readFingerprint = vi.fn(async () => fingerprint);
@@ -32,7 +39,7 @@ function createHarness(initialFingerprint: string) {
     {
       platform: "darwin",
       readFingerprint,
-      resolveWatchPaths: () => ["/Applications", "/Applications/ChatGPT.app"],
+      resolveWatchPaths,
       pathExists: () => true,
       watchPath: (watchedPath, options, listener) => {
         const watcher = new FakeWatcher();
@@ -74,6 +81,7 @@ describe("Codex desktop generation service", () => {
   afterEach(async () => {
     await service?.stop?.({} as never);
     service = undefined;
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -150,6 +158,112 @@ describe("Codex desktop generation service", () => {
     expect(harness.registrations).toHaveLength(4);
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => expect(harness.clearFailure).toHaveBeenCalledTimes(2));
+  });
+
+  function managedWatchFixture() {
+    const managedRoot = "/Users/test/Library/Application Support/OpenClaw/Codex";
+    const appBundlePath = path.join(managedRoot, "versions/selected/ChatGPT.app");
+    vi.spyOn(managedDesktopInstallation, "resolveCodexManagedDesktopRoot").mockReturnValue(
+      managedRoot,
+    );
+    vi.spyOn(desktopAppPaths, "resolveMacOSDesktopCodexAppPathCandidates").mockReturnValue([
+      {
+        appName: "ChatGPT.app",
+        appBundlePath,
+        appServerCommandPath: path.join(appBundlePath, "Contents/Resources/codex"),
+        bundledMarketplacePath: path.join(
+          appBundlePath,
+          "Contents/Resources/plugins/openai-bundled",
+        ),
+        computerUseServiceAppPaths: [],
+      },
+    ]);
+    return { managedRoot, appBundlePath };
+  }
+
+  it("keeps the selected generation current while a managed update is staged", async () => {
+    vi.useFakeTimers();
+    const { managedRoot, appBundlePath } = managedWatchFixture();
+    const harness = createHarness("managed-selected", () => [managedRoot, appBundlePath]);
+    service = harness.service;
+    await startAndSettle(harness);
+    const generation = await waitForCodexDesktopGeneration();
+    const root = harness.registrations.find((entry) => entry.watchedPath === managedRoot);
+
+    for (const filename of [
+      ".download-update/archive.zip",
+      "versions/staged/ChatGPT.app/Contents/Resources/codex",
+      "versions/selected-other/ChatGPT.app/Contents/Resources/codex",
+      ".selected.json.tmp",
+      "selected.json.lock",
+    ]) {
+      root?.listener("change", filename);
+      expect(isCodexDesktopGenerationCurrent(generation), filename).toBe(true);
+    }
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(harness.registrations).toHaveLength(2);
+    expect(harness.readFingerprint).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["receipt", "selected bundle through root", "selected bundle watch"])(
+    "invalidates the selected generation for %s changes",
+    async (changedArtifact) => {
+      vi.useFakeTimers();
+      const { managedRoot, appBundlePath } = managedWatchFixture();
+      const harness = createHarness("managed-before", () => [managedRoot, appBundlePath]);
+      service = harness.service;
+      await startAndSettle(harness);
+      const generation = await waitForCodexDesktopGeneration();
+      harness.onGenerationChange.mockClear();
+      const watchedPath = changedArtifact === "selected bundle watch" ? appBundlePath : managedRoot;
+      const registration = harness.registrations.find((entry) => entry.watchedPath === watchedPath);
+      const filename =
+        changedArtifact === "receipt"
+          ? "selected.json"
+          : path.relative(watchedPath, path.join(appBundlePath, "Contents/Resources/codex"));
+
+      harness.setFingerprint("managed-after");
+      registration?.listener("rename", Buffer.from(filename));
+
+      expect(isCodexDesktopGenerationCurrent(generation)).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_100);
+      expect(harness.registrations).toHaveLength(4);
+      expect(harness.onGenerationChange).toHaveBeenCalledOnce();
+      expect(harness.onGenerationChange).toHaveBeenCalledWith({
+        epoch: expect.any(Number),
+        fingerprint: "managed-after",
+      });
+    },
+  );
+
+  it("rearms a missing managed root from its ancestor without reacting to staging", async () => {
+    vi.useFakeTimers();
+    const { managedRoot } = managedWatchFixture();
+    vi.mocked(desktopAppPaths.resolveMacOSDesktopCodexAppPathCandidates).mockReturnValue([]);
+    const ancestor = path.dirname(path.dirname(managedRoot));
+    let watchPaths = [ancestor];
+    const harness = createHarness("before-install", () => watchPaths);
+    service = harness.service;
+    await startAndSettle(harness);
+    const generation = await waitForCodexDesktopGeneration();
+    const registration = harness.registrations[0];
+
+    registration?.listener("rename", "OtherApp/settings.json");
+    registration?.listener("change", "OpenClaw/Codex/.download-update/archive.zip");
+    expect(isCodexDesktopGenerationCurrent(generation)).toBe(true);
+
+    watchPaths = [managedRoot];
+    registration?.listener("rename", "OpenClaw");
+    expect(isCodexDesktopGenerationCurrent(generation)).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(harness.registrations.at(-1)?.watchedPath).toBe(managedRoot);
+    const root = harness.registrations.at(-1);
+    harness.setFingerprint("installed-selection");
+    root?.listener("rename", "selected.json");
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(await waitForCodexDesktopGeneration()).toMatchObject({
+      fingerprint: "installed-selection",
+    });
   });
 
   it("settles the current generation while persistent watcher registration retries", async () => {

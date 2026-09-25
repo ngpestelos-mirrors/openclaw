@@ -15,6 +15,10 @@ import {
   createCodexDesktopGenerationOwner,
   type CodexDesktopGeneration,
 } from "./desktop-generation-owner.js";
+import {
+  resolveCodexManagedDesktopReceiptPath,
+  resolveCodexManagedDesktopRoot,
+} from "./managed-desktop-installation.js";
 
 const APPLICATIONS_PATH = "/Applications";
 const REARM_INITIAL_DELAY_MS = 100;
@@ -126,9 +130,13 @@ function armWatchers(current: DesktopGenerationState): boolean {
   current.armEpoch = armEpoch;
   const watchers = new Set<FSWatcher>();
   current.watchers = watchers;
-  const candidateNames = new Set<string>(
-    resolveMacOSDesktopCodexAppPathCandidates("darwin").map((candidate) => candidate.appName),
-  );
+  const candidates = resolveMacOSDesktopCodexAppPathCandidates("darwin");
+  const candidateNames = new Set<string>(candidates.map((candidate) => candidate.appName));
+  const managedRoot = resolveCodexManagedDesktopRoot();
+  const receiptPath = resolveCodexManagedDesktopReceiptPath(managedRoot);
+  const managedBundlePaths = candidates
+    .map((candidate) => candidate.appBundlePath)
+    .filter((bundlePath) => isPathWithin(managedRoot, bundlePath));
   let complete = true;
   for (const watchedPath of current.resolveWatchPaths?.() ?? []) {
     if (!current.pathExists?.(watchedPath)) {
@@ -150,6 +158,22 @@ function armWatchers(current: DesktopGenerationState): boolean {
             !candidateNames.has(filename.toString().split(path.sep)[0] ?? "")
           ) {
             return;
+          }
+          if (
+            filename &&
+            watchedPath !== APPLICATIONS_PATH &&
+            isPathWithin(watchedPath, managedRoot)
+          ) {
+            const changedPath = path.resolve(watchedPath, filename.toString());
+            // Downloads and unselected versions are not a generation change. Only
+            // publication, the selected bundle, or root creation/replacement matters.
+            if (
+              changedPath !== receiptPath &&
+              !isPathWithin(changedPath, managedRoot) &&
+              !managedBundlePaths.some((bundlePath) => isPathWithin(bundlePath, changedPath))
+            ) {
+              return;
+            }
           }
           owner.markDirty();
           scheduleRearm(current, owner);
@@ -180,6 +204,14 @@ function armWatchers(current: DesktopGenerationState): boolean {
     current.rearmDelayMs = REARM_INITIAL_DELAY_MS;
   }
   return complete;
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+  );
 }
 
 function reportWatcherFailure(

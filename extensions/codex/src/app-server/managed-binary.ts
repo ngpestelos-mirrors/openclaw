@@ -9,7 +9,10 @@ import path from "node:path";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
 import type { CodexAppServerStartOptions, CodexManagedCommandOrder } from "./config.js";
-import { resolveMacOSDesktopCodexAppServerCommandCandidates } from "./desktop-app-paths.js";
+import {
+  resolveMacOSDesktopCodexAppPathCandidateForBundle,
+  resolveMacOSDesktopCodexAppServerCommandCandidates,
+} from "./desktop-app-paths.js";
 import { MANAGED_CODEX_APP_SERVER_PACKAGE } from "./version.js";
 
 // Registration and lazy runtime artifacts can load separate module copies.
@@ -130,12 +133,14 @@ export function isManagedCodexDesktopCommand(
   command: string,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  return (
-    platform === "darwin" &&
-    resolveMacOSDesktopCodexAppServerCommandCandidates(platform).some(
-      (candidate) => candidate === command,
-    )
+  if (resolveMacOSDesktopCodexAppServerCommandCandidates(platform).includes(command)) {
+    return true;
+  }
+  const candidate = resolveMacOSDesktopCodexAppPathCandidateForBundle(
+    path.dirname(path.dirname(path.dirname(command))),
+    { platform },
   );
+  return candidate?.appServerCommandPath === command;
 }
 
 function resolveManagedCodexPackageRootForCommand(

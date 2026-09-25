@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CODEX_COMPUTER_USE_NODE_REPL_PROBE } from "./computer-use-node-repl.js";
 import {
   runCodexComputerUseLiveTest,
   type CodexComputerUseRequest,
@@ -30,6 +31,98 @@ vi.mock("./shared-client.js", async (importOriginal) => ({
 }));
 
 describe("Codex Computer Use readiness", () => {
+  it("probes the official native Computer Use bridge through its actual MCP server", async () => {
+    const request = createComputerUseRequest({
+      installed: true,
+      marketplaceName: "openai-bundled",
+      mcpServerName: "node_repl",
+      mcpTools: ["js", "js_reset"],
+      pluginMcpServers: [],
+    });
+    const status = await ensureCodexComputerUse({
+      request,
+      pluginConfig: { computerUse: { enabled: true, strictReadiness: true } },
+    });
+    expectStatusFields(status, {
+      ready: true,
+      mcpServerName: "node_repl",
+      tools: ["js", "js_reset"],
+    });
+    expect(requestCalls(request)).toContainEqual([
+      "mcpServer/tool/call",
+      expect.objectContaining({
+        server: "node_repl",
+        tool: "js",
+        arguments: { code: CODEX_COMPUTER_USE_NODE_REPL_PROBE },
+      }),
+      expect.any(Object),
+    ]);
+    expectRequestMethodNotCalled(request, "turn/start");
+  });
+
+  it("does not substitute an unrelated node_repl server for a custom plugin", async () => {
+    const request = createComputerUseRequest({
+      installed: true,
+      mcpServerName: "node_repl",
+      mcpTools: ["js"],
+      pluginMcpServers: [],
+    });
+    await expectSetupErrorStatus(
+      ensureCodexComputerUse({
+        request,
+        pluginConfig: {
+          computerUse: { enabled: true, autoInstall: false, marketplaceName: "desktop-tools" },
+        },
+      }),
+      { reason: "mcp_missing", ready: false },
+    );
+    expectRequestMethodNotCalled(request, "mcpServer/tool/call");
+  });
+
+  it("discovers the official native bridge after a fresh installation reload", async () => {
+    const fixture = createComputerUseRequest({
+      installed: false,
+      marketplaceName: "openai-bundled",
+      mcpServerName: "node_repl",
+      mcpTools: ["js"],
+      pluginMcpServers: [],
+    });
+    let reloaded = false;
+    const request = vi.fn(async (method: string, params?: unknown) => {
+      if (method === "config/mcpServer/reload") {
+        reloaded = true;
+      }
+      if (method === "mcpServerStatus/list" && !reloaded) {
+        return { data: [], nextCursor: null };
+      }
+      return fixture(method, params);
+    });
+    const status = await ensureCodexComputerUse({
+      request,
+      pluginConfig: { computerUse: { enabled: true, strictReadiness: true, autoInstall: true } },
+    });
+    expect(reloaded).toBe(true);
+    expectStatusFields(status, { ready: true, mcpServerName: "node_repl", tools: ["js"] });
+  });
+
+  it("fails strict native readiness when the tool returns success without a valid result", async () => {
+    const request = createComputerUseRequest({
+      installed: true,
+      marketplaceName: "openai-bundled",
+      mcpServerName: "node_repl",
+      mcpTools: ["js"],
+      pluginMcpServers: [],
+      liveTestText: "[]",
+    });
+    await expectSetupErrorStatus(
+      ensureCodexComputerUse({
+        request,
+        pluginConfig: { computerUse: { enabled: true, strictReadiness: true, autoRepair: false } },
+      }),
+      { ready: false, reason: "live_test_failed" },
+    );
+  });
+
   afterEach(() => {
     vi.useRealTimers();
     sharedClientMocks.getLeasedSharedCodexAppServerClient.mockReset();

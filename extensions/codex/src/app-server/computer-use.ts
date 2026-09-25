@@ -15,6 +15,7 @@ import {
   type CodexAppServerClient,
 } from "./client.js";
 import { resolveCodexManagedBundledMarketplacePath } from "./computer-use-marketplace.js";
+import { CODEX_COMPUTER_USE_NODE_REPL_SERVER } from "./computer-use-node-repl.js";
 import {
   createComputerUseRequest,
   runCodexComputerUseLiveTest,
@@ -622,34 +623,51 @@ async function readComputerUseTools(params: {
   installPlugin: boolean;
   releaseNativeConfigFence?: () => void;
 }): Promise<CodexComputerUseStatus> {
-  let server = await readMcpServerStatus(params.request, params.config.mcpServerName);
+  let config = params.config;
+  const usesOfficialNativeBridge =
+    config.mcpServerName === "computer-use" &&
+    params.plugin.summary.id === "computer-use@openai-bundled" &&
+    params.plugin.mcpServers.length === 0;
+  const readServer = async () => {
+    const configured = await readMcpServerStatus(params.request, config.mcpServerName);
+    if (configured || !usesOfficialNativeBridge) {
+      return configured;
+    }
+    const native = await readMcpServerStatus(params.request, CODEX_COMPUTER_USE_NODE_REPL_SERVER);
+    if (!native?.tools?.js) {
+      return undefined;
+    }
+    config = { ...config, mcpServerName: CODEX_COMPUTER_USE_NODE_REPL_SERVER };
+    return native;
+  };
+  let server = await readServer();
   let tools = Object.keys(server?.tools ?? {}).toSorted();
   if ((!server || tools.length === 0) && params.installPlugin) {
     await params.request("config/mcpServer/reload", undefined);
-    server = await readMcpServerStatus(params.request, params.config.mcpServerName);
+    server = await readServer();
     tools = Object.keys(server?.tools ?? {}).toSorted();
   }
   if (!server) {
     return statusFromPlugin({
-      config: params.config,
+      config,
       plugin: params.plugin,
       tools: [],
       reason: "mcp_missing",
-      message: `Computer Use is installed, but the ${params.config.mcpServerName} MCP server is not available.`,
+      message: `Computer Use is installed, but the ${config.mcpServerName} MCP server is not available.`,
     });
   }
   if (tools.length === 0) {
     return statusFromPlugin({
-      config: params.config,
+      config,
       plugin: params.plugin,
       tools,
       reason: "mcp_missing",
-      message: `Computer Use is installed, but the ${params.config.mcpServerName} MCP server exposes no tools.`,
+      message: `Computer Use is installed, but the ${config.mcpServerName} MCP server exposes no tools.`,
     });
   }
 
   const status = statusFromPlugin({
-    config: params.config,
+    config,
     plugin: params.plugin,
     tools,
     reason: "ready",
@@ -666,10 +684,10 @@ async function readComputerUseTools(params: {
     request: params.request,
     client: params.client,
     signal: params.signal,
-    config: params.config,
+    config,
     tools,
   });
-  const compatibilityStartupAllowed = !liveTest.ok && !params.config.strictReadiness;
+  const compatibilityStartupAllowed = !liveTest.ok && !config.strictReadiness;
   return {
     ...status,
     ready: liveTest.ok,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, existsSync } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +8,11 @@ import {
   resolveMacOSDesktopCodexAppPathCandidates,
   type MacOSDesktopCodexAppPathCandidate,
 } from "./desktop-app-paths.js";
+import {
+  readCodexManagedDesktopSelection,
+  resolveCodexManagedDesktopReceiptPath,
+  resolveCodexManagedDesktopRoot,
+} from "./managed-desktop-installation.js";
 
 const MAX_COMPUTER_USE_PLUGIN_TREE_ENTRIES = 4_096;
 
@@ -16,8 +21,20 @@ export async function readMacOSDesktopGenerationFingerprint(
   candidates: readonly MacOSDesktopCodexAppPathCandidate[] = resolveMacOSDesktopCodexAppPathCandidates(
     "darwin",
   ),
+  managedRoot = resolveCodexManagedDesktopRoot(),
 ): Promise<string> {
-  const entries: string[] = [];
+  const receiptPath = resolveCodexManagedDesktopReceiptPath(managedRoot);
+  let selectionFingerprint: string;
+  try {
+    const selected = readCodexManagedDesktopSelection(managedRoot);
+    selectionFingerprint = selected
+      ? `${selected.receiptIdentity}:${selected.receiptContents}`
+      : "missing";
+  } catch {
+    // Invalid receipts never authorize following a symlink or reading unbounded data.
+    selectionFingerprint = "invalid";
+  }
+  const entries: string[] = [`selection:${receiptPath}:${selectionFingerprint}`];
   for (const candidate of candidates) {
     const command = await statFingerprint(candidate.appServerCommandPath);
     entries.push(`candidate:${candidate.appName}:${candidate.appServerCommandPath}:${command}`);
@@ -61,8 +78,16 @@ export function resolveMacOSDesktopGenerationWatchPaths(
   candidates: readonly MacOSDesktopCodexAppPathCandidate[] = resolveMacOSDesktopCodexAppPathCandidates(
     "darwin",
   ),
+  managedRoot = resolveCodexManagedDesktopRoot(),
 ): string[] {
   const watched = new Set<string>(["/Applications"]);
+  // Observe first installation as well as later receipt replacements. Rearming
+  // narrows this ancestor to the managed root after maintenance creates it.
+  let managedWatchRoot = managedRoot;
+  while (!existsSync(managedWatchRoot) && path.dirname(managedWatchRoot) !== managedWatchRoot) {
+    managedWatchRoot = path.dirname(managedWatchRoot);
+  }
+  watched.add(managedWatchRoot);
   for (const candidate of candidates) {
     watched.add(candidate.appBundlePath);
   }

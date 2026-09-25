@@ -150,7 +150,7 @@ describe("Codex desktop generation owner", () => {
 
   it("watches stable application roots for recursive artifact updates", () => {
     const fixture = candidate("/Applications", "ChatGPT.app");
-    expect(resolveMacOSDesktopGenerationWatchPaths([fixture])).toEqual([
+    expect(resolveMacOSDesktopGenerationWatchPaths([fixture], "/Applications")).toEqual([
       "/Applications",
       fixture.appBundlePath,
     ]);

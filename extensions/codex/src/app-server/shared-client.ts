@@ -33,12 +33,16 @@ import {
   resolveCodexAppServerAuthProfileIdForAgent,
   resolveCodexAppServerAuthProfileStore,
 } from "./auth-profile.js";
-import { resolveCodexAppServerUserHomeDir } from "./auth-start-options.js";
+import {
+  resolveCodexAppServerLocalHomeDir,
+  resolveCodexAppServerUserHomeDir,
+} from "./auth-start-options.js";
 import {
   ensureCodexAppServerClientRuntime,
   recordCodexAppServerAuthHandoff,
 } from "./client-runtime.js";
 import { CodexAppServerClient, isUnsupportedCodexAppServerVersionError } from "./client.js";
+import { resolveCodexComputerUseNodeReplStartArgs } from "./computer-use-node-repl.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import {
   codexAppServerStartOptionsKey,
@@ -964,7 +968,8 @@ async function startInitializedCodexAppServerClient(
     );
   };
   const startOptionsCandidates = resolveManagedFallbackStartOptions(params.startOptions);
-  for (const [index, startOptions] of startOptionsCandidates.entries()) {
+  for (const [index, candidateStartOptions] of startOptionsCandidates.entries()) {
+    let startOptions = candidateStartOptions;
     params.assertCurrent?.();
     const desktopGeneration =
       params.desktopGeneration ??
@@ -1010,6 +1015,28 @@ async function startInitializedCodexAppServerClient(
         assertCurrent: assertStartupCurrent,
         ownsIsolatedCodexHome,
       });
+      if (
+        (startOptions.commandSource === "managed" ||
+          startOptions.commandSource === "resolved-managed") &&
+        isManagedCodexDesktopCommand(startOptions.command) &&
+        computerUseConfig.pluginName === "computer-use" &&
+        computerUseConfig.mcpServerName === "computer-use" &&
+        !computerUseConfig.marketplaceSource &&
+        !computerUseConfig.marketplacePath &&
+        (!computerUseConfig.marketplaceName ||
+          computerUseConfig.marketplaceName === "openai-bundled")
+      ) {
+        const args = await resolveCodexComputerUseNodeReplStartArgs({
+          appServerCommand: startOptions.command,
+          codexHome: resolveCodexAppServerLocalHomeDir(startOptions, params.agentDir),
+          args: startOptions.args,
+          // OpenClaw enablement is a hint; the helper also preserves an enabled
+          // official native plugin. Custom integrations are excluded above.
+          enabled: computerUseConfig.enabled,
+        });
+        startOptions = args === startOptions.args ? startOptions : { ...startOptions, args };
+        assertStartupCurrent();
+      }
     } catch (error) {
       if (isCodexComputerUseCandidateArtifactsUnavailableError(error)) {
         if (index + 1 < startOptionsCandidates.length) {
