@@ -10,6 +10,7 @@ import {
   CODEX_COMPUTER_USE_NODE_REPL_PROBE,
   CODEX_COMPUTER_USE_NODE_REPL_SERVER,
   hasCodexComputerUseNodeReplOwnership,
+  isCodexComputerUseNodeReplClient,
 } from "./computer-use-node-repl.js";
 import type { ResolvedCodexComputerUseConfig } from "./config.js";
 import type { ToolCallResult as CodexMcpToolCallResult } from "./protocol-mcp.js";
@@ -102,7 +103,10 @@ export async function runCodexComputerUseLiveTest(params: {
   const startedAt = Date.now();
   let lastError: unknown;
   let repair: CodexComputerUseRepairStatus | undefined;
-  const probe = resolveComputerUseLiveTestProbe(params.tools, params.config.mcpServerName);
+  const usesOfficialNativeBridge =
+    params.config.mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER &&
+    isCodexComputerUseNodeReplClient(params.client);
+  const probe = resolveComputerUseLiveTestProbe(params.tools, usesOfficialNativeBridge);
   for (let attempt = 0; attempt <= COMPUTER_USE_LIVE_TEST_RETRY_COUNT; attempt += 1) {
     let threadId: string | undefined;
     let outcome:
@@ -110,10 +114,7 @@ export async function runCodexComputerUseLiveTest(params: {
       | { ok: false; error: unknown };
     try {
       const assertNativeBridgeOwned = async () => {
-        if (
-          params.config.mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER &&
-          !(await hasCodexComputerUseNodeReplOwnership(params))
-        ) {
+        if (usesOfficialNativeBridge && !(await hasCodexComputerUseNodeReplOwnership(params))) {
           throw new Error("Computer Use node_repl is not the admitted official desktop bridge");
         }
       };
@@ -148,10 +149,7 @@ export async function runCodexComputerUseLiveTest(params: {
           `Computer Use readiness tool ${params.config.mcpServerName}.${probe.tool} returned an error result`,
         );
       }
-      if (
-        params.config.mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER &&
-        !hasComputerUseAppCount(toolResult)
-      ) {
+      if (usesOfficialNativeBridge && !hasComputerUseAppCount(toolResult)) {
         throw new Error("Computer Use node_repl readiness returned no valid application count");
       }
       outcome = {
@@ -233,12 +231,12 @@ function hasComputerUseAppCount(result: CodexMcpToolCallResult): boolean {
 
 function resolveComputerUseLiveTestProbe(
   tools: readonly string[] | undefined,
-  mcpServerName: string,
+  usesOfficialNativeBridge: boolean,
 ): {
   tool: string;
   arguments: Record<string, JsonValue>;
 } {
-  if (mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER && tools?.includes("js")) {
+  if (usesOfficialNativeBridge && tools?.includes("js")) {
     return { tool: "js", arguments: { code: CODEX_COMPUTER_USE_NODE_REPL_PROBE } };
   }
   if (

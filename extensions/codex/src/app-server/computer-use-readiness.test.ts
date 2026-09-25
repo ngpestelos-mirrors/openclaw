@@ -168,9 +168,58 @@ describe("Codex Computer Use readiness", () => {
     },
   );
 
-  it.each(["thread/start", "config/mcpServer/reload"])(
-    "rechecks effective bridge ownership after %s before another probe",
-    async (boundary) => {
+  it.each(["config", "environment", "override"])(
+    "preserves a custom node_repl route selected by %s",
+    async (selection) => {
+      if (selection === "environment") {
+        vi.stubEnv("OPENCLAW_CODEX_COMPUTER_USE_MCP_SERVER_NAME", "node_repl");
+      }
+      const request = createComputerUseRequest({
+        installed: true,
+        marketplaceName: "openai-bundled",
+        mcpServerName: "node_repl",
+        mcpTools: ["list_apps"],
+        pluginMcpServers: [],
+        liveTestText: "[]",
+      });
+      const status = await readCodexComputerUseStatus({
+        request,
+        pluginConfig: {
+          computerUse: {
+            enabled: true,
+            strictReadiness: true,
+            ...(selection === "config" ? { mcpServerName: "node_repl" } : {}),
+          },
+        },
+        ...(selection === "override" ? { overrides: { mcpServerName: "node_repl" } } : {}),
+      });
+      expectStatusFields(status, { ready: true, mcpServerName: "node_repl" });
+      expect(request).toHaveBeenCalledWith(
+        "mcpServer/tool/call",
+        {
+          threadId: "computer-use-probe-thread-1",
+          server: "node_repl",
+          tool: "list_apps",
+          arguments: {},
+        },
+        { timeoutMs: 60_000 },
+      );
+      expect(
+        requestCalls(request).filter(([method]) => method === "thread/unsubscribe"),
+      ).toHaveLength(1);
+      expectRequestMethodNotCalled(request, "config/read");
+      expectRequestMethodNotCalled(request, "config/mcpServer/reload");
+    },
+  );
+
+  it.each([
+    { boundary: "thread/start", explicit: false },
+    { boundary: "config/mcpServer/reload", explicit: false },
+    { boundary: "thread/start", explicit: true },
+    { boundary: "config/mcpServer/reload", explicit: true },
+  ])(
+    "rechecks effective bridge ownership after $boundary before another probe (explicit: $explicit)",
+    async ({ boundary, explicit }) => {
       const request = createComputerUseRequest({
         installed: true,
         marketplaceName: "openai-bundled",
@@ -194,6 +243,7 @@ describe("Codex Computer Use readiness", () => {
               strictReadiness: true,
               autoInstall: false,
               autoRepair: true,
+              ...(explicit ? { mcpServerName: "node_repl" } : {}),
             },
           },
         }),
@@ -279,6 +329,7 @@ describe("Codex Computer Use readiness", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     sharedClientMocks.getLeasedSharedCodexAppServerClient.mockReset();
     sharedClientMocks.releaseLeasedSharedCodexAppServerClient.mockReset();
   });

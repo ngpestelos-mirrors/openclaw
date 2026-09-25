@@ -7,6 +7,7 @@ import {
   assertCodexDesktopComputerUseProbeSupported,
   bindCodexComputerUseNodeReplClient,
   hasCodexComputerUseNodeReplOwnership,
+  isCodexComputerUseNodeReplClient,
   resolveCodexComputerUseNodeReplStartArgs,
 } from "./computer-use-node-repl.js";
 import { requireRecord } from "./computer-use.test-support.js";
@@ -74,6 +75,7 @@ describe("desktop Computer Use node_repl process config", () => {
         start.env.CODEX_HOME = "/custom/home";
       }
       bindCodexComputerUseNodeReplClient(client, start);
+      expect(isCodexComputerUseNodeReplClient(client)).toBe(scenario === "official");
       await expect(hasCodexComputerUseNodeReplOwnership({ client, request })).resolves.toBe(
         scenario === "official",
       );
@@ -103,6 +105,7 @@ describe("desktop Computer Use node_repl process config", () => {
       env: { CODEX_HOME: home },
     });
     server[key] = value;
+    expect(isCodexComputerUseNodeReplClient(client)).toBe(true);
     const request = vi.fn(async () => ({ config }));
     await expect(hasCodexComputerUseNodeReplOwnership({ client, request })).resolves.toBe(false);
     expect(request).toHaveBeenCalledExactlyOnceWith("config/read", { includeLayers: false });

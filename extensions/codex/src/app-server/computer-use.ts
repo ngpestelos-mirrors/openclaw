@@ -18,6 +18,7 @@ import { resolveCodexManagedBundledMarketplacePath } from "./computer-use-market
 import {
   CODEX_COMPUTER_USE_NODE_REPL_SERVER,
   hasCodexComputerUseNodeReplOwnership,
+  isCodexComputerUseNodeReplClient,
 } from "./computer-use-node-repl.js";
 import {
   createComputerUseRequest,
@@ -634,15 +635,16 @@ async function readComputerUseTools(params: {
   let ownershipRejected = false;
   const readServer = async () => {
     if (
-      (usesOfficialNativeBridge || config.mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER) &&
+      (usesOfficialNativeBridge ||
+        (config.mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER &&
+          isCodexComputerUseNodeReplClient(params.client))) &&
       !(await hasCodexComputerUseNodeReplOwnership(params))
     ) {
       ownershipRejected = true;
       return undefined;
     }
-    const configured = await readMcpServerStatus(params.request, config.mcpServerName);
-    if (configured || !usesOfficialNativeBridge) {
-      return configured;
+    if (!usesOfficialNativeBridge) {
+      return await readMcpServerStatus(params.request, config.mcpServerName);
     }
     const native = await readMcpServerStatus(params.request, CODEX_COMPUTER_USE_NODE_REPL_SERVER);
     if (!native?.tools?.js) {

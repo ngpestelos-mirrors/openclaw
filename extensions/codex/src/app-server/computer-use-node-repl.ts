@@ -44,6 +44,11 @@ export function bindCodexComputerUseNodeReplClient(
   bridgeOwnership().clients.set(client, owner);
 }
 
+/** Launch identity survives config changes so an admitted bridge cannot become a custom route. */
+export function isCodexComputerUseNodeReplClient(client: object | undefined): boolean {
+  return Boolean(client && bridgeOwnership().clients.has(client));
+}
+
 /** Effective native configuration cannot replace the bridge after admission. */
 export async function hasCodexComputerUseNodeReplOwnership(params: {
   client?: object;
