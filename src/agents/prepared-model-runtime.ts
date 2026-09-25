@@ -1,7 +1,17 @@
 /** Lifecycle-owned auth/model discovery snapshots for agent runs. */
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import {
+  captureRemoteModelCatalogStartupSnapshot,
+  publishRemoteModelCatalogSnapshot,
+  readRemoteModelCatalogUpdate,
+  runOutsideRemoteModelCatalogSnapshot,
+  withRemoteModelCatalogSnapshot,
+  type ActiveRemoteModelCatalog,
+  type RemoteCatalogPublicationResult,
+} from "../model-catalog/remote-overlay.js";
 import { registerRuntimeAuthProfileStoreMutationListener } from "./auth-profiles/runtime-snapshots.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import {
@@ -14,7 +24,10 @@ import {
   configuredOwnersAreRequestVisible,
   registerPreparedRuntimeAuthMaterializationPublisher,
 } from "./prepared-model-runtime-materializations.js";
-import { refreshPreparedModelRuntimeSnapshotsNow } from "./prepared-model-runtime.configured-refresh.js";
+import {
+  publishPreparedModelRuntimeCatalogReplacement,
+  refreshPreparedModelRuntimeSnapshotsNow,
+} from "./prepared-model-runtime.configured-refresh.js";
 import {
   capturePreparedModelRuntimeLifetime,
   closePreparedModelRuntimeSnapshots,
@@ -30,6 +43,7 @@ import {
   normalizeOptionalDir,
   normalizePreparedModelRuntimeInput,
   ownerKey,
+  preparedModelRuntimeConfigsMatch,
   publishPreparedModelRuntimeOwnerBatch,
   publishModelRuntimeSnapshot,
   rebindInputToCommittedConfiguredOwner,
@@ -104,6 +118,13 @@ const publicationQueue = new PreparedModelRuntimePublicationQueue();
 let refreshRequestEpoch = 0;
 let refreshCancellation = new AbortController();
 let pendingModelRuntimeReplacement: PreparedModelRuntimeReplacement | undefined;
+let pendingRemoteCatalogPublication:
+  | {
+      catalog: ActiveRemoteModelCatalog;
+      controller: AbortController;
+      completion: Promise<RemoteCatalogPublicationResult>;
+    }
+  | undefined;
 const authPublication = new PreparedModelRuntimeAuthPublicationOwner();
 const getBlockingReplacement = () =>
   pendingModelRuntimeReplacement?.degraded ? undefined : pendingModelRuntimeReplacement;
@@ -129,6 +150,8 @@ function captureModelRuntimeLifetime(): () => void {
 
 async function closeModelRuntime(error: Error): Promise<void> {
   refreshRequestEpoch += 1;
+  pendingRemoteCatalogPublication?.controller.abort(error);
+  pendingRemoteCatalogPublication = undefined;
   authPublication.reset(error);
   pendingModelRuntimeReplacement?.reject(error);
   pendingModelRuntimeReplacement = undefined;
@@ -434,6 +457,104 @@ export async function refreshPreparedModelRuntimeCatalog(
   options: PreparedModelCatalogRefreshOptions = {},
 ): Promise<ModelCatalogSnapshot | undefined> {
   return await refreshPublishedModelRuntimeCatalog(snapshot, owners, options);
+}
+
+/** Downloads become visible only after an independently prepared rows/pricing generation commits. */
+export function applyRemoteModelCatalogUpdate(
+  getConfig: () => OpenClawConfig,
+  signal?: AbortSignal,
+): Promise<RemoteCatalogPublicationResult> {
+  signal?.throwIfAborted();
+  const assertLifetime = captureModelRuntimeLifetime();
+  const completion: Promise<RemoteCatalogPublicationResult> = publicationQueue.track(
+    runOutsideRemoteModelCatalogSnapshot(async (): Promise<RemoteCatalogPublicationResult> => {
+      const config = getConfig();
+      const catalog = await readRemoteModelCatalogUpdate(config);
+      assertLifetime();
+      if (!catalog) {
+        return "unchanged";
+      }
+      // Join outside the queue: degraded startup still owns a queued final commit.
+      if (pendingModelRuntimeReplacement) {
+        await pendingModelRuntimeReplacement.promise;
+        assertLifetime();
+      }
+      let previous = captureRemoteModelCatalogStartupSnapshot();
+      if (previous?.sourceUrl === catalog.sourceUrl) {
+        if (previous.revision === catalog.revision) {
+          return "unchanged";
+        }
+        if (previous.generatedAt > catalog.generatedAt) {
+          return "superseded";
+        }
+      }
+      const pending = pendingRemoteCatalogPublication;
+      if (pending?.catalog.sourceUrl === catalog.sourceUrl) {
+        if (pending.catalog.revision === catalog.revision) {
+          return await pending.completion;
+        }
+        if (pending.catalog.generatedAt > catalog.generatedAt) {
+          return "superseded";
+        }
+      }
+      pending?.controller.abort(
+        new PreparedModelRuntimePublicationSupersededError("A newer remote catalog was accepted"),
+      );
+      const controller = new AbortController();
+      pendingRemoteCatalogPublication = { catalog, controller, completion };
+      const epoch = refreshRequestEpoch;
+      try {
+        const published = await withRemoteModelCatalogSnapshot(catalog, () =>
+          publishPreparedModelRuntimeCatalogReplacement({
+            owners,
+            agentBuildCompletions,
+            buildTimeoutMs: modelRuntimeBuildTimeoutMs,
+            signal: AbortSignal.any([refreshCancellation.signal, controller.signal]),
+            isPublicationCurrent: () =>
+              pendingRemoteCatalogPublication?.controller === controller &&
+              refreshRequestEpoch === epoch &&
+              captureRemoteModelCatalogStartupSnapshot() === previous &&
+              preparedModelRuntimeConfigsMatch(config, getConfig()),
+            prepareCommit: (candidates) => {
+              const commitDispatch = replyDispatchPublication.stage(candidates);
+              return () => {
+                if (!publishRemoteModelCatalogSnapshot(catalog, previous)) {
+                  throw new PreparedModelRuntimePublicationSupersededError(
+                    "Remote catalog publication lost its accepted predecessor",
+                  );
+                }
+                previous = null;
+                commitDispatch();
+              };
+            },
+            commit: (publish) =>
+              publicationQueue.enqueue(async () => {
+                assertLifetime();
+                publish();
+              }),
+          }),
+        );
+        if (published) {
+          notifyPreparedModelRuntimePublication({ phase: "published" });
+        }
+        return published ? "published" : "superseded";
+      } catch (error) {
+        if (
+          error instanceof PreparedModelRuntimePublicationSupersededError ||
+          controller.signal.aborted ||
+          refreshRequestEpoch !== epoch
+        ) {
+          return "superseded";
+        }
+        throw error;
+      } finally {
+        if (pendingRemoteCatalogPublication?.controller === controller) {
+          pendingRemoteCatalogPublication = undefined;
+        }
+      }
+    }),
+  );
+  return racePromiseWithAbortSignal(completion, signal);
 }
 
 /** Invalidates every published generation before config/plugin runtime replacement. */

@@ -12,6 +12,7 @@ import {
 import { tryResolveAmbientOwnerAgentId } from "../../agents/agent-scope-config.js";
 import { refreshExpiredPreparedModelCatalog } from "../../agents/prepared-model-catalog.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
+import { applyRemoteModelCatalogUpdate } from "../../agents/prepared-model-runtime.js";
 import { roleScopesAllow } from "../../shared/operator-scope-compat.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { prepareOperatorModelPresentation } from "../operator-model-presentation.js";
@@ -84,13 +85,16 @@ export const modelsHandlers: GatewayRequestHandlers = {
       if (!publicationScope) {
         return;
       }
+      const remotePublished =
+        params.refresh === true &&
+        (await applyRemoteModelCatalogUpdate(context.getRuntimeConfig)) === "published";
       if (params.refresh !== true) {
         refreshExpiredPreparedModelCatalog({ agentId: resolved.agentId, config: cfg });
       }
       const result = await buildModelsListResult({
         source: { kind: "gateway", context },
         agentId: resolved.agentId,
-        params,
+        params: remotePublished ? { ...params, refresh: false } : params,
         includeManualSelection: hasGatewayClientCap(
           client?.connect.caps,
           GATEWAY_CLIENT_CAPS.MODEL_SELECTION_POLICY,

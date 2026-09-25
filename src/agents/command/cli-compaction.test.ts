@@ -104,6 +104,7 @@ function createPreparedRuntimeLease(input: {
       ...(input.agentId ? { agentId: input.agentId } : {}),
     },
     pluginGeneration: {
+      remoteCatalog: null,
       configuredCatalogEntries: [],
       inlineProviderModels: [],
       pluginMetadataSnapshot: prepared.metadataSnapshot,
@@ -760,6 +761,7 @@ describe("runCliTurnCompactionLifecycle", () => {
       workspaceDir: tmpDir,
     });
     const pluginGeneration = {
+      remoteCatalog: null,
       configuredCatalogEntries: [],
       inlineProviderModels: [],
       pluginMetadataSnapshot: preparedRuntimeLease.snapshot.metadataSnapshot,

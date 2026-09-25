@@ -680,6 +680,7 @@ describe("prepared harness source delivery", () => {
       pluginGeneration: {
         pluginMetadataSnapshot: metadataSnapshot,
         pluginRegistry,
+        remoteCatalog: null,
         configuredCatalogEntries: [],
         inlineProviderModels: [],
       },
@@ -773,6 +774,7 @@ describe("prepared harness source delivery", () => {
       workspaceDir,
     };
     const admittedGeneration: PreparedModelRuntimePluginGeneration = {
+      remoteCatalog: null,
       configuredCatalogEntries: [],
       inlineProviderModels: [],
       pluginMetadataSnapshot: admittedMetadataSnapshot,
@@ -859,6 +861,7 @@ describe("prepared harness source delivery", () => {
         workspaceDir,
       });
       const admittedGeneration: PreparedModelRuntimePluginGeneration = {
+        remoteCatalog: null,
         configuredCatalogEntries: [],
         inlineProviderModels: [],
         pluginMetadataSnapshot: {

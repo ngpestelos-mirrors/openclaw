@@ -112,6 +112,7 @@ export function createFullModelCatalogAccess(
         params.inventoryOwner.catalogInventory = published.inventory;
       }
     },
+    params.isPublished,
   );
   const eligibleProviders = [
     ...new Set(
@@ -495,12 +496,13 @@ export function createFullModelCatalogAccess(
       for (const failure of failures) {
         attempt.failed(failure.error, failure.providers, "native");
       }
-      notifyPreparedModelCatalogPublication(
-        publishCatalog(
-          { ...latest, inventory: nextInventory, nativeCatalogAcquired: acquiredNative },
-          "native",
-        ),
+      const change = publishCatalog(
+        { ...latest, inventory: nextInventory, nativeCatalogAcquired: acquiredNative },
+        "native",
       );
+      if (params.isPublished?.() !== false) {
+        notifyPreparedModelCatalogPublication(change);
+      }
       return published.catalog ?? staticCatalog;
     })()
       .catch((error: unknown) => {
@@ -656,7 +658,10 @@ export function createFullModelCatalogAccess(
       await acquireNativeCatalog([normalizeProvider(selection.provider)], selection),
     loadFullModelCatalog: async (options) => {
       // Standalone commands cannot publish background discovery after their process exits.
-      if (options?.refresh && params.inventoryOwner.provenance === "standalone") {
+      if (
+        options?.waitForCompletion ||
+        (options?.refresh && params.inventoryOwner.provenance === "standalone")
+      ) {
         return await acquireCatalog(options);
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
