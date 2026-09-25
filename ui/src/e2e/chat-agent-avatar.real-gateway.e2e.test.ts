@@ -46,7 +46,7 @@ type BrowserResponseProof = {
   blobReads: number;
   blobBytes: number;
 };
-type ProofWindow = Window & { avatarResponseProof: BrowserResponseProof[] };
+type ProofWindow = typeof window & { avatarResponseProof: BrowserResponseProof[] };
 type WorkspaceIconElement = HTMLElement & {
   routeUrl: string;
   authTokens: string[];
