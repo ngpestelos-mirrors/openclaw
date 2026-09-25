@@ -171,7 +171,7 @@ export function withOpenClawStateStartupCheckpointConnection<T>(
     );
     if (!existing) {
       quarantineOrphanedSqliteSidecars(pathname);
-      ensureOpenClawStatePermissions(pathname, env);
+      ensureOpenClawStatePermissions(pathname, env, { createDirectory: true });
     }
     const db = openNodeSqliteDatabase(existing ? resolveExistingSqliteFileUri(pathname) : pathname);
     let ownershipAdmitted = false;

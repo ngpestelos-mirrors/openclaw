@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { statSync, type BigIntStats } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { formatErrorMessage } from "../infra/errors.js";
 import { assertStateDatabaseAccessAllowed } from "../infra/gateway-state-owner.js";
@@ -80,46 +80,60 @@ type UnpublishedStateDatabaseOptions = {
 export function openUnpublishedStateDatabase(
   params: UnpublishedStateDatabaseOptions,
 ): OpenClawStateDatabase {
-  const open = () => {
+  const open = (schemaOwned: boolean): OpenClawStateDatabase => {
+    const original = params.existingSchema
+      ? statSync(params.pathname, { bigint: true })
+      : statSync(params.pathname, { bigint: true, throwIfNoEntry: false });
+    if (!original && !schemaOwned) {
+      return withStateDatabaseSchemaMaintenance(
+        { databasePath: params.pathname, busyTimeoutMs: params.busyTimeoutMs },
+        () => open(true),
+      );
+    }
+    if (original && !original.isFile()) {
+      throw new Error(`Existing shared-state database must be a regular file: ${params.pathname}`);
+    }
     const initialization = prepareStateDatabaseInitialization(
       params.pathname,
       params.env,
       params.initializationAgentPaths,
     );
-    if (!params.existingSchema && !existsSync(params.pathname)) {
+    if (!original) {
       quarantineOrphanedSqliteSidecars(params.pathname);
-      ensureOpenClawStatePermissions(params.pathname, params.env);
+      ensureOpenClawStatePermissions(params.pathname, params.env, { createDirectory: true });
     }
-    return openNativeStateDatabase(params, initialization);
+    return openNativeStateDatabase(params, initialization, original);
   };
-  return !params.existingSchema && !existsSync(params.pathname)
-    ? withStateDatabaseSchemaMaintenance(
-        { databasePath: params.pathname, busyTimeoutMs: params.busyTimeoutMs },
-        open,
-      )
-    : open();
+  return open(false);
 }
 
 function openNativeStateDatabase(
   params: UnpublishedStateDatabaseOptions,
   initialization: StateDatabaseInitialization,
+  original: BigIntStats | undefined,
 ): OpenClawStateDatabase {
   const { busyTimeoutMs, lockFailureReporting } = params;
-  const original = params.existingSchema ? statSync(params.pathname) : undefined;
-  if (original && !original.isFile()) {
-    throw new Error(`Existing shared-state database must be a regular file: ${params.pathname}`);
-  }
   const assertSameFile = () => {
     if (original) {
-      const current = statSync(params.pathname);
-      if (!current.isFile() || current.dev !== original.dev || current.ino !== original.ino) {
+      const current = statSync(params.pathname, { bigint: true });
+      if (
+        !current.isFile() ||
+        current.dev !== original.dev ||
+        current.ino !== original.ino ||
+        current.birthtimeNs !== original.birthtimeNs
+      ) {
         throw new Error(`Existing shared-state database generation changed: ${params.pathname}`);
       }
     }
   };
-  const db = openTrackedStateDatabase(params.pathname, { existingOnly: params.existingSchema });
+  // Observing an existing generation never authorizes recreating it after a reset.
+  const db = openTrackedStateDatabase(params.pathname, {
+    existingOnly: original !== undefined,
+    expectedIdentity: original ? `file:${original.dev}:${original.ino}` : undefined,
+  });
   let walMaintenance: SqliteWalMaintenance | undefined;
   try {
+    assertSameFile();
     enableNodeSqliteKyselyStatementCache(db);
     setSqliteBusyTimeout(db, busyTimeoutMs);
     assertOpenClawStateWriteAllowed({
@@ -172,6 +186,7 @@ function openNativeStateDatabase(
       { lockFailureReporting },
     );
     ensureOpenClawStatePermissions(params.pathname, params.env);
+    assertSameFile();
     return { db, path: params.pathname, walMaintenance: maintenance };
   } catch (error) {
     // Acquisition owns the native handle until every setup and hardening step returns.

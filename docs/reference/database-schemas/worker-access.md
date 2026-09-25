@@ -42,6 +42,12 @@ Startup, schema work, and offline maintenance use the installation's single
 process owner. Ordinary writes acquire their actual SQLite transaction; they do
 not acquire a separate coordination database or carry a lock-directory namespace.
 
+A shared-state open that observes an existing file retains its physical identity
+and refuses if that generation disappears or changes before publication. It does
+not recreate a missing file. Preparing a new database directory and quarantining
+orphaned sidecars require the existing schema-maintenance owner; later permission
+hardening never recreates a removed directory.
+
 Each SQLite broker worker admits up to 128 running and queued requests. A busy
 worker's admission queue does not consume another worker's request capacity;
 independent workers continue serving their databases. Requests on the same worker
