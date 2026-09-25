@@ -85,6 +85,8 @@ export type SqliteWorkerReply = {
       retire?: true;
       openOutcome?: "refused-before-agent-open";
       openNotEntered?: true;
+      /** Direct refusal provenance does not certify that opening had no effects. */
+      admissionRefused?: true;
       error: {
         name: string;
         message: string;

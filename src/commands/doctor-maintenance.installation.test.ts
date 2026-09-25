@@ -1,6 +1,8 @@
+import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createManagedHandoffTestBinding } from "../../test/helpers/managed-handoff-isolation.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { applyCliProfileEnv } from "../cli/profile.js";
 import { writeOpenClawConfig } from "../config/test-helpers.js";
@@ -16,6 +18,7 @@ import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { tryAcquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import * as sqliteSnapshotSource from "../infra/sqlite-snapshot-source.js";
 import * as sqliteWorkerStores from "../infra/sqlite-worker-store.js";
+import { resolveManagedUpdateLeaseDatabasePath } from "../infra/update-managed-service-handoff-lease.js";
 import { readUpdateRunDriver } from "../infra/update-run-driver.js";
 import { createUpdateRun } from "../infra/update-run-ledger.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
@@ -123,9 +126,19 @@ vi.mock("../cli/daemon-cli/restart-health.js", async (importOriginal) => ({
 vi.mock("../../packages/terminal-core/src/note.js", () => ({ note: mocks.note }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-useDoctorMaintenanceRuntimeDirectory(() => tempDirs.make("openclaw-doctor-installation-runtime-"));
+let handoffBinding: ReturnType<typeof createManagedHandoffTestBinding>;
+useDoctorMaintenanceRuntimeDirectory(() => {
+  const runtimeDirectory = realpathSync(tempDirs.make("openclaw-doctor-installation-runtime-"));
+  handoffBinding = createManagedHandoffTestBinding(runtimeDirectory);
+  vi.stubEnv(
+    "NODE_OPTIONS",
+    `${process.env.NODE_OPTIONS ?? ""} ${handoffBinding.nodeOption}`.trim(),
+  );
+  return runtimeDirectory;
+});
 const originalStdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 beforeEach(() => {
+  handoffBinding.assertPath(resolveManagedUpdateLeaseDatabasePath());
   vi.clearAllMocks();
   mocks.resident.mockReset();
   mocks.audit.mockResolvedValue({ ok: true, issues: [] });
@@ -497,6 +510,18 @@ async function runInstallationCase(params: {
       const maintenance = await admission;
       if (params.inspectionScenario) {
         vi.spyOn(performance, "now").mockImplementation(() => inspectionClock);
+        // Charge both fresh byte validation and fallback snapshots: reusing decoded
+        // rows does not remove the fresh read at each native authority boundary.
+        const readVersion = sqliteSnapshotSource.readSqliteSourceContentVersionSync;
+        vi.spyOn(sqliteSnapshotSource, "readSqliteSourceContentVersionSync").mockImplementation(
+          (pathname) => {
+            const version = readVersion(pathname);
+            if (inspectingRuntime) {
+              inspectionClock += 100;
+            }
+            return version;
+          },
+        );
         const prepareSnapshot = sqliteSnapshotSource.prepareSqliteReadOnlyLocationSync;
         vi.spyOn(sqliteSnapshotSource, "prepareSqliteReadOnlyLocationSync").mockImplementation(
           (pathname) => {

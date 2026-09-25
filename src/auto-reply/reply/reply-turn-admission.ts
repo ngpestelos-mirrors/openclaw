@@ -23,10 +23,6 @@ import type { GatewayContextResolver } from "../../gateway/server-methods/types.
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import {
-  getDiagnosticSessionActivitySnapshot,
-  resolveRunStaleThresholdMs,
-} from "../../logging/diagnostic-run-activity.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   bindGatewayContextResolver,
@@ -42,11 +38,8 @@ import {
 import type { OpenClawAgentDatabaseClaim } from "../../state/openclaw-agent-db-identity.js";
 import {
   createReplyOperation,
-  expireStaleReplyOperation,
   isReplyRunSuccessorAdmissionBlocked,
-  isReplyRunEvidenceStale,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-  REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS,
   replyRunRegistry,
   ReplyRunAlreadyActiveError,
   ReplyRunFollowupAdmissionBlockedError,
@@ -60,8 +53,9 @@ import {
   waitForReplyRunSuccessorAdmission,
 } from "./reply-run-registry.js";
 import {
-  isReplyRunRecoveryBlocked,
+  expireVisibleStaleOperation,
   lifecycleAdmissionByOperation,
+  resolveVisibleActiveWaitMs,
 } from "./reply-run-registry.state.js";
 import { waitForRestartRecoveryProgress } from "./reply-turn-recovery-wait.js";
 import { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
@@ -141,35 +135,6 @@ function rejectLifecycleInvalidatedWork(params: {
 
 function isAbortSignalAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
-}
-
-function expireVisibleStaleOperation(operation: ReplyOperation | undefined): boolean {
-  if (!operation) {
-    return false;
-  }
-  const idleMs = Date.now() - operation.lastActivityAtMs;
-  if (operation.result) {
-    return (
-      idleMs >= REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS &&
-      expireStaleReplyOperation(operation, "terminal_unreleased")
-    );
-  }
-  return isReplyRunEvidenceStale(operation) && expireStaleReplyOperation(operation, "no_activity");
-}
-
-function resolveVisibleActiveWaitMs(operation: ReplyOperation | undefined): number {
-  if (!operation || isReplyRunRecoveryBlocked(operation)) {
-    return REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS;
-  }
-  const ageMs = Date.now() - operation.lastActivityAtMs;
-  const activity = getDiagnosticSessionActivitySnapshot({
-    sessionId: operation.sessionId,
-    sessionKey: operation.key,
-  });
-  const remainingMs = operation.result
-    ? REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS - ageMs
-    : resolveRunStaleThresholdMs(activity, ageMs) - ageMs;
-  return Math.min(REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS, Math.max(1, remainingMs));
 }
 
 type ReplyTurnAdmissionParams = {
@@ -315,6 +280,7 @@ export async function admitReplyTurn(
         let admittedSessionEntry: InternalSessionEntry | undefined;
         let recoveryOwnerLease: MainSessionRecoveryOwnerLease | undefined;
         let interruptedBeforeOperation = false;
+        let recoveryClaimStarted = false;
         const admission = storePath
           ? await beginSessionWorkAdmission({
               scope: storePath,
@@ -507,6 +473,9 @@ export async function admitReplyTurn(
             continue;
           }
           if (shouldClaimRecoveryOwner && recoveryOwnerRelease === undefined) {
+            // A claim can durably clear recovery state. Once it starts, a later
+            // preparation change must fail this admission instead of replaying it.
+            recoveryClaimStarted = true;
             const ownerClaim = await claimMainSessionRecoveryOwner({
               lifecycleGeneration: getAgentEventLifecycleGeneration(),
               sessionId,
@@ -520,6 +489,7 @@ export async function admitReplyTurn(
               });
             }
             recoveryOwnerLease = ownerClaim.kind === "claimed" ? ownerClaim.lease : undefined;
+            admittedSessionEntry = ownerClaim.entry;
           }
           if (interruptedBeforeOperation || isAbortSignalAborted(params.upstreamAbortSignal)) {
             rejectLifecycleInvalidatedWork({
@@ -530,6 +500,13 @@ export async function admitReplyTurn(
           }
           assertDatabaseOwnerCurrent();
           if (rotationObservation?.changed()) {
+            if (recoveryClaimStarted) {
+              rejectLifecycleInvalidatedWork({
+                kind: params.kind,
+                message: `Session "${params.sessionKey}" changed while starting work. Retry.`,
+                transientSessionChange: true,
+              });
+            }
             // A predecessor can rotate after the final row read but before this handoff.
             // Reacquire the full admission; its session ID alone grants no authority.
             throw new ReplyOperationChangedDuringAdmissionError();
