@@ -15,6 +15,7 @@ import type { ExecApprovalsFile } from "openclaw/plugin-sdk/exec-approvals-runti
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { clearInternalHooks, resetGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import { clearMemoryPluginState } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import * as nodeSelectionRuntime from "openclaw/plugin-sdk/node-selection-runtime";
 import { clearPluginCommands } from "openclaw/plugin-sdk/plugin-runtime";
 import {
   createAgentHarnessHostCapabilitiesForTest,
@@ -438,7 +439,11 @@ export function getMockRuntimeIdentity() {
   return { serverVersion: CODEX_APP_SERVER_VERSION };
 }
 
-export { mockClientRuntimeMethods, turnStartResult } from "./codex-app-server.test-fixtures.js";
+export {
+  mockClientRuntimeMethods,
+  rateLimitsUpdated,
+  turnStartResult,
+} from "./codex-app-server.test-fixtures.js";
 
 export function threadStartResult(threadId = "thread-1", options: { cwd?: string } = {}) {
   const cwd = options.cwd ?? tempDir ?? "/tmp/openclaw-codex-test";
@@ -457,23 +462,6 @@ export function createThreadStartRequest(threadId = "thread-1") {
     }
     return responses[method];
   });
-}
-
-export function rateLimitsUpdated(resetsAt: number): CodexServerNotification {
-  return {
-    method: "account/rateLimits/updated",
-    params: {
-      rateLimits: {
-        limitId: "codex",
-        limitName: "Codex",
-        primary: { usedPercent: 100, windowDurationMins: 300, resetsAt },
-        secondary: null,
-        credits: null,
-        planType: "plus",
-        rateLimitReachedType: "rate_limit_reached",
-      },
-    },
-  };
 }
 
 export function createAppServerHarness(
@@ -677,6 +665,11 @@ export function setupRunAttemptTestHooks(): void {
   beforeEach(async () => {
     // Direct runtime tests supply the plugin root normally owned by loader registration.
     setManagedCodexPluginRoot(fileURLToPath(new URL("../../", import.meta.url)));
+    // Protocol fixtures have no remote nodes; ambient discovery must not wait on fake timers.
+    vi.spyOn(nodeSelectionRuntime, "loadNodeExecAvailability").mockResolvedValue({
+      cacheKey: "[]",
+      isAvailable: () => false,
+    });
     // Machine-managed sandbox requirements must not leak into policy fixtures.
     vi.spyOn(codexRequirements, "readCodexRequirementsToml").mockReturnValue(undefined);
     // An uninitialized real host approvals store intentionally fails closed.

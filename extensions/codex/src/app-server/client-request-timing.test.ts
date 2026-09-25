@@ -77,24 +77,34 @@ describe("Codex request timing", () => {
     await expect(pending).resolves.toEqual(page);
   });
 
-  it.each(["abort", "timeout", "close"] as const)(
-    "settles %s during authority preparation and refuses a late wire grant",
-    async (reason) => {
+  it.each(
+    (["thread/list", "turn/start"] as const).flatMap((method) =>
+      (["abort", "timeout", "close"] as const).map((reason) => ({ method, reason })),
+    ),
+  )(
+    "settles $method $reason during authority preparation and refuses a late wire grant",
+    async ({ method, reason }) => {
       const harness = createHarness();
       const resume = createDeferred<void>();
       const released = createDeferred<void>();
       const controller = new AbortController();
-      const pending = read(harness, {
-        signal: controller.signal,
-        withCurrent: async (write) => {
-          try {
-            await resume.promise;
-            write();
-          } finally {
-            released.resolve();
-          }
+      const pending = harness.client.request(
+        method,
+        method === "turn/start" ? { threadId: "held-turn", input: [] } : { limit: 1 },
+        {
+          timeoutMs: 1_000,
+          signal: controller.signal,
+          withCurrent: async (write) => {
+            try {
+              await resume.promise;
+              write();
+            } finally {
+              released.resolve();
+            }
+          },
         },
-      });
+      );
+      void pending.catch(() => undefined);
       const rejected = expect(pending).rejects.toThrow(
         reason === "abort" ? "aborted" : reason === "timeout" ? "timed out" : "closed",
       );
@@ -106,6 +116,13 @@ describe("Codex request timing", () => {
         harness.client.close();
       }
       await rejected;
+      if (reason !== "close") {
+        await expect(pending).rejects.toMatchObject({
+          reason: reason === "abort" ? "aborted" : "timed out",
+          mayHaveWritten: false,
+          code: "CODEX_APP_SERVER_LOCAL_REQUEST_CANCELLED",
+        });
+      }
       expect(harness.writes).toHaveLength(0);
       resume.resolve();
       await released.promise;

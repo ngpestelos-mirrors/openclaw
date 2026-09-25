@@ -395,17 +395,23 @@ export async function tryReuseCodexLiveThread(
       preserveSubscription = true;
       return { kind: "resume", prebuiltFinalConfigPatch };
     }
-    await attestCodexThreadToolSurface({
-      client: params.client,
-      threadId: binding.threadId,
-      appIds: pluginThreadConfig?.provisionalAppIds ?? [],
-      signal: params.signal,
-      threadConfig: resumeParams.config,
-      restrictedToolSurface,
-      lifecycleTiming,
-      assertCurrent: assertWarmOwner,
-      withCurrent: params.authority?.withCurrent,
-    });
+    try {
+      await attestCodexThreadToolSurface({
+        client: params.client,
+        threadId: binding.threadId,
+        appIds: pluginThreadConfig?.provisionalAppIds ?? [],
+        signal: params.signal,
+        threadConfig: resumeParams.config,
+        restrictedToolSurface,
+        lifecycleTiming,
+        assertCurrent: assertWarmOwner,
+        withCurrent: params.authority?.withCurrent,
+      });
+    } catch (error) {
+      // Admission can reject before its consumer runs; keep warm-owner guidance.
+      assertWarmOwner();
+      throw error;
+    }
     assertWarmOwner();
     if (ephemeralPolicy && ephemeralPolicy.skillsInstructions !== params.skillsInstructions) {
       try {
