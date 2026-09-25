@@ -11215,7 +11215,8 @@ describe("Linux App validation routing", () => {
   const workflow = parse(readFileSync(".github/workflows/linux-app.yml", "utf8"));
   const linuxSteps: WorkflowStep[] = workflow.jobs.build.steps;
   const macosSteps: WorkflowStep[] = workflow.jobs["test-macos"].steps;
-  const packagingSteps = [
+  const manualSteps = [
+    "Test native Quick Chat",
     "Stage AppImage GStreamer plugins",
     "Prepare pinned AppImage tools",
     "Build Linux companion bundles",
@@ -11226,7 +11227,7 @@ describe("Linux App validation routing", () => {
   ];
 
   it.each(["pull_request", "workflow_dispatch"] as const)(
-    "keeps native tests required and selects packaging only for manual validation: %s",
+    "keeps required native tests and selects manual validation steps: %s",
     (eventName) => {
       const selected = (steps: WorkflowStep[]) =>
         steps.filter(
@@ -11240,6 +11241,10 @@ describe("Linux App validation routing", () => {
                 "inline-browser": { outputs: {}, outcome: "success" },
                 "gateway-switch": { outputs: {}, outcome: "success" },
                 "desktop-sharing": { outputs: {}, outcome: "success" },
+                "quick-chat": {
+                  outputs: {},
+                  outcome: eventName === "workflow_dispatch" ? "success" : "skipped",
+                },
               },
             }),
         );
@@ -11270,7 +11275,7 @@ describe("Linux App validation routing", () => {
       expect(linux.find((step) => step.id === "desktop-sharing")?.run).toContain(
         "--desktop-sharing",
       );
-      for (const name of packagingSteps) {
+      for (const name of manualSteps) {
         expect(
           linuxSteps.some((step) => step.name === name),
           name,
@@ -11297,6 +11302,7 @@ describe("Linux App validation routing", () => {
         ["Upload native inline browser proof", "inline-browser"],
         ["Upload native Gateway switching proof", "gateway-switch"],
         ["Upload native desktop sharing proof", "desktop-sharing"],
+        ["Upload native Quick Chat proof", "quick-chat"],
       ] as const) {
         const upload = expectDefined(
           linuxSteps.find((step) => step.name === name),
