@@ -76,7 +76,8 @@ export async function runInstalledLifecycle(
   const { execSchtasks } = await import("./schtasks-exec.js");
   const { setScheduledTaskXmlEnabled } = await import("./schtasks-control.js");
   const { resolveTaskScriptPath } = await import("./schtasks.js");
-  const { probeScheduledTaskExists } = await import("./schtasks-state-probe.js");
+  const { probeScheduledTaskExists, probeScheduledTaskState, ScheduledTaskInspectionError } =
+    await import("./schtasks-state-probe.js");
   const {
     assertInteractiveLeastPrivilegeTask,
     readTaskPrincipal,
@@ -630,6 +631,14 @@ export async function runInstalledLifecycle(
   for (const task of tasks.toReversed()) {
     try {
       await lifetime.verifyCleanup(async () => {
+        const registration = probeScheduledTaskState(task.taskName);
+        if (registration.status === "unknown") {
+          throw new ScheduledTaskInspectionError(registration);
+        }
+        // Successful uninstall or failed registration leaves no definition to stop.
+        if (registration.status === "missing") {
+          return;
+        }
         const stdout = new Writable({
           write(_chunk, _encoding, callback) {
             callback();
