@@ -193,7 +193,9 @@ If inspection fails, Doctor and update refusals include the underlying probe
 detail; an empty response identifies the exit code and reports that PowerShell
 produced no output.
 
-During previous-Gateway readiness verification, each Scheduled Task runtime probe allows at most five seconds, or the shorter remaining budget. Other service inspections retain their caller's budget, including the longer allowance for verifying that a runtime rebuild is safe. During update preflight, a registration or runtime timeout retries the complete strict inspection once and reports the enforced probe budget. If inspection remains unavailable, the update preserves the recorded service definition and skips automatic service restart with a warning. Inspect the service with `openclaw gateway status --deep`, then restart it manually after the update. Losing verified ownership after admission blocks the service mutation.
+During previous-Gateway readiness verification, each Scheduled Task runtime probe allows at most five seconds, or the shorter remaining budget. Other service inspections retain their caller's budget, including the longer allowance for verifying that a runtime rebuild is safe.
+
+During update preflight, Scheduled Task inspection uses the update's `--timeout` budget. A registration or runtime timeout retries the complete strict inspection once. If inspection remains unavailable, the update reports the enforced budget and probe detail, preserves the recorded service definition, and skips automatic service restart. Inspect the service with `openclaw gateway status --deep`, then restart it manually after the update. Losing verified ownership after admission blocks the service mutation.
 
 Gateway startup creates private SQLite staging directories through Windows APIs,
 without compiling C# or launching PowerShell for their permissions. The owner,
