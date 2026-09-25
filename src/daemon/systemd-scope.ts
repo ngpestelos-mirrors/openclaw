@@ -196,7 +196,10 @@ function systemdUnitMatchesIdentity(
   return false;
 }
 
-function resolveSystemdTemplateInstanceName(unitName: string, env: GatewayServiceEnv): string {
+export function resolveSystemdTemplateInstanceName(
+  unitName: string,
+  env: GatewayServiceEnv,
+): string {
   if (!unitName.endsWith("@.service")) {
     return unitName;
   }

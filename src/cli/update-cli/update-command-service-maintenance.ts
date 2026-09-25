@@ -636,7 +636,14 @@ async function stopManagedServiceBeforeMutableUpdate(
     try {
       assertCurrent();
     } catch (cause) {
-      throw new AggregateError([err, cause], "Update executor was lost during native preparation", {
+      const failures = [err, cause];
+      try {
+        // Lost authority forbids restoration, but this private recovery still needs settlement.
+        await windowsTaskAutoStartRecovery?.complete(false);
+      } catch (settlementError) {
+        failures.push(settlementError);
+      }
+      throw new AggregateError(failures, "Update executor was lost during native preparation", {
         cause,
       });
     }

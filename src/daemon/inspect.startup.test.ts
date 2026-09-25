@@ -9,11 +9,17 @@ import { createDoctorPrompter } from "../commands/doctor-prompter.js";
 import * as doctorServicePolicy from "../commands/doctor-service-repair-policy.js";
 import * as configPaths from "../config/paths.js";
 import { CORE_HEALTH_CHECKS } from "../flows/doctor-core-checks.js";
+import * as gatewayProcesses from "../infra/gateway-processes.js";
+import * as portsInspection from "../infra/ports-inspect.js";
 import { encodeWindowsLauncherScript } from "../infra/windows-launcher-encoding.js";
+import * as probeHosts from "./gateway-service-probe-hosts.js";
 import { findExtraGatewayServices, renderGatewayServiceCleanupHints } from "./inspect.js";
+import { discoverManagedGatewayBindings } from "./managed-gateway-bindings.js";
 import * as taskLayout from "./schtasks-layout.js";
 import { resolveStartupEntryPath } from "./schtasks-layout.js";
+import * as taskProcesses from "./schtasks-process.js";
 import * as taskProbe from "./schtasks-state-probe.js";
+import { readGatewayServiceState, resolveGatewayService } from "./service.js";
 
 const nativePlatform = process.platform;
 let root: string;
@@ -75,6 +81,113 @@ async function startup(form: "cmd" | "9.2/9.3" | "9.4", taskName = "OpenClaw Gat
 }
 
 describe("Windows Startup service inventory", () => {
+  it("keeps same-label Startup files as separate managed bindings using their captured profile", async () => {
+    const cmd = await startup("cmd", "Recovery alias");
+    const vbs = await startup("9.4", "Recovery alias");
+    const bindings = await discoverManagedGatewayBindings(environment());
+    expect(bindings).toHaveLength(2);
+    expect(bindings.map((binding) => binding.windowsStartupEntry)).toEqual(
+      expect.arrayContaining([cmd.startupPath, vbs.startupPath]),
+    );
+    for (const binding of bindings) {
+      expect(binding.profile).toBe("rescue");
+      expect(binding.scope).toBe("user");
+      expect(binding.env.OPENCLAW_WINDOWS_TASK_NAME).toBeUndefined();
+    }
+  });
+
+  it("keeps Startup runtime unknown when another verified Gateway owns the port", async () => {
+    const { startupPath, scriptPath } = await startup("9.4");
+    const foreignCommand =
+      '"C:/Node/node.exe" "C:/Other/openclaw/dist/index.js" gateway --port 19789';
+    vi.spyOn(taskProcesses, "readWindowsProcessSnapshot").mockReturnValue([
+      { ProcessId: 4343, CommandLine: foreignCommand },
+    ]);
+    vi.spyOn(probeHosts, "resolveGatewayServiceProbeHosts").mockResolvedValue(["127.0.0.1"]);
+    vi.spyOn(portsInspection, "inspectPortUsage").mockResolvedValue({
+      port: 19789,
+      status: "busy",
+      listeners: [{ pid: 4343, commandLine: foreignCommand }],
+      hints: [],
+    });
+    vi.spyOn(gatewayProcesses, "findVerifiedGatewayListenerPidsOnPortSync").mockReturnValue([4343]);
+    const state = await readGatewayServiceState(resolveGatewayService(), {
+      env: environment(),
+      windowsStartupEntry: startupPath,
+      requireEffective: true,
+      requireLoadedCommand: true,
+    });
+    expect(state.command?.sourcePath).toBe(scriptPath);
+    expect(state.running).toBe(false);
+    expect(state.runtime?.status).toBe("unknown");
+    expect(state.runtime?.pid).toBeUndefined();
+    expect(taskProbe.probeScheduledTaskState).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "reads the exact Startup target without Task Scheduler (process inspected=%s)",
+    async (inspected) => {
+      const { startupPath, scriptPath } = await startup("9.4");
+      vi.mocked(taskProbe.probeScheduledTaskState).mockImplementation(() => {
+        throw new Error("Task Scheduler must not inspect a Startup file target");
+      });
+      vi.spyOn(taskProcesses, "readWindowsProcessSnapshot").mockReturnValue(
+        inspected
+          ? [
+              {
+                ProcessId: 4242,
+                CommandLine:
+                  '"C:/Node/node.exe" "C:/Applications/openclaw/dist/index.js" gateway --port 19789',
+              },
+            ]
+          : null,
+      );
+      const state = await readGatewayServiceState(resolveGatewayService(), {
+        env: environment(),
+        windowsStartupEntry: startupPath,
+        requireEffective: true,
+        requireLoadedCommand: true,
+      });
+      expect(state.command).toMatchObject({ sourcePath: scriptPath });
+      expect(state.env.OPENCLAW_PROFILE).toBe("rescue");
+      expect(state.runtime).toMatchObject(
+        inspected ? { status: "running", pid: 4242 } : { status: "unknown" },
+      );
+      expect(state.running).toBe(inspected);
+      expect(taskProbe.probeScheduledTaskState).not.toHaveBeenCalled();
+      if (!inspected) {
+        expect(state.runtime?.pid).toBeUndefined();
+      }
+    },
+  );
+
+  it.each(["launcher", "script"] as const)(
+    "rejects a changed Startup %s after runtime inspection",
+    async (changed) => {
+      const { startupPath, scriptPath } = await startup("9.4");
+      const changedPath = changed === "launcher" ? startupPath : scriptPath;
+      const original = await fs.readFile(changedPath);
+      vi.spyOn(taskProcesses, "readWindowsProcessSnapshot").mockImplementation(() => {
+        writeFileSync(
+          changedPath,
+          Buffer.concat([
+            original,
+            Buffer.from("\r\n", changed === "launcher" ? "utf16le" : "utf8"),
+          ]),
+        );
+        return null;
+      });
+      await expect(
+        readGatewayServiceState(resolveGatewayService(), {
+          env: environment(),
+          windowsStartupEntry: startupPath,
+          requireEffective: true,
+          requireLoadedCommand: true,
+        }),
+      ).rejects.toThrow("Startup launcher changed during runtime inspection");
+    },
+  );
+
   it.each(["cmd", "9.2/9.3", "9.4"] as const)(
     "discovers an unselected sibling from real %s launcher files",
     async (form) => {

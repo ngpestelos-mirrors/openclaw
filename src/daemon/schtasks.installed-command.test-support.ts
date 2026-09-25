@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { sanitizeForLog, stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import {
   hasUnjoinedWork,
@@ -9,6 +10,88 @@ import {
 } from "../../scripts/lib/managed-child-process.mts";
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { formatCommandOutput } from "../process/command-error.js";
+
+type ServiceObservation = "install" | "status";
+
+function captureServiceOutput(
+  kind: ServiceObservation,
+  stdout: string,
+  truncated: boolean,
+  diagnostic: (value: string) => string,
+) {
+  if (truncated) {
+    return { kind, unavailable: "capture limit exceeded; output withheld" };
+  }
+  let value: Record<string, unknown> | undefined;
+  try {
+    value = asOptionalRecord(JSON.parse(stdout));
+  } catch {
+    return { kind, unavailable: "response is not JSON" };
+  }
+  if (!value) {
+    return { kind, unavailable: "response is not a JSON object" };
+  }
+  // Only these fixed diagnostic fields may cross into retained evidence, never config/auth/argv.
+  const fields = (input: unknown, keys: string[]) => {
+    const source = asOptionalRecord(input);
+    return Object.fromEntries(
+      keys.map((key) => {
+        const field = source?.[key];
+        return [
+          key,
+          typeof field === "string"
+            ? diagnostic(field)
+            : typeof field === "number" || typeof field === "boolean" || field === null
+              ? field
+              : undefined,
+        ];
+      }),
+    );
+  };
+  const service = asOptionalRecord(value.service);
+  const common = { kind };
+  if (kind === "install") {
+    return {
+      ...common,
+      ...fields(value, ["action", "ok", "result", "message", "error"]),
+      service: fields(service, ["label", "loaded", "loadedText", "notLoadedText"]),
+      warnings: Array.isArray(value.warnings)
+        ? value.warnings
+            .slice(0, 5)
+            .filter((warning): warning is string => typeof warning === "string")
+            .map(diagnostic)
+        : undefined,
+    };
+  }
+  const runtime = asOptionalRecord(service?.runtime);
+  const rpc = asOptionalRecord(value.rpc);
+  return {
+    ...common,
+    service: {
+      ...fields(service, ["loaded", "inspectionReason"]),
+      loadState: fields(service?.loadState, ["status", "detail", "inspectionReason"]),
+      runtime: {
+        ...fields(runtime, [
+          "status",
+          "state",
+          "pid",
+          "detail",
+          "inspectionReason",
+          "missingUnit",
+          "lastRunTime",
+          "lastRunResult",
+        ]),
+        inspectionFailure: fields(runtime?.inspectionFailure, ["code", "detail", "timeoutMs"]),
+      },
+    },
+    rpc: {
+      ...fields(rpc, ["ok", "kind", "url", "error", "gatewayReached"]),
+      server: fields(rpc?.server, ["version", "buildId"]),
+    },
+    gateway: fields(value.gateway, ["port", "version", "bindMode", "bindHost", "probeUrl"]),
+    port: fields(value.port, ["port", "status"]),
+  };
+}
 
 export type CommandRecord = {
   args: string[];
@@ -19,6 +102,7 @@ export type CommandRecord = {
   joined: boolean;
   elapsedMs: number;
   failureOutput?: { stdout: string; stderr: string; captureTruncated: boolean };
+  serviceOutput?: ReturnType<typeof captureServiceOutput>;
 };
 export async function run(
   args: string[],
@@ -27,7 +111,9 @@ export async function run(
   records: CommandRecord[],
   expectedExit = 0,
   signal?: AbortSignal,
+  options: { expectedStderr?: readonly string[]; observeService?: ServiceObservation } = {},
 ) {
+  const { expectedStderr = [], observeService } = options;
   const started = performance.now();
   let child: ChildProcess | undefined;
   let stdout = "";
@@ -77,6 +163,7 @@ export async function run(
   const afterCleanup = child
     ? inspectManagedProcessGroup(child, { errorPolicy: "indeterminate" })
     : undefined;
+  const stderrMatches = expectedStderr.every((expected) => stderr.includes(expected));
   const failed =
     failure ||
     afterCleanup !== "dead" ||
@@ -84,7 +171,8 @@ export async function run(
     truncated ||
     exitSignal !== null ||
     code !== expectedExit ||
-    result !== expectedExit;
+    result !== expectedExit ||
+    !stderrMatches;
   const redaction = { env, stateDir: env.OPENCLAW_STATE_DIR ?? cwd };
   const diagnostic = (value: string) => {
     // A truncated capture may have lost the field name needed for redaction.
@@ -116,6 +204,9 @@ export async function run(
     joined: afterCleanup === "dead" && !hasUnjoinedWork(failure),
     elapsedMs: performance.now() - started,
     ...(failureOutput ? { failureOutput } : {}),
+    ...(observeService
+      ? { serviceOutput: captureServiceOutput(observeService, stdout, truncated, diagnostic) }
+      : {}),
   });
   if (child && afterCleanup !== "dead") {
     // Keep the existing fixture lifetime's claim when physical cleanup is uncertain.
@@ -135,5 +226,10 @@ export async function run(
   const details = failureOutput ? JSON.stringify(failureOutput, null, 2) : "";
   assert.equal(code, expectedExit, details);
   assert.equal(result, expectedExit, details);
+  assert.equal(
+    stderrMatches,
+    true,
+    `Command stderr did not match expected diagnostics.\n${details}`,
+  );
   return stdout;
 }

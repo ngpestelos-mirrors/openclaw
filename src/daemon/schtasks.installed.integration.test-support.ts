@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { z } from "zod";
 import {
@@ -13,10 +14,9 @@ import {
 import type { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 import {
+  assertInstalledSiblingBuildRefusal,
   doctorReportSchema,
   inspectDisabledDiscoveryTasks,
-  inspectInstalledSelectedStartupFallback,
-  inspectInstalledStartupSiblings,
   type InstalledTask as Task,
 } from "./schtasks.installed-diagnostics.test-support.js";
 import {
@@ -37,6 +37,11 @@ import {
   samePath,
   verifyPreparedInstall,
 } from "./schtasks.installed-package.test-support.js";
+import {
+  inspectInstalledSelectedStartupFallback,
+  inspectInstalledStartupAliasBuildRefusal,
+  inspectInstalledStartupSiblings,
+} from "./schtasks.installed-startup.test-support.js";
 
 type Lifetime = ReturnType<typeof createFixtureLifetime>;
 type Owners = {
@@ -106,6 +111,12 @@ export async function runInstalledLifecycle(
       commands,
       expectedExit,
       signal,
+      {
+        observeService:
+          args[0] === "gateway" && (args[1] === "install" || args[1] === "status")
+            ? args[1]
+            : undefined,
+      },
     );
   const doctor = async (task: Task, expectedExit = 1) =>
     doctorReportSchema.parse(
@@ -267,6 +278,25 @@ export async function runInstalledLifecycle(
       const peerXml = await readTaskXml(peer.taskName);
       const peerConfig = await fs.readFile(peer.configPath);
       const peerInstallBefore = await hashInstall(peer.installRoot);
+      if (key === "2026.9.4") {
+        observations.siblingBuildRefusal = await assertInstalledSiblingBuildRefusal({
+          toolingEntry: path.resolve("scripts/run-node.mjs"),
+          selected,
+          peer,
+          commands,
+          signal,
+          verifyContinuity: async () => {
+            assert.equal(
+              (await status(selected, beforeIdentity)).service.runtime.pid,
+              before.service.runtime.pid,
+            );
+            assert.equal(
+              (await status(peer, peerIdentity)).service.runtime.pid,
+              peerBefore.service.runtime.pid,
+            );
+          },
+        });
+      }
       const driverBefore = await hashFile(selected.entry);
       observations.driver = {
         version: key,
@@ -339,6 +369,22 @@ export async function runInstalledLifecycle(
         admissions,
         admissionPath,
       });
+      if (key === "2026.9.4") {
+        observations.startupAliasBuildRefusal = await inspectInstalledStartupAliasBuildRefusal({
+          toolingEntry: path.resolve("scripts/run-node.mjs"),
+          selected,
+          peer,
+          expectedSelected: after,
+          expectedPeer: peerAfter,
+          readStatus: async (task) => JSON.parse(await cli(task, ["gateway", "status", "--json"])),
+          commands,
+          signal,
+          lifetime,
+          admissions,
+          admissionPath,
+          waitForLoopbackPortRelease: owners.waitForLoopbackPortRelease,
+        });
+      }
       await cli(peer, ["gateway", "stop", "--force", "--json"]);
       await owners.waitForLoopbackPortRelease(peer.gatewayPort);
       await cli(peer, ["gateway", "uninstall", "--json"]);
@@ -385,6 +431,28 @@ export async function runInstalledLifecycle(
     await cli(selected, ["gateway", "stop", "--force", "--json"]);
     await owners.waitForLoopbackPortRelease(selected.gatewayPort);
     observations.selectedStartupFallback = await inspectInstalledSelectedStartupFallback({
+      ...(key === "2026.9.4"
+        ? {
+            observeFingerprint: async () =>
+              JSON.parse(
+                await run(
+                  [
+                    "--import",
+                    pathToFileURL(path.resolve("scripts/tsx.mjs")).href,
+                    path.resolve(
+                      "src/daemon/schtasks.installed-fingerprint-observer.test-support.mts",
+                    ),
+                    inputPath,
+                  ],
+                  selected.env,
+                  process.cwd(),
+                  commands,
+                  0,
+                  signal,
+                ),
+              ),
+          }
+        : {}),
       selected,
       expectedCommand: candidateStatus.service.command.programArguments,
       doctor: (task) => doctor(task, 0),

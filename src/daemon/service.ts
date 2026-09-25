@@ -22,6 +22,7 @@ import {
   commitDaemonRuntimePin,
   readDaemonRuntimePinForInstall,
 } from "./runtime-pin-state.js";
+import { readStartupEntryState } from "./schtasks-runtime.js";
 import {
   installScheduledTask,
   isScheduledTaskEnabled,
@@ -63,7 +64,6 @@ import type {
   GatewayServiceManageArgs,
   GatewayServiceReadOptions,
   GatewayServiceRestartResult,
-  GatewayServiceStartRepairIssue,
   GatewayServiceStartResult,
   GatewayServiceStageArgs,
   GatewayServiceState,
@@ -133,20 +133,16 @@ export type GatewayService = GatewayServiceLoadStateReader & {
   ) => Promise<GatewayServiceRuntime>;
 };
 
-/** Reads the installed service and reports definition drift that must be repaired before launch. */
-export async function inspectGatewayServiceStartRepair(
-  service: GatewayService,
-  args: GatewayServiceEnvArgs,
-  expectedPort?: number,
-): Promise<{ state: GatewayServiceState; issues: GatewayServiceStartRepairIssue[] }> {
-  const state = await readGatewayServiceState(service, args);
-  return { state, issues: collectGatewayServiceStartRepairIssues(state, expectedPort) };
-}
-
 export async function readGatewayServiceState(
   service: GatewayService,
   input: ReadGatewayServiceStateArgs = {},
 ): Promise<GatewayServiceState> {
+  if (input.windowsStartupEntry !== undefined) {
+    if (service.readCommand !== readScheduledTaskCommand) {
+      throw new Error("Startup file inspection requires the Windows service adapter.");
+    }
+    return readStartupEntryState(input.windowsStartupEntry, input);
+  }
   let args = input;
   const deadline =
     performance.now() + (args.timeoutMs && args.timeoutMs > 0 ? args.timeoutMs : 5000);
@@ -389,11 +385,8 @@ export async function startGatewayService(
   args: GatewayServiceControlArgs,
   expectedPort?: number,
 ): Promise<GatewayServiceStartResult> {
-  const { state, issues: repairIssues } = await inspectGatewayServiceStartRepair(
-    service,
-    { env: args.env },
-    expectedPort,
-  );
+  const state = await readGatewayServiceState(service, { env: args.env });
+  const repairIssues = collectGatewayServiceStartRepairIssues(state, expectedPort);
   if (state.loadState.status === "unknown") {
     throw new Error(`Service status inspection failed: ${state.loadState.detail}`);
   }

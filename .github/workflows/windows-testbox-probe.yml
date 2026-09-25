@@ -1139,7 +1139,7 @@ jobs:
               if ($record.role -cin @("direct", "extra") -and $record.cleanupNeedle -cne $expectedProfile) { throw "Diagnostic task cleanup token differs from its exact profile." }
               if ($record.PSObject.Properties.Name -ccontains "startupEntryPaths") {
                 $entryCount = @($record.startupEntryPaths).Count
-                if ($record.role -cnotin @("selected", "peer") -or ($record.cell -ceq "fresh" -and $record.role -cne "selected") -or $record.startupEntriesInitiallyAbsent -ne $true -or $entryCount -notin @(2, 3) -or ($entryCount -eq 3 -and $record.role -cne "selected")) { throw "Startup paths lack their exact installed fixture admission." }
+                if ($record.role -cnotin @("selected", "peer") -or ($record.cell -ceq "fresh" -and $record.role -cne "selected") -or $record.startupEntriesInitiallyAbsent -ne $true -or $entryCount -notin @(2, 3) -or ($entryCount -eq 3 -and $record.role -cne "selected" -and -not ($record.cell -ceq "2026.9.4" -and $record.role -ceq "peer"))) { throw "Startup paths lack their exact installed fixture admission." }
                 $startupRoot = Join-Path $expectedRoot "appdata/Microsoft/Windows/Start Menu/Programs/Startup"
                 $extensions = @("cmd", "vbs", "sibling.vbs")
                 foreach ($entryIndex in 0..($entryCount - 1)) {

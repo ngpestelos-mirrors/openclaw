@@ -180,6 +180,8 @@ script. The complete inventory retains errors for unreadable or malformed Gatewa
 launchers; Doctor and status list only successfully inspected extra services.
 Startup inspection hints use the exact file path and do not grant Task Scheduler
 control over it.
+Local builds also check these definitions for a running Gateway using that
+installation's `dist`. Stop the matching Gateway before rebuilding its files.
 
 The task probe allows Windows PowerShell to inherit or create a console because
 some PowerShell 5.1 hosts fail inspection when console creation is disabled.

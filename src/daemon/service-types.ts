@@ -185,6 +185,7 @@ export type GatewayServiceDefinitionInspectionArgs = GatewayServiceEnvArgs & {
 };
 
 export type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
+  windowsStartupEntry?: string;
   systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
   systemdInstallation?: GatewayServiceState["systemdInstallation"];
   requireEffective?: boolean;

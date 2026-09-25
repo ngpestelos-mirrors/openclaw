@@ -434,6 +434,7 @@ describe("failed update recovery restart", () => {
           windowsTaskAutoStartRecovery: {
             suspended: Promise.resolve(true),
             beginMutation: () => {},
+            assertRecoveryCurrent: () => {},
             restore,
             handoff: () => {},
             complete,

@@ -4,11 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { z } from "zod";
-import { hashFile } from "../../scripts/lib/gateway-bench-installed-package.ts";
-import type { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
-import { normalizeWindowsTaskIdentity } from "./constants.js";
+import { hashFile, hashInstall } from "../../scripts/lib/gateway-bench-installed-package.ts";
+import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
 import {
-  installedStatusSchema,
+  packageRoot,
   type parseInstalledPreview,
 } from "./schtasks.installed-package.test-support.js";
 
@@ -339,303 +338,51 @@ export async function inspectDisabledDiscoveryTasks(params: {
   };
 }
 
-type InstalledStartupInspectionArgs = {
+/** Native installed-peer build admission; no source-checkout compile or successful build claim. */
+export async function assertInstalledSiblingBuildRefusal(params: {
+  toolingEntry: string;
+  startupEntry?: string;
   selected: InstalledTask;
-  launcher: InstalledTask;
-  doctor: (task: InstalledTask) => Promise<z.infer<typeof doctorReportSchema>>;
-  deepStatus: (task: InstalledTask) => Promise<unknown>;
-  lifetime: Pick<ReturnType<typeof createFixtureLifetime>, "verifyCleanup">;
-  admissions: Array<Record<string, unknown>>;
-  admissionPath: string;
-};
-
-const startupStatusExtrasSchema = z.object({
-  extraServices: z.array(
-    z.object({
-      platform: z.string(),
-      label: z.string(),
-      detail: z.string(),
-      scope: z.string(),
-      windowsStartupEntry: z.string().optional(),
-    }),
-  ),
-});
-
-async function withInstalledStartupEntries(
-  params: InstalledStartupInspectionArgs,
-  includeAlias: boolean,
-  inspect: (startupPaths: string[]) => Promise<Record<string, unknown>>,
-) {
-  const { selected, launcher, lifetime, admissions, admissionPath } = params;
-  const { buildStartupLauncherScript, resolveStartupEntryPath, resolveTaskLauncherScriptPath } =
-    await import("./schtasks-layout.js");
-  const { encodeWindowsLauncherScript } = await import("../infra/windows-launcher-encoding.js");
-  const { probeScheduledTaskExists } = await import("./schtasks-state-probe.js");
-  const { readTaskXml } = await import("./schtasks.integration-observation.test-support.js");
-  const launcherPath = resolveTaskLauncherScriptPath(launcher.env, launcher.scriptPath);
-  assert.notEqual(launcherPath, launcher.scriptPath);
-  const sourcePaths = [launcher.scriptPath, launcherPath];
-  const sourceHashes = await Promise.all(sourcePaths.map((pathname) => hashFile(pathname)));
-  const snapshots = await Promise.all(
-    [...new Set([selected, launcher])].map(async (task) => {
-      assert.equal(probeScheduledTaskExists(task.taskName), true);
-      const xml = await readTaskXml(task.taskName);
-      assert.ok(xml);
-      return { task, xml, config: await fs.readFile(task.configPath) };
-    }),
-  );
-  const startupPaths = [
-    resolveStartupEntryPath(launcher.env, "cmd"),
-    resolveStartupEntryPath(launcher.env, "vbs"),
-  ];
-  const startupBytes = [
-    encodeWindowsLauncherScript({
-      format: "cmd",
-      content: buildStartupLauncherScript({ scriptPath: launcher.scriptPath }),
-    }),
-    await fs.readFile(launcherPath),
-  ];
-  if (includeAlias) {
-    startupPaths.push(startupPaths[1]!.replace(/\.vbs$/u, ".sibling.vbs"));
-    startupBytes.push(startupBytes[1]!);
-  }
-  for (const pathname of startupPaths) {
-    await assert.rejects(fs.lstat(pathname), { code: "ENOENT" });
-  }
-  const matches = admissions.filter((record) => record.taskName === launcher.taskName);
-  assert.equal(matches.length, 1);
-  const admission = matches[0];
-  assert.ok(admission);
-  assert.ok(admission.role === "selected" || admission.role === "peer");
-  if (admission.startupEntryPaths !== undefined) {
-    assert.equal(admission.startupEntriesInitiallyAbsent, true);
-    assert.deepEqual(admission.startupEntryPaths, startupPaths.slice(0, 2));
-  }
-  // Admission precedes creation; the workflow removes only these exact owned files.
-  admission.startupEntriesInitiallyAbsent = true;
-  admission.startupEntryPaths = startupPaths;
-  await fs.writeFile(admissionPath, JSON.stringify(admissions, null, 2));
-  const createdPaths: string[] = [];
-  let failure: Error | undefined;
-  let observation: Record<string, unknown> | undefined;
-  try {
-    await fs.mkdir(path.dirname(startupPaths[0]!), { recursive: true });
-    for (const [index, pathname] of startupPaths.entries()) {
-      const handle = await fs.open(pathname, "wx");
-      createdPaths.push(pathname);
-      try {
-        await handle.writeFile(startupBytes[index]!);
-      } finally {
-        await handle.close();
-      }
-    }
-    observation = await inspect(startupPaths);
-    for (const snapshot of snapshots) {
-      assert.equal(probeScheduledTaskExists(snapshot.task.taskName), true);
-      assert.equal(await readTaskXml(snapshot.task.taskName), snapshot.xml);
-      assert.deepEqual(await fs.readFile(snapshot.task.configPath), snapshot.config);
-    }
-    assert.deepEqual(
-      await Promise.all(sourcePaths.map((pathname) => hashFile(pathname))),
-      sourceHashes,
-    );
-    for (const [index, pathname] of startupPaths.entries()) {
-      assert.deepEqual(await fs.readFile(pathname), startupBytes[index]);
-    }
-  } catch (error) {
-    failure = toErrorObject(error, "Installed Startup diagnostics failed");
-  }
-  try {
-    await lifetime.verifyCleanup(async () => {
-      const results = await Promise.allSettled(
-        createdPaths.map(async (pathname) => {
-          await fs.rm(pathname);
-          await assert.rejects(fs.lstat(pathname), { code: "ENOENT" });
-        }),
-      );
-      const errors = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      if (errors.length) {
-        throw new AggregateError(errors, "Startup sibling cleanup failed");
-      }
-    });
-  } catch (error) {
-    failure = new AggregateError(failure ? [failure, error] : [error], "Startup fixture failed");
-  }
-  if (failure) {
-    throw failure;
-  }
-  assert.ok(observation);
-  return {
-    ...observation,
-    sourcePaths,
-    sourceSha256: sourceHashes,
-    startupEntryPaths: startupPaths,
-    taskDefinitionsRestored: true,
-    startupEntriesRemoved: true,
-    launcherExecutionRequested: false,
-    launcherScope:
-      "CMD wrapper uses the maintained renderer; gateway CMD and VBS bytes come from the installed fixture.",
-  };
-}
-
-export async function inspectInstalledStartupSiblings(
-  params: InstalledStartupInspectionArgs & {
-    expectedStatus: z.infer<typeof installedStatusSchema>;
-  },
-) {
-  const { selected, launcher, expectedStatus, doctor, deepStatus } = params;
-  return withInstalledStartupEntries(params, false, async (startupPaths) => {
-    const report = await doctor(selected);
-    assert.equal(report.checksRun, 1);
-    const findings = report.findings.filter(
-      (finding) =>
-        finding.target &&
-        normalizeWindowsTaskIdentity(finding.target) ===
-          normalizeWindowsTaskIdentity(launcher.taskName),
-    );
-    assert.equal(findings.length, 2);
-    for (const pathname of startupPaths) {
-      const found = findings.filter((finding) => finding.message.includes(`startup: ${pathname}`));
-      assert.equal(found.length, 1);
-      assert.equal(found[0]?.checkId, "core/doctor/gateway-services/extra");
-      assert.equal(found[0]?.severity, "info");
-    }
-    const value = await deepStatus(selected);
-    const status = installedStatusSchema.parse(value);
-    assert.deepEqual(status.service, expectedStatus.service);
-    assert.deepEqual(status.rpc.server, expectedStatus.rpc.server);
-    assert.deepEqual(status.gateway, expectedStatus.gateway);
-    const { extraServices } = startupStatusExtrasSchema.parse(value);
-    const siblings = extraServices.filter(
-      (service) =>
-        normalizeWindowsTaskIdentity(service.label) ===
-        normalizeWindowsTaskIdentity(launcher.taskName),
-    );
-    assert.equal(siblings.length, 2);
-    for (const pathname of startupPaths) {
-      const found = siblings.filter((service) => service.windowsStartupEntry === pathname);
-      assert.equal(found.length, 1);
-      assert.equal(found[0]?.platform, "win32");
-      assert.equal(found[0]?.scope, "user");
-      assert.equal(found[0]?.detail, `startup: ${pathname}`);
-    }
-    return { report, status, siblings, scope: "Task-present same-label Startup diagnostics" };
-  });
-}
-
-export async function inspectInstalledSelectedStartupFallback(
-  params: Omit<InstalledStartupInspectionArgs, "launcher"> & {
-    expectedCommand: string[];
-    canBindLoopbackPort: (port: number) => Promise<boolean>;
-  },
-) {
-  const { selected, doctor, deepStatus, lifetime, expectedCommand, canBindLoopbackPort } = params;
-  const { execSchtasks } = await import("./schtasks-exec.js");
-  const { probeScheduledTaskState } = await import("./schtasks-state-probe.js");
-  const { readScheduledTaskRuntime } = await import("./schtasks-runtime.js");
-  const { readTaskXml, readRelatedProcessDiagnostics } =
-    await import("./schtasks.integration-observation.test-support.js");
-  const assertStopped = async () => {
-    const runtime = await readScheduledTaskRuntime(selected.env, { requireLoaded: true });
-    assert.equal(runtime.status, "stopped");
-    assert.equal(runtime.pid, undefined);
-    assert.equal(await canBindLoopbackPort(selected.gatewayPort), true);
-    const processes = readRelatedProcessDiagnostics([selected.profile]);
-    assert.equal(processes.ok, true);
-    assert.equal(processes.truncated, false);
-    assert.deepEqual(processes.processes, []);
-  };
-  await assertStopped();
-  return withInstalledStartupEntries(
-    { ...params, launcher: selected },
-    true,
-    async (startupPaths) => {
-      const originalXml = await readTaskXml(selected.taskName);
-      assert.ok(originalXml);
-      const restorePath = path.join(selected.rootDir, "startup-restore-task.xml");
-      await fs.writeFile(restorePath, `\uFEFF${originalXml}`, "utf16le");
-      let failure: Error | undefined;
-      let observation: Record<string, unknown> | undefined;
-      try {
-        assert.equal((await execSchtasks(["/Delete", "/F", "/TN", selected.taskName])).code, 0);
-        assert.equal(probeScheduledTaskState(selected.taskName).status, "missing");
-        await assertStopped();
-        const aliasPath = startupPaths[2];
-        assert.ok(aliasPath);
-        const report = await doctor(selected);
-        assert.equal(report.checksRun, 1);
-        assert.equal(report.findings.length, 1);
-        assert.equal(report.findings[0]?.target, selected.taskName);
-        assert.equal(report.findings[0]?.checkId, "core/doctor/gateway-services/extra");
-        assert.equal(report.findings[0]?.severity, "info");
-        assert.ok(report.findings[0]?.message.includes(`startup: ${aliasPath}`));
-        const value = await deepStatus(selected);
-        const status = z
-          .object({
-            service: z.object({
-              loaded: z.literal(true),
-              runtime: z.object({
-                status: z.literal("stopped"),
-                pid: z.undefined(),
-                detail: z.string(),
-              }),
-              command: z.object({ programArguments: z.array(z.string()) }),
-            }),
-            rpc: z.object({ ok: z.literal(false) }),
-            gateway: z.object({ port: z.number().int().positive() }),
-          })
-          .parse(value);
-        assert.match(status.service.runtime.detail, /^Startup-folder login item installed;/u);
-        assert.deepEqual(status.service.command.programArguments, expectedCommand);
-        assert.equal(status.gateway.port, selected.gatewayPort);
-        const { extraServices } = startupStatusExtrasSchema.parse(value);
-        assert.deepEqual(extraServices, [
-          {
-            platform: "win32",
-            label: selected.taskName,
-            detail: `startup: ${aliasPath}`,
-            scope: "user",
-            windowsStartupEntry: aliasPath,
-          },
-        ]);
-        assert.equal(probeScheduledTaskState(selected.taskName).status, "missing");
-        await assertStopped();
-        observation = {
-          report,
-          status,
-          extraServices,
-          selectedStartupEntryPaths: startupPaths.slice(0, 2),
-          aliasPath,
-          scope:
-            "Read-only selected Startup fallback classification with a positive same-label alias; no fallback update or protected-authority claim.",
-        };
-      } catch (error) {
-        failure = toErrorObject(error, "Selected Startup fallback inspection failed");
-      }
-      try {
-        await lifetime.verifyCleanup(async () => {
-          assert.equal(
-            (await execSchtasks(["/Create", "/F", "/TN", selected.taskName, "/XML", restorePath]))
-              .code,
-            0,
-          );
-          assert.equal(await readTaskXml(selected.taskName), originalXml);
-          assert.equal(probeScheduledTaskState(selected.taskName).status, "found");
-          await assertStopped();
-        });
-      } catch (error) {
-        failure = new AggregateError(
-          failure ? [failure, error] : [error],
-          "Selected Startup Task restoration failed",
-        );
-      }
-      if (failure) {
-        throw failure;
-      }
-      assert.ok(observation);
-      return observation;
+  peer: InstalledTask;
+  commands: CommandRecord[];
+  signal: AbortSignal;
+  verifyContinuity: () => Promise<void>;
+}) {
+  const { toolingEntry, selected, peer, commands, signal, verifyContinuity } = params;
+  const buildRoot = await fs.realpath(packageRoot(peer.installRoot));
+  const dist = path.join(buildRoot, "dist");
+  assert.equal((await fs.lstat(dist)).isDirectory(), true);
+  assert.notEqual(await fs.realpath(packageRoot(selected.installRoot)), buildRoot);
+  const before = await hashInstall(peer.installRoot);
+  const toolingEntrySha256 = await hashFile(toolingEntry);
+  await run(
+    [toolingEntry, "models", "status"],
+    { ...selected.env, OPENCLAW_FORCE_BUILD: "1" },
+    buildRoot,
+    commands,
+    1,
+    signal,
+    {
+      expectedStderr: [
+        `Refusing to rebuild dist while a managed Gateway (profile ${peer.profile})`,
+        params.startupEntry
+          ? `stop the process launched by Startup entry ${JSON.stringify(params.startupEntry)}`
+          : `openclaw gateway stop --profile ${peer.profile}`,
+      ],
     },
   );
+  await verifyContinuity();
+  assert.deepEqual(await hashInstall(peer.installRoot), before);
+  return {
+    kind: "native-installed-peer-build-admission",
+    toolingEntry,
+    toolingEntrySha256,
+    buildRoot,
+    dist,
+    peerProfile: peer.profile,
+    exactSiblingRefusal: true,
+    installedFilesUnchanged: true,
+    liveRpcAndPidContinuity: true,
+    successfulBuildObserved: false,
+  };
 }

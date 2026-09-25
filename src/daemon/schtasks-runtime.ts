@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import { findVerifiedGatewayListenerPidsOnPortSync } from "../infra/gateway-processes.js";
 import { inspectPortUsage } from "../infra/ports-inspect.js";
 import { mergeProcessEnv } from "../infra/process-env.js";
@@ -14,6 +15,7 @@ import { formatLine } from "./output.js";
 import { execSchtasks } from "./schtasks-exec.js";
 import {
   readScheduledTaskCommand,
+  readStartupEntryCommand,
   resolveStartupEntryPaths,
   resolveTaskName,
   resolveTaskScriptPath,
@@ -43,6 +45,8 @@ import type {
   GatewayServiceEnvArgs,
   GatewayServiceReadOptions,
   GatewayServiceRestartResult,
+  GatewayServiceState,
+  ReadGatewayServiceStateArgs,
 } from "./service-types.js";
 import {
   assertGatewayServiceUpdateCurrent,
@@ -216,6 +220,38 @@ export async function launchFallbackTaskScript(
     },
   });
   child.unref();
+}
+
+/** Inspect an exact login item without borrowing a same-name Scheduled Task's state. */
+export async function readStartupEntryState(
+  startupEntryPath: string,
+  args: ReadGatewayServiceStateArgs,
+): Promise<GatewayServiceState> {
+  const capture = async () => {
+    const contents: string[] = [];
+    const command = await readStartupEntryCommand(startupEntryPath, {
+      onLauncherContent: (content) => contents.push(content),
+    });
+    return { command, contents };
+  };
+  const captured = await capture();
+  const env = mergeGatewayServiceEnv(args.env ?? process.env, captured.command);
+  args.validateEnvBeforeStatusRead?.(env);
+  const runtime = await resolveFallbackRuntime(env, captured.command, "control").catch(
+    (error: unknown) => createServiceRuntimeInspectionFailure(error),
+  );
+  if (!isDeepStrictEqual(await capture(), captured)) {
+    throw new Error("Startup launcher changed during runtime inspection.");
+  }
+  return {
+    installed: true,
+    loadState: { status: "loaded" },
+    running: runtime.status === "running",
+    env,
+    command: captured.command,
+    runtime,
+    ...(runtime.inspectionReason ? { inspectionReason: runtime.inspectionReason } : {}),
+  };
 }
 
 export async function resolveFallbackRuntime(
