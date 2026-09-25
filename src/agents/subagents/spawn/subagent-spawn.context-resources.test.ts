@@ -253,6 +253,7 @@ describe("spawn context-engine resource custody", () => {
     const settleFailedLaunch = vi.fn(async () => {});
     const cancelledScope = {
       waitForClaim: () => undefined,
+      waitForRetirementPublication: () => undefined,
       canLaunch: () => false,
       canCleanupSession: () => true,
       canAcceptLaunch: () => true,
@@ -372,7 +373,7 @@ describe("spawn context-engine resource custody", () => {
       expect(fixture.database.isOpen).toBe(true);
       expect(launches).toBe(0);
       if (mode === "withdrawal") {
-        const hold = scheduler.holdSwarmRunReservation(result.runId!);
+        const hold = scheduler.holdQueuedSwarmRun(result.runId!);
         expect(hold?.withdraw()).toBe(true);
         let released = false;
         const release = Promise.resolve(hold?.release()).then(() => {

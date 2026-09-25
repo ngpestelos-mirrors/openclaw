@@ -3,6 +3,7 @@ import os from "node:os";
 // persistence, registry registration, and lifecycle event emission.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.shared.js";
 import { upsertSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -10,6 +11,7 @@ import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.j
 import { resolveUserPath } from "../../../utils.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { installAcceptedSubagentGatewayMock } from "../../test-helpers/subagent-gateway.js";
+import type { RegisterSubagentRunOptions } from "../registry/subagent-registry.types.js";
 import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import {
   createConfigOverride,
@@ -48,6 +50,7 @@ const hoisted = vi.hoisted(() => ({
 
 let resetSubagentRegistryForTests: typeof import("../registry/subagent-registry.test-helpers.js").resetSubagentRegistryForTests;
 let spawnSubagentDirect: typeof import("./subagent-spawn.js").spawnSubagentDirect;
+let closeSwarmScheduler: typeof import("../swarm/swarm-scheduler.js").closeSwarmScheduler;
 
 const requireRecord = createRequireRecord("record", "expected-non-array-record");
 
@@ -192,6 +195,7 @@ describe("spawnSubagentDirect seam flow", () => {
       resolveSandboxRuntimeStatus: hoisted.resolveSandboxRuntimeStatusMock,
       sessionStorePath: "/tmp/subagent-spawn-session-store.json",
     }));
+    ({ closeSwarmScheduler } = await import("../swarm/swarm-scheduler.js"));
   });
 
   beforeEach(() => {
@@ -770,6 +774,104 @@ describe("spawnSubagentDirect seam flow", () => {
       first.runId,
       expect.any(String),
     );
+  });
+
+  it("retains the collector slot through publication and retrying rollback termination", async () => {
+    vi.stubEnv("OPENCLAW_TEST_FAST", "1");
+    hoisted.configOverride = createConfigOverride({
+      tools: { swarm: { enabled: true, maxConcurrent: 1 } },
+    });
+    hoisted.startQueuedSubagentRunMock.mockReturnValueOnce(false).mockReturnValue(true);
+    const publication = createDeferred();
+    const waitEntered = createDeferred();
+    const retryEntered = createDeferred();
+    const allowDeletion = createDeferred();
+    const secondDispatched = createDeferred();
+    let publicationPending = true;
+    let agentCalls = 0;
+    let deleteCalls = 0;
+    hoisted.registerSubagentRunMock.mockImplementationOnce(
+      (record: { runId: string }, options?: RegisterSubagentRunOptions) => {
+        if (!options?.retainOwnership) {
+          throw new Error("Expected retained collector registration");
+        }
+        options.retainOwnership({
+          canLaunch: () => true,
+          canAcceptLaunch: () => true,
+          canCleanupSession: () => !publicationPending,
+          canRetireReservation: () => true,
+          waitForClaim: () => undefined,
+          waitForRetirementPublication: () => {
+            if (!publicationPending) {
+              return undefined;
+            }
+            waitEntered.resolve();
+            return publication.promise;
+          },
+          settleFailedLaunch: async (error) => {
+            hoisted.settleFailedQueuedSubagentLaunchMock(record.runId, error);
+          },
+        });
+      },
+    );
+    hoisted.callGatewayMock.mockImplementation(async (request: { method?: string }) => {
+      if (request.method === "agent") {
+        agentCalls += 1;
+        if (agentCalls === 2) {
+          secondDispatched.resolve();
+        }
+        return { runId: `gateway-${agentCalls}` };
+      }
+      if (request.method === "chat.abort") {
+        throw new Error("abort unavailable");
+      }
+      if (request.method === "sessions.delete") {
+        deleteCalls += 1;
+        if (deleteCalls === 1) {
+          throw new Error("transient guarded deletion failure");
+        }
+        retryEntered.resolve();
+        await allowDeletion.promise;
+      }
+      return {};
+    });
+    try {
+      const first = await spawnSubagentDirect(
+        { task: "publication-first", collect: true, groupId: "publication-rollback" },
+        { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
+      );
+      const second = await spawnSubagentDirect(
+        { task: "publication-second", collect: true, groupId: "publication-rollback" },
+        { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
+      );
+      await waitEntered.promise;
+      expect(agentCalls).toBe(1);
+      expect(deleteCalls).toBe(0);
+      publicationPending = false;
+      publication.resolve();
+      expect(
+        await Promise.race([
+          retryEntered.promise.then(() => "cleanup retry"),
+          secondDispatched.promise.then(() => "next dispatch"),
+        ]),
+      ).toBe("cleanup retry");
+      expect(agentCalls).toBe(1);
+      expect(hoisted.settleFailedQueuedSubagentLaunchMock).not.toHaveBeenCalled();
+      allowDeletion.resolve();
+      await secondDispatched.promise;
+      await vi.waitFor(() =>
+        expect(hoisted.startQueuedSubagentRunMock).toHaveBeenCalledWith(second.runId, "gateway-2"),
+      );
+      expect(hoisted.settleFailedQueuedSubagentLaunchMock).toHaveBeenCalledWith(
+        first.runId,
+        expect.any(String),
+      );
+    } finally {
+      publicationPending = false;
+      publication.resolve();
+      allowDeletion.resolve();
+      await closeSwarmScheduler();
+    }
   });
 
   it("holds the collector slot while an indeterminate launch session is deleted", async () => {

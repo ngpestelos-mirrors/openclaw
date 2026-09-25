@@ -17,7 +17,7 @@ import {
 import {
   activateSwarmRun,
   closeSwarmScheduler,
-  holdSwarmRunReservation,
+  holdQueuedSwarmRun,
   isSwarmRunActive,
   releaseSwarmRun,
   reserveSwarmRun,
@@ -211,7 +211,7 @@ it.each(["cancelled", "shutdown"] as const)(
           if (reason === "shutdown") {
             removal = closeSwarmScheduler(lifecycleOwner);
           } else {
-            const hold = holdSwarmRunReservation("queued-removal");
+            const hold = holdQueuedSwarmRun("queued-removal");
             expect(hold?.withdraw()).toBe(true);
             removal = hold?.release();
           }

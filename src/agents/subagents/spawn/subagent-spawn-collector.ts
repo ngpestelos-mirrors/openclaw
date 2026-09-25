@@ -119,8 +119,8 @@ export function createCollectorLaunchCallbacks(params: {
           throw new Error("collector registry row could not transition from queued to running");
         }
       } catch (error) {
-        // Termination can delete the provisional session. The scheduler's failure
-        // settlement waits for cancellation publication before taking that ownership.
+        // Publication temporarily blocks cleanup authority. Settle rollback after
+        // that barrier so a paused owner cannot count as confirmed termination.
         pendingLaunchTermination = gatewayRunId;
         throw error;
       }
@@ -177,6 +177,13 @@ export function createCollectorLaunchCallbacks(params: {
           break;
         }
         await claim;
+      }
+      for (
+        let publication = registrationScope?.waitForRetirementPublication();
+        publication;
+        publication = registrationScope?.waitForRetirementPublication()
+      ) {
+        await publication;
       }
       if (pendingLaunchTermination && !launchTerminationConfirmed) {
         await terminateAcceptedCollectorRun({

@@ -24,6 +24,7 @@ import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recover
 import { callSubagentRegistryGateway } from "./subagent-registry-deps.js";
 import { updateSubagentArchiveAtMs } from "./subagent-registry-helpers.js";
 import type { SubagentLifecycleController } from "./subagent-registry-lifecycle.js";
+import { waitForSubagentRetirementPublication } from "./subagent-registry-memory.js";
 import { getLatestSubagentRunByChildSessionKeyFromRuns } from "./subagent-registry-queries.js";
 import { isRetiredSubagentSessionOwner } from "./subagent-registry-restart-recovery-helpers.js";
 import { restoreSubagentRunsFromDisk } from "./subagent-registry-state.js";
@@ -284,8 +285,8 @@ export function createSubagentRegistryRestorer(config: {
                   );
                 }
               } catch (error) {
-                // Restored launches share the scheduler's publication hold; rollback
-                // must not delete their provisional session before that hold releases.
+                // Keep accepted rollback in failure settlement, where retirement
+                // publication can finish before provisional-session deletion.
                 pendingLaunchTermination = { gatewayRunId, error };
                 throw error;
               }
@@ -294,6 +295,13 @@ export function createSubagentRegistryRestorer(config: {
           onStartFailure: async (error) => {
             if (error instanceof GatewayDrainingError) {
               return false;
+            }
+            for (
+              let publication = waitForSubagentRetirementPublication(entry);
+              publication;
+              publication = waitForSubagentRetirementPublication(entry)
+            ) {
+              await publication;
             }
             if (pendingLaunchTermination && !launchTerminationConfirmed) {
               await terminateAcceptedRestoredCollectorRun({
@@ -396,6 +404,15 @@ export function createSubagentRegistryRestorer(config: {
     expectedSessionId?: string,
     expectedLifecycleRevision?: string,
   ): Promise<boolean> {
+    // Descriptorless restore failures enter here without onStartFailure; their
+    // provisional session must survive the same pending cancellation receipt.
+    for (
+      let publication = waitForSubagentRetirementPublication(entry);
+      publication;
+      publication = waitForSubagentRetirementPublication(entry)
+    ) {
+      await publication;
+    }
     if (runs.get(runId) !== entry || entry.execution.status !== "queued") {
       return true;
     }

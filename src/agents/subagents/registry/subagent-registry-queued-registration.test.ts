@@ -27,7 +27,7 @@ import {
   createInMemoryTaskFlowRegistryStore,
 } from "../../../test-utils/task-registry-store.js";
 import { runSpawnPipeline } from "../../spawn-pipeline.js";
-import { holdSwarmRunReservation, reserveSwarmRun } from "../swarm/swarm-scheduler.js";
+import { holdQueuedSwarmRun, reserveSwarmRun } from "../swarm/swarm-scheduler.js";
 import { testing as schedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import { SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
 import { registerQueuedRegistrationAdmissionCases } from "./subagent-registry-queued-admission.test-support.js";
@@ -213,7 +213,7 @@ it.each(["same-id", "different-id", "lifecycle", "database"] as const)(
       maxConcurrent: 1,
       activeRunIds: [],
     });
-    const reservation = holdSwarmRunReservation(f.registration.runId)!;
+    const reservation = holdQueuedSwarmRun(f.registration.runId)!;
     const completion = f.register();
     const rejected = expect(completion).rejects.toThrow("original run owner");
     const original = f.runs.get(f.registration.runId)!;

@@ -52,11 +52,7 @@ import {
 } from "../../subagent-test-fixtures.test-helpers.js";
 import type { SubagentRegistryHarness } from "../../subagent-test-fixtures.test-helpers.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
-import {
-  enqueueSwarmRun,
-  holdSwarmRunReservation,
-  releaseSwarmRun,
-} from "../swarm/swarm-scheduler.js";
+import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
 import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import {
   SUBAGENT_ENDED_REASON_COMPLETE,
@@ -1573,29 +1569,39 @@ describe("subagent registry seam flow", () => {
 
     hydrateAndActivateRegistry();
     await launchEntered.promise;
-    const hold = expectDefined(
-      holdSwarmRunReservation("run-restored-stop-one"),
-      "restored launch publication hold",
+    const memory = await import("./subagent-registry-memory.js");
+    const entry = expectDefined(memory.subagentRuns.get("run-restored-stop-one"), "restored run");
+    const publication = memory.subagentRuns.captureRetirement(
+      entry,
+      (current) => current === entry,
     );
-    const launchState = expectDefined(
-      swarmSchedulerTesting.capturePendingLaunch("run-restored-stop-one"),
-      "restored pending launch",
-    );
+    const overlap = memory.subagentRuns.captureRetirement(entry, (current) => current === entry);
+    const cleanupWaiting = createDeferred();
+    const waitForPublication = memory.waitForSubagentRetirementPublication;
+    const publicationWait = vi
+      .spyOn(memory, "waitForSubagentRetirementPublication")
+      .mockImplementation((current) => {
+        const pending = waitForPublication(current);
+        if (current === entry && pending) {
+          cleanupWaiting.resolve();
+        }
+        return pending;
+      });
     try {
       releaseLaunch.resolve();
-      await waitForFast(() =>
-        expect(launchState()).toEqual({
-          holds: 1,
-          waitingForHolds: true,
-          startFailureEntered: false,
-        }),
-      );
+      await cleanupWaiting.promise;
       expect(releaseAbort).toBeUndefined();
       expect(deleteReleases).toEqual([]);
       expect(agentCalls).toBe(1);
+      publication.completePublication();
+      expect(memory.hasPendingSubagentRetirementPublication(entry)).toBe(true);
+      expect(releaseAbort).toBeUndefined();
+      overlap.completePublication();
     } finally {
       releaseLaunch.resolve();
-      await hold.release();
+      publication.release();
+      overlap.release();
+      publicationWait.mockRestore();
     }
     await waitForFast(() => expect(releaseAbort).toBeTypeOf("function"));
     expect(agentCalls).toBe(1);

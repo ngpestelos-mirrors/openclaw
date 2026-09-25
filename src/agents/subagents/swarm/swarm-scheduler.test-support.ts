@@ -3,11 +3,6 @@ import "./swarm-scheduler.js";
 type SwarmSchedulerTestApi = {
   testing: {
     reset(): void;
-    capturePendingLaunch(
-      runId: string,
-    ):
-      | (() => { holds: number; waitingForHolds: boolean; startFailureEntered: boolean })
-      | undefined;
   };
 };
 

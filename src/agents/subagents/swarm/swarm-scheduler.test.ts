@@ -1,4 +1,3 @@
-import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { PluginRuntimeCloseRetainedError } from "../../../plugins/runtime-close-error.js";
@@ -9,7 +8,7 @@ import {
   enqueueSwarmRun,
   isSwarmRunActive,
   isSwarmRunWaitingForCapacity,
-  holdSwarmRunReservation,
+  holdQueuedSwarmRun,
   releaseSwarmRun,
   removeQueuedSwarmRun,
   reserveSwarmRun,
@@ -143,7 +142,7 @@ describe("swarm scheduler", () => {
       waits.push(isSwarmRunWaitingForCapacity("two", owner));
     });
     await vi.waitFor(() => expect(started).toEqual(["one"]));
-    const hold = holdSwarmRunReservation("two");
+    const hold = holdQueuedSwarmRun("two");
     expect(isSwarmRunWaitingForCapacity("two", owner)).toBe(false);
     await hold?.release();
     expect(isSwarmRunWaitingForCapacity("two", owner)).toBe(true);
@@ -182,7 +181,7 @@ describe("swarm scheduler", () => {
           onStartFailure: () => true,
           onRemoved,
         });
-        const hold = holdSwarmRunReservation(runId);
+        const hold = holdQueuedSwarmRun(runId);
         assert(hold);
         expect(hold.withdraw()).toBe(true);
         releases.push(hold.release());
@@ -247,142 +246,6 @@ describe("swarm scheduler", () => {
     }
     await closing;
     expect(onRemoved).toHaveBeenCalledExactlyOnceWith("shutdown");
-  });
-
-  it.each([false, true])(
-    "retains pending-launch cleanup across overlapping holds and reused IDs (cleanupFailure=%s)",
-    async (cleanupFailure) => {
-      const lifecycleOwner = {};
-      const entered = createDeferred();
-      const failLaunch = createDeferred();
-      const failureEntered = createDeferred();
-      const removalEntered = createDeferred();
-      const finishRemoval = createDeferred();
-      const failure = new Error("removal failed");
-      const onStartFailure = vi.fn(async () => {
-        failureEntered.resolve();
-        return true;
-      });
-      enqueueSwarmRun({
-        groupId: "original",
-        runId: "reused",
-        maxConcurrent: 1,
-        activeRunIds: [],
-        lifecycleOwner,
-        start: async () => {
-          entered.resolve();
-          await failLaunch.promise;
-        },
-        onStartFailure,
-        onRemoved: async () => {
-          removalEntered.resolve();
-          await finishRemoval.promise;
-          if (cleanupFailure) {
-            throw failure;
-          }
-        },
-      });
-      await entered.promise;
-      const first = holdSwarmRunReservation("reused");
-      const second = holdSwarmRunReservation("reused");
-      assert(first && second);
-      let closing: Promise<unknown> | undefined;
-      try {
-        expect(first.withdraw()).toBe(false);
-        failLaunch.reject(new Error("admission cancelled"));
-        await nextTurn();
-        expect(onStartFailure).not.toHaveBeenCalled();
-        expect(releaseSwarmRun("reused")).toBe(true);
-        const replacementEntered = createDeferred();
-        enqueueSwarmRun({
-          groupId: "replacement",
-          runId: "reused",
-          maxConcurrent: 1,
-          activeRunIds: [],
-          start: async () => replacementEntered.resolve(),
-          onStartFailure: () => true,
-        });
-        await replacementEntered.promise;
-        closing = closeSwarmScheduler(lifecycleOwner).then(
-          () => undefined,
-          (error: unknown) => error,
-        );
-        expect(first.isCurrent()).toBe(false);
-        expect(first.withdraw()).toBe(false);
-        // Neither the first nor a repeated non-final release may join gated cleanup.
-        await first.release();
-        await first.release();
-        expect(onStartFailure).not.toHaveBeenCalled();
-        const released = second.release();
-        await failureEntered.promise;
-        await removalEntered.promise;
-        expect(onStartFailure).toHaveBeenCalledOnce();
-        expect(isSwarmRunActive("reused")).toBe(true);
-        finishRemoval.resolve();
-        await released;
-        if (cleanupFailure) {
-          expect(await closing).toMatchObject({ errors: [failure] });
-        } else {
-          expect(await closing).toBeUndefined();
-        }
-      } finally {
-        failLaunch.reject(new Error("test cleanup"));
-        finishRemoval.resolve();
-        await Promise.all([first.release(), second.release()]);
-        await closing;
-        await closeSwarmScheduler();
-      }
-    },
-  );
-
-  it("rechecks a new hold before entering failure cleanup after the last hold wakes it", async () => {
-    const entered = createDeferred();
-    const failLaunch = createDeferred();
-    const failureEntered = createDeferred();
-    const finishFailure = createDeferred();
-    const onStartFailure = vi.fn(async () => {
-      failureEntered.resolve();
-      await finishFailure.promise;
-      return true;
-    });
-    enqueueSwarmRun({
-      groupId: "group",
-      runId: "pending",
-      maxConcurrent: 1,
-      activeRunIds: ["restored"],
-      start: async () => {
-        entered.resolve();
-        await failLaunch.promise;
-      },
-      onStartFailure,
-    });
-    expect(holdSwarmRunReservation("restored")).toBeUndefined();
-    releaseSwarmRun("restored");
-    await entered.promise;
-    const first = holdSwarmRunReservation("pending");
-    assert(first);
-    let second: ReturnType<typeof holdSwarmRunReservation>;
-    try {
-      failLaunch.reject(new Error("admission cancelled"));
-      await nextTurn();
-      const released = first.release();
-      second = holdSwarmRunReservation("pending");
-      assert(second);
-      await released;
-      await nextTurn();
-      expect(onStartFailure).not.toHaveBeenCalled();
-      await second.release();
-      await failureEntered.promise;
-      // A hold cannot retroactively protect cleanup that already started.
-      expect(holdSwarmRunReservation("pending")).toBeUndefined();
-      finishFailure.resolve();
-      await closeSwarmScheduler();
-    } finally {
-      failLaunch.reject(new Error("test cleanup"));
-      finishFailure.resolve();
-      await Promise.all([first.release(), second?.release()]);
-      await closeSwarmScheduler();
-    }
   });
 
   it("preserves restored active slots when shutting down queued launch resources", async () => {
@@ -793,8 +656,8 @@ describe("swarm scheduler", () => {
       if (activation === "before") {
         activate();
       }
-      const first = holdSwarmRunReservation("held");
-      const second = holdSwarmRunReservation("held");
+      const first = holdQueuedSwarmRun("held");
+      const second = holdQueuedSwarmRun("held");
       expect(first).toBeDefined();
       expect(second).toBeDefined();
       if (activation === "during") {
@@ -847,7 +710,7 @@ describe("swarm scheduler", () => {
         start: oldStart,
         onStartFailure: () => true,
       });
-      const hold = holdSwarmRunReservation("reused");
+      const hold = holdQueuedSwarmRun("reused");
       expect(hold).toBeDefined();
       expect(hold?.withdraw()).toBe(true);
       expect(isSwarmRunActive("reused")).toBe(false);

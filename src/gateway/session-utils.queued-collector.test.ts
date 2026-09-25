@@ -16,7 +16,7 @@ import {
 } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
 import {
   activateSwarmRun,
-  holdSwarmRunReservation,
+  holdQueuedSwarmRun,
   releaseSwarmRun,
   removeQueuedSwarmRun,
   reserveSwarmRun,
@@ -279,7 +279,7 @@ describe("queued collector session projection", () => {
         agentId: "other",
       }),
     ).toEqual({ active: false, runIds: [] });
-    const hold = expectDefined(holdSwarmRunReservation(entry.runId), "queued hold");
+    const hold = expectDefined(holdQueuedSwarmRun(entry.runId), "queued hold");
     const start = vi.fn(async () => {});
     try {
       activateSwarmRun({
