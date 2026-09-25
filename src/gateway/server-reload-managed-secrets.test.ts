@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { lookupContextTokens, resetContextWindowCacheForTest } from "../agents/context.js";
+import { closePreparedModelRuntimeSnapshots } from "../agents/prepared-model-runtime.lifecycle.js";
 import { createModelProviderRouteOverrideResolver } from "../config/model-provider-config.js";
 import {
   getRuntimeConfigSnapshot,
   getRuntimeConfigSourceSnapshot,
 } from "../config/runtime-snapshot.js";
 import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
+import type { ModelProviderConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { getActiveSecretsRuntimeSnapshotState } from "../secrets/runtime-state.js";
 import {
   activateSecretsRuntimeSnapshot,
   activateSecretsRuntimeSnapshotWithSource,
@@ -13,20 +17,24 @@ import {
   getActiveSecretsRuntimeSnapshotRevision,
   prepareSecretsRuntimeSnapshot,
 } from "../secrets/runtime.js";
+import { diffConfigPaths } from "./config-diff.js";
 import { buildGatewayReloadPlan } from "./config-reload-plan.js";
 import type { GatewayConfigReloadTransactionOwnership } from "./config-reload.js";
 import { createManagedReloadSecretHandlers } from "./server-reload-managed-secrets.js";
 import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
 import { createRuntimeSecretsActivator } from "./server-startup-config.js";
 
-vi.mock("../agents/context.js", () => ({ refreshContextWindowCache: vi.fn() }));
+let finishPendingModelReload: (() => Promise<void>) | undefined;
 
-afterEach(() => {
+afterEach(async () => {
+  await finishPendingModelReload?.();
+  finishPendingModelReload = undefined;
   clearSecretsRuntimeSnapshot();
+  resetContextWindowCacheForTest();
   vi.restoreAllMocks();
 });
 
-function configPair(runtime: "openclaw" | "codex") {
+function configPair(runtime: "openclaw" | "codex", contextWindow?: number) {
   const source = {
     agents: { defaults: { models: { "openai/gpt-5.6-luna": { agentRuntime: { id: runtime } } } } },
     models: {
@@ -42,6 +50,7 @@ function configPair(runtime: "openclaw" | "codex") {
               input: ["text", "image"],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               maxTokens: 4096,
+              ...(contextWindow === undefined ? {} : { contextWindow }),
             },
           ],
         },
@@ -73,8 +82,11 @@ function expectAuthoredSource(source: OpenClawConfig) {
   ).toBe("none");
 }
 
-async function createReload(commit: () => Promise<void>, beforePublication?: () => Promise<void>) {
-  const initial = configPair("openclaw");
+async function createReload(
+  commit: () => Promise<void>,
+  beforePublication?: () => Promise<void>,
+  { initial = configPair("openclaw"), next = configPair("codex") } = {},
+) {
   activateSecretsRuntimeSnapshotWithSource(await prepare(initial.config), initial.source);
   expectAuthoredSource(initial.source);
   const activateRuntimeSecrets = createRuntimeSecretsActivator({
@@ -127,11 +139,9 @@ async function createReload(commit: () => Promise<void>, beforePublication?: () 
     rollbackRuntimeEnv: vi.fn(),
     reapplyRuntimeOverlays: (config) => config,
   };
-  const next = configPair("codex");
-  const plan = buildGatewayReloadPlan(
-    ["agents.defaults.models.openai/gpt-5.6-luna.agentRuntime.id"],
-    { candidateConfig: next.config },
-  );
+  const plan = buildGatewayReloadPlan(diffConfigPaths(initial.source, next.source), {
+    candidateConfig: next.config,
+  });
   return {
     initial,
     next,
@@ -170,13 +180,51 @@ describe("managed reload authored source", () => {
     expectAuthoredSource(next.source);
   });
 
-  it("restores the predecessor's authored source when runtime commit fails", async () => {
-    const { initial, ownership, run } = await createReload(async () => {
-      throw new Error("commit failed");
+  it("restores source and cold context limits before model replacement settles after commit failure", async () => {
+    const initial = configPair("openclaw", 32_768);
+    const next = configPair("codex", 65_536);
+    const candidateOnlyModel = "rollback-candidate-only";
+    for (const config of [next.source, next.config]) {
+      const provider: ModelProviderConfig = config.models!.providers!.openai!;
+      provider.models.push({
+        ...provider.models[0]!,
+        id: candidateOnlyModel,
+        contextWindow: 16_384,
+      });
+    }
+    resetContextWindowCacheForTest();
+    const failure = new Error("commit failed");
+    const { ownership, run } = await createReload(
+      async () => {
+        // The candidate is visible before commit; a cold synchronous reader can cache its limits.
+        expect(lookupContextTokens("gpt-5.6-luna", { allowAsyncLoad: false })).toBe(65_536);
+        expect(lookupContextTokens(candidateOnlyModel, { allowAsyncLoad: false })).toBe(16_384);
+        throw failure;
+      },
+      undefined,
+      { initial, next },
+    );
+    const { markPreparedModelRuntimeSnapshotsStale, rejectPendingPreparedModelRuntimeReplacement } =
+      await import("../agents/prepared-model-runtime.js");
+    const replacement = markPreparedModelRuntimeSnapshotsStale("plugin reload is preparing", {
+      waitForReplacement: true,
     });
-    await expect(run()).rejects.toThrow("commit failed");
-    expect(ownership.markRuntimeCommitted).not.toHaveBeenCalled();
-    expectAuthoredSource(initial.source);
+    // Independent teardown also releases the gate if the original self-wait times out the test.
+    finishPendingModelReload = async () => {
+      rejectPendingPreparedModelRuntimeReplacement(replacement, failure);
+      await verification.catch(() => {});
+      await closePreparedModelRuntimeSnapshots();
+    };
+
+    const verification = (async () => {
+      await expect(run()).rejects.toBe(failure);
+      expect(ownership.markRuntimeCommitted).not.toHaveBeenCalled();
+      expectAuthoredSource(initial.source);
+      expect(getActiveSecretsRuntimeSnapshotState()?.config).toEqual(initial.config);
+      expect(lookupContextTokens("gpt-5.6-luna", { allowAsyncLoad: false })).toBe(32_768);
+      expect(lookupContextTokens(candidateOnlyModel, { allowAsyncLoad: false })).toBeUndefined();
+    })();
+    await verification;
   });
 
   it("does not roll back a newer publication's authored source", async () => {

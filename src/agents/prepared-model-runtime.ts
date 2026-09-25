@@ -17,9 +17,8 @@ import {
 import { refreshPreparedModelRuntimeSnapshotsNow } from "./prepared-model-runtime.configured-refresh.js";
 import { isPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalog.js";
 import {
-  capturePreparedModelRuntimeLifetime,
   closePreparedModelRuntimeSnapshots,
-  registerPreparedModelRuntimeClose,
+  PreparedModelRuntimeRefreshLifetime,
   createPreparedModelRuntimeReplacement,
   retirePreparedModelRuntimeGeneration,
 } from "./prepared-model-runtime.lifecycle.js";
@@ -102,8 +101,7 @@ const retainedDirectRunOwners = new PreparedModelRuntimeOwnerRetention(1);
 const retainedGatewayRunOwners = new PreparedModelRuntimeOwnerRetention(8);
 let gatewayLifecycleActive = false;
 const publicationQueue = new PreparedModelRuntimePublicationQueue();
-let refreshRequestEpoch = 0;
-let refreshCancellation = new AbortController();
+const refreshLifetime = new PreparedModelRuntimeRefreshLifetime(closeModelRuntime);
 let pendingModelRuntimeReplacement: PreparedModelRuntimeReplacement | undefined;
 const authPublication = new PreparedModelRuntimeAuthPublicationOwner();
 const getBlockingReplacement = () =>
@@ -121,15 +119,11 @@ const replyDispatchPublication = new PreparedReplyDispatchPublicationOwner({
 });
 export const loadPublishedGatewayReplyDispatchRuntime = replyDispatchPublication.load;
 
-let releaseProcessLifetime: (() => void) | undefined;
-function captureModelRuntimeLifetime(): () => void {
-  const assertCurrent = capturePreparedModelRuntimeLifetime();
-  releaseProcessLifetime ??= registerPreparedModelRuntimeClose(closeModelRuntime);
-  return assertCurrent;
-}
+/** Seal shared acquisition before shutdown joins managed reloads. */
+export const cancelPreparedModelRuntimeRefresh = refreshLifetime.cancel;
 
 async function closeModelRuntime(error: Error): Promise<void> {
-  refreshRequestEpoch += 1;
+  refreshLifetime.requestEpoch += 1;
   authPublication.reset(error);
   pendingModelRuntimeReplacement?.reject(error);
   pendingModelRuntimeReplacement = undefined;
@@ -143,15 +137,14 @@ async function closeModelRuntime(error: Error): Promise<void> {
   retainedGatewayRunOwners.clear(owners);
   gatewayLifecycleActive = false;
   replyDispatchPublication.clear();
-  refreshCancellation.abort(error);
+  refreshLifetime.cancellation.abort(error);
   const results = await Promise.allSettled([
     publicationQueue.settle(),
     ...agentBuildCompletions.values(),
     ...standaloneActivationTails.values(),
   ]);
   closingOwners.forEach(releasePreparedPluginPublication);
-  releaseProcessLifetime?.();
-  releaseProcessLifetime = undefined;
+  refreshLifetime.release();
   const failures = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason] : [],
   );
@@ -209,7 +202,7 @@ async function loadPreparedModelRuntimeOwner<T>(
   rawInput: PreparedModelRuntimeInput,
   project: (owner: PreparedModelRuntimeOwner, snapshot: PreparedModelRuntimeSnapshot) => T,
 ): Promise<T> {
-  const assertLifetime = captureModelRuntimeLifetime();
+  const assertLifetime = refreshLifetime.capture();
   let input = normalizePreparedModelRuntimeInput({
     ...rawInput,
     preserveWorkspaceDirOnRefresh:
@@ -280,7 +273,7 @@ export async function publishPreparedModelRuntimeSnapshot(
   rawInput: PreparedModelRuntimeInput,
   options: PreparedModelRuntimePublicationOptions = {},
 ): Promise<PreparedModelRuntimeSnapshot> {
-  captureModelRuntimeLifetime();
+  refreshLifetime.capture();
   const input = normalizePreparedModelRuntimeInput(rawInput);
   const existing = owners.get(ownerKey(input));
   if (existing?.pending) {
@@ -319,7 +312,7 @@ export async function activateStandalonePreparedModelRuntime(
   rawInput: PreparedModelRuntimeInput,
   options: Pick<PreparedModelRuntimePublicationOptions, "catalogMode"> = {},
 ): Promise<PreparedModelRuntimeSnapshot | undefined> {
-  const assertLifetime = captureModelRuntimeLifetime();
+  const assertLifetime = refreshLifetime.capture();
   const input = normalizePreparedModelRuntimeInput(rawInput);
   const key = ownerKey(input);
   const previous = standaloneActivationTails.get(key) ?? Promise.resolve();
@@ -382,7 +375,7 @@ async function activateStandalonePreparedModelRuntimeNow(
 }
 
 const preparedModelRuntimeLeaseContext = {
-  captureLifetime: captureModelRuntimeLifetime,
+  captureLifetime: refreshLifetime.capture,
   owners,
   agentBuildCompletions,
   retainedDirectRunOwners,
@@ -470,9 +463,10 @@ export function markPreparedModelRuntimeSnapshotsStale(
     agentIds?: ReadonlySet<string>;
   } = {},
 ): PreparedModelRuntimeReplacementGateId | undefined {
-  captureModelRuntimeLifetime();
-  const previousCancellation = refreshCancellation;
-  refreshCancellation = new AbortController();
+  refreshLifetime.capture();
+  refreshLifetime.cancellation.signal.throwIfAborted();
+  const previousCancellation = refreshLifetime.cancellation;
+  refreshLifetime.cancellation = new AbortController();
   setPreparedModelRuntimeStartupStatus(undefined);
   replyDispatchPublication.clear();
   if (options.waitForReplacement) {
@@ -486,7 +480,7 @@ export function markPreparedModelRuntimeSnapshotsStale(
     pendingModelRuntimeReplacement = undefined;
     cancelled.resolve();
   }
-  refreshRequestEpoch += 1;
+  refreshLifetime.requestEpoch += 1;
   const staleError = new Error(reason);
   updateOwnersForScopedRefresh(owners, options.agentIds, staleError, {
     retireStandalone: true,
@@ -539,12 +533,12 @@ export function refreshPreparedModelRuntimeSnapshots(
     waitForReplacement: true,
     agentIds: initialAgentIds,
   });
-  const requestEpoch = refreshRequestEpoch;
-  const acquisitionSignal = refreshCancellation.signal;
+  const requestEpoch = refreshLifetime.requestEpoch;
+  const acquisitionSignal = refreshLifetime.cancellation.signal;
   const replacement = pendingModelRuntimeReplacement;
   let publicationAgentIds = initialAgentIds;
   const isPublicationCurrent = () =>
-    requestEpoch === refreshRequestEpoch && options.isPublicationCurrent?.() !== false;
+    requestEpoch === refreshLifetime.requestEpoch && options.isPublicationCurrent?.() !== false;
   const startup =
     options.startup === true && options.catalogMode === "static" && replacement
       ? new PreparedModelRuntimeStartup({
@@ -570,7 +564,7 @@ export function refreshPreparedModelRuntimeSnapshots(
         })
       : undefined;
   const rejectReplacement = (error: Error) => {
-    if (requestEpoch === refreshRequestEpoch) {
+    if (requestEpoch === refreshLifetime.requestEpoch) {
       // A lost external claim can leave partially built owners; fence them even without a successor.
       updateOwnersForScopedRefresh(owners, publicationAgentIds, error, {
         clearPending: true,

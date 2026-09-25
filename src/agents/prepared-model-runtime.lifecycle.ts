@@ -52,6 +52,41 @@ export function registerPreparedModelRuntimeClose(close: ModelRuntimeClose): () 
   return () => lifetimes.closeCallbacks.delete(close);
 }
 
+/** Module-local refresh admission shares the registered process close lifetime. */
+export class PreparedModelRuntimeRefreshLifetime {
+  requestEpoch = 0;
+  cancellation = new AbortController();
+  #releaseProcessLifetime: (() => void) | undefined;
+
+  constructor(private readonly close: ModelRuntimeClose) {}
+
+  capture = (): (() => void) => {
+    const assertCurrent = capturePreparedModelRuntimeLifetime();
+    if (!this.#releaseProcessLifetime) {
+      // Completed process teardown ends the previous refresh admission fence.
+      this.cancellation = new AbortController();
+      this.#releaseProcessLifetime = registerPreparedModelRuntimeClose(this.close);
+    }
+    return assertCurrent;
+  };
+
+  /** Seal acquisition only after every Gateway has fenced admission. */
+  cancel = (): void => {
+    if (this.#releaseProcessLifetime && this.cancellation.signal.aborted) {
+      return;
+    }
+    this.capture();
+    // Fence publications before cancellation can reenter a provider callback.
+    this.requestEpoch += 1;
+    this.cancellation.abort(new Error("prepared model runtime acquisition stopped for shutdown"));
+  };
+
+  release(): void {
+    this.#releaseProcessLifetime?.();
+    this.#releaseProcessLifetime = undefined;
+  }
+}
+
 /** Install the shared plugin resource owner only when a real generation acquires it. */
 export function registerPreparedPluginRetirement(retire: () => Promise<void>): void {
   capturePreparedModelRuntimeLifetime();
