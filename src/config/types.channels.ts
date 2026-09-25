@@ -111,9 +111,9 @@ export type ExtensionChannelConfig = {
   threadBindings?: {
     /** Enables thread-bound session routing for this channel. */
     enabled?: boolean;
-    /** Allows sessions_spawn/native spawn flows to bind spawned sessions to threads. */
+    /** Allows ACP thread spawns to bind spawned sessions to threads. */
     spawnSessions?: boolean;
-    /** Default context mode for thread-bound native subagent spawns. */
+    /** No longer used: agent-started native subagents never bind a thread. */
     defaultSpawnContext?: "isolated" | "fork";
   };
   /** Channel-specific bot loop guard settings. */

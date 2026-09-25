@@ -142,7 +142,7 @@ function resolveAcpThreadSpawnAvailable(opts: {
 }
 
 const SUBAGENT_THREAD_BINDING_UNAVAILABLE_NOTE =
-  "Thread binding is not available for agent-started subagents; the subagent runs in the background and its result returns here.";
+  "Thread binding is not available for agent-started subagents; the subagent runs in the background.";
 
 function createSessionsSpawnToolSchema(params: {
   acpAvailable: boolean;

@@ -17,7 +17,8 @@ A `sessions_spawn` call with `thread: true` or `mode: "session"` still succeeds
 for a native sub-agent. The child runs unbound, and the result `note` says that
 thread binding is not available for agent-started sub-agents.
 
-Only a user command binds a conversation to another session. Existing
+For native subagents, only a user command binds a conversation to another
+session. ACP spawns with `thread: true` keep their own binding behavior. Existing
 bindings stay in place until you detach them or they expire.
 
 ### Thread supporting channels

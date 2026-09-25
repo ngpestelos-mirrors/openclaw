@@ -67,7 +67,7 @@ read_when:
   </Accordion>
 
   <Accordion title="How do thread-bound subagent sessions work on Discord?">
-    Agent-started subagents never bind a thread or take over a chat. They run in the background and their result returns to the agent that started them. Only user commands, such as `/acp spawn --bind here` or `--thread auto`, bind a conversation to another session.
+    Agent-started subagents never bind a thread or take over a chat. They run in the background and their result returns to the agent that started them. For native subagents, only user commands, such as `/acp spawn --bind here` or `--thread auto`, bind a conversation to another session. ACP spawns with `thread: true` keep their own binding behavior.
 
     - `/agents` inspects binding state.
     - `/session idle <duration|off>` and `/session max-age <duration|off>` control automatic expiry.
