@@ -593,12 +593,22 @@ export function createPublicationOwner(
       if (record.descriptor.reverse) {
         throw new Error("Bound reverse publication cannot use legacy rollback.");
       }
+      const observed = await inspect();
+      assertCurrent();
+      if (
+        observed.selected === "previous" &&
+        !observed.previous &&
+        [...observed.launcherStates.values()].every((value) => value === "previous")
+      ) {
+        transition("aborted");
+        return false;
+      }
       // Disarm before any restore or its compensating moves. Failure to commit
       // this fact forbids compensation; a killed rollback never becomes forward repair.
       transition("rollback-in-progress", record.intent);
-      const observed = await inspect();
+      const disarmed = await inspect();
       assertCurrent();
-      return observed.previous;
+      return disarmed.previous;
     },
     recordRestoredLauncher(name: string, staged: string) {
       if (record.phase !== "rollback-in-progress") {

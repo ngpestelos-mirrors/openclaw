@@ -39,6 +39,19 @@ function observe(pin: Pin, file: string) {
   return target;
 }
 
+function observeNamedSymlink(initial: fs.BigIntStats, file: string): string {
+  const before = fs.lstatSync(file, { bigint: true });
+  if (!same(initial, before) || !before.isSymbolicLink() || before.nlink !== 1n) {
+    throw new Error("Reverse symlink path does not match its captured inode.");
+  }
+  const target = fs.readlinkSync(file);
+  const after = fs.lstatSync(file, { bigint: true });
+  if (!same(before, after) || Buffer.byteLength(target) !== Number(before.size)) {
+    throw new Error("Reverse symlink changed while reading its named inode.");
+  }
+  return target;
+}
+
 /** Observation lifetime only: the existing executor still owns every effect.
  * Keep pins through callback, child and command settlement, including handoff.
  * Pins are process-local and never passed to children. Once this scope ends,
@@ -82,7 +95,10 @@ export async function withPackageReverseSymlinkCustody<T>(
 
 export function readPackageReverseSymlink(file: string, initial: fs.BigIntStats): string {
   if (process.platform !== "darwin" || !fs.constants.O_SYMLINK) {
-    throw new Error("Reverse symlink custody requires an inode-bound read capability.");
+    // Unix npm launchers are normally symlinks. Their named inode is observed
+    // without yielding; the effect path rechecks the same identity immediately
+    // before rename. Darwin additionally retains the inode across awaited work.
+    return observeNamedSymlink(initial, file);
   }
   const scope = custody.getStore();
   if (scope && !scope.active) {

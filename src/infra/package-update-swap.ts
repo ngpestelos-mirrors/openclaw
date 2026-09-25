@@ -260,7 +260,7 @@ export async function swapStagedPackageInstall(
       messages.push(
         `Installation recovery is unverified; inspect the installation and backups in ${targetLayout.globalRoot} before restarting.`,
       );
-    } else if (activation) {
+    } else if (activation && activation.status().phase !== "aborted") {
       activation.restored();
     } else {
       for (const [root, label] of [

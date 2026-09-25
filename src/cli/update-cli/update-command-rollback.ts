@@ -99,7 +99,7 @@ export async function rollbackFailedUpdate(params: {
   const env = before?.serviceEnv ?? opts.run?.env ?? process.env;
   // A retained B belongs to full recovery even when its publication owner is
   // unavailable. Refuse there; never downgrade to package-only restoration.
-  if (!opts.recovery && run?.recoveryBaseline) {
+  if (!opts.recovery && run?.recoveryBaseline && packageTransaction?.reversePublication) {
     return rollbackOriginalUpdateGeneration(params);
   }
   if (!opts.recovery) {

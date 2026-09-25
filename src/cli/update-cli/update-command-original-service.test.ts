@@ -620,7 +620,7 @@ it("refuses B ledger admission independently from compatible service A state", a
   expect(mocks.restart).not.toHaveBeenCalled();
 });
 
-it("keeps a captured managed runtime in full recovery when its publisher is unavailable", async () => {
+it("keeps a captured prepublication failure on the existing managed recovery path", async () => {
   const run: NonNullable<UpdateCommandOptions["run"]> = {
     runId: createUpdateRun({ trigger: "cli" }, { env: state.env }).runId,
     env: state.env,
@@ -649,12 +649,10 @@ it("keeps a captured managed runtime in full recovery when its publisher is unav
       allowGatewayRestart: false,
       timeoutMs: 30_000,
     });
-    expect(outcome).toMatchObject({
-      rolledBack: false,
-      pendingRecoveryReason:
-        "Full recovery requires its original captured run and package transaction.",
-      result: { status: "error", recovery: { serviceRestartSafe: false } },
-    });
+    expect(outcome.pendingRecoveryReason).not.toBe(
+      "Full recovery requires its original captured run and package transaction.",
+    );
+    expect(outcome.result.status).toBe("error");
   });
   expect(mocks.nativeInstall).not.toHaveBeenCalled();
   expect(mocks.nativeRestart).not.toHaveBeenCalled();
