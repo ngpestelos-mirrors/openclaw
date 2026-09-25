@@ -47,6 +47,16 @@ export const updateExecutorNativeEntrypoints = {
     sourceWorkerName: "../../infra/update-doctor-result",
     distWorkerPath: "infra/update-doctor-result.js",
   },
+  processBrokerHost: {
+    currentModuleUrl,
+    sourceWorkerName: "../../process/spawn-broker/host",
+    distWorkerPath: "process/spawn-broker/host.js",
+  },
+  processBrokerContext: {
+    currentModuleUrl,
+    sourceWorkerName: "../../process/spawn-broker/context",
+    distWorkerPath: "process/spawn-broker/context.js",
+  },
   processExec: {
     currentModuleUrl,
     sourceWorkerName: "../../process/exec",
