@@ -6,15 +6,18 @@ import {
   getTaskActivitySnapshot,
   recordTaskActivityEvent,
 } from "../tasks/task-registry-activity.js";
-import { getTaskById } from "../tasks/task-registry.js";
+import { updateTask } from "../tasks/task-registry-mutation.js";
+import { getTaskById, cancelTaskById } from "../tasks/task-registry.js";
 import { getTaskRegistryStore } from "../tasks/task-registry.store.js";
 import {
   resetTaskRegistryForTests,
   withTaskRegistryTempDir,
 } from "../tasks/task-registry.test-support.js";
+import { getTaskRunOwner } from "../tasks/task-run-owner.js";
 import {
   captureAgentHarnessTaskAssignment,
   createAgentHarnessTaskRuntime,
+  createAgentHarnessCommandTask,
 } from "./agent-harness-task-runtime.js";
 
 it.each([false, true])(
@@ -91,3 +94,93 @@ it.each([false, true])(
     );
   },
 );
+
+it.each([
+  "cancelled",
+  "succeeded",
+  "replacement",
+  "same-scope replacement",
+  "replacement before stop",
+  "revoked",
+  "incognito",
+] as const)("binds command cancellation to its original task outcome (%s)", async (scenario) => {
+  await withTaskRegistryTempDir(
+    async () => {
+      let current = true;
+      let stops = 0;
+      let replacement: ReturnType<typeof updateTask> | undefined;
+      const ownerKey =
+        scenario === "incognito" ? "agent:main:dashboard:incognito-command" : "agent:main:command";
+      const command = await createAgentHarnessCommandTask({
+        scope: createAgentHarnessTaskRuntimeScope({ requesterSessionKey: ownerKey }),
+        runId: "native-command:original",
+        taskKind: "test-native-command",
+        command: "SYNTHETIC_TASK_CONTENT",
+        startedAt: Date.now(),
+        assertCurrent() {
+          if (!current) {
+            throw new Error("source retired");
+          }
+        },
+        async cancel(_reason, assertTaskCurrent) {
+          stops += 1;
+          if (scenario === "replacement") {
+            replacement = updateTask(command.task.taskId, {
+              runId: "native-command:successor",
+              status: "cancelled",
+            });
+          } else if (scenario === "same-scope replacement") {
+            replacement = updateTask(command.task.taskId, { taskKind: "successor-command" });
+            assertTaskCurrent();
+          } else {
+            await command.finish({
+              status: scenario === "succeeded" ? "succeeded" : "cancelled",
+              endedAt: Date.now(),
+            });
+          }
+        },
+      });
+      try {
+        if (scenario === "revoked") {
+          current = false;
+        }
+        if (scenario === "replacement before stop") {
+          replacement = updateTask(command.task.taskId, { taskKind: "successor-command" });
+        }
+        const result = await cancelTaskById({ cfg: {}, taskId: command.task.taskId });
+        expect(result.cancelled).toBe(scenario === "cancelled" || scenario === "incognito");
+        expect(stops).toBe(
+          scenario === "revoked" || scenario === "replacement before stop" ? 0 : 1,
+        );
+        if (scenario === "incognito") {
+          expect(JSON.stringify(getTaskById(command.task.taskId))).not.toContain(
+            "SYNTHETIC_TASK_CONTENT",
+          );
+        }
+        if (scenario === "replacement") {
+          expect(replacement).toMatchObject({
+            runId: "native-command:successor",
+            status: "cancelled",
+          });
+          await expect(command.finish({ status: "failed", endedAt: Date.now() })).resolves.toBe(
+            "retired",
+          );
+          expect(getTaskById(command.task.taskId)?.runId).toBe("native-command:successor");
+        }
+        if (scenario === "same-scope replacement" || scenario === "replacement before stop") {
+          expect(replacement).toMatchObject({ taskKind: "successor-command", status: "running" });
+          const outcome = await command
+            .finish({ status: "failed", endedAt: Date.now() })
+            .catch(() => "rejected");
+          const successor = expectDefined(getTaskById(command.task.taskId), "replacement task");
+          expect(successor).toMatchObject({ taskKind: "successor-command", status: "running" });
+          expect(outcome).toBe("retired");
+          expect(getTaskRunOwner(successor)).toBeUndefined();
+        }
+      } finally {
+        command.release();
+      }
+    },
+    { durableStore: true },
+  );
+});
