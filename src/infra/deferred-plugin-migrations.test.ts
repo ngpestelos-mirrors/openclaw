@@ -9,6 +9,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { stateNativeProcessEntrypoints } from "../state/native-process-runtime.test-support.js";
 import * as stateDatabaseHandles from "../state/openclaw-state-db-handle.js";
 import { withOpenClawStateDatabaseReadSnapshot } from "../state/openclaw-state-db-readonly.js";
+import type { DB } from "../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -25,11 +26,8 @@ import {
 } from "./deferred-plugin-migrations.js";
 import * as stateOwners from "./gateway-state-owner.js";
 import * as kyselyCache from "./kysely-sync-cache-state.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
-import {
-  readMigrationCheckpointStatus,
-  recordSuccessfulStartupMigrations,
-} from "./startup-migration-checkpoint.js";
 import { recordLegacyMigrationRun } from "./state-migrations.receipts.js";
 
 const log = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn() }));
@@ -297,20 +295,39 @@ describe("deferred configured-plugin migrations", () => {
     },
   );
 
-  it("invalidates successful checkpoints until deferred work completes and is certified again", () => {
+  it("removes historical completion facts when work is deferred without changing other metadata", () => {
     const { env } = fixture();
-    const checkpoint = {
-      env,
-      buildIdentity: "test-build",
-      version: "2026.9.3",
-      identity: {
-        effectiveConfigFingerprint: "config",
-        pluginDoctorConfigFingerprint: "doctor-config",
-        pluginMigrationFingerprint: "plugins",
+    const { db } = openOpenClawStateDatabase({ env });
+    const metadata = getNodeSqliteKysely<Pick<DB, "schema_meta">>(db);
+    const checkpointKeys = ["state-migrations", "startup-migrations"];
+    const fixtureKeys = [...checkpointKeys, "unrelated-metadata"];
+    const readFixtureMetadata = () =>
+      executeSqliteQuerySync(
+        db,
+        metadata.selectFrom("schema_meta").selectAll().where("meta_key", "in", fixtureKeys),
+      ).rows;
+    runOpenClawStateWriteTransaction(
+      ({ db: writeDb }) => {
+        executeSqliteQuerySync(
+          writeDb,
+          metadata.insertInto("schema_meta").values(
+            fixtureKeys.map((metaKey) => ({
+              meta_key: metaKey,
+              role: "global",
+              schema_version: 3,
+              agent_id: null,
+              app_version: "2026.9.3\n3\ntest-build\nconfig\ndoctor-config\nplugins",
+              created_at: 1,
+              updated_at: 1,
+            })),
+          ),
+        );
       },
-    };
-    recordSuccessfulStartupMigrations(checkpoint);
-    expect(readMigrationCheckpointStatus(checkpoint)).toBe("startup-current");
+      { env },
+    );
+    const seeded = readFixtureMetadata();
+    expect(seeded.map((row) => row.meta_key).toSorted()).toEqual(fixtureKeys.toSorted());
+    const unrelated = seeded.filter((row) => row.meta_key === "unrelated-metadata");
     recordDeferredPluginMigrations({
       env,
       pending: [
@@ -321,11 +338,9 @@ describe("deferred configured-plugin migrations", () => {
         },
       ],
     });
-    expect(readMigrationCheckpointStatus(checkpoint)).toBe("stale");
+    expect(readFixtureMetadata()).toEqual(unrelated);
     recordDeferredPluginMigrations({ env, pending: [], resolvedPluginIds: ["fixture-plugin"] });
-    expect(readMigrationCheckpointStatus(checkpoint)).toBe("stale");
-    recordSuccessfulStartupMigrations(checkpoint);
-    expect(readMigrationCheckpointStatus(checkpoint)).toBe("startup-current");
+    expect(readFixtureMetadata()).toEqual(unrelated);
   });
 
   it("retains pending migrations across restart and resolves only the completed plugin", () => {

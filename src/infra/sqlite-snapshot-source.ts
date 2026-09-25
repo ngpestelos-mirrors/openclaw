@@ -26,12 +26,17 @@ import {
 // Keep parent launch orchestration out of the native snapshot child's import graph.
 export async function prepareSqliteReadOnlyLocation(
   pathname: string,
-  options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal } = {},
+  options: {
+    preserveSourceArtifacts?: boolean;
+    signal?: AbortSignal;
+    /** A dedicated reader pins its transaction without borrowing a live writer's connection. */
+    allowLiveOwner?: boolean;
+  } = {},
 ): Promise<PreparedSqliteReadOnlyLocation> {
   const signal = resolveSqliteInspectionSignal(options.signal);
   try {
     signal?.throwIfAborted();
-    if (!options.preserveSourceArtifacts) {
+    if (!options.preserveSourceArtifacts && options.allowLiveOwner !== false) {
       const owned = prepareSqliteSnapshotFromLiveOwner(pathname, signal);
       if (owned) {
         return await owned;
