@@ -245,6 +245,20 @@ console.log("relocated exec authorization persisted");
       signal,
     }) =>
       fixtureLifetime.run(async () => {
+        const diagnosticStart = performance.now();
+        const diagnosticCpu = process.cpuUsage();
+        const observePhase = (phase: string, detail: Record<string, unknown> = {}) => {
+          process.stderr.write(
+            `${JSON.stringify({
+              diagnostic: "worker-facade-phase",
+              phase,
+              elapsedMs: performance.now() - diagnosticStart,
+              cpu: process.cpuUsage(diagnosticCpu),
+              ...detail,
+            })}\n`,
+          );
+        };
+        observePhase("begin");
         const root = fixtureLifetime.createTempDir("openclaw-worker-facade-");
         const packageRoot = path.join(root, "pkg");
         const relocated = path.join(packageRoot, "dist/worker");
@@ -256,7 +270,9 @@ console.log("relocated exec authorization persisted");
           path.join(packageRoot, "package.json"),
           JSON.stringify({ name: "openclaw", version: "0.0.0", type: "module" }),
         );
+        observePhase("extract-start");
         await tar.extract({ file: preparedArchive, cwd: relocated });
+        observePhase("extract-complete");
         fs.writeFileSync(
           path.join(pluginRoot, "package.json"),
           JSON.stringify({
@@ -284,6 +300,7 @@ console.log("relocated exec authorization persisted");
           `globalThis[Symbol.for("worker-facade-evaluations")] = (globalThis[Symbol.for("worker-facade-evaluations")] ?? 0) + 1;
 export const marker = "relocated";`,
         );
+        observePhase("child-start");
         const result = await fixtureLifetime.track(
           runNodeScript(
             [
@@ -348,17 +365,38 @@ console.log("relocated worker facade activation follows the shared config snapsh
               signal,
               requireProcessTreeExit: process.platform !== "win32",
               maxBuffer: 64 * 1024,
+              onReady(child, readOutput) {
+                observePhase("child-ready");
+                child.once("exit", (code, childSignal) => {
+                  const output = readOutput();
+                  observePhase("child-exit", {
+                    code,
+                    signal: childSignal,
+                    stdoutBytes: Buffer.byteLength(output.stdout),
+                    stderrBytes: Buffer.byteLength(output.stderr),
+                  });
+                });
+                child.once("close", (code, childSignal) =>
+                  observePhase("child-close", { code, signal: childSignal }),
+                );
+              },
             },
           ),
         );
+        observePhase("child-settled", {
+          status: result.status,
+          hasError: result.error !== undefined,
+        });
         expect(result.error, `${root}\n${result.stderr}`).toBeUndefined();
         expect(result.status, result.stderr).toBe(0);
         expect(result.stdout.trim()).toBe(
           "relocated worker facade activation follows the shared config snapshot",
         );
 
+        observePhase("audit-import-start");
         const { collectPackageDistImportErrors } =
           await import("../../scripts/lib/package-dist-imports.mjs");
+        observePhase("audit-import-complete");
         const preparedRoot = path.dirname(preparedDist);
         const files = fs
           .readdirSync(preparedDist, { recursive: true, withFileTypes: true })
@@ -368,13 +406,22 @@ console.log("relocated worker facade activation follows the shared config snapsh
               .relative(preparedRoot, path.join(entry.parentPath, entry.name))
               .replaceAll("\\", "/"),
           );
+        observePhase("audit-start", { files: files.length });
         expect(
           collectPackageDistImportErrors({
             files,
-            readText: (relativePath) =>
-              fs.readFileSync(path.join(preparedRoot, relativePath), "utf8"),
+            readText: (relativePath) => {
+              observePhase("audit-read-start", { file: relativePath });
+              const source = fs.readFileSync(path.join(preparedRoot, relativePath), "utf8");
+              observePhase("audit-read-complete", {
+                file: relativePath,
+                characters: source.length,
+              });
+              return source;
+            },
           }),
         ).toEqual([]);
+        observePhase("audit-complete");
       }));
 
     it("delivers resized computer observations and image operations from a relocated archive", async () => {
