@@ -203,7 +203,7 @@ export function publicUpgradeReport(result, upgrade, proof) {
     !evidence.cleanup.confirmed ||
     evidence.gatewayStops.length !== 3 ||
     evidence.updater?.exitCode !== 0 ||
-    evidence.updater.joined !== true
+    !evidence.updater.joined
   ) {
     throw new Error("CURATED_UPGRADE_EVIDENCE_INCOMPLETE");
   }
