@@ -355,7 +355,7 @@ final class ProfileChatPreferencesTests: XCTestCase {
             defaultDefaults.set(true, forKey: reasoningKey)
             defaultDefaults.set(true, forKey: toolActivityKey)
 
-            _ = AppKitTestSupport.application
+            try await AppKitTestSupport.startApplication()
             XCTAssertTrue(AppKitTestSupport.didSetActivationPolicy)
             let transport = ProfileModelPickerTransport()
             let controller = WebChatSwiftUIWindowController(
