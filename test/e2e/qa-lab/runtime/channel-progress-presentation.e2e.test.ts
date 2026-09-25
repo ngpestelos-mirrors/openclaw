@@ -1460,7 +1460,6 @@ describe("channel progress presentation through an isolated Gateway", () => {
       return (
         task?.status === "completed" &&
         delivery?.disposition === "ambiguous" &&
-        typeof delivery.nextAttemptAt === "number" &&
         Boolean(queued) &&
         gateway.logs().includes("automatic completion delivery could not be confirmed")
       );

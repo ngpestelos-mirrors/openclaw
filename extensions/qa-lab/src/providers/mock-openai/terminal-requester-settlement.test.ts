@@ -127,4 +127,19 @@ describe("terminal requester settlement", () => {
       vi.useRealTimers();
     }
   });
+
+  it("fails a terminal requester waiter that never settles", async () => {
+    vi.useFakeTimers();
+    const gate = createTerminalRequesterSettleGate();
+    gate.onResponseSent(requester);
+    const child = gate.waitUntilSettled(requester.caseName, requester.childSessionKey);
+    const timedOut = expect(child).rejects.toThrow("terminal requester did not settle");
+    try {
+      await vi.advanceTimersByTimeAsync(120_000);
+      await timedOut;
+    } finally {
+      gate.stop();
+      vi.useRealTimers();
+    }
+  });
 });

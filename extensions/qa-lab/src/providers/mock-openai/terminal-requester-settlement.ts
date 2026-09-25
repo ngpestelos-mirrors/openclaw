@@ -77,7 +77,11 @@ export function createTerminalRequesterSettleGate() {
       }
       let finish!: (error?: Error) => void;
       const promise = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          finish(new Error(`terminal requester did not settle: ${caseName} (${childSessionKey})`));
+        }, 120_000);
         finish = (error) => {
+          clearTimeout(timeout);
           waiters.delete(key);
           if (error) {
             reject(error);
