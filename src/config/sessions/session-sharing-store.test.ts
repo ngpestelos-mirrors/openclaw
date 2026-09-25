@@ -1,7 +1,10 @@
 import fs from "node:fs";
-import { describe, expect, it } from "vitest";
+import type { Worker } from "node:worker_threads";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { sessionChanges, type SessionRowChange } from "../../sessions/session-row-changes.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   isOpenClawAgentDatabaseOpen,
   openOpenClawAgentDatabase,
@@ -14,10 +17,72 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "./session-accessor.js";
+import * as sqliteArchive from "./session-accessor.sqlite-archive.js";
+import * as reclamation from "./session-accessor.sqlite-reclamation.js";
 import { isSessionMember, listSessionMembers } from "./session-sharing-store.js";
 import { addSessionMember, removeSessionMember } from "./session-sharing-store.native.js";
 
+afterEach(() => vi.restoreAllMocks());
+
 describe("session sharing store", () => {
+  it("joins exited maintenance leases before removing sharing fixture state", async () => {
+    let fixtureRoot = "";
+    const workers: Worker[] = [];
+    const maintenance = createDeferred<{
+      raw: ReturnType<typeof reclamation.runSqliteSessionReclamation>;
+    }>();
+    const spawn = sqliteArchive.createSqliteTranscriptArchiveWorker;
+    vi.spyOn(sqliteArchive, "createSqliteTranscriptArchiveWorker").mockImplementation((data) => {
+      const worker = spawn(data);
+      if (
+        expect
+          .objectContaining({
+            type: "sqlite-transcript-archive-v2",
+            operation: "reclaim",
+            databaseOptions: expect.objectContaining({
+              env: expect.objectContaining({ OPENCLAW_STATE_DIR: fixtureRoot }),
+            }),
+          })
+          .asymmetricMatch(data)
+      ) {
+        workers.push(worker);
+      }
+      return worker;
+    });
+    const run = reclamation.runSqliteSessionReclamation;
+    vi.spyOn(reclamation, "runSqliteSessionReclamation").mockImplementation((params) => {
+      const raw = run(params);
+      if (
+        params.plan.kind === "maintenance-plan" &&
+        params.plan.databaseOptions.env?.OPENCLAW_STATE_DIR === fixtureRoot
+      ) {
+        maintenance.resolve({ raw });
+      }
+      return raw;
+    });
+    await withOpenClawTestState({ layout: "state-only" }, async ({ stateDir: dir, env }) => {
+      fixtureRoot = dir;
+      const scope = {
+        agentId: "main",
+        env,
+        sessionKey: "agent:main:main",
+      };
+      await upsertSessionEntryCore(scope, { sessionId: "session-main", updatedAt: 1 });
+      await expect((await maintenance.promise).raw).resolves.toMatchObject({
+        kind: "maintenance-plan",
+      });
+      expect(workers).toHaveLength(1);
+      const worker = workers[0];
+      if (!worker) {
+        throw new Error("Expected the automatic maintenance worker");
+      }
+      // Parent-owned lease cleanup still needs the original store after native exit.
+      await worker.terminate();
+    });
+    expect(fs.existsSync(fixtureRoot)).toBe(false);
+    await closeOpenClawAgentDatabasesAsync(fixtureRoot);
+  });
+
   it("publishes membership changes only after their containing transaction commits", async () => {
     await withOpenClawTestState({ layout: "state-only" }, async ({ env }) => {
       const scope = { agentId: "main", env, sessionKey: "agent:main:main" };

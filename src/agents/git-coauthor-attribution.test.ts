@@ -6,14 +6,8 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { recordSessionParticipant } from "../config/sessions/session-accessor.sqlite-participants.native.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
-import {
-  openOpenClawAgentDatabase,
-  closeOpenClawAgentDatabasesForTest,
-} from "../state/openclaw-agent-db.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { setUserPreferences } from "../state/user-preferences.js";
 import { ensureProfileForEmail, linkEmail, syncGitHubIdentity } from "../state/user-profiles.js";
 import {
@@ -29,8 +23,6 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
   await sharedState.cleanup();
 });
 
