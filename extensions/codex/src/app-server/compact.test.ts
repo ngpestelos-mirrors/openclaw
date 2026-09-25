@@ -11,7 +11,6 @@ import { patchSessionEntry, upsertSessionEntry } from "openclaw/plugin-sdk/sessi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   consumeCodexAppServerLiveThread,
-  ensureCodexAppServerClientRuntime,
   retainCodexAppServerLiveThread,
 } from "./client-runtime.js";
 import { CodexAppServerRpcError } from "./client.js";
@@ -189,12 +188,15 @@ describe("maybeCompactCodexAppServerSession", () => {
       },
       { bindingStore, clientFactory },
     );
-    await flushAsyncTasks();
-    expect(clientFactory).not.toHaveBeenCalled();
+    try {
+      await flushAsyncTasks();
+      expect(clientFactory).not.toHaveBeenCalled();
 
-    await patchSessionEntry({ ...scope, update: () => ({ sessionId: successor.sessionId }) });
-    releaseQueue.resolve();
-    await held;
+      await patchSessionEntry({ ...scope, update: () => ({ sessionId: successor.sessionId }) });
+    } finally {
+      releaseQueue.resolve();
+      await held;
+    }
 
     await expect(pending).rejects.toThrow("Codex session generation is no longer current");
     expect(clientFactory).not.toHaveBeenCalled();

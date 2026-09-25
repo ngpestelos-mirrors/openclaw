@@ -12,14 +12,23 @@ export function createCopilotAgentHarness(
   options?: Parameters<typeof createCopilotAgentHarnessImpl>[0],
 ) {
   const harness = createCopilotAgentHarnessImpl(options);
-  const compact = harness.compact;
-  if (compact) {
-    harness.compact = (
+  if (typeof harness.compact !== "function") {
+    return harness;
+  }
+  const compact = (params: AgentHarnessCompactParams<2>) => {
+    if (typeof harness.compact !== "function") {
+      throw new Error("Copilot harness does not support compaction");
+    }
+    return harness.compact(params);
+  };
+  return {
+    ...harness,
+    compact: (
       params: AgentHarnessCompactParams &
         Partial<Pick<AgentHarnessCompactParams<2>, "hostCapabilities">>,
     ) => {
       if (params.hostCapabilities) {
-        return compact(params);
+        return compact({ ...params, hostCapabilities: params.hostCapabilities });
       }
       return runWithAsyncWorkResources(async (onAcquired) => {
         const host = await createAgentHarnessHostCapabilitiesForTest({
@@ -40,9 +49,8 @@ export function createCopilotAgentHarness(
         const prepared = { ...params, hostCapabilities: host.capabilities };
         return await compact(prepared);
       });
-    };
-  }
-  return harness;
+    },
+  };
 }
 
 type SettledTurnFinalizationAttemptParams = Parameters<

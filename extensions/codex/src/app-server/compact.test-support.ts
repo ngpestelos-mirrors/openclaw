@@ -45,15 +45,17 @@ export function beginCompactionTestCleanup() {
   };
   compactionTestCleanup = cleanup;
   return async (failed: boolean) => {
-    const unfinished = cleanup.pending.size > 0 || cleanup.released.size > 0;
+    const unfinished = cleanup.pending.size > 0;
     try {
-      // Logical cancellation can settle before retained queue cleanup releases its work.
+      // A returned result may still own normal async release; only failed or unfinished calls
+      // need cancellation and fake terminal events before their retained cleanup can drain.
       if (failed || unfinished) {
         cleanup.controller.abort(new Error("Compaction test ended before its owned work settled"));
         for (const client of cleanup.clients) {
           client.interrupt();
         }
       }
+      await Promise.allSettled(cleanup.pending);
       await Promise.all(cleanup.released);
     } finally {
       for (const client of cleanup.clients) {
@@ -62,7 +64,7 @@ export function beginCompactionTestCleanup() {
       compactionTestCleanup = undefined;
     }
     if (!failed && unfinished) {
-      throw new Error("Test left compaction calls or retained cleanup unsettled");
+      throw new Error("Test left compaction calls unsettled");
     }
   };
 }

@@ -466,7 +466,7 @@ async function compactNativeHarnessCliTranscript(
 
 /** Runs pre-turn compaction for a CLI session and returns the updated session entry. */
 export async function runCliTurnCompactionLifecycle(
-  params: CliCompactionContext & {
+  input: CliCompactionContext & {
     sessionId: string;
     sessionEntry: SessionEntry | undefined;
     sessionStore?: Record<string, SessionEntry>;
@@ -476,10 +476,10 @@ export async function runCliTurnCompactionLifecycle(
   },
   host: QueuedCompactionHostOptions,
 ): Promise<SessionEntry | undefined> {
-  const storePath = params.storePath;
-  const contextTokenBudget = normalizeSessionTokenCount(params.sessionEntry?.contextTokens);
+  const storePath = input.storePath;
+  const contextTokenBudget = normalizeSessionTokenCount(input.sessionEntry?.contextTokens);
   if (!storePath || !contextTokenBudget) {
-    return params.sessionEntry;
+    return input.sessionEntry;
   }
 
   return await runWithAsyncWorkResources(async (onAcquired) => {
@@ -490,10 +490,10 @@ export async function runCliTurnCompactionLifecycle(
     const assertSourceActive = sourceAuthority.assertActive;
     const sourceSignal = operatorAuthority?.signal;
     const abortSignal =
-      params.abortSignal && sourceSignal
-        ? AbortSignal.any([params.abortSignal, sourceSignal])
-        : (params.abortSignal ?? sourceSignal);
-    params = { ...params, abortSignal };
+      input.abortSignal && sourceSignal
+        ? AbortSignal.any([input.abortSignal, sourceSignal])
+        : (input.abortSignal ?? sourceSignal);
+    const params = { ...input, abortSignal };
     const capturedEntry = loadSessionEntryReadOnly({
       agentId: params.sessionAgentId,
       sessionKey: params.sessionKey,
@@ -734,4 +734,3 @@ export async function runCliTurnCompactionLifecycle(
     return result;
   });
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

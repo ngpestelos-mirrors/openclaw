@@ -483,13 +483,15 @@ async function maybeCompactAgentHarnessSessionInGeneration(
       assertSourceCurrent,
       sourceAuthority.operatorAuthority,
     );
-    let host: ReturnType<typeof createAgentHarnessHostCapabilities> | undefined;
-    let releaseUnqualifiedModelSource: (() => void) | undefined;
+    const resources: {
+      host?: ReturnType<typeof createAgentHarnessHostCapabilities>;
+      releaseUnqualifiedModelSource?: () => void;
+    } = {};
     onAcquired({
       release: () => {
         try {
-          releaseUnqualifiedModelSource?.();
-          host?.close();
+          resources.releaseUnqualifiedModelSource?.();
+          resources.host?.close();
         } finally {
           admission.close();
         }
@@ -603,18 +605,19 @@ async function maybeCompactAgentHarnessSessionInGeneration(
     assertSourceCurrent();
     // Compaction reasons are not agent-run triggers.
     const { model: modelId, trigger: _compactionTrigger, ...hostAttempt } = resolvedCompactParams;
-    host = createAgentHarnessHostCapabilities({
+    const host = createAgentHarnessHostCapabilities({
       attempt: { ...hostAttempt, modelId, runId, admittedRunContext },
       pluginId: resolveAgentHarnessOwnerPluginId(harness),
       nativeModelPolicySupport: harness.nativeModelPolicySupport,
     });
+    resources.host = host;
     const retainSourceAuthority = host.capabilities.retainSourceAuthority;
     if (!retainSourceAuthority) {
       throw new Error("Compaction host cannot retain its original source authority");
     }
     const unqualifiedModelSource =
       harness.nativeModelPolicySupport === "exact" ? undefined : retainSourceAuthority();
-    releaseUnqualifiedModelSource = unqualifiedModelSource?.release;
+    resources.releaseUnqualifiedModelSource = unqualifiedModelSource?.release;
     const dispatchParams: AgentHarnessCompactParamsV2 = {
       ...resolvedCompactParams,
       ...(unqualifiedModelSource?.signal

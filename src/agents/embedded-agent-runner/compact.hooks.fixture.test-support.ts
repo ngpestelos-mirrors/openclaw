@@ -60,11 +60,6 @@ export function useCompactHooksSessionFixture(sessionKey: string) {
   };
 }
 
-export type CompactHooksQueuedCompaction = (
-  params: Parameters<typeof import("./compact.queued.js").compactEmbeddedAgentSession>[0],
-  host?: Partial<Parameters<typeof import("./compact.queued.js").compactEmbeddedAgentSession>[1]>,
-) => ReturnType<typeof import("./compact.queued.js").compactEmbeddedAgentSession>;
-
 export async function acquiredPreparedModelRuntime() {
   const pendingLease = acquireAgentRunPreparedModelRuntimeMock.mock.results[0]?.value;
   if (!pendingLease) {

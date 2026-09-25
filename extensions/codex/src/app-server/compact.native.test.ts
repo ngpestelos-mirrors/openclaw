@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AgentHarnessCompactParams } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { expect, it, vi } from "vitest";
@@ -188,14 +189,16 @@ it(
         expect(options?.preparedAuth).toBeUndefined();
         expect(options?.authRequirement).toBeUndefined();
         expect(options?.authProfileId ?? null).toBeNull();
-        expect(options?.startOptions?.commandSource).toBe("managed");
+        const startOptions = options?.startOptions;
+        assert(startOptions);
+        expect(startOptions.commandSource).toBe("managed");
         if (!client) {
           client = await createIsolatedCodexAppServerClient({
             ...options,
             startOptions: {
-              ...options?.startOptions,
+              ...startOptions,
               transport: "stdio",
-              args: options?.startOptions?.args ?? ["app-server"],
+              args: startOptions.args ?? ["app-server"],
               cwd: native.cwd,
               headers: {},
               env: childEnv,
@@ -265,13 +268,15 @@ it(
       const compactionHost = compactionHostParams.hostCapabilities;
       expect(compactionHost).not.toBe(setupHost);
       compactionHost.assertActive();
+      const retainSourceAuthority = compactionHost.retainSourceAuthority;
+      assert(retainSourceAuthority);
       transport.phase = "compaction";
       const harness = createCodexAppServerAgentHarness({
         bindingStore: testCodexAppServerBindingStore,
         pluginConfig,
       });
-      assert(harness.compact);
-      const compacted = await harness.compact({
+      assert(typeof harness.compact === "function");
+      const compactParams: AgentHarnessCompactParams<2> = {
         runId: compactionHostParams.runId,
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
@@ -289,9 +294,15 @@ it(
         permissionMode: params.permissionMode,
         thinkLevel: params.thinkLevel,
         abortSignal: params.abortSignal,
-        hostCapabilities: compactionHost,
+        hostCapabilities: {
+          kind: compactionHost.kind,
+          version: compactionHost.version,
+          assertActive: compactionHost.assertActive,
+          retainSourceAuthority,
+        },
         trigger: "manual",
-      });
+      };
+      const compacted = await harness.compact(compactParams);
       summary.compacted = compacted?.compacted === true;
       expect(compacted).toMatchObject({ ok: true, compacted: true });
       expect(transport.requests.map((request) => request.requestKind)).toEqual([
@@ -299,6 +310,7 @@ it(
         "compaction",
       ]);
       const [setupRequest, compactRequest] = transport.requests;
+      assert(setupRequest && compactRequest);
       expect(compactRequest.threadId).toBe(setupRequest.threadId);
       expect(compactRequest.turnId).not.toBe(setupRequest.turnId);
     } finally {

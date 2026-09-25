@@ -85,7 +85,7 @@ describe("harness compaction cancellation", () => {
       });
       let sourceHolds = 0;
       let sourceActive = true;
-      const sourceReleased = createDeferredCore<void>();
+      const sourceReleased = createDeferredCore();
       const operatorAuthority = createAdmittedRunOperatorAuthority({
         profileId: "compaction-source",
         scopes: ["operator.write"],
@@ -320,8 +320,8 @@ describe("harness compaction cancellation", () => {
   });
 
   it("keeps same-session compaction admissions independent while native tails settle", async () => {
-    const firstTail = createDeferredCore<void>();
-    const secondTail = createDeferredCore<void>();
+    const firstTail = createDeferredCore();
+    const secondTail = createDeferredCore();
     const firstWork = new AsyncWorkScope();
     const secondWork = new AsyncWorkScope();
     const hosts: AgentHarnessHostCapabilities[] = [];

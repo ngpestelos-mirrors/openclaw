@@ -9,6 +9,11 @@ import type {
   PreparedModelRuntimeLeaseOptions,
 } from "../prepared-model-runtime.types.js";
 
+export type CompactHooksQueuedCompaction = (
+  params: Parameters<typeof import("./compact.queued.js").compactEmbeddedAgentSession>[0],
+  host?: Partial<Parameters<typeof import("./compact.queued.js").compactEmbeddedAgentSession>[1]>,
+) => ReturnType<typeof import("./compact.queued.js").compactEmbeddedAgentSession>;
+
 const emptyPluginIndex: PluginMetadataSnapshot["index"] = {
   version: 1,
   hostContractVersion: "test",

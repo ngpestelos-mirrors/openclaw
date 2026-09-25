@@ -125,27 +125,27 @@ function resolveManualCompactionActiveRunSessionId(
  * `compactEmbeddedAgentSessionDirect` to avoid deadlocks.
  */
 export async function compactEmbeddedAgentSession(
-  params: CompactEmbeddedAgentSessionParams,
-  host: QueuedCompactionHostOptions,
+  input: CompactEmbeddedAgentSessionParams,
+  options: QueuedCompactionHostOptions,
 ): Promise<EmbeddedAgentCompactResult> {
   return await runWithAsyncWorkResources(async (onAcquired) => {
-    const releaseSource = retainAgentHarnessCompactionSource(host.sourceAuthority);
+    const releaseSource = retainAgentHarnessCompactionSource(options.sourceAuthority);
     onAcquired({ release: releaseSource, releaseBeforeResultWhenIdle: true });
-    const sourceAuthority = host.sourceAuthority;
-    const assertHostActive = host.assertActive;
-    host = {
-      ...host,
+    const sourceAuthority = options.sourceAuthority;
+    const assertHostActive = options.assertActive;
+    const host = {
+      ...options,
       assertActive: () => {
         assertHostActive?.();
         sourceAuthority.assertActive();
         sourceAuthority.operatorAuthority?.assertCurrent();
       },
     };
-    const signals = [params.abortSignal, sourceAuthority.operatorAuthority?.signal].filter(
+    const signals = [input.abortSignal, sourceAuthority.operatorAuthority?.signal].filter(
       (signal): signal is AbortSignal => signal !== undefined,
     );
-    params = {
-      ...params,
+    const params = {
+      ...input,
       ...(signals.length > 0 ? { abortSignal: AbortSignal.any(signals) } : {}),
     };
     const projectedConfig = projectCodexHostTranscriptBytePreflightConfig(

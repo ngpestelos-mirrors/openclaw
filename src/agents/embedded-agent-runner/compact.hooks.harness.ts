@@ -14,12 +14,12 @@ import {
   agentSessionAutomaticCompaction,
   agentSessionSetContextReplacementHook,
 } from "../sessions/agent-session-compaction.js";
-import type { CompactHooksQueuedCompaction } from "./compact.hooks.fixture.test-support.js";
 import {
   acquireCompactHooksPreparedModelRuntime,
   emptyPluginMetadataSnapshot,
   getCurrentPluginMetadataSnapshotMock,
   mockCompactHooksPluginMetadata,
+  type CompactHooksQueuedCompaction,
   type MockResolvedModel,
 } from "./compact.hooks.metadata.test-support.js";
 import { mockCompactHooksTools } from "./compact.hooks.tools.test-support.js";

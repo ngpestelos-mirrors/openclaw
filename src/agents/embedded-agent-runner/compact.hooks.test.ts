@@ -53,7 +53,6 @@ import {
   acquiredPreparedModelRuntime,
   expectedNativeCompactionOptions,
   useCompactHooksSessionFixture,
-  type CompactHooksQueuedCompaction,
 } from "./compact.hooks.fixture.test-support.js";
 import {
   acquireAgentRunPreparedModelRuntimeMock,
@@ -110,7 +109,10 @@ import {
   sessionManualCompactionMock,
   triggerInternalHookMock,
 } from "./compact.hooks.harness.js";
-import { createCompactHooksPreparedModelRuntime } from "./compact.hooks.metadata.test-support.js";
+import {
+  createCompactHooksPreparedModelRuntime,
+  type CompactHooksQueuedCompaction,
+} from "./compact.hooks.metadata.test-support.js";
 import {
   abortEmbeddedAgentRun,
   clearActiveEmbeddedRun,
@@ -5365,10 +5367,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
             baseUrl: "https://api.openai.com/v1",
           }),
         }),
-        {
-          nativeCompactionRequest: "after_context_engine",
-          preparedModelRuntime: expect.any(Object),
-        },
+        expectedNativeCompactionOptions("after_context_engine"),
       );
     } finally {
       await compactionFixture.cleanupDirectory(agentDir);
