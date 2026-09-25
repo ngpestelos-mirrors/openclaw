@@ -23,8 +23,10 @@ Acceptance transfers these restrictions to the child. They survive normal
 sender completion, child resume, and Gateway restart. Receiver credentials,
 approvals, and live execution authority remain with their existing owners;
 creating a child does not transfer them. If a backend cannot enforce a required
-constraint, the spawn fails explicitly. ACP and standalone CLI execution do not
-accept these saved native action restrictions.
+constraint, the spawn fails explicitly. ACP accepts and retains saved policies
+when its host execution can satisfy them. Constraints ACP cannot enforce cause
+an explicit refusal; use the native subagent backend for that work. Standalone
+CLI execution does not accept these saved native action restrictions.
 
 An isolated transcript is separate conversation context, not proof of resource
 isolation. File-tool workspace restrictions do not confine shell commands, and
