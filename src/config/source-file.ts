@@ -198,6 +198,12 @@ export function createConfigFileAdapter(opts: {
               if (!isCurrent()) {
                 return;
               }
+              // Bootstrap invalidation is not a file mutation (formerly ignoreInitial).
+              // onReady owns the initial read/admission gap; detailed startup changes
+              // and later unknown invalidations still follow the ordinary change path.
+              if (!next.ready && hint.reason === "reconcile" && !hint.changes?.length) {
+                return;
+              }
               const relevant = [...entries].filter(
                 ([, absolute]) =>
                   !hint.changes ||

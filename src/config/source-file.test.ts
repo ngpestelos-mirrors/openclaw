@@ -159,6 +159,28 @@ describe("config file adapter", () => {
     };
   }
 
+  it("keeps bootstrap invalidation out of config changes while preserving later unknown invalidation", async () => {
+    const h = createHarness();
+    await h.start();
+    h.current().dirty(undefined, "reconcile");
+    h.current().ready();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(h.onReady).toHaveBeenCalledOnce();
+    expect(h.onChange).not.toHaveBeenCalled();
+    await h.dirty();
+    expect(h.onChange).toHaveBeenCalledOnce();
+  });
+
+  it("preserves actual unknown activity during startup", async () => {
+    const h = createHarness();
+    await h.start();
+    h.current().dirty(undefined, "overflow");
+    h.current().ready();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(h.onReady).toHaveBeenCalledOnce();
+    expect(h.onChange).toHaveBeenCalledOnce();
+  });
+
   it("starts explicitly and invalidates replacements without accepting retired callbacks", async () => {
     const h = createHarness();
     expect(h.watch).not.toHaveBeenCalled();
@@ -395,14 +417,19 @@ describe("config file adapter", () => {
       expect(h.adapter.status()).toBe("active");
       h.current().fail();
       await vi.advanceTimersByTimeAsync(500);
+      // Unknown reconciliation here is ongoing coverage, not bootstrap.
+      h.current().ready();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.onChange).toHaveBeenCalledTimes(12);
       await h.dirty(undefined, reason);
+      expect(h.onChange).toHaveBeenCalledTimes(13);
       h.current().fail();
       const old = h.current();
       await vi.advanceTimersByTimeAsync(1999);
       expect(h.current()).toBe(old);
       await vi.advanceTimersByTimeAsync(1);
       expect(h.current()).not.toBe(old);
-      expect(h.onChange).toHaveBeenCalledTimes(13);
+      expect(h.onChange).toHaveBeenCalledTimes(14);
     },
   );
 

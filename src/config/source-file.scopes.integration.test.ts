@@ -267,20 +267,20 @@ it.each([true, false])(
         expect(initial.includedPaths).not.toContain(canonicalFile);
       }
       const ready = createDeferred();
-      const initialSettled = createDeferred();
       const changed = createDeferred();
       void changed.promise.catch(() => {});
       const source = createConfigSource({
         path: configPath,
         includedPaths: initial.includedPaths,
         readSnapshot,
-        onReady: () => ready.resolve(),
+        onReady: () => {
+          // The real source owner reconciles its initial snapshot at readiness.
+          void source.readSnapshot().then(() => ready.resolve(), ready.reject);
+        },
         onObserved(snapshotObservation) {
           void source.readSnapshot(snapshotObservation).then((snapshot) => {
             if (snapshot.valid && snapshot.config.gateway?.port === 18890) {
               changed.resolve();
-            } else {
-              initialSettled.resolve();
             }
           }, changed.reject);
         },
@@ -300,8 +300,7 @@ it.each([true, false])(
       try {
         source.start();
         await ready.promise;
-        // Initial invalidation must finish before the independent later edit.
-        await initialSettled.promise;
+        // Initial source reconciliation has finished before the independent edit.
         // The alias entry and primary config are unchanged. Only a canonical-file
         // observation can deliver this later edit; no manual reconcile/read helps it.
         await fs.writeFile(canonicalFile, JSON.stringify({ mode: "local", port: 18890 }));
