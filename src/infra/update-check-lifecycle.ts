@@ -7,6 +7,8 @@ export type UpdateCheckLifecycle = {
   signal: AbortSignal;
   campaign?: Pick<UpdateCampaignController, "clear">;
   isCurrent: () => boolean;
+  /** Shared publication order for background and interactive Dev discovery. */
+  devGitCheckGeneration: number;
   refreshes: WeakMap<OpenClawConfig, Promise<void>>;
   run: <T>(work: (signal: AbortSignal) => Promise<T>) => Promise<T>;
   initialize: () => ReturnType<typeof resolveStartupInstallStatus>;
@@ -64,6 +66,7 @@ export function createGatewayUpdateLifecycle(): UpdateCheckLifecycle {
   const lifecycle: UpdateCheckLifecycle = {
     signal,
     isCurrent: () => updateCheckLifecycle === lifecycle,
+    devGitCheckGeneration: 0,
     refreshes: new WeakMap(),
     run,
     initialize,

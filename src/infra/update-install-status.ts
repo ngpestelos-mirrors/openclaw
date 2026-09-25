@@ -5,7 +5,11 @@ import { readVerifiedGitUpdateReceipt, type VerifiedGitUpdateReceipt } from "./r
 import { checkUpdateStatus, type UpdateCheckResult } from "./update-check.js";
 import { updateInstallRootsMatch } from "./update-install-root.js";
 
-export async function resolveStartupInstallStatus(fetchRemoteGit: boolean, signal: AbortSignal) {
+export async function resolveStartupInstallStatus(
+  fetchRemoteGit: boolean,
+  signal: AbortSignal,
+  timeoutMs = fetchRemoteGit ? undefined : 2500,
+) {
   const [root, installReceipt] = await Promise.all([
     resolveOpenClawPackageRoot({
       moduleUrl: import.meta.url,
@@ -21,7 +25,7 @@ export async function resolveStartupInstallStatus(fetchRemoteGit: boolean, signa
   const status = await checkUpdateStatus({
     root,
     signal,
-    ...(fetchRemoteGit ? {} : { timeoutMs: 2500 }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
     fetchGit: fetchRemoteGit,
     includeRegistry: false,
     ...(fetchRemoteGit ? { useDetachedDevUpstream: true } : {}),
@@ -47,7 +51,7 @@ function resolveGitInstalledAtMs(
     : undefined;
 }
 
-function resolveGitScheduleStatus(
+export function resolveGitScheduleStatus(
   update: UpdateCheckResult,
   installReceipt: VerifiedGitUpdateReceipt | null,
   root: string | null,
