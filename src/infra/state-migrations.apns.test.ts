@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
@@ -28,6 +29,7 @@ describe("legacy APNs Doctor migration", () => {
   let envSnapshot: ReturnType<typeof captureEnv> | undefined;
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(async () => {
+      __setFsSafeTestHooksForTest(undefined);
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
       await closeStateDatabaseForTest();
@@ -123,6 +125,98 @@ describe("legacy APNs Doctor migration", () => {
       ...overrides,
     });
   }
+
+  it("preserves a changed copied original and its receipt-bound recovery bytes on retry", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    const stateDir = useStateDir();
+    const sourcePath = await writeLegacyState(stateDir, { "legacy-direct": directRegistration() });
+    const original = await fsp.readFile(sourcePath);
+    const link = vi
+      .spyOn(fsp, "link")
+      .mockRejectedValue(
+        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
+      );
+    expect(
+      (
+        await migrate(stateDir, {
+          removeSource: () => {
+            throw new Error("unlink refused");
+          },
+        })
+      ).warnings.join("\n"),
+    ).toContain("unlink refused");
+    link.mockRestore();
+    const db = openOpenClawStateDatabase({ env: envFor(stateDir) }).db;
+    const receipt = db
+      .prepare(
+        "SELECT source_sha256, source_size_bytes, removed_source FROM migration_sources WHERE migration_kind = ?",
+      )
+      .get("legacy-apns-registrations-json");
+    expect(receipt).toMatchObject({ removed_source: 0 });
+    const stage = fs
+      .readdirSync(path.dirname(sourcePath))
+      .find((name) => name.startsWith(".doctor-source-copy-"));
+    expect(stage).toBeDefined();
+    const payload = path.join(path.dirname(sourcePath), stage!, "payload");
+    expect(await fsp.readFile(payload)).toEqual(original);
+    const canonical = await loadApnsRegistration("legacy-direct", stateDir);
+    const changed = Buffer.from(
+      original.toString("utf8").replace(APNS_DEVICE_IDENTIFIER.toUpperCase(), "f".repeat(32)),
+    );
+    expect(changed).not.toEqual(original);
+    await fsp.writeFile(sourcePath, changed);
+    const retry = await migrate(stateDir);
+    expect(retry.warnings.join("\n")).toContain("differs from the APNs migration receipt");
+    expect(await fsp.readFile(sourcePath)).toEqual(changed);
+    expect(await fsp.readFile(payload)).toEqual(original);
+    expect(
+      db
+        .prepare(
+          "SELECT source_sha256, source_size_bytes, removed_source FROM migration_sources WHERE migration_kind = ?",
+        )
+        .get("legacy-apns-registrations-json"),
+    ).toEqual(receipt);
+    expect(await loadApnsRegistration("legacy-direct", stateDir)).toEqual(canonical);
+
+    await fsp.writeFile(sourcePath, original);
+    let replaced = false;
+    __setFsSafeTestHooksForTest({
+      beforeRootFallbackMutation(operation, targetPath) {
+        if (operation === "remove" && targetPath === sourcePath) {
+          const replacement = `${sourcePath}.replacement`;
+          fs.writeFileSync(replacement, original);
+          fs.renameSync(replacement, sourcePath);
+          replaced = true;
+        }
+      },
+    });
+    const raced = await migrate(stateDir);
+    __setFsSafeTestHooksForTest(undefined);
+    expect(replaced).toBe(true);
+    expect(raced.warnings.join("\n")).toContain("source generation changed during cleanup");
+    expect(await fsp.readFile(sourcePath)).toEqual(original);
+    expect(await fsp.readFile(payload)).toEqual(original);
+    expect(
+      db
+        .prepare(
+          "SELECT source_sha256, source_size_bytes, removed_source FROM migration_sources WHERE migration_kind = ?",
+        )
+        .get("legacy-apns-registrations-json"),
+    ).toEqual(receipt);
+    expect(await loadApnsRegistration("legacy-direct", stateDir)).toEqual(canonical);
+
+    const unchanged = await migrate(stateDir);
+    expect(unchanged.warnings).toEqual([]);
+    expect(fs.existsSync(sourcePath)).toBe(false);
+    expect(fs.existsSync(payload)).toBe(false);
+    expect(
+      db
+        .prepare("SELECT removed_source FROM migration_sources WHERE migration_kind = ?")
+        .get("legacy-apns-registrations-json"),
+    ).toEqual({ removed_source: 1 });
+    expect(await loadApnsRegistration("legacy-direct", stateDir)).toEqual(canonical);
+  });
 
   it("recovers streamed APNs private copy after post-delete sync failure without replaying registrations", async () => {
     vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");

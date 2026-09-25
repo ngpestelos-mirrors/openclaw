@@ -40,6 +40,7 @@ import {
 import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceOrClaimMayExist,
+  removeLegacyMigrationReceiptSource,
   resolveLegacyMigrationRelativePath,
   type LegacyMigrationSourceSnapshot,
 } from "./state-migrations.source-snapshot.js";
@@ -81,7 +82,7 @@ type ApnsMigrationDatabase = Pick<
 
 type LegacySourceSnapshot = Pick<
   LegacyMigrationSourceSnapshot,
-  "sourcePath" | "dev" | "ino" | "mtimeMs" | "sha256" | "size"
+  "sourcePath" | "ctimeMs" | "dev" | "ino" | "mtimeMs" | "sha256" | "size"
 >;
 
 function resolveLegacyApnsPath(stateDir: string): string {
@@ -304,13 +305,13 @@ async function cleanupReceiptAuthoritativeSources(params: {
     if (!(await params.stateRoot.exists(relativeLegacyPath(params.stateDir, candidate)))) {
       continue;
     }
-    // Validate ownership and drain the pinned inode before deleting receipt-retired bytes.
-    await readLegacySourceSnapshot(params.stateRoot, params.stateDir, candidate);
-    if (params.removeSource) {
-      await params.removeSource(candidate);
-    } else {
-      await params.stateRoot.remove(relativeLegacyPath(params.stateDir, candidate));
-    }
+    await removeLegacyMigrationReceiptSource({
+      ...params,
+      candidate,
+      label: "APNs",
+      readSnapshot: (sourcePath) =>
+        readLegacySourceSnapshot(params.stateRoot, params.stateDir, sourcePath),
+    });
     removed += 1;
   }
   if (

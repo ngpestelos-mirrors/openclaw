@@ -619,6 +619,36 @@ describe("legacy MCP OAuth Doctor migration", () => {
     expect(receipt(env, sourcePath)).toMatchObject({ removed_source: 1 });
   });
 
+  it("preserves a changed pending fixed claim instead of retiring new credentials", async () => {
+    const { env, stateDir } = useStateDir();
+    const sourcePath = await writeLegacy({ stateDir });
+    expect(
+      (
+        await migrate(stateDir, env, {
+          removeSource() {
+            throw new Error("unlink refused");
+          },
+        })
+      ).warnings.join("\n"),
+    ).toContain("unlink refused");
+    const claimPath = `${sourcePath}.doctor-importing`;
+    const canonical = storeRow(env)?.store_json;
+    const originalReceipt = receipt(env, sourcePath);
+    expect(originalReceipt?.removed_source).toBe(0);
+    const changed = Buffer.from(
+      JSON.stringify(
+        validStore({ tokens: { access_token: "new-token-placeholder", token_type: "Bearer" } }),
+      ),
+    );
+    await fsp.writeFile(claimPath, changed);
+
+    const retry = await migrate(stateDir, env);
+    expect(retry.warnings.join("\n")).toContain("differs from the MCP OAuth migration receipt");
+    expect(await fsp.readFile(claimPath)).toEqual(changed);
+    expect(receipt(env, sourcePath)).toEqual(originalReceipt);
+    expect(storeRow(env)?.store_json).toEqual(canonical);
+  });
+
   it("rejects symlinked, hardlinked, oversized, and invalid-UTF-8 sources", async () => {
     const cases: Array<{ env: NodeJS.ProcessEnv; sourcePath: string; stateDir: string }> = [];
 
@@ -851,5 +881,49 @@ describe("legacy MCP OAuth Doctor migration", () => {
         .readdirSync(path.dirname(sourcePath))
         .some((name) => name.startsWith(".doctor-source-copy-")),
     ).toBe(false);
+  });
+
+  it("preserves a changed copied OAuth original and its receipt-bound recovery bytes on retry", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    const { env, stateDir } = useStateDir();
+    const sourcePath = await writeLegacy({ stateDir });
+    const original = await fsp.readFile(sourcePath);
+    const link = vi
+      .spyOn(fsp, "link")
+      .mockRejectedValue(
+        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
+      );
+    expect(
+      (
+        await migrate(stateDir, env, {
+          removeSource() {
+            throw new Error("unlink refused");
+          },
+        })
+      ).warnings.join("\n"),
+    ).toContain("unlink refused");
+    link.mockRestore();
+    const originalReceipt = receipt(env, sourcePath);
+    expect(originalReceipt?.removed_source).toBe(0);
+    const stage = fs
+      .readdirSync(path.dirname(sourcePath))
+      .find((name) => name.startsWith(".doctor-source-copy-"));
+    expect(stage).toBeDefined();
+    const payload = path.join(path.dirname(sourcePath), stage!, "payload");
+    expect(await fsp.readFile(payload)).toEqual(original);
+    const canonical = storeRow(env)?.store_json;
+    const changed = Buffer.from(
+      JSON.stringify(
+        validStore({ tokens: { access_token: "new-token-placeholder", token_type: "Bearer" } }),
+      ),
+    );
+    await fsp.writeFile(sourcePath, changed);
+    const retry = await migrate(stateDir, env);
+    expect(retry.warnings.join("\n")).toContain("differs from the MCP OAuth migration receipt");
+    expect(await fsp.readFile(sourcePath)).toEqual(changed);
+    expect(await fsp.readFile(payload)).toEqual(original);
+    expect(receipt(env, sourcePath)).toEqual(originalReceipt);
+    expect(storeRow(env)?.store_json).toEqual(canonical);
   });
 });

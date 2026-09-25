@@ -71,6 +71,7 @@ describe("shared legacy migration receipts", () => {
     expect(readLegacyMigrationReceipt(receipt.sourceKey, env)).toEqual({
       sourceKey: receipt.sourceKey,
       sourceSha256: receipt.sourceSha256,
+      sourceSizeBytes: receipt.sourceSizeBytes,
       removedSource: false,
       reportJson: receipt.reportJson,
     });
@@ -148,6 +149,7 @@ describe("shared legacy migration receipts", () => {
     expect(readLegacyMigrationReceipt(receipt.sourceKey, env)).toEqual({
       sourceKey: receipt.sourceKey,
       sourceSha256: "b".repeat(64),
+      sourceSizeBytes: 24,
       removedSource: false,
       reportJson: receipt.reportJson,
     });

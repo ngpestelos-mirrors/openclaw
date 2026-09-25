@@ -37,6 +37,7 @@ import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceSnapshotsMatch as snapshotsMatch,
   readLegacyMigrationSourceSnapshot,
+  removeLegacyMigrationReceiptSource,
   resolveLegacyMigrationRelativePath,
   type LegacyMigrationSourceSnapshot,
 } from "./state-migrations.source-snapshot.js";
@@ -305,14 +306,18 @@ async function cleanupReceiptAuthoritativeSources(params: {
     if (!(await params.stateRoot.exists(relativeLegacyPath(params.stateDir, candidate)))) {
       continue;
     }
-    await readLegacySourceSnapshot(params.stateRoot, params.stateDir, candidate, {
-      parseStore: false,
+    await removeLegacyMigrationReceiptSource({
+      ...params,
+      candidate,
+      label: "MCP OAuth",
+      ...(listLegacyMigrationSourceCopies(params.sourcePath).length === 0
+        ? { retiredClaimPath: `${params.sourcePath}${DOCTOR_CLAIM_SUFFIX}` }
+        : {}),
+      readSnapshot: (sourcePath) =>
+        readLegacySourceSnapshot(params.stateRoot, params.stateDir, sourcePath, {
+          parseStore: false,
+        }),
     });
-    if (params.removeSource) {
-      await params.removeSource(candidate);
-    } else {
-      await params.stateRoot.remove(relativeLegacyPath(params.stateDir, candidate));
-    }
     removed += 1;
   }
   if (
