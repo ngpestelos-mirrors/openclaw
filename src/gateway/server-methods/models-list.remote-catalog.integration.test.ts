@@ -30,13 +30,27 @@ it(
       },
     });
     const generatedAt = Date.now() + 86_400_000;
+    const modelMetadata = {
+      api: "anthropic-messages",
+      reasoning: false,
+      input: ["text"],
+      contextWindow: 32768,
+      maxTokens: 4096,
+    };
     const first = {
       schemaVersion: 1,
       generatedAt,
       sourceCommit: "remote-catalog-fixture",
       providers: {
         kimi: {
-          models: [{ id: "remote-first", name: "Remote First", cost: { input: 1, output: 2 } }],
+          models: [
+            {
+              ...modelMetadata,
+              id: "remote-first",
+              name: "Remote First",
+              cost: { input: 1, output: 2 },
+            },
+          ],
         },
       },
     };
@@ -46,8 +60,18 @@ it(
       providers: {
         kimi: {
           models: [
-            { id: "remote-first", name: "Remote First", cost: { input: 7, output: 14 } },
-            { id: "remote-next", name: "Remote Next", cost: { input: 9, output: 18 } },
+            {
+              ...modelMetadata,
+              id: "remote-first",
+              name: "Remote First",
+              cost: { input: 7, output: 14 },
+            },
+            {
+              ...modelMetadata,
+              id: "remote-next",
+              name: "Remote Next",
+              cost: { input: 9, output: 18 },
+            },
           ],
         },
       },
@@ -125,6 +149,7 @@ it(
           providers: {
             kimi: {
               baseUrl: "https://api.kimi.com/coding/",
+              api: "anthropic-messages",
               models: [{ id: "remote-first", name: "Remote First" }],
             },
           },
