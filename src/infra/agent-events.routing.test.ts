@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { beforeEach, describe, expect, it, test } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, test } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { createAgentCommandLifecycle } from "../agents/command/lifecycle.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
@@ -8,6 +9,8 @@ import {
   emitAgentEventForRunContext,
   emitAgentEventIfCurrent,
   rotateAgentEventLifecycleGeneration,
+  registerAgentEventLifecycleRotationHandler,
+  settleAgentEventLifecycleRetirement,
   getAgentEventLifecycleGeneration,
   onAgentRuntimeEvent,
   resetAgentEventsForTest,
@@ -26,6 +29,36 @@ import {
 
 describe("agent event routing after cancellation", () => {
   beforeEach(() => resetAgentEventsForTest());
+
+  test.each([false, true])(
+    "revokes the lifecycle before joining durable owner retirement (fails=%s)",
+    async (fails) => {
+      const retirement = createDeferred<void>();
+      let revokedGeneration: string | undefined;
+      registerAgentEventLifecycleRotationHandler("retirement-test", (generation) => {
+        revokedGeneration = generation;
+        return retirement.promise;
+      });
+      onTestFinished(() => registerAgentEventLifecycleRotationHandler("retirement-test", () => {}));
+      const generation = rotateAgentEventLifecycleGeneration();
+      expect(revokedGeneration).toBe(generation);
+      let settled = false;
+      const drain = settleAgentEventLifecycleRetirement().finally(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      if (fails) {
+        retirement.reject(new Error("retirement failed"));
+        await expect(drain).rejects.toThrow("Failed to settle retired agent lifecycle owners");
+      } else {
+        retirement.resolve();
+        await drain;
+      }
+      expect(settled).toBe(true);
+      await expect(settleAgentEventLifecycleRetirement()).resolves.toBeUndefined();
+    },
+  );
 
   it.each([
     { name: "visible", hidden: false, messages: true },

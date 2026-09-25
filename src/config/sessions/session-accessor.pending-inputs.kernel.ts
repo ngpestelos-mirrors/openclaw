@@ -1,7 +1,14 @@
 import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.types.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
-import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  runOpenClawAgentWriteTransaction,
+  type OpenClawAgentDatabase,
+  type OpenClawAgentDatabaseOptions,
+} from "../../state/openclaw-agent-db.js";
+import type { AgentDatabaseOperations } from "../../state/openclaw-agent-execution-contract.js";
 import {
   ensureSessionInputCompletionsSchema,
   ensureSessionPendingInputsSchema,
@@ -47,6 +54,56 @@ export type PendingInputFinish = {
   lifecycleGeneration: string;
   disposition: Exclude<SessionPendingInputState, "queued">;
 };
+
+type PendingInputWorkerCommand = Extract<
+  SqliteWorkerCommand<AgentDatabaseOperations>,
+  { type: `session.pendingInput.${string}` }
+>;
+type PendingInputWorkerResult =
+  AgentDatabaseOperations[PendingInputWorkerCommand["type"]]["output"];
+
+export function runSessionPendingInputWorkerCommand(
+  database: OpenClawAgentDatabase,
+  options: OpenClawAgentDatabaseOptions,
+  command: PendingInputWorkerCommand,
+  admit: (stage: "transaction" | "commit") => void,
+): PendingInputWorkerResult {
+  if (command.type === "session.pendingInput.read" && !command.input.trackCompletion) {
+    return runSqliteDeferredTransactionSync(database.db, () =>
+      readSessionPendingInputStage(database, command.input.resolved, command.input),
+    );
+  }
+  return runOpenClawAgentWriteTransaction(
+    (current) => {
+      if (current.db !== database.db) {
+        throw new Error("Pending input lost its canonical database owner");
+      }
+      admit("transaction");
+      const result = (() => {
+        switch (command.type) {
+          case "session.pendingInput.read":
+            return readSessionPendingInputStage(current, command.input.resolved, command.input);
+          case "session.pendingInput.stage":
+            return commitSessionPendingInputStage(current, command.input.resolved, command.input);
+          case "session.pendingInput.complete":
+            return completeSessionPendingInputInDatabase(
+              current,
+              command.input.resolved,
+              command.input,
+            );
+          case "session.pendingInput.finish":
+            return finishSessionPendingInputInDatabase(current, command.input);
+          case "session.pendingInput.repair":
+            return repairSessionPendingInputRowsInDatabase(current, command.input.rows);
+        }
+      })();
+      admit("commit");
+      return result;
+    },
+    options,
+    { operationLabel: command.type },
+  );
+}
 
 /** The caller holds the admitted writer transaction, including feature schema preparation. */
 export function readSessionPendingInputStage(

@@ -35,6 +35,25 @@ function registeredRun() {
   return { entries, runId, entry, registration, drain };
 }
 
+it.each([false, true])(
+  "retains cancellation authority through input settlement (failure: %s)",
+  async (failed) => {
+    const { entries, runId, entry, registration } = registeredRun();
+    const settlement = createDeferred();
+    registration.retainInputSettlement(settlement.promise);
+    registration.controller.abort();
+    registration.cleanup();
+    expect(entries.get(runId)).toBe(entry);
+    if (failed) {
+      settlement.reject(new Error("input write failed"));
+    } else {
+      settlement.resolve();
+    }
+    await settlement.promise.catch(() => undefined);
+    expect(entries.has(runId)).toBe(false);
+  },
+);
+
 it.each(
   ["settled", "pending", "writing", "failed"].flatMap((state) =>
     [false, true].map((alreadyRemoved) => ({ state, alreadyRemoved })),

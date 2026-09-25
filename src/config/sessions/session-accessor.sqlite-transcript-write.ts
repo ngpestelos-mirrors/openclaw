@@ -1,15 +1,12 @@
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
-import { isIncognitoSessionKey } from "../../routing/session-key.js";
-import { runInDetachedAsyncContext } from "../../shared/async-work-scope.js";
 import {
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { clearAllCliSessions } from "./cli-session-binding.js";
+import { prepareSessionPendingInputPromotion } from "./session-accessor.pending-inputs-promotion.js";
 import type {
   SessionTranscriptAccessScope,
   SessionTranscriptContextVersion,
@@ -29,7 +26,6 @@ import {
   writeSessionEntry,
 } from "./session-accessor.sqlite-entry-store.js";
 import { prepareSessionIdentityPublication } from "./session-accessor.sqlite-identity.js";
-import { captureSessionPendingInputWorkerCustody } from "./session-accessor.sqlite-pending-inputs.js";
 import {
   readTranscriptEventRows,
   readTranscriptSnapshot,
@@ -75,11 +71,9 @@ import type {
 } from "./session-accessor.types.js";
 import { COMPACTION_RUN_USAGE_CLEAR_PATCH } from "./session-entry-projection.js";
 import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
-import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 import {
   assertOwnedTranscriptWriteCommit,
-  captureOwnedTranscriptWriteAssertion,
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWriterFence,
 } from "./transcript-write-context.js";
@@ -478,17 +472,6 @@ export async function appendTranscriptMessage<TMessage>(
     env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
   });
   resolved.path = resolveOpenClawAgentSqlitePath(toDatabaseOptions(resolved));
-  const custody = captureSessionPendingInputWorkerCustody();
-  const message = asOptionalRecord(options.message);
-  const pendingCustody =
-    !isIncognitoSessionKey(scope.sessionKey) &&
-    custody?.input.databasePath === resolved.path &&
-    custody.input.sessionKey === resolved.sessionKey &&
-    custody.input.sessionId === resolved.sessionId &&
-    message?.role === "user" &&
-    custody.input.idempotencyKey === readMessageIdempotencyKey(message)
-      ? custody
-      : undefined;
   const writeScope = withOwnedSessionTranscriptWriterFence({
     ...scope,
     env: resolved.env,
@@ -497,60 +480,18 @@ export async function appendTranscriptMessage<TMessage>(
     sessionId: resolved.sessionId,
     sessionKey: resolved.sessionKey,
   });
-  const assertOwned = captureOwnedTranscriptWriteAssertion(writeScope);
+  const promotePendingInput = prepareSessionPendingInputPromotion(
+    writeScope,
+    toDatabaseOptions(resolved),
+    options,
+  );
   const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
   await restoreSessionColdTranscript(writeScope);
   return await runExclusiveSqliteSessionWrite(
     resolved,
     async () => {
-      if (pendingCustody) {
-        const databaseOptions = toDatabaseOptions(resolved);
-        const execution = captureOpenClawAgentDatabaseExecution(databaseOptions);
-        try {
-          const { withSessionMetadataWorker } = await runInDetachedAsyncContext(
-            () => import("../../agents/sessions/session-manager-metadata-runtime.js"),
-          );
-          const { env: _env, ...target } = writeScope;
-          const {
-            beforeFreshMessageCommit: _beforeFresh,
-            prepareMessageAfterIdempotencyCheck: _prepare,
-            ...appendOptions
-          } = options;
-          return await withSessionMetadataWorker<
-            TranscriptMessageAppendResult<TMessage> | undefined,
-            TMessage
-          >(
-            databaseOptions,
-            { execution },
-            () => {
-              assertOwned();
-              pendingCustody.assertCurrent();
-            },
-            async (worker) => {
-              const committed = await worker.execute({
-                type: "session.transcript.promotePendingInput",
-                input: {
-                  scope: { ...target, storePath: execution.path },
-                  options: appendOptions,
-                  pendingCustody: pendingCustody.input,
-                },
-              });
-              pendingCustody.publishCommitted(committed.consumedInputIds);
-              if (committed.projectionNeedsReconcile) {
-                const { startSessionTranscriptIndexReconcile } = await runInDetachedAsyncContext(
-                  () => import("./session-transcript-reconcile.js"),
-                );
-                startSessionTranscriptIndexReconcile({
-                  ...databaseOptions,
-                  preferredSessionId: resolved.sessionId,
-                });
-              }
-              return committed.result;
-            },
-          );
-        } finally {
-          await execution.release();
-        }
+      if (promotePendingInput) {
+        return await promotePendingInput();
       }
       let result: TranscriptMessageAppendResult<TMessage> | undefined;
       runOpenClawAgentWriteTransaction((database) => {

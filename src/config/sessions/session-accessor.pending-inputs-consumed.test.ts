@@ -32,6 +32,7 @@ import {
   withSessionPendingInputPersistence,
   type SessionPendingInputReceipt,
 } from "./session-accessor.pending-inputs.js";
+import * as pendingInputRuntime from "./session-accessor.pending-inputs.runtime.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 
@@ -104,6 +105,45 @@ describe("committed pending input release", () => {
       await receipt.finish("interrupted");
     }
     await closeDatabases();
+  });
+
+  it.each(["cancelled", "interrupted"] as const)(
+    "retains %s input visibly without permitting the old run to execute",
+    async (disposition) => {
+      const receipt = await stage("closed");
+      const second = await stage("closed-second");
+      const aggregate = bindSessionPendingInputSources(
+        [receipt, second],
+        message("closed-aggregate"),
+      )!;
+      const finishing = aggregate.finish(disposition);
+      expect(() => receipt.run(() => {})).toThrow("ownership ended");
+      expect(() => second.run(() => {})).toThrow("ownership ended");
+      await finishing;
+      expect((await readSessionPendingInput(scope(), receipt.inputId))?.state).toBe(disposition);
+      expect(() => promote(receipt)).toThrow("ownership ended");
+      await expect(stage("closed")).rejects.toThrow("submit a new turn");
+      await expect(appendTranscriptMessage(scope(), { message: receipt.message })).rejects.toThrow(
+        "outside its admitted turn",
+      );
+      expect(await promote(await stage("new-authorized-run"))).toMatchObject({ appended: true });
+    },
+  );
+
+  it("does not interrupt custody when the selected session becomes current during a pending read", async () => {
+    const receipt = await stage("reactivated");
+    await upsertSessionEntryCore(scope(), { sessionId: "replacement-session", updatedAt: 2 });
+    const repair = pendingInputRuntime.repairSessionPendingInputRows;
+    vi.spyOn(pendingInputRuntime, "repairSessionPendingInputRows").mockImplementationOnce(
+      async (...args) => {
+        await upsertSessionEntryCore(scope(), { sessionId: scope().sessionId, updatedAt: 3 });
+        return repair(...args);
+      },
+    );
+    expect(await listSessionPendingInputs(scope())).toMatchObject({
+      items: [{ id: receipt.inputId, state: "queued" }],
+    });
+    expect(await promote(receipt)).toMatchObject({ appended: true, messageId: receipt.inputId });
   });
 
   it.each([false, true])(

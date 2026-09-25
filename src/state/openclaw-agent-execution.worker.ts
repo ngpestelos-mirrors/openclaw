@@ -5,10 +5,7 @@ import type { Result } from "@openclaw/normalization-core/result";
 import type { SessionTranscriptInitializationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
-import {
-  assertTransactionUsable,
-  runSqliteDeferredTransactionSync,
-} from "../infra/sqlite-transaction.js";
+import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import {
   onSqliteWalCheckpoint,
   type SqliteWalCheckpointSnapshot,
@@ -364,50 +361,11 @@ function openAgentDatabaseBackend(
         command.type === "session.pendingInput.repair") &&
       pendingInputs
     ) {
-      const opened = openWriter();
-      const kernel = pendingInputs;
-      if (command.type === "session.pendingInput.read" && !command.input.trackCompletion) {
-        return runSqliteDeferredTransactionSync(opened.db, () =>
-          kernel.readSessionPendingInputStage(opened, command.input.resolved, command.input),
-        );
-      }
-      return runOpenClawAgentWriteTransaction(
-        (current) => {
-          if (current.db !== opened.db) {
-            throw new Error("Pending input lost its canonical database owner");
-          }
-          admit("transaction");
-          const result = (() => {
-            switch (command.type) {
-              case "session.pendingInput.read":
-                return kernel.readSessionPendingInputStage(
-                  current,
-                  command.input.resolved,
-                  command.input,
-                );
-              case "session.pendingInput.stage":
-                return kernel.commitSessionPendingInputStage(
-                  current,
-                  command.input.resolved,
-                  command.input,
-                );
-              case "session.pendingInput.complete":
-                return kernel.completeSessionPendingInputInDatabase(
-                  current,
-                  command.input.resolved,
-                  command.input,
-                );
-              case "session.pendingInput.finish":
-                return kernel.finishSessionPendingInputInDatabase(current, command.input);
-              case "session.pendingInput.repair":
-                return kernel.repairSessionPendingInputRowsInDatabase(current, command.input.rows);
-            }
-          })();
-          admit("commit");
-          return result;
-        },
+      return pendingInputs.runSessionPendingInputWorkerCommand(
+        openWriter(),
         options,
-        { operationLabel: command.type },
+        command,
+        admit,
       );
     }
     if (command.type === "trajectory.events.append" && trajectory) {
