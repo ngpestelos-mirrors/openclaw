@@ -109,7 +109,7 @@ lines.on("line", (line) => {
   return filePath;
 }
 
-export async function closePolicyHttpServers(): Promise<void> {
+async function closePolicyHttpServers(): Promise<void> {
   await Promise.all(
     [...activeHttpServers].map(
       (server) =>

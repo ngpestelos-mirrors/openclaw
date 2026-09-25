@@ -1,5 +1,5 @@
 // Scheduled work must use free shared-admission slots across timer ticks (#119083).
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import {
   createCronRegressionState,
   createDueIsolatedJob,
@@ -520,10 +520,13 @@ describe("cron service cross-tick bounded admission", () => {
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 2;
 
     const tickA = onTimer(state);
-    let tickB: ReturnType<typeof clock.advanceBy> = undefined;
+    let tickB: ReturnType<typeof clock.advanceTo> = undefined;
     try {
       await aStarted.promise;
-      tickB = clock.advanceBy(500);
+      const nextWakeAtMs = scheduler.nextWakeAtMs;
+      assert.isNotNull(nextWakeAtMs);
+      expect(nextWakeAtMs).toBeGreaterThanOrEqual(t0 + 500);
+      tickB = clock.advanceTo(nextWakeAtMs);
       await bStarted.promise;
 
       expect(runIsolatedAgentJob).toHaveBeenCalledTimes(2);
