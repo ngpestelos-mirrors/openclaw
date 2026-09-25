@@ -6461,12 +6461,6 @@ jobs:
           set -euo pipefail
           source .ci-harness/scripts/lib/swift-toolchain.sh
           mkdir -p apps/ios/build/LifecycleTestResults
-          diagnostic_collection=on-failure
-          if [[ "$IOS_CI_PHASE" == "smoke" ]]; then
-            # Xcode 27's verbose simulator diagnostics can stall for 600s after passing tests.
-            # Keep xcresult/log evidence here and verbose diagnostics in full manual validation.
-            diagnostic_collection=never
-          fi
           run_apple_command_logged apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.log xcodebuild \
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClaw \
@@ -6474,7 +6468,7 @@ jobs:
             -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.xcresult \
             -parallel-testing-enabled NO \
-            -collect-test-diagnostics "$diagnostic_collection" \
+            -collect-test-diagnostics "$(ios_test_diagnostic_collection)" \
             -only-testing:OpenClawTests/TalkRealtimeVoiceSessionCleanupTests \
             -only-testing:OpenClawTests/TalkRealtimeConsultCancellationTests \
             -only-testing:OpenClawTests/TalkRealtimeTranscriptWriteQueueTests \
@@ -6523,6 +6517,7 @@ jobs:
             -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath "$result_bundle" \
             -parallel-testing-enabled NO \
+            -collect-test-diagnostics "$(ios_test_diagnostic_collection)" \
             "${test_args[@]}" \
             test
           if [[ "$IOS_CI_PHASE" == "tests" ]]; then
@@ -6533,6 +6528,7 @@ jobs:
               -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
               -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawWatchDeliveryUITests.xcresult \
               -parallel-testing-enabled NO \
+              -collect-test-diagnostics "$(ios_test_diagnostic_collection)" \
               -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testWatchMessageDeliveryIsReachableFromSettings \
               test
           fi

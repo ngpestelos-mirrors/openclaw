@@ -112,6 +112,7 @@ if (tool === "uname") {
       WATCH_FIXTURE_MODE: mode,
       GITHUB_ENV: environmentFile,
       IOS_CI_PHASE: "smoke",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
       HISTORICAL_TARGET: "false",
       IOS_DEST: "",
       XCODE_XCCONFIG_FILE: "",
@@ -210,18 +211,45 @@ describe.skipIf(process.platform === "win32")("iOS voice cleanup workflow", () =
   });
 
   it("retains universal build settings and verbose diagnostics in full manual validation", () => {
-    const { result, commands } = runSimulatorStep("voice", [prepareStep, buildStep, voiceStep], {
-      IOS_CI_PHASE: "tests",
-    });
+    const { result, commands } = runSimulatorStep(
+      "voice",
+      [prepareStep, buildStep, voiceStep, iosStep],
+      { IOS_CI_PHASE: "tests" },
+    );
     expect(result.status, result.stderr).toBe(0);
     const appBuild = commands.find((command) => command.tool === "pnpm");
     expect(appBuild?.destination).toBe("");
     expect(commands.every((command) => command.settings === undefined)).toBe(true);
-    const testRun = commands.find((command) => command.tool === "xcodebuild");
-    expect(testRun?.args).toEqual(
-      expect.arrayContaining(["-collect-test-diagnostics", "on-failure"]),
-    );
+    const testRuns = commands.filter((command) => command.tool === "xcodebuild");
+    expect(testRuns).toHaveLength(3);
+    for (const testRun of testRuns) {
+      expect(testRun.args).toEqual(
+        expect.arrayContaining(["-collect-test-diagnostics", "on-failure"]),
+      );
+    }
   });
+
+  it.each([
+    ["voice", 0, 3],
+    ["voice-tests-failed", 25, 1],
+  ] as const)(
+    "scheduled simulator diagnostics preserve %s test outcomes",
+    (mode, exitCode, commandCount) => {
+      const { result, commands } = runSimulatorStep(mode, [prepareStep, voiceStep, iosStep], {
+        IOS_CI_PHASE: "tests",
+        GITHUB_EVENT_NAME: "schedule",
+      });
+      expect(result.status, result.stderr).toBe(exitCode);
+      const tests = commands.filter((command) => command.tool === "xcodebuild");
+      expect(tests).toHaveLength(commandCount);
+      for (const testRun of tests) {
+        expect(testRun.args).toEqual(
+          expect.arrayContaining(["-collect-test-diagnostics", "never", "-resultBundlePath"]),
+        );
+        expect(testRun.args.some((arg) => arg.startsWith("-only-testing:"))).toBe(true);
+      }
+    },
+  );
 
   it("stops before compilation and XCTest when the selected iPhone cannot boot", () => {
     const { result, commands } = runSimulatorStep("voice-boot-failed", [

@@ -258,7 +258,11 @@ to files. Forwarding simulator logs into a congested Actions pipe can stall time
 test operations before their mocked transport runs. After each command exits,
 CI prints at most 8 KiB of its log and preserves its exit status. The lifecycle
 evidence artifact retains the full logs alongside `.xcresult` bundles on success
-and failure; test timeouts, assertions, and diagnostic collection stay unchanged.
+and failure. Voice and lifecycle simulator commands disable verbose diagnostic
+collection in smoke and scheduled hourly runs: Xcode 27 can otherwise wait 600
+seconds collecting diagnostics after passing tests. Full manual validation keeps
+on-failure diagnostic collection. Test timeouts, assertions, exit statuses, and
+result bundles stay unchanged.
 
 ### macOS Swift phases
 

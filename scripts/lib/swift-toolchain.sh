@@ -39,6 +39,16 @@ prepare_ios_test_simulator() {
   printf '%s\n' "$simulator_id"
 }
 
+ios_test_diagnostic_collection() {
+  # Xcode 27 can spend 600s collecting diagnostics after successful tests.
+  # Keep full manual diagnostics; routine runs retain command logs and xcresults.
+  if [[ "${IOS_CI_PHASE:-}" == "smoke" || "${GITHUB_EVENT_NAME:-}" == "schedule" ]]; then
+    printf 'never\n'
+  else
+    printf 'on-failure\n'
+  fi
+}
+
 run_apple_command_logged() {
   local log_path="$1"
   shift
