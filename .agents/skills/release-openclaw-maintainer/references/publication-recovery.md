@@ -82,6 +82,28 @@ rewrites; an exceptional operator request must name its exact scope. Mac-only
 packaging recovery keeps the original tag and follows
 [platform publication](platform-publication.md).
 
+## Interrupted preparation and publication
+
+Keep `request.json`, `dispatch.json`, and `dispatch.next.json` when recovering.
+A missing child run ID means the dispatch is unconfirmed; inspect Actions before
+trying again. Resume partial preparation on the same protected tooling tag with the original
+`publish_inputs` and `preparation_request` containing the verified `npmRunId` and
+`clawhubRunId`. Missing or expired
+artifacts also require reconciliation; they do not authorize another dispatch.
+
+For a failed nonpublishing preparation child, rerun all of that child's jobs to
+produce a complete package set from one attempt, then only the outer **Verify
+and seal prepared publication** job. After publication has been dispatched,
+rerun only failed verification jobs when the publisher succeeded; otherwise
+inspect its children and follow the recovery route above. Never repeat an
+uncertain dispatch or rerun all publication jobs to fix a download failure.
+
+Explicit ClawHub recovery uses `recovered_clawhub_run_id` and
+`recovered_clawhub_run_attempt` to name the original child. Keep the original
+parent's tooling, inputs, run ID, and attempt. Do not reuse an approval from another
+child. Docker-only recovery does not recover canceled ClawHub publication;
+verify and recover that surface separately.
+
 ## Registry selectors
 
 Promote through the restricted release-ops

@@ -5,6 +5,23 @@ recovery. Select the phase below; deferred or omitted checks are not passed.
 Every selected child needs terminal evidence. A required failure cannot be
 waived by success on another surface.
 
+## Older updater checks
+
+Before freezing a release, refresh `scripts/lib/update-compat-inventory.json`
+from every release in the supported upgrade window. Verify each downloaded npm
+tarball against its published `dist.integrity` before extraction, then run
+`pnpm update:compat:gen --release '<unpacked-dir>=<verified-integrity>'`, repeating
+`--release` for every supported version. Generation replaces the recorded set:
+keep empty entries, drop expired versions and their historical corrections, and
+never hand-edit recorded origins. Run `pnpm update:compat:check`; both npm
+`latest` and `beta` must be covered. Repeat the generation arguments with
+`--check` for an offline regeneration check.
+
+Run every recorded `update-first-hop-compat*` lane and the upgrade survivor lane
+from the oldest supported release. Native Windows proof must invoke the old
+updater with a registered Scheduled Task and verify that it restarts the Gateway
+without a later manual `gateway start`.
+
 ## Source and package gates
 
 Before tagging or publishing, complete the relevant source/package checks:
