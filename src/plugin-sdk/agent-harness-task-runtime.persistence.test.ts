@@ -1,13 +1,23 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it } from "vitest";
+import { identifiedClient, runTaskHandler } from "../gateway/server-methods/tasks.test-helpers.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { markPluginRegistryRetired } from "../plugins/registry-lifecycle.js";
+import {
+  getPluginRuntimeGatewayRequestScope,
+  withPluginRuntimeGatewayRequestScope,
+} from "../plugins/runtime/gateway-request-scope.js";
+import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { createAgentHarnessTaskRuntimeScope } from "../tasks/agent-harness-task-runtime-scope.js";
+import { withTaskCancellationContext } from "../tasks/task-cancellation-context.js";
 import { getTaskFlowRegistryStore } from "../tasks/task-flow-registry.store.js";
 import {
   getTaskActivitySnapshot,
   recordTaskActivityEvent,
 } from "../tasks/task-registry-activity.js";
 import { updateTask } from "../tasks/task-registry-mutation.js";
-import { getTaskById, cancelTaskById } from "../tasks/task-registry.js";
+import { getTaskById } from "../tasks/task-registry.js";
 import { getTaskRegistryStore } from "../tasks/task-registry.store.js";
 import {
   resetTaskRegistryForTests,
@@ -103,55 +113,102 @@ it.each([
   "replacement before stop",
   "revoked",
   "incognito",
+  "registry retired",
+  "caller revoked",
 ] as const)("binds command cancellation to its original task outcome (%s)", async (scenario) => {
   await withTaskRegistryTempDir(
     async () => {
       let current = true;
       let stops = 0;
+      let callerCurrent = true;
+      const agentRegistry = createEmptyPluginRegistry();
+      const requestSignal = new AbortController().signal;
+      const requestClient = identifiedClient(["operator.admin"]);
       let replacement: ReturnType<typeof updateTask> | undefined;
       const ownerKey =
         scenario === "incognito" ? "agent:main:dashboard:incognito-command" : "agent:main:command";
-      const command = await createAgentHarnessCommandTask({
-        scope: createAgentHarnessTaskRuntimeScope({ requesterSessionKey: ownerKey }),
-        runId: "native-command:original",
-        taskKind: "test-native-command",
-        command: "SYNTHETIC_TASK_CONTENT",
-        startedAt: Date.now(),
-        assertCurrent() {
-          if (!current) {
-            throw new Error("source retired");
-          }
-        },
-        async cancel(_reason, assertTaskCurrent) {
-          stops += 1;
-          if (scenario === "replacement") {
-            replacement = updateTask(command.task.taskId, {
-              runId: "native-command:successor",
-              status: "cancelled",
-            });
-          } else if (scenario === "same-scope replacement") {
-            replacement = updateTask(command.task.taskId, { taskKind: "successor-command" });
-            assertTaskCurrent();
-          } else {
-            await command.finish({
-              status: scenario === "succeeded" ? "succeeded" : "cancelled",
-              endedAt: Date.now(),
-            });
-          }
-        },
-      });
+      const command = await withPluginRuntimeGenerationScope(
+        { metadataSnapshot: createPluginMetadataSnapshotFixture(), pluginRegistry: agentRegistry },
+        () =>
+          createAgentHarnessCommandTask({
+            scope: createAgentHarnessTaskRuntimeScope({ requesterSessionKey: ownerKey }),
+            runId: "native-command:original",
+            taskKind: "test-native-command",
+            command: "SYNTHETIC_TASK_CONTENT",
+            startedAt: Date.now(),
+            assertCurrent() {
+              if (!current) {
+                throw new Error("source retired");
+              }
+            },
+            async cancel(_reason, assertTaskCurrent) {
+              expect(getPluginRuntimeGatewayRequestScope()?.signal).toBe(requestSignal);
+              expect(getPluginRuntimeGatewayRequestScope()?.client).toBe(requestClient);
+              if (scenario === "caller revoked") {
+                await Promise.resolve();
+                callerCurrent = false;
+                assertTaskCurrent();
+              }
+              stops += 1;
+              if (scenario === "replacement") {
+                replacement = updateTask(command.task.taskId, {
+                  runId: "native-command:successor",
+                  status: "cancelled",
+                });
+              } else if (scenario === "same-scope replacement") {
+                replacement = updateTask(command.task.taskId, { taskKind: "successor-command" });
+                assertTaskCurrent();
+              } else {
+                await command.finish({
+                  status: scenario === "succeeded" ? "succeeded" : "cancelled",
+                  endedAt: Date.now(),
+                });
+              }
+            },
+          }),
+      );
       try {
+        if (scenario === "registry retired") {
+          markPluginRegistryRetired(agentRegistry);
+        }
         if (scenario === "revoked") {
           current = false;
         }
         if (scenario === "replacement before stop") {
           replacement = updateTask(command.task.taskId, { taskKind: "successor-command" });
         }
-        const result = await cancelTaskById({ cfg: {}, taskId: command.task.taskId });
-        expect(result.cancelled).toBe(scenario === "cancelled" || scenario === "incognito");
-        expect(stops).toBe(
-          scenario === "revoked" || scenario === "replacement before stop" ? 0 : 1,
+        const result = await withPluginRuntimeGatewayRequestScope(
+          {
+            pluginRegistry: createEmptyPluginRegistry(),
+            client: requestClient,
+            signal: requestSignal,
+            isWebchatConnect: () => true,
+          },
+          () =>
+            withTaskCancellationContext(
+              () => {
+                if (!callerCurrent) {
+                  throw new Error("request authority retired");
+                }
+              },
+              () =>
+                runTaskHandler("tasks.cancel", { taskId: command.task.taskId }, {}, requestClient),
+            ),
         );
+        expect(result.payload?.cancelled).toBe(
+          scenario === "cancelled" || scenario === "incognito",
+        );
+        expect(stops).toBe(
+          scenario === "revoked" ||
+            scenario === "replacement before stop" ||
+            scenario === "registry retired" ||
+            scenario === "caller revoked"
+            ? 0
+            : 1,
+        );
+        if (scenario === "caller revoked") {
+          expect(callerCurrent).toBe(false);
+        }
         if (scenario === "incognito") {
           expect(JSON.stringify(getTaskById(command.task.taskId))).not.toContain(
             "SYNTHETIC_TASK_CONTENT",
@@ -179,6 +236,7 @@ it.each([
         }
       } finally {
         command.release();
+        markPluginRegistryRetired(agentRegistry);
       }
     },
     { durableStore: true },

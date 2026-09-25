@@ -18,6 +18,7 @@ describe("native background command outcomes", () => {
     "complete",
     "cancel",
     "natural success",
+    "publication failure",
     "refused stop",
     "failed stop",
     "concurrent stop",
@@ -58,10 +59,7 @@ describe("native background command outcomes", () => {
             async finish(terminal) {
               try {
                 finishAttempts += 1;
-                if (
-                  scenario === "client closed" ||
-                  (scenario === "natural success" && finishAttempts === 1)
-                ) {
+                if (scenario === "client closed" || scenario === "publication failure") {
                   throw new Error("Synthetic terminal publication failure");
                 }
                 return await task.finish(terminal);
@@ -173,6 +171,22 @@ describe("native background command outcomes", () => {
         if (!cancelOwner) {
           throw new Error("Expected the registered native cancellation owner");
         }
+        if (scenario === "publication failure") {
+          const releasedBeforeCompletion = releaseSource.mock.calls.length;
+          await expect(harness.notify(terminal(0))).rejects.toThrow(
+            "Synthetic terminal publication failure",
+          );
+          expect(releaseTask).toHaveBeenCalledOnce();
+          expect(releaseSource).toHaveBeenCalledTimes(releasedBeforeCompletion + 1);
+          expect(finishAttempts).toBe(1);
+          expect(terminationAttempts).toBe(0);
+          expect(source.signal.aborted).toBe(false);
+          // The failed publication has no confirmed durable terminal result.
+          expect(tasks.listTaskRecords()).toContainEqual(
+            expect.objectContaining({ status: "running" }),
+          );
+          return;
+        }
         if (scenario === "client closed") {
           const releasedBeforeStop = releaseSource.mock.calls.length;
           stopAttempts = Promise.allSettled([cancelOwner()]);
@@ -206,14 +220,13 @@ describe("native background command outcomes", () => {
             "failed stop",
             "changed handle",
             "authority retired during inventory",
-            "natural success",
           ].includes(scenario)
         ) {
           await expect(cancelOwner()).rejects.toThrow();
           expect(tasks.listTaskRecords()).toContainEqual(
             expect.objectContaining({ status: "running" }),
           );
-          if (scenario === "failed stop" || scenario === "natural success") {
+          if (scenario === "failed stop") {
             await cancelOwner();
           } else {
             await harness.notify(terminal(7));

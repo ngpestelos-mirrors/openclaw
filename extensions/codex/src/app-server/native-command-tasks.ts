@@ -99,14 +99,11 @@ export function prepareCodexNativeCommandTasks(
         releaseIfFinished();
       })
       .catch((error: unknown) => {
-        entry.settlement = undefined;
-        if (closed) {
-          // A closed source cannot retry a failed write; leave recovery to maintenance.
-          entry.task?.release();
-          entries.delete(itemId);
-          entry.done.resolve();
-          releaseIfFinished();
-        }
+        // Leave unconfirmed durable outcomes to canonical task recovery, not a live run claim.
+        entry.task?.release();
+        entries.delete(itemId);
+        entry.done.resolve();
+        releaseIfFinished();
         throw error;
       }));
   };

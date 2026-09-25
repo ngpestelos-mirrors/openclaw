@@ -114,10 +114,12 @@ It returns `"published"` after terminal publication or `"retired"` when the orig
 task was replaced. Retirement releases the old binding without changing its
 successor; both results let the harness release its native observation leases.
 A successful stop requires the original task to settle as cancelled; natural
-completion racing Stop remains success. Failed publication retains the run owner
-so the harness can retry settlement. If the native owner closes and cannot
-publish an outcome, release the binding so normal task recovery can reconcile
-the row. Restored rows do not recreate native process authority.
+completion racing Stop remains success. Failed publication retains the run owner;
+the harness must either own a subsequent settlement attempt or release the binding
+so normal task recovery can reconcile the row. A one-shot terminal notification
+must not leave a finished command holding live ownership indefinitely. Release
+the binding when the native owner closes and cannot publish an outcome. Restored
+rows do not recreate native process authority.
 
 Command previews use the shared redacted exec formatter, and Incognito content
 stays private. These tasks are silent: recording completion does not schedule a

@@ -1,4 +1,6 @@
-import { err, ok } from "@openclaw/normalization-core/result";
+import { err, ok, type Result } from "@openclaw/normalization-core/result";
+import { requireActivePluginRegistry } from "../plugins/runtime.js";
+import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import {
   assertAgentHarnessTaskRuntimeScope,
@@ -17,7 +19,7 @@ import {
   captureTaskPersistenceReceipt,
   matchesTaskPersistenceReceipt,
 } from "./task-registry-records.js";
-import type { TaskPersistenceReceipt } from "./task-registry.types.js";
+import type { TaskPersistenceReceipt, TaskRecord } from "./task-registry.types.js";
 import { getTaskRunOwner } from "./task-run-owner.js";
 import type { TaskRunOwnerBinding } from "./task-run-owner.types.js";
 
@@ -34,6 +36,7 @@ export async function createAgentHarnessCommandTask(params: {
   cancel: (reason: string, assertTaskCurrent: () => void) => Promise<void>;
 }) {
   const scope = assertAgentHarnessTaskRuntimeScope(params.scope);
+  const registry = requireActivePluginRegistry();
   const runtime = captureDetachedTaskRuntimeOwner();
   // Legacy custom runtimes cannot bind a receipt-owned cancellation capability.
   if (runtime.runtime) {
@@ -127,29 +130,34 @@ export async function createAgentHarnessCommandTask(params: {
       throw error;
     }));
   try {
-    binding = await receipt.bindRunOwner(async (reason) => {
-      try {
-        const control = captureTaskCancellationControl();
-        const assertTaskCurrent = () => {
-          assertCurrent();
-          if (!originalTask()) {
-            throw new Error("Native command no longer belongs to its original task.");
+    binding = await receipt.bindRunOwner(
+      (reason) =>
+        // Keep the admitting registry without reviving its old Gateway request authority.
+        withPluginRuntimeRegistryScope(registry, async (): Promise<Result<TaskRecord, string>> => {
+          try {
+            const control = captureTaskCancellationControl();
+            const assertTaskCurrent = () => {
+              assertCurrent();
+              if (!originalTask()) {
+                throw new Error("Native command no longer belongs to its original task.");
+              }
+              control?.assertCurrent();
+            };
+            assertTaskCurrent();
+            await params.cancel(reason, assertTaskCurrent);
+            const current = getTaskById(receipt.task.taskId);
+            return expectedTask &&
+              current &&
+              matchesTaskPersistenceReceipt(current, expectedTask) &&
+              current.status === "cancelled"
+              ? ok(current)
+              : err("Native command did not settle as cancelled.");
+          } catch {
+            return err("Native command could not be cancelled by its current owner.");
           }
-          control?.assertCurrent();
-        };
-        assertTaskCurrent();
-        await params.cancel(reason, assertTaskCurrent);
-        const current = getTaskById(receipt.task.taskId);
-        return expectedTask &&
-          current &&
-          matchesTaskPersistenceReceipt(current, expectedTask) &&
-          current.status === "cancelled"
-          ? ok(current)
-          : err("Native command did not settle as cancelled.");
-      } catch {
-        return err("Native command could not be cancelled by its current owner.");
-      }
-    }, assertCurrent);
+        }),
+      assertCurrent,
+    );
     const current = getTaskById(receipt.task.taskId);
     if (!current || getTaskRunOwner(current) !== binding.owner) {
       throw new Error("Native command task owner was replaced during admission.");
