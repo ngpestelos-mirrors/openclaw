@@ -7095,6 +7095,18 @@ describeLive("gateway live (dev agent, profile keys)", () => {
           maxItems: candidatePoolLimit,
           primary: selectedCandidates,
         });
+        const liveCandidatePool = candidatePool.map((candidate) =>
+          candidate.model.provider === "google"
+            ? {
+                ...candidate,
+                model: {
+                  ...candidate.model,
+                  api: "google-interactions" as const,
+                  baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+                },
+              }
+            : candidate,
+        );
         logProgress(
           `[all-models] selection=${useExplicit ? "explicit" : useSmall ? "small" : "high-signal"}`,
         );
@@ -7104,14 +7116,16 @@ describeLive("gateway live (dev agent, profile keys)", () => {
           );
         }
         expect(candidatePool.length).toBeGreaterThan(0);
-        const imageCandidates = candidatePool.filter(({ model }) => model.input?.includes("image"));
+        const imageCandidates = liveCandidatePool.filter(({ model }) =>
+          model.input?.includes("image"),
+        );
         if (imageCandidates.length === 0) {
           logProgress("[all-models] no image-capable models selected; image probe will be skipped");
         }
         await runGatewayModelSuite({
           label: "all-models",
           cfg,
-          candidates: candidatePool,
+          candidates: liveCandidatePool,
           authProfileStore,
           allowNotFoundSkip: useModern || useSmall,
           extraToolProbes: ENABLE_EXTRA_TOOL_PROBES,
