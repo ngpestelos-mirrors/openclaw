@@ -14,6 +14,7 @@ import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import * as tokens from "./device-auth-store.js";
 import { storeDeviceAuthTokenInDatabase } from "./device-auth-store.kernel.js";
+import { SQLITE_WORKER_MAX_RESULT_BYTES } from "./sqlite-worker-contract.js";
 import { sqliteWorkerPreloadEnv } from "./sqlite-worker-preload.test-support.js";
 import * as sqliteWorkers from "./sqlite-worker-store.js";
 import {
@@ -123,42 +124,47 @@ if (!isMainThread) {
       let nativeWrites = 0;
       let current = true;
       const refused = new Error("Synthetic token authority revoked");
-      const dispatch = vi
-        .spyOn(MessagePort.prototype, "postMessage")
-        .mockImplementation(function (this: MessagePort, message, transferList) {
-          const result = nativePost.call(this, message, transferList);
-          if (
-            !isRecord(message) ||
-            message.type !== "accepted" ||
-            (preparation
-              ? message.admission !== undefined
-              : !(message.admission instanceof MessagePort))
-          ) {
-            return result;
-          }
-          dispatch.mockRestore();
-          const deadline = Date.now() + 5_000;
-          const pause = new Int32Array(new SharedArrayBuffer(4));
-          while (!fs.existsSync(entered)) {
-            if (Date.now() >= deadline) {
-              throw new Error("Worker did not reach its transaction grant");
-            }
-            Atomics.wait(pause, 0, 0, 1);
-          }
-          current = ownerCurrent;
-          runOpenClawStateWriteTransaction(
-            ({ db }) => {
-              nativeWrites += 1;
-              storeDeviceAuthTokenInDatabase(db, {
-                deviceId: "synthetic-native-device",
-                role: "operator",
-                token: "synthetic-native-token",
-              });
-            },
-            { env: state.env },
-          );
+      // Begin the framed-result cleanup probe after the large mutation has settled.
+      const dispatch = vi.spyOn(MessagePort.prototype, "postMessage").mockImplementation(function (
+        this: MessagePort,
+        message,
+        transferList,
+      ) {
+        const result = nativePost.call(this, message, transferList);
+        if (
+          !isRecord(message) ||
+          (length > SQLITE_WORKER_MAX_RESULT_BYTES
+            ? message.type !== "result-next"
+            : message.type !== "accepted" ||
+              (preparation
+                ? message.admission !== undefined
+                : !(message.admission instanceof MessagePort)))
+        ) {
           return result;
-        });
+        }
+        dispatch.mockRestore();
+        const deadline = Date.now() + 5_000;
+        const pause = new Int32Array(new SharedArrayBuffer(4));
+        while (!fs.existsSync(entered)) {
+          if (Date.now() >= deadline) {
+            throw new Error("Worker did not reach its transaction grant");
+          }
+          Atomics.wait(pause, 0, 0, 1);
+        }
+        current = ownerCurrent;
+        runOpenClawStateWriteTransaction(
+          ({ db }) => {
+            nativeWrites += 1;
+            storeDeviceAuthTokenInDatabase(db, {
+              deviceId: "synthetic-native-device",
+              role: "operator",
+              token: "synthetic-native-token",
+            });
+          },
+          { env: state.env },
+        );
+        return result;
+      });
       const token = "x".repeat(length);
       const mutate = () =>
         tokens.storeDeviceAuthToken({

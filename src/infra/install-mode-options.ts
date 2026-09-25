@@ -7,7 +7,7 @@ type InstallModeOptions<TLogger> = {
   dryRun?: boolean;
 };
 
-type TimedInstallModeOptions<TLogger> = InstallModeOptions<TLogger> & {
+export type TimedInstallModeOptions<TLogger> = InstallModeOptions<TLogger> & {
   timeoutMs?: number;
   /** Resolved work policy: null is unbounded; omission retains install defaults. */
   workTimeoutMs?: number | null;
@@ -16,7 +16,7 @@ type TimedInstallModeOptions<TLogger> = InstallModeOptions<TLogger> & {
 /** Keep a deliberate work deadline separate from bounded metadata/probe defaults. */
 export function resolveInstallWorkTimeoutMs(
   workTimeoutMs: number | null | undefined,
-  defaultTimeoutMs: number,
+  defaultTimeoutMs: number | undefined,
 ): number | undefined {
   return workTimeoutMs === null ? undefined : (workTimeoutMs ?? defaultTimeoutMs);
 }

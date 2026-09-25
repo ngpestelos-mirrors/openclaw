@@ -19,9 +19,12 @@ import { withEnvAsync } from "../test-utils/env.js";
 import * as usageFormat from "../utils/usage-format.js";
 import { refreshCostUsageCacheForAgent } from "./session-cost-usage-aggregation.js";
 import { prepareSessionCostUsageRefreshLock } from "./session-cost-usage-cache.sqlite.js";
-import { readSessionCostUsageRollupRows } from "./session-cost-usage-cache.test-support.js";
+import {
+  readSessionCostUsageRollupEntry,
+  readSessionCostUsageRollupRows,
+  writeLegacyUsageCostRollupForTest,
+} from "./session-cost-usage-cache.test-support.js";
 import { listUsageCountedTranscriptStats } from "./session-cost-usage-collection.js";
-import type { SessionUsageRollupData } from "./session-cost-usage-rollup.js";
 import {
   discoverAllSessions as discoverAllSessionsForAgent,
   loadCostUsageSummary as loadCostUsageSummaryForAgent,
@@ -713,7 +716,7 @@ describe("session cost usage", () => {
       bundledGeneratedAt: () => 100,
       readStoredCatalog: () => ({
         id: 1,
-        source_url: "https://catalog.openclaw.ai/models/v1/catalog.json",
+        source_url: "https://catalog.openclaw.ai/models/v2/catalog.json",
         bundle_json: bundleJson,
         generated_at: 200,
         min_version: "2026.7.0",
@@ -758,9 +761,10 @@ describe("session cost usage", () => {
   });
 
   it.each([
-    { name: "unconfigured", config: undefined },
+    { name: "unconfigured", config: undefined, missingCostEntries: 1 },
     {
       name: "configured all-zero",
+      missingCostEntries: 0,
       config: {
         models: {
           providers: {
@@ -781,7 +785,7 @@ describe("session cost usage", () => {
         },
       } satisfies OpenClawConfig,
     },
-  ])("counts token usage for $name pricing as missing", async ({ config }) => {
+  ])("reports cost availability for $name pricing", async ({ config, missingCostEntries }) => {
     const root = await makeSessionCostRoot("cost-zero-pricing");
     const sessionsDir = path.join(root, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
@@ -809,12 +813,11 @@ describe("session cost usage", () => {
       "utf-8",
     );
 
-    // Config defaults cannot distinguish omitted pricing from explicit zero rates.
     await withStateDir(root, async () => {
       const summary = await loadCostUsageSummary({ config });
       expect(summary.totals.totalTokens).toBe(23287);
       expect(summary.totals.totalCost).toBe(0);
-      expect(summary.totals.missingCostEntries).toBe(1);
+      expect(summary.totals.missingCostEntries).toBe(missingCostEntries);
     });
   });
 
@@ -1036,9 +1039,7 @@ describe("session cost usage", () => {
         (row) => row.key === sessionFile,
       );
       const cachedRollup = cachedEntry
-        ? (JSON.parse(cachedEntry.valueJson) as {
-            rollup?: { untimestamped?: { totals?: { totalTokens?: number } } };
-          })
+        ? readSessionCostUsageRollupEntry(cachedEntry, "main")
         : undefined;
       expect(cachedRollup?.rollup?.untimestamped?.totals?.totalTokens).toBe(1_000);
 
@@ -1125,39 +1126,7 @@ describe("session cost usage", () => {
       });
       expect(current.cacheStatus.status).toBe("fresh");
 
-      const writeLegacyRollup = async () => {
-        const currentRow = requireValue(
-          readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
-          "expected current usage rollup",
-        );
-        const currentRollup = JSON.parse(currentRow.valueJson) as {
-          version: number;
-          rollup: SessionUsageRollupData;
-        };
-        currentRollup.version = 4;
-        currentRollup.rollup.untimestamped.totals.totalTokens = 9_999;
-        for (const bucket of [
-          currentRollup.rollup.untimestamped,
-          ...Object.values(currentRollup.rollup.buckets),
-        ]) {
-          bucket.messageCounts.toolCalls = 1;
-          bucket.tools = [{ name: "read", count: 1 }];
-        }
-        const lock = prepareSessionCostUsageRefreshLock("main");
-        try {
-          expect(await lock.acquire()).toBe(true);
-          expect(
-            await lock.writeRollup({
-              rollupId: sessionFile,
-              previousValueJson: Buffer.from(currentRow.valueJson),
-              valueJson: Buffer.from(JSON.stringify(currentRollup)),
-              updatedAt: currentRow.updatedAt + 1,
-            }),
-          ).toBe(true);
-        } finally {
-          await lock.release();
-        }
-      };
+      const writeLegacyRollup = () => writeLegacyUsageCostRollupForTest(sessionFile);
       const appendUsage = (timestamp: string) =>
         fs.appendFile(sessionFile, `${JSON.stringify(assistantEntry(timestamp, 5))}\n`, "utf-8");
       const rangeEndMs = Date.UTC(2026, 1, 5) + 24 * 60 * 60 * 1000 - 1;
@@ -1198,12 +1167,11 @@ describe("session cost usage", () => {
         readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
         "expected appended usage rollup",
       );
-      const appendedRollup = JSON.parse(appendedRow.valueJson) as {
-        version: number;
-        rollup: { untimestamped: { totals: { totalTokens: number } } };
-      };
+      const appendedRollup = requireValue(
+        readSessionCostUsageRollupEntry(appendedRow, "main"),
+        "decoded appended rollup",
+      );
       expect(appendedRollup.rollup.untimestamped.totals.totalTokens).toBe(1_000);
-      expect(appendedRollup.version).toBe(5);
 
       const allTime = await loadSessionCostSummariesFromCache({
         sessions: [session],

@@ -20,7 +20,7 @@ import { ADMIN_SCOPE } from "../operator-scopes.js";
 import type {
   PrepareGatewaySessionLifecycle,
   PreparedGatewaySessionLifecycle,
-} from "../session-lifecycle-preparation.js";
+} from "../session-create-service.types.js";
 import { hasExplicitSessionName, resolveExplicitSessionName } from "../session-title-state.js";
 import {
   prepareSessionWorktree,
@@ -373,7 +373,7 @@ export async function prepareSessionWorkspace(params: {
         name: pending.name,
         baseRef: pending.baseRef,
         checkoutCommit: pending.baseCommit,
-        label: title ?? resolveExplicitSessionName(saved) ?? pending.titleSource,
+        label: title ?? resolveExplicitSessionName(saved),
         runSetupScript: client?.connect?.scopes?.includes(ADMIN_SCOPE) === true,
         signal,
         commitGuard: assertRunOwnership,

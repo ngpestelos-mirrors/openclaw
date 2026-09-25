@@ -1,17 +1,19 @@
 /** Client-scoped Codex auth and account observers. */
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
-import { readCodexSessionMeta } from "../session-catalog-provenance.js";
 import { refreshCodexAppServerAuthTokens, type CodexAppServerAuthHandoff } from "./auth-bridge.js";
 import { fingerprintTokenAuthProfileCacheKey } from "./auth-cache-key.js";
 import type { CodexAppServerAuthProfileLookup } from "./auth-profile.js";
+import { readCodexClientSessionMetadata } from "./client-session-metadata.js";
 import {
   createThreadOwnerToken,
   forgetThreadOwnership,
   hasSiblingThreadWork,
   hasThreadOwnership,
   invalidateThreadOwnership,
+  revertRetainedThreadSkillsCatalog,
   type RetainedLiveThread,
+  type CodexEphemeralThreadPolicy,
+  type CodexAppServerLiveThreadOwnership,
   type ThreadOwnershipState,
   type ThreadOwnerToken,
   type ThreadReleaseTransition,
@@ -42,18 +44,6 @@ type ClientRuntime = ThreadOwnershipState &
     >;
     evictionTimer?: ReturnType<typeof setTimeout>;
   };
-
-export type CodexAppServerLiveThreadOwnership = {
-  assertCurrent: () => void;
-  configFingerprint?: string;
-  /** Ephemeral configuration is creation-owned and cannot be refreshed or cold-resumed. */
-  ephemeralPolicy?: string;
-  serviceTier?: CodexServiceTier | null;
-  /** Releases this active claim or the exact idle record it published. */
-  release: (threadId: string, assertCurrent?: () => void) => Promise<void>;
-  /** Forgets this local owner after native shutdown, without unsubscribing a successor. */
-  forget: () => void;
-};
 
 /** Match Codex's native grace window without retaining inactive conversations indefinitely. */
 const CODEX_APP_SERVER_LIVE_THREAD_IDLE_TIMEOUT_MS = 30 * 60_000;
@@ -117,43 +107,21 @@ export function prepareCodexWorkspaceReferences(
   return prepareCodexClientWorkspaceReferences(configuredClients.get(client), threadId, reference);
 }
 
-/** Immutable declarations are data owned by this physical client, never retained executors. */
+/** Immutable declarations are cached by the selected physical client. */
 export async function readCodexClientSessionMeta(
   client: CodexAppServerClient,
   sessionsRoot: string,
   boundRolloutPath: string | undefined,
   threadId: string,
 ): Promise<JsonObject> {
-  let rolloutPath = boundRolloutPath;
-  const runtime = configuredClients.get(client);
-  if (!runtime || runtime.closed) {
-    throw new Error("Codex native metadata requires a live selected client");
-  }
-  const cached = runtime.sessionMetadata.get(threadId);
-  if (
-    cached &&
-    cached.sessionsRoot === sessionsRoot &&
-    (!rolloutPath || cached.rolloutPath === rolloutPath)
-  ) {
-    return structuredClone(cached.metadata);
-  }
-  if (!rolloutPath) {
-    // The original imported-target materializer may bind before native storage
-    // assigns its path. Discover it once from the selected thread, not from disk scans.
-    const { thread } = await client.request("thread/read", { threadId, includeTurns: false });
-    if (thread.id !== threadId || !thread.path) {
-      throw new Error("Codex native metadata has no verified thread path");
-    }
-    rolloutPath = thread.path;
-  }
-  const metadata = await readCodexSessionMeta(sessionsRoot, rolloutPath, threadId);
-  if (runtime.closed || !metadata) {
-    throw new Error("Codex native metadata is unavailable on the selected client");
-  }
-  runtime.sessionMetadata.delete(threadId);
-  runtime.sessionMetadata.set(threadId, { sessionsRoot, rolloutPath, metadata });
-  pruneMapToMaxSize(runtime.sessionMetadata, CODEX_APP_SERVER_LIVE_THREAD_MAX_IDLE);
-  return structuredClone(metadata);
+  return await readCodexClientSessionMetadata(
+    configuredClients.get(client),
+    client,
+    sessionsRoot,
+    boundRolloutPath,
+    threadId,
+    CODEX_APP_SERVER_LIVE_THREAD_MAX_IDLE,
+  );
 }
 
 /** Installs one auth-refresh handler and one rate-limit observer per physical client. */
@@ -438,7 +406,7 @@ export async function retainCodexAppServerLiveThread(
   releaseThread?: (threadId: string, assertCurrent?: () => void) => Promise<void>,
   configFingerprint?: string,
   serviceTier?: CodexServiceTier | null,
-  ephemeralPolicy?: string,
+  ephemeralPolicy?: CodexEphemeralThreadPolicy,
 ): Promise<boolean> {
   const runtime = configuredClients.get(client);
   if (!runtime || runtime.closed) {
@@ -655,6 +623,17 @@ function claimCodexAppServerThreadOwnership(
       }
     },
   };
+}
+
+/** Standalone incognito compaction retains its separately owned subscription. */
+export function revertCodexAppServerLiveThreadSkillsCatalog(
+  client: CodexAppServerClient,
+  threadId: string,
+): void {
+  const runtime = configuredClients.get(client);
+  if (runtime && !runtime.closed) {
+    revertRetainedThreadSkillsCatalog(runtime, threadId);
+  }
 }
 
 /** Distinguish active claimed ownership from an already-evicted idle subscription. */

@@ -94,6 +94,7 @@ export async function prepareCodexLunaReserveTurn(options: {
   assertCurrent: () => void;
   signal: AbortSignal;
   timeoutMs: number;
+  activeNativeTurn?: boolean;
 }): Promise<PreparedReserveTurn | undefined> {
   const { client, bindingStore, identity, binding, normal, signal, timeoutMs } = options;
   // Native/adopted sessions have another model owner. API-key clients have no ChatGPT handoff.
@@ -114,6 +115,11 @@ export async function prepareCodexLunaReserveTurn(options: {
       );
     }
     return undefined;
+  }
+  if (options.activeNativeTurn) {
+    throw new Error(
+      "Codex still has an active native turn. Wait for it to finish before sending this pending turn; no Reserve settings or input were sent.",
+    );
   }
   return await bindingStore.withLease(identity, async () => {
     let expectedReturn = binding.reserveReturn;

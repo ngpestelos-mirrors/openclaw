@@ -1,9 +1,11 @@
 import path from "node:path";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
   closeOpenClawStateDatabaseAsync,
   drainSessionDiskBudgetWorkers,
@@ -31,6 +33,7 @@ import {
   sessionBindingIdentity,
   type StoredCodexAppServerBinding,
 } from "./session-binding.js";
+import { getCodexAppServerTurnRouter } from "./turn-router.js";
 
 setupRunAttemptTestHooks();
 const ordinaryModel = "gpt-5.6-luna";
@@ -77,6 +80,7 @@ function fixture(auth: "chatgpt" | "api-key" = "chatgpt") {
     startError: undefined as number | undefined,
     onStart: undefined as (() => void) | undefined,
     resumeError: false,
+    activeResume: false,
     beforeSelection: undefined as (() => Promise<void> | void) | undefined,
     starts: [] as unknown[],
     steers: [] as unknown[],
@@ -94,7 +98,24 @@ function fixture(auth: "chatgpt" | "api-key" = "chatgpt") {
         return {
           ...response,
           model: native.model,
-          thread: { ...response.thread, model: native.model },
+          ...(native.activeResume
+            ? {
+                initialTurnsPage: {
+                  data: [{ id: "still-active", status: "inProgress", items: [] }],
+                  nextCursor: null,
+                },
+              }
+            : {}),
+          thread: {
+            ...response.thread,
+            model: native.model,
+            ...(native.activeResume
+              ? {
+                  status: { type: "active", activeFlags: [] },
+                  turns: [{ id: "still-active", status: "inProgress", items: [] }],
+                }
+              : {}),
+          },
         };
       }
       if (method === "account/rateLimits/read") {
@@ -201,7 +222,12 @@ function fixture(auth: "chatgpt" | "api-key" = "chatgpt") {
 describe("pending Reserve caller through real client transport (synthetic backend)", () => {
   it("submits settings and intact pending input atomically without settings notifications", async () => {
     const f = fixture();
+    const agentEnd = vi.fn();
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "agent_end", handler: agentEnd }]),
+    );
     const result = await f.finish(f.run());
+    expect(agentEnd.mock.calls[0]?.[1]).toMatchObject({ modelId: "gpt-reserve" });
     expect(f.native.starts).toHaveLength(1);
     expect(f.native.starts[0]).toMatchObject({
       model: "gpt-reserve",
@@ -215,6 +241,50 @@ describe("pending Reserve caller through real client transport (synthetic backen
       model: "gpt-reserve",
       reserveReturn: { accountId: "account-a", model: ordinaryModel },
     });
+  });
+  it("keeps input unsent when a resumed native turn cannot settle before Reserve entry", async () => {
+    const f = fixture();
+    f.native.usage = recovered;
+    await f.finish(f.run());
+    await f.reopen();
+    f.native.activeResume = true;
+    await f.harness.notify({ method: "thread/closed", params: { threadId: "thread-1" } });
+    f.native.usage = offered;
+    const watch = vi
+      .spyOn(getCodexAppServerTurnRouter(f.harness.client), "watchNativeTurnCompletion")
+      .mockReturnValue({
+        completion: Promise.resolve(false),
+        state: "unconfirmed",
+        settledSignal: AbortSignal.abort(),
+        cancel: () => {},
+      });
+    const run = f.run();
+    void run.catch(() => {});
+    // An incorrect second dispatch completes normally so the negative control fails on admission.
+    void run
+      .waitForTurnAccepted()
+      .then(() => f.harness.completeTurn({ threadId: "thread-1", turnId: "reserve-turn" }))
+      .catch(() => {});
+    await expect(run).rejects.toThrow("active native turn");
+    expect(watch).toHaveBeenCalled();
+    expect(f.native.starts).toHaveLength(1);
+    expect(f.read()?.reserveReturn).toBeUndefined();
+  });
+  it("authorizes the selected Reserve model rather than the original ordinary model", async () => {
+    const f = fixture();
+    const bind = f.params.hostCapabilities.bindModelExecution!;
+    const authorize = vi.fn<typeof bind>((model) => {
+      if (model?.model === "gpt-reserve") {
+        throw new Error("synthetic host denies Reserve model");
+      }
+      return bind(model);
+    });
+    f.params.hostCapabilities = { ...f.params.hostCapabilities, bindModelExecution: authorize };
+    await expect(f.run()).rejects.toThrow("synthetic host denies Reserve model");
+    expect(authorize).toHaveBeenCalledWith({ provider: "openai", model: "gpt-reserve" });
+    expect(f.native.starts).toEqual([]);
+    expect(f.read()?.model).toBe(ordinaryModel);
+    expect(f.read()?.reserveReturn?.model).toBe(ordinaryModel);
   });
   it.each(["clear", "logout", "api-key notice", "failed refresh"] as const)(
     "refuses %s before Reserve selection rather than sending ordinary input",

@@ -51,12 +51,7 @@ import {
 import { createNoisyPngBuffer, createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.js";
-import {
-  deleteSession,
-  listRunningSessions,
-  markBackgrounded,
-  waitForExecScope,
-} from "../agents/bash-process-registry.js";
+import { listRunningSessions, waitForExecScope } from "../agents/bash-process-registry.js";
 import { runExecProcess } from "../agents/bash-tools.exec-runtime.js";
 import { hasModelFallbackStop } from "../agents/failover-error.js";
 import * as agentSessionSdk from "../agents/sessions/sdk.js";
@@ -83,7 +78,11 @@ import {
   WorkerLiveEventClient,
   WorkerTranscriptCommitClient,
 } from "./worker-rpc-clients.js";
-import { registerWorkerBackgroundExecLifecycleTests } from "./worker-runtime-background-exec.suite.js";
+import {
+  registerWorkerBackgroundExecLifecycleTests,
+  registerWorkerExecEnvironmentFinalizationTests,
+} from "./worker-runtime-background-exec.suite.js";
+import { registerWorkerPermissionTests } from "./worker-runtime-permissions.suite.js";
 import { createWorkerRuntimeEnvironment, runWorkerDescriptor } from "./worker.runtime.js";
 
 const browserRuntimeMocks = vi.hoisted(() => ({
@@ -151,7 +150,8 @@ type InferencePlan =
   | "burst-text"
   | "oversized-text"
   | "oversized-error"
-  | "empty-terminal";
+  | "empty-terminal"
+  | { args: Record<string, unknown>; toolCallId: string; toolName: string };
 type WorkerDoneMessage = Extract<WorkerInferenceTerminalOutcome, { type: "done" }>["message"];
 
 type FakeGatewayOptions = {
@@ -599,6 +599,10 @@ class FakeWorkerGateway {
     });
     const plan = this.options.inferencePlans?.[this.inferencePlanIndex] ?? "text";
     this.inferencePlanIndex += 1;
+    if (typeof plan === "object") {
+      this.sendToolCallTurn(socket, frame.params, plan);
+      return;
+    }
     if (plan === "read-image") {
       this.sendToolCallTurn(socket, frame.params, {
         args: { path: "attachment.png" },
@@ -1897,68 +1901,10 @@ describe("worker runtime", () => {
     },
   );
 
-  it.each(["foreground", "hidden-background"] as const)(
-    "keeps environment state until %s exec finalization settles",
-    async (visibility) => {
-      const sessionId = `worker-finalizer-${visibility}`;
-      const scopeKey = `worker:${sessionId}`;
-      const environment = await createWorkerRuntimeEnvironment(sessionId);
-      const finalizing = createDeferred();
-      const releaseFinalizer = createDeferred();
-      const settledStateDirs: Array<string | undefined> = [];
-      let run: Awaited<ReturnType<typeof runExecProcess>> | undefined;
-      try {
-        run = await runExecProcess({
-          command: "worker-finalizer-fixture",
-          workdir: environment.stateDir,
-          env: {},
-          sandbox: {
-            containerName: "worker-finalizer-fixture",
-            workspaceDir: environment.stateDir,
-            containerWorkdir: environment.stateDir,
-            buildExecSpec: async () => ({
-              argv: [process.execPath, "-e", "process.stdout.write('worker-finalizer-output')"],
-              env: {},
-              stdinMode: "pipe-closed",
-            }),
-            finalizeExec: async () => {
-              finalizing.resolve();
-              await releaseFinalizer.promise;
-            },
-          },
-          usePty: false,
-          warnings: [],
-          maxOutput: 1000,
-          pendingMaxOutput: 1000,
-          notifyOnExit: false,
-          scopeKey,
-          timeoutSec: null,
-          onSettledBeforeNotify: () => {
-            settledStateDirs.push(process.env.OPENCLAW_STATE_DIR);
-          },
-        });
-        if (visibility === "hidden-background") {
-          markBackgrounded(run.session);
-          deleteSession(run.session.id);
-        }
-        await finalizing.promise;
-        const closing = environment.close();
-        await Promise.resolve();
-
-        expect(process.env.OPENCLAW_STATE_DIR).toBe(environment.stateDir);
-        await expect(stat(environment.stateDir)).resolves.toBeDefined();
-        releaseFinalizer.resolve();
-        await run.promise;
-        await closing;
-        expect(settledStateDirs).toEqual([environment.stateDir]);
-        await expect(stat(environment.stateDir)).rejects.toMatchObject({ code: "ENOENT" });
-      } finally {
-        releaseFinalizer.resolve();
-        await run?.promise;
-        await environment.close();
-      }
-    },
-  );
+  registerWorkerExecEnvironmentFinalizationTests({
+    runExecProcess,
+    createWorkerRuntimeEnvironment,
+  });
 
   it("revokes local tool handles when their worker turn closes", async () => {
     const { launch } = await setup();
@@ -2312,85 +2258,7 @@ describe("worker runtime", () => {
     }
   });
 
-  it.each([
-    {
-      mode: "read-only" as const,
-      omittedTools: ["write", "edit", "apply_patch"],
-      denial: /host=gateway security=deny/u,
-    },
-    {
-      mode: "guarded" as const,
-      omittedTools: [],
-      denial:
-        /approval_required.*worker guarded permission mode.*run this command locally.*interactive approval.*administrator.*clear the session permission mode/isu,
-    },
-    {
-      mode: "workspace" as const,
-      omittedTools: [],
-      denial:
-        /approval_required.*worker workspace permission mode.*run this command locally.*interactive approval.*administrator.*clear the session permission mode/isu,
-    },
-    { mode: "full" as const, omittedTools: [], denial: null },
-  ])("applies the $mode worker permission clamp", async ({ mode, omittedTools, denial }) => {
-    const { gateway, workspaceDir, launch } = await setup({
-      inferencePlans: ["tool", "text"],
-      ...(mode === "full"
-        ? {
-            execApprovals: {
-              version: 1,
-              defaults: { security: "full", ask: "always" },
-              agents: {},
-            },
-          }
-        : {}),
-    });
-    launch.assignment.permissionMode = mode;
-    launch.assignment.workerContainmentRoot = workspaceDir;
-
-    await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "completed" });
-
-    const toolNames = gateway.inferenceRequests[0]?.context.tools?.map((tool) => tool.name) ?? [];
-    for (const toolName of omittedTools) {
-      expect(toolNames).not.toContain(toolName);
-    }
-    const toolResult = JSON.stringify(
-      gateway.inferenceRequests[1]?.context.messages.find(
-        (message) => message.role === "toolResult",
-      ),
-    );
-    if (denial) {
-      expect(toolResult).toMatch(denial);
-      await expect(
-        readFile(path.join(workspaceDir, "local-proof.txt"), "utf8"),
-      ).rejects.toMatchObject({ code: "ENOENT" });
-    } else {
-      await expect(readFile(path.join(workspaceDir, "local-proof.txt"), "utf8")).resolves.toBe(
-        "worker-local",
-      );
-      expect(toolResult).not.toMatch(/approval_required|approval-pending/iu);
-      expect(gateway.methods.some((method) => method.includes("approval"))).toBe(false);
-    }
-  });
-
-  it.each(["guarded", "workspace"] as const)(
-    "denies default safe bins under the %s worker permission policy",
-    async (mode) => {
-      const { gateway, workspaceDir, launch } = await setup({
-        inferencePlans: ["safe-tool", "text"],
-      });
-      launch.assignment.permissionMode = mode;
-      launch.assignment.workerContainmentRoot = workspaceDir;
-
-      await expect(runWorkerDescriptor(launch)).resolves.toMatchObject({ status: "completed" });
-
-      const toolResult = JSON.stringify(
-        gateway.inferenceRequests[1]?.context.messages.find(
-          (message) => message.role === "toolResult",
-        ),
-      );
-      expect(toolResult).toContain("approval_required");
-    },
-  );
+  registerWorkerPermissionTests({ setup });
 
   it("canonicalizes an in-root worker workspace before enforcing containment", async () => {
     const { workspaceDir, launch } = await setup();

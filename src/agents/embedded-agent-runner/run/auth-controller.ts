@@ -24,6 +24,7 @@ import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
 import { shouldUseTransientCooldownProbeSlot } from "../../failover-policy.js";
 import { getFailoverErrorCode } from "../../failover/error.js";
 import { renderAuthProfileFailoverCopy } from "../../failover/user-copy.js";
+import { resolveProviderModelAuthPolicy } from "../../model-auth-policy.js";
 import {
   getApiKeyForModelCore,
   MissingProviderAuthError,
@@ -456,6 +457,7 @@ export function createEmbeddedRunAuthController(params: {
     const messageForReason =
       failoverParams.message?.trim() ||
       (failoverParams.error ? formatErrorMessage(failoverParams.error).trim() : "");
+    const code = failoverParams.error ? getFailoverErrorCode(failoverParams.error) : undefined;
     const reason = resolveAuthProfileFailoverReason({
       allInCooldown: failoverParams.allInCooldown,
       message: messageForReason,
@@ -463,6 +465,7 @@ export function createEmbeddedRunAuthController(params: {
     });
     const message =
       failoverParams.message?.trim() ||
+      (code === "selected_auth_profile_unavailable" ? messageForReason : undefined) ||
       renderAuthProfileFailoverCopy({
         reason,
         provider,
@@ -495,8 +498,8 @@ export function createEmbeddedRunAuthController(params: {
         provider,
         model: modelId,
         authMode,
-        status: resolveFailoverStatus(reason),
-        code: failoverParams.error ? getFailoverErrorCode(failoverParams.error) : undefined,
+        status: resolveFailoverStatus(reason, code),
+        code,
         authProfileFailure: { allInCooldown: failoverParams.allInCooldown },
         cause: failoverParams.error,
       });
@@ -537,6 +540,13 @@ export function createEmbeddedRunAuthController(params: {
       !providerModelRouteAcceptsAuthMode({
         requirement: preparedModel.authRequirement,
         mode: apiKeyInfo.mode ?? (apiKeyInfo.apiKey ? "api-key" : undefined),
+        authRequirement: resolveProviderModelAuthPolicy({
+          provider: preparedModel.runtimeModel.provider,
+          mode: apiKeyInfo.mode,
+          authFlow: apiKeyInfo.authFlow,
+          api: preparedModel.runtimeModel.api,
+          baseUrl: preparedModel.runtimeModel.baseUrl,
+        }).authRequirement,
       })
     ) {
       throw new Error(

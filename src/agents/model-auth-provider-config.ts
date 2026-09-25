@@ -1,6 +1,7 @@
 /**
  * Provider-entry configuration and stored-profile binding for model auth.
  */
+import { isDeepStrictEqual } from "node:util";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { resolveMergedModelProviderEntry } from "../config/model-provider-config.js";
 import {
@@ -56,6 +57,7 @@ export function projectResolvedProfileAuth(params: {
   provider: string;
   store: AuthProfileStore;
   mode: ResolvedProviderAuth["mode"];
+  authFlow?: string;
 }): ResolvedProviderAuth {
   const credential = params.store.profiles[params.profileId];
   const ref =
@@ -72,6 +74,7 @@ export function projectResolvedProfileAuth(params: {
     profileId: params.profileId,
     source: `profile:${params.profileId}`,
     mode: params.mode,
+    ...(params.authFlow ? { authFlow: params.authFlow } : {}),
   };
 }
 
@@ -96,12 +99,16 @@ export function resolveProviderConfig(
 }
 
 function resolveProviderSourceConfig(cfg: OpenClawConfig | undefined, provider: string) {
+  const source = getRuntimeConfigSourceSnapshot();
+  if (cfg === source) {
+    return cfg;
+  }
   return providerConfigMatchesRuntimeSnapshot({
     inputConfig: cfg,
     runtimeConfig: getRuntimeConfigSnapshot(),
     provider,
   })
-    ? (getRuntimeConfigSourceSnapshot() ?? cfg)
+    ? (source ?? cfg)
     : cfg;
 }
 
@@ -472,7 +479,9 @@ export async function resolveProviderEntryApiKeyBinding(params: {
   store: AuthProfileStore;
   agentDir?: string;
   secretSentinels?: boolean;
+  signal?: AbortSignal;
 }): Promise<ProviderEntryApiKeyBindingResolution> {
+  params.signal?.throwIfAborted();
   const reference = resolveProviderEntryApiKeyProfileReference(params);
   if (reference.kind === "none" || reference.kind === "marker") {
     return { kind: "none" };
@@ -487,11 +496,14 @@ export async function resolveProviderEntryApiKeyBinding(params: {
       store: params.store,
       profileId: reference.profileId,
       agentDir: params.agentDir,
+      signal: params.signal,
     });
+    params.signal?.throwIfAborted();
     if (!resolved) {
       return { kind: "profile-unresolved", profileId: reference.profileId };
     }
     const resolvedProfileId = resolved.profileId ?? reference.profileId;
+    const credential = resolved.credential ?? reference.credential;
     return {
       kind: "profile-resolved",
       auth: projectResolvedProfileAuth({
@@ -501,9 +513,11 @@ export async function resolveProviderEntryApiKeyBinding(params: {
         provider: params.provider,
         store: params.store,
         mode: resolved.profileType ? profileTypeToAuthMode(resolved.profileType) : reference.mode,
+        authFlow: credential.type === "oauth" ? credential.authFlow : undefined,
       }),
     };
   } catch (err) {
+    params.signal?.throwIfAborted();
     if (err instanceof SecretSurfaceUnavailableError) {
       throw err;
     }
@@ -636,6 +650,7 @@ export function providerConfigMatchesRuntimeSnapshot(params: {
   return inputProvider && runtimeProvider
     ? params.inputConfig === params.runtimeConfig ||
         inputProvider === runtimeProvider ||
+        isDeepStrictEqual(inputProvider, runtimeProvider) ||
         hashRuntimeConfigValue(toComparableConfig(inputProvider)) ===
           hashRuntimeConfigValue(toComparableConfig(runtimeProvider))
     : false;

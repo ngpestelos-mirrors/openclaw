@@ -17,7 +17,6 @@ const enCommandPalette = {
     startSessionBackground: "Start new session in background",
     startingSession: "Starting…",
     promptRequired: "Write a prompt to start a session.",
-    longPrompt: "This prompt is too long to search. You can still start a new session with it.",
     searchingSessions: "Searching sessions…",
     searchingCommands: "Searching commands…",
     clearSearch: "Clear search",
@@ -87,6 +86,8 @@ const enCommandPalette = {
     },
     labels: {
       commandPalette: "Open command palette",
+      newSession: "Open New Session",
+      archiveSession: "Archive current session",
       paletteStartSession: "Start a background session (in the command palette)",
       keyboardShortcuts: "Show keyboard shortcuts",
       toggleSidebar: "Toggle sidebar",
@@ -108,6 +109,8 @@ const enCommandPalette = {
       zoomIn: "Zoom in",
       zoomOut: "Zoom out",
       zoomReset: "Reset zoom",
+      panImageHorizontal: "Pan image horizontally",
+      panImageVertical: "Pan image vertically",
       terminalPanel: "Toggle terminal panel",
       homePanel: "Talk to your Home agent",
       workspaceFiles: "Toggle workspace files",
@@ -142,6 +145,7 @@ const enCommandPalette = {
       clearDescription: "Clear chat history",
       redirectDescription: "Abort and restart with a new message",
       steerDescription: "Inject a message into the active run",
+      exportDescription: "Download this conversation as Markdown",
       categories: {
         session: "Session",
         model: "Model",

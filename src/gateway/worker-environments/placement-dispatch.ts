@@ -60,10 +60,7 @@ type WorkerPlacementDispatchOptions = WorkerPlacementReclaimBarriers &
   WorkerPlacementReclaimOptions &
   Pick<
     PlacementRecoveryDeps,
-    | "resolveWorkspace"
-    | "reportWorkspaceResultRecoveryFailure"
-    | "prepareAcceptedWorkspacePublication"
-    | "publishAcceptedWorkspace"
+    "resolveWorkspace" | "prepareAcceptedWorkspacePublication" | "publishAcceptedWorkspace"
   > & {
     environments: WorkerDispatchEnvironmentService &
       Pick<WorkerEnvironmentService, "recordError" | "requestDestroy"> &
@@ -224,33 +221,18 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
       reportPlacementTransition(onTransition, placement);
       const environment = prepared
         ? prepared.environment
-        : request.inheritedProfile
-          ? await environments.createFromProfileSnapshot(
-              {
-                profileId: request.profileId,
-                providerId: request.inheritedProfile.providerId,
-                profileSnapshot: request.inheritedProfile.profileSnapshot,
-              },
-              idempotencyKey,
-              request.machineClass,
-              request.executionMode,
-              projectPath,
-              signal,
-              request.os,
-              request.runSetupScript,
-              preparedIntent,
-            )
-          : await environments.create(
-              request.profileId,
-              idempotencyKey,
-              request.machineClass,
-              request.executionMode,
-              projectPath,
-              signal,
-              request.os,
-              request.runSetupScript,
-              preparedIntent,
-            );
+        : await environments.createWithRequest({
+            profileId: request.profileId,
+            idempotencyKey,
+            machineClass: request.machineClass,
+            executionMode: request.executionMode,
+            projectPath,
+            signal,
+            os: request.os,
+            runSetupScript: request.runSetupScript,
+            admittedIntent: preparedIntent,
+            inheritedProfile: request.inheritedProfile,
+          });
       return await startup.continueProvisionedDispatch({
         request,
         placement,
@@ -264,7 +246,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
       });
     } catch (error) {
       try {
-        if (placement && startup.retainInterruptedProvisioning(placement, error)) {
+        if (placement && (await startup.retainInterruptedProvisioning(placement, error))) {
           throw error;
         }
         const current = placement ? placements.get(request.sessionId) : undefined;

@@ -392,7 +392,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     expect(deliveredCallArg().requireVisibleReply).toBe(true);
     const message = String(deliveredCallArg().triggerMessage);
     expect(message).not.toContain("NO_REPLY");
-    expect(message).toContain("continue any remaining in-scope work before replying");
+    expect(message).toContain("in-scope fixable blockers require continued work");
     expect(deliveredCallArg().directIdempotencyKey).toBe(requesterSettleKey("run-b:yield-1"));
     expect(completeBatchSpy).toHaveBeenCalledWith(["run-b"], 1, {
       delivered: true,
@@ -844,6 +844,26 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
       vi.useRealTimers();
       deliverSpy.mockReset().mockResolvedValue({ delivered: true, path: "direct" });
     }
+  });
+
+  it("records a transcript turn assertion as one permanent completion failure", async () => {
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([
+      makeSettledChild({ runId: "run-a" }),
+      makeSettledChild({ runId: "run-b" }),
+    ]);
+    const error = "Session transcript keyed user is outside the current turn: old-input";
+    deliverSpy.mockRejectedValueOnce(new Error(error));
+
+    expect(await maybeWakeRequesterAfterAllChildrenSettled(wakeParams())).toBe(false);
+    expect(completeBatchSpy).toHaveBeenCalledExactlyOnceWith(["run-a", "run-b"], undefined, {
+      delivered: false,
+      path: "none",
+      disposition: "permanent_failure",
+      error,
+    });
+    expect(await maybeWakeRequesterAfterAllChildrenSettled(wakeParams())).toBe(false);
+    expect(deliverSpy).toHaveBeenCalledOnce();
+    expect(completeBatchSpy).toHaveBeenCalledOnce();
   });
 
   it("does not retry an ambiguous delivery failure", async () => {

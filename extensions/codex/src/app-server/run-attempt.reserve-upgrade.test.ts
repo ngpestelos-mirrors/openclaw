@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateSyncKeyedStoreForTests,
+  openOpenClawStateDatabase,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createTestPluginApi, type TestPluginApiInput } from "openclaw/plugin-sdk/plugin-test-api";
@@ -58,7 +59,7 @@ const offered = {
   },
 };
 
-// Read-only evidence: compare the historical schema before and after candidate use.
+// Compare Reserve use against the schema admitted by the normal core migration owner.
 function inspectDatabase(database: string) {
   const db = new DatabaseSync(database, { readOnly: true });
   try {
@@ -68,6 +69,9 @@ function inspectDatabase(database: string) {
         .prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name")
         .all(),
       integrity: db.prepare("PRAGMA integrity_check").get(),
+      bindings: db
+        .prepare("SELECT * FROM plugin_state_entries ORDER BY plugin_id, namespace, entry_key")
+        .all(),
     };
   } finally {
     db.close();
@@ -92,10 +96,16 @@ async function fixture() {
   } finally {
     restored.close();
   }
-  const bytes = await fs.readFile(database);
   const before = inspectDatabase(database);
   expect(before.version).toEqual({ user_version: 17 });
   expect(before.integrity).toEqual({ integrity_check: "ok" });
+  // Main may legitimately advance its schema. Admit that upgrade through its owner,
+  // not a Reserve migration, while preserving every byte of the historical binding row.
+  openOpenClawStateDatabase({ env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } });
+  const admitted = inspectDatabase(database);
+  expect(admitted.bindings).toEqual(before.bindings);
+  expect(admitted.integrity).toEqual(before.integrity);
+  const bytes = await fs.readFile(database);
   const openSyncKeyedStore = <T>(options: OpenKeyedStoreOptions) =>
     createPluginStateSyncKeyedStoreForTests<T>("codex", {
       ...options,
@@ -129,7 +139,7 @@ async function fixture() {
     }),
     historyCoveredThrough: "2026-09-18T00:00:00.000Z",
   });
-  // Even the first candidate read must not migrate, normalize, or rewrite the old file.
+  // A Reserve reader must not rewrite the core-admitted file or normalize its old binding.
   expect(await fs.readFile(database)).toEqual(bytes);
   const native = {
     model: ordinaryModel,
@@ -249,7 +259,12 @@ async function fixture() {
     finish,
     read: () => store.read(sessionBindingIdentity(params)),
     readOriginal: () => store.read(identity),
-    assertUnmigrated: () => expect(inspectDatabase(database)).toEqual(before),
+    assertNoReserveMigration: () => {
+      const after = inspectDatabase(database);
+      expect(after.version).toEqual(admitted.version);
+      expect(after.schema).toEqual(admitted.schema);
+      expect(after.integrity).toEqual(admitted.integrity);
+    },
     reopen: async () => {
       await drainSessionDiskBudgetWorkers();
       await closeOpenClawStateDatabaseAsync();
@@ -327,7 +342,7 @@ describe("v2026.9.5 SQLite producer to registered candidate harness (synthetic b
     expect(f.read()?.threadId).toBe("thread-1");
     expect(f.read()?.model).toBe(ordinaryModel);
     expect(f.wire.requests.filter((r) => r.method === "thread/start")).toEqual([]);
-    f.assertUnmigrated();
+    f.assertNoReserveMigration();
   });
 
   it("does not treat persisted return intent as authority or silently replace its unavailable thread", async () => {
@@ -345,7 +360,7 @@ describe("v2026.9.5 SQLite producer to registered candidate harness (synthetic b
     await expect(f.run()).rejects.toThrow("synthetic missing upgraded native thread");
     expect(f.wire.requests.filter((r) => r.method === "thread/start")).toEqual([]);
     expect(f.read()?.reserveReturn).toBeDefined();
-    f.assertUnmigrated();
+    f.assertNoReserveMigration();
   });
 
   it("lets an explicit new session leave the old recovery intent without inheriting Reserve authority", async () => {
@@ -370,6 +385,6 @@ describe("v2026.9.5 SQLite producer to registered candidate harness (synthetic b
     expect(f.read()).toMatchObject({ threadId: "thread-new", model: ordinaryModel });
     expect(f.read()?.reserveReturn).toBeUndefined();
     expect(f.wire.requests.filter((r) => r.method === "thread/start")).toHaveLength(1);
-    f.assertUnmigrated();
+    f.assertNoReserveMigration();
   });
 });

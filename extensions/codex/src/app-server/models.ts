@@ -2,12 +2,15 @@
  * Lists and normalizes models exposed by the Codex app-server `model/list`
  * endpoint, including pagination and shared-client lease handling.
  */
-import { normalizeOptionalString, uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  normalizeOptionalString,
+  normalizeUniqueTrimmedStringList,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { CodexAppServerAuthRequirement } from "./auth-bridge.js";
 import type { resolveCodexAppServerAuthProfileIdForAgent } from "./auth-profile.js";
 import type { CodexAppServerStartOptions } from "./config.js";
 import { assertCodexModelListResponse } from "./protocol-validators.js";
-import type { CodexModel, CodexReasoningEffortOption } from "./protocol.js";
+import type { CodexModel } from "./protocol.js";
 import type { CodexAppServerScopedRequest } from "./request.js";
 
 /** Normalized model metadata returned by the Codex app-server model listing helper. */
@@ -167,7 +170,9 @@ function readCodexModel(value: CodexModel): CodexAppServerModel {
     hidden: value.hidden,
     isDefault: value.isDefault,
     inputModalities: value.inputModalities,
-    supportedReasoningEfforts: readReasoningEfforts(value.supportedReasoningEfforts),
+    supportedReasoningEfforts: normalizeUniqueTrimmedStringList(
+      value.supportedReasoningEfforts.map((entry) => entry.reasoningEffort),
+    ),
     ...(value.serviceTiers?.length ? { serviceTiers: value.serviceTiers } : {}),
     ...(value.defaultServiceTier != null ? { defaultServiceTier: value.defaultServiceTier } : {}),
     ...(normalizeOptionalString(value.defaultReasoningEffort)
@@ -177,13 +182,6 @@ function readCodexModel(value: CodexModel): CodexAppServerModel {
       ? { multiAgentVersion: value.multiAgentVersion }
       : {}),
   };
-}
-
-function readReasoningEfforts(value: CodexReasoningEffortOption[]): string[] {
-  const efforts = value
-    .map((entry) => normalizeOptionalString(entry.reasoningEffort))
-    .filter((entry): entry is string => entry !== undefined);
-  return uniqueStrings(efforts);
 }
 
 function normalizeMaxPages(value: unknown): number {

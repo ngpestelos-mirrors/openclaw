@@ -1,20 +1,26 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import path from "node:path";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
+import type { Result } from "@openclaw/normalization-core/result";
 import chokidar, { type FSWatcher } from "chokidar";
 import { isPathInside } from "../../infra/path-guards.js";
+import { createNativeSkillsAncestorWatcher } from "./refresh-ancestor-native.js";
 import { teardownSkillsPathWatcher } from "./refresh-watch-close.js";
 import type { createSkillsWatchPathFilter } from "./refresh-watch-path.js";
+import { shouldUseNativeSkillsWatcher } from "./refresh-watch-transport.js";
 
 type AncestorSubscription = {
   path: string;
   ignored: ReturnType<typeof createSkillsWatchPathFilter>["ignored"];
   ready: () => void;
+  reconcile: () => void;
   changed: (event: string, path: string) => void;
   raw: (event: string, path: unknown, details: unknown) => void;
   error: (error: Error) => void;
 };
 type AncestorWatcher = {
-  watcher: FSWatcher;
+  watcher: FSWatcher | ReturnType<typeof createNativeSkillsAncestorWatcher>;
+  close: () => Promise<Result<void, unknown>>;
   ready: boolean;
   error?: Error;
   subscriptions: Set<AncestorSubscription>;
@@ -28,28 +34,58 @@ function createAncestorWatcher(
   watchRoot: string,
   usePolling: boolean,
   subscriptions: Set<AncestorSubscription>,
-): FSWatcher {
-  return runInWatcherContext(() =>
-    chokidar.watch(watchRoot, {
+): Pick<AncestorWatcher, "watcher" | "close"> {
+  const ignored: AncestorSubscription["ignored"] = (candidate, stats) => {
+    let allIgnored = true;
+    // Each logical filter records directory-symlink identity for unlink
+    // events. Evaluate all of them even when another target admits entry.
+    for (const current of subscriptions) {
+      if (!current.ignored(candidate, stats)) {
+        allIgnored = false;
+      }
+    }
+    return allIgnored;
+  };
+  return runInWatcherContext(() => {
+    if (shouldUseNativeSkillsWatcher(usePolling)) {
+      const watcher = createNativeSkillsAncestorWatcher(watchRoot, ignored, () => {
+        const current = ancestorWatchers.get(watchRoot);
+        if (current?.watcher === watcher) {
+          replaceAncestorWatcher(watchRoot, usePolling, current);
+        }
+      });
+      watcher.on("reconcile", (_changedPath: string, structural: boolean) => {
+        const current = ancestorWatchers.get(watchRoot);
+        if (!structural || current?.watcher !== watcher) {
+          return;
+        }
+        // Native Windows names can alias any admitted entry. Do not apply the
+        // union or per-subscription lexical filter to this reconciliation hint.
+        for (const target of Array.from(subscriptions)) {
+          if (current.watcher === watcher && !watcher.closed && subscriptions.has(target)) {
+            target.reconcile();
+          }
+        }
+      });
+      return { watcher, close: () => watcher.close() };
+    }
+    const watcher = chokidar.watch(watchRoot, {
       ignoreInitial: true,
       followSymlinks: false,
       usePolling,
       // Only observe the next directory in each missing path. Appearance moves
       // subscriptions to the closest existing ancestor or their recursive root.
       depth: 0,
-      ignored: (candidate, stats) => {
-        let ignored = true;
-        // Each logical filter records directory-symlink identity for unlink
-        // events. Evaluate all of them even when another target admits entry.
-        for (const current of subscriptions) {
-          if (!current.ignored(candidate, stats)) {
-            ignored = false;
-          }
-        }
-        return ignored;
-      },
-    }),
-  );
+      ignored,
+    });
+    if (process.platform === "darwin" && !usePolling) {
+      // macOS can keep a directory watch on its moved inode without a rename
+      // event. Observe its directory entry through the same filtered watcher so
+      // replacement can reconcile even when the old directory emits nothing.
+      watcher.add(path.dirname(watchRoot));
+    }
+    return { watcher, close: () => teardownSkillsPathWatcher({ watcher }) };
+  });
 }
 
 function observeAncestorWatcher(current: AncestorWatcher): void {
@@ -68,7 +104,7 @@ function observeAncestorWatcher(current: AncestorWatcher): void {
       }
     }
   });
-  watcher.on("all", (event, changedPath) => {
+  watcher.on("all", (event: string, changedPath: string) => {
     if (!isCurrent()) {
       return;
     }
@@ -82,7 +118,7 @@ function observeAncestorWatcher(current: AncestorWatcher): void {
       }
     }
   });
-  watcher.on("raw", (event, rawPath, details) => {
+  watcher.on("raw", (event: string, rawPath: unknown, details: unknown) => {
     if (!isCurrent()) {
       return;
     }
@@ -92,7 +128,7 @@ function observeAncestorWatcher(current: AncestorWatcher): void {
       }
     }
   });
-  watcher.on("error", (error) => {
+  watcher.on("error", (error: unknown) => {
     if (!isCurrent()) {
       return;
     }
@@ -107,6 +143,20 @@ function observeAncestorWatcher(current: AncestorWatcher): void {
   });
 }
 
+function replaceAncestorWatcher(
+  watchRoot: string,
+  usePolling: boolean,
+  current: AncestorWatcher,
+): void {
+  const closeRetired = current.close;
+  Object.assign(current, createAncestorWatcher(watchRoot, usePolling, current.subscriptions));
+  current.ready = false;
+  current.error = undefined;
+  observeAncestorWatcher(current);
+  // Releases retain this group and its subscriptions across native retries/rearms.
+  void closeRetired();
+}
+
 export function acquireSkillsAncestorWatcher(
   watchRoot: string,
   usePolling: boolean,
@@ -116,7 +166,7 @@ export function acquireSkillsAncestorWatcher(
   if (!group) {
     const subscriptions = new Set<AncestorSubscription>([subscription]);
     group = {
-      watcher: createAncestorWatcher(watchRoot, usePolling, subscriptions),
+      ...createAncestorWatcher(watchRoot, usePolling, subscriptions),
       ready: false,
       subscriptions,
     };
@@ -125,12 +175,7 @@ export function acquireSkillsAncestorWatcher(
   } else {
     group.subscriptions.add(subscription);
     if (group.error) {
-      const retired = group.watcher;
-      group.watcher = createAncestorWatcher(watchRoot, usePolling, group.subscriptions);
-      group.error = undefined;
-      observeAncestorWatcher(group);
-      // Releases retain this group and its subscriptions across native retries.
-      void teardownSkillsPathWatcher({ watcher: retired });
+      replaceAncestorWatcher(watchRoot, usePolling, group);
     }
   }
   const current = group;
@@ -156,7 +201,7 @@ export function acquireSkillsAncestorWatcher(
     release: () => {
       if (current.subscriptions.delete(subscription) && current.subscriptions.size === 0) {
         ancestorWatchers.delete(watchRoot);
-        void teardownSkillsPathWatcher(current);
+        void current.close();
       }
     },
   };
