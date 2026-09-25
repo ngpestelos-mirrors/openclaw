@@ -18,6 +18,7 @@ vi.mock("../infra/sqlite-worker-identity.js", () => ({
 vi.mock("node:worker_threads", async () => {
   const { EventEmitter } = await import("node:events");
   return {
+    isMainThread: true,
     Worker: class extends EventEmitter {
       shared: BigInt64Array;
       stdout = { resume() {} };

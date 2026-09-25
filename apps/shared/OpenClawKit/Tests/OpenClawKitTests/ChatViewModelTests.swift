@@ -8958,8 +8958,9 @@ struct ChatViewModelTests {
             vm.send()
         }
 
-        try await waitUntil("compact attempted") {
-            await transport.compactSessionKeys() == ["main"]
+        try await waitUntil("compact command settled") {
+            let keys = await transport.compactSessionKeys()
+            return await MainActor.run { keys == ["main"] && !vm.isSubmittingDraft }
         }
         try await waitUntil("compact failure settled") {
             await MainActor.run { !vm.isLoading && vm.canRequestSessionCompact }
@@ -9040,8 +9041,9 @@ struct ChatViewModelTests {
             vm.send()
         }
 
-        try await waitUntil("first compact attempted") {
-            await transport.compactSessionKeys() == ["main"]
+        try await waitUntil("first compact command settled") {
+            let keys = await transport.compactSessionKeys()
+            return await MainActor.run { keys == ["main"] && !vm.isSubmittingDraft }
         }
         try await waitUntil("first compact failure settled") {
             await MainActor.run { !vm.isLoading && vm.canRequestSessionCompact }
@@ -9053,8 +9055,9 @@ struct ChatViewModelTests {
             vm.send()
         }
 
-        try await waitUntil("second compact attempted") {
-            await transport.compactSessionKeys() == ["main", "main"]
+        try await waitUntil("second compact command settled") {
+            let keys = await transport.compactSessionKeys()
+            return await MainActor.run { keys == ["main", "main"] && !vm.isSubmittingDraft }
         }
         #expect(await MainActor.run { vm.errorText } == nil)
     }
