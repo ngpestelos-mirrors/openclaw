@@ -93,8 +93,7 @@ async function startConfigRpcGateway(
       OPENCLAW_BUNDLED_PLUGINS_DIR: path.resolve(import.meta.dirname, "../../../dist/extensions"),
     },
   });
-  // Activation receipts report only a status; retain the reload error that explains failures.
-  setLoggerOverride({ level: "silent", consoleLevel: "error" });
+  setLoggerOverride({ level: "silent", consoleLevel: "silent" });
   const config = { agents: { entries: { main: {} } } };
   const configPath = configRelativePath ? state.statePath(configRelativePath) : state.configPath;
   recordPhase?.("config.write");
