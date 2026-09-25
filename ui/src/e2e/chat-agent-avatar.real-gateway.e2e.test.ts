@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { waitForControlUiDocument } from "../../../src/commands/control-ui-handoff.js";
 import { appendTranscriptMessage } from "../../../src/config/sessions/session-accessor.js";
 import { ensureGatewayOwnerProfile, setAvatar } from "../../../src/state/user-profiles.js";
 import {
@@ -319,6 +320,11 @@ async function openAvatarChat(page: Page) {
   if (!instance) {
     throw new Error("Gateway fixture is not running");
   }
+  const document = await waitForControlUiDocument({
+    url: `http://127.0.0.1:${instance.port}/`,
+    timeoutMs: 60_000,
+  });
+  expect(document.ready, JSON.stringify(document)).toBe(true);
   // Each browser context consumes its own one-time dashboard handoff.
   const dashboard = await instance.cli(["dashboard", "--json"]);
   const handoff: { browserUrl: string; reason?: string } = JSON.parse(dashboard.stdout);
