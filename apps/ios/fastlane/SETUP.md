@@ -166,8 +166,10 @@ OPENCLAW_CI_SIMSLIM_BINARY=/tmp/ios-e2e-tools/simslim \
 ```
 
 The gate requires a clean tracked and untracked source tree at the exact SHA;
-gitignored build outputs are allowed. It builds the Gateway runtime and unsigned Debug `OpenClawUITests` products
-once. Each of the two live Gateway UI tests gets a new simulator, isolated real
+gitignored build outputs are allowed. It builds the Gateway runtime and ad-hoc-signed
+Debug `OpenClawUITests` simulator products once. Ad-hoc signing preserves Keychain
+entitlements without certificates or provisioning profiles; this is not a signed
+Release build. Each of the two live Gateway UI tests gets a new simulator, isolated real
 Gateway, and fresh setup code. Chat uses the deterministic local
 `openai/ios-e2e` provider fixture. Native Overview runs with Control UI disabled;
 this is not screenshot mode or a substitute for external-provider validation.

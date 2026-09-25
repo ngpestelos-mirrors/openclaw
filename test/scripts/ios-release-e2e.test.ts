@@ -408,9 +408,9 @@ describe("release qualification workflow authority", () => {
       `ios-release-e2e=\${{ needs.ios-release-e2e.result }}|${job.if}`,
     );
   });
-  it("uses unsigned Debug products, exact destinations and the XCTest result CLI", () => {
+  it("uses ad-hoc Debug products, exact destinations and the XCTest result CLI", () => {
     const source = readFileSync("scripts/lib/ios-release-e2e-native.ts", "utf8");
-    expect(source).toContain('"CODE_SIGNING_ALLOWED=NO"');
+    expect(source).not.toContain('"CODE_SIGNING_ALLOWED=NO"');
     expect(source).toContain('"Debug"');
     expect(source).toContain("`platform=iOS Simulator,id=${udid}`");
     expect(source).toContain('"test-without-building"');
@@ -627,6 +627,20 @@ describe("native command adapter", () => {
       }
       const commands = nativeMocks.command.mock.calls.map(([options]) => options);
       expect(commands.filter(({ args }) => args.includes("build-for-testing"))).toHaveLength(1);
+      for (const { args: nativeArgs } of commands.filter(
+        ({ args }) => args.includes("build-for-testing") || args.includes("test-without-building"),
+      )) {
+        expect(nativeArgs).toEqual(
+          expect.arrayContaining([
+            "CODE_SIGNING_ALLOWED=YES",
+            "CODE_SIGN_IDENTITY=-",
+            "CODE_SIGN_STYLE=Manual",
+            "PROVISIONING_PROFILE=",
+            "PROVISIONING_PROFILE_SPECIFIER=",
+          ]),
+        );
+        expect(nativeArgs).not.toContain("-allowProvisioningUpdates");
+      }
       expect(
         commands
           .filter(({ args }) => args.includes("test-without-building"))

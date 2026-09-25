@@ -149,7 +149,12 @@ export async function createNativeDependencies(options: {
       "Debug",
       "-derivedDataPath",
       path.join(root, "DerivedData"),
-      "CODE_SIGNING_ALLOWED=NO",
+      // Simulator Keychain access needs entitlements, but no signing certificate.
+      "CODE_SIGNING_ALLOWED=YES",
+      "CODE_SIGN_IDENTITY=-",
+      "CODE_SIGN_STYLE=Manual",
+      "PROVISIONING_PROFILE=",
+      "PROVISIONING_PROFILE_SPECIFIER=",
       "-parallel-testing-enabled",
       "NO",
     ];
