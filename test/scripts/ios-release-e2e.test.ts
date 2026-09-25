@@ -632,6 +632,13 @@ describe("native command adapter", () => {
           .filter(({ args }) => args.includes("test-without-building"))
           .map(({ env }) => env.TEST_RUNNER_OPENCLAW_IOS_LIVE_SETUP_CODE),
       ).toEqual(["synthetic-code-1", "synthetic-code-2"]);
+      for (const { args: testArgs } of commands.filter(({ args }) =>
+        args.includes("test-without-building"),
+      )) {
+        expect(testArgs).not.toContain("-test-iterations");
+        expect(testArgs).not.toContain("-retry-tests-on-failure");
+        expect(testArgs).not.toContain("-run-tests-until-failure");
+      }
       expect(
         commands.filter(({ args }) => args.includes("delete")).map(({ args }) => args.at(-1)),
       ).toEqual(["11111111-2222-3333-4444-000000000001", "11111111-2222-3333-4444-000000000002"]);

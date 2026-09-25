@@ -346,8 +346,6 @@ export async function createNativeDependencies(options: {
                   "-resultBundlePath",
                   resultBundle,
                   `-only-testing:${test}`,
-                  "-test-iterations",
-                  "1",
                   "test-without-building",
                 ],
                 { env: testRunnerEnv(qr.stdout.trim()), timeoutMs: 600_000 },
