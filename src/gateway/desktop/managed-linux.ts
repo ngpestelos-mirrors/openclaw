@@ -10,6 +10,12 @@ import { getProcessSupervisor } from "../../process/supervisor/index.js";
 import type { ManagedRun, ProcessSupervisor, RunExit } from "../../process/supervisor/types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { getHostDesktopGuidance } from "./host-guidance.js";
+import {
+  createManagedLinuxAudio,
+  managedLinuxAudioEnv,
+  type DesktopAudioSource,
+  type ManagedLinuxAudio,
+} from "./managed-linux-audio.js";
 import { probeRfbServer } from "./rfb-probe.js";
 
 const MANAGED_DISPLAY_FIRST = 99;
@@ -38,6 +44,8 @@ type ManagedPair = {
   busExit: ReturnType<ManagedRun["wait"]>;
   sessionExit: ReturnType<ManagedRun["wait"]>;
   computerLeases: Set<{ onStop(): Promise<void> }>;
+  audio: ManagedLinuxAudio;
+  env: NodeJS.ProcessEnv;
   stopPromise?: Promise<void>;
 };
 
@@ -58,6 +66,8 @@ export type ManagedLinuxDesktop = {
     attachment: { kind: "tcp"; host: "127.0.0.1"; port: number };
     auth: "vnc-password";
     vncPassword: string;
+    resolveAudio?: () => DesktopAudioSource | undefined;
+    audioUnavailableReason?: string;
   }>;
   acquireComputer(params: { onStop(): Promise<void> }): Promise<DesktopComputerLease>;
   stop(): Promise<void>;
@@ -156,6 +166,7 @@ export function createManagedLinuxDesktop(
     supervisor?: ProcessSupervisor;
     onFailed?: (error: string) => void;
     runtime?: {
+      createAudio?: typeof createManagedLinuxAudio;
       nowMs?: () => number;
       probeRfb?: typeof probeRfbServer;
       randomBytes?: typeof crypto.randomBytes;
@@ -175,6 +186,7 @@ export function createManagedLinuxDesktop(
 ): ManagedLinuxDesktop {
   const supervisor = params.supervisor ?? getProcessSupervisor();
   const nowMs = params.runtime?.nowMs ?? Date.now;
+  const createAudio = params.runtime?.createAudio ?? createManagedLinuxAudio;
   const probeRfb = params.runtime?.probeRfb ?? probeRfbServer;
   const randomBytes = params.runtime?.randomBytes ?? crypto.randomBytes;
   const readinessPollMs = params.runtime?.readinessPollMs ?? MANAGED_READINESS_POLL_MS;
@@ -194,6 +206,7 @@ export function createManagedLinuxDesktop(
   let startPromise: Promise<ManagedResources> | undefined;
   let stopPromise: Promise<void> | undefined;
   let stopProcesses: (() => Promise<void>) | undefined;
+  let audioOwner: ReturnType<typeof createManagedLinuxAudio> | undefined;
   let epoch = 0;
   let stopping = false;
   let stderrTail = "";
@@ -216,6 +229,15 @@ export function createManagedLinuxDesktop(
     },
     auth: "vnc-password" as const,
     vncPassword: active.password,
+    // Registry acquisitions outlive a process restart. Resolve the new generation's
+    // capability at observation time; a previously captured source stays retired.
+    resolveAudio: () =>
+      resources === active && pair && isPairCurrent(pair) ? pair.audio.source : undefined,
+    get audioUnavailableReason() {
+      return resources === active && pair && isPairCurrent(pair)
+        ? pair.audio.unavailableReason
+        : undefined;
+    },
   });
 
   const removeResources = async () => {
@@ -312,6 +334,9 @@ export function createManagedLinuxDesktop(
     if (current) {
       current.current = false;
     }
+    const retiringAudio = audioOwner;
+    const audioStopped = retiringAudio?.stop();
+    void audioStopped?.catch(() => undefined);
     const stopped = Promise.resolve().then(async () => {
       // Native users must finish cleanup before their X11 and D-Bus session disappears.
       const outcomes = await Promise.allSettled(
@@ -321,6 +346,11 @@ export function createManagedLinuxDesktop(
         }),
       );
       const failure = outcomes.find((outcome) => outcome.status === "rejected");
+      // Capture admission closes with the desktop generation, before replacing its server.
+      await audioStopped;
+      if (audioOwner === retiringAudio) {
+        audioOwner = undefined;
+      }
       if (failure) {
         throw failure.reason;
       }
@@ -410,6 +440,24 @@ export function createManagedLinuxDesktop(
       if (activeEpoch !== epoch || stopping) {
         throw new Error("managed Linux desktop stopped during startup");
       }
+      let audioPair: ManagedPair | null = null;
+      audioOwner = createAudio({
+        supervisor,
+        tempDir: active.tempDir,
+        env: active.env,
+        assertCurrent: () => {
+          if (activeEpoch !== epoch || stopping || (audioPair && !isPairCurrent(audioPair))) {
+            throw new Error("managed Linux desktop stopped");
+          }
+        },
+      });
+      const audio = await audioOwner.ready;
+      // Route applications (including D-Bus activation) only after private audio
+      // is ready. Optional setup failure preserves the pre-existing host route;
+      // the capture owner never records that fallback route.
+      const env = audio.source
+        ? Object.freeze({ ...active.env, ...managedLinuxAudioEnv(active.tempDir) })
+        : active.env;
       const busReady = createDeferredCore();
       let busOutput = "";
       await fs.rm(path.join(active.tempDir, "bus"), { force: true });
@@ -424,7 +472,7 @@ export function createManagedLinuxDesktop(
           `--address=${active.env.DBUS_SESSION_BUS_ADDRESS}`,
         ],
         activeEpoch,
-        active.env,
+        env,
         (chunk) => {
           busOutput = appendTail(busOutput, chunk);
           if (busOutput.includes("\n")) {
@@ -451,12 +499,7 @@ export function createManagedLinuxDesktop(
       } finally {
         clearTimeout(busTimeout);
       }
-      const session = await spawnRun(
-        "startxfce4",
-        buildDesktopSessionArgv(),
-        activeEpoch,
-        active.env,
-      );
+      const session = await spawnRun("startxfce4", buildDesktopSessionArgv(), activeEpoch, env);
       const nextPair: ManagedPair = {
         current: true,
         vnc,
@@ -466,7 +509,10 @@ export function createManagedLinuxDesktop(
         busExit,
         sessionExit: waitForRun(session),
         computerLeases: new Set(),
+        audio,
+        env,
       };
+      audioPair = nextPair;
       pair = nextPair;
       status = { state: "running", display: active.display, port: active.port };
       return nextPair;
@@ -574,7 +620,7 @@ export function createManagedLinuxDesktop(
       const lease = { onStop: () => request.onStop() };
       current.computerLeases.add(lease);
       return {
-        env: resources.env,
+        env: current.env,
         isCurrent: () => isPairCurrent(current) && current.computerLeases.has(lease),
         release: () => {
           current.computerLeases.delete(lease);

@@ -10,6 +10,7 @@ import type {
   RunExit,
   SpawnInput,
 } from "../../process/supervisor/types.js";
+import { createManagedLinuxAudio } from "./managed-linux-audio.js";
 import { createManagedLinuxDesktop } from "./managed-linux.js";
 import { createDesktopSessionRegistry } from "./session-registry.js";
 
@@ -92,6 +93,12 @@ function createFakeSupervisor() {
       if (input.mode === "child" && input.argv[0] === "dbus-daemon") {
         input.onStdout?.(`${input.env?.DBUS_SESSION_BUS_ADDRESS},guid=fixture\n`);
       }
+      if (input.mode === "child" && input.argv[0] === "pulseaudio") {
+        input.onStderr?.("Daemon startup complete.\n");
+      }
+      if (input.mode === "child" && input.argv[0] === "parec") {
+        input.onStdoutRaw?.(Buffer.alloc(4));
+      }
       const completion = spawnCompletion(inputs.length);
       // Notify after the spawn caller resumes; earlier native setup can await real filesystem work.
       setImmediate(() => completion.resolve());
@@ -124,7 +131,14 @@ function createFakeSupervisor() {
   };
 }
 
-async function createFixture() {
+const noAudio: typeof createManagedLinuxAudio = (params) => {
+  // Factories may consult admission before the asynchronous desktop pair exists.
+  params.assertCurrent();
+  const stop = vi.fn(async () => undefined);
+  return { ready: Promise.resolve({ unavailableReason: "parec is not installed", stop }), stop };
+};
+
+async function createFixture(createAudio = noAudio) {
   const root = tempDirs.make("openclaw-managed-linux-test-");
   const x11SocketDir = path.join(root, "x11");
   await fs.mkdir(x11SocketDir);
@@ -145,6 +159,7 @@ async function createFixture() {
   const desktop = createManagedLinuxDesktop({
     supervisor: fake.supervisor,
     runtime: {
+      createAudio,
       nowMs: () => now,
       probeRfb,
       readinessPollMs: 1,
@@ -163,6 +178,105 @@ async function createFixture() {
 }
 
 describe("managed Linux desktop", () => {
+  it.each(["pulseaudio missing", "parec missing", "private server startup failed"])(
+    "preserves inherited application and activation routing when %s",
+    async (reason) => {
+      const inherited = {
+        PULSE_SERVER: "unix:/operator/pulse/native",
+        PULSE_SINK: "operator-output",
+        PULSE_SOURCE: "operator-input",
+        PULSE_RUNTIME_PATH: "/operator/pulse",
+        PULSE_STATE_PATH: "/operator/pulse/state",
+        PULSE_CLIENTCONFIG: "/operator/pulse/client.conf",
+      };
+      for (const [key, value] of Object.entries(inherited)) {
+        vi.stubEnv(key, value);
+      }
+      const createAudio: typeof createManagedLinuxAudio = () => {
+        const stop = vi.fn(async () => undefined);
+        return { ready: Promise.resolve({ unavailableReason: reason, stop }), stop };
+      };
+      const { desktop, fake } = await createFixture(createAudio);
+      const acquired = await desktop.acquire();
+      expect(acquired.resolveAudio?.()).toBeUndefined();
+      expect(acquired.audioUnavailableReason).toBe(reason);
+      for (const binary of ["dbus-daemon", "startxfce4"]) {
+        expect(
+          fake.inputs.find((input) => input.mode === "child" && input.argv[0] === binary)?.env,
+        ).toMatchObject(inherited);
+      }
+      const lease = await desktop.acquireComputer({ onStop: async () => undefined });
+      expect(lease.env).toMatchObject(inherited);
+      expect(Object.isFrozen(lease.env)).toBe(true);
+      expect(process.env).toMatchObject(inherited);
+      lease.release();
+    },
+  );
+
+  it("does not reuse a retired private audio environment when restart falls back", async () => {
+    vi.stubEnv("PULSE_SERVER", "unix:/operator/pulse/native");
+    vi.stubEnv("PULSE_SINK", "operator-output");
+    let generation = 0;
+    const createAudio: typeof createManagedLinuxAudio = () => {
+      const stop = vi.fn(async () => undefined);
+      const source =
+        generation++ === 0
+          ? {
+              start: async () => {
+                throw new Error("capture not requested");
+              },
+            }
+          : undefined;
+      return { ready: Promise.resolve({ source, stop }), stop };
+    };
+    const { desktop, fake } = await createFixture(createAudio);
+    await desktop.acquire();
+    const first = await desktop.acquireComputer({ onStop: async () => undefined });
+    expect(first.env.PULSE_SERVER).not.toBe(process.env.PULSE_SERVER);
+    fake.exit(0);
+    await fake.afterSpawn(6);
+    expect(first.isCurrent()).toBe(false);
+    const next = await desktop.acquireComputer({ onStop: async () => undefined });
+    expect(next.env.PULSE_SERVER).toBe(process.env.PULSE_SERVER);
+    expect(next.env.PULSE_SINK).toBe(process.env.PULSE_SINK);
+    expect((await desktop.acquire()).resolveAudio?.()).toBeUndefined();
+    next.release();
+  });
+
+  it("starts private audio before apps and closes captures on desktop restart and stop", async () => {
+    const createAudio: typeof createManagedLinuxAudio = (params) =>
+      createManagedLinuxAudio({ ...params, runtime: { detectBinary: async () => true } });
+    const { desktop, fake } = await createFixture(createAudio);
+    const first = await desktop.acquire();
+    expect(fake.inputs.map((input) => input.mode === "child" && input.argv[0])).toEqual([
+      "Xtigervnc",
+      "pulseaudio",
+      "dbus-daemon",
+      "startxfce4",
+    ]);
+    const computer = await desktop.acquireComputer({ onStop: async () => undefined });
+    expect(computer.env.PULSE_SINK).toBe("openclaw_desktop");
+    for (const binary of ["dbus-daemon", "startxfce4"]) {
+      expect(
+        fake.inputs.find((input) => input.mode === "child" && input.argv[0] === binary)?.env,
+      ).toBe(computer.env);
+    }
+    computer.release();
+    const source = first.resolveAudio!()!;
+    const capture = await source.start(new AbortController().signal);
+    fake.exit(0);
+    await fake.afterSpawn(9);
+    expect(capture.stream.destroyed).toBe(true);
+    await expect(source.start(new AbortController().signal)).rejects.toThrow();
+    const second = await desktop.acquire();
+    expect(second.resolveAudio!()).not.toBe(source);
+    expect(first.resolveAudio!()).toBe(second.resolveAudio!());
+    const nextCapture = await first.resolveAudio!()!.start(new AbortController().signal);
+    await desktop.stop();
+    expect(nextCapture.stream.destroyed).toBe(true);
+    expect(fake.runs.every((run) => run.settled)).toBe(true);
+  });
+
   it("starts lazily with the exact TigerVNC recipe and a private ephemeral password", async () => {
     vi.stubEnv("WAYLAND_DISPLAY", "wayland-0");
     vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/unrelated/bus");
@@ -241,6 +355,10 @@ describe("managed Linux desktop", () => {
     );
     expect(computer.env.WAYLAND_DISPLAY).toBeUndefined();
     expect(computer.env.XDG_SESSION_TYPE).toBe("x11");
+    expect(computer.env.PULSE_SERVER).toBe(process.env.PULSE_SERVER);
+    expect(computer.env.PULSE_SINK).toBe(process.env.PULSE_SINK);
+    expect(acquired.resolveAudio?.()).toBeUndefined();
+    expect(acquired.audioUnavailableReason).toBe("parec is not installed");
     expect(Object.isFrozen(computer.env)).toBe(true);
     expect(process.env.DBUS_SESSION_BUS_ADDRESS).toBe("unix:path=/unrelated/bus");
     expect((await fs.stat(passwordFile)).mode & 0o777).toBe(0o600);
@@ -292,6 +410,7 @@ describe("managed Linux desktop", () => {
       const desktop = createManagedLinuxDesktop({
         supervisor,
         runtime: {
+          createAudio: noAudio,
           probeRfb: async () => ({ kind: "rfb", securityTypes: [2] }),
           runPasswordTool,
           tempRoot: fixture.root,
@@ -316,6 +435,7 @@ describe("managed Linux desktop", () => {
       supervisor: fixture.fake.supervisor,
       onFailed,
       runtime: {
+        createAudio: noAudio,
         probeRfb: async () => ({ kind: "rfb", securityTypes: [2] }),
         runPasswordTool: fixture.runPasswordTool,
         tempRoot: fixture.root,
