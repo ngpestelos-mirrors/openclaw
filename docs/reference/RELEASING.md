@@ -573,7 +573,7 @@ fresh `--state-dir`, which the refusal prints.
    instead for the parent's transaction-bound authorization receipt before its
    publish jobs start. npm children keep the `npm-release` gate because their
    npm trusted publishers are bound to that environment (`npm trust list
-   openclaw`), and the workflow token cannot approve it (`canApprove=false`):
+openclaw`), and the workflow token cannot approve it (`canApprove=false`):
    watch `gh api repos/openclaw/openclaw/actions/runs/<child>/pending_deployments`
    and approve the plugin npm and core npm children by hand. Direct human
    dispatch of a child keeps its own gate and does not use the receipt. Never

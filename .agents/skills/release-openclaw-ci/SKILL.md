@@ -538,7 +538,7 @@ and must be cleared after the release.
   `openclaw-clawhub-parent-authorization-v2-*` receipt before publishing. npm
   children (`Plugin NPM Release`, `openclaw-npm-release.yml`) keep
   `npm-release` (npm trusted publishers are bound to it, `npm trust list
-  openclaw`) and the workflow token cannot approve it (`canApprove=false`), so
+openclaw`) and the workflow token cannot approve it (`canApprove=false`), so
   an unapproved npm child sits `waiting` silently. Watch every child and
   approve npm children only (environment id `13010111854`):
   ```bash
