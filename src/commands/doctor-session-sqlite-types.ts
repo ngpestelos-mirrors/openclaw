@@ -20,7 +20,6 @@ export type LegacyArchiveTarget = {
   retainedImportVerified: boolean;
   sourceConflicts?: Map<string, string>;
   verifiedSources?: DeferredPluginSessionImport["sources"];
-  verifiedDatabaseIdentity?: string;
 };
 
 export function countBlockingSessionSqliteIssues(report: DoctorSessionSqliteTargetReport): number {

@@ -10,10 +10,6 @@ import { hashFileDescriptorSync } from "../infra/file-descriptor.js";
 import { FsSafeError } from "../infra/fs-safe.js";
 import { isPathInside } from "../infra/path-guards.js";
 import {
-  isUnpublishedDeferredSessionMove,
-  withdrawUnpublishedMigrationMoves,
-} from "../infra/session-sqlite-migration-archive-deferral.js";
-import {
   moveMigrationArtifact,
   readMigrationArtifactIdentity,
   statMigrationPath,
@@ -96,16 +92,6 @@ async function reconcileRestorePublications(
     canonicalMigrationFilePath(path.join(resolveStateDir(env), "anchor")),
   );
   for (const context of contexts) {
-    withdrawUnpublishedMigrationMoves(
-      context,
-      context.targets
-        .flatMap((target) => target.plannedMoves)
-        .filter(
-          (move) =>
-            (!sourcePath || canonicalMigrationFilePath(sourcePath) === move.sourcePath) &&
-            isUnpublishedDeferredSessionMove(context, move, env),
-        ),
-    );
     for (const target of context.targets) {
       for (const move of uniqueRestoreMoves(target)) {
         if (

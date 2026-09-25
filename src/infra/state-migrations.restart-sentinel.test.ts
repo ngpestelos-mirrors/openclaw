@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -25,7 +25,6 @@ import {
   detectLegacyRestartSentinel,
   migrateLegacyRestartSentinel,
 } from "./state-migrations.restart-sentinel.js";
-import { holdLegacyCopyAfterSourceDeletion } from "./state-migrations.source-copy.test-support.js";
 
 type MigrationDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -35,8 +34,6 @@ type MigrationDatabase = Pick<
 describe("legacy restart sentinel migration", () => {
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(() => {
-      vi.restoreAllMocks();
-      vi.unstubAllEnvs();
       closeOpenClawStateDatabaseForTest();
       cleanup();
     });
@@ -369,78 +366,4 @@ describe("legacy restart sentinel migration", () => {
       expect(receipt(env)).toBeUndefined();
     }
   });
-
-  it.each([
-    "retained",
-    "consumed",
-    "superseded",
-    "malformed",
-    "payload",
-    "receipt",
-    "canonical",
-  ] as const)(
-    "reconciles private sentinel copies without reviving retired state (%s)",
-    async (state) => {
-      vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
-      vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
-      const { stateDir, env } = useStateDir();
-      const sourcePath = await writeLegacy(stateDir, {
-        version: 1,
-        payload: state === "malformed" ? { invalid: true } : payload(),
-      });
-      const release = holdLegacyCopyAfterSourceDeletion(sourcePath);
-      try {
-        expect((await migrate({ stateDir, env })).warnings.join("\n")).toContain(
-          "post-delete parent sync failed",
-        );
-      } finally {
-        release();
-      }
-      expect(fs.existsSync(sourcePath)).toBe(false);
-      const copies = fs
-        .readdirSync(stateDir)
-        .filter((name) => name.startsWith(".doctor-source-copy-"));
-      expect(copies).toHaveLength(1);
-      const copy = path.join(stateDir, copies[0]!, "payload");
-      const imported = await readRestartSentinel(env);
-      expect(receipt(env)?.removed_source).toBe(0);
-      const db = database(env);
-      const runs = db.prepare("SELECT COUNT(*) AS count FROM migration_runs").get();
-      if (state === "consumed") {
-        expect(imported).not.toBeNull();
-        expect(await clearRestartSentinelIfRevision(imported!.revision, env)).toBe(true);
-      } else if (state === "superseded") {
-        await writeRestartSentinel(payload(999), env);
-      } else if (state === "payload") {
-        await fsp.appendFile(copy, " ");
-      } else if (state === "receipt") {
-        db.prepare("UPDATE migration_sources SET source_sha256 = ? WHERE source_path = ?").run(
-          "0".repeat(64),
-          sourcePath,
-        );
-      } else if (state === "canonical") {
-        db.prepare(
-          "UPDATE gateway_restart_sentinel SET version = 99 WHERE sentinel_key = 'current'",
-        ).run();
-      }
-      const before = db
-        .prepare("SELECT * FROM gateway_restart_sentinel ORDER BY sentinel_key")
-        .all();
-      const result = await migrate({ stateDir, env });
-      expect(
-        db.prepare("SELECT * FROM gateway_restart_sentinel ORDER BY sentinel_key").all(),
-      ).toEqual(before);
-      expect(db.prepare("SELECT COUNT(*) AS count FROM migration_runs").get()).toEqual(runs);
-      if (["payload", "receipt", "canonical"].includes(state)) {
-        expect(result.warnings.join("\n")).toContain("preserved");
-        expect(fs.existsSync(copy)).toBe(true);
-        expect(receipt(env)?.removed_source).toBe(0);
-      } else {
-        expect(result.warnings).toEqual([]);
-        expect(fs.existsSync(copy)).toBe(false);
-        expect(receipt(env)?.removed_source).toBe(1);
-        expect(detectLegacyRestartSentinel({ stateDir }).hasLegacy).toBe(false);
-      }
-    },
-  );
 });

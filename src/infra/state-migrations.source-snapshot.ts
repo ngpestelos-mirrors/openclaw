@@ -11,22 +11,12 @@ import {
   requireDirectorySync,
   type PinnedDirectory,
 } from "./directory-durability.js";
-import { hasErrnoCode, isErrno } from "./errno.js";
-import { hashFileDescriptorSync, sameFileMutationFingerprint } from "./file-descriptor.js";
+import { hasErrnoCode } from "./errno.js";
 import { pathMayExistSync } from "./path-existence.js";
-import {
-  readLegacyMigrationReceipt,
-  type LegacyMigrationReceipt,
-} from "./state-migrations.receipts.js";
-import {
-  prepareLegacyMigrationSourceCopy,
-  type LegacyMigrationSourceCopy,
-} from "./state-migrations.source-copy.js";
 
 /** The stable source identity every doctor-owned import verifies before cleanup. */
 export type LegacyMigrationSourceSnapshot = {
   buffer: Buffer;
-  ctimeMs: number;
   dev: number;
   ino: number;
   mtimeMs: number;
@@ -76,7 +66,6 @@ export class LegacyMigrationSourceClaim<
   readonly claimPath: string;
   readonly sourceRelativePath: string;
   readonly claimRelativePath: string;
-  private retainedCopy: LegacyMigrationSourceCopy | undefined;
 
   constructor(
     private readonly params: {
@@ -108,26 +97,12 @@ export class LegacyMigrationSourceClaim<
 
   async exists(claimed = false): Promise<boolean> {
     return await this.params.stateRoot.exists(
-      claimed && !this.retainedCopy ? this.claimRelativePath : this.sourceRelativePath,
+      claimed ? this.claimRelativePath : this.sourceRelativePath,
     );
   }
 
   async read(claimed = false): Promise<TSnapshot> {
-    if (claimed && this.retainedCopy) {
-      await this.retainedCopy.verify();
-    }
-    return await this.params.readSnapshot(
-      claimed && !this.retainedCopy ? this.claimPath : this.sourcePath,
-    );
-  }
-
-  /** A verified copy claim intentionally retains its admitted original until commit. */
-  async assertSourceNotReappeared(message: string): Promise<void> {
-    if (this.retainedCopy) {
-      await this.retainedCopy.verify();
-    } else if (await this.exists()) {
-      throw new Error(message);
-    }
+    return await this.params.readSnapshot(claimed ? this.claimPath : this.sourcePath);
   }
 
   private async pinParent(): Promise<PinnedDirectory> {
@@ -149,11 +124,7 @@ export class LegacyMigrationSourceClaim<
     }
   }
 
-  private async move(
-    from: string,
-    to: string,
-    retainVerifiedCopy?: () => Promise<void>,
-  ): Promise<void> {
+  private async move(from: string, to: string): Promise<void> {
     const root = this.params.stateRoot;
     try {
       await root.move(from, to);
@@ -187,30 +158,14 @@ export class LegacyMigrationSourceClaim<
         await using opened = await root.open(from, { hardlinks: "reject", symlinks: "reject" });
         identity = fs.fstatSync(opened.handle.fd, { bigint: true });
         await opened.handle.sync();
-        try {
-          const published = await publishFileExclusive({
-            sourcePath,
-            targetPath,
-            expectedSourceIdentity: identity,
-            parentReceipt: parent.receipt,
-            strategy: "link-required",
-          });
-          requireDirectorySync(published.directorySync, "Legacy migration claim directory");
-        } catch (error) {
-          // Only an uncommitted Node link denial admits copying. Read, policy,
-          // sync and post-publication failures must retain their original refusal.
-          if (
-            !retainVerifiedCopy ||
-            getFsSafeNativeConfig().mode !== "off" ||
-            !isErrno(error) ||
-            error.syscall !== "link" ||
-            (error.code !== "EACCES" && error.code !== "EPERM")
-          ) {
-            throw error;
-          }
-          await retainVerifiedCopy();
-          return;
-        }
+        const published = await publishFileExclusive({
+          sourcePath,
+          targetPath,
+          expectedSourceIdentity: identity,
+          parentReceipt: parent.receipt,
+          strategy: "link-required",
+        });
+        requireDirectorySync(published.directorySync, "Legacy migration claim directory");
       }
       await root.remove(from, {
         assertBeforeMutation: () => assertClaimLinkPair(sourcePath, targetPath, identity),
@@ -282,11 +237,6 @@ export class LegacyMigrationSourceClaim<
 
   async restore(): Promise<string | null> {
     try {
-      if (this.retainedCopy) {
-        await this.retainedCopy.discard();
-        this.retainedCopy = undefined;
-        return null;
-      }
       await this.recoverLinkedMove();
       if (!(await this.exists(true))) {
         return null;
@@ -307,29 +257,7 @@ export class LegacyMigrationSourceClaim<
     beforeClaim?: () => void;
   }): Promise<TSnapshot> {
     params.beforeClaim?.();
-    if (this.retainedCopy) {
-      throw new Error("legacy migration source is already claimed");
-    }
-    await this.move(this.sourceRelativePath, this.claimRelativePath, async () => {
-      const assertSourceUnchanged = async () => {
-        if (
-          !legacyMigrationSourceSnapshotsMatch(
-            await this.params.readSnapshot(this.sourcePath),
-            params.snapshot,
-          )
-        ) {
-          throw new Error(params.mismatchMessage);
-        }
-      };
-      await assertSourceUnchanged();
-      this.retainedCopy = await prepareLegacyMigrationSourceCopy({
-        stateRoot: this.params.stateRoot,
-        sourceRelativePath: this.sourceRelativePath,
-        claimRelativePath: this.claimRelativePath,
-        expected: params.snapshot,
-        assertSourceUnchanged,
-      });
-    });
+    await this.move(this.sourceRelativePath, this.claimRelativePath);
     const claimed = await this.read(true);
     if (!legacyMigrationSourceSnapshotsMatch(claimed, params.snapshot)) {
       throw new Error(params.mismatchMessage);
@@ -347,11 +275,6 @@ export class LegacyMigrationSourceClaim<
       skipSourceCheck?: boolean;
     } = {},
   ): Promise<void> {
-    if (this.retainedCopy) {
-      await this.retainedCopy.removeSource(params.removeSource);
-      this.retainedCopy = undefined;
-      return;
-    }
     if (!params.skipSourceCheck && (await this.exists())) {
       throw new Error(
         params.sourceReappearedMessage ??
@@ -455,7 +378,6 @@ export async function readLegacyMigrationSourceSnapshot(params: {
   const raw = opened.buffer.toString("utf8");
   return {
     buffer: opened.buffer,
-    ctimeMs: opened.stat.ctimeMs,
     dev: opened.stat.dev,
     ino: opened.stat.ino,
     mtimeMs: opened.stat.mtimeMs,
@@ -466,135 +388,6 @@ export async function readLegacyMigrationSourceSnapshot(params: {
     size: opened.buffer.byteLength,
     sourcePath: params.sourcePath,
   };
-}
-
-/** Retire a receipt-bound name only while its admitted generation is still current.
- * A pending receipt may still name a copied original; a completed receipt instead
- * retires any recreated legacy JSON without replaying it over SQLite.
- */
-export async function removeLegacyMigrationReceiptSource(params: {
-  stateRoot: Root;
-  stateDir: string;
-  candidate: string;
-  label: string;
-  receipt: LegacyMigrationReceipt;
-  env: NodeJS.ProcessEnv;
-  readSnapshot: (
-    candidate: string,
-  ) => Promise<
-    Pick<LegacyMigrationSourceSnapshot, "ctimeMs" | "dev" | "ino" | "mtimeMs" | "sha256" | "size">
-  >;
-  retiredClaimPath?: string;
-  removeSource?: (candidate: string) => Promise<void> | void;
-}): Promise<void> {
-  const relativePath = resolveLegacyMigrationRelativePath(
-    params.stateDir,
-    params.candidate,
-    params.label,
-    false,
-  );
-  const snapshot = await params.readSnapshot(params.candidate);
-  const { receipt } = params;
-  // A fixed claim already removed the old live name. An old runtime can then
-  // recreate that name before cleanup. Only the separately admitted, unchanged
-  // claim permits retiring that recreation while the receipt is still pending.
-  // The copied-claim route has no fixed claim, so its live original must match.
-  const recreated =
-    !receipt.removedSource &&
-    (snapshot.sha256 !== receipt.sourceSha256 || snapshot.size !== receipt.sourceSizeBytes);
-  let claimed: { path: string; snapshot: typeof snapshot; identity: fs.BigIntStats } | undefined;
-  if (recreated && params.retiredClaimPath && params.candidate !== params.retiredClaimPath) {
-    const claimSnapshot = await params.readSnapshot(params.retiredClaimPath);
-    if (
-      claimSnapshot.sha256 === receipt.sourceSha256 &&
-      claimSnapshot.size === receipt.sourceSizeBytes
-    ) {
-      claimed = {
-        path: params.retiredClaimPath,
-        snapshot: claimSnapshot,
-        identity: fs.lstatSync(params.retiredClaimPath, { bigint: true }),
-      };
-    }
-  }
-  const assertReceipt = () => {
-    const current = readLegacyMigrationReceipt(receipt.sourceKey, params.env);
-    if (
-      !current ||
-      current.sourceSha256 !== receipt.sourceSha256 ||
-      current.sourceSizeBytes !== receipt.sourceSizeBytes ||
-      current.reportJson !== receipt.reportJson ||
-      current.removedSource !== receipt.removedSource
-    ) {
-      throw new Error(`${params.label} migration receipt changed during legacy cleanup`);
-    }
-    if (!current.removedSource && recreated && !claimed) {
-      throw new Error(`legacy source differs from the ${params.label} migration receipt`);
-    }
-  };
-  assertReceipt();
-  const identity = fs.lstatSync(params.candidate, { bigint: true });
-  const assertOneGeneration = (
-    candidate: string,
-    expected: typeof snapshot,
-    original: fs.BigIntStats,
-  ) => {
-    const admitted = fs.lstatSync(candidate);
-    const current = fs.lstatSync(candidate, { bigint: true });
-    if (
-      !current.isFile() ||
-      current.nlink !== 1n ||
-      current.dev !== BigInt(expected.dev) ||
-      current.ino !== BigInt(expected.ino) ||
-      admitted.ctimeMs !== expected.ctimeMs ||
-      admitted.mtimeMs !== expected.mtimeMs ||
-      current.size !== BigInt(expected.size) ||
-      !sameFileMutationFingerprint(current, original)
-    ) {
-      throw new Error(`legacy ${params.label} source generation changed during cleanup`);
-    }
-    const fd = fs.openSync(
-      candidate,
-      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
-    );
-    try {
-      const before = fs.fstatSync(fd, { bigint: true });
-      if (!sameFileMutationFingerprint(before, original) || before.nlink !== 1n) {
-        throw new Error(`legacy ${params.label} source generation changed during cleanup`);
-      }
-      const content = hashFileDescriptorSync(fd, expected.size);
-      const after = fs.fstatSync(fd, { bigint: true });
-      const leaf = fs.lstatSync(candidate, { bigint: true });
-      if (
-        content.sha256 !== expected.sha256 ||
-        content.sizeBytes !== expected.size ||
-        !sameFileMutationFingerprint(before, after) ||
-        !sameFileMutationFingerprint(after, leaf) ||
-        leaf.nlink !== 1n
-      ) {
-        throw new Error(`legacy ${params.label} source generation changed during cleanup`);
-      }
-    } finally {
-      fs.closeSync(fd);
-    }
-  };
-  const assertGeneration = () => {
-    assertReceipt();
-    assertOneGeneration(params.candidate, snapshot, identity);
-    if (claimed) {
-      assertOneGeneration(claimed.path, claimed.snapshot, claimed.identity);
-    }
-  };
-  assertGeneration();
-  if (params.removeSource) {
-    // This injected test hook simulates failure; production uses Root's final
-    // synchronous mutation callback after all of its awaited path admission.
-    await params.removeSource(params.candidate);
-  } else {
-    await params.stateRoot.remove(relativePath, {
-      mutationSymlinks: "reject",
-      assertBeforeMutation: assertGeneration,
-    });
-  }
 }
 
 /** Read admitted legacy bytes; claim and cleanup owners verify the retained snapshot. */
@@ -611,7 +404,6 @@ export function readLegacyMigrationSourceSnapshotSync(params: {
   const raw = buffer.toString("utf8");
   return {
     buffer: Buffer.from(raw),
-    ctimeMs: stat.ctimeMs,
     dev: stat.dev,
     ino: stat.ino,
     mtimeMs: stat.mtimeMs,

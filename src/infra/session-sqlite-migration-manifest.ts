@@ -223,12 +223,6 @@ export function createSessionSqliteMigrationRun(
   for (const target of targets) {
     assertSafeMigrationTargetTopology(target);
   }
-  const canonicalTargets = new Map(
-    targets.map((target) => {
-      const normalized = normalizeMigrationTarget(target);
-      return [sessionSqliteMigrationTargetKey(normalized), normalized];
-    }),
-  );
   const runId = `session-sqlite-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const manifestPath = path.join(resolveSessionSqliteMigrationRunsDir(env), `${runId}.json`);
   const manifest: SessionSqliteMigrationManifest = {
@@ -236,10 +230,8 @@ export function createSessionSqliteMigrationRun(
     openClawVersion: VERSION,
     runId,
     startedAt: new Date().toISOString(),
-    targets: [...canonicalTargets.values()].map(({ agentId, sqlitePath, storePath }) => ({
-      agentId,
-      sqlitePath,
-      storePath,
+    targets: targets.map((target) => ({
+      ...normalizeMigrationTarget(target),
       completedMoves: [],
       issues: [],
       plannedMoves: [],

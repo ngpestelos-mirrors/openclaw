@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -12,15 +12,12 @@ import {
   detectLegacyCommitments,
   migrateLegacyCommitments,
 } from "./state-migrations.commitments.js";
-import { holdLegacyCopyAfterSourceDeletion } from "./state-migrations.source-copy.test-support.js";
 
 const CLAIM_SUFFIX = ".doctor-discarding";
 
 describe("retired commitments Doctor cleanup", () => {
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(() => {
-      vi.restoreAllMocks();
-      vi.unstubAllEnvs();
       closeOpenClawStateDatabaseForTest();
       cleanup();
     });
@@ -379,72 +376,4 @@ describe("retired commitments Doctor cleanup", () => {
     expect(fs.existsSync(claimPath)).toBe(true);
     expect(readReceipt(env)).toBeUndefined();
   });
-
-  it.each(["unchanged", "empty", "payload", "receipt", "decision"] as const)(
-    "recovers a private discard copy only with its recorded decision (%s)",
-    async (changed) => {
-      vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
-      vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
-      const { stateDir, env } = useStateDir();
-      const sourcePath = await writeLegacy(stateDir, {
-        version: 1,
-        commitments: [{ id: "retired" }],
-      });
-      const run = async () =>
-        migrateLegacyCommitments({
-          detected: await detectLegacyCommitments({
-            stateDir,
-            env,
-            doctorOnlyStateMigrations: true,
-          }),
-          stateDir,
-          env,
-        });
-      const release = holdLegacyCopyAfterSourceDeletion(sourcePath);
-      try {
-        expect((await run()).warnings.join("\n")).toContain("post-delete parent sync failed");
-      } finally {
-        release();
-      }
-      expect(fs.existsSync(sourcePath)).toBe(false);
-      const copies = fs
-        .readdirSync(path.dirname(sourcePath))
-        .filter((name) => name.startsWith(".doctor-source-copy-"));
-      expect(copies).toHaveLength(1);
-      const copy = path.join(path.dirname(sourcePath), copies[0]!, "payload");
-      expect(readReceipt(env)?.removed_source).toBe(0);
-      const db = openOpenClawStateDatabase({ env }).db;
-      const runs = db.prepare("SELECT COUNT(*) AS count FROM migration_runs").get();
-      if (changed === "empty") {
-        await fsp.unlink(copy);
-      } else if (changed === "payload") {
-        await fsp.appendFile(copy, " ");
-      } else if (changed === "receipt") {
-        db.prepare("UPDATE migration_sources SET source_sha256 = ? WHERE source_path = ?").run(
-          "0".repeat(64),
-          sourcePath,
-        );
-      } else if (changed === "decision") {
-        const report = JSON.parse(readReceipt(env)!.report_json);
-        report.decision = "legacy-imported";
-        db.prepare("UPDATE migration_sources SET report_json = ? WHERE source_path = ?").run(
-          JSON.stringify(report),
-          sourcePath,
-        );
-      }
-      const result = await run();
-      expect(db.prepare("SELECT COUNT(*) AS count FROM migration_runs").get()).toEqual(runs);
-      if (changed === "unchanged" || changed === "empty") {
-        expect(result.warnings).toEqual([]);
-        expect(fs.existsSync(copy)).toBe(false);
-        expect(fs.existsSync(path.dirname(copy))).toBe(false);
-        expect(readReceipt(env)?.removed_source).toBe(1);
-        expect((await run()).changes).toEqual([]);
-      } else {
-        expect(result.warnings.join("\n")).toContain("preserved");
-        expect(fs.existsSync(copy)).toBe(true);
-        expect(readReceipt(env)?.removed_source).toBe(0);
-      }
-    },
-  );
 });

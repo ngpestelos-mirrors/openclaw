@@ -12,8 +12,6 @@ import {
   recordLegacyMigrationReceipt,
   resolveLegacyMigrationSourceKey,
 } from "./state-migrations.receipts.js";
-import { recoverLegacyMigrationReceiptCopies } from "./state-migrations.source-copy-recovery.js";
-import { listLegacyMigrationSourceCopies } from "./state-migrations.source-copy.js";
 import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceOrClaimMayExist,
@@ -48,8 +46,7 @@ export async function detectLegacyCommitments(params: {
   let hasPendingReceipt = false;
   if (
     params.doctorOnlyStateMigrations === true &&
-    !legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX) &&
-    listLegacyMigrationSourceCopies(sourcePath).length === 0
+    !legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX)
   ) {
     try {
       const receipt = withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
@@ -69,9 +66,7 @@ export async function detectLegacyCommitments(params: {
     sourcePath,
     hasLegacy:
       params.doctorOnlyStateMigrations === true &&
-      (legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX) ||
-        listLegacyMigrationSourceCopies(sourcePath).length > 0 ||
-        hasPendingReceipt),
+      (legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX) || hasPendingReceipt),
   };
 }
 
@@ -176,41 +171,8 @@ async function migrateWithExclusiveStateOwnership(params: {
   });
   try {
     await source.recover("retired commitments source conflicts with its interrupted Doctor claim");
-    const receipt = readLegacyMigrationReceipt(sourceKey, params.env);
-    const recovery = await recoverLegacyMigrationReceiptCopies({
-      stateRoot: params.stateRoot,
-      stateDir: params.stateDir,
-      sourcePath,
-      claimPath: source.claimPath,
-      env: params.env,
-      receipt,
-      label: "commitments",
-      maxBytes: MAX_LEGACY_COMMITMENTS_BYTES,
-      verifyCanonical: (current) => {
-        const report: unknown = JSON.parse(current.reportJson);
-        if (
-          !isRecord(report) ||
-          report.source !== MIGRATION_KIND ||
-          report.decision !== "retired-source-discarded" ||
-          report.sourceSha256 !== current.sourceSha256 ||
-          report.importedRecordCount !== 0 ||
-          report.archivedRecordCount !== 0 ||
-          report.exportedRecordCount !== 0
-        ) {
-          throw new Error("commitments discard receipt is not authoritative");
-        }
-      },
-    });
-    if (recovery.warnings.length > 0) {
-      return { changes: [], warnings: recovery.warnings };
-    }
-    if (recovery.removed > 0 && receipt) {
-      if (!receipt.removedSource) {
-        markLegacyMigrationSourceRemoved(sourceKey, params.env, "state-migration.commitments");
-      }
-      return { changes: ["Removed receipt-retired private commitments copies."], warnings: [] };
-    }
     if (!(await source.exists())) {
+      const receipt = readLegacyMigrationReceipt(sourceKey, params.env);
       if (receipt && !receipt.removedSource) {
         try {
           markLegacyMigrationSourceRemoved(sourceKey, params.env, "state-migration.commitments");

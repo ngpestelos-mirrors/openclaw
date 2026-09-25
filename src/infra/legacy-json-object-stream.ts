@@ -6,7 +6,6 @@ import type { Root } from "@openclaw/fs-safe";
 const JSON_WHITESPACE = new Set([" ", "\t", "\r", "\n"]);
 
 type LegacyJsonStreamSnapshot = {
-  ctimeMs: number;
   dev: number;
   ino: number;
   mtimeMs: number;
@@ -210,7 +209,6 @@ function assertStableRead(
   if (
     before.dev !== after.dev ||
     before.ino !== after.ino ||
-    before.ctimeMs !== after.ctimeMs ||
     before.mtimeMs !== after.mtimeMs ||
     before.size !== after.size ||
     bytesRead !== after.size
@@ -258,7 +256,6 @@ export async function readLegacyJsonObjectStream(params: {
     const after = await opened.handle.stat();
     assertStableRead(before, after, size);
     return {
-      ctimeMs: after.ctimeMs,
       dev: after.dev,
       ino: after.ino,
       mtimeMs: after.mtimeMs,

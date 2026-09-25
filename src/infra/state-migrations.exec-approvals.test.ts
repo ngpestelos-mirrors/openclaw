@@ -5,7 +5,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -13,7 +13,6 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
-import * as durability from "./directory-durability.js";
 import { resolveExecApprovalsPath } from "./exec-approvals-config.js";
 import { ExecApprovalsMigrationRequiredError } from "./exec-approvals-migration-gate.js";
 import {
@@ -38,8 +37,6 @@ describe("legacy exec approvals migration", () => {
   const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(() => {
-      vi.restoreAllMocks();
-      vi.unstubAllEnvs();
       closeOpenClawStateDatabaseForTest();
       execApprovalsStoreTesting.reset();
       envSnapshot.restore();
@@ -99,176 +96,6 @@ describe("legacy exec approvals migration", () => {
         .where("id", "like", "exec-approvals-json:%"),
     );
   }
-
-  it("warns about unbound private material beside an original exec-approvals source", async () => {
-    const { env, stateDir, sourcePath } = useStateDir();
-    await writeLegacy(sourcePath, { version: 1, defaults: {}, agents: {} });
-    const stage = path.join(stateDir, ".doctor-source-copy-11111111-1111-4111-8111-111111111111");
-    await fsp.mkdir(stage, { mode: 0o700 });
-    await fsp.writeFile(path.join(stage, "payload"), "unbound test bytes", { mode: 0o600 });
-    const result = await migrate({ env, stateDir });
-    expect(result.warnings.join("\n")).toContain("Preserved unbound exec approvals private copy");
-    expect(await fsp.readFile(path.join(stage, "payload"), "utf8")).toBe("unbound test bytes");
-  });
-
-  it("recovers committed exec policy from a private copy without importing or rekeying it", async () => {
-    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
-    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
-    const { env, stateDir, sourcePath } = useStateDir();
-    await writeLegacy(sourcePath, {
-      version: 1,
-      socket: { path: "/tmp/exec.sock", token: "synthetic-socket-value" },
-      defaults: { security: "deny" },
-      agents: {},
-    });
-    const original = await fsp.readFile(sourcePath);
-    const link = vi
-      .spyOn(fsp, "link")
-      .mockRejectedValue(
-        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
-      );
-    const sync = durability.requireDirectorySync;
-    const failedSync = vi
-      .spyOn(durability, "requireDirectorySync")
-      .mockImplementation((outcome, label) => {
-        if (label === "Legacy migration source directory" && !fs.existsSync(sourcePath)) {
-          throw new Error("post-delete sync failed");
-        }
-        sync(outcome, label);
-      });
-    expect((await migrate({ env, stateDir })).warnings.join("\n")).toContain(
-      "post-delete sync failed",
-    );
-    link.mockRestore();
-    failedSync.mockRestore();
-    const copyName = fs
-      .readdirSync(stateDir)
-      .find((name) => name.startsWith(".doctor-source-copy-"));
-    expect(copyName).toBeDefined();
-    const payload = path.join(stateDir, copyName!, "payload");
-    expect(await fsp.readFile(payload)).toEqual(original);
-    expect(fs.existsSync(sourcePath)).toBe(false);
-    const db = database(env);
-    const canonical = readExecApprovalsConfigRow(db)?.raw_json;
-    if (!canonical) {
-      throw new Error("expected imported approvals policy");
-    }
-
-    await fsp.writeFile(payload, "modified payload");
-    expect((await migrate({ env, stateDir })).warnings.join("\n")).toContain(
-      "copy differs from receipt",
-    );
-    await fsp.writeFile(payload, original);
-    db.prepare("UPDATE exec_approvals_config SET raw_json = ? WHERE config_key = 'current'").run(
-      "{}",
-    );
-    expect((await migrate({ env, stateDir })).warnings.join("\n")).toContain(
-      "canonical exec approvals no longer match",
-    );
-    expect(fs.existsSync(payload)).toBe(true);
-    db.prepare("UPDATE exec_approvals_config SET raw_json = ? WHERE config_key = 'current'").run(
-      canonical,
-    );
-    const report = receipt(env)!.report_json;
-    db.prepare("UPDATE migration_sources SET report_json = ? WHERE migration_kind = ?").run(
-      "{}",
-      "legacy-exec-approvals-json",
-    );
-    expect((await migrate({ env, stateDir })).warnings.join("\n")).toContain(
-      "does not authorize source retirement",
-    );
-    db.prepare("UPDATE migration_sources SET report_json = ? WHERE migration_kind = ?").run(
-      report,
-      "legacy-exec-approvals-json",
-    );
-    const updated = JSON.stringify({
-      ...JSON.parse(canonical),
-      socket: { path: "/tmp/exec.sock", token: "newer-synthetic-socket-value" },
-    });
-    db.prepare("UPDATE exec_approvals_config SET raw_json = ? WHERE config_key = 'current'").run(
-      updated,
-    );
-    const retry = await migrate({ env, stateDir });
-    expect(retry.warnings).toEqual([]);
-    expect(retry.changes).toContain(
-      "Removed interrupted private exec approvals copy covered by its SQLite receipt.",
-    );
-    expect(fs.existsSync(payload)).toBe(false);
-    expect(readExecApprovalsConfigRow(db)?.raw_json).toBe(updated);
-  });
-
-  it("does not stop before retiring a receipt-covered original beside its copy", async () => {
-    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
-    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
-    const { env, stateDir, sourcePath } = useStateDir();
-    await writeLegacy(sourcePath, { version: 1, defaults: { security: "deny" }, agents: {} });
-    const link = vi
-      .spyOn(fsp, "link")
-      .mockRejectedValue(
-        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
-      );
-    expect(
-      (
-        await migrate({
-          env,
-          stateDir,
-          removeSource() {
-            throw new Error("unlink refused");
-          },
-        })
-      ).warnings.join("\n"),
-    ).toContain("unlink refused");
-    link.mockRestore();
-    const canonical = readExecApprovalsConfigRow(database(env))?.raw_json;
-    expect((await migrate({ env, stateDir })).warnings).toEqual([]);
-    expect(fs.existsSync(sourcePath)).toBe(false);
-    expect((await migrate({ env, stateDir })).warnings).toEqual([]);
-    expect(readExecApprovalsConfigRow(database(env))?.raw_json).toEqual(canonical);
-    expect(fs.readdirSync(stateDir).some((name) => name.startsWith(".doctor-source-copy-"))).toBe(
-      false,
-    );
-  });
-
-  it("preserves an empty-stub copy if its required archive no longer matches", async () => {
-    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
-    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
-    const { env, stateDir, sourcePath } = useStateDir();
-    await writeLegacy(sourcePath, { version: 1, defaults: {}, agents: {} });
-    const original = await fsp.readFile(sourcePath);
-    const link = vi
-      .spyOn(fsp, "link")
-      .mockRejectedValue(
-        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
-      );
-    const sync = durability.requireDirectorySync;
-    const failedSync = vi
-      .spyOn(durability, "requireDirectorySync")
-      .mockImplementation((outcome, label) => {
-        if (label === "Legacy migration source directory" && !fs.existsSync(sourcePath)) {
-          throw new Error("post-delete sync failed");
-        }
-        sync(outcome, label);
-      });
-    expect((await migrate({ env, stateDir })).warnings.join("\n")).toContain(
-      "post-delete sync failed",
-    );
-    failedSync.mockRestore();
-    link.mockRestore();
-    const report = JSON.parse(receipt(env)!.report_json) as { archivePath: string };
-    const stage = fs.readdirSync(stateDir).find((name) => name.startsWith(".doctor-source-copy-"));
-    expect(stage).toBeDefined();
-    const payload = path.join(stateDir, stage!, "payload");
-    expect(await fsp.readFile(payload)).toEqual(original);
-    await fsp.writeFile(report.archivePath, "altered archived bytes");
-    expect((await migrate({ env, stateDir })).warnings.join("\n")).toContain(
-      "archived empty exec approvals no longer match",
-    );
-    expect(fs.existsSync(payload)).toBe(true);
-    await fsp.writeFile(report.archivePath, original);
-    expect((await migrate({ env, stateDir })).warnings).toEqual([]);
-    expect(fs.existsSync(payload)).toBe(false);
-    expect(readExecApprovalsConfigRow(database(env))).toBeUndefined();
-  });
 
   it("detects source and claim only for Doctor-owned migration", async () => {
     const { stateDir, sourcePath } = useStateDir();

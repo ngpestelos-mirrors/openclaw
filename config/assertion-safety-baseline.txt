@@ -2840,6 +2840,7 @@ src/infra/state-migrations.config-machine-state.ts	1
 src/infra/state-migrations.cron-run-logs.ts	4
 src/infra/state-migrations.debug-proxy.ts	5
 src/infra/state-migrations.doctor.ts	5
+src/infra/state-migrations.exec-approvals.ts	1
 src/infra/state-migrations.fs.ts	1
 src/infra/state-migrations.legacy-session-store.ts	3
 src/infra/state-migrations.legacy-sessions.ts	2

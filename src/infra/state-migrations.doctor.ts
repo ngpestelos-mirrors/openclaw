@@ -76,7 +76,6 @@ import {
 import { detectLegacyDeviceAuth, migrateLegacyDeviceAuth } from "./state-migrations.device-auth.js";
 import {
   detectLegacyDeviceIdentity,
-  legacyDeviceIdentitySourcePaths,
   migrateLegacyDeviceIdentity,
 } from "./state-migrations.device-identity.js";
 import {
@@ -1317,7 +1316,11 @@ function buildLegacyStateMigrationSteps(
     "apns-registrations": [pathEndpoints(detected.apns.sourcePath), detected.apns.hasLegacy],
     "device-auth": [pathEndpoints(detected.deviceAuth.sourcePath), detected.deviceAuth.hasLegacy],
     "device-identity": [
-      pathEndpoints(...legacyDeviceIdentitySourcePaths(detected.deviceIdentity)),
+      pathEndpoints(
+        detected.deviceIdentity.sourcePath,
+        detected.deviceIdentity.claimPath,
+        detected.deviceIdentity.nativeClaimPath,
+      ),
       detected.deviceIdentity.hasLegacy || detected.deviceIdentity.hasInvalidCanonical,
     ],
     "exec-approvals": [

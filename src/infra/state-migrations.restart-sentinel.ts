@@ -2,11 +2,7 @@
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { root, type Root } from "@openclaw/fs-safe";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  openOpenClawStateDatabase,
-  runOpenClawStateWriteTransaction,
-} from "../state/openclaw-state-db.js";
+import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import {
   parseRestartSentinelEnvelope,
   readRestartSentinelRowSync,
@@ -22,8 +18,6 @@ import {
   resolveLegacyMigrationSourceKey,
 } from "./state-migrations.receipts.js";
 import type { LegacyRestartSentinelDetection } from "./state-migrations.restart-sentinel.types.js";
-import { recoverLegacyMigrationReceiptCopies } from "./state-migrations.source-copy-recovery.js";
-import { listLegacyMigrationSourceCopies } from "./state-migrations.source-copy.js";
 import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceOrClaimMayExist,
@@ -53,9 +47,7 @@ export function detectLegacyRestartSentinel(params: {
   const sourcePath = path.join(params.stateDir, LEGACY_RESTART_SENTINEL_FILENAME);
   return {
     sourcePath,
-    hasLegacy:
-      legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX) ||
-      listLegacyMigrationSourceCopies(sourcePath).length > 0,
+    hasLegacy: legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX),
   };
 }
 
@@ -205,55 +197,6 @@ async function migrateWithExclusiveStateOwnership(params: {
       }),
   });
   try {
-    const receipt = readLegacyMigrationReceipt(
-      resolveLegacyMigrationSourceKey("restart-sentinel-json", sourcePath),
-      params.env,
-    );
-    const recovery = await recoverLegacyMigrationReceiptCopies({
-      stateRoot: params.stateRoot,
-      stateDir: params.stateDir,
-      sourcePath,
-      claimPath: source.claimPath,
-      env: params.env,
-      receipt,
-      label: "restart sentinel",
-      maxBytes: MAX_LEGACY_RESTART_SENTINEL_BYTES,
-      verifyCanonical: (current) => {
-        const report: unknown = JSON.parse(current.reportJson);
-        if (
-          !isRecord(report) ||
-          report.source !== MIGRATION_KIND ||
-          report.sourceSha256 !== current.sourceSha256 ||
-          typeof report.decision !== "string" ||
-          ![
-            "canonical-preserved",
-            "invalid-canonical-repaired",
-            "legacy-imported",
-            "malformed-legacy-discarded",
-            "receipt-authoritative",
-          ].includes(report.decision)
-        ) {
-          throw new Error("restart sentinel retirement receipt is not authoritative");
-        }
-        // A sentinel may have been consumed or superseded after its import. Its
-        // retirement receipt forbids replay; neither event revives the old bytes.
-        if (
-          readRestartSentinelRowSync(openOpenClawStateDatabase({ env: params.env }).db).kind ===
-          "invalid"
-        ) {
-          throw new Error("canonical restart sentinel is invalid");
-        }
-      },
-    });
-    if (recovery.warnings.length > 0) {
-      return { changes, warnings: recovery.warnings };
-    }
-    if (recovery.removed > 0 && receipt) {
-      if (!receipt.removedSource) {
-        markLegacyMigrationSourceRemoved(receipt.sourceKey, params.env);
-      }
-      return { changes: ["Removed receipt-covered private restart sentinel copies."], warnings };
-    }
     await recoverInterruptedClaim({
       source,
       env: params.env,
