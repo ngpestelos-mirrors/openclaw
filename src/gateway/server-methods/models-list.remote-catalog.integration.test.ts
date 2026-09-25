@@ -221,12 +221,12 @@ it(
           client.request<ModelsListResult>("models.list", { view: "all", refresh });
         const kimiIds = (catalog: ModelsListResult) =>
           catalog.models.filter((row) => row.provider === "kimi").map((row) => row.id);
-        const currentPrice = () =>
+        const currentPrice = (model = "remote-first") =>
           resolveModelCostConfig({
             config: getRuntimeConfig(),
             agentDir: state.agentDir(),
             provider: "kimi",
-            model: "remote-first",
+            model,
           })?.input;
         const settleInterrupted = async (pending: Promise<ModelsListResult>, phase: string) => {
           const outcome = await withTestTimeout(
@@ -449,6 +449,7 @@ it(
         }
         expect(kimiIds(await list(true))).toContain("remote-last");
         expect(currentPrice()).toBe(11);
+        expect(currentPrice("remote-last")).toBe(13);
         expect(oldModel.cost.input).toBe(1);
         expect(
           newRun.snapshot.createStores().modelRegistry.find("kimi", "remote-first")?.cost.input,
@@ -463,26 +464,28 @@ it(
         const withoutRemote = await list(true);
         expect(kimiIds(withoutRemote)).not.toContain("remote-next");
         expect(kimiIds(withoutRemote)).not.toContain("remote-last");
-        expect(currentPrice()).toBeUndefined();
+        expect(currentPrice("remote-last")).toBeUndefined();
         const disabledThread = providerThread;
         exitWorkerOnce = true;
         await settleInterrupted(list(true), "worker exit with remote catalog disabled");
         await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
         expect(kimiIds(await list(true))).not.toContain("remote-last");
-        expect(currentPrice()).toBeUndefined();
+        expect(currentPrice("remote-last")).toBeUndefined();
         expect(providerThread).not.toBe(disabledThread);
         expect(
-          withPreparedModelRuntimePluginGenerationScope(
-            oldRun.pluginGeneration,
-            () =>
-              resolveModelCostConfig({
-                config,
-                agentDir: state.agentDir(),
-                provider: "kimi",
-                model: "remote-first",
-              })?.input,
+          [oldRun, newRun].map(({ pluginGeneration }) =>
+            withPreparedModelRuntimePluginGenerationScope(
+              pluginGeneration,
+              () =>
+                resolveModelCostConfig({
+                  config,
+                  agentDir: state.agentDir(),
+                  provider: "kimi",
+                  model: "remote-first",
+                })?.input,
+            ),
           ),
-        ).toBe(1);
+        ).toEqual([1, 7]);
       } finally {
         releaseProvider();
         await disconnectGatewayClient(client);
