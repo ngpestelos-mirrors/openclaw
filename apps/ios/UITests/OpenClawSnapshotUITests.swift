@@ -1872,10 +1872,15 @@ extension OpenClawSnapshotUITests {
         let send = app.buttons["chat-send-message"]
         XCTAssertTrue(send.waitForExistence(timeout: 3))
         XCTAssertTrue(send.isEnabled)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+        // Dismiss before sending to preserve turn anchoring without tapping a starter prompt.
+        let transcript = app.scrollViews.firstMatch
+        XCTAssertTrue(transcript.exists)
+        transcript.swipeDown()
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
-        send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertEqual(input.value as? String, text)
+        send.tap()
 
+        XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts[replyMarker].waitForExistence(timeout: 60))
         XCTAssertTrue(app.staticTexts["Writing"].waitForNonExistence(timeout: 5))
     }
