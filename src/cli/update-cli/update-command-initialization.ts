@@ -7,6 +7,7 @@ import { compareSemverStrings } from "../../infra/update-check.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import { isFailedUpdateStep } from "../../infra/update-run-step.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
+import { createOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
 import {
@@ -139,9 +140,23 @@ export function acquireLegacyUpdateInitializationFence(params: {
   // Released schema-1 writers through 2026.7.1 do not acquire the current process
   // owner. The parent retains it so modern startup/schema work cannot race the
   // legacy child while that child initializes its own profile.
-  return params.targetSchemas.state === 1 && comparison !== null && comparison <= 0
-    ? acquireGatewayStateOwner({ databasePath })
-    : undefined;
+  if (params.targetSchemas.state !== 1 || comparison === null || comparison > 0) {
+    return undefined;
+  }
+  const owner = acquireGatewayStateOwner({ databasePath });
+  const maintenance = createOpenClawDatabaseMaintenanceScope({
+    schemaMaintenance: true,
+    assertOwnerCurrent: owner.assertCurrent,
+    assertDatabaseAccess: owner.assertDatabaseAccess,
+  });
+  return {
+    assertCurrent: owner.assertCurrent,
+    run: <T>(operation: () => T) => maintenance.run(operation),
+    async release() {
+      await maintenance.close();
+      owner.release();
+    },
+  };
 }
 
 /** The selected release owns bootstrap; the parent may only inspect its result. */

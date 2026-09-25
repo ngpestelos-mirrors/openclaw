@@ -97,7 +97,10 @@ it("rechecks external leases under the process owner after an empty observation"
   );
   expect(boundary.release).toHaveBeenCalledOnce();
   expect(boundary.stop).not.toHaveBeenCalled();
-  expect(boundary.close).not.toHaveBeenCalled();
+  expect(boundary.close).toHaveBeenCalledOnce();
+  expect(boundary.close.mock.invocationCallOrder[0]!).toBeLessThan(
+    boundary.release.mock.invocationCallOrder[0]!,
+  );
 });
 
 it("fails closed on an unknown external lease observation without exposing private details", async () => {
@@ -128,7 +131,10 @@ it("fails closed on an unknown external lease observation without exposing priva
   expect(boundary.lease).toHaveBeenCalledOnce();
   expect(boundary.release).toHaveBeenCalledOnce();
   expect(boundary.stop).not.toHaveBeenCalled();
-  expect(boundary.close).not.toHaveBeenCalled();
+  expect(boundary.close).toHaveBeenCalledOnce();
+  expect(boundary.close.mock.invocationCallOrder[0]!).toBeLessThan(
+    boundary.release.mock.invocationCallOrder[0]!,
+  );
 });
 
 it("grants external maintenance only after the unchanged held-owner checks", async () => {
@@ -173,7 +179,10 @@ it("preserves held-owner unreadable-state guidance after an external diagnostic 
   expect(boundary.ownerAssert).toHaveBeenCalledOnce();
   expect(boundary.lease).toHaveBeenCalledOnce();
   expect(boundary.release).toHaveBeenCalledOnce();
-  expect(boundary.close).not.toHaveBeenCalled();
+  expect(boundary.close).toHaveBeenCalledOnce();
+  expect(boundary.close.mock.invocationCallOrder[0]!).toBeLessThan(
+    boundary.release.mock.invocationCallOrder[0]!,
+  );
   expect(boundary.stop).not.toHaveBeenCalled();
 });
 
@@ -186,8 +195,11 @@ it("carries an actual typed lease refusal through Doctor IPC, finalization and p
   expect(refusal).toBeInstanceOf(UpdateDoctorError);
   expect(refusal).toMatchObject({ cause, message: leaseGuidance });
   expect(boundary.readLeases).not.toHaveBeenCalled();
-  expect(boundary.close).not.toHaveBeenCalled();
+  expect(boundary.close).toHaveBeenCalledOnce();
   expect(boundary.release).toHaveBeenCalledOnce();
+  expect(boundary.close.mock.invocationCallOrder[0]!).toBeLessThan(
+    boundary.release.mock.invocationCallOrder[0]!,
+  );
   expect(boundary.resume).toHaveBeenCalledOnce();
   expect(boundary.complete).toHaveBeenCalledOnce();
   expect(boundary.restart).toHaveBeenCalledOnce();

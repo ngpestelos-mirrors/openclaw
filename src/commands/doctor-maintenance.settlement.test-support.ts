@@ -101,10 +101,19 @@ vi.mock("../infra/gateway-lock.js", async (importOriginal) => ({
 }));
 vi.mock("../state/openclaw-state-db-async-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/openclaw-state-db-async-lifecycle.js")>()),
-  createOpenClawDatabaseMaintenanceScope: () => ({
-    run: <T>(operation: () => T) => operation(),
-    close: boundary.close,
-  }),
+  createOpenClawDatabaseMaintenanceScope: () => {
+    let closing: Promise<void> | undefined;
+    return {
+      run: <T>(operation: () => T) => operation(),
+      close: () =>
+        (closing ??= (async () => {
+          await boundary.close();
+        })().catch((error: unknown) => {
+          closing = undefined;
+          throw error;
+        })),
+    };
+  },
 }));
 vi.mock("../state/openclaw-agent-db-lease.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/openclaw-agent-db-lease.js")>()),

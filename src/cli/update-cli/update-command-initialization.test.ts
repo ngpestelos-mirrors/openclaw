@@ -305,7 +305,7 @@ describe("selected-target state initialization", () => {
 });
 
 describe("initialization schema coordination", () => {
-  it("fences modern schema writers while the legacy target creates its database", () => {
+  it("retains parent read authority while the legacy target creates its database", async () => {
     const env = freshEnvironment();
     const databasePath = resolveOpenClawStateSqlitePath(env);
     const fence = acquireLegacyUpdateInitializationFence({
@@ -313,20 +313,35 @@ describe("initialization schema coordination", () => {
       targetVersion: "2026.7.1",
       targetSchemas: { state: 1, agent: 1 },
     });
-    expect(fence).toBeDefined();
+    if (!fence) {
+      throw new Error("Legacy target requires an initialization fence");
+    }
     try {
       expect(runIndependentSchemaWriter(env, "Unexpected modern schema writer")).toContain(
         "another Gateway owns that state directory",
       );
-      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-      const legacy = new DatabaseSync(databasePath);
-      try {
-        legacy.exec(
-          "PRAGMA user_version=1; CREATE TABLE legacy_state(value TEXT); INSERT INTO legacy_state VALUES('target-owned')",
-        );
-      } finally {
-        legacy.close();
-      }
+      mocks.doctor.mockImplementation(async () => {
+        fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+        const legacy = new DatabaseSync(databasePath);
+        try {
+          legacy.exec(
+            "PRAGMA user_version=1; CREATE TABLE legacy_state(value TEXT); INSERT INTO legacy_state VALUES('target-owned')",
+          );
+        } finally {
+          legacy.close();
+        }
+        return doctorSuccess;
+      });
+      await fence.run(async () => {
+        await Promise.resolve();
+        await initializeUpdateStateFromTarget({
+          ...initializationOptions(env),
+          assertCurrent: fence.assertCurrent,
+          checkSchemas: async () => undefined,
+        });
+      });
+      expect(mocks.doctor).toHaveBeenCalledOnce();
+      await expect(updateStateNeedsInitialization(env)).rejects.toThrow(/offline maintenance/);
       const reader = new DatabaseSync(databasePath, { readOnly: true });
       try {
         expect(reader.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
@@ -337,12 +352,12 @@ describe("initialization schema coordination", () => {
         reader.close();
       }
     } finally {
-      fence?.release();
+      await fence.release();
     }
     expect(runIndependentSchemaWriter(env, "released")).toBe("released");
   });
 
-  it("leaves the modern target free to acquire its own schema fence", () => {
+  it("leaves the modern target free to acquire its own schema fence", async () => {
     const env = freshEnvironment();
     const fence = acquireLegacyUpdateInitializationFence({
       env,
@@ -352,7 +367,7 @@ describe("initialization schema coordination", () => {
     try {
       expect(runIndependentSchemaWriter(env, "target-owned")).toBe("target-owned");
     } finally {
-      fence?.release();
+      await fence?.release();
     }
   });
 });

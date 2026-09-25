@@ -308,24 +308,31 @@ it("refuses native restart when restart intent cannot be recorded", async () => 
   expect(lifecycleRuntimeLogs.join("\n")).toContain("Cannot record restart intent");
 });
 
-it("restarts a verified inactive service without intent and releases startup exclusion", async () => {
-  vi.spyOn(process, "platform", "get").mockReturnValue("linux");
-  const { db } = openOpenClawStateDatabase();
-  service.readRuntime.mockResolvedValue({ status: "stopped" });
-  service.restart.mockImplementationOnce(async () => {
-    const exclusion = tryAcquireGatewayStateOwner(resolveOpenClawStateSqlitePath(process.env));
-    expect(exclusion).not.toBeNull();
-    exclusion?.release();
-    return { outcome: "completed" };
-  });
+it.each(["warm", "cold"] as const)(
+  "restarts a verified inactive service with %s state without intent and releases startup exclusion",
+  async (state) => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    openOpenClawStateDatabase();
+    if (state === "cold") {
+      closeOpenClawStateDatabaseForTest();
+    }
+    service.readRuntime.mockResolvedValue({ status: "stopped" });
+    service.restart.mockImplementationOnce(async () => {
+      const exclusion = tryAcquireGatewayStateOwner(resolveOpenClawStateSqlitePath(process.env));
+      expect(exclusion).not.toBeNull();
+      exclusion?.release();
+      return { outcome: "completed" };
+    });
 
-  await expect(runServiceRestart(createGatewayServiceRunArgs())).resolves.toBe(true);
+    await expect(runServiceRestart(createGatewayServiceRunArgs())).resolves.toBe(true);
 
-  expect(service.restart).toHaveBeenCalledOnce();
-  expect(db.prepare("SELECT count(*) AS count FROM gateway_restart_intent").get()).toEqual({
-    count: 0,
-  });
-});
+    expect(service.restart).toHaveBeenCalledOnce();
+    const { db } = openOpenClawStateDatabase();
+    expect(db.prepare("SELECT count(*) AS count FROM gateway_restart_intent").get()).toEqual({
+      count: 0,
+    });
+  },
+);
 
 it("refuses stopped native status while unpublished Gateway startup holds authority", async () => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");

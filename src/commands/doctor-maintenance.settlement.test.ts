@@ -439,7 +439,7 @@ it.each(["drain", "acquired", "native-revoked", "install-drift"] as const)(
     );
     expect(boundary.repair).not.toHaveBeenCalled();
     expect(boundary.complete).toHaveBeenCalled();
-    expect(boundary.close).not.toHaveBeenCalled();
+    expect(boundary.close).toHaveBeenCalledOnce();
     expect(gatewayHeld).toBe(false);
   },
 );

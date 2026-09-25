@@ -280,11 +280,17 @@ export function writeGatewayServiceRestartIntentSync(opts: {
       const exclusion = tryAcquireGatewayStateOwner(resolveOpenClawStateSqlitePath(opts.env));
       if (exclusion) {
         try {
-          const owner = readGatewayOwnerLease({ env: opts.env, current: true });
-          opts.assertCurrent();
-          if (!owner || owner.state === "dead") {
+          const inactive = exclusion.run(() => {
+            const owner = readGatewayOwnerLease({ env: opts.env, current: true });
+            opts.assertCurrent();
+            if (owner && owner.state !== "dead") {
+              return false;
+            }
             assertLegacyGatewayStoppedSync(opts.env ?? process.env);
             opts.assertCurrent();
+            return true;
+          });
+          if (inactive) {
             return false;
           }
         } finally {
