@@ -39,7 +39,8 @@ it.skipIf(process.platform === "win32").each([
      import { MessageChannel } from "node:worker_threads";
      import { withRetainedUpdateRuntime } from ${JSON.stringify(new URL("./update-retained-runtime.ts", import.meta.url).href)};
      import { installCliSignalExitHandlers } from ${JSON.stringify(new URL("../cli/signal-exit-barrier.ts", import.meta.url).href)};
-     import { runCliWithExitFinalization } from ${JSON.stringify(new URL("../cli/one-shot-exit.ts", import.meta.url).href)};
+     import { exitCliAfterOutput, runCliWithExitFinalization } from ${JSON.stringify(new URL("../cli/one-shot-exit.ts", import.meta.url).href)};
+     import { defaultRuntime } from ${JSON.stringify(new URL("../runtime.ts", import.meta.url).href)};
      const root = ${JSON.stringify(root)};
      const outcome = ${JSON.stringify(exit)};
      installCliSignalExitHandlers();
@@ -49,16 +50,15 @@ it.skipIf(process.platform === "win32").each([
          const retained = (await fs.readdir(path.dirname(root))).filter(name => name.startsWith("openclaw-update-runtime-"));
          process.stdout.write(JSON.stringify({ retained }) + "\\n");
          if (outcome === "failure-report") {
-           const { parseTimeoutMsOrExit } = await import(${JSON.stringify(new URL("../cli/update-cli/shared.ts", import.meta.url).href)});
-           if (parseTimeoutMsOrExit("invalid") !== null) throw new Error("Invalid update timeout was accepted");
-           return;
+           defaultRuntime.error("Update failure reported");
+           exitCliAfterOutput(defaultRuntime, 1);
          }
          const { port1 } = new MessageChannel();
          port1.on("message", () => {});
          process.kill(process.pid, outcome);
          await new Promise(() => {});
        }),
-       onError(error) { process.stderr.write(String(error)); process.exitCode = 1; },
+       onError(error) { process.stderr.write("Unexpected error: " + String(error)); process.exitCode = 2; },
      });`,
     {
       imports: [import.meta.resolve("tsx")],
@@ -80,7 +80,8 @@ it.skipIf(process.platform === "win32").each([
   expect(result.signal, result.stderr).toBeNull();
   expect(result.stdout).toMatch(/"retained":\["openclaw-update-runtime-[A-Za-z0-9]{6}"\]/u);
   if (exit === "failure-report") {
-    expect(result.stderr).toContain("--timeout must be a positive integer (seconds)");
+    expect(result.stderr).toContain("Update failure reported");
+    expect(result.stderr).not.toContain("Unexpected error:");
   }
   expect(
     (await fs.readdir(base)).filter((name) => name.startsWith("openclaw-update-runtime-")),

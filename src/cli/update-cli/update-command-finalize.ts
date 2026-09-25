@@ -94,7 +94,8 @@ export async function updateFinalizeCommand(
     defaultRuntime.error(
       `--channel must be "stable", "extended-stable", "beta", or "dev" (got "${opts.channel}")`,
     );
-    return exitCliAfterOutput(defaultRuntime, 1);
+    defaultRuntime.exit(1);
+    return;
   }
 
   let exitCode: number | undefined;
