@@ -40,7 +40,7 @@ beforeAll(async () => {
           if (line === "ping") send({ phase: "pending", calls });
         });
         installCliSignalExitHandlers();
-        const action = runInterruptibleServer(process.argv[1], {
+        const action = runInterruptibleServer("QA signal fixture", {
           baseUrl: "http://127.0.0.1:43124",
           async stop() {
             calls += 1;
@@ -74,8 +74,8 @@ beforeAll(async () => {
   fixtureCode = output.text;
 });
 
-function startFixture(label: string) {
-  const child = spawn(process.execPath, ["--input-type=module", "--eval", fixtureCode, label], {
+function startFixture() {
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", fixtureCode], {
     stdio: ["pipe", "pipe", "pipe"],
   });
   const stdout = createBoundedChildOutput();
@@ -120,11 +120,11 @@ function startFixture(label: string) {
   };
 }
 
-describe.each(["Lab UI", "provider"])("%s server signal owner", (label) => {
+describe("QA server signal owner", () => {
   it.skipIf(process.platform === "win32").each(["release", "reject"] as const)(
     "joins the first interrupt until stop can %s",
     async (outcome) => {
-      const fixture = startFixture(label);
+      const fixture = startFixture();
       try {
         expect(await fixture.next()).toEqual({ phase: "ready", execPath: process.execPath });
         expect(fixture.child.kill("SIGINT")).toBe(true);
@@ -159,7 +159,7 @@ describe.each(["Lab UI", "provider"])("%s server signal owner", (label) => {
     ["SIGTERM", "SIGINT"],
     ["SIGTERM", "SIGTERM"],
   ] as const)("leaves hung %s shutdown through native %s termination", async (first, second) => {
-    const fixture = startFixture(label);
+    const fixture = startFixture();
     try {
       expect(await fixture.next()).toEqual({ phase: "ready", execPath: process.execPath });
       expect(fixture.child.kill(first)).toBe(true);
