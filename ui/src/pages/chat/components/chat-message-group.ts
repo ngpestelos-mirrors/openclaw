@@ -484,8 +484,12 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
   const normalizedRole = normalizeRoleForGrouping(group.role);
   const sourceOnly = isSourceOnlyUserGroup(group);
   const assistantName = opts.assistantName ?? "Assistant";
+  // Cached warm starts can render before the viewer is known. Keep human
+  // alignment neutral then; a qualified agent can never be that viewer.
   const isPeerGroup =
-    normalizedRole === "user" && Boolean(group.sender) && !isOwnSenderGroup(group, opts.userId);
+    normalizedRole === "user" &&
+    Boolean(group.sender && (opts.userId || group.sender.identity?.type === "agent")) &&
+    !isOwnSenderGroup(group, opts.userId);
   const forwardedSource = hasForwardedSource(group);
   const isForwarded = normalizedRole === "assistant" && forwardedSource;
   const showSenderName =
