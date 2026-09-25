@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
@@ -11,6 +12,45 @@ const attachment = {
 };
 
 suite.define(() => {
+  it("keeps Retry clear of native desktop caption buttons", async () => {
+    await suite.withPage({ viewport: { width: 1280, height: 800 } }, async ({ page }) => {
+      const script = readFileSync(
+        new URL("../../../apps/linux/ui/window-chrome.js", import.meta.url),
+        "utf8",
+      );
+      const css = readFileSync(
+        new URL("../../../apps/linux/ui/window-chrome.css", import.meta.url),
+        "utf8",
+      );
+      await page.addInitScript({
+        content:
+          "window.__TAURI_INTERNALS__={invoke:async()=>({focused:true,fullscreen:false,maximized:false})};(" +
+          script +
+          ")(" +
+          JSON.stringify({ origin: new URL(suite.server.baseUrl).origin, platform: "linux", css }) +
+          ");",
+      });
+      const gateway = await installMockGateway(page);
+      await page.goto(suite.server.baseUrl + "chat");
+      await waitForControlUiGatewayReady(page);
+      const caption = page.getByRole("group", { name: "Window controls" });
+      await caption.waitFor();
+      await gateway.deferNext("connect");
+      await gateway.closeLatest(1012, "synthetic reconnect");
+      const retry = page
+        .locator(".connection-status-banner")
+        .getByRole("button", { name: "Retry now" });
+      await retry.waitFor();
+      const button = (await retry.boundingBox())!;
+      const controls = (await caption.boundingBox())!;
+      expect(button.x + button.width).toBeLessThanOrEqual(controls.x);
+      const sockets = await gateway.getSocketCount();
+      await retry.click();
+      await waitForControlUiGatewayReady(page);
+      expect(await gateway.getSocketCount()).toBeGreaterThan(sockets);
+    });
+  });
+
   it("keeps a new draft and attachment through retry without starting it", async () => {
     await suite.withPage({ viewport: { width: 390, height: 844 } }, async ({ page }) => {
       const gateway = await installMockGateway(page);

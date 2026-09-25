@@ -4478,6 +4478,14 @@ wa-dropdown.sidebar-identity-menu::part(menu) {
   line-height: 1.35;
 }
 
+/* Desktop caption buttons share the expanded chat’s top row. */
+html.openclaw-native-desktop
+  .shell:not(.shell--mobile-nav):not(.shell--nav-collapsed)
+  .content--chat
+  > .connection-status-banner {
+  padding-right: calc(var(--openclaw-native-window-controls-width, 0px) + 20px);
+}
+
 .connection-status-banner__icon {
   display: inline-flex;
   flex: 0 0 auto;
