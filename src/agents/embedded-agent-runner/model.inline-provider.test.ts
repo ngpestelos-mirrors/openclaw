@@ -100,6 +100,22 @@ describe("buildInlineProviderModels", () => {
     ]);
   });
 
+  it("preserves opt-in google-interactions api inherited from provider config", () => {
+    const result = buildInlineProviderModels({
+      "google-interactions": {
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+        api: "google-interactions",
+        models: [makeModel("gemini-3.8-flash")],
+      },
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      provider: "google-interactions",
+      api: "google-interactions",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    });
+  });
+
   it("preserves google-vertex api inherited from provider config", () => {
     const providers: Parameters<typeof buildInlineProviderModels>[0] = {
       google: {

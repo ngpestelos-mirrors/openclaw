@@ -306,6 +306,45 @@ it.each([
   },
 );
 
+it("suspends a created thinking claim during an edit and restores it after rejection", async () => {
+  const key = "agent:main:thinking-edit";
+  let rejectPatch: (error: Error) => void = () => undefined;
+  const pendingPatch = new Promise<never>((_resolve, reject) => {
+    rejectPatch = reject;
+  });
+  const request = vi.fn(async (method: string) => {
+    if (method === "sessions.create") {
+      return { key, entry: { sessionId: "thinking-edit", thinkingLevel: "xhigh", updatedAt: 2 } };
+    }
+    if (method === "sessions.list") {
+      return sessionsResult(
+        [{ key, sessionId: "thinking-edit", kind: "direct", thinkingLevel: "high", updatedAt: 1 }],
+        2,
+      );
+    }
+    if (method === "sessions.patch") {
+      return pendingPatch;
+    }
+    throw new Error("Unexpected request: " + method);
+  });
+  const { sessions } = createSessionCapabilityHarness(request as GatewayBrowserClient["request"]);
+  let patch: ReturnType<typeof sessions.patch> | undefined;
+  try {
+    await sessions.createResult({ agentId: "main" });
+    expect(sessions.think(key)).toBe("xhigh");
+    patch = sessions.patch(key, { thinkingLevel: "low" });
+    expect(sessions.think(key)).toBeUndefined();
+    expect(sessions.state.result?.sessions[0]?.thinkingLevel).toBe("low");
+    rejectPatch(new Error("Synthetic thinking update rejected"));
+    await expect(patch).rejects.toThrow("Synthetic thinking update rejected");
+    expect(sessions.think(key)).toBe("xhigh");
+  } finally {
+    rejectPatch(new Error("Synthetic cleanup"));
+    await patch?.catch(() => undefined);
+    sessions.dispose();
+  }
+});
+
 it("retires a created thinking claim before replacement state is published", async () => {
   const key = "agent:main:created-before-reconnect";
   const request = vi.fn(async (method: string) => {

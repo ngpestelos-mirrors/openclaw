@@ -80,6 +80,19 @@ describe("ModelsConfigSchema", () => {
     ).toBe(true);
   });
 
+  it("accepts opt-in google-interactions provider and model APIs", () => {
+    const result = ModelsConfigSchema.safeParse({
+      providers: {
+        "google-interactions": {
+          baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+          api: "google-interactions",
+          models: [{ id: "gemini-3.8-flash", name: "Gemini", api: "google-interactions" }],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("accepts google-vertex as a model API from MODEL_APIS", () => {
     const result = ModelsConfigSchema.safeParse({
       providers: {

@@ -45,9 +45,18 @@ function normalizeGoogleVideoInput(
 function resolveGoogleReasoningOutputMode(
   ctx: ProviderReasoningOutputModeContext,
 ): "native" | "tagged" {
-  if (ctx.provider === "google" || ctx.provider === "google-vertex") {
+  if (
+    ctx.provider === "google" ||
+    ctx.provider === "google-vertex" ||
+    ctx.provider === "google-interactions"
+  ) {
     const api = ctx.model?.api ?? ctx.modelApi;
-    if (!api || api === "google-generative-ai" || api === "google-vertex") {
+    if (
+      !api ||
+      api === "google-generative-ai" ||
+      api === "google-vertex" ||
+      api === "google-interactions"
+    ) {
       return "native";
     }
   }
@@ -59,7 +68,7 @@ export function buildGoogleProvider(): ProviderPlugin {
     id: "google",
     label: "Google AI Studio",
     docsPath: "/providers/models",
-    hookAliases: ["google-antigravity", "google-vertex"],
+    hookAliases: ["google-antigravity", "google-vertex", "google-interactions"],
     envVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     auth: [
       createProviderApiKeyAuthMethod({
