@@ -91,7 +91,7 @@ type MutationRunParams<Result> = {
   validationOwner?: SqliteMutationWorkerValidationOwner;
   diagnostics?: SqliteSessionReclamationDiagnostics;
   commitGate: SharedArrayBuffer;
-  onCommitRequest: () => unknown[];
+  onCommitRequest: () => void;
   withWriteAdmission: SqliteWorkerWriteAdmission<Result>;
 };
 type WorkerCleanup = { cleanupWarnings: string[]; settled: boolean };
@@ -403,15 +403,7 @@ export class SqliteReclamationWorker {
           onExit: (code) => {
             exitCode = code;
           },
-          onCommitRequest: () => {
-            const errors = params.onCommitRequest();
-            if (errors.length) {
-              log.warn("SQLite session reclamation recovered commit settlement errors", {
-                errors: errors.map(String),
-                path: this.options.path,
-              });
-            }
-          },
+          onCommitRequest: params.onCommitRequest,
           withWriteAdmission: params.withWriteAdmission,
           validationOwner: params.validationOwner,
           dispatch: () =>
