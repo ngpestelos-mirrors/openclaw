@@ -69,6 +69,7 @@ export async function runInstalledLifecycle(
 ) {
   const { resolveGatewayWindowsTaskName } = await import("./constants.js");
   const { execSchtasks } = await import("./schtasks-exec.js");
+  const { setScheduledTaskXmlEnabled } = await import("./schtasks-control.js");
   const { resolveTaskScriptPath } = await import("./schtasks.js");
   const { probeScheduledTaskExists } = await import("./schtasks-state-probe.js");
   const {
@@ -486,10 +487,9 @@ export async function runInstalledLifecycle(
     await fs.writeFile(restoreXml, `\uFEFF${xml}`, "utf16le");
     await fs.writeFile(
       malformedXml,
-      `\uFEFF${xml
+      `\uFEFF${setScheduledTaskXmlEnabled(xml, false)
         .replace(match[0], `<Command>${escaped}</Command>`)
-        .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")
-        .replaceAll("<Enabled>true</Enabled>", "<Enabled>false</Enabled>")}`,
+        .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")}`,
       "utf16le",
     );
     let previewFailure: Error | undefined;
