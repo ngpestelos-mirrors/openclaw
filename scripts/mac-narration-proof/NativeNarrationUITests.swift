@@ -172,9 +172,16 @@ final class NativeNarrationUITests: XCTestCase {
 
     @MainActor
     private func openQuickChat(_ app: XCUIApplication) async throws -> XCUIElement {
-        app.typeKey(" ", modifierFlags: .option)
+        // The app intentionally disables global hotkey registration under XCTest.
+        // Use the ordinary status-menu action without changing that safety contract.
+        let statusItem = app.descendants(matching: .statusItem).firstMatch
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+        statusItem.rightClick()
+        let quickChat = app.menuItems["Quick Chat"]
+        XCTAssertTrue(quickChat.waitForExistence(timeout: 5))
+        quickChat.click()
         let toggle = app.buttons["quick-chat-toggle-conversation"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 8), "Option-Space did not open Quick Chat")
+        XCTAssertTrue(toggle.waitForExistence(timeout: 8), "Status menu did not open Quick Chat")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: toggle)
         let result = await XCTWaiter.fulfillment(of: [enabled], timeout: 10)
         XCTAssertEqual(result, .completed)
