@@ -49,7 +49,7 @@ import { listLiveTransportQaAdapterFactories } from "./live-transports/cli.js";
 import { runQaManualLane } from "./manual-lane.runtime.js";
 import { resolveQaRuntimeModelPair } from "./model-selection.runtime.js";
 import { runQaMultipass } from "./multipass.runtime.js";
-import { qaProfileEvidencePlan, type QaProfileEvidencePlan } from "./profile-evidence-plan.js";
+import { qaProfileEvidencePlan } from "./profile-evidence-plan.js";
 import {
   resolveQaRunProfileExecutionSelection,
   resolveQaRunProfileMembership,
@@ -258,11 +258,6 @@ function parseQaPositiveIntegerOption(label: string, value: number | undefined) 
     throw new Error(`${label} must be a positive integer`);
   }
   return value;
-}
-
-function normalizeQaOptionalModelRef(input: string | undefined) {
-  const model = input?.trim();
-  return model && model.length > 0 ? model : undefined;
 }
 
 function normalizeQaRuntimeId(value: string): RuntimeId | undefined {
@@ -667,7 +662,9 @@ export async function runQaProfileCommand(opts: QaProfileCommandOptions) {
   );
   const categories = membership.categories;
   if (categories.length === 0) {
-    throw new Error(formatQaRunProfileNoMatchMessage(opts));
+    throw new Error(
+      `qa run did not find taxonomy categories for ${formatQaRunProfileFilterList(opts)}.`,
+    );
   }
 
   const requestedScenarioIds = uniqueStrings(
@@ -675,7 +672,8 @@ export async function runQaProfileCommand(opts: QaProfileCommandOptions) {
   );
   const taxonomyScenarios = membership.selectedScenarios;
   const missingScenarioIds = membership.excludedScenarioIds;
-  const providerMode = opts.providerMode ?? defaultQaRunProfileProviderMode(profile);
+  const providerMode =
+    opts.providerMode ?? (profile === "smoke-ci" ? "mock-openai" : DEFAULT_QA_LIVE_PROVIDER_MODE);
   const normalizedProviderMode = normalizeQaProviderMode(providerMode);
   const primaryModel = opts.primaryModel?.trim() || defaultQaModelForMode(normalizedProviderMode);
   const missingScenarioIdSet = new Set(missingScenarioIds);
@@ -736,11 +734,8 @@ export async function runQaProfileCommand(opts: QaProfileCommandOptions) {
   process.stdout.write(
     `QA run profile: ${profile}; categories: ${categories.length}; scenarios: ${scenarios.length}\n`,
   );
-  let evidencePath: string | undefined;
-  let expectedCells: QaProfileEvidencePlan["expectedCells"] = [];
-  let observedCells: QaProfileEvidencePlan["observedCells"] = [];
-  await withTemporaryQaProfileEnv(profile, async () => {
-    const suiteResult = await runQaSuiteCommand({
+  const suiteResult = await withTemporaryQaProfileEnv(profile, () =>
+    runQaSuiteCommand({
       repoRoot,
       outputDir: opts.outputDir,
       evidenceMode,
@@ -756,15 +751,12 @@ export async function runQaProfileCommand(opts: QaProfileCommandOptions) {
       allowFailures: opts.allowFailures,
       channelDriver: profileReport.channelDriver,
       expandScenarioChannels: true,
-    });
-    evidencePath =
-      suiteResult && "evidencePath" in suiteResult ? suiteResult.evidencePath : undefined;
-    expectedCells = suiteResult && "expectedCells" in suiteResult ? suiteResult.expectedCells : [];
-    observedCells = suiteResult && "observedCells" in suiteResult ? suiteResult.observedCells : [];
-  });
-  if (!evidencePath) {
+    }),
+  );
+  if (!suiteResult || !("evidencePath" in suiteResult) || !suiteResult.evidencePath) {
     throw new Error("qa run --qa-profile did not produce qa-evidence.json.");
   }
+  const { evidencePath, expectedCells, observedCells } = suiteResult;
   const profilePlan = qaProfileEvidencePlan.build({
     profile,
     taxonomyIdentity,
@@ -798,16 +790,6 @@ function normalizeQaRunProfile(value: string, profileIds: readonly string[]) {
     return normalized;
   }
   throw new Error(`--qa-profile must be one of ${profileIds.join(", ")}, got "${value}".`);
-}
-
-function defaultQaRunProfileProviderMode(profile: string): QaProviderModeInput {
-  return profile === "smoke-ci" ? "mock-openai" : DEFAULT_QA_LIVE_PROVIDER_MODE;
-}
-
-function formatQaRunProfileNoMatchMessage(
-  opts: Pick<QaProfileCommandOptions, "profile" | "surface" | "category">,
-) {
-  return `qa run did not find taxonomy categories for ${formatQaRunProfileFilterList(opts)}.`;
 }
 
 function formatQaRunProfileFilterList(
@@ -854,8 +836,8 @@ export async function runQaSuiteCommand(opts: QaSuiteCommandOptions) {
   const runtimePair = parseQaRuntimePair(opts.runtimePair);
   const providerMode = normalizeQaProviderMode(opts.providerMode);
   const claudeCliAuthMode = parseQaCliBackendAuthMode(opts.cliAuthMode);
-  const primaryModel = normalizeQaOptionalModelRef(opts.primaryModel);
-  const alternateModel = normalizeQaOptionalModelRef(opts.alternateModel);
+  const primaryModel = opts.primaryModel?.trim() || undefined;
+  const alternateModel = opts.alternateModel?.trim() || undefined;
   const channelDriver = normalizeQaSuiteChannelDriver(opts.channelDriver);
   const explicitScenarioIds = resolveQaParityPackScenarioIds({
     parityPack: opts.parityPack,

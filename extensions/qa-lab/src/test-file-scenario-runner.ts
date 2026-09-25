@@ -33,7 +33,6 @@ import {
   formatQaScenarioCommandOutput,
   runQaScenarioCommandLifecycle,
   type QaScenarioCommandExecution,
-  type QaScenarioCommandResult,
 } from "./test-file-scenario-command-lifecycle.js";
 import {
   assertQaPreparedDockerEnvironment,
@@ -43,7 +42,8 @@ import {
   type QaPreparedDockerEvidence,
 } from "./test-file-scenario-docker-batch.js";
 import {
-  testFileRunnerDefinitions,
+  buildQaScenarioCommandSteps,
+  testFileEvidenceBuilders,
   type QaScenarioCommandStep,
 } from "./test-file-scenario-runner-commands.js";
 import { buildQaTestFileExecutionUnits } from "./test-file-scenario-runner-planning.js";
@@ -77,9 +77,7 @@ type QaTestFileScenarioRunParams = {
   writeEvidenceFile?: boolean;
 };
 
-type QaScenarioCommandRunner = (
-  command: QaScenarioCommandExecution,
-) => Promise<QaScenarioCommandResult>;
+type QaScenarioCommandRunner = typeof runQaScenarioCommandLifecycle;
 
 type QaTestFileScenarioResult = {
   cleanupFailure?: Error;
@@ -249,10 +247,9 @@ async function runQaTestFileScenario(params: {
     // The enclosing attempt root is exclusive, so old runs remain untouched.
     await fs.mkdir(scenarioOutputDir);
   }
-  const definition = testFileRunnerDefinitions[params.scenario.execution.kind];
   const result = await runScenarioCommandSteps({
     ...params,
-    steps: definition.buildSteps(params.scenario, { outputDir: params.outputDir }),
+    steps: buildQaScenarioCommandSteps(params.scenario, { outputDir: params.outputDir }),
   });
   if (params.scenario.execution.kind !== "script") {
     return result;
@@ -315,53 +312,6 @@ function resolveTestFileExecutionKind(scenarios: readonly QaTestFileScenario[]) 
   }
   const [kind] = kinds;
   return kind;
-}
-
-function buildNativeCommandEvidence(params: {
-  artifactPaths: { kind: string; path: string }[];
-  generatedAt: string;
-  kind: QaTestFileExecutionKind;
-  primaryModel: string;
-  providerMode: QaProviderMode;
-  repoRoot: string;
-  result: QaTestFileScenarioResult;
-  evidenceMode?: QaScorecardEvidenceMode;
-  env?: NodeJS.ProcessEnv;
-}) {
-  const definition = testFileRunnerDefinitions[params.kind];
-  return definition.buildEvidenceSummary({
-    artifactPaths: params.artifactPaths,
-    evidenceMode: params.evidenceMode,
-    env: params.env,
-    generatedAt: params.generatedAt,
-    primaryModel: params.primaryModel,
-    providerMode: params.providerMode,
-    repoRoot: params.repoRoot,
-    targets: [buildScenarioEvidenceTarget(params.result.scenario)],
-    results: [
-      {
-        id: params.result.scenario.id,
-        status: params.result.status,
-        durationMs: params.result.durationMs,
-        failureMessage: params.result.failureMessage,
-      },
-    ],
-  });
-}
-
-async function writeTestFileEvidenceFile(params: {
-  evidence: unknown;
-  outputDir: string;
-  writeEvidenceFile?: boolean;
-}): Promise<Pick<QaTestFileScenarioRunResult, "evidencePath">> {
-  const evidencePath = path.join(params.outputDir, QA_EVIDENCE_FILENAME);
-  if (params.writeEvidenceFile ?? true) {
-    await fs.writeFile(evidencePath, `${JSON.stringify(params.evidence, null, 2)}\n`, "utf8");
-    await assertQaSuiteArtifactWritten("evidence", evidencePath);
-  } else {
-    await fs.rm(evidencePath, { force: true });
-  }
-  return { evidencePath };
 }
 
 export async function runQaTestFileScenarios(
@@ -491,14 +441,21 @@ export async function runQaTestFileScenarios(
       }
     }
     const commandRows = () =>
-      buildNativeCommandEvidence({
+      testFileEvidenceBuilders[kind]({
         artifactPaths: [{ kind: "log", path: artifact.path }],
         generatedAt: new Date().toISOString(),
-        kind,
         primaryModel: params.primaryModel,
         providerMode: params.providerMode,
         repoRoot: params.repoRoot,
-        result,
+        targets: [buildScenarioEvidenceTarget(result.scenario)],
+        results: [
+          {
+            id: result.scenario.id,
+            status: result.status,
+            durationMs: result.durationMs,
+            failureMessage: result.failureMessage,
+          },
+        ],
         env,
       }).entries;
     if (
@@ -654,11 +611,13 @@ export async function runQaTestFileScenarios(
         (scenarioOrder.get(left.scenario) ?? 0) - (scenarioOrder.get(right.scenario) ?? 0),
     );
     const evidence = snapshot();
-    const paths = await writeTestFileEvidenceFile({
-      evidence,
-      outputDir: params.outputDir,
-      writeEvidenceFile: params.writeEvidenceFile,
-    });
+    const evidencePath = path.join(params.outputDir, QA_EVIDENCE_FILENAME);
+    if (params.writeEvidenceFile ?? true) {
+      await fs.writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+      await assertQaSuiteArtifactWritten("evidence", evidencePath);
+    } else {
+      await fs.rm(evidencePath, { force: true });
+    }
     if (cleanupFailures.size > 0) {
       throw new QaSuiteCleanupError(
         [...cleanupFailures],
@@ -666,7 +625,7 @@ export async function runQaTestFileScenarios(
       );
     }
     return {
-      ...paths,
+      evidencePath,
       evidence,
       executionKind: kind,
       outputDir: params.outputDir,

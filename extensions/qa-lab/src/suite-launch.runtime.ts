@@ -541,15 +541,10 @@ export async function runQaSuiteWithInfraRetry<Result>(
   throw new Error("unreachable qa suite retry state");
 }
 
-async function loadQaLabServerRuntime() {
-  const { startQaLabServer } = await import("./lab-server.js");
-  return startQaLabServer;
-}
-
 async function loadQaFlowSuiteRuntime() {
-  const [{ runQaFlowSuite }, startLab] = await Promise.all([
+  const [{ runQaFlowSuite }, { startQaLabServer: startLab }] = await Promise.all([
     import("./suite.js"),
-    loadQaLabServerRuntime(),
+    import("./lab-server.js"),
   ]);
   return async (params: QaSuiteRunParams | undefined) =>
     await runQaFlowSuite({
@@ -868,7 +863,6 @@ function testFileScenarioResultToSuiteScenario(
 ): QaSuiteScenarioResult {
   const suiteStatus =
     result.status === "pass" ? "pass" : result.status === "skipped" ? "skip" : "fail";
-  const stepStatus = suiteStatus;
   const logPath = toRepoRelativePath(repoRoot, result.logPath);
   const details = [
     `execution.kind=${result.scenario.execution.kind}`,
@@ -884,7 +878,7 @@ function testFileScenarioResultToSuiteScenario(
     steps: [
       {
         name: `Run ${result.scenario.execution.kind} test file`,
-        status: stepStatus,
+        status: suiteStatus,
         details,
       },
     ],
@@ -917,19 +911,8 @@ async function writeUnifiedQaSuiteArtifacts(params: {
     startedAt: params.startedAt,
   });
   const summary = buildQaSuiteSummaryJson({
-    alternateModel: params.alternateModel,
-    channel: params.channel,
-    channelDriver: params.channelDriver,
-    concurrency: params.concurrency,
-    evidence: params.evidence,
-    fastMode: params.fastMode,
-    finishedAt: params.finishedAt,
-    primaryModel: params.primaryModel,
-    providerMode: params.providerMode,
-    runtimePair: params.runtimePair,
-    scenarioIds: params.scenarioIds,
+    ...params,
     scenarios: [...params.scenarios],
-    startedAt: params.startedAt,
   }) satisfies QaSuiteSummaryJson;
   await publishQaSuiteArtifactFiles({
     outputDir: params.outputDir,
