@@ -1,6 +1,7 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { buildChildEnv } from "../../scripts/ci-run-node-test-shard.mts";
 import {
   createChangedNodeTestShards,
   hasControlUiPerformanceAffectingChange,
@@ -9,6 +10,9 @@ import { createNodeTestShardBundles } from "../../scripts/lib/ci-node-test-plan.
 import { isReleaseOnlyRuntimeTestFile } from "../../scripts/lib/ci-proof-test-inventory.mts";
 import { buildVitestRunPlans } from "../../scripts/test-projects.test-support.mts";
 import * as testProjects from "../../scripts/test-projects.test-support.mts";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 // Real-checkout compositions share the planner's process-scoped import-graph cache.
 // Small synthetic graphs and canonical process selection remain in the unit file.
@@ -169,6 +173,7 @@ it("keeps UI fallback with its complete canonical owners beside precise core cha
   );
   expect(new Set(preciseFiles).size).toBe(preciseFiles.length);
   expect(precise!.length).toBeLessThan(shards!.length);
+  const envScratch = tempDirs.make("changed-ui-owner-env-");
   for (const job of precise ?? []) {
     for (const group of job.groups ?? []) {
       const ownerJob = expectDefined(
@@ -186,7 +191,23 @@ it("keeps UI fallback with its complete canonical owners beside precise core cha
       expect(group.env).toEqual(owner.env);
       expect(group.fallbackMaxWorkers).toBe(owner.fallbackMaxWorkers);
       expect(group.minTotalMemoryBytes).toBe(owner.minTotalMemoryBytes);
-      expect(job.env).toEqual(ownerJob.env);
+      // The same worker limit can be stored on the job or its group.
+      const actualEnv = buildChildEnv(
+        { kind: "group", name: group.shard_name, plan: group },
+        job.env ?? {},
+        envScratch,
+        0,
+      );
+      const canonicalEnv = buildChildEnv(
+        { kind: "group", name: owner.shard_name, plan: owner },
+        ownerJob.env ?? {},
+        envScratch,
+        0,
+      );
+      // Precise include-file selection is checked separately above.
+      delete actualEnv.OPENCLAW_VITEST_INCLUDE_FILE;
+      delete canonicalEnv.OPENCLAW_VITEST_INCLUDE_FILE;
+      expect(actualEnv).toEqual(canonicalEnv);
       expect(job.runner).toBe(ownerJob.runner);
       expect(job.planConcurrency).toBe(ownerJob.planConcurrency);
     }
