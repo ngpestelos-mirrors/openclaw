@@ -520,8 +520,14 @@ suite.define(() => {
       const group = page
         .locator(".chat-group")
         .filter({ has: page.getByText(reply, { exact: true }) });
+      const image = group.locator("img.chat-avatar.assistant");
+      await expect
+        .poll(() => group.locator(".chat-avatar-slot").getAttribute("data-avatar-state"))
+        .toBe("failed");
       expect(await group.locator(".chat-avatar.assistant:not(img)").isVisible()).toBe(true);
-      expect(await group.locator("img.chat-avatar.assistant").count()).toBe(0);
+      expect(await image.count()).toBe(1);
+      expect(await image.getAttribute("src")).toBeNull();
+      expect(await image.isVisible()).toBe(false);
       expect(await group.evaluate((element) => element.isConnected)).toBe(true);
       await captureStreamProof(page, "identity-404");
     });
