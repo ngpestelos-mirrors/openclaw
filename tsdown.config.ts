@@ -529,6 +529,7 @@ function buildDockerE2eHarnessEntries(): Record<string, string> {
     "system-agent/setup-inference": "src/system-agent/setup-inference.ts",
     "gateway/protocol/index": "packages/gateway-protocol/src/index.ts",
     "infra/errors": "src/infra/errors.ts",
+    "infra/gateway-scheduler": "src/infra/gateway-scheduler.ts",
     "infra/ws": "src/infra/ws.ts",
     "plugin-sdk/provider-onboard": "src/plugin-sdk/provider-onboard.ts",
     "plugins/tool-metadata": "src/plugins/tool-metadata.ts",

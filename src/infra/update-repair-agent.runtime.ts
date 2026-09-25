@@ -13,8 +13,13 @@ import { isToolAllowedByPolicies } from "../agents/tool-policy-match.js";
 import { mergeAlsoAllowPolicy, resolveToolProfilePolicy } from "../agents/tool-policy.js";
 import { buildExecRunConfig } from "../commands/agent-exec-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  getBoundLegacyPluginSdkResourceHost,
+  LegacyPluginSdkResourceHost,
+} from "../plugins/legacy-sdk-resource-host.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import type { SystemAgentConfiguredRoute } from "../system-agent/inference-route.js";
+import { GatewayScheduler } from "./gateway-scheduler.js";
 import { sanitizeHostExecEnv, withHostExecInheritedEnvOmitted } from "./host-env-security.js";
 import {
   installationTargetEnv,
@@ -112,9 +117,25 @@ export async function withUpdateRepairEnvironment<T>(
 }
 
 async function withRepairResources<T>(run: () => Promise<T>): Promise<T> {
+  const existingHost = getBoundLegacyPluginSdkResourceHost();
+  const scheduler = existingHost ? existingHost.scheduler : new GatewayScheduler();
+  const host = existingHost ?? new LegacyPluginSdkResourceHost();
+  if (!existingHost) {
+    host.bindScheduler(scheduler);
+  }
   const resources = createOpenClawDatabaseMaintenanceScope();
-  const [outcome] = await Promise.allSettled([Promise.resolve().then(() => resources.run(run))]);
+  const [outcome] = await Promise.allSettled([
+    Promise.resolve().then(() => {
+      host.assertOpen();
+      scheduler.signal.throwIfAborted();
+      return host.run(() => resources.run(run));
+    }),
+  ]);
   try {
+    if (!existingHost) {
+      await scheduler.stop();
+      await host.close();
+    }
     await resources.close();
   } catch (error) {
     recordAgentCleanupFailure();
@@ -391,6 +412,7 @@ async function runScopedUpdateRepairTurn(params: UpdateRepairTurnParams) {
                       : {}),
                     modelFallbacksOverride: modelFallbacks,
                     codeModeOverride: false,
+                    cleanupBundleMcpOnRunEnd: true,
                     disableTrajectory: true,
                     trigger: "manual",
                     timeoutMs: Math.max(1, deadline - Date.now()),

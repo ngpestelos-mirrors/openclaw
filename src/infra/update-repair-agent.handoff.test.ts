@@ -6,9 +6,11 @@ import type { StreamFn } from "../agents/runtime/index.js";
 import { beginDoctorMaintenance } from "../commands/doctor-maintenance.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
+import { getBoundLegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import { readActiveOpenClawAgentDatabaseLeasesReadOnly } from "../state/openclaw-agent-db-lease.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import type { GatewayScheduler } from "./gateway-scheduler.js";
 import { resolveManagedUpdateLeaseDatabasePath } from "./update-managed-service-handoff-lease.js";
 import { runUpdateRepairTurn } from "./update-repair-agent.runtime.js";
 
@@ -91,7 +93,15 @@ it("executes the real terminal client tool before settling credentials and admit
       },
     };
     await state.writeConfig(config);
+    let resourceHost: ReturnType<typeof getBoundLegacyPluginSdkResourceHost>;
+    let scheduler: GatewayScheduler | undefined;
     fixture.stream.mockImplementation((model, context) => {
+      const host = getBoundLegacyPluginSdkResourceHost();
+      if (!host) {
+        throw new Error("Repair inference has no SDK resource owner");
+      }
+      resourceHost = host;
+      scheduler = host.scheduler;
       expect(context.tools?.map((tool) => tool.name)).toContain("request_update_maintenance");
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() => {
@@ -160,6 +170,9 @@ it("executes the real terminal client tool before settling credentials and admit
     });
     expect(fixture.stream).toHaveBeenCalledTimes(1);
     // These checks must precede fixture teardown: cleanup must not hide a leaked lease.
+    expect(scheduler?.signal.aborted).toBe(true);
+    expect(scheduler?.nextWakeAtMs).toBeNull();
+    expect(() => resourceHost?.assertOpen()).toThrow("Plugin SDK resource host is closed");
     expect(readActiveOpenClawAgentDatabaseLeasesReadOnly({ env: state.env })).toEqual([]);
     const saved = auth.loadAuthProfileStoreForRuntime(agentDir, {
       readOnly: true,

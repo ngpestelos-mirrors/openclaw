@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { currentUpdateCheckLifecycle } from "../infra/update-check-lifecycle.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
@@ -47,7 +48,7 @@ describe("deferred Gateway update-check lifecycle", () => {
     }
   });
 
-  async function startUpdateCheck(overrides: Partial<UpdateCheckStartupParams> = {}) {
+  async function startUpdateCheck(overrides: Partial<UpdateCheckStartupParams> = {}, start = true) {
     const owner = createDeferredGatewayUpdateCheck({
       scheduler,
       createUpdateCheck: () => defaultUpdateCheck,
@@ -59,7 +60,9 @@ describe("deferred Gateway update-check lifecycle", () => {
       ...overrides,
     });
     owners.add(owner);
-    owner.start();
+    if (start) {
+      owner.start();
+    }
     return owner;
   }
 
@@ -74,6 +77,38 @@ describe("deferred Gateway update-check lifecycle", () => {
     }
     return call[0];
   }
+
+  it("owns RPC update work when autonomous checks never start", async () => {
+    const createUpdateCheck = vi.fn(() => defaultUpdateCheck);
+    const owner = await startUpdateCheck({ createUpdateCheck }, false);
+    const lifecycle = currentUpdateCheckLifecycle();
+    const entered = createDeferred();
+    const cleanup = createDeferred();
+    const cancelled = createDeferred();
+    const work = lifecycle.run(async (signal) => {
+      signal.addEventListener("abort", () => cancelled.resolve(), { once: true });
+      entered.resolve();
+      await cleanup.promise;
+    });
+    await entered.promise;
+
+    expect(lifecycle.scheduler).toBe(scheduler);
+    expect(scheduler.nextWakeAtMs).toBeNull();
+    let stopped = false;
+    const stopping = owner.stop().then(() => {
+      stopped = true;
+    });
+    try {
+      await cancelled.promise;
+      expect(stopped).toBe(false);
+      expect(createUpdateCheck).not.toHaveBeenCalled();
+    } finally {
+      cleanup.resolve();
+      await Promise.all([work, stopping]);
+    }
+    expect(stopped).toBe(true);
+    expect(scheduler.nextWakeAtMs).toBeNull();
+  });
 
   it("scopes detailed update broadcasts to read-capable operator clients", async () => {
     const clients = [
