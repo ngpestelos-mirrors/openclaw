@@ -98,7 +98,7 @@ function publishRemoteModelCatalogStartupSnapshot(
   if (inherited !== undefined) {
     return inherited.catalog;
   }
-  // New workers inherit the startup pair, including absence, rather than later downloads.
+  // Downloads are inert; workers inherit only the host's accepted rows/pricing pair.
   setEnvironmentData(STARTUP_SNAPSHOT_KEY, { catalog: snapshot });
   return snapshot;
 }

@@ -430,16 +430,23 @@ JSON `GET` at startup and then checks at most every six hours. The request sends
 no prompts, credentials, model usage, or configuration payload beyond the
 normal HTTP user agent and conditional cache headers.
 
-The downloaded bundle is stored in the shared SQLite state database and becomes
-visible after the next Gateway restart. Remote data can update or add models
-only for providers declared by installed plugin manifests. It cannot supply API
-base URLs or request headers, and a catalog older than the installed release's
-build stamp is ignored.
+The downloaded bundle is stored in the shared SQLite state database. The Gateway
+prepares a new catalog generation in the background, then publishes its model
+rows and prices together without restarting. Picker reads keep using the current
+generation during preparation; a failed or superseded preparation leaves it in
+place. Admitted runs retain their captured generation, and each usage-estimation
+operation uses one pricing context.
 
-The Gateway reports when a checked catalog needs a restart to become active,
-including a bundle downloaded by another process. Repeated checks of the same
-source and generation do not repeat the notice. Checking for an update does not
-activate the downloaded rows or prices.
+Remote data can update or add models only for providers declared by installed
+plugin manifests. It cannot supply API base URLs or request headers, and a
+catalog older than the installed release's build stamp is ignored. Hosted
+metadata does not override a provider's account-discovery or model-admission
+rules.
+
+The background check also notices bundles downloaded by another process.
+An explicit Gateway catalog refresh can apply a pending bundle sooner.
+`openclaw models refresh` reports the download result, not whether a running
+Gateway has finished publishing it.
 
 The hosted file is published from the public
 [`openclaw/catalog`](https://github.com/openclaw/catalog) GitHub repository.

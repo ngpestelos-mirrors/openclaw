@@ -1,7 +1,10 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { prepareModelPricingContext } from "../model-catalog/pricing.js";
 import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model-runtime.errors.js";
-import { retirePreparedModelRuntimeGeneration } from "./prepared-model-runtime.lifecycle.js";
+import {
+  capturePreparedModelRuntimeGeneration,
+  retirePreparedModelRuntimeGeneration,
+} from "./prepared-model-runtime.lifecycle.js";
 import {
   ownerKey,
   prepareModelRuntimeOwner,
@@ -106,6 +109,7 @@ export async function publishPreparedModelRuntimeCatalogReplacement(params: {
   owners: Map<string, PreparedModelRuntimeOwner>;
   agentBuildCompletions: Map<string, Promise<void>>;
   buildTimeoutMs: number;
+  controller: AbortController;
   signal: AbortSignal;
   isPublicationCurrent: () => boolean;
   prepareCommit: (owners: readonly PreparedModelRuntimeOwner[]) => () => void;
@@ -120,10 +124,36 @@ export async function publishPreparedModelRuntimeCatalogReplacement(params: {
   ) {
     return false;
   }
+  const controller = params.controller;
+  let parentSignals = [
+    params.signal,
+    ...claims.map(({ owner }) => capturePreparedModelRuntimeGeneration(owner)),
+  ];
+  const abortPreparation = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(
+        new PreparedModelRuntimePublicationSupersededError(
+          "A captured model owner retired during remote catalog preparation",
+        ),
+      );
+    }
+  };
+  const stopWatchingParents = () => {
+    for (const signal of parentSignals) {
+      signal.removeEventListener("abort", abortPreparation);
+    }
+    parentSignals = [];
+  };
+  for (const signal of parentSignals) {
+    signal.addEventListener("abort", abortPreparation, { once: true });
+  }
+  if (parentSignals.some((signal) => signal.aborted)) {
+    abortPreparation();
+  }
   const staged = new Map<string, PreparedModelRuntimeOwner>();
   let committed = false;
   const isCurrent = () =>
-    !params.signal.aborted &&
+    !controller.signal.aborted &&
     params.isPublicationCurrent() &&
     claims.every(
       ({ owner, generation, input }) =>
@@ -151,7 +181,7 @@ export async function publishPreparedModelRuntimeCatalogReplacement(params: {
       retirePreparedModelRuntimeGeneration(owner);
     }
   };
-  params.signal.addEventListener("abort", retireCandidates, { once: true });
+  controller.signal.addEventListener("abort", retireCandidates, { once: true });
   try {
     assertCurrent();
     await publishPreparedModelRuntimeOwnerBatch({
@@ -160,7 +190,7 @@ export async function publishPreparedModelRuntimeCatalogReplacement(params: {
       agentBuildCompletions: params.agentBuildCompletions,
       buildTimeoutMs: params.buildTimeoutMs,
       registerEntriesAfterBuildStart: true,
-      acquisitionSignal: params.signal,
+      acquisitionSignal: controller.signal,
       isPublicationCurrent: () => committed || isCurrent(),
       isOwnerRegistered: (key, owner) => (committed ? params.owners : staged).get(key) === owner,
       isOwnerPublished: (key, owner) => committed && params.owners.get(key) === owner,
@@ -187,6 +217,8 @@ export async function publishPreparedModelRuntimeCatalogReplacement(params: {
         params.owners.set(ownerKey(owner.input), owner);
       }
       committed = true;
+      stopWatchingParents();
+      controller.signal.removeEventListener("abort", retireCandidates);
       // Existing leases retain their pair; other owners must rebuild before new admission.
       for (const owner of params.owners.values()) {
         if (owner.provenance !== "configured") {
@@ -202,8 +234,21 @@ export async function publishPreparedModelRuntimeCatalogReplacement(params: {
       staged.clear();
     });
     return true;
+  } catch (error) {
+    if (
+      !committed &&
+      !(error instanceof PreparedModelRuntimePublicationSupersededError) &&
+      !isCurrent()
+    ) {
+      throw new PreparedModelRuntimePublicationSupersededError(
+        "Remote catalog preparation lost its captured owners",
+        { cause: error },
+      );
+    }
+    throw error;
   } finally {
-    params.signal.removeEventListener("abort", retireCandidates);
+    stopWatchingParents();
+    controller.signal.removeEventListener("abort", retireCandidates);
     if (!committed) {
       retireCandidates();
       for (const owner of candidates) {

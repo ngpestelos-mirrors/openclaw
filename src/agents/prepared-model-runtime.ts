@@ -123,6 +123,7 @@ let pendingRemoteCatalogPublication:
       catalog: ActiveRemoteModelCatalog;
       controller: AbortController;
       completion: Promise<RemoteCatalogPublicationResult>;
+      isCurrent: () => boolean;
     }
   | undefined;
 const authPublication = new PreparedModelRuntimeAuthPublicationOwner();
@@ -184,6 +185,18 @@ async function closeModelRuntime(error: Error): Promise<void> {
 
 /** Advances model-neutral config identity without rebuilding prepared generation artifacts. */
 export function advancePreparedModelRuntimeConfig(config: OpenClawConfig): void {
+  const pending = pendingRemoteCatalogPublication;
+  if (
+    pending &&
+    !pending.controller.signal.aborted &&
+    captureRemoteModelCatalogStartupSnapshot() !== pending.catalog
+  ) {
+    pending.controller.abort(
+      new PreparedModelRuntimePublicationSupersededError(
+        "Config changed during remote catalog preparation",
+      ),
+    );
+  }
   for (const owner of owners.values()) {
     // Read-only owners include the config hash in their map key and remain bound to their lease.
     if (owner.input.readOnly) {
@@ -490,31 +503,36 @@ export function applyRemoteModelCatalogUpdate(
       }
       const pending = pendingRemoteCatalogPublication;
       if (pending?.catalog.sourceUrl === catalog.sourceUrl) {
-        if (pending.catalog.revision === catalog.revision) {
+        if (pending.catalog.revision === catalog.revision && pending.isCurrent()) {
           return await pending.completion;
         }
         if (pending.catalog.generatedAt > catalog.generatedAt) {
           return "superseded";
         }
       }
-      pending?.controller.abort(
-        new PreparedModelRuntimePublicationSupersededError("A newer remote catalog was accepted"),
-      );
+      if (pending?.isCurrent()) {
+        pending.controller.abort(
+          new PreparedModelRuntimePublicationSupersededError("A newer remote catalog was accepted"),
+        );
+      }
       const controller = new AbortController();
-      pendingRemoteCatalogPublication = { catalog, controller, completion };
       const epoch = refreshRequestEpoch;
+      const isCurrent = () =>
+        !controller.signal.aborted &&
+        pendingRemoteCatalogPublication?.controller === controller &&
+        refreshRequestEpoch === epoch &&
+        captureRemoteModelCatalogStartupSnapshot() === previous &&
+        preparedModelRuntimeConfigsMatch(config, getConfig());
+      pendingRemoteCatalogPublication = { catalog, controller, completion, isCurrent };
       try {
         const published = await withRemoteModelCatalogSnapshot(catalog, () =>
           publishPreparedModelRuntimeCatalogReplacement({
             owners,
             agentBuildCompletions,
             buildTimeoutMs: modelRuntimeBuildTimeoutMs,
-            signal: AbortSignal.any([refreshCancellation.signal, controller.signal]),
-            isPublicationCurrent: () =>
-              pendingRemoteCatalogPublication?.controller === controller &&
-              refreshRequestEpoch === epoch &&
-              captureRemoteModelCatalogStartupSnapshot() === previous &&
-              preparedModelRuntimeConfigsMatch(config, getConfig()),
+            controller,
+            signal: refreshCancellation.signal,
+            isPublicationCurrent: isCurrent,
             prepareCommit: (candidates) => {
               const commitDispatch = replyDispatchPublication.stage(candidates);
               return () => {

@@ -199,9 +199,11 @@ for the wire controls.
 not sign in to providers, test credentials, or activate downloaded rows in a
 running Gateway. It rejects `--agent` because the hosted catalog is global.
 
-Restart the Gateway to use downloaded updates. The Gateway reports when a
-checked catalog needs a restart, including an update downloaded by another
-process. A successful refresh result describes the download, not live activation.
+The Gateway applies compatible downloads at its next background catalog check
+or explicit catalog refresh, without restarting. It keeps serving the current
+rows and prices until the replacement generation is ready. A failed preparation
+leaves that generation active. A successful CLI refresh result describes the
+download, not live activation.
 If `models.catalogRefresh.enabled` is `false`, the command reports that refresh
 is disabled.
 
