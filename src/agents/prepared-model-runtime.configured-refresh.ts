@@ -284,7 +284,7 @@ async function publishPreparedModelRuntimeCatalogReplacement(params: {
     .map((owner) => ({ owner, generation: owner.generation, input: owner.input }));
   if (
     !claims.length ||
-    claims.some(({ owner }) => !owner.snapshot || owner.needsRefresh || owner.pending)
+    claims.some(({ owner }) => !owner.snapshot || owner.needsRefresh || owner.pending !== undefined)
   ) {
     return false;
   }
@@ -418,13 +418,13 @@ async function publishPreparedModelRuntimeCatalogReplacement(params: {
       for (const owner of candidates) {
         releasePreparedPluginPublication(owner);
       }
-      await Promise.all(
-        candidates.map((owner) =>
-          owner.pluginGeneration
-            ? discardPreparedPluginGeneration(owner.pluginGeneration)
-            : undefined,
-        ),
-      );
+      const discarded: Promise<void>[] = [];
+      for (const owner of candidates) {
+        if (owner.pluginGeneration) {
+          discarded.push(discardPreparedPluginGeneration(owner.pluginGeneration));
+        }
+      }
+      await Promise.all(discarded);
     }
   }
 }

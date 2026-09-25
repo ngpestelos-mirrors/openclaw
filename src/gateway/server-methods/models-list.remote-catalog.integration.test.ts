@@ -223,8 +223,8 @@ it(
       });
       try {
         await server.startupSettled;
-        const list = (refresh = false) =>
-          client.request<ModelsListResult>("models.list", { view: "all", refresh });
+        const list = (refreshCatalog = false) =>
+          client.request<ModelsListResult>("models.list", { view: "all", refresh: refreshCatalog });
         const kimiIds = (catalog: ModelsListResult) =>
           catalog.models.filter((row) => row.provider === "kimi").map((row) => row.id);
         const currentPrice = (model = "remote-first") =>
@@ -524,7 +524,9 @@ it(
       }
     } finally {
       endpoint.closeAllConnections();
-      await new Promise<void>((resolve) => endpoint.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        endpoint.close(() => resolve());
+      });
       setRemoteModelCatalogOverlaySourcesForTest();
       await state.cleanup();
     }

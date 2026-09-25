@@ -462,9 +462,8 @@ or retired are skipped. If models.dev itself is unreachable or malformed,
 publication fails and the last published artifact stays in place. A single
 missing or renamed upstream provider only skips that provider's hydration; its
 manifest rows still publish, so one provider cannot block catalog updates for
-the rest. This is a
-publication-time contract: it adds no Gateway fetches or hot reload, and updated
-metadata still becomes visible after a Gateway restart.
+the rest. Hydration runs at publication time, not in the Gateway. Downloaded
+metadata follows the shared catalog generation publication described above.
 Its scheduled workflow checks OpenClaw's default-branch plugin manifests and
 public pricing sources every four hours. Every catalog content change is
 preserved as a public commit. Provider-owned policies select complete price
