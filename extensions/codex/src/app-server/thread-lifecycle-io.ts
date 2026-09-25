@@ -172,6 +172,7 @@ export async function resumeExistingCodexThread(
         hostSystemAgentActive,
         restrictedToolSurfaceInheritedMcpServerNames,
         shellEnvironment: params.shellEnvironment,
+        shellPathPrepend: params.shellPathPrepend,
         disableLoginShell: params.disableLoginShell,
       }),
     );
@@ -519,6 +520,7 @@ export async function startFreshCodexThread(
       hostSystemAgentActive,
       restrictedToolSurfaceInheritedMcpServerNames,
       shellEnvironment: params.shellEnvironment,
+      shellPathPrepend: params.shellPathPrepend,
       disableLoginShell: params.disableLoginShell,
     }),
   );

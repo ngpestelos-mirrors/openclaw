@@ -151,11 +151,7 @@ type CodexAppServerBindingMutation =
       threadId?: string;
     };
 
-export type CodexSessionGenerationAdoptionResult = NativeSessionGenerationAdoptionResult;
-
 export type CodexSessionGenerationRetirementResult = "applied" | "absent" | "conflict";
-
-export type CodexSessionGenerationReclaimPlan = NativeSessionGenerationReclaimPlan;
 
 type BindingStateStore = Pick<
   PluginStateSyncKeyedStore<StoredCodexAppServerBinding>,
@@ -190,13 +186,13 @@ export type CodexAppServerBindingStore = {
   ): Promise<boolean>;
   prepareSessionGenerationReclaim(
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
-  ): Promise<CodexSessionGenerationReclaimPlan>;
+  ): Promise<NativeSessionGenerationReclaimPlan>;
   adoptSessionGeneration(
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
     expectedPreviousSessionId: string,
     assertCurrent?: () => void,
     authority?: CodexBindingAuthority,
-  ): Promise<CodexSessionGenerationAdoptionResult>;
+  ): Promise<NativeSessionGenerationAdoptionResult>;
   resetSessionGeneration(
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
   ): Promise<CodexSessionGenerationRetirementResult>;
