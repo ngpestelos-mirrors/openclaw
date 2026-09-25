@@ -95,6 +95,7 @@ export async function waitForGatewayHttpReadiness(params: {
   probeTimeoutMs?: number;
   port: number;
   signal?: AbortSignal;
+  onObservation?: (readiness: GatewayHttpReadiness) => void;
 }): Promise<GatewayHttpReadiness> {
   params.signal?.throwIfAborted();
   const probe = createConfiguredGatewayLocalProbe(params.config ?? {});
@@ -133,6 +134,7 @@ export async function waitForGatewayHttpReadiness(params: {
     ]);
     params.signal?.throwIfAborted();
     latest = { healthz, readyz };
+    params.onObservation?.(latest);
     if (healthz === 200 && readyz === 200) {
       return latest;
     }

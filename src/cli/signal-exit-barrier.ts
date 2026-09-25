@@ -1,6 +1,7 @@
 import { resolveGlobalSet } from "../shared/global-singleton.js";
 
 type SignalExitBarrier = () => Promise<void>;
+type SignalExitFinalizer = SignalExitBarrier & { onStall?: () => void };
 
 // Gates let bounded mutations finish before signal cleanup begins; barriers
 // then prevent one cleanup from exiting while another still owns state.
@@ -12,7 +13,7 @@ const activeGates = resolveGlobalSet<{ finished: Promise<void>; interrupt?: () =
   Symbol.for("openclaw.signalExitGates"),
   "close-and-restart",
 );
-const activeFinalizers = resolveGlobalSet<SignalExitBarrier>(
+const activeFinalizers = resolveGlobalSet<SignalExitFinalizer>(
   Symbol.for("openclaw.signalExitFinalizers"),
   "close-and-restart",
 );
@@ -32,19 +33,37 @@ export function registerSignalExitBarrier(barrier: SignalExitBarrier): () => voi
 }
 
 /** Temporary artifacts remain available until other shutdown owners have drained. */
-export function registerSignalExitFinalizer(finalizer: SignalExitBarrier): void {
-  activeFinalizers.add(finalizer);
+export function registerSignalExitFinalizer(
+  finalizer: SignalExitBarrier,
+  onStall?: () => void,
+): () => void {
+  const registered = onStall ? Object.assign(() => finalizer(), { onStall }) : finalizer;
+  activeFinalizers.add(registered);
+  return () => activeFinalizers.delete(registered);
 }
 
 let pendingSignalExitDrain: Promise<void> | undefined;
 let pendingProcessExit: Promise<void> | undefined;
+let recordedProcessExitCode: number | string | undefined;
 
 /** Broken output must not bypass a maintenance owner's asynchronous recovery. */
-export function exitAfterSignalExitBarriers(code: number | string): void {
+export function exitAfterSignalExitBarriers(
+  code: number | string,
+  options: { finalizersStalled?: boolean } = {},
+): void {
+  // The recorded-output watchdog may stop waiting for disposable cleanup, not
+  // the mutation/recovery gates and barriers that still own authoritative state.
+  if (options.finalizersStalled) {
+    recordedProcessExitCode = code;
+    for (const finalizer of activeFinalizers) {
+      finalizer.onStall?.();
+    }
+  }
   if (pendingProcessExit) {
     return;
   }
   if (activeGates.size === 0 && activeBarriers.size === 0 && activeFinalizers.size === 0) {
+    recordedProcessExitCode = undefined;
     process.exit(code);
     return;
   }
@@ -55,8 +74,13 @@ export function exitAfterSignalExitBarriers(code: number | string): void {
     .then((exitCode) => {
       pendingProcessExit = undefined;
       const outcome = process.exitCode;
+      const recordedCode = recordedProcessExitCode;
+      recordedProcessExitCode = undefined;
+      // The watchdog may arrive during an existing exit drain. Its recorded
+      // outcome must survive both later exitCode writes and cleanup failures.
       process.exit(
-        (exitCode === 0 || exitCode === "0") && outcome !== undefined ? outcome : exitCode,
+        recordedCode ??
+          ((exitCode === 0 || exitCode === "0") && outcome !== undefined ? outcome : exitCode),
       );
     });
 }

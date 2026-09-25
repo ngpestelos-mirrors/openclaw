@@ -44,7 +44,6 @@ import {
 } from "../infra/update-doctor-result.js";
 import { resolveUpdateInstallRoot } from "../infra/update-install-root.js";
 import { cleanupStaleManagedServiceUpdateHandoffs } from "../infra/update-managed-service-handoff-cleanup.js";
-import type { UpdateRunRecord } from "../infra/update-run-record.js";
 import { renderUpdateRunReport } from "../infra/update-run-report.js";
 import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import * as windowsPrivateDirectory from "../infra/windows-private-directory.js";
@@ -91,6 +90,7 @@ import {
   packageTargetStatus,
 } from "./update-cli/update-cli-package.test-support.js";
 import { registerAlreadyCurrentAdmissionTests } from "./update-cli/update-command-current-admission.test-support.js";
+import { registerUpdatePreflightTests } from "./update-cli/update-command-preflight.test-support.js";
 import * as runtimeRecovery from "./update-cli/update-command-runtime-recovery.test-support.js";
 import { createGlobalUserServiceCommand } from "./update-cli/update-command-service-state.test-support.js";
 import { isLegacyUpdateDoctorCommand } from "./update-cli/update-command-transport.test-support.js";
@@ -145,6 +145,9 @@ const systemdPolicy = vi.hoisted(() =>
 );
 const sourceRuntimeCompletion = vi.hoisted(() =>
   vi.fn<typeof import("./update-cli/update-command-runtime.js").completeSourceUpdateRuntime>(),
+);
+const retainUpdateRuntime = vi.hoisted(() =>
+  vi.fn<import("../infra/update-retained-runtime.js").RetainUpdateRuntime>(),
 );
 const pluginAvailabilityPreflight = vi.hoisted(() => vi.fn());
 vi.mock("./update-cli/update-command-plugin-preflight.js", () => ({
@@ -250,10 +253,7 @@ vi.mock("../infra/update-retained-runtime.js", async (importOriginal) => {
   const withRetainedUpdateRuntime: typeof actual.withRetainedUpdateRuntime = (
     moduleUrl,
     operation,
-  ) =>
-    actual.withRetainedUpdateRuntime(moduleUrl, () =>
-      operation(async ({ assertCurrent }) => assertCurrent()),
-    );
+  ) => actual.withRetainedUpdateRuntime(moduleUrl, () => operation(retainUpdateRuntime));
   return { withRetainedUpdateRuntime };
 });
 vi.mock("../infra/update-candidate-state.js", async (importOriginal) => ({
@@ -1573,6 +1573,7 @@ describe("update-cli", () => {
     expect(getFileLockProcessStartTime(process.pid)).not.toBeNull();
     pluginAvailabilityPreflight.mockResolvedValue([]);
     sourceRuntimeCompletion.mockResolvedValue({ changed: false });
+    retainUpdateRuntime.mockImplementation(async ({ assertCurrent }) => assertCurrent());
     triageAfterFailure.mockResolvedValue(undefined);
     inferenceRepair.mockResolvedValue({
       status: "unavailable",
@@ -7080,50 +7081,20 @@ describe("update-cli", () => {
     expect(packageInstallCommandCall()?.[0]).toBeUndefined();
   });
 
-  it("records low disk space before target lookup and still runs package updates", async () => {
-    await mockPackageInstallAtCaseDir();
-    mockCurrentProcessFreshDoctor();
-    vi.spyOn(fsSync, "statfsSync").mockReturnValue(
-      statfsFixture({
-        bavail: 256,
-        bsize: 1024 * 1024,
-      }),
-    );
-    const targetLookups: Array<{ output: string; steps: UpdateRunRecord["steps"] }> = [];
-    const resolveTag = vi.mocked(resolveNpmChannelTag).getMockImplementation()!;
-    vi.mocked(resolveNpmChannelTag).mockImplementation(async (...args) => {
-      targetLookups.push({
-        output: getLogOutput(),
-        steps: listUpdateRuns({ limit: 1 })[0]?.steps ?? [],
-      });
-      return await resolveTag(...args);
-    });
-
-    await updateCommand({ yes: true });
-
-    expect(targetLookups).toContainEqual({
-      output: expect.stringContaining("Low disk space near"),
-      steps: expect.arrayContaining([
-        expect.objectContaining({
-          step: "warning:disk-space-preflight",
-          status: "completed",
-          detail: expect.stringContaining("256 MiB available"),
-        }),
-      ]),
-    });
-    expectPackageInstallSpec("openclaw@9999.0.0");
-    const preflightParams = vi
-      .mocked(fetchNpmPackageTargetStatus)
-      .mock.calls.find(([params]) => params.target === "9999.0.0")?.[0];
-    expect(preflightParams).toEqual(
-      expect.objectContaining({
-        target: "9999.0.0",
-        spec: "openclaw@9999.0.0",
-        cwd: process.cwd(),
-      }),
-    );
-    expect(packageInstallCommandCall()?.[1].env).toBe(preflightParams?.env);
-    expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
+  registerUpdatePreflightTests({
+    mockPackageInstallAtCaseDir,
+    mockCurrentProcessFreshDoctor,
+    statfsFixture,
+    resolveNpmChannelTag,
+    fetchNpmPackageTargetStatus,
+    listUpdateRuns,
+    updateCommand,
+    getLogOutput,
+    lastWriteJsonCall,
+    expectPackageInstallSpec,
+    packageInstallCommandCall,
+    defaultRuntime,
+    retainUpdateRuntime,
   });
 
   it.each(["insufficient", "alternative", "unknown", "plenty", "package-only"] as const)(

@@ -465,10 +465,24 @@ async function updateCommandInternal(
     const installKey = captureUpdateCommandExecutorAuthority(fence).installKey;
     assertUpdatePackageActivationAdmission(installKey, { serviceRoot: managedServiceRoot });
     preUpdatePluginInstallRecords = await prepareMutableUpdateRuntime(env, fence);
-    await retainRuntime({
+    const retentionStartedAt = Date.now();
+    const retentionStep = {
+      name: "updater-runtime-retention",
+      command: "retain updater runtime",
+      index: 0,
+      total: 0,
+    };
+    progress.onStepStart?.(retentionStep);
+    const retention = await retainRuntime({
       mutationRoots: [root],
       timeoutMs: updateStepTimeoutMs,
       assertCurrent: () => fence.assertCurrent(),
+    });
+    progress.onStepComplete?.({
+      ...retentionStep,
+      durationMs: Date.now() - retentionStartedAt,
+      exitCode: 0,
+      diagnostics: retention ? [JSON.stringify(retention)] : undefined,
     });
     mutableUpdatePrepared = true;
   };

@@ -21,6 +21,12 @@ describe("Windows CI whole-file placement", () => {
     const inventory = [1, 2].flatMap((part) =>
       scripts[`test:windows:ci:${part}`].slice(command.length + 1).split(" "),
     );
+    expect(inventory).toEqual(
+      expect.arrayContaining([
+        "src/cli/update-cli/update-command-readiness.windows.test.ts",
+        "src/daemon/schtasks-runtime-probe.windows.test.ts",
+      ]),
+    );
     const shards = createWindowsTestShards(scripts);
     expect(shards).toHaveLength(5);
     const compareFiles = (a: string, b: string) => a.localeCompare(b);

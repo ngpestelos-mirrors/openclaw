@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import fs, { mkdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { flushLogger, setLoggerOverride } from "../logging/logger.js";
+import { loggingState } from "../logging/state.js";
 import {
   captureRuntimeWorkerSource,
   withRuntimeWorkerGeneration,
@@ -45,7 +48,20 @@ it.each([false, true])(
     });
     try {
       const result = withRetainedUpdateRuntime(moduleUrl, async (retain) => {
-        await retain({ mutationRoots: [root], timeoutMs: 30_000, assertCurrent() {} });
+        const metrics = await retain({
+          mutationRoots: [root],
+          timeoutMs: 30_000,
+          assertCurrent() {},
+        });
+        assert.ok(metrics);
+        expect(metrics.inventoryMs).toBeGreaterThanOrEqual(0);
+        expect(metrics.materializationMs).toBeGreaterThanOrEqual(0);
+        expect(metrics.linked + metrics.copied).toBe(6);
+        expect(metrics.entries).toBeGreaterThan(6);
+        expect(metrics.estimatedBytes).toBeGreaterThanOrEqual(metrics.entries * 4096);
+        expect(
+          await retain({ mutationRoots: [root], timeoutMs: 30_000, assertCurrent() {} }),
+        ).toBeUndefined();
         denyRemoval = true;
         if (failed) {
           throw original;
@@ -187,7 +203,20 @@ it.each(["npm", "pnpm", "pnpm-workspace", "git", "git-linked"] as const)(
     let retainedStore: SqliteWorkerStore<Operations> | undefined;
     let acceptedWrite: Promise<string[]> | undefined;
     await withRetainedUpdateRuntime(moduleUrl, async (retain) => {
-      await retain({ mutationRoots: [root], timeoutMs: 30_000, assertCurrent() {} });
+      const metrics = await retain({
+        mutationRoots: [root],
+        timeoutMs: 30_000,
+        assertCurrent() {},
+      });
+      assert.ok(metrics);
+      expect(metrics.inventoryMs).toBeGreaterThanOrEqual(0);
+      expect(metrics.materializationMs).toBeGreaterThanOrEqual(0);
+      expect(metrics.linked + metrics.copied).toBe(6);
+      expect(metrics.entries).toBeGreaterThan(6);
+      expect(metrics.estimatedBytes).toBeGreaterThanOrEqual(metrics.entries * 4096);
+      expect(
+        await retain({ mutationRoots: [root], timeoutMs: 30_000, assertCurrent() {} }),
+      ).toBeUndefined();
       const source = captureRuntimeWorkerSource(resolveRuntimeWorkerUrl(worker));
       retainedPath = fileURLToPath(source.moduleUrl);
       expect(retainedPath).not.toBe(path.join(root, "dist/state/store.js"));
@@ -240,3 +269,45 @@ it.each(["npm", "pnpm", "pnpm-workspace", "git", "git-linked"] as const)(
     ]);
   },
 );
+
+it("records why the actual retained runtime remains when its worker cannot settle", async () => {
+  const base = tempDirs.make("retained-unsettled-reason-");
+  const root = await fixture(base, "npm");
+  const moduleUrl = pathToFileURL(path.join(root, "dist/updater.mjs"));
+  const previous = loggingState.overrideSettings;
+  const logPath = path.join(base, "cleanup.log");
+  const failure = new Error("native close unconfirmed");
+  const tmp = vi.spyOn(os, "tmpdir").mockReturnValue(base);
+  let retained: string | undefined;
+  try {
+    setLoggerOverride({ level: "warn", consoleLevel: "silent", file: logPath });
+    await expect(
+      withRetainedUpdateRuntime(moduleUrl.href, async (retain) => {
+        await retain({ mutationRoots: [root], timeoutMs: 30000, assertCurrent() {} });
+        const directory = (await fs.readdir(base)).find((name) =>
+          name.startsWith("openclaw-update-runtime-"),
+        );
+        assert.ok(directory);
+        retained = path.join(base, directory);
+        const { runtimeGeneration } = captureRuntimeWorkerSource(moduleUrl);
+        assert.ok(runtimeGeneration);
+        runtimeGeneration.retain({}, async () => {
+          throw failure;
+        });
+      }),
+    ).rejects.toMatchObject({ errors: [failure] });
+    assert.ok(retained);
+    expect((await stat(retained)).isDirectory()).toBe(true);
+    await flushLogger();
+    expect(await readFile(logPath, "utf8")).toContain(
+      JSON.stringify(
+        "Runtime retained at " +
+          retained +
+          ": retained updater workers did not settle; keep it until the workers stop",
+      ),
+    );
+  } finally {
+    tmp.mockRestore();
+    setLoggerOverride(previous as Parameters<typeof setLoggerOverride>[0]);
+  }
+});
