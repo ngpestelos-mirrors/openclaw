@@ -467,7 +467,7 @@ export function createManagedReloadSecretHandlers(options: {
           applicationStatus = await applyHotReload(plan, prepared.config, publication);
         }
       } catch (err) {
-        // Failed cleanup and committed replacements must not retry stale preparation.
+        // A direct cause survives only a completed, uncommitted plugin rollback.
         const cause =
           err instanceof PluginRuntimeApplicationError && !err.details.committed ? err.cause : err;
         if (cause instanceof GatewayHotReloadStaleSecretsError) {

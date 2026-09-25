@@ -183,55 +183,6 @@ async function createReload(
 }
 
 describe("managed reload authored source", () => {
-  it.each(["rollback", "cleanup failure", "committed"] as const)(
-    "retries stale plugin secrets only after an uncommitted clean rollback (%s)",
-    async (outcome) => {
-      const commit = vi.fn(async () => {});
-      const cleanupFailure = new Error("candidate cleanup failed");
-      const beforePublication = vi.fn(async () => {
-        if (outcome !== "committed" && beforePublication.mock.calls.length === 1) {
-          const current = getActiveSecretsRuntimeSnapshotState();
-          const source = getRuntimeConfigSourceSnapshot();
-          assert(current && source);
-          // A concurrent refresh advances ownership after this candidate was prepared.
-          activateSecretsRuntimeSnapshotWithSource(current, source);
-        }
-      });
-      const afterCommit = vi.fn(() => {
-        if (outcome === "committed" && afterCommit.mock.calls.length === 1) {
-          throw new GatewayHotReloadStaleSecretsError();
-        }
-      });
-      const { initial, next, ownership, applyHotReload, run } = await createReload(
-        commit,
-        beforePublication,
-        { afterCommit, ...(outcome === "cleanup failure" ? { cleanupFailure } : {}) },
-      );
-      const result = await run().catch((error: unknown) => error);
-      if (outcome === "rollback") {
-        expect(result).toBe("applied");
-      } else {
-        assert(result instanceof PluginRuntimeApplicationError);
-        expect(result.details.committed).toBe(outcome === "committed");
-        if (outcome === "cleanup failure") {
-          assert(result.cause instanceof AggregateError);
-          expect(result.cause.errors).toEqual([
-            expect.any(GatewayHotReloadStaleSecretsError),
-            cleanupFailure,
-          ]);
-        } else {
-          expect(result.cause).toBeInstanceOf(GatewayHotReloadStaleSecretsError);
-        }
-      }
-      expect(applyHotReload).toHaveBeenCalledTimes(outcome === "rollback" ? 2 : 1);
-      expect(commit).toHaveBeenCalledTimes(outcome === "cleanup failure" ? 0 : 1);
-      expect(ownership.markRuntimeCommitted).toHaveBeenCalledTimes(
-        outcome === "cleanup failure" ? 0 : 1,
-      );
-      expectAuthoredSource(outcome === "cleanup failure" ? initial.source : next.source);
-    },
-  );
-
   it.each([false, true])(
     "commits the exact target before publication (hook fails: %s)",
     async (fails) => {
@@ -424,6 +375,60 @@ describe("managed reload authored source", () => {
     expect(getActiveSecretsRuntimeSnapshotRevision()).toBe(revision);
     expectAuthoredSource(initial.source);
   });
+
+  it.each(["direct", "plugin restored", "plugin committed", "plugin cleanup failed"] as const)(
+    "retries stale secret publication only after safe recovery: %s",
+    async (recovery) => {
+      const committed = recovery === "plugin committed";
+      const cleanupFailed = recovery === "plugin cleanup failed";
+      const refreshed = configPair("openclaw");
+      refreshed.source.models.providers.openai.models[0]!.name = "Refreshed model";
+      refreshed.config.models!.providers!.openai!.models[0]!.name = "Refreshed model";
+      const snapshot = await prepare(refreshed.config);
+      const commit = vi.fn(async () => {});
+      const cleanupFailure = new Error("candidate cleanup failed");
+      const beforePublication = vi.fn(async () => {
+        if (!committed && beforePublication.mock.calls.length === 1) {
+          activateSecretsRuntimeSnapshotWithSource(snapshot, refreshed.source);
+        }
+      });
+      const afterCommit = vi.fn(() => {
+        if (committed && afterCommit.mock.calls.length === 1) {
+          throw new GatewayHotReloadStaleSecretsError();
+        }
+      });
+      const { next, ownership, applyHotReload, run } = await createReload(
+        commit,
+        beforePublication,
+        recovery === "direct"
+          ? undefined
+          : { afterCommit, ...(cleanupFailed ? { cleanupFailure } : {}) },
+      );
+      const result = await run().catch((error: unknown) => error);
+      if (cleanupFailed || committed) {
+        assert(result instanceof PluginRuntimeApplicationError);
+        expect(result.details.committed).toBe(committed);
+        if (cleanupFailed) {
+          assert(result.cause instanceof AggregateError);
+          expect(result.cause.errors).toEqual([
+            expect.any(GatewayHotReloadStaleSecretsError),
+            cleanupFailure,
+          ]);
+          expect(getRuntimeConfigSnapshot()?.models?.providers?.openai?.models[0]?.name).toBe(
+            "Refreshed model",
+          );
+        } else {
+          expect(result.cause).toBeInstanceOf(GatewayHotReloadStaleSecretsError);
+        }
+      } else {
+        expect(result).toBe("applied");
+      }
+      expect(applyHotReload).toHaveBeenCalledTimes(cleanupFailed || committed ? 1 : 2);
+      expect(commit).toHaveBeenCalledTimes(cleanupFailed ? 0 : 1);
+      expect(ownership.markRuntimeCommitted).toHaveBeenCalledTimes(cleanupFailed ? 0 : 1);
+      expectAuthoredSource(cleanupFailed ? refreshed.source : next.source);
+    },
+  );
 
   it("preserves generated model metadata across a successful hot reload", async () => {
     const { next, run } = await createReload(async () => {});
