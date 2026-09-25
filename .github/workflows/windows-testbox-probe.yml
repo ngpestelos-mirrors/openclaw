@@ -1266,6 +1266,15 @@ jobs:
           }
           exit 0
 
+      - name: Diagnose PowerShell context after settled fresh failure
+        if: ${{ always() && !cancelled() && inputs.installed_startup_package != '' && steps.native_schtasks_fresh.outcome == 'failure' && steps.native_cleanup_fresh.outcome == 'success' && steps.native_cleanup_fresh.outputs.owned_package_cleanup == 'true' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$NODE_BIN:$PATH"
+          node --import ./scripts/tsx.mjs src/daemon/schtasks.installed-powershell-context.test-support.mts .artifacts/windows-schtasks/installed-input.json
+
       - name: Retain installed cell proof fresh
         id: native_cell_proof_fresh
         if: ${{ always() && inputs.run_windows_ci && inputs.installed_startup_package != '' && contains(fromJSON('["success","failure","cancelled"]'), steps.native_prepare_fresh.outcome) }}
@@ -1503,6 +1512,7 @@ jobs:
           name: windows-schtasks-proof-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .artifacts/windows-schtasks/proof.json
+            .artifacts/windows-schtasks/powershell-context.json
             .artifacts/windows-schtasks/package-handoff.json
             .artifacts/windows-schtasks/installed-input.json*
             .artifacts/windows-schtasks/cells/*/*.json*

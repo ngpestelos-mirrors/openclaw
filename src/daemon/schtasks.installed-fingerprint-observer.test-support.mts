@@ -17,6 +17,8 @@ const reviewedFixturePaths = new Set([
   "src/daemon/schtasks.installed-fingerprint-observer.test.ts",
   "src/config/sessions/session-sharing-store.test.ts",
   ".github/workflows/windows-testbox-probe.yml",
+  "test/helpers/gateway/config-rpc-gateway.ts",
+  "src/daemon/schtasks.installed-powershell-context.test-support.mts",
 ]);
 
 /** The source observer may differ from the package only in these reviewed proof fixtures. */
