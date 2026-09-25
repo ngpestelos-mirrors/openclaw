@@ -26,6 +26,7 @@ import { codexTestTurnIds } from "./codex-app-server.test-fixtures.js";
 import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config.js";
 import * as elicitationBridge from "./elicitation-bridge.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
+import { mergeCodexThreadConfigs } from "./plugin-thread-config.js";
 import type { JsonObject, JsonValue } from "./protocol.js";
 import { createSandboxContext } from "./sandbox-exec-server.test-helpers.js";
 import { createCodexTestBindingStore } from "./session-binding.test-helpers.js";
@@ -1159,6 +1160,14 @@ describe("runCodexAppServerSideQuestion", () => {
         },
       };
       const savedAppConfig = structuredClone(nativeAppConfig);
+      const nativeConfig = {
+        apps: {
+          _default: { default_tools_approval_mode: "prompt", approvals_reviewer: "user" },
+          "ask-app": nativeAppConfig,
+          "auto-app": { default_tools_approval_mode: "prompt", approvals_reviewer: "auto_review" },
+          "true-app": { default_tools_approval_mode: "approve" },
+        },
+      };
       const client = createFakeClient({ completeTurn: rejectsReplay });
       const baseRequest = client.request.getMockImplementation()!;
       client.request.mockImplementation(async (method: string, requestParams?: unknown) => {
@@ -1213,7 +1222,7 @@ describe("runCodexAppServerSideQuestion", () => {
           if (outcome === "binding-changed") {
             readCodexAppServerBindingMock.mockReturnValue({ threadId: "replacement-thread" });
           }
-          return { config: { apps: { "ask-app": nativeAppConfig } }, layers: [] };
+          return { config: nativeConfig, layers: [] };
         }
         if (method === "config/batchWrite" || method === "config/value/write") {
           throw new Error("side-question admission cannot write saved app settings");
@@ -1341,7 +1350,13 @@ describe("runCodexAppServerSideQuestion", () => {
         ([method]) => method === "thread/fork",
       )?.[1] as Record<string, unknown> | undefined;
       expect(forkParams?.approvalsReviewer).toBe("auto_review");
-      const config = forkParams?.config as Record<string, unknown> | undefined;
+      const config = forkParams?.config as JsonObject | undefined;
+      expect(mergeCodexThreadConfigs(nativeConfig, config)?.apps).toMatchObject({
+        _default: { default_tools_approval_mode: "prompt", approvals_reviewer: "user" },
+        "auto-app": { default_tools_approval_mode: "prompt", approvals_reviewer: "auto_review" },
+        "true-app": { default_tools_approval_mode: "approve" },
+        "false-app": { destructive_enabled: false },
+      });
       expect(config).not.toHaveProperty("approvals_reviewer");
       expect(config?.["features.code_mode"]).toBe(true);
       expect(config?.apps).toEqual({
@@ -1369,19 +1384,16 @@ describe("runCodexAppServerSideQuestion", () => {
           enabled: true,
           destructive_enabled: true,
           open_world_enabled: true,
-          default_tools_approval_mode: "auto",
         },
         "false-app": {
           enabled: true,
           destructive_enabled: false,
           open_world_enabled: true,
-          default_tools_approval_mode: "auto",
         },
         "true-app": {
           enabled: true,
           destructive_enabled: true,
           open_world_enabled: true,
-          default_tools_approval_mode: "auto",
         },
       });
     },

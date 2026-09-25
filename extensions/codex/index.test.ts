@@ -101,6 +101,28 @@ describe("codex plugin", () => {
     });
   });
 
+  it.each([
+    { appServer: { networkProxy: { enabled: true, profileName: "" } } },
+    { appServer: { networkProxy: { enabled: true }, remoteWorkspaceRoot: " " } },
+    { appServer: { networkProxy: { enabled: true }, authToken: { unexpected: "private-value" } } },
+  ])("rejects invalid enabled network restrictions at plugin registration: %j", (pluginConfig) => {
+    const registerAgentHarness = vi.fn();
+    expect(() =>
+      plugin.register(
+        createTestPluginApi({
+          id: "codex",
+          name: "Codex",
+          source: "test",
+          config: explicitAgentConfig,
+          pluginConfig,
+          runtime: createCodexTestRuntime(),
+          registerAgentHarness,
+        }),
+      ),
+    ).toThrow("Invalid plugins.entries.codex.config.appServer.");
+    expect(registerAgentHarness).not.toHaveBeenCalled();
+  });
+
   it("does not select an agent or open plugin state while registering", () => {
     const openKeyedStore = vi.fn(() => {
       throw new Error("state is unavailable during registration");
