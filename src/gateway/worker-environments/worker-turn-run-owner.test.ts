@@ -17,8 +17,8 @@ import { getDiagnosticSessionActivitySnapshot } from "../../logging/diagnostic-r
 import { recoverStuckDiagnosticSession } from "../../logging/diagnostic-stuck-session-recovery.runtime.js";
 import {
   logSessionStateChange,
-  startDiagnosticHeartbeat,
-  stopDiagnosticHeartbeat,
+  startGatewayDiagnosticHeartbeat,
+  stopGatewayDiagnosticHeartbeat,
 } from "../../logging/diagnostic.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
@@ -153,7 +153,7 @@ describe("cloud worker run ownership", () => {
         sessionKey: SESSION_KEY,
         state: "processing",
       });
-      startDiagnosticHeartbeat(
+      startGatewayDiagnosticHeartbeat(
         createTestGatewayScheduler("fake-timers"),
         { diagnostics: { enabled: true } },
         {
@@ -241,7 +241,7 @@ describe("cloud worker run ownership", () => {
         ).toBeUndefined();
         expect(environments.destroy).not.toHaveBeenCalled();
       } finally {
-        stopDiagnosticHeartbeat();
+        stopGatewayDiagnosticHeartbeat();
         setDiagnosticsEnabledForProcess(previousDiagnostics);
         finishLaunch.resolve();
         operation.abortByUser();

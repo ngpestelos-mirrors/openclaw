@@ -468,10 +468,9 @@ describe("registered session PR subscriptions", () => {
           if (delayed) {
             await f.clock.advanceBy(10_000);
             await entered.promise;
-            expect(
-              frames(peer.socket),
-              "no refresh result before the held loader settles",
-            ).toEqual([]);
+            expect(frames(peer.socket), "no refresh result before the held loader settles").toEqual(
+              [],
+            );
           }
           held.resolve(snapshot);
           await Promise.all([f.subscriptions.pollNow(), ...refreshes]);

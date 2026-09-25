@@ -3,8 +3,8 @@
  */
 import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
-  startDiagnosticHeartbeat as startOwnedDiagnosticHeartbeat,
-  stopDiagnosticHeartbeat as stopOwnedDiagnosticHeartbeat,
+  startGatewayDiagnosticHeartbeat,
+  stopGatewayDiagnosticHeartbeat,
 } from "../logging/diagnostic.js";
 import { getBoundLegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 
@@ -12,18 +12,18 @@ let standaloneDiagnosticScheduler: GatewayScheduler | undefined;
 
 /** Standalone SDK callers own this schedule; Gateway plugins use their bound host. */
 export function startDiagnosticHeartbeat(
-  config?: Parameters<typeof startOwnedDiagnosticHeartbeat>[1],
-  opts?: Parameters<typeof startOwnedDiagnosticHeartbeat>[2],
+  config?: Parameters<typeof startGatewayDiagnosticHeartbeat>[1],
+  opts?: Parameters<typeof startGatewayDiagnosticHeartbeat>[2],
 ): void {
   const host = getBoundLegacyPluginSdkResourceHost();
   const scheduler = host
     ? host.scheduler
     : (standaloneDiagnosticScheduler ??= new GatewayScheduler());
-  startOwnedDiagnosticHeartbeat(scheduler, config, opts);
+  startGatewayDiagnosticHeartbeat(scheduler, config, opts);
 }
 
 export function stopDiagnosticHeartbeat(): void {
-  stopOwnedDiagnosticHeartbeat();
+  stopGatewayDiagnosticHeartbeat();
   const scheduler = standaloneDiagnosticScheduler;
   standaloneDiagnosticScheduler = undefined;
   void scheduler?.stop();

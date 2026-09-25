@@ -161,10 +161,8 @@ vi.mock("../../infra/update-check-lifecycle.js", async (importOriginal) => {
 });
 
 vi.mock("../../infra/update-campaign.js", () => ({
-  UpdateCampaignController: class {
-    constructor() {
-      throw new Error("update.run must consume its existing campaign owner");
-    }
+  UpdateCampaignController: function unexpectedCampaignConstruction() {
+    throw new Error("update.run must consume its existing campaign owner");
   },
 }));
 

@@ -844,7 +844,7 @@ function logSessionAttention(
 let heartbeatJob: GatewayScheduledJob | undefined;
 let lastDiagnosticHeartbeatTickAt: number | undefined;
 
-export function startDiagnosticHeartbeat(
+export function startGatewayDiagnosticHeartbeat(
   scheduler: GatewayScheduler,
   config?: OpenClawConfig,
   opts?: StartDiagnosticHeartbeatOptions,
@@ -1031,7 +1031,7 @@ export function startDiagnosticHeartbeat(
   });
 }
 
-export function stopDiagnosticHeartbeat() {
+export function stopGatewayDiagnosticHeartbeat() {
   stopDiagnosticGcObserver();
   heartbeatJob?.cancel();
   heartbeatJob = undefined;
@@ -1044,7 +1044,7 @@ export function stopDiagnosticHeartbeat() {
 }
 
 function resetDiagnosticStateForTest(): void {
-  stopDiagnosticHeartbeat();
+  stopGatewayDiagnosticHeartbeat();
   resetDiagnosticSessionRecoveryCoordinatorForTest();
   resetDiagnosticSessionStateForTest();
   resetDiagnosticActivityForTest();

@@ -37,7 +37,11 @@ async function main() {
   } finally {
     scheduler.beginClose();
     clearSink();
-    await recorder.stop().finally(() => scheduler.stop());
+    try {
+      await recorder.stop();
+    } finally {
+      await scheduler.stop();
+    }
   }
 }
 

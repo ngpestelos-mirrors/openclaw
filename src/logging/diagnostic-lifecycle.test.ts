@@ -22,8 +22,8 @@ import {
   logMessageQueued,
   logSessionStateChange,
   logWebhookReceived,
-  startDiagnosticHeartbeat,
-  stopDiagnosticHeartbeat,
+  startGatewayDiagnosticHeartbeat,
+  stopGatewayDiagnosticHeartbeat,
 } from "./diagnostic.js";
 import { resetDiagnosticStateForTest } from "./diagnostic.test-support.js";
 import { createDiagnosticMessageLifecycle } from "./message-lifecycle.js";
@@ -48,7 +48,7 @@ it("reports the shared next wake and coalesces diagnostic heartbeats after sleep
   });
   try {
     scheduler.schedule({ id: "pending-work", atMs: startedAt + 60_000, run: () => {} });
-    startDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
+    startGatewayDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
     logMessageQueued({ sessionKey: "diagnostic-schedule", source: "test" });
     await clock.advanceBy(30_000);
     expect(debug).toHaveBeenCalledWith(
@@ -57,7 +57,7 @@ it("reports the shared next wake and coalesces diagnostic heartbeats after sleep
     await clock.advanceBy(120_000);
     await waitForDiagnosticEventsDrained();
     expect(heartbeats).toHaveLength(2);
-    stopDiagnosticHeartbeat();
+    stopGatewayDiagnosticHeartbeat();
     await clock.advanceBy(120_000);
     await waitForDiagnosticEventsDrained();
     expect(heartbeats).toHaveLength(2);
@@ -79,7 +79,7 @@ it("preserves independent tool-loop and poll-backoff policy when diagnostic obse
   expect(recordCommandPoll(state, "fixture-command", false)).toBe(5_000);
   expect(recordCommandPoll(state, "fixture-command", false)).toBe(10_000);
   setDiagnosticsEnabledForProcess(false);
-  stopDiagnosticHeartbeat();
+  stopGatewayDiagnosticHeartbeat();
   const current = getDiagnosticSessionState(session);
   expect(detectToolCallLoop(current, "read", args, { enabled: true })).toEqual(before);
   expect(recordCommandPoll(current, "fixture-command", false)).toBe(30_000);
@@ -93,16 +93,16 @@ it("retires interrupted diagnostic observations before re-enable without revivin
   const unsubscribe = onDiagnosticEvent((event) => events.push(event));
   const session = { sessionKey: "diagnostic-lifecycle", sessionId: "diagnostic-lifecycle" };
   try {
-    startDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
+    startGatewayDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
     logMessageQueued({ ...session, source: "test" });
     logSessionStateChange({ ...session, state: "processing" });
     const generation = peekDiagnosticSessionState(session)?.generation;
     expect(generation).toBeTypeOf("number");
     setDiagnosticsEnabledForProcess(false);
-    stopDiagnosticHeartbeat();
+    stopGatewayDiagnosticHeartbeat();
     logSessionStateChange({ ...session, state: "idle" });
     setDiagnosticsEnabledForProcess(true);
-    startDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
+    startGatewayDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
     logWebhookReceived({ channel: "test" });
     await clock.advanceBy(30_000);
     await waitForDiagnosticEventsDrained();

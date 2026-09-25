@@ -253,9 +253,9 @@ export function createControlUiSessionPullRequestSubscriptions(
       if (subscription?.size === 0) {
         // Pruning an old watch does not retire a newer replacement still preparing its keys.
         subscriptions.delete(connId);
-        if (subscriptions.size === 0 && timer !== null) {
-          clearTimer(timer);
-          timer = null;
+        if (subscriptions.size === 0) {
+          pollJob?.cancel();
+          pollJob = undefined;
         }
       }
       return undefined;

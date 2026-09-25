@@ -12,7 +12,7 @@ import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
-import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "./diagnostic.js";
+import { startGatewayDiagnosticHeartbeat, stopGatewayDiagnosticHeartbeat } from "./diagnostic.js";
 import { resetDiagnosticStateForTest } from "./diagnostic.test-support.js";
 
 const native = vi.hoisted(() => {
@@ -50,7 +50,8 @@ it("owns demand, queued GC batches, and disable/re-enable through the existing h
   const scheduler = createTestGatewayScheduler(clock.clock);
   const now = vi.spyOn(performance, "now").mockReturnValue(100);
   const durations: number[] = [];
-  const start = () => startDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
+  const start = () =>
+    startGatewayDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
   const publicUnsubscribe = onDiagnosticEvent(() => {});
   let unsubscribe = () => {};
   try {
@@ -87,7 +88,7 @@ it("owns demand, queued GC batches, and disable/re-enable through the existing h
 
     setDiagnosticsEnabledForProcess(false);
     first.deliver([{ startTime: 150, duration: 99 }]);
-    stopDiagnosticHeartbeat();
+    stopGatewayDiagnosticHeartbeat();
     expect(first.disconnect).toHaveBeenCalledTimes(1);
     now.mockReturnValue(200);
     setDiagnosticsEnabledForProcess(true);
@@ -104,7 +105,7 @@ it("owns demand, queued GC batches, and disable/re-enable through the existing h
     expect(hasInternalDiagnosticEventInterest("diagnostic.gc")).toBe(false);
     await clock.advanceBy(30_000);
     expect(native.observers[1]!.disconnect).toHaveBeenCalledTimes(1);
-    stopDiagnosticHeartbeat();
+    stopGatewayDiagnosticHeartbeat();
     expect(native.observers[1]!.disconnect).toHaveBeenCalledTimes(1);
   } finally {
     unsubscribe();

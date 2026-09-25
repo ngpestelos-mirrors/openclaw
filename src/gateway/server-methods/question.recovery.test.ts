@@ -36,7 +36,7 @@ import {
   setDiagnosticsEnabledForProcess,
 } from "../../infra/diagnostic-events.js";
 import { recoverStuckDiagnosticSession } from "../../logging/diagnostic-stuck-session-recovery.runtime.js";
-import { diagnosticLogger, startDiagnosticHeartbeat } from "../../logging/diagnostic.js";
+import { diagnosticLogger, startGatewayDiagnosticHeartbeat } from "../../logging/diagnostic.js";
 import { resetDiagnosticStateForTest } from "../../logging/diagnostic.test-support.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -199,7 +199,7 @@ it.each(["secrets", "ask_user"] as const)(
   async (tool) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const recovery = vi.fn(recoverStuckDiagnosticSession);
-      startDiagnosticHeartbeat(
+      startGatewayDiagnosticHeartbeat(
         createTestGatewayScheduler("fake-timers"),
         {},
         { recoverStuckSession: recovery },
@@ -270,7 +270,7 @@ it.each(["resumed", "replacement"] as const)(
           }
         };
       }
-      startDiagnosticHeartbeat(
+      startGatewayDiagnosticHeartbeat(
         createTestGatewayScheduler("fake-timers"),
         {},
         {
@@ -316,7 +316,7 @@ it("keeps resumed question work alive when attention logging settles the questio
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const recoveryAtMs = Date.now() + 900_000;
     const recovery = vi.fn(recoverStuckDiagnosticSession);
-    startDiagnosticHeartbeat(
+    startGatewayDiagnosticHeartbeat(
       createTestGatewayScheduler("fake-timers"),
       {},
       { recoverStuckSession: recovery, sampleLiveness: () => null },
@@ -629,7 +629,7 @@ it.each(["pending", "answered", "cancelled", "expired", "requester-inactive"] as
       await gate;
       return recoverStuckDiagnosticSession(params);
     });
-    startDiagnosticHeartbeat(
+    startGatewayDiagnosticHeartbeat(
       createTestGatewayScheduler("fake-timers"),
       {},
       { recoverStuckSession: recovery },

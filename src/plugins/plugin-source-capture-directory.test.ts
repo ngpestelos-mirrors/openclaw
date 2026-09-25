@@ -14,10 +14,8 @@ import {
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import { retainGatewayPluginMetadata } from "./plugin-metadata-lifecycle.js";
 import { withPluginSourceCaptureDirectory } from "./plugin-package-metadata-capture.js";
-import {
-  createPluginSourceCaptureRoot,
-  sweepPluginSourceCaptureDirectories,
-} from "./plugin-source-capture-directory.js";
+import { createPluginSourceCaptureRoot } from "./plugin-source-capture-directory.js";
+import { sweepPluginSourceCapturesForTest } from "./plugin-source-capture-directory.test-support.js";
 import { pluginProcessRuntimeEntrypoints } from "./process-runtime.test-support.js";
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
@@ -243,7 +241,7 @@ it("metadata boot preserves recent captures and legacy files with another produc
     await scheduler.stop();
     await metadata.close();
     active.dispose();
-    await sweepPluginSourceCaptureDirectories(stateDir);
+    await sweepPluginSourceCapturesForTest(stateDir);
   }
 }, 30_000);
 
@@ -257,13 +255,13 @@ it.each([false, true])(
       age(child.instanceRoot);
       const metadata = retainGatewayPluginMetadata(createTestGatewayScheduler());
       try {
-        await sweepPluginSourceCaptureDirectories(stateDir);
+        await sweepPluginSourceCapturesForTest(stateDir);
         expect(await child.read()).toBe(capturedSource.trim());
         expect(fs.existsSync(child.captureRoot)).toBe(true);
         expect(fs.readFileSync(child.capturedFile, "utf8")).toBe(capturedSource);
         await child.stop();
         expect(fs.readFileSync(child.capturedFile, "utf8")).toBe(capturedSource);
-        await sweepPluginSourceCaptureDirectories(stateDir);
+        await sweepPluginSourceCapturesForTest(stateDir);
         expect(fs.existsSync(child.instanceRoot)).toBe(false);
         expect(fs.existsSync(child.captureRoot)).toBe(false);
       } finally {
@@ -292,7 +290,7 @@ it.each(["payload", "instance"])(
       await remove(target, options);
     });
     try {
-      await sweepPluginSourceCaptureDirectories(stateDir);
+      await sweepPluginSourceCapturesForTest(stateDir);
       expect(fs.existsSync(path.join(orphan.instanceRoot, "owner.sqlite"))).toBe(true);
       if (stage === "payload") {
         expect(fs.readFileSync(orphan.capturedFile, "utf8")).toBe(capturedSource);
@@ -303,7 +301,7 @@ it.each(["payload", "instance"])(
       fault.mockRestore();
     }
     age(orphan.instanceRoot);
-    await sweepPluginSourceCaptureDirectories(stateDir);
+    await sweepPluginSourceCapturesForTest(stateDir);
     expect(fs.existsSync(orphan.instanceRoot)).toBe(false);
   },
   30_000,
@@ -323,7 +321,7 @@ it("keeps hourly reclamation on a live metadata owner when its siblings are clos
   const siblingScheduler = createTestGatewayScheduler(siblingTime.clock);
   const sibling = retainGatewayPluginMetadata(siblingScheduler);
   try {
-    await sweepPluginSourceCaptureDirectories(stateDir);
+    await sweepPluginSourceCapturesForTest(stateDir);
     expect(fs.readFileSync(orphan.capturedFile, "utf8")).toBe(capturedSource);
     fencedScheduler.beginClose();
     await siblingScheduler.stop();
@@ -335,7 +333,7 @@ it("keeps hourly reclamation on a live metadata owner when its siblings are clos
     await sibling.close();
     await fenced.close();
     await metadata.close();
-    await sweepPluginSourceCaptureDirectories(stateDir);
+    await sweepPluginSourceCapturesForTest(stateDir);
   }
 }, 30_000);
 
@@ -428,7 +426,7 @@ it("retains live capture bytes until both metadata owners and the artifact relea
       artifact.resolve(path.join(source, "index.cjs")),
     );
     age(instanceRoot);
-    await sweepPluginSourceCaptureDirectories(stateDir);
+    await sweepPluginSourceCapturesForTest(stateDir);
     expect(fs.readFileSync(artifact.resolve(path.join(source, "index.cjs")), "utf8")).toBe(
       capturedSource,
     );
@@ -438,7 +436,7 @@ it("retains live capture bytes until both metadata owners and the artifact relea
       capturedSource,
     );
     await second.close();
-    await sweepPluginSourceCaptureDirectories(stateDir);
+    await sweepPluginSourceCapturesForTest(stateDir);
     expect(fs.readFileSync(artifact.resolve(path.join(source, "index.cjs")), "utf8")).toBe(
       capturedSource,
     );
@@ -466,7 +464,7 @@ it("leaves explicit worker capture directories under their caller's custody", as
     age(artifact.boundaryRoot);
     const metadata = retainGatewayPluginMetadata(createTestGatewayScheduler());
     try {
-      await sweepPluginSourceCaptureDirectories(stateDir);
+      await sweepPluginSourceCapturesForTest(stateDir);
       expect(path.dirname(artifact.boundaryRoot)).toBe(workerRoot);
       expect(fs.readFileSync(artifact.resolve(path.join(source, "index.cjs")), "utf8")).toBe(
         capturedSource,
@@ -514,7 +512,7 @@ it("keeps metadata boot and source capture usable when the state directory canno
   let artifact: ReturnType<typeof capturePluginGenerationArtifact> | undefined;
   let instanceRoot: string | undefined;
   try {
-    await sweepPluginSourceCaptureDirectories(stateDir);
+    await sweepPluginSourceCapturesForTest(stateDir);
     artifact = capturePluginGenerationArtifact(source);
     instanceRoot = path.dirname(path.dirname(artifact.boundaryRoot));
     expect(fs.readFileSync(artifact.resolve(path.join(source, "index.cjs")), "utf8")).toBe(
@@ -598,18 +596,18 @@ it("summarizes inaccessible coordinators with backoff while continuing cleanup r
     }
     return lstat(target, options);
   });
-  await sweepPluginSourceCaptureDirectories(stateDir);
+  await sweepPluginSourceCapturesForTest(stateDir);
   expect(warning).toHaveBeenCalledTimes(1);
   expect(String(warning.mock.calls[0]?.[0])).toContain("100 cleanup failure(s)");
-  await sweepPluginSourceCaptureDirectories(stateDir);
+  await sweepPluginSourceCapturesForTest(stateDir);
   expect(warning).toHaveBeenCalledTimes(1);
   vi.setSystemTime(Date.now() + hour);
-  await sweepPluginSourceCaptureDirectories(stateDir);
+  await sweepPluginSourceCapturesForTest(stateDir);
   expect(warning).toHaveBeenCalledTimes(2);
   vi.setSystemTime(Date.now() + hour);
-  await sweepPluginSourceCaptureDirectories(stateDir);
+  await sweepPluginSourceCapturesForTest(stateDir);
   expect(warning).toHaveBeenCalledTimes(2);
   fault.mockRestore();
-  await sweepPluginSourceCaptureDirectories(stateDir);
+  await sweepPluginSourceCapturesForTest(stateDir);
   expect(fs.readdirSync(root)).toEqual([]);
 });
