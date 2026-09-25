@@ -1,4 +1,5 @@
 // Host-owned SQLite leases serialize trusted work across processes.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { isSqliteLockError } from "../infra/sqlite-error-diagnostics.js";
@@ -134,6 +135,7 @@ async function runStateLeaseOwnerInScope<T>(
   const heartbeatMs = Math.max(250, Math.min(30_000, Math.floor(validated.leaseMs / 3)));
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let runTimerRenewal = AsyncLocalStorage.snapshot();
   const abortLost = (cause?: unknown) => {
     if (!leaseLost.signal.aborted) {
       leaseLost.abort(
@@ -354,11 +356,14 @@ async function runStateLeaseOwnerInScope<T>(
         assertOperationOwned();
       } else {
         renewAndSchedule();
+        // A caller can enter offline publication after acquiring this lease.
+        // Carry its verified authority into the existing timer without changing cadence.
+        runTimerRenewal = AsyncLocalStorage.snapshot();
       }
     };
     const renewFromTimer = () => {
       try {
-        renewAndSchedule();
+        runTimerRenewal(renewAndSchedule);
       } catch (error) {
         if (
           error instanceof OpenClawStateLeaseError &&

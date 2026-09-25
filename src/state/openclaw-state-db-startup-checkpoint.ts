@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import { assertStateDatabaseAccessAllowed } from "../infra/gateway-state-owner.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync-cache-state.js";
-import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "../infra/node-sqlite.js";
 import { setSqliteBusyTimeout } from "../infra/sqlite-busy-timeout.js";
 import { quarantineOrphanedSqliteSidecars } from "../infra/sqlite-files.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
@@ -24,7 +25,7 @@ import {
 import { resolveDatabasePath } from "./openclaw-state-db-maintenance.js";
 import { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-readonly.js";
-import { ensureColumn } from "./openclaw-state-db-schema-helpers.js";
+import { ensureColumn, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 import { assertOpenClawStateSchemaRepairAllowed } from "./openclaw-state-db-schema-policy.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import { assertOpenClawStateWriteAllowed } from "./openclaw-state-ownership.js";
@@ -127,6 +128,23 @@ function ensureStartupMigrationCheckpointSchema(
   );
 }
 
+function hasStartupMigrationCheckpointSchema(db: DatabaseSync): boolean {
+  const objects = db // sqlite-allow-raw -- Checkpoint open admission distinguishes row access from additive schema repair.
+    .prepare(`SELECT type, name FROM sqlite_schema WHERE name IN (
+      'schema_meta', 'state_leases', 'idx_state_leases_expiry', 'idx_state_leases_owner'
+    )`)
+    .all();
+  const has = (type: string, name: string) =>
+    objects.some((row) => row.type === type && row.name === name);
+  return (
+    has("table", "schema_meta") &&
+    has("table", "state_leases") &&
+    has("index", "idx_state_leases_expiry") &&
+    has("index", "idx_state_leases_owner") &&
+    tableHasColumn(db, "schema_meta", "app_version")
+  );
+}
+
 export function withOpenClawStateStartupCheckpointConnection<T>(
   callback: (db: DatabaseSync) => T,
   options: OpenClawStateDatabaseOptions & { atomic?: boolean },
@@ -140,44 +158,60 @@ export function withOpenClawStateStartupCheckpointConnection<T>(
   const env = options.env ?? process.env;
   const pathname = resolveDatabasePath(options);
   assertOpenClawStateSchemaRepairAllowed(pathname);
-  return withStateDatabaseSchemaMaintenance({ databasePath: pathname }, () => {
+  const open = (schemaOwned: boolean): T => {
+    assertStateDatabaseAccessAllowed(pathname);
+    const existing = existsSync(pathname);
+    if (!existing && !schemaOwned) {
+      return withStateDatabaseSchemaMaintenance({ databasePath: pathname }, () => open(true));
+    }
     const initialization = prepareStateDatabaseInitialization(
       pathname,
       env,
       options.initializationAgentPaths,
     );
-    quarantineOrphanedSqliteSidecars(pathname);
-    if (!existsSync(pathname)) {
+    if (!existing) {
+      quarantineOrphanedSqliteSidecars(pathname);
       ensureOpenClawStatePermissions(pathname, env);
     }
-    const db = openNodeSqliteDatabase(pathname);
+    const db = openNodeSqliteDatabase(existing ? resolveExistingSqliteFileUri(pathname) : pathname);
     let ownershipAdmitted = false;
+    let result: { value: T } | undefined;
     try {
       setSqliteBusyTimeout(db, OPENCLAW_SQLITE_BUSY_TIMEOUT_MS);
       assertOpenClawStateWriteAllowed({ database: db, databasePath: pathname, env });
       ownershipAdmitted = true;
       ensureOpenClawStatePermissions(pathname, env);
-      configureSqlitePreSchemaPragmas(db, {
-        busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-      });
+      if (schemaOwned) {
+        configureSqlitePreSchemaPragmas(db, {
+          busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+        });
+      }
       const operate = () => {
         assertSqliteIntegrity(db, pathname);
-        const schemaCookie = options.atomic ? readSqliteSchemaCookie(db) : undefined;
-        if (isUninitializedNativeStartupDatabase(db)) {
+        assertSupportedStateSchemaVersion(db, pathname);
+        const initialize = isUninitializedNativeStartupDatabase(db);
+        const needsSchema = initialize || !hasStartupMigrationCheckpointSchema(db);
+        if (needsSchema && !schemaOwned) {
+          return undefined;
+        }
+        const schemaCookie = options.atomic && needsSchema ? readSqliteSchemaCookie(db) : undefined;
+        if (initialize) {
           initializeCanonicalSchema(db, pathname, env, initialization);
         }
-        ensureStartupMigrationCheckpointSchema(db, pathname, env);
+        if (needsSchema) {
+          ensureStartupMigrationCheckpointSchema(db, pathname, env);
+        }
         // Bootstrap/additive repair is a separate mutation boundary. Only unchanged
         // schema can share the initial proof with a subsequent lease claim.
-        if (options.atomic && readSqliteSchemaCookie(db) !== schemaCookie) {
+        if (schemaCookie !== undefined && readSqliteSchemaCookie(db) !== schemaCookie) {
           assertSqliteIntegrity(db, pathname);
         }
-        return callback(db);
+        return { value: callback(db) };
       };
       // Inspection and conditional claim must see the same integrity-proven generation.
       // A deferred snapshot lets WAL writers proceed during verification. A changed
       // snapshot cannot upgrade to a writer, so no proof crosses an intervening commit.
-      return options.atomic
+      result = options.atomic
         ? runSqliteDeferredTransactionSync(db, operate, {
             busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
             databaseLabel: pathname,
@@ -190,7 +224,14 @@ export function withOpenClawStateStartupCheckpointConnection<T>(
         ensureOpenClawStatePermissions(pathname, env);
       }
     }
-  });
+    if (result) {
+      return result.value;
+    }
+    // No callback ran. Reopen and revalidate under schema ownership, retaining
+    // that owner until the atomic checkpoint transaction commits or rolls back.
+    return withStateDatabaseSchemaMaintenance({ databasePath: pathname }, () => open(true));
+  };
+  return open(false);
 }
 
 /** Admit only recognized native bootstrap; versioned state stays on the read-only path. */

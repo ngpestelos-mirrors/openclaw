@@ -101,7 +101,8 @@ export function createTaskRecord(
             throw new TaskCreateRejected();
           }
         },
-        deferCommit: publishTaskRegistryAfterCommit,
+        // The native mutation owner snapshots this projection for rollback; observers defer separately.
+        deferCommit: (publish) => publish(),
         onCommitted(commit) {
           if (commit.kind === "delivery") {
             taskDeliveryStates.set(commit.task.taskId, commit.deliveryState);
@@ -135,7 +136,9 @@ export function createTaskRecord(
             task: cloneTaskRecordForObserver(record),
           }));
           if (isTerminalTaskStatus(record.status)) {
-            void maybeDeliverTaskTerminalUpdate(taskId);
+            publishTaskRegistryAfterCommit(() => {
+              void maybeDeliverTaskTerminalUpdate(taskId);
+            });
           }
         },
       },

@@ -93,6 +93,15 @@ export async function withPluginLifecycleLease<T>(
         ? lease
         : {
             ...lease,
+            ...(lease.renew
+              ? {
+                  renew: () =>
+                    assertAuthority(() => {
+                      assertCurrent?.();
+                      lease.renew?.();
+                    }),
+                }
+              : {}),
             assertOwned: () =>
               assertAuthority(() => {
                 assertCurrent?.();
@@ -164,6 +173,7 @@ export async function withPluginLifecycleLease<T>(
       const pluginLease: PluginLifecycleLeaseContext = {
         databasePath,
         signal: lease.signal,
+        ...(lease.renew ? { renew: () => lease.renew?.() } : {}),
         assertOwned: () => lease.assertOwned(),
         assertOwnedInTransaction: (database) => lease.assertOwnedInTransaction(database),
       };

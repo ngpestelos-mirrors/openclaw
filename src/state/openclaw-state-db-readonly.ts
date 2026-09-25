@@ -114,10 +114,10 @@ export async function withOpenClawStateDatabaseReadSnapshot<T>(
   const controller = new AbortController();
   let closeSnapshotWork: ((reason: unknown) => void) | undefined;
   const run = async () => {
-    openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
     let admission: ReturnType<typeof captureOpenClawStateDatabaseReadAdmission>;
     let prepared: PreparedSqliteReadOnlyLocation;
     try {
+      openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
       admission = captureOpenClawStateDatabaseReadAdmission(pathname);
       prepared = await prepareSqliteReadOnlyLocation(pathname, {
         preserveSourceArtifacts: isArtifactPreservingStateRead(),

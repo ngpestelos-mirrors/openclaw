@@ -502,7 +502,12 @@ export async function acquireGatewayLock(
       waited && role === "gateway"
         ? `; waited ${Math.round(now() - startedAt)}ms for Gateway state ownership`
         : "";
-    throw new GatewayLockError(`failed to acquire gateway state ownership${waitHint}`, error);
+    const message = `failed to acquire gateway state ownership${waitHint}`;
+    const detail =
+      error instanceof GatewayStateOwnerContentionError
+        ? `${message}: ${error.message}. Stop the Gateway or wait for the current OpenClaw operation to finish, then retry.`
+        : message;
+    throw new GatewayLockError(detail, error);
   }
   if (waited && role === "gateway") {
     log.info(`Gateway state ownership acquired after ${((now() - startedAt) / 1000).toFixed(1)} s`);

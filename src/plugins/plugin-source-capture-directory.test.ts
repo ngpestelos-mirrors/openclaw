@@ -5,12 +5,14 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import * as nodeSqlite from "../infra/node-sqlite.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import { retainGatewayPluginMetadata } from "./plugin-metadata-lifecycle.js";
 import { withPluginSourceCaptureDirectory } from "./plugin-package-metadata-capture.js";
 import {
   createPluginSourceCaptureRoot,
+  retainPluginSourceCaptureInstance,
   sweepPluginSourceCaptureDirectories,
 } from "./plugin-source-capture-directory.js";
 import { pluginProcessRuntimeEntrypoints } from "./process-runtime.test-support.js";
@@ -448,6 +450,101 @@ it("retains live capture bytes until both metadata owners and the artifact relea
     }
   }
 });
+
+it.skipIf(process.platform === "win32").each([
+  { removed: "directory", closeFails: false },
+  { removed: "token", closeFails: false },
+  { removed: "directory", closeFails: true },
+])(
+  "finishes disposal after its $removed disappears, retaining failed close custody ($closeFails)",
+  async ({ removed, closeFails }) => {
+    const stateDir = temp.make("plugin-capture-disappeared-");
+    const open = nodeSqlite.openNodeSqliteDatabase;
+    let database: ReturnType<typeof open> | undefined;
+    const failure = new Error("Fixture native close is still pending");
+    if (closeFails) {
+      vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
+        const opened = open(...args);
+        database = opened;
+        vi.spyOn(opened, "close").mockImplementationOnce(() => {
+          throw failure;
+        });
+        return opened;
+      });
+    }
+    const instance = retainPluginSourceCaptureInstance(stateDir);
+    const capture = instance.createDirectory();
+    const root = path.dirname(path.dirname(capture));
+    const payload = path.join(capture, "index.cjs");
+    fs.writeFileSync(payload, capturedSource);
+    fs.rmSync(removed === "directory" ? root : path.join(root, "owner.sqlite"), {
+      recursive: true,
+    });
+    try {
+      if (closeFails) {
+        await expect(instance.releaseAsync()).rejects.toBe(failure);
+        expect(database?.isOpen).toBe(true);
+        expect(() => retainPluginSourceCaptureInstance(stateDir)).toThrow(
+          "Plugin source instance cleanup is incomplete",
+        );
+      }
+      await expect(instance.releaseAsync()).resolves.toBeUndefined();
+      if (closeFails) {
+        expect(database?.isOpen).toBe(false);
+        vi.restoreAllMocks();
+      }
+      if (removed === "directory") {
+        expect(fs.existsSync(root)).toBe(false);
+      } else {
+        expect(fs.readFileSync(payload, "utf8")).toBe(capturedSource);
+        expect(fs.existsSync(path.join(root, "owner.sqlite"))).toBe(false);
+      }
+      const successor = retainPluginSourceCaptureInstance(stateDir);
+      try {
+        expect(successor.createDirectory()).not.toBe(capture);
+      } finally {
+        await successor.releaseAsync();
+      }
+    } finally {
+      vi.restoreAllMocks();
+      await instance.releaseAsync();
+      await sweepPluginSourceCaptureDirectories(stateDir);
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32").each(["directory", "token"] as const)(
+  "preserves replacement bytes when an owned capture's %s changes before disposal",
+  async (replaced) => {
+    const stateDir = temp.make("plugin-capture-replaced-");
+    const instance = retainPluginSourceCaptureInstance(stateDir);
+    const capture = instance.createDirectory();
+    const root = path.dirname(path.dirname(capture));
+    fs.writeFileSync(path.join(capture, "index.cjs"), capturedSource);
+    const target = replaced === "directory" ? root : path.join(root, "owner.sqlite");
+    const parked = path.join(stateDir, "original");
+    fs.renameSync(target, parked);
+    if (replaced === "directory") {
+      fs.mkdirSync(target);
+    }
+    const replacement = replaced === "directory" ? path.join(target, "sentinel") : target;
+    fs.writeFileSync(replacement, "replacement bytes");
+    try {
+      await expect(instance.releaseAsync()).rejects.toThrow(
+        "SQLite staging ownership changed before retirement",
+      );
+      expect(fs.readFileSync(replacement, "utf8")).toBe("replacement bytes");
+      const originalCapture =
+        replaced === "directory" ? path.join(parked, path.relative(root, capture)) : capture;
+      expect(fs.readFileSync(path.join(originalCapture, "index.cjs"), "utf8")).toBe(capturedSource);
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.renameSync(parked, target);
+      await instance.releaseAsync();
+      await sweepPluginSourceCaptureDirectories(stateDir);
+    }
+  },
+);
 
 it("leaves explicit worker capture directories under their caller's custody", async () => {
   const stateDir = temp.make("plugin-capture-worker-state-");

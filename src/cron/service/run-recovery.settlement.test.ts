@@ -36,8 +36,8 @@ function loseFirstCronMutationReply(
   const attempts: string[] = [];
   // oxlint-disable-next-line typescript/unbound-method -- The intercepted worker remains the receiver.
   const originalPost = Worker.prototype.postMessage;
-  // oxlint-disable-next-line typescript/unbound-method -- The intercepted message port remains the receiver.
-  const originalOn = MessagePort.prototype.on;
+  // oxlint-disable-next-line typescript/unbound-method -- The intercepted worker remains the receiver.
+  const originalEmit = Worker.prototype.emit;
   const post = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
     this: Worker,
     request: SqliteWorkerRequest,
@@ -61,35 +61,30 @@ function loseFirstCronMutationReply(
     }
     return originalPost.call(this, request, transferList);
   });
-  const on = vi.spyOn(MessagePort.prototype, "on").mockImplementation(function (
-    this: MessagePort,
+  const emit = vi.spyOn(Worker.prototype, "emit").mockImplementation(function (
+    this: Worker,
     event,
-    listener,
+    ...args: unknown[]
   ) {
-    if (event !== "message") {
-      return originalOn.call(this, event, listener);
-    }
-    return originalOn.call(this, event, function (this: MessagePort, ...args: unknown[]) {
-      const message = args[0];
-      const reply = isRecord(message) && message.type === "result" ? message.reply : undefined;
-      if (
-        !dropped &&
-        target &&
-        isRecord(reply) &&
-        reply.id === target.requestId &&
-        reply.ok === true &&
-        reply.value instanceof Uint8Array
-      ) {
-        const result: unknown = deserialize(reply.value);
-        if (isRecord(result) && result.nonce === target.nonce) {
-          // Withhold only the successful reply; real commit receipts and native settlement still flow.
-          dropped = true;
-          stopped = target.worker.terminate();
-          return;
-        }
+    const reply = args[0];
+    if (
+      event === "message" &&
+      !dropped &&
+      target?.worker === this &&
+      isRecord(reply) &&
+      reply.id === target.requestId &&
+      reply.ok === true &&
+      reply.value instanceof Uint8Array
+    ) {
+      const result: unknown = deserialize(reply.value);
+      if (isRecord(result) && result.nonce === target.nonce) {
+        // Withhold only the successful reply; real commit receipts and native settlement still flow.
+        dropped = true;
+        stopped = target.worker.terminate();
+        return true;
       }
-      Reflect.apply(listener, this, args);
-    });
+    }
+    return originalEmit.call(this, event, ...args);
   });
   return {
     attempts,
@@ -101,7 +96,7 @@ function loseFirstCronMutationReply(
       }
       await stopped;
       post.mockRestore();
-      on.mockRestore();
+      emit.mockRestore();
     },
   };
 }

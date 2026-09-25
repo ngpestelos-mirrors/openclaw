@@ -158,9 +158,12 @@ export async function beginDoctorMaintenance(params: {
         schemaMaintenance: true,
         assertDatabaseAccess: owner.assertDatabaseAccess,
         assertOwnerCurrent: () => {
-          assertCallerCurrent?.();
-          assertUpdateAdmissionCurrent?.();
-          owner.assertCurrent();
+          // Policy checks read SQLite; their storage access comes from the raw process owner.
+          owner.run(() => {
+            assertCallerCurrent?.();
+            assertUpdateAdmissionCurrent?.();
+            owner.assertCurrent();
+          });
         },
       });
       gatewayOwner = owner;

@@ -66,7 +66,12 @@ export function createStateDatabaseRetainer(
               owner.retiring = false;
               return;
             }
-            operations.retire(database, scope === undefined);
+            // A retained reference carries its original cleanup authority beyond lock.run().
+            if (scope) {
+              scope.run(() => operations.retire(database, false));
+            } else {
+              operations.retire(database, true);
+            }
           },
         };
     const reference = retainStateDatabaseReference({

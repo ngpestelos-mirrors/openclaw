@@ -429,14 +429,15 @@ describe("startup migration checkpoint", () => {
     if (!originalExec) {
       throw new Error("DatabaseSync.exec descriptor is unavailable");
     }
-    // Schema setup commits before the lease helper starts its own transaction.
-    // Claim at that exact boundary so the final transaction must fence the new owner.
-    let immediateTransactionCount = 0;
+    // The initialized schema needs no DDL. Claim immediately before the lease
+    // writer acquires its native transaction, after connection admission passed.
+    let claimed = false;
     const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
       this: import("node:sqlite").DatabaseSync,
       sql: string,
     ) {
-      if (sql === "BEGIN IMMEDIATE" && ++immediateTransactionCount === 2) {
+      if (sql === "BEGIN IMMEDIATE" && !claimed) {
+        claimed = true;
         const claimant = new DatabaseSync(databasePath);
         try {
           claimant
@@ -465,6 +466,7 @@ describe("startup migration checkpoint", () => {
       expect(() => acquireStartupMigrationLease({ env, owner: "unmarked", nowMs: 1 })).toThrow(
         OpenClawStateOwnershipError,
       );
+      expect(claimed).toBe(true);
     } finally {
       exec.mockRestore();
     }

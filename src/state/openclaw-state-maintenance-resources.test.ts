@@ -59,6 +59,7 @@ function createSharedWorkerClient(env: NodeJS.ProcessEnv) {
 it("releases its native borrow without retiring an independent shared client", async () => {
   await withOpenClawTestState({ label: "maintenance-native-borrow" }, async (state) => {
     const store = createSharedWorkerClient(state.env);
+    await store.register("foreign", { value: "foreign" });
     const lock = await acquireGatewayLock({
       env: state.env,
       role: "sqlite-maintenance",
@@ -74,15 +75,22 @@ it("releases its native borrow without retiring an independent shared client", a
       return { database, reference };
     });
     try {
-      await store.register("foreign", { value: "foreign" });
+      await expect(store.register("blocked", { value: "blocked" })).rejects.toThrow(
+        "offline maintenance",
+      );
+      owned.reference.release();
+      expect(owned.database.db.isOpen).toBe(false);
       await lock.release();
       expect(owned.database.db.isOpen).toBe(false);
       await expect(store.lookup("foreign")).resolves.toEqual({ value: "foreign" });
       await store.register("after", { value: "after" });
       await expect(store.lookup("after")).resolves.toEqual({ value: "after" });
     } finally {
-      owned.reference.release();
-      await lock.release();
+      try {
+        owned.reference.release();
+      } finally {
+        await lock.release();
+      }
     }
   });
 });
@@ -223,8 +231,8 @@ it("closes its created agent handle while preserving earlier and later runtime h
     }
     try {
       const owned = lock.run(() => openOpenClawAgentDatabase({ agentId: "owned", env: state.env }));
-      const later = openOpenClawAgentDatabase({ agentId: "later", env: state.env });
       await lock.release();
+      const later = openOpenClawAgentDatabase({ agentId: "later", env: state.env });
       expect(owned.db.isOpen).toBe(false);
       expect(earlier.db.isOpen).toBe(true);
       expect(later.db.isOpen).toBe(true);
@@ -252,8 +260,11 @@ it.each([false, true])(
       }
       try {
         await lock.run(() => store.register("owned", { value: "owned" }));
-        await store.register("later", { value: "later" });
+        await expect(store.register("later", { value: "later" })).rejects.toThrow(
+          "offline maintenance",
+        );
         await lock.release();
+        await store.register("later", { value: "later" });
         await store.register("after", { value: "after" });
         expect((await store.entries()).map((entry) => entry.key).toSorted()).toEqual(
           (alreadyOpen

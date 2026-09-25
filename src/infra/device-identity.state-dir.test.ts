@@ -2,7 +2,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolveGatewayLockDir } from "../config/paths.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
@@ -21,8 +20,7 @@ describe("device identity state dir defaults", () => {
 
       expect(loadDeviceIdentityIfPresent()).toEqual(identity);
       expect(fs.existsSync(databasePath)).toBe(true);
-      expect(fs.readdirSync(stateDir)).toEqual(["state", "tmp"]);
-      expect(fs.readdirSync(resolveGatewayLockDir(stateDir))).toEqual([]);
+      expect(fs.readdirSync(stateDir)).toEqual(["state"]);
       expect(fs.existsSync(path.join(stateDir, "identity", "device.json"))).toBe(false);
     });
   });
@@ -52,8 +50,7 @@ describe("device identity state dir defaults", () => {
       const identity = loadOrCreateDeviceIdentity({ env });
 
       expect(loadDeviceIdentityIfPresent({ env })).toEqual(identity);
-      expect(fs.readdirSync(stateDir)).toEqual(["state", "tmp"]);
-      expect(fs.readdirSync(resolveGatewayLockDir(stateDir))).toEqual([]);
+      expect(fs.readdirSync(stateDir)).toEqual(["state"]);
       expect(fs.existsSync(path.join(fakeHome, ".openclaw"))).toBe(false);
     });
   });

@@ -59,6 +59,7 @@ function jobWithCleanup(admissionFailures: readonly unknown[] = []) {
       return effects.forbidden();
     },
     failure: undefined,
+    failureSource: undefined,
     cleanupFailures: admissionFailures,
     committed: undefined,
     settlement: undefined,

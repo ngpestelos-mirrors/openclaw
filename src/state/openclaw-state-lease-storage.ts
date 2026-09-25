@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { computeBackoff, sleepWithAbort } from "../infra/backoff.js";
+import { setTimeout as sleep } from "node:timers/promises";
+import { computeBackoff } from "../infra/backoff.js";
 import { runWithSqliteBusyTimeout } from "../infra/sqlite-busy-timeout.js";
 import { isSqliteLockError } from "../infra/sqlite-error-diagnostics.js";
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
@@ -240,10 +241,8 @@ export async function releaseOpenClawStateLeaseBestEffort(
         return;
       }
       attempt += 1;
-      // Cleanup gives competing writers a bounded async window to finish.
-      await sleepWithAbort(
-        Math.min(deadline - now, computeBackoff(STATE_LEASE_WRITE_BACKOFF, attempt)),
-      );
+      // Cleanup outlives caller scheduling; native timers let competing writers settle.
+      await sleep(Math.min(deadline - now, computeBackoff(STATE_LEASE_WRITE_BACKOFF, attempt)));
     }
   }
 }

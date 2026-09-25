@@ -565,9 +565,12 @@ it.each([
             notifyPolicy: "silent",
           });
           expect(creation).toEqual({ taskId: running.taskId, writes: noWrites });
-          expect(
-            Object.values(creationSql ?? {}).flatMap((counts) => Object.values(counts)),
-          ).toEqual(Array(28).fill(0));
+          expect(creationSql).toBeDefined();
+          const creationSqlCounts = Object.values(creationSql ?? {}).flatMap((counts) =>
+            Object.values(counts),
+          );
+          expect(creationSqlCounts.length).toBeGreaterThan(0);
+          expect(creationSqlCounts.every((count) => count === 0)).toBe(true);
           expect(running.parentFlowId).toBeUndefined();
           expect(observed.flowCount).toBe(0);
           expect(observed.writes).toEqual(noWrites);

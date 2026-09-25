@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { openOpenClawStateDatabase } from "./openclaw-state-db.js";
 import { releaseOpenClawStateLeaseBestEffort } from "./openclaw-state-lease-storage.js";
@@ -44,6 +44,7 @@ describe.each([undefined, "existing"] as const)(
                 entered = true;
                 lease.assertOwned();
                 if (ending === "cleanup") {
+                  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
                   writer = takeWriter();
                   cleanupRelease = yieldImmediate().then(() => writer?.release());
                 }
@@ -80,6 +81,7 @@ describe.each([undefined, "existing"] as const)(
                 .all("core:test", "contending-writer"),
             ).toEqual([]);
           } finally {
+            vi.useRealTimers();
             writer?.release();
             await cleanupRelease;
           }

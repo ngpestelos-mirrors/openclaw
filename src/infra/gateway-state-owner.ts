@@ -115,13 +115,22 @@ function ensureOwnerDirectory(
 ): void {
   const firstCreated = fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (firstCreated && created) {
-    for (let current = directory; ; current = path.dirname(current)) {
+    // Windows mkdir returns a namespaced path even when its input has no prefix.
+    const boundary = path.toNamespacedPath(firstCreated);
+    const directories: ProcessOwner["projectionDirectories"] = [];
+    for (let current = directory; ;) {
       const { dev, ino } = fs.lstatSync(current, { bigint: true });
-      created.push({ path: current, dev, ino });
-      if (current === firstCreated) {
+      directories.push({ path: current, dev, ino });
+      if (path.toNamespacedPath(current) === boundary) {
         break;
       }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        throw new Error("Created state ownership directory is outside its expected ancestry");
+      }
+      current = parent;
     }
+    created.push(...directories);
   }
   const observed = fs.lstatSync(directory);
   const uid = process.getuid?.();

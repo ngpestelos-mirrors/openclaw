@@ -54,15 +54,26 @@ const { instances, ownedRoots, sweeps, warningBackoff } = resolveGlobalSingleton
 
 function retireInstance(key: string, instance: Instance): string | undefined {
   instance.closing = true;
+  let removalRoot = instance.root;
   // Keep the exact native token available if retirement or close needs a retry.
-  instance.token?.(true);
+  try {
+    instance.token?.(true);
+  } catch (error) {
+    if (!hasErrnoCode(error, "ENOENT")) {
+      throw error;
+    }
+    // Enclosing state can disappear before deferred disposal. Missing ownership
+    // permits closing our handle, never deleting residual or replacement files.
+    instance.token?.();
+    removalRoot = undefined;
+  }
   if (instance.root) {
     ownedRoots.delete(instance.root);
   }
   instance.references = 0;
   instances.delete(key);
   clearInterval(instance.timer);
-  return instance.root;
+  return removalRoot;
 }
 
 function instanceDirectory(stateDir: string): string {

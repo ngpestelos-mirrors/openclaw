@@ -15,7 +15,15 @@ import * as portProbe from "../../infra/ports-probe.js";
 import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
 import * as updateCheck from "../../infra/update-check.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { createDeferredCore } from "../../shared/deferred.js";
+import {
+  getOpenClawDatabaseMaintenanceScope,
+  runOutsideOpenClawDatabaseMaintenanceScope,
+} from "../../state/openclaw-state-db-async-lifecycle.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
@@ -189,16 +197,52 @@ export function prepareBundledPluginRuntime() {
         expect(await fs.readFile(artifact, "utf8")).toBe("original");
         lock.mockResolvedValue(undefined);
       });
+      const readExpiry = () => {
+        const value = openOpenClawStateDatabase({ env })
+          .db.prepare(
+            "SELECT expires_at FROM state_leases WHERE scope = 'core:plugin-lifecycle' AND lease_key = 'global'",
+          )
+          .get()?.expires_at;
+        if (typeof value !== "number") {
+          throw new Error("Expected a persisted plugin lifecycle lease expiry");
+        }
+        return value;
+      };
+      const leaseMs = 1_000;
+      vi.useFakeTimers({
+        toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+      });
       try {
         await expect(
-          withPluginLifecycleLease({ env, waitMs: 0 }, (lease) =>
-            completeSourceUpdateRuntime({
+          withPluginLifecycleLease({ env, waitMs: 0, leaseMs }, async (lease) => {
+            // The worker acquires against its real clock; align the controlled timer clock afterward.
+            vi.setSystemTime(readExpiry() - leaseMs);
+            const result = await completeSourceUpdateRuntime({
               root,
               timeoutMs: 1_000,
               lease,
               beforePublication: park,
-            }),
-          ),
+              beforePersistentEffect: async () => {
+                const maintenance = getOpenClawDatabaseMaintenanceScope();
+                expect(maintenance).toBeDefined();
+                maintenance?.assertDatabaseAccess(lease.databasePath);
+                runOutsideOpenClawDatabaseMaintenanceScope(() => {
+                  expect(() => openOpenClawStateDatabase({ env })).toThrow("offline maintenance");
+                });
+                const before = readExpiry();
+                await vi.advanceTimersByTimeAsync(leaseMs * 4);
+                lease.assertOwned();
+                expect(readExpiry()).toBeGreaterThan(before + leaseMs * 3);
+                expect(lease.signal.aborted).toBe(false);
+              },
+            });
+            expect(getOpenClawDatabaseMaintenanceScope()).toBeUndefined();
+            const afterPublication = readExpiry();
+            await vi.advanceTimersByTimeAsync(leaseMs * 4);
+            lease.assertOwned();
+            expect(readExpiry()).toBeGreaterThan(afterPublication + leaseMs * 3);
+            return result;
+          }),
         ).resolves.toEqual({ changed });
         expect(park).toHaveBeenCalledTimes(changed ? 1 : 0);
         expect(await fs.readFile(artifact, "utf8")).toBe(changed ? "candidate" : "original");
@@ -209,6 +253,7 @@ export function prepareBundledPluginRuntime() {
           expect(lock).not.toHaveBeenCalled();
         }
       } finally {
+        vi.useRealTimers();
         closeOpenClawStateDatabaseForTest();
       }
     }),
@@ -591,3 +636,85 @@ it("holds native and Gateway exclusion through publication rollback and closes i
     expect(released).not.toBeNull();
     released?.release();
   }));
+
+it.each([false, true])(
+  "settles cleanup writes and releases publication custody after disposal fails (publication failed: %s)",
+  (publicationFailed) =>
+    withRuntimePublicationFixture(async ({ root, env, databasePath }) => {
+      openOpenClawStateDatabase({ env });
+      const entered = createDeferredCore();
+      const resume = createDeferredCore();
+      const publicationFailure = new Error("publication failed before cleanup");
+      const cleanupFailure = new Error("publication resource disposal failed");
+      let accepted: Promise<void> | undefined;
+      let settled = false;
+      let observedError: unknown;
+      const publication = withGatewayRuntimeArtifactPublication(
+        { root, env, timeoutMs: 200, assertCurrent() {} },
+        async () => {
+          const maintenance = getOpenClawDatabaseMaintenanceScope();
+          if (!maintenance) {
+            throw new Error("Expected publication maintenance authority");
+          }
+          maintenance.own({}, "shared-resources", () => {
+            accepted = maintenance.run(async () => {
+              entered.resolve();
+              await resume.promise;
+              openOpenClawStateDatabase({ env })
+                .db.prepare(
+                  "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES ('publication-cleanup-proof', 'true', 1)",
+                )
+                .run();
+            });
+            throw cleanupFailure;
+          });
+          if (publicationFailed) {
+            throw publicationFailure;
+          }
+          return "published";
+        },
+      ).then(
+        () => {
+          settled = true;
+        },
+        (error: unknown) => {
+          settled = true;
+          observedError = error;
+        },
+      );
+      try {
+        await entered.promise;
+        // Let the rejected disposal batch settle while its accepted write is still blocked.
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(settled).toBe(false);
+        expect(tryAcquireGatewayStateOwner(databasePath)).toBeNull();
+        resume.resolve();
+        await publication;
+        await accepted;
+        expect(observedError).toEqual(
+          publicationFailed
+            ? expect.objectContaining({
+                cause: publicationFailure,
+                errors: [publicationFailure, cleanupFailure],
+              })
+            : cleanupFailure,
+        );
+        const next = tryAcquireGatewayStateOwner(databasePath);
+        expect(next).not.toBeNull();
+        next?.release();
+        expect(
+          openOpenClawStateDatabase({ env })
+            .db.prepare(
+              "SELECT value_json FROM config_machine_state WHERE state_key = 'publication-cleanup-proof'",
+            )
+            .get(),
+        ).toEqual({ value_json: "true" });
+      } finally {
+        resume.resolve();
+        await publication;
+        closeOpenClawStateDatabaseForTest();
+      }
+    }),
+);

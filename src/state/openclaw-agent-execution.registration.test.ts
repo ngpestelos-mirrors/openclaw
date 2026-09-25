@@ -164,6 +164,7 @@ function retireFailedReply(
           return edge.forbidden();
         },
         failure: admissionFailure,
+        failureSource: admissionFailure === undefined ? undefined : "authority",
         cleanupFailures: [],
         committed: undefined,
         settlement: undefined,

@@ -16,7 +16,12 @@ import { recordAgentRunTerminalOutcome } from "../channels/turn/agent-run-termin
 import { formatCliFailureLines, formatCliJsonFailure } from "../cli/failure-output.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
-import { acquireGatewayLock, type GatewayLockOptions } from "../infra/gateway-lock.js";
+import {
+  acquireGatewayLock,
+  GatewayLockError,
+  type GatewayLockOptions,
+} from "../infra/gateway-lock.js";
+import { GatewayStateOwnerContentionError } from "../infra/gateway-state-owner.js";
 import { loggingState } from "../logging/state.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE } from "../sessions/agent-harness-session-key.js";
@@ -868,7 +873,6 @@ describe("agentCliCommand", () => {
         firstRunStarted.resolve();
         await firstRunFinished.promise;
       });
-      const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsedMs);
       const firstRun = agentCliCommand({ message: "first", to: "+1555", local: true }, runtime, {
         localGatewayLockOptions: lockOptions,
       });
@@ -878,17 +882,28 @@ describe("agentCliCommand", () => {
         const payload: unknown = JSON.parse(fs.readFileSync(stateLockPath, "utf8"));
         expect(payload).toMatchObject({ pid: process.pid, role: "agent-embedded" });
 
-        await expect(
-          agentCliCommand({ message: "second", to: "+1555", local: true }, runtime, {
-            localGatewayLockOptions: { ...lockOptions, pollIntervalMs: 2, timeoutMs: 15 },
-          }),
-        ).rejects.toThrow(
-          `another embedded OpenClaw state writer is active (pid ${process.pid}); lock timeout after 15ms`,
+        const secondRun = agentCliCommand(
+          { message: "second", to: "+1555", local: true },
+          runtime,
+          { localGatewayLockOptions: lockOptions },
         );
+        await expect(secondRun).rejects.toBeInstanceOf(GatewayLockError);
+        await expect(secondRun).rejects.toMatchObject({
+          message: expect.stringContaining("wait for the current OpenClaw operation to finish"),
+          cause: expect.any(GatewayStateOwnerContentionError),
+        });
+        await expect(secondRun).rejects.toMatchObject({
+          message: expect.stringContaining(
+            path.join(fs.realpathSync(dir), "state", "openclaw.sqlite"),
+          ),
+          cause: {
+            databasePath: path.join(fs.realpathSync(dir), "state", "openclaw.sqlite"),
+          },
+        });
         expect(agentCommand).toHaveBeenCalledTimes(1);
       } finally {
         firstRunFinished.resolve();
-        await firstRun.finally(() => clock.mockRestore());
+        await firstRun;
       }
       expect(fs.existsSync(stateLockPath)).toBe(false);
     });

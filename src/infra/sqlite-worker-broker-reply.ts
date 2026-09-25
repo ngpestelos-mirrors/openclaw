@@ -33,16 +33,19 @@ export function dispatchSqliteWorkerJob(
   onRejected: (error: unknown, retire: boolean) => void,
 ): void {
   const actor = [...slot.actors].find((candidate) => candidate.id === job.request.actor);
-  const assertDispatchable = () => {
-    if (!job.nativeDispatched) {
-      job.signal?.throwIfAborted();
-    }
-    job.assertCurrent?.();
+  const assertCurrentJob = () => {
     if (slot.failed || slot.current !== job) {
       throw (
         slot.failed ?? new SqliteWorkerError("SQLite worker job is no longer current", "closed")
       );
     }
+  };
+  const assertDispatchable = () => {
+    if (!job.nativeDispatched) {
+      job.signal?.throwIfAborted();
+    }
+    job.assertCurrent?.();
+    assertCurrentJob();
   };
   try {
     assertDispatchable();
@@ -51,6 +54,7 @@ export function dispatchSqliteWorkerJob(
       job,
       actor,
       assertDispatchable,
+      assertCurrentJob,
     );
     const request = prepareSqliteWorkerRequest(job);
     assertDispatchable();
@@ -73,6 +77,7 @@ function prepareSqliteWorkerOperationAdmission(
   job: Job,
   actor: Actor | undefined,
   assertDispatchable: () => void,
+  assertCurrentJob: () => void,
 ) {
   const databasePath = job.request.stateDatabasePath ?? actor?.databasePath;
   if (!job.createAdmission && !databasePath) {
@@ -95,7 +100,7 @@ function prepareSqliteWorkerOperationAdmission(
     if (databasePath) {
       let schemaLease: StateDatabaseSchemaLease | undefined;
       const assertAccess = () => {
-        assertDispatchable();
+        assertCurrentJob();
         job.maintenanceScope?.assertAdmission();
         assertStateDatabaseAccessAllowed(databasePath, {
           maintenanceScope: job.maintenanceScope,
@@ -104,10 +109,12 @@ function prepareSqliteWorkerOperationAdmission(
       };
       retained.admission.bindDatabaseAuthority({
         databasePath,
+        assertRequest: assertDispatchable,
         assertAccess,
         acquireSchema() {
           assertAccess();
-          const lease = acquireStateDatabaseSchemaLease(databasePath);
+          const acquire = () => acquireStateDatabaseSchemaLease(databasePath);
+          const lease = job.maintenanceScope ? job.maintenanceScope.run(acquire) : acquire();
           schemaLease = lease;
           job.maintenanceScope?.own(lease, "shared-resources", () => lease.release());
           return {
@@ -324,8 +331,13 @@ export function receiveSqliteWorkerReply(
   if (job.request.type === "close") {
     owner.finish(job, undefined, value, undefined, reply.closeReceipt);
   } else {
-    // A domain can encode a refused transaction inside a successful wire reply.
-    owner.finish(job, job.operationAdmission?.admission.failure, value);
+    // Domains own handled refusal results; physical and request authority still fence delivery.
+    const admission = job.operationAdmission?.admission;
+    owner.finish(
+      job,
+      admission?.failureSource === "domain" ? undefined : admission?.failure,
+      value,
+    );
   }
   owner.dispatch();
 }

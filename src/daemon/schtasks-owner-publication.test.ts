@@ -112,11 +112,11 @@ it.each(["snapshot", "port-only"])(
   async (discovery) => {
     await withPreparedGatewayTask(async ({ env }) => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+      mockWindowsTaskkillSuccess();
       const foreground = acquireGatewayStateOwner({
         databasePath: resolveOpenClawStateSqlitePath(env),
       });
       try {
-        mockWindowsTaskkillSuccess();
         const foregroundCommand = INSTALLED_GATEWAY_COMMAND_LINE.replace(
           " gateway ",
           " gateway run ",
@@ -162,6 +162,7 @@ it.each(["snapshot", "per-pid"])(
   async (discovery) => {
     await withPreparedGatewayTask(async ({ env }) => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+      mockWindowsTaskkillSuccess();
       const databasePath = resolveOpenClawStateSqlitePath(env);
       const legacy = acquireGatewayStateOwner({ databasePath });
       let forced = false;

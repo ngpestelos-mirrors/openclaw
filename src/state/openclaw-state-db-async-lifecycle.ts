@@ -279,6 +279,11 @@ export function createOpenClawDatabaseMaintenanceScope(
                     maintenanceResources.claims.delete(key);
                   }),
                 );
+                // A disposer can admit tracked cleanup before rejecting. Settle
+                // that work before reporting failure to its process owner.
+                while (pending.size) {
+                  await Promise.allSettled(pending);
+                }
                 const errors = results.flatMap((result) =>
                   result.status === "rejected" ? [result.reason] : [],
                 );
