@@ -5,6 +5,7 @@ import {
   getRuntimeConfigSourceSnapshot,
 } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { PluginRuntimeApplicationError } from "../plugins/lifecycle.js";
 import {
   getActiveSecretsRuntimeSnapshotState,
   getActiveSecretsRuntimeSnapshotRevisionState,
@@ -466,7 +467,10 @@ export function createManagedReloadSecretHandlers(options: {
           applicationStatus = await applyHotReload(plan, prepared.config, publication);
         }
       } catch (err) {
-        if (err instanceof GatewayHotReloadStaleSecretsError) {
+        // Failed cleanup and committed replacements must not retry stale preparation.
+        const cause =
+          err instanceof PluginRuntimeApplicationError && !err.details.committed ? err.cause : err;
+        if (cause instanceof GatewayHotReloadStaleSecretsError) {
           await transactionOwnership.checkpoint();
           assertReloadPublicationCurrent(transactionOwnership.isCurrent(), false);
           continue;

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createModelProviderRouteOverrideResolver } from "../config/model-provider-config.js";
 import {
@@ -7,6 +7,7 @@ import {
 } from "../config/runtime-snapshot.js";
 import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { PluginRuntimeApplicationError } from "../plugins/lifecycle.js";
 import {
   activateSecretsRuntimeSnapshotStateIfCurrent,
   getActiveSecretsRuntimeSnapshotState,
@@ -21,6 +22,7 @@ import {
 } from "../secrets/runtime.js";
 import { buildGatewayReloadPlan } from "./config-reload-plan.js";
 import type { GatewayConfigReloadTransactionOwnership } from "./config-reload.js";
+import { GatewayHotReloadStaleSecretsError } from "./server-reload-contracts.js";
 import { createManagedReloadSecretHandlers } from "./server-reload-managed-secrets.js";
 import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
 import { createRuntimeSecretsActivator } from "./server-startup-config.js";
@@ -88,7 +90,11 @@ function expectAuthoredSource(source: OpenClawConfig) {
   ).toBe("none");
 }
 
-async function createReload(commit: () => Promise<void>, beforePublication?: () => Promise<void>) {
+async function createReload(
+  commit: () => Promise<void>,
+  beforePublication?: () => Promise<void>,
+  plugin?: { afterCommit?: () => void; cleanupFailure?: Error },
+) {
   const initial = configPair("openclaw");
   activateSecretsRuntimeSnapshotWithSource(await prepare(initial.config), initial.source);
   expectAuthoredSource(initial.source);
@@ -105,6 +111,42 @@ async function createReload(commit: () => Promise<void>, beforePublication?: () 
     commitRuntimePolicy: vi.fn(),
     reconcileRuntimePolicy: vi.fn(),
   };
+  const applyHotReload = vi.fn<
+    Parameters<typeof createManagedReloadSecretHandlers>[0]["applyHotReload"]
+  >(async (_plan, _config, publication) => {
+    await beforePublication?.();
+    let committed = false;
+    try {
+      await publication!.publish(
+        async () => {
+          await commit();
+          committed = true;
+          plugin?.afterCommit?.();
+        },
+        () => committed,
+      );
+    } catch (cause) {
+      if (!plugin) {
+        throw cause;
+      }
+      throw new PluginRuntimeApplicationError(
+        "Plugin operation failed during activate",
+        {
+          operationId: "secrets-publication",
+          generation: 1,
+          pluginIds: ["fixture"],
+          phase: "activate",
+          committed,
+        },
+        {
+          cause: plugin.cleanupFailure
+            ? new AggregateError([cause, plugin.cleanupFailure], "Plugin rollback failed")
+            : cause,
+        },
+      );
+    }
+    return "applied";
+  });
   const { onHotReload } = createManagedReloadSecretHandlers({
     params,
     prepareRuntimeCandidate: (config) => config,
@@ -112,18 +154,7 @@ async function createReload(commit: () => Promise<void>, beforePublication?: () 
       snapshot: await prepare(config),
       expectedRevision: getActiveSecretsRuntimeSnapshotRevision(),
     }),
-    applyHotReload: async (_plan, _config, publication) => {
-      await beforePublication?.();
-      let committed = false;
-      await publication!.publish(
-        async () => {
-          await commit();
-          committed = true;
-        },
-        () => committed,
-      );
-      return "applied";
-    },
+    applyHotReload,
   });
   const ownership: GatewayConfigReloadTransactionOwnership = {
     isCurrent: () => true,
@@ -146,11 +177,61 @@ async function createReload(commit: () => Promise<void>, beforePublication?: () 
     initial,
     next,
     ownership,
+    applyHotReload,
     run: () => onHotReload(plan, next.config, ownership, next.source),
   };
 }
 
 describe("managed reload authored source", () => {
+  it.each(["rollback", "cleanup failure", "committed"] as const)(
+    "retries stale plugin secrets only after an uncommitted clean rollback (%s)",
+    async (outcome) => {
+      const commit = vi.fn(async () => {});
+      const cleanupFailure = new Error("candidate cleanup failed");
+      const beforePublication = vi.fn(async () => {
+        if (outcome !== "committed" && beforePublication.mock.calls.length === 1) {
+          const current = getActiveSecretsRuntimeSnapshotState();
+          const source = getRuntimeConfigSourceSnapshot();
+          assert(current && source);
+          // A concurrent refresh advances ownership after this candidate was prepared.
+          activateSecretsRuntimeSnapshotWithSource(current, source);
+        }
+      });
+      const afterCommit = vi.fn(() => {
+        if (outcome === "committed" && afterCommit.mock.calls.length === 1) {
+          throw new GatewayHotReloadStaleSecretsError();
+        }
+      });
+      const { initial, next, ownership, applyHotReload, run } = await createReload(
+        commit,
+        beforePublication,
+        { afterCommit, ...(outcome === "cleanup failure" ? { cleanupFailure } : {}) },
+      );
+      const result = await run().catch((error: unknown) => error);
+      if (outcome === "rollback") {
+        expect(result).toBe("applied");
+      } else {
+        assert(result instanceof PluginRuntimeApplicationError);
+        expect(result.details.committed).toBe(outcome === "committed");
+        if (outcome === "cleanup failure") {
+          assert(result.cause instanceof AggregateError);
+          expect(result.cause.errors).toEqual([
+            expect.any(GatewayHotReloadStaleSecretsError),
+            cleanupFailure,
+          ]);
+        } else {
+          expect(result.cause).toBeInstanceOf(GatewayHotReloadStaleSecretsError);
+        }
+      }
+      expect(applyHotReload).toHaveBeenCalledTimes(outcome === "rollback" ? 2 : 1);
+      expect(commit).toHaveBeenCalledTimes(outcome === "cleanup failure" ? 0 : 1);
+      expect(ownership.markRuntimeCommitted).toHaveBeenCalledTimes(
+        outcome === "cleanup failure" ? 0 : 1,
+      );
+      expectAuthoredSource(outcome === "cleanup failure" ? initial.source : next.source);
+    },
+  );
+
   it.each([false, true])(
     "commits the exact target before publication (hook fails: %s)",
     async (fails) => {
