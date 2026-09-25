@@ -2,14 +2,26 @@ import {
   createOutboundPayloadPlan,
   createStructuredOutboundPayloadPlan,
 } from "openclaw/plugin-sdk/channel-outbound";
-import { copyReplyPayloadMetadata, type ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
+import { normalizeMessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
+import {
+  copyReplyPayloadMetadata,
+  resolveAskUserQuestionOptionIndices,
+  type ReplyPayload,
+} from "openclaw/plugin-sdk/reply-payload";
 import type {
   CurrentTurnTranscriptFinal,
   TelegramDispatchTurn as Turn,
 } from "./bot-message-dispatch.types.js";
 import {
+  appendTelegramDroppedControlFallback,
+  resolveTelegramInlineButtons,
+  type TelegramDroppedControl,
+  type TelegramInlineButtons,
+} from "./button-types.js";
+import {
   canonicalizeTelegramPresentationPayload,
   copyTelegramDroppedControlFallback,
+  markTelegramDroppedControlFallback,
 } from "./interactive-fallback.js";
 import { resolveTelegramTargetChatType } from "./targets.js";
 
@@ -112,4 +124,41 @@ export function formatTelegramGroupThreadReply(
 ): string {
   const name = participant.name.replace(/[\\`*_{}[\]()<>#!|]/g, "\\$&").replace(/\s+/g, " ");
   return `**${name}**\n${text}`;
+}
+
+export function resolvePayloadTelegramControls(
+  turn: Turn,
+  payload: ReplyPayload,
+): { payload: ReplyPayload; buttons: TelegramInlineButtons | undefined } {
+  // SAFETY: Telegram owns the native button rows carried in its channelData extension.
+  const telegramData = payload.channelData?.telegram as
+    | { buttons?: TelegramInlineButtons }
+    | undefined;
+  const droppedControls: TelegramDroppedControl[] = [];
+  const buttons = resolveTelegramInlineButtons(
+    {
+      buttons: telegramData?.buttons,
+      presentation: normalizeMessagePresentation(payload.presentation),
+      interactive: payload.interactive,
+    },
+    {
+      allowWebAppButtons: resolveTelegramTargetChatType(String(turn.context.chatId)) === "direct",
+      onDroppedControl: (control) => droppedControls.push(control),
+      questionOptionIndices: resolveAskUserQuestionOptionIndices(payload),
+    },
+  );
+  const text = appendTelegramDroppedControlFallback(payload.text ?? "", droppedControls);
+  const fallback = appendTelegramDroppedControlFallback("", droppedControls);
+  const normalizedPayload =
+    text === (payload.text ?? "") ? payload : applyTextToPayload(payload, text);
+  return {
+    payload: fallback
+      ? markTelegramDroppedControlFallback(
+          normalizedPayload,
+          text === fallback ? "" : text.slice(0, -fallback.length - 2),
+          text,
+        )
+      : normalizedPayload,
+    buttons,
+  };
 }
