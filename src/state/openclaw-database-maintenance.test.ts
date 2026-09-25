@@ -269,6 +269,14 @@ CREATE INDEX IF NOT EXISTS idx_web_push_approval_deliveries_subscription
 
     const database = createGlobalDatabase();
     try {
+      const authorizationIndexSql = database
+        .prepare("SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?")
+        .get("idx_user_profile_identities_authorization")?.sql;
+      if (typeof authorizationIndexSql !== "string") {
+        throw new Error("Missing canonical authorization index");
+      }
+      // Remove the feature-local index before rolling its additive column back.
+      database.exec("DROP INDEX idx_user_profile_identities_authorization;");
       for (const {
         columnName,
         dataType,
@@ -287,6 +295,7 @@ CREATE INDEX IF NOT EXISTS idx_web_push_approval_deliveries_subscription
       }
 
       ensureAdditiveStateColumns(database, "runtime");
+      database.exec(authorizationIndexSql);
       expect(() =>
         assertOpenClawStateDatabaseForMaintenance(database, {
           pathname: "global.sqlite",

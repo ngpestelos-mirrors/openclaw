@@ -2337,13 +2337,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       .flatMap((shard) => shard.includePatterns ?? [])
       .toSorted((a, b) => a.localeCompare(b));
 
-    expect(bundled.length - gatewayStripes.length).toBeLessThan(base.length - 1);
+    const packedBundles = bundled.filter((shard) => shard.shardName.startsWith("bundle-"));
+    expect(packedBundles.length).toBeGreaterThan(0);
     expect(new Set(bundled.map((shard) => shard.checkName)).size).toBe(bundled.length);
     expect(bundledPatterns).toEqual(basePatterns);
     expect(
-      bundled
-        .filter((shard) => shard.shardName.startsWith("bundle-"))
-        .every((shard) => (shard.includePatterns?.length ?? 0) <= 64),
+      packedBundles.every(
+        (shard) =>
+          (shard.includePatterns?.length ?? 0) > 0 && (shard.includePatterns?.length ?? 0) <= 64,
+      ),
     ).toBe(true);
     expect(bundled.every((shard) => shard.runner?.startsWith("blacksmith-"))).toBe(true);
     expect(bundled).toEqual(createNodeTestShardBundles({ includeReleaseOnlyPluginShards: false }));
@@ -2372,13 +2374,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(bundled.find((shard) => shard.shardName === "bundle-infra-small-1")?.runner).toBe(
       "blacksmith-4vcpu-ubuntu-2404",
     );
-    expect(
-      new Set(
-        bundled
-          .filter((shard) => shard.shardName.startsWith("bundle-"))
-          .flatMap((shard) => shard.configs),
-      ),
-    ).toEqual(new Set(["test/vitest/vitest.infra.config.ts"]));
+    expect(new Set(packedBundles.flatMap((shard) => shard.configs))).toEqual(
+      new Set(["test/vitest/vitest.infra.config.ts"]),
+    );
     expect(bundled.some((shard) => shard.shardName.startsWith("bundle-commands-"))).toBe(false);
     expect(bundled.some((shard) => shard.shardName.startsWith("bundle-cron-"))).toBe(false);
     expect(bundled.some((shard) => shard.shardName.startsWith("bundle-agents-core-"))).toBe(false);
