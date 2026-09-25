@@ -13,7 +13,7 @@ import {
   type InheritedToolPolicyV2,
 } from "./inherited-tool-policy.schema.js";
 import { createToolPolicyMatcher } from "./tool-policy-match.js";
-import { createToolExecutionMatcher } from "./tool-policy-shared.js";
+import { createToolExecutionMatcher, normalizeToolList } from "./tool-policy-shared.js";
 import {
   buildPluginToolGroups,
   expandPolicyWithPluginGroups,
@@ -39,7 +39,7 @@ export function captureInheritedToolPolicy(params: {
     const intersection = policy.allow && readToolAllowlistIntersection(policy.allow);
     if (intersection) {
       if (policy.deny?.length) {
-        clauses.push({ kind: "configured", deny: policy.deny });
+        clauses.push({ kind: "configured", deny: normalizeToolList(policy.deny) });
       }
       for (const allow of intersection) {
         // An empty intersection operand means no tools; an ordinary empty
@@ -49,7 +49,7 @@ export function captureInheritedToolPolicy(params: {
             ? { kind: "runtime", allow: [] }
             : {
                 kind: "configured",
-                allow,
+                allow: normalizeToolList(allow),
                 ...(frozenAllow ? { frozenAllow: true } : {}),
               },
         );
@@ -57,8 +57,8 @@ export function captureInheritedToolPolicy(params: {
     } else {
       clauses.push({
         kind: "configured",
-        allow: policy.allow,
-        deny: policy.deny,
+        allow: policy.allow && normalizeToolList(policy.allow),
+        deny: policy.deny && normalizeToolList(policy.deny),
         ...(frozenAllow ? { frozenAllow: true } : {}),
       });
     }

@@ -43,6 +43,8 @@ import { runWithGatewaySessionSpawnContext } from "./gateway-session-spawn-conte
 import { callGatewayTool } from "./gateway.js";
 
 type InProcessGatewayCallOptions = {
+  /** Spawn admission ends when the Gateway takes custody of the initial input. */
+  assertCreationCurrent?: () => void;
   onExecution?: (execution: Promise<void>) => void;
   resolveGatewayContext?: GatewayContextResolver;
   sessionMutationCommitGuard?: () => void;
@@ -366,10 +368,23 @@ async function callInProcessGatewayToolBound<T>(
   },
   fallback: (scopes: ReturnType<typeof resolveLeastPrivilegeOperatorScopesForMethod>) => Promise<T>,
 ): Promise<T> {
-  const assertCallerCurrent = captureGatewayToolCallerAssertion();
+  const assertAdmittedCallerCurrent = captureGatewayToolCallerAssertion();
+  const assertCreationCurrent = options.assertCreationCurrent;
+  if (
+    assertCreationCurrent &&
+    (method !== "sessions.create" || options.sessionCreation?.via !== "spawn")
+  ) {
+    throw new Error("Creation admission requires trusted session spawn dispatch.");
+  }
+  const assertCallerCurrent = assertCreationCurrent
+    ? () => {
+        assertAdmittedCallerCurrent?.();
+        assertCreationCurrent();
+      }
+    : assertAdmittedCallerCurrent;
   const caller = getGatewayToolCallerIdentity();
   const agentToolCaller =
-    options.sessionCreation?.via === "spawn" && caller && assertCallerCurrent
+    options.sessionCreation?.via === "spawn" && caller && assertAdmittedCallerCurrent
       ? {
           agentId: caller.agentId,
           sessionKey: caller.sessionKey,
@@ -445,12 +460,7 @@ export async function callInProcessGatewayToolWithCreation<T = Record<string, un
   method: string,
   params: Record<string, unknown>,
   creation: TrustedSessionCreation,
-  options: {
-    resolveGatewayContext?: GatewayContextResolver;
-    sessionMutationCommitGuard?: () => void;
-    signal?: AbortSignal;
-    timeoutMs?: number | null;
-  } = {},
+  options: InProcessGatewayCallOptions = {},
 ): Promise<T> {
   const requesterProfileId = getGatewayToolCallerIdentity()?.operatorAuthority?.profileId;
   const trustedCreation =

@@ -37,6 +37,7 @@ import {
   initializeModelRegistryRuntime,
 } from "../../sessions/model-registry-runtime.js";
 import type { WorkspaceBootstrapFile } from "../../workspace.js";
+import { prepareAttemptSessionFixture } from "./attempt-setup.test-support.js";
 import type { SessionManagerMocks } from "./attempt-spawn-workspace.session-manager-mock.test-support.js";
 import {
   createCompletedAssistantStream,
@@ -692,12 +693,6 @@ vi.mock(
   "../../sandbox/runtime-status.js",
   () => import("./attempt-spawn-workspace.sandbox-mock.test-support.js"),
 );
-
-vi.mock("../../tool-fs-policy.js", () => ({
-  resolveSessionPermissionExecMode: (policy: { mode: string }) =>
-    ({ "read-only": "deny", guarded: "ask", workspace: "auto", full: "full" })[policy.mode],
-  resolveEffectiveToolFsWorkspaceOnly: () => false,
-}));
 
 vi.mock("../../transcript-policy.js", () => ({
   resolveTranscriptPolicy: () => ({
@@ -1370,6 +1365,7 @@ export async function createContextEngineAttemptRunner(params: {
       },
       ...params.attemptOverrides,
     };
+    await prepareAttemptSessionFixture(attempt);
     const admission = prepareSystemAgentRunAdmission(
       attempt.config ?? {},
       attempt.runId,

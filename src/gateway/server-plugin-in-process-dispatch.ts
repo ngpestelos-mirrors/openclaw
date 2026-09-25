@@ -273,6 +273,9 @@ function resolveInProcessGatewayDispatch(
     options.agentToolCaller?.agentId === caller.agentId &&
     options.agentToolCaller.sessionKey === caller.sessionKey;
   const assertInvocationCurrent = () => {
+    if (transfersCreatedInput) {
+      options.agentToolCaller?.assertCurrent?.();
+    }
     assertSettleWakeCurrent?.();
     if (!isHostOwnedAgentRun || !operatorRunAuthority) {
       inheritedOperatorAuthority?.signal.throwIfAborted();
@@ -640,8 +643,6 @@ async function withInProcessGatewayDispatch<T>(
   }
 }
 
-export type { GatewayMethodDispatchResponse } from "./server-in-process-dispatch.js";
-
 export async function dispatchGatewayMethodInProcessRaw(
   method: string,
   params: unknown,
@@ -687,7 +688,7 @@ export async function dispatchGatewayMethodInProcessRaw(
   });
 }
 
-export { getInProcessGatewayRequestContext } from "../plugins/runtime/gateway-request-scope.js";
+export { getInProcessGatewayRequestContext, type GatewayMethodDispatchResponse };
 
 export async function dispatchGatewayMethodInProcess<T>(
   method: string,

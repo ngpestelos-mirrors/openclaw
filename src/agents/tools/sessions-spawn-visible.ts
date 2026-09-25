@@ -491,9 +491,8 @@ export async function maybeSpawnVisibleSession(params: {
         assertCurrent: assertActive,
         create: (assertCreationCurrent) =>
           createGatewayCall("sessions.create", createParams, {
-            signal: params.options?.signal,
-            sessionMutationCommitGuard: assertCreationCurrent,
-            ...(placement ? { timeoutMs: null } : {}),
+            assertCreationCurrent,
+            ...(placement ? { signal: params.options?.signal, timeoutMs: null } : {}),
           }),
       });
     } catch (error) {
