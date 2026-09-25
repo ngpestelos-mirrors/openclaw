@@ -8,7 +8,11 @@ import {
   getWindowsPowerShellExePath,
   getWindowsSystem32ExePath,
 } from "../infra/windows-install-roots.js";
-import { resolveTaskScriptPath } from "./schtasks-layout.js";
+import {
+  buildTaskScript,
+  encodeWindowsLauncherScript,
+  resolveTaskScriptPath,
+} from "./schtasks-layout.js";
 import { launchFallbackTaskScript } from "./schtasks-runtime.js";
 import type { GatewayServiceEnv } from "./service-types.js";
 
@@ -320,8 +324,12 @@ export async function proveNativeStartupFallbackLaunch(params: {
   );
   await fs.writeFile(
     scriptPath,
-    `@echo off\r\n"${process.execPath}" "${probePath}" "${batchMarkerPath}" "${batchParentPidPath}"\r\n`,
-    "utf8",
+    encodeWindowsLauncherScript({
+      format: "cmd",
+      content: buildTaskScript({
+        programArguments: [process.execPath, probePath, batchMarkerPath, batchParentPidPath],
+      }),
+    }),
   );
   const missingExecutableError = await expectNativeLaunchFailure(
     () =>
@@ -467,7 +475,9 @@ export function prepareNativeProof(
   value: Record<string, unknown>,
 ): NativeScheduledTaskProof | undefined {
   const proofPath = process.env.CI_WINDOWS_SCHTASKS_PROOF_PATH?.trim();
-  if (!proofPath) return undefined;
+  if (!proofPath) {
+    return undefined;
+  }
   const head = process.env.CI_WINDOWS_SCHTASKS_HEAD?.trim();
   if (!head || !/^[0-9a-f]{40}$/u.test(head)) {
     throw new Error("CI_WINDOWS_SCHTASKS_HEAD must identify the exact 40-character checkout SHA");

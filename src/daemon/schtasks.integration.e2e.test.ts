@@ -1010,9 +1010,13 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
         : undefined;
       // Publish one result only after every selected lifecycle and its cleanup succeeds.
       if (current) {
-        if (binding && !released) throw new Error("Released Scheduled Task proof is missing");
+        if (binding && !released) {
+          throw new Error("Released Scheduled Task proof is missing");
+        }
         const value = { ...current.value };
-        if (released) value.releasedLauncher = released.value;
+        if (released) {
+          value.releasedLauncher = released.value;
+        }
         await fs.mkdir(path.dirname(current.path), { recursive: true });
         await fs.writeFile(current.path, JSON.stringify(value, null, 2) + "\n", "utf8");
       }

@@ -66,7 +66,9 @@ function fixtureEnvironment(env: GatewayServiceEnv): NodeJS.ProcessEnv {
     "OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER",
   ]) {
     const value = env[key];
-    if (value !== undefined) projected[key] = value;
+    if (value !== undefined) {
+      projected[key] = value;
+    }
   }
   return projected;
 }
@@ -104,7 +106,9 @@ async function command(args: string[], cwd: string, env: NodeJS.ProcessEnv, sign
 
 function processIdentity(pid: number, probePath: string) {
   const birth = readWindowsProcessStartTimeSync(pid);
-  if (birth === null) throw new Error("Native process birth is unavailable");
+  if (birth === null) {
+    throw new Error("Native process birth is unavailable");
+  }
   const capture = readRelatedProcessDiagnostics([probePath]);
   expect(capture.ok).toBe(true);
   expect(capture.truncated).toBe(false);
@@ -285,7 +289,9 @@ export async function proveReleasedScheduledTask(params: {
   expect(await ownedResponse.json()).toEqual({ marker, pid: owned.pid });
   const xml = await readTaskXml(params.taskName);
   expect(xml).not.toBeNull();
-  if (!xml) throw new Error("Released task registration is missing");
+  if (!xml) {
+    throw new Error("Released task registration is missing");
+  }
   const principal = readTaskPrincipal(params.taskName);
   expect(principal.taskState).toBe(4);
   assertInteractiveLeastPrivilegeTask({ taskXml: xml, principal });
@@ -339,7 +345,9 @@ export async function proveReleasedScheduledTask(params: {
       })
       .catch((error: unknown) => {
         // Managed cancellation reports ABORT_ERR only after its Job and output join.
-        if (!cancel.signal.aborted || !hasErrnoCode(error, "ABORT_ERR")) throw error;
+        if (!cancel.signal.aborted || !hasErrnoCode(error, "ABORT_ERR")) {
+          throw error;
+        }
       }),
   );
   let foreignIdentity: ReturnType<typeof processIdentity> | undefined;
