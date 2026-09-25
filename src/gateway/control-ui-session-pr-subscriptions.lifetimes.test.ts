@@ -42,7 +42,6 @@ describe("recipient publication lifetimes", () => {
   it.each(["disconnect", "replace with another key", "replace with the same key"] as const)(
     "tracks shared cache ownership during %s of a preparing watcher",
     async (action) => {
-      vi.useFakeTimers();
       const entered = createDeferred();
       const held = createDeferred<ControlUiSessionPrTarget>();
       let holdPreparation = true;
@@ -52,6 +51,7 @@ describe("recipient publication lifetimes", () => {
           READY,
       );
       active = createTestControlUiSessionPrSubscriptions({
+        scheduler,
         broadcastToConnIds: vi.fn(),
         load,
         prepareRead: async (connId, session) => () => {
