@@ -1277,6 +1277,160 @@ function writeReport(artifactRoot, directory, name, report, limit) {
   }
 }
 
+// Keep only the shipped reader's scalar facts; raw debug logs never enter public artifacts.
+function packageIntegrityEvent(value) {
+  if (
+    !value ||
+    typeof value.readerId !== "string" ||
+    !/^[0-9]{1,12}:[0-9]{1,12}$/.test(value.readerId) ||
+    !["baseline", "retained", "restored", "transaction"].includes(value.phase) ||
+    !["reader-started", "reader-settled"].includes(value.event) ||
+    value.deadlineClock !== "wall"
+  ) {
+    throw new Error("Invalid package integrity event");
+  }
+  const result = {
+    readerId: value.readerId,
+    phase: value.phase,
+    event: value.event,
+    deadlineClock: "wall",
+  };
+  for (const field of [
+    "budgetMs",
+    "timeOriginUnixMs",
+    "startedAtMonotonicMs",
+    "deadlineAtUnixMs",
+    "settledAtMonotonicMs",
+    "elapsedMs",
+    "timeoutObservedAtMonotonicMs",
+    "pendingIo",
+  ]) {
+    if (value[field] === undefined) {
+      continue;
+    }
+    if (typeof value[field] !== "number" || !Number.isFinite(value[field]) || value[field] < 0) {
+      throw new Error();
+    }
+    result[field] = value[field];
+  }
+  if (typeof result.budgetMs !== "number" || typeof result.startedAtMonotonicMs !== "number") {
+    throw new Error();
+  }
+  if (value.event === "reader-settled") {
+    if (
+      !["completed", "failed", "timed-out"].includes(value.outcome) ||
+      typeof result.elapsedMs !== "number" ||
+      !Number.isInteger(result.pendingIo)
+    ) {
+      throw new Error();
+    }
+    result.outcome = value.outcome;
+  }
+  return result;
+}
+
+function publishedPackageIntegrity(value) {
+  try {
+    if (
+      !["captured", "partial", "unavailable"].includes(value?.availability) ||
+      !Array.isArray(value.events) ||
+      value.events.length > entryLimit ||
+      typeof value.truncated !== "boolean"
+    ) {
+      throw new Error();
+    }
+    for (const field of ["filesRead", "unreadableFiles", "invalidLines"]) {
+      if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
+        throw new Error();
+      }
+    }
+    const incomplete = value.truncated || value.unreadableFiles > 0 || value.invalidLines > 0;
+    const expectedAvailability =
+      value.events.length === 0 ? "unavailable" : incomplete ? "partial" : "captured";
+    if (
+      value.availability !== expectedAvailability ||
+      (value.events.length > 0 && value.filesRead === 0)
+    ) {
+      throw new Error();
+    }
+    return {
+      availability: expectedAvailability,
+      events: value.events.map(packageIntegrityEvent),
+      filesRead: value.filesRead,
+      unreadableFiles: value.unreadableFiles,
+      invalidLines: value.invalidLines,
+      truncated: value.truncated,
+    };
+  } catch {
+    return { availability: "unavailable", events: [] };
+  }
+}
+
+export function readPackageIntegrityEvents(artifactRoot) {
+  const result = {
+    availability: "unavailable",
+    events: [],
+    filesRead: 0,
+    unreadableFiles: 0,
+    invalidLines: 0,
+    truncated: false,
+  };
+  // The shipped transport retains five rotations. Read bounded tails oldest first.
+  for (const suffix of [".5", ".4", ".3", ".2", ".1", ""]) {
+    const relative = `diagnostics/package-integrity${suffix}.log`;
+    try {
+      if (suffix && !fs.existsSync(path.join(artifactRoot, relative))) {
+        continue;
+      }
+      const { fd, stat: before } = openOwned(artifactRoot, relative);
+      let text;
+      try {
+        const length = Math.min(before.size, inputLimit);
+        const offset = before.size - length;
+        const bytes = Buffer.alloc(length);
+        const read = fs.readSync(fd, bytes, 0, length, offset);
+        if (read !== length || !unchangedFile(before, fs.fstatSync(fd))) {
+          throw new Error();
+        }
+        text = bytes.toString("utf8");
+        if (offset > 0) {
+          result.truncated = true;
+          text = text.includes("\n") ? text.slice(text.indexOf("\n") + 1) : "";
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+      result.filesRead += 1;
+      for (const line of text.split("\n").filter(Boolean)) {
+        try {
+          const record = JSON.parse(line);
+          // getChildLogger prefixes the tslog arguments with serialized subsystem bindings.
+          if (typeof record["0"] !== "string" || !record["0"].startsWith("{")) {
+            continue;
+          }
+          if (JSON.parse(record["0"]).subsystem !== "update/package-integrity") {
+            continue;
+          }
+          result.events.push(packageIntegrityEvent(record["1"]));
+          if (result.events.length > entryLimit) {
+            result.events.shift();
+            result.truncated = true;
+          }
+        } catch {
+          result.invalidLines += 1;
+        }
+      }
+    } catch {
+      result.unreadableFiles += 1;
+    }
+  }
+  if (result.events.length) {
+    result.availability =
+      result.truncated || result.unreadableFiles || result.invalidLines ? "partial" : "captured";
+  }
+  return publishedPackageIntegrity(result);
+}
+
 async function capture(artifactRoot, phase, exitStatus, signal = "", observationRoot = "") {
   const report = {
     ...phaseResult(phase, Number(exitStatus), signal || null),
@@ -1290,6 +1444,14 @@ async function capture(artifactRoot, phase, exitStatus, signal = "", observation
       name === "gateway-restart.log"
         ? readOwned(process.env.OPENCLAW_STATE_DIR, "logs/gateway-restart.log", name)
         : readOwned(artifactRoot, name, name);
+  }
+  if (
+    process.env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIO === "legacy-operator-state" &&
+    process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE?.trim().replace(/^openclaw@/u, "") ===
+      "2026.9.4" &&
+    (process.env.OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE ?? "manual") === "manual"
+  ) {
+    report.packageIntegrity = readPackageIntegrityEvents(artifactRoot);
   }
   const stateRoot = process.env.OPENCLAW_STATE_DIR;
   report.pluginIdentity = await pluginIdentities(stateRoot, artifactRoot);
@@ -1645,6 +1807,9 @@ function publishedSuccessSummary(artifactRoot, sanitize) {
     updateRestartSource: sanitize(snapshot.updateRestartSource, "summary"),
     firstHopPostCore: publishedPostCore(snapshot.firstHopPostCore, sanitize),
     backupRollback: publishedBackupRollback(snapshot, sanitize),
+    ...(snapshot.packageIntegrity
+      ? { packageIntegrity: publishedPackageIntegrity(snapshot.packageIntegrity) }
+      : {}),
     timings,
     phases: boundedList(snapshot.phases).map((event) => {
       if (
@@ -1735,6 +1900,9 @@ export function publishDiagnostics(
     config: {},
     omissions,
   };
+  if (snapshot.packageIntegrity) {
+    report.packageIntegrity = publishedPackageIntegrity(snapshot.packageIntegrity);
+  }
   // Re-project the allowlist: the container cannot add upload fields or supply
   // arbitrary omission text. Redact every permitted free-text field on the host.
   for (const label of [

@@ -291,7 +291,7 @@ write_summary() {
     node --input-type=module <<'NODE'
 import fs from "node:fs";
 import path from "node:path";
-import { readPostCoreSnapshot } from "./scripts/e2e/lib/upgrade-survivor/diagnostics.mjs";
+import { readPostCoreSnapshot, readPackageIntegrityEvents } from "./scripts/e2e/lib/upgrade-survivor/diagnostics.mjs";
 const phaseLog = process.env.SUMMARY_PHASE_LOG;
 const phases = fs.existsSync(phaseLog)
   ? fs.readFileSync(phaseLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
@@ -343,6 +343,10 @@ const summary = {
   backupRollback: process.env.SUMMARY_SCENARIO === "legacy-operator-state"
     ? readJsonOrNull(process.env.SUMMARY_BACKUP_ROLLBACK)
     : undefined,
+  ...(process.env.SUMMARY_SCENARIO === "legacy-operator-state" &&
+    process.env.SUMMARY_BASELINE_VERSION === "2026.9.4" &&
+    process.env.SUMMARY_UPDATE_RESTART_MODE === "manual"
+    ? { packageIntegrity: readPackageIntegrityEvents(path.dirname(process.env.SUMMARY_JSON)) } : {}),
   timings: {
     startupSeconds: numberOrNull(process.env.SUMMARY_START_SECONDS),
     updateRestartSeconds: numberOrNull(process.env.SUMMARY_UPDATE_RESTART_SECONDS),
@@ -2380,6 +2384,14 @@ if [ "$SCENARIO" = "legacy-operator-state" ]; then
     phase patch-restored-index node scripts/e2e/lib/upgrade-survivor/legacy-operator-restored-index.mjs patch
     phase stop-restored-index-baseline stop_gateway
     phase restore-baseline-index node scripts/e2e/lib/upgrade-survivor/legacy-operator-restored-index.mjs restore
+    # Public logging settings preserve the old driver's own scan events without changing its budget.
+    openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw config set logging.file "$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$ARTIFACT_ROOT/diagnostics/package-integrity.log")" --strict-json \
+      >"$ARTIFACT_ROOT/integrity-logging-config.out" 2>"$ARTIFACT_ROOT/integrity-logging-config.err" &&
+      openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw config set logging.consoleLevel '"info"' --strict-json \
+        >>"$ARTIFACT_ROOT/integrity-logging-config.out" 2>>"$ARTIFACT_ROOT/integrity-logging-config.err" &&
+      openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" openclaw config set logging.level '"debug"' --strict-json \
+        >>"$ARTIFACT_ROOT/integrity-logging-config.out" 2>>"$ARTIFACT_ROOT/integrity-logging-config.err" ||
+      echo "Integrity diagnostics configuration unavailable; preserving the update test outcome." >&3
     # Do not restart the published Gateway after restoring stale metadata over its current SQLite state.
   fi
   phase prepare-schema-expectation prepare_schema_expectation

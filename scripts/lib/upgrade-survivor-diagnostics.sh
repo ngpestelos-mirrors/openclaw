@@ -8,6 +8,7 @@ prepare_diagnostics_capture() {
       "$ARTIFACT_DIR/candidate-cohort.json" \
       "$ARTIFACT_DIR/legacy-operator-restored-index.json" \
       "$ARTIFACT_DIR"/restored-index-{post-update,candidate-import,rollback}.json \
+      "$ARTIFACT_DIR"/diagnostics/package-integrity{,.1,.2,.3,.4,.5}.log \
       "$ARTIFACT_DIR"/legacy-operator-baseline-turn.{out,err} \
       "$ARTIFACT_DIR"/legacy-operator-candidate-turn.{out,err} \
       "$ARTIFACT_DIR/missing-load-path/baseline-gateway.log" \
