@@ -46,10 +46,12 @@ import { setTelegramPluginStateRuntimeForTests } from "./runtime-state.test-supp
 import type { TelegramRuntime } from "./runtime.types.js";
 
 vi.mock("openclaw/plugin-sdk/conversation-runtime", { spy: true });
+vi.mock("openclaw/plugin-sdk/conversation-binding-runtime", { spy: true });
 
 const harness = await import("./bot.create-telegram-bot.test-harness.js");
 const pluginStateTestRuntime = await import("openclaw/plugin-sdk/plugin-state-test-runtime");
 const conversationRuntime = await import("openclaw/plugin-sdk/conversation-runtime");
+const bindingRuntime = await import("openclaw/plugin-sdk/conversation-binding-runtime");
 const telegramMediaResolver = await import("./bot/delivery.resolve-media.js");
 const tempStateDirs: string[] = [];
 let previousStateDir: string | undefined;
@@ -89,9 +91,7 @@ const {
   resetTelegramTopicNameCacheForTest,
 } = await import("./runtime.test-support.js");
 const { setTelegramRuntime } = await import("./runtime.js");
-let createTelegramBot: (
-  opts: TelegramBotOptions,
-) => ReturnType<typeof import("./bot-core.js").createTelegramBotCore>;
+let createTelegramBot: (opts: TelegramBotOptions) => ReturnType<typeof createTelegramBotBase>;
 
 function createTelegramBotTestStateDir(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "openclaw-telegram-bot-"));
@@ -1205,7 +1205,7 @@ describe("createTelegramBot", () => {
     const releasePreparation = createDeferred<void>();
     let sourceWork: Promise<unknown> | undefined;
     let stopDispatch: ReturnType<typeof dispatchSpooledNativeStop> | undefined;
-    const bindingRoute = vi.spyOn(conversationRuntime, "resolveConfiguredBindingRoute");
+    const bindingRoute = vi.spyOn(bindingRuntime, "resolveConfiguredBindingRoute");
     const bindingReady = vi.spyOn(conversationRuntime, "ensureConfiguredBindingRouteReady");
 
     try {
