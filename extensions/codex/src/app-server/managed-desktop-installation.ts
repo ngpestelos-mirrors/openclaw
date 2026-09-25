@@ -2,13 +2,12 @@
 import fs, { type BigIntStats } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { withFileLock } from "openclaw/plugin-sdk/file-lock";
+import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
 import {
   assertNoSymlinkParentsSync,
-  extractErrorCode,
   readRegularFileSync,
-  replaceFileAtomic,
-} from "openclaw/plugin-sdk/security-runtime";
+} from "openclaw/plugin-sdk/file-access-runtime";
+import { withFileLock } from "openclaw/plugin-sdk/file-lock";
 
 export type CodexManagedDesktopSelection = Readonly<{
   version: 1;
@@ -131,6 +130,9 @@ export async function publishCodexManagedDesktopSelection(params: {
       },
     },
     async () => {
+      // Descriptor registration only reads selection; load the broader mutation
+      // facade during explicit publication, then recheck authority and identities.
+      const { replaceFileAtomic } = await import("openclaw/plugin-sdk/security-runtime");
       assertUnchanged();
       await replaceFileAtomic({
         filePath: receiptPath,

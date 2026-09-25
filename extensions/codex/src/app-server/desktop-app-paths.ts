@@ -1,7 +1,7 @@
 /** Shared path candidates for Codex's macOS desktop app bundle. */
 import { existsSync, lstatSync } from "node:fs";
 import path from "node:path";
-import { assertNoSymlinkParentsSync } from "openclaw/plugin-sdk/security-runtime";
+import { assertNoSymlinkParentsSync } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   isCodexManagedDesktopAppPath,
   readCodexManagedDesktopSelection,
