@@ -12,6 +12,10 @@ import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { repairAuditEventsSchema } from "../state/openclaw-state-db-audit-migration.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import {
+  closeOpenClawStateDatabaseByPathAsync,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
+import {
   createBuiltRuntime,
   createSourceRuntime,
   runSourceRuntime,
@@ -251,15 +255,31 @@ describe("startup admission before persistent writes", () => {
       fs.mkdirSync(path.dirname(databasePath), { recursive: true });
       fs.mkdirSync(path.join(stateDir, "agents", "main", "agent"), { recursive: true });
       fs.mkdirSync(workspaceDir);
-      fs.writeFileSync(
-        databasePath,
-        gunzipSync(fs.readFileSync("test/fixtures/sqlite/openclaw-state-v2026.7.1-2.sqlite.gz")),
-      );
+      if (selectedSession) {
+        // Reach the legacy session refusal without an earlier registry-schema refusal.
+        openOpenClawStateDatabase({
+          path: databasePath,
+          env: {
+            HOME: root,
+            USERPROFILE: root,
+            OPENCLAW_STATE_DIR: stateDir,
+            OPENCLAW_CONFIG_PATH: configPath,
+          },
+        });
+        await closeOpenClawStateDatabaseByPathAsync(databasePath);
+      } else {
+        fs.writeFileSync(
+          databasePath,
+          gunzipSync(fs.readFileSync("test/fixtures/sqlite/openclaw-state-v2026.7.1-2.sqlite.gz")),
+        );
+      }
       // Keeping this idle connection open retains a real WAL in the manifest.
       const prepared = new DatabaseSync(databasePath);
       try {
         prepared.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0");
-        repairAuditEventsSchema(prepared);
+        if (!selectedSession) {
+          repairAuditEventsSchema(prepared);
+        }
         const identity = canonicalIdentity ? generateStoredDeviceIdentity() : undefined;
         if (identity) {
           prepared
@@ -315,7 +335,33 @@ describe("startup admission before persistent writes", () => {
         if (selectedSession) {
           const legacyStore = path.join(stateDir, "external", "agent", "sessions.json");
           fs.mkdirSync(path.dirname(legacyStore), { recursive: true });
-          fs.writeFileSync(legacyStore, "{}\n");
+          fs.writeFileSync(
+            legacyStore,
+            JSON.stringify({
+              "agent:agent:retained": {
+                sessionId: "retained-session",
+                sessionFile: "retained-session.jsonl",
+                updatedAt: 1,
+              },
+            }),
+          );
+          fs.writeFileSync(
+            path.join(path.dirname(legacyStore), "retained-session.jsonl"),
+            [
+              { type: "session", version: 3, id: "retained-session" },
+              {
+                type: "message",
+                id: "retained-message",
+                parentId: null,
+                message: {
+                  role: "user",
+                  content: [{ type: "text", text: "Retained before startup" }],
+                },
+              },
+            ]
+              .map((entry) => JSON.stringify(entry))
+              .join("\n") + "\n",
+          );
         }
         if (workspace) {
           fs.writeFileSync(
@@ -340,8 +386,10 @@ describe("startup admission before persistent writes", () => {
         const configBefore = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : null;
         const schemaBefore = schemaMetadata(databasePath);
         const before = manifest(stateDir);
-        expect(schemaBefore.userVersion).toBe(1);
-        expect(Boolean(before[path.join("state", "openclaw.sqlite-wal")])).toBe(!consolidated);
+        expect(schemaBefore.userVersion).toBe(selectedSession ? OPENCLAW_STATE_SCHEMA_VERSION : 1);
+        if (!selectedSession) {
+          expect(Boolean(before[path.join("state", "openclaw.sqlite-wal")])).toBe(!consolidated);
+        }
         const entry = `
         const { ensureConfigReady } = await import(${JSON.stringify(runtimeUrl(doctorConfigRuntimeEntrypoints.configGuard))});
         const { ExitError } = await import(${JSON.stringify(runtimeUrl(doctorConfigRuntimeEntrypoints.runtime))});

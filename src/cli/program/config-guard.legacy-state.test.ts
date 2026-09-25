@@ -76,20 +76,21 @@ it.each([
           ).toBeUndefined();
 
           await prepareDoctorContext(configPath);
+          const { db: repairedDb } = openOpenClawStateDatabase();
 
           await expect(fs.access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
           expect(
-            db
+            repairedDb
               .prepare(
                 "SELECT value_json FROM config_machine_state WHERE state_key = 'voicewake.triggers'",
               )
               .get(),
           ).toEqual({ value_json: '["test wake phrase"]' });
-          const receipts = db.prepare("SELECT count(*) AS count FROM migration_runs").get();
+          const receipts = repairedDb.prepare("SELECT count(*) AS count FROM migration_runs").get();
           expect(receipts?.count).toBeGreaterThan(0);
           testApi.resetConfigGuardStateForTests();
           await bootstrap();
-          expect(db.prepare("SELECT count(*) AS count FROM migration_runs").get()).toEqual(
+          expect(repairedDb.prepare("SELECT count(*) AS count FROM migration_runs").get()).toEqual(
             receipts,
           );
         } finally {

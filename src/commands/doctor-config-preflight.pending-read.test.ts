@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -56,30 +56,53 @@ it("reuses Doctor's readonly child for pending records and discovery, then joins
       );
       return result;
     });
-    const prepareSnapshot = snapshotSource.prepareSqliteReadOnlyLocation;
-    const snapshotChildren: Array<number | undefined> = [];
-    vi.spyOn(snapshotSource, "prepareSqliteReadOnlyLocation").mockImplementation(
-      async (...args) => {
-        const prepared = await prepareSnapshot(...args);
-        const sessionIndex = vi
-          .mocked(spawn)
-          .mock.calls.findIndex(([, argv]) => argv?.includes(SQLITE_READONLY_CHILD_ARG));
-        snapshotChildren.push(vi.mocked(spawn).mock.results[sessionIndex]?.value.pid);
-        return prepared;
-      },
-    );
+    const preparedSnapshots = vi.spyOn(snapshotSource, "prepareSqliteReadOnlyLocation");
+    const spawnChild = vi.mocked(spawn).getMockImplementation();
+    if (!spawnChild) {
+      throw new Error("Real child launch observer is unavailable");
+    }
+    const requestModes = new Map<ChildProcess, string[]>();
+    const observeChild: typeof spawnChild = (...args) => {
+      const child = spawnChild(...args);
+      if (Array.isArray(args[1]) && args[1].includes(SQLITE_READONLY_CHILD_ARG)) {
+        const modes: string[] = [];
+        requestModes.set(child, modes);
+        const send = child.send.bind(child);
+        vi.spyOn(child, "send").mockImplementation((...sendArgs) => {
+          const message = sendArgs[0];
+          modes.push(
+            message === "close"
+              ? "close"
+              : typeof message === "object" &&
+                  message !== null &&
+                  "args" in message &&
+                  Array.isArray(message.args) &&
+                  typeof message.args[0] === "string"
+                ? message.args[0]
+                : "unexpected",
+          );
+          return send(...sendArgs);
+        });
+      }
+      return child;
+    };
     try {
-      const result = await runDoctorConfigPreflight({
-        migrateLegacyConfig: false,
-        doctorOnlyStateMigrations: true,
-        observe: false,
+      const completed: { result?: Awaited<ReturnType<typeof runDoctorConfigPreflight>> } = {};
+      await vi.mocked(spawn).withImplementation(observeChild, async () => {
+        completed.result = await runDoctorConfigPreflight({
+          migrateLegacyConfig: false,
+          doctorOnlyStateMigrations: true,
+          observe: false,
+        });
       });
+      const result = completed.result;
+      if (!result) {
+        throw new Error("Doctor preflight did not settle");
+      }
       expect(result.snapshot.valid).toBe(true);
       expect(pendingReadLaunches.length).toBeGreaterThan(0);
       expect(pendingReadLaunches.every((count) => count === 0)).toBe(true);
-      expect(snapshotChildren.length).toBeGreaterThanOrEqual(2);
-      expect(snapshotChildren[0]).toBeTypeOf("number");
-      expect(new Set(snapshotChildren).size).toBe(1);
+      expect(preparedSnapshots.mock.calls.length).toBeGreaterThanOrEqual(2);
       const sessions = vi
         .mocked(spawn)
         .mock.calls.flatMap(([, argv], index) =>
@@ -87,9 +110,32 @@ it("reuses Doctor's readonly child for pending records and discovery, then joins
             ? [vi.mocked(spawn).mock.results[index]?.value]
             : [],
         );
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]?.exitCode).toBe(0);
-      expect(sessions[0]?.connected).toBe(false);
+      // Token custodians use the same launch argv as the reused read child.
+      // Actual requests distinguish the owners without assuming their launch order.
+      const readers = sessions.filter((child) => requestModes.get(child)?.includes("sync"));
+      expect(readers).toHaveLength(1);
+      for (const child of sessions) {
+        const modes = requestModes.get(child);
+        expect(modes).toBeDefined();
+        if (!modes) {
+          throw new Error("Unobserved read-only child requests");
+        }
+        expect(modes.at(-1)).toBe("close");
+        if (child === readers[0]) {
+          expect(modes.filter((mode) => mode === "sync").length).toBeGreaterThanOrEqual(2);
+          expect(modes.every((mode) => mode === "sync" || mode === "close")).toBe(true);
+        } else {
+          const creates = modes.filter((mode) => mode === "staging-create").length;
+          expect(creates).toBeGreaterThan(0);
+          expect(modes.filter((mode) => mode === "staging-retire")).toHaveLength(creates);
+          expect(
+            modes.every((mode) => ["staging-create", "staging-retire", "close"].includes(mode)),
+          ).toBe(true);
+        }
+        expect(child.exitCode).toBe(0);
+        expect(child.signalCode).toBeNull();
+        expect(child.connected).toBe(false);
+      }
       expect(checkpoint.hasActiveStartupMigrationLease()).toBe(false);
     } finally {
       await closeOpenClawStateDatabaseAsync();
@@ -97,9 +143,10 @@ it("reuses Doctor's readonly child for pending records and discovery, then joins
   });
 });
 
-it.each([false, true])(
-  "awaits pending inputs before backup selection (Gateway readiness: %s)",
-  async (gateway) => {
+it.each(["Doctor repair", "Gateway readiness"] as const)(
+  "awaits pending inputs before backup selection through %s",
+  async (owner) => {
+    const gateway = owner === "Gateway readiness";
     await withDoctorConfigPreflightHome(async (home) => {
       const stateDir = path.join(home, ".openclaw");
       const configPath = path.join(stateDir, "openclaw.json");
@@ -152,13 +199,21 @@ it.each([false, true])(
         },
       );
       const acquire = vi.spyOn(checkpoint, "acquireStartupMigrationLeaseWithWait");
-      const operation = runStartupConfigPreflight({
-        gateway,
-        observe: false,
-        validateStartupConfig: () => {
-          snapshotsClosedAtValidation.push(snapshotClosed);
-        },
-      });
+      const operation = gateway
+        ? runStartupConfigPreflight({
+            gateway: true,
+            observe: false,
+            validateStartupConfig: () => {
+              snapshotsClosedAtValidation.push(snapshotClosed);
+            },
+          })
+        : runDoctorConfigPreflight({
+            migrateState: false,
+            migrateLegacyConfig: false,
+            repairPrefixedConfig: true,
+            invalidConfigNote: false,
+            observe: false,
+          });
       const settled = operation.then(() => "settled" as const);
       try {
         expect(await Promise.race([held.promise.then(() => "held" as const), settled])).toBe(
