@@ -137,16 +137,20 @@ export async function waitForScheduledTaskRunningEvidence(
   }
 }
 
-export async function isRegisteredScheduledTask(
+async function readScheduledTaskRegistration(
   env: GatewayServiceEnv,
   timeoutMs?: number,
 ): Promise<boolean> {
-  const res = await execSchtasks(["/Query", "/TN", resolveTaskName(env)], timeoutMs).catch(() => ({
-    code: 1,
-    stdout: "",
-    stderr: "",
-  }));
+  const res = await execSchtasks(["/Query", "/TN", resolveTaskName(env)], timeoutMs);
+  if (res.interruption) {
+    throw new Error(res.interruption.detail);
+  }
   return res.code === 0;
+}
+
+// Ordinary install/control routing retains its best-effort Startup fallback.
+export async function isRegisteredScheduledTask(env: GatewayServiceEnv): Promise<boolean> {
+  return readScheduledTaskRegistration(env).catch(() => false);
 }
 
 export async function launchFallbackTaskScript(
@@ -493,7 +497,7 @@ export async function startStartupEntry(
 export async function isScheduledTaskInstalled(args: GatewayServiceEnvArgs): Promise<boolean> {
   const effectiveEnv = args.env ?? (process.env as GatewayServiceEnv);
   return (
-    (await isRegisteredScheduledTask(effectiveEnv, args.timeoutMs)) ||
+    (await readScheduledTaskRegistration(effectiveEnv, args.timeoutMs)) ||
     (await isStartupEntryInstalled(effectiveEnv))
   );
 }

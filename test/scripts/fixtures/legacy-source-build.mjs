@@ -131,6 +131,20 @@ const modules = new Map([
     `export const discoverManagedGatewayBindings = async () => ${JSON.stringify(mode === "sibling" ? [{ profile: "sibling", env: { OPENCLAW_PROFILE: "sibling" } }] : [])};`,
   ],
 ]);
+const memoryUrl = pathToFileURL(path.join(source, "scripts/lib/process-memory.mts")).href;
+// The compiler is synthetic; its capacity must not depend on other CI workers.
+modules.set(
+  "scripts/lib/process-memory",
+  `import { readProcessMemoryCapacity as actual } from ${JSON.stringify(memoryUrl + "?original")};
+  export function readProcessMemoryCapacity() {
+    const bytes = 16 * 1024 ** 3;
+    return actual({
+      cgroupMemoryLimitBytes: bytes,
+      procMemTotalBytes: bytes,
+      availableMemoryBytes: bytes,
+    });
+  }`,
+);
 const managedUrl = pathToFileURL(path.join(source, "scripts/lib/managed-child-process.mts")).href;
 const compilerResponse = `
   export * from ${JSON.stringify(managedUrl + "?original")};

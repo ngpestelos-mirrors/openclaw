@@ -3885,10 +3885,14 @@ console.log(JSON.stringify({ ok: true, channels: {} }));
     const beforeTracking = git(mirror, "rev-parse", "refs/remotes/origin/main");
     const binDir = writeFixtureGitBin(root, origin);
 
-    const result = spawnSync(process.execPath, [script, "--checkout", mirror], {
-      encoding: "utf8",
-      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
-    });
+    const result = spawnSync(
+      process.execPath,
+      [...updaterLoaderArgs, script, "--checkout", mirror],
+      {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
+      },
+    );
     expect(result.status).toBe(1);
     expect(git(mirror, "rev-parse", "HEAD")).toBe(before);
     expect(git(mirror, "rev-parse", "refs/remotes/origin/main")).toBe(beforeTracking);
