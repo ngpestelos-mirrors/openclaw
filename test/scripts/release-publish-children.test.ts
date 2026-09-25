@@ -18,6 +18,10 @@ const startCorePublication = workflow.jobs.publish.steps.find(
 
 type Job = { name: string; status: string; conclusion: string | null };
 type RunState = { status: string; conclusion?: string; jobs: Job[] };
+type PendingDeployment = {
+  environment: { id: number; name: string };
+  current_user_can_approve: boolean;
+};
 
 const job = (name: string, conclusion: string | null, status = "completed"): Job => ({
   name,
@@ -45,7 +49,7 @@ afterEach(() => {
 
 // Each `gh run view --json status,...` poll advances that run through its
 // states; a workflow dispatch creates the next run id in `runs` order.
-function fixture(runs: Record<string, RunState[]>) {
+function fixture(runs: Record<string, RunState[]>, pendingDeployments: PendingDeployment[] = []) {
   const root = mkdtempSync(join(tmpdir(), "release-publish-children-"));
   roots.push(root);
   mkdirSync(join(root, "bin"));
@@ -87,7 +91,10 @@ if (args[0] === 'run' && args[1] === 'view') {
   else if (json === 'conclusion,url,createdAt,updatedAt') console.log(JSON.stringify({ conclusion: current.conclusion, url: url(id), createdAt: '2026-09-23T20:00:00Z', updatedAt: '2026-09-23T20:05:00Z' }));
   else throw new Error('Unexpected view: ' + JSON.stringify(args));
 } else if (args[0] === 'api' && args.some((arg) => arg.endsWith('/pending_deployments'))) {
-  console.log('[]');
+  const pending = ${JSON.stringify(pendingDeployments)};
+  const method = args[args.indexOf('-X') + 1];
+  if (pending.length) appendFileSync(root + '/calls', method + ' ' + process.env.GH_TOKEN + '\\n');
+  console.log(JSON.stringify(method === 'POST' ? {} : pending));
 } else if (args[0] === 'api' && args.some((arg) => arg.includes('/commits/'))) {
   console.log(${JSON.stringify(workflowSha)});
 } else if (args[0] === 'api' && args.some((arg) => arg.endsWith('/dispatches'))) {
@@ -133,6 +140,24 @@ if (args[0] === 'run' && args[1] === 'view') {
 }
 
 describe("plugin npm child failure propagation", () => {
+  it("approves child gates with the delegated token and falls back to the workflow token", () => {
+    for (const approverToken of ["release-manager-token", ""]) {
+      const result = fixture({ 91: succeeded }, [
+        { environment: { id: 7, name: "npm-release" }, current_user_can_approve: true },
+      ]).run(`
+        source "$HELPER_SCRIPT"
+        export GH_TOKEN=workflow-token
+        export RELEASE_CHILD_APPROVER_TOKEN=${approverToken}
+        approve_pending_deployments plugin-npm-release.yml 91 "$PARENT_WORKFLOW_SHA"
+      `);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.events).toEqual([
+        `GET ${approverToken || "workflow-token"}`,
+        `POST ${approverToken || "workflow-token"}`,
+      ]);
+    }
+  });
+
   it.each([
     {
       label: "a pre-publish failure while the child is still running",

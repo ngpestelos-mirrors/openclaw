@@ -4,7 +4,9 @@ Use `$one-password` before any credential operation, and `$release-private`
 when available for maintainer credential locators. Core package publishing is
 GitHub OIDC trusted publishing; never substitute `NPM_TOKEN` or plugin OTP
 commands. GitHub's `npm-release` environment must be approved by
-`@openclaw/openclaw-release-managers`.
+`@openclaw/openclaw-release-managers`; the approved parent then writes the
+attested release approval receipt that its children verify, and approves the
+npm children's gates with the `RELEASE_CHILD_APPROVER_TOKEN` environment secret.
 
 The regular and extended-stable publish parent runs from the protected
 `release-publish/<tooling-sha12>-<epoch>` tag minted at the pinned Tooling SHA;

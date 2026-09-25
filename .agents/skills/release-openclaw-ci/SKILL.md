@@ -520,21 +520,31 @@ and must be cleared after the release.
 
 ### Publish children
 
-- npm children (`Plugin NPM Release`, `openclaw-npm-release.yml`) need their
-  own `npm-release` approval; the parent's approval does not always propagate,
-  and an unapproved core child sits `waiting` silently. Watch every child and
-  approve npm children only (environment id `13010111854`):
+- The parent's `npm-release` approval mints the attested
+  `openclaw-release-approval-v1-<parent run>-<attempt>` receipt; bot-dispatched
+  children verify it (`scripts/release-approval-receipt.mjs verify`) before
+  their gates. The ClawHub OIDC child skips its `clawhub-plugin-release` gate
+  on a verified receipt. npm children (`Plugin NPM Release`,
+  `openclaw-npm-release.yml`) keep `npm-release` (npm trusted publishers are
+  bound to it, `npm trust list openclaw`); the parent approves their gates
+  with the `npm-release` environment secret `RELEASE_CHILD_APPROVER_TOKEN`
+  (release-manager fine-grained token, `Deployments: write`, `Actions: read`).
+  The workflow token itself cannot approve (`canApprove=false`), so without
+  that secret an unapproved npm child sits `waiting` silently. Watch every
+  child and approve npm children only (environment id `13010111854`):
   ```bash
   gh api repos/openclaw/openclaw/actions/runs/<child>/pending_deployments
   gh api -X POST repos/openclaw/openclaw/actions/runs/<child>/pending_deployments \
     -f state=approved -f comment="<reason>" -F 'environment_ids[]=13010111854'
   ```
 - Never approve ClawHub children (`plugin-clawhub-release.yml`,
-  `plugin-clawhub-new.yml`) by hand: `Revalidate trusted tooling identity`
-  downloads `openclaw-clawhub-recovery-approval-<run>-1`, which only the
-  parent's approval path uploads, so every publish job fails
-  `Artifact not found`. If the parent died before approving them, cancel them
-  and re-dispatch the parent.
+  `plugin-clawhub-new.yml`) by hand. `plugin-clawhub-release.yml` needs no
+  approval on the bot route (receipt-verified); the `Artifact not found` line
+  for `openclaw-clawhub-recovery-approval-<run>-1` is a non-fatal probe, and a
+  late human approval fails at `Revalidate trusted tooling identity` with
+  `parent state completed/failure is not allowed by authorization route`
+  once the parent has died (2026.9.6: runs 35930335388/35930341394). If the
+  parent died, cancel the children and re-dispatch the parent.
 - Before re-dispatching a failed publish parent, sweep its stale children;
   otherwise the next parent fails at `Dispatch publish workflows` with
   `ClawHub dispatch blocked by waiting run`. The parent's own cleanup misses

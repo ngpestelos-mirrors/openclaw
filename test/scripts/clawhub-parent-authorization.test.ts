@@ -241,7 +241,9 @@ describe("ClawHub parent publication authorization", () => {
       >;
     };
     const approval = workflow.jobs.approve_plugins_clawhub_release;
-    expect(approval.environment).toBe("clawhub-plugin-release");
+    expect(approval.environment).toBe(
+      "${{ needs.validate_release_publish_approval.outputs.parent_approval != 'receipt' && 'clawhub-plugin-release' || '' }}",
+    );
     expect(approval.needs).toContain("validate_release_publish_approval");
     expect(approval.if).toContain("needs.validate_release_publish_approval.result == 'success'");
     const validation = workflow.jobs.validate_release_publish_approval;

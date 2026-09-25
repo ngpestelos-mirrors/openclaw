@@ -310,6 +310,7 @@ approve_pending_deployments() {
   local run_id="$2"
   local expected_sha="$3"
   local only_environment="${4:-}"
+  local approver_token="${RELEASE_CHILD_APPROVER_TOKEN:-${GH_TOKEN:-}}"
   local pending_json approved
 
   if ! verify_child_run_sha "$workflow" "$run_id" "$expected_sha"; then
@@ -317,11 +318,19 @@ approve_pending_deployments() {
     return 2
   fi
 
-  if ! pending_json="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/pending_deployments" 2>/dev/null)"; then
+  if ! pending_json="$(GH_TOKEN="${approver_token}" gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/pending_deployments" 2>/dev/null)"; then
     return 1
   fi
   if [[ -z "${pending_json}" ]] || ! printf '%s' "${pending_json}" | jq -e 'length > 0' >/dev/null 2>&1; then
     return 1
+  fi
+
+  if [[ -z "${RELEASE_CHILD_APPROVER_TOKEN:-}" ]]; then
+    local env_name
+    env_name="$(printf '%s' "${pending_json}" | jq -r '[.[] | select(.current_user_can_approve == false)][0].environment.name // empty')"
+    if [[ -n "${env_name}" ]]; then
+      echo "${workflow}: the workflow token cannot approve ${env_name}; set the npm-release environment secret RELEASE_CHILD_APPROVER_TOKEN or approve manually." >&2
+    fi
   fi
 
   approved=0
@@ -330,7 +339,7 @@ approve_pending_deployments() {
       continue
     fi
     echo "${workflow}: approving pending environment ${env_name} (${env_id})"
-    if ! gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/pending_deployments" \
+    if ! GH_TOKEN="${approver_token}" gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/pending_deployments" \
       -F "environment_ids[]=${env_id}" \
       -f state=approved \
       -f comment="Approve child release gate after parent release approval" >/dev/null; then

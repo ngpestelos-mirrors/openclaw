@@ -505,11 +505,22 @@ The full checklist below explains each step; this section decides the default.
    publishes and before the parent's completion verify, because that verify
    fails on a stale `beta` tag and leaves the release drafted. "Visible" means
    `npm view openclaw versions --prefer-online` lists it, 5-6 minutes after the
-   core child's `+ openclaw@YYYY.M.PATCH`. Each npm child (`Plugin NPM
-Release`, `openclaw-npm-release.yml`) needs its own `npm-release` approval;
-   watch `gh api repos/openclaw/openclaw/actions/runs/<child>/pending_deployments`
-   and approve npm children only. Never approve a ClawHub child by hand (its
-   publish jobs then fail `Artifact not found`); cancel it and re-dispatch the
+   core child's `+ openclaw@YYYY.M.PATCH`. The parent's `npm-release` approval
+   is the one release approval: the approved `publish` job writes and attests
+   the `openclaw-release-approval-v1-<run>-<attempt>` receipt (tag, target SHA,
+   tooling identity, approver) before dispatching children, and every
+   bot-dispatched child verifies it in its trusted-tooling validation job. The
+   ClawHub child then runs without its `clawhub-plugin-release` gate. npm
+   children keep the `npm-release` gate because their npm trusted publishers
+   are bound to that environment; the parent approves those gates with the
+   `npm-release` environment secret `RELEASE_CHILD_APPROVER_TOKEN` (a
+   fine-grained token of a `release-managers-openclaw` member with
+   `Deployments: write` and `Actions: read` on `openclaw/openclaw`). Without
+   that secret the workflow token cannot approve (`canApprove=false`); watch
+   `gh api repos/openclaw/openclaw/actions/runs/<child>/pending_deployments`
+   and approve npm children by hand. Direct human dispatch of a child keeps
+   its own gate and does not use the receipt. Never approve a ClawHub child by
+   hand; cancel it and re-dispatch the
    parent. Before any re-dispatch, reject and cancel the failed parent's stale
    `waiting`/`queued` children or the new parent fails
    `ClawHub dispatch blocked by waiting run`. If the parent failed only at its
