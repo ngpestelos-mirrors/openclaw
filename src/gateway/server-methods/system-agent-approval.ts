@@ -15,8 +15,12 @@ import {
 } from "../../infra/system-agent-approvals.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { evaluateSystemAgentConfigChange } from "../../system-agent/operations-execution-helpers.js";
 import { describeSystemAgentPersistentOperation } from "../../system-agent/operations.js";
-import { changesPermissionPolicy } from "../../system-agent/permission-policy.js";
+import {
+  admitUnchangedPermissionPolicy,
+  changesPermissionPolicy,
+} from "../../system-agent/permission-policy.js";
 import type { AgentRuntimeDelegatedAuthority } from "../agent-runtime-identity-token.js";
 import { ApprovalObserverClosedError } from "../exec-approval-lifecycle.js";
 import { sameWorkerSessionTurnClaim } from "../worker-environments/placement-record.js";
@@ -198,6 +202,7 @@ export async function prepareDelegatedSystemAgentApproval(params: {
       const applyDecision = async (
         decision: ExecApprovalDecision | null,
         terminalStatus?: "expired" | "cancelled",
+        automatic = false,
       ) => {
         if (decision && decision !== "deny") {
           assertLiveApprovalAuthority();
@@ -207,6 +212,7 @@ export async function prepareDelegatedSystemAgentApproval(params: {
           proposal.hash,
           assertLiveApprovalAuthority,
           terminalStatus,
+          automatic ? admitUnchangedPermissionPolicy : undefined,
         );
       };
       const resolveCorrection = async (
@@ -243,9 +249,21 @@ export async function prepareDelegatedSystemAgentApproval(params: {
       };
       // Only a fresh proposal belongs to this input. An existing operator request
       // stays bound to its original decision, even if this caller has Full Access.
-      // Permission policy always waits for a human, so a run cannot widen itself.
-      if (callerIdentity?.fullPermission === true && !changesPermissionPolicy(proposal.operation)) {
-        const reply = await applyDecision("allow-once");
+      // The canonical writer evaluates actual effects, not proximity to policy keys.
+      // Carry the same policy assertion into the fresh write snapshot as well: a
+      // concurrent tightening must not turn a previously harmless proposal into
+      // an automatic restoration of the old permissions.
+      let changesPolicy = false;
+      if (
+        callerIdentity?.fullPermission === true &&
+        (proposal.operation.kind === "config-set" || proposal.operation.kind === "config-set-ref")
+      ) {
+        const change = await evaluateSystemAgentConfigChange(proposal.operation);
+        assertLiveApprovalAuthority();
+        changesPolicy = changesPermissionPolicy(change.before, change.after);
+      }
+      if (callerIdentity?.fullPermission === true && !changesPolicy) {
+        const reply = await applyDecision("allow-once", undefined, true);
         if (!reply) {
           throw new Error("OpenClaw change is no longer pending. Retry the request.");
         }

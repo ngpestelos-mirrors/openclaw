@@ -4,8 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createSystemAgentTool } from "../agents/tools/system-agent-tool.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../config/config.js";
-import { SystemAgentOperationExitError } from "./operations-execution-helpers.js";
+import {
+  evaluateSystemAgentConfigChange,
+  SystemAgentOperationExitError,
+} from "./operations-execution-helpers.js";
 import { executeSystemAgentOperation, type SystemAgentCommandDeps } from "./operations.js";
+import { changesPermissionPolicy } from "./permission-policy.js";
 import { createSystemAgentTestRuntime } from "./system-agent.runtime.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -161,6 +165,89 @@ describe("executeSystemAgentOperation approved config writes", () => {
         );
         expect(await fs.readFile(configPath, "utf8")).toBe(raw);
       }
+    },
+  );
+});
+
+describe("delegated config proposal evaluation", () => {
+  it.each(["gateway.auth.token", "gateway.remote.token"])(
+    "evaluates SecretRef effects at %s without resolving or writing credentials",
+    async (configKey) => {
+      const raw = JSON.stringify({ secrets: { providers: { fixture: { source: "env" } } } });
+      const configPath = await prepareConfig(raw);
+      const change = await evaluateSystemAgentConfigChange({
+        kind: "config-set-ref",
+        path: configKey,
+        source: "env",
+        provider: "fixture",
+        id: "FIXTURE_UNSET_CREDENTIAL",
+      });
+      expect(changesPermissionPolicy(change.before, change.after)).toBe(
+        configKey === "gateway.auth.token",
+      );
+      expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+    },
+  );
+
+  it("compares schema-normalized values rather than raw JSON representation", async () => {
+    const raw = JSON.stringify({
+      agents: { defaults: { sandbox: { docker: { setupCommand: "echo fixture" } } } },
+    });
+    const configPath = await prepareConfig(raw);
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: "agents.defaults.sandbox.docker.setupCommand",
+      value: '["echo fixture"]',
+    });
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(false);
+    expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+  });
+
+  it("evaluates legacy roster addressing against the canonical agent entry", async () => {
+    const raw = JSON.stringify({
+      agents: { entries: { research: { tools: { exec: { mode: "deny" } } } } },
+    });
+    const configPath = await prepareConfig(raw);
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: "agents.list[0].tools.exec.mode",
+      value: "full",
+    });
+    expect(change.after.agents?.entries?.research?.tools?.exec?.mode).toBe("full");
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
+    expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+  });
+
+  it("detects indirect policy changes through canonical environment interpolation", async () => {
+    const raw = JSON.stringify({
+      env: { vars: { FIXTURE_POLICY_MODE: "ask" } },
+      tools: { exec: { mode: "${FIXTURE_POLICY_MODE}" } },
+    });
+    const configPath = await prepareConfig(raw);
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: "env.vars.FIXTURE_POLICY_MODE",
+      value: "full",
+    });
+    expect(change.before.tools?.exec?.mode).toBe("ask");
+    expect(change.after.tools?.exec?.mode).toBe("full");
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
+    expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+  });
+
+  it.each([
+    ["tools..exec", "{}"],
+    ["tools.exec", "null"],
+    ["tools.exec.mode", "banana"],
+    ["agents.defaults.tools.profile", "full"],
+  ])(
+    "rejects invalid proposal %s instead of treating it as policy-free",
+    async (configKey, value) => {
+      const configPath = await prepareConfig();
+      await expect(
+        evaluateSystemAgentConfigChange({ kind: "config-set", path: configKey, value }),
+      ).rejects.toThrow();
+      expect(await fs.readFile(configPath, "utf8")).toBe("{}\n");
     },
   );
 });

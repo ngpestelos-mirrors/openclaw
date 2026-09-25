@@ -162,6 +162,7 @@ export type GatewaySystemAgentSession = {
       proposalHash: string,
       beforePersistentApply?: () => void,
       terminalStatus?: "expired" | "cancelled",
+      admitConfigChange?: (change: { before: OpenClawConfig; after: OpenClawConfig }) => boolean,
     ) => Promise<{
       text: string;
       action: "none" | "exit" | "open-tui" | "open-setup";

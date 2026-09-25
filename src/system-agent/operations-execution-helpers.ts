@@ -1,5 +1,7 @@
 // Shared execution helpers keep the public dispatcher small and reviewable.
+
 import { parseConfigSetPath } from "../cli/config-cli-path.js";
+import type { ConfigMutationAdmission } from "../cli/config-cli-runner.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -219,6 +221,7 @@ export type ExecuteOptions = {
    * immediately followed by the persistent effect it authorizes.
    */
   beforePersistentApply?: () => void;
+  admitConfigChange?: ConfigMutationAdmission;
   /** Adopt the exact final binding after a verified model-route write commits. */
   onVerifiedInferenceChanged?: (binding: SystemAgentVerifiedInferenceBinding) => void;
 };
@@ -234,6 +237,7 @@ type PersistentApplyContext = {
   deps?: SystemAgentCommandDeps;
   /** Synchronous authority guard for the owner immediately before mutation. */
   assertPersistentApply?: () => void;
+  admitConfigChange?: ConfigMutationAdmission;
   /** Re-check authority, then enter one persistent side-effect boundary. */
   commit<T>(effect: () => Promise<T> | T): Promise<T>;
 };
@@ -271,6 +275,7 @@ export async function applyPersistentOperation(params: {
   const outcome = await params.run({
     runtime,
     deps: opts.deps,
+    ...(opts.admitConfigChange ? { admitConfigChange: opts.admitConfigChange } : {}),
     ...(assertPersistentApply ? { assertPersistentApply } : {}),
     commit,
   });
@@ -301,6 +306,53 @@ export async function applyPersistentOperation(params: {
   };
 }
 
+/** Keep proposal evaluation and execution on exactly the same CLI input contract. */
+function configSetOperationOptions(
+  operation: Extract<SystemAgentOperation, { kind: "config-set" | "config-set-ref" }>,
+): Parameters<NonNullable<SystemAgentCommandDeps["runConfigSet"]>>[0] {
+  return {
+    path: operation.path,
+    ...(operation.kind === "config-set"
+      ? { value: operation.value, cliOptions: {} }
+      : {
+          cliOptions: {
+            refProvider: operation.provider ?? "default",
+            refSource: operation.source,
+            refId: operation.id,
+          },
+        }),
+  };
+}
+
+/** Inspect through canonical config-set validation without committing a write. */
+export async function evaluateSystemAgentConfigChange(
+  operation: Extract<SystemAgentOperation, { kind: "config-set" | "config-set-ref" }>,
+): Promise<Parameters<ConfigMutationAdmission>[0]> {
+  const { runConfigSet } = await import("../cli/config-cli.js");
+  let change: Parameters<ConfigMutationAdmission>[0] | undefined;
+  const errors: string[] = [];
+  await runConfigSet({
+    ...configSetOperationOptions(operation),
+    runtime: {
+      log: () => {},
+      error: (...args) => errors.push(args.join(" ")),
+      exit: () => {
+        throw new Error(errors.join("\n") || "Config evaluation failed");
+      },
+    },
+    admitChange: (candidate) => {
+      change = candidate;
+      return false;
+    },
+  });
+  if (!change) {
+    throw new Error(
+      "Config evaluation did not produce a validated candidate. No settings were saved.",
+    );
+  }
+  return change;
+}
+
 export async function runConfigSetOperation(params: {
   operation: Extract<SystemAgentOperation, { kind: "config-set" | "config-set-ref" }>;
   ctx: PersistentApplyContext;
@@ -314,16 +366,8 @@ export async function runConfigSetOperation(params: {
     });
   await ctx.commit(() =>
     runConfigSet({
-      path: operation.path,
-      ...(operation.kind === "config-set"
-        ? { value: operation.value, cliOptions: {} }
-        : {
-            cliOptions: {
-              refProvider: operation.provider ?? "default",
-              refSource: operation.source,
-              refId: operation.id,
-            },
-          }),
+      ...configSetOperationOptions(operation),
+      ...(ctx.admitConfigChange ? { admitChange: ctx.admitConfigChange } : {}),
       ...(ctx.assertPersistentApply ? { beforePersistentApply: ctx.assertPersistentApply } : {}),
     }),
   );

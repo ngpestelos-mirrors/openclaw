@@ -302,18 +302,17 @@ export function assertStrictConfigForMutation(
   config: OpenClawConfig,
   pluginMetadataSnapshot?: Pick<PluginMetadataSnapshot, "manifestRegistry">,
   deferredPluginMigrations?: readonly DeferredPluginMigration[],
-): void {
-  const errors = collectStrictConfigErrors(
-    config,
+): OpenClawConfig {
+  const validated = validateConfigObjectRawWithPlugins(config, {
+    semanticValidation: "strict",
     pluginMetadataSnapshot,
     deferredPluginMigrations,
-  );
-  if (errors.length === 0) {
-    return;
+  });
+  if (validated.ok) {
+    return validated.config;
   }
-  throw new Error(
-    ["Config validation failed.", ...errors.map((error) => `- ${error.message}`)].join("\n"),
-  );
+  const errors = formatConfigIssueLines(validated.issues, "-", { normalizeRoot: true });
+  throw new Error(["Config validation failed.", ...errors.map((error) => `- ${error}`)].join("\n"));
 }
 
 async function collectConfigSecretProviderErrors(params: {

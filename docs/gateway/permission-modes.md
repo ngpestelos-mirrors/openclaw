@@ -46,11 +46,28 @@ When a regular agent delegates a persistent change through its `openclaw` tool,
 the host applies the requesting run's effective permission policy to the exact
 proposed operation. Full Access applies it automatically without an approval
 prompt, including when Full Access comes from the configured default rather than
-an explicit session mode. Permission policy is the exception: changes to tool and
+an explicit session mode. Actual permission changes are the exception: tool and
 exec policy, sandboxing, approvals, owners and command allowlists, channel exec
-approvers, `security`, or Gateway authorization (`gateway.auth`, `gateway.roles`,
-`gateway.tools`, `gateway.trustedProxies`, `gateway.nodes`) always wait for a
-human decision, even in Full Access. Restricted runs from messaging channels ask the
+approvers, security policy, Workshop approval policy, and Gateway authorization
+(auth, roles, HTTP tools, trusted proxies including Real-IP fallback, and nodes)
+wait for a human decision, even in Full Access.
+
+The host compares the canonical validated config before and after the change,
+not just its path. No-op policy writes, parent replacements preserving policy,
+and operational exec settings (timeouts, background/cleanup timing, highlighting,
+and notifications) stay automatic. The comparison preserves explicit policy
+layers and resolves exec inheritance and sandbox/filesystem defaults; removing an
+override that changes inherited authority still needs approval. Unresolved host
+exec defaults are not assumed to mean Full Access. Both expansion and tightening
+are human decisions: this is not a general privilege-ranking algorithm.
+Inbound Gateway credentials and their SecretRefs affect who can authenticate;
+rotating them is a permission change, unlike an outgoing service API key.
+
+Invalid paths or values fail normal config validation, not an extra approval.
+Automatic writes recheck the policy effect against the actual write snapshot, so
+concurrent tightening cannot be silently undone by an earlier no-op proposal.
+
+Restricted runs from messaging channels ask the
 requesting chat for approval: native approval cards where the channel supports
 them, otherwise a `/approve <id> allow-once|deny` reply. Webchat and terminal runs
 decide in the Control UI or apps, which can also decide any chat's approval.

@@ -19,6 +19,7 @@ import { shortenHomePath } from "../utils.js";
 import { formatCliCommand } from "./command-format.js";
 import type { ConfigPatchOptions, ConfigUnsetOptions } from "./config-cli-input.js";
 import { getAtPath, isConfigSchemaPath, parseConfigSetPath } from "./config-cli-path.js";
+import type { ConfigMutationAdmission } from "./config-cli-runner.js";
 import { isConfigMachineOutput, isConfigSetJsonParseOnly } from "./config-output-mode.js";
 import type { ConfigSetOptions } from "./config-set-input.js";
 import { formatCliJsonFailure } from "./failure-output.js";
@@ -55,6 +56,7 @@ export async function runConfigSet(opts: {
   cliOptions: ConfigSetOptions;
   runtime?: RuntimeEnv;
   beforePersistentApply?: () => void;
+  admitChange?: ConfigMutationAdmission;
 }) {
   const runtime = opts.runtime ?? defaultRuntime;
   const { handleConfigMutationError, runConfigOperations } = await import("./config-cli-runner.js");
@@ -77,6 +79,7 @@ export async function runConfigSet(opts: {
       operations,
       options: opts.cliOptions,
       successMode: "set",
+      ...(opts.admitChange ? { admitChange: opts.admitChange } : {}),
       ...(currentExpectation ? { currentExpectation } : {}),
       ...(opts.beforePersistentApply ? { beforePersistentApply: opts.beforePersistentApply } : {}),
     });

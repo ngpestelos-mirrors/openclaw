@@ -53,6 +53,7 @@ export type SystemAgentCommandDeps = {
     value?: string;
     cliOptions: ConfigSetOptions;
     beforePersistentApply?: () => void;
+    admitChange?: import("../cli/config-cli-runner.js").ConfigMutationAdmission;
   }) => Promise<void>;
   runGatewayRestart?: () => Promise<void | boolean>;
   runGatewayStart?: () => Promise<void>;

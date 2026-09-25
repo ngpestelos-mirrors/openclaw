@@ -1,4 +1,5 @@
 import type { SystemAgentChatParams } from "@openclaw/gateway-protocol";
+import type { ConfigMutationAdmission } from "../cli/config-cli-runner.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type {
   SystemAgentSession,
@@ -157,6 +158,7 @@ export class ChatTurnRouter {
     decision: "allow-once" | "allow-always" | "deny" | null,
     proposalHash: string,
     beforePersistentApply?: PersistentApplyGuard,
+    admitConfigChange?: ConfigMutationAdmission,
   ): Promise<SystemAgentChatReply | null> {
     return await resolveOperatorApprovalDecision({
       decision,
@@ -165,7 +167,11 @@ export class ChatTurnRouter {
       clear: () => this.clearPendingProposals(),
       apply: async (operation) => {
         this.proposalResolution = "approved";
-        return await this.applyApprovedPersistentOperation(operation, beforePersistentApply);
+        return await this.applyApprovedPersistentOperation(
+          operation,
+          beforePersistentApply,
+          admitConfigChange,
+        );
       },
       denied: () => {
         this.proposalResolution = "declined";
@@ -294,12 +300,19 @@ export class ChatTurnRouter {
   private async applyApprovedPersistentOperation(
     operation: SystemAgentOperation,
     beforePersistentApply?: PersistentApplyGuard,
+    admitConfigChange?: ConfigMutationAdmission,
   ): Promise<SystemAgentChatReply> {
     if (!isPersistentSystemAgentOperation(operation)) {
       throw new Error("OpenClaw host received a non-persistent approved operation.");
     }
     const capture = createCaptureRuntime();
-    const result = await this.executeOperation(operation, capture, true, beforePersistentApply);
+    const result = await this.executeOperation(
+      operation,
+      capture,
+      true,
+      beforePersistentApply,
+      admitConfigChange,
+    );
     const configWrite = operation.kind === "config-set" || operation.kind === "config-set-ref";
     if (configWrite && result === undefined) {
       return {
@@ -545,6 +558,7 @@ export class ChatTurnRouter {
     capture: CaptureRuntime,
     approved: boolean,
     beforePersistentApply?: PersistentApplyGuard,
+    admitConfigChange?: ConfigMutationAdmission,
   ): Promise<SystemAgentOperationResult | undefined> {
     try {
       const execute = this.dependencies.executeOperation ?? executeSystemAgentOperation;
@@ -558,6 +572,7 @@ export class ChatTurnRouter {
           : {}),
         deps: this.commandDeps(),
         beforePersistentApply,
+        ...(admitConfigChange ? { admitConfigChange } : {}),
         onVerifiedInferenceChanged: this.callbacks.rebindVerifiedInference,
       });
     } catch (error) {

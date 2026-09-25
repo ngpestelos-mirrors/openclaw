@@ -299,6 +299,12 @@ function assertConfigSetCurrentExpectationPath(params: {
   }
 }
 
+/** Host-only admission on canonical, validated values; false inspects without writing. */
+export type ConfigMutationAdmission = (change: {
+  before: OpenClawConfig;
+  after: OpenClawConfig;
+}) => boolean;
+
 export async function runConfigOperations(params: {
   runtime: RuntimeEnv;
   operations: ConfigSetOperation[];
@@ -306,6 +312,7 @@ export async function runConfigOperations(params: {
   successMode: "set" | "patch";
   currentExpectation?: ConfigSetCurrentExpectation;
   beforePersistentApply?: () => void;
+  admitChange?: ConfigMutationAdmission;
 }) {
   const { runtime, operations, options } = params;
   if (
@@ -507,7 +514,7 @@ export async function runConfigOperations(params: {
     env: preparedValues.resolutionEnv,
     previousEnv: preparedPreviousValues.resolutionEnv,
   };
-  if (options.dryRun) {
+  if (options.dryRun || params.admitChange) {
     const topology = prepareConfigWriteTopology({
       snapshot,
       pluginMetadataSnapshot: mutationStart.writeOptions.basePluginMetadataSnapshot,
@@ -541,6 +548,19 @@ export async function runConfigOperations(params: {
   if (validation.kind === "dry-run") {
     printConfigDryRunResult(validation.result, runtime, options.json);
     return;
+  }
+  if (params.admitChange) {
+    // Use the writer's topology/env preparation and schema-normalized values,
+    // not a second config-set implementation. Invalid candidates are errors.
+    const validate = (config: OpenClawConfig) =>
+      assertStrictConfigForMutation(
+        config,
+        mutationStart.writeOptions.basePluginMetadataSnapshot,
+        getDeferredPluginMigrationConfigFacts(snapshot.sourceConfig),
+      );
+    if (!params.admitChange({ before: snapshot.config, after: validate(nextConfig) })) {
+      return;
+    }
   }
   if (validation.kind === "unchanged") {
     assertCurrentExpectation?.();

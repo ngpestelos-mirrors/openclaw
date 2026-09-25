@@ -120,13 +120,22 @@ Changes delegated by a regular agent, including requests from messaging channels
 follow the requesting run's effective [session permission policy](/gateway/permission-modes).
 Full Access applies the exact proposed operation automatically, including when
 Full Access comes from the configured default rather than an explicit session
-mode. Permission policy is the exception: changes to tool and exec policy,
-sandboxing, approvals, `commands.ownerAllowFrom`/`allowFrom`, channel exec
-approvers, `security`, `skills.workshop.approvalPolicy`, and Gateway
-authorization (`gateway.auth`, `gateway.roles`, `gateway.tools`,
-`gateway.trustedProxies`, `gateway.nodes`), or to any parent of those keys,
-always wait for a human decision, even in Full Access, so a run cannot widen its
-own authority unseen. Restricted runs from messaging channels ask for approval in the chat that
+mode. Permission policy is the exception: actual changes to tool and exec policy,
+sandboxing, approvals, commands' owner/sender allowlists, channel exec approvers,
+security policy, Workshop approval policy, and Gateway authorization wait for a
+human decision. This includes tightening, removals that change inherited policy,
+and inbound Gateway credential rotation—not just privilege expansion.
+
+OpenClaw compares the canonical validated config before and after the proposal.
+Writing the same policy value or replacing a parent while preserving its policy
+is automatic in Full Access. Operational exec settings (timeouts, background and
+cleanup timing, highlighting, and notifications) do not change authority.
+Outgoing API-key rotation is not treated as inbound Gateway authentication.
+Invalid config still fails normal validation. See the
+[comparison boundary](/gateway/permission-modes#delegated-setup-and-repair) for
+inheritance and concurrent-write handling.
+
+Restricted runs from messaging channels ask for approval in the chat that
 made the request: channels with native approval cards show **Allow once** and
 **Deny** buttons, and other messaging chats receive the change summary with a
 `/approve <id> allow-once|deny` reply. Webchat and terminal runs decide in the

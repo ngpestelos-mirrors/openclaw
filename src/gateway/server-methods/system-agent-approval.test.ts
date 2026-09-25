@@ -25,6 +25,7 @@ import { resetCommandQueueStateForTest } from "../../process/command-queue.test-
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
 import { SystemAgentChatEngine } from "../../system-agent/chat-engine.js";
+import type { SystemAgentCommandDeps } from "../../system-agent/operations.js";
 import {
   createSystemAgentVerifiedInferenceTestFixture,
   createSystemAgentPluginMetadataTestSnapshot,
@@ -87,11 +88,13 @@ describe("Full Access delegated chat", () => {
   async function createDelegatedChatFixture(
     source: "typed" | "model tool" | "repair" = "typed",
     previousRun = "live",
+    options: { config?: OpenClawConfig; realWriter?: boolean } = {},
   ) {
     const stateDir = systemAgentTempDirs.make("openclaw-full-access-change-");
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(stateDir, "openclaw.json"));
-    fs.writeFileSync(path.join(stateDir, "openclaw.json"), JSON.stringify(verifiedConfig));
+    const configPath = path.join(stateDir, "openclaw.json");
+    fs.writeFileSync(configPath, JSON.stringify({ ...verifiedConfig, ...options.config }));
 
     const fixture = await pluginMetadataSnapshot!.run(() =>
       createSystemAgentVerifiedInferenceTestFixture(verifiedConfig),
@@ -99,7 +102,25 @@ describe("Full Access delegated chat", () => {
     setupInferenceMocks.resolvePersistentApplyInference.mockResolvedValue(
       fixture.binding.execution,
     );
-    const runConfigSet = vi.fn(async () => {});
+    const runConfigSet = vi.fn<NonNullable<SystemAgentCommandDeps["runConfigSet"]>>(
+      async (opts) => {
+        if (options.realWriter) {
+          const { runConfigSet: run } = await import("../../cli/config-cli.js");
+          await run({
+            ...opts,
+            runtime: {
+              log: () => {},
+              error: (...args) => {
+                throw new Error(args.join(" "));
+              },
+              exit: (code) => {
+                throw new Error(`config write exited: ${code}`);
+              },
+            },
+          });
+        }
+      },
+    );
     let proposed = false;
     const engine = new SystemAgentChatEngine({
       operatorApprovalOnly: true,
@@ -222,6 +243,7 @@ describe("Full Access delegated chat", () => {
       callChat,
       requested,
       approvalDatabasePath,
+      configPath,
     };
   }
 
@@ -385,7 +407,7 @@ describe("Full Access delegated chat", () => {
         () =>
           callChat({
             sessionId: "delegate-full",
-            message: "config set gateway.port banana",
+            message: "config set gateway.port 19001",
             delegation: { agentId: "main", sessionKey: "agent:main:main" },
           }),
       );
@@ -400,10 +422,108 @@ describe("Full Access delegated chat", () => {
     },
   );
 
-  it("keeps a Full Access permission-policy change waiting for the user", async () => {
-    const { manager, operationalRunInstance, runConfigSet, callChat, requested } =
-      await createDelegatedChatFixture("typed");
-    const pending = withGatewayToolCallerIdentity(
+  const policyConfig: OpenClawConfig = {
+    tools: { exec: { mode: "ask", notifyOnExit: true } },
+    agents: { entries: { research: { name: "Research", tools: { exec: { mode: "deny" } } } } },
+    gateway: { port: 18789, auth: { mode: "token", token: "fixture-inbound-token" } },
+    approvals: { exec: { enabled: true } },
+  };
+
+  it.each([
+    ["tools.exec.notifyOnExit", "false", false],
+    ["tools.exec.mode", "ask", false],
+    ["tools", '{exec:{mode:"ask",notifyOnExit:false}}', false],
+    ["agents.entries.research", '{name:"Renamed",tools:{exec:{mode:"deny"}}}', false],
+    ["gateway", '{port:19001,auth:{mode:"token",token:"fixture-inbound-token"}}', false],
+    ["tools.exec.mode", "full", true],
+    ["tools.exec.mode", "deny", true],
+    ["tools", "{}", true],
+    ["agents.entries.research", '{name:"Research"}', true],
+    ["approvals", "{}", true],
+    ["gateway.auth.token", "fixture-rotated-token", true],
+  ] as const)(
+    "Full Access config set %s %s requires approval=%s",
+    async (configKey, value, requiresApproval) => {
+      const { manager, operationalRunInstance, runConfigSet, callChat, requested, configPath } =
+        await createDelegatedChatFixture("typed", "live", {
+          config: policyConfig,
+          realWriter: true,
+        });
+      const before = fs.readFileSync(configPath, "utf8");
+      const pending = withGatewayToolCallerIdentity(
+        {
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          operationalRunInstance,
+          fullPermission: true,
+        },
+        () =>
+          callChat({
+            sessionId: "delegate-full",
+            message: `config set ${configKey} ${value}`,
+            delegation: { agentId: "main", sessionKey: "agent:main:main" },
+          }),
+      );
+      try {
+        expect(
+          await Promise.race([
+            requested.promise.then(() => "approval requested"),
+            pending.then(() => "call settled"),
+          ]),
+        ).toBe(requiresApproval ? "approval requested" : "call settled");
+        if (requiresApproval) {
+          expect(runConfigSet).not.toHaveBeenCalled();
+          expect(fs.readFileSync(configPath, "utf8")).toBe(before);
+          const records = await manager.listPendingRecords();
+          expect(records).toHaveLength(1);
+          if (configKey === "tools.exec.mode" && value === "full") {
+            // A genuine human decision may authorize the risky choice. The
+            // automatic-only effect guard must not become a blanket refusal.
+            await manager.resolve(
+              expectDefined(records[0], "policy approval").id,
+              "allow-once",
+              "operator",
+            );
+            expect((await pending).payload).toMatchObject({
+              reply: expect.stringContaining("[openclaw] done: config.set"),
+            });
+            expect(JSON.parse(fs.readFileSync(configPath, "utf8")).tools.exec.mode).toBe("full");
+          }
+        } else {
+          expect((await pending).payload).toMatchObject({
+            reply: expect.stringContaining("[openclaw] done: config.set"),
+          });
+          expect(runConfigSet).toHaveBeenCalledOnce();
+          expect(await manager.listPendingRecords()).toEqual([]);
+          const { getAtPath, parseConfigSetPath, parseConfigSetValue } =
+            await import("../../cli/config-cli-path.js");
+          expect(
+            getAtPath(
+              JSON.parse(fs.readFileSync(configPath, "utf8")),
+              parseConfigSetPath(configKey),
+            ).value,
+          ).toEqual(parseConfigSetValue(value, false));
+        }
+      } finally {
+        for (const record of await manager.listPendingRecords()) {
+          await manager.resolve(record.id, "deny", "cleanup");
+        }
+        await pending;
+      }
+    },
+  );
+
+  it("rejects stale automatic admission after a concurrent policy tightening", async () => {
+    const { manager, operationalRunInstance, callChat, engine, configPath } =
+      await createDelegatedChatFixture("typed", "live", { config: policyConfig, realWriter: true });
+    const resolve = engine.resolveOperatorApproval.bind(engine);
+    vi.spyOn(engine, "resolveOperatorApproval").mockImplementationOnce(async (...args) => {
+      const current = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      current.tools.exec.mode = "deny";
+      fs.writeFileSync(configPath, JSON.stringify(current));
+      return resolve(...args);
+    });
+    const result = await withGatewayToolCallerIdentity(
       {
         agentId: "main",
         sessionKey: "agent:main:main",
@@ -413,26 +533,40 @@ describe("Full Access delegated chat", () => {
       () =>
         callChat({
           sessionId: "delegate-full",
-          message: "config set tools.exec.security full",
+          message: "config set tools.exec.mode ask",
           delegation: { agentId: "main", sessionKey: "agent:main:main" },
         }),
     );
-    try {
-      // An auto-applied change settles the call without ever requesting approval.
-      const first = await Promise.race([
-        requested.promise.then(() => "approval requested" as const),
-        pending.then(() => "call settled" as const),
-      ]);
-      expect(first).toBe("approval requested");
-      expect(runConfigSet).not.toHaveBeenCalled();
-      expect(await manager.listPendingRecords()).toHaveLength(1);
-    } finally {
-      for (const record of await manager.listPendingRecords()) {
-        await manager.resolve(record.id, "deny", "cleanup");
-      }
-      await pending;
-    }
-    expect(runConfigSet).not.toHaveBeenCalled();
+    expect(result.payload).toMatchObject({
+      reply: expect.stringContaining("Permission policy changed"),
+    });
+    expect(JSON.parse(fs.readFileSync(configPath, "utf8")).tools.exec.mode).toBe("deny");
+    expect(await manager.listPendingRecords()).toEqual([]);
+    expect(engine.getPendingOperatorProposal()).toBeNull();
+  });
+
+  it("reports invalid policy values without creating an approval or writing", async () => {
+    const { manager, operationalRunInstance, callChat, configPath } =
+      await createDelegatedChatFixture("typed", "live", { config: policyConfig, realWriter: true });
+    const before = fs.readFileSync(configPath, "utf8");
+    await expect(
+      withGatewayToolCallerIdentity(
+        {
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          operationalRunInstance,
+          fullPermission: true,
+        },
+        () =>
+          callChat({
+            sessionId: "delegate-full",
+            message: "config set tools.exec.mode banana",
+            delegation: { agentId: "main", sessionKey: "agent:main:main" },
+          }),
+      ),
+    ).rejects.toThrow("Config validation failed");
+    expect(fs.readFileSync(configPath, "utf8")).toBe(before);
+    expect(await manager.listPendingRecords()).toEqual([]);
   });
 
   it.each([

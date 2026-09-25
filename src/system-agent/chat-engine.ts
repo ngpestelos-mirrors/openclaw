@@ -3,6 +3,7 @@ import type {
   SystemAgentWizardCancel,
   WizardAnswer,
 } from "../../packages/gateway-protocol/src/index.js";
+import type { ConfigMutationAdmission } from "../cli/config-cli-runner.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   cleanupSystemAgentSession,
@@ -119,12 +120,14 @@ export class SystemAgentChatEngine {
     proposalHash: string,
     beforePersistentApply?: () => void,
     terminalStatus?: "expired" | "cancelled",
+    admitConfigChange?: ConfigMutationAdmission,
   ): Promise<SystemAgentChatReply | null> {
     const turn = this.turnQueue.then(async () => {
       const reply = await this.router.resolveOperatorApproval(
         decision,
         proposalHash,
         beforePersistentApply,
+        admitConfigChange,
       );
       if (reply && terminalStatus && !reply.applied) {
         reply.text = `OpenClaw change ${terminalStatus}. No change. Retry the request if it is still needed.`;
