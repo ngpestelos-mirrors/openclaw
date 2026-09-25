@@ -1,5 +1,5 @@
 // Qa Lab tests cover suite runtime flow plugin behavior.
-import { parseModelRef, resolveModelRefFromString } from "openclaw/plugin-sdk/agent-runtime";
+import { parseModelRef } from "openclaw/plugin-sdk/agent-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -116,15 +116,7 @@ function createQaSuiteRuntimeFlowTestEnv(
     primaryModel: "openai/gpt-5.6-luna",
     alternateModel: "openai/gpt-5.6-luna-mini",
     mock: null,
-    cfg: {
-      agents: {
-        defaults: {
-          models: {
-            "anthropic/claude-opus-5": { alias: "opus" },
-          },
-        },
-      },
-    },
+    cfg: {},
   } satisfies Parameters<typeof runQaSuiteScenarioDefinition>[0]["env"];
 }
 
@@ -331,17 +323,16 @@ describe("qa suite runtime flow", () => {
     for (const [name, helper] of Object.entries(aliasedDependencies)) {
       expect((call.deps as Record<string, unknown>)[name]).toBe(helper);
     }
-    const canonicalOpus = resolveModelRefFromString({
-      cfg: env.cfg,
-      raw: "anthropic/opus",
-      defaultProvider: "anthropic",
-    })?.ref;
+    const canonicalOpus = { provider: "anthropic", model: "claude-opus-5-5" };
     const normalizeModelRef = call.deps.normalizeModelRef as (
       raw: string,
     ) => { provider: string; model: string } | null;
-    expect(canonicalOpus).toEqual({ provider: "anthropic", model: "claude-opus-5" });
     expect(normalizeModelRef("anthropic/opus")).toEqual(canonicalOpus);
     expect(normalizeModelRef("AnThRoPiC/OPUS")).toEqual(canonicalOpus);
+    expect(normalizeModelRef("anthropic/claude-opus-5")).toEqual({
+      provider: "anthropic",
+      model: "claude-opus-5",
+    });
     expect(normalizeModelRef("OPENAI/gpt-5.6-luna")).toEqual({
       provider: "openai",
       model: "gpt-5.6-luna",

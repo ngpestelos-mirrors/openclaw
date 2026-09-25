@@ -673,6 +673,9 @@ async function materializePromptMediaMessages(
         content: projectedContent,
         timestamp: message.timestamp,
         ...(message.runtimeContextCarrier ? { runtimeContextCarrier: true } : {}),
+        ...(message.runtimeContextCarrierRetained !== undefined
+          ? { runtimeContextCarrierRetained: message.runtimeContextCarrierRetained }
+          : {}),
       } as ProviderContext["messages"][number] as AgentMessage;
       continue;
     }
