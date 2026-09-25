@@ -54,6 +54,7 @@ export async function createQaSuiteEvidenceInvocation(
     QaSuiteResolvedRunContext,
     "repoRoot" | "outputDir" | "selectedScenarios" | "providerMode" | "primaryModel" | "transportId"
   >,
+  onResultCommitted?: (index: number, result: QaSuiteScenarioResult) => void,
 ) {
   const launch = structuredClone(
     params?.evidenceAnchors?.[0]?.launch ??
@@ -195,10 +196,20 @@ export async function createQaSuiteEvidenceInvocation(
     });
     const selectedId = invocation.select(index, options.selectedId ?? id);
     recordedResults.set(id, recordedResult);
+    const selectedResult =
+      selectedId === id ? recordedResult : await resolveSelectedResult(index, selectedId, result);
+    // Reporting owns the committed selection even if an external observer throws.
+    // The initial snapshot above has no result to hand off.
+    onResultCommitted?.(index, selectedResult);
     publish();
-    if (selectedId === id) {
-      return recordedResult;
-    }
+    return selectedResult;
+  }
+
+  async function resolveSelectedResult(
+    index: number,
+    selectedId: string,
+    result: QaSuiteScenarioResult,
+  ) {
     if (result.evidenceOccurrenceId === selectedId) {
       return structuredClone(result);
     }

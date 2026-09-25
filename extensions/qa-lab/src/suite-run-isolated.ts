@@ -2,6 +2,7 @@ import path from "node:path";
 import { disposeRegisteredAgentHarnesses } from "openclaw/plugin-sdk/agent-harness";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { QaRunnerTransportArtifacts } from "openclaw/plugin-sdk/qa-runner-runtime";
+import { QaSuiteCleanupError } from "./errors.js";
 import type { QaEvidenceSummaryV3Json } from "./evidence-summary.js";
 import type { QaLabLatestReport } from "./lab-server.types.js";
 import {
@@ -25,7 +26,7 @@ import {
   markQaSuiteNestedRun,
   requireQaSuiteStartLab,
   runQaSuiteCleanupSteps,
-  throwQaSuiteCleanupErrors,
+  publishQaSuiteTerminalResult,
   writeQaSuiteProgress,
 } from "./suite.js";
 
@@ -47,7 +48,10 @@ export async function runQaFlowSuiteIsolated(
     concurrency,
     progressEnabled,
   } = context;
-  const recording = await createQaSuiteEvidenceInvocation(params, context);
+  const recording = await createQaSuiteEvidenceInvocation(params, context, (index, result) => {
+    completedScenarioResults[index] = result;
+    progress.commitScenarioResult(index, result);
+  });
   const ownsLab = !params?.lab;
   const startLab = requireQaSuiteStartLab(params?.startLab);
   const lab =
@@ -145,7 +149,61 @@ export async function runQaFlowSuiteIsolated(
   let parentTransportCleaned = false;
   let completionProgress: string | undefined;
   let terminalScenarios: QaSuiteScenarioResult[] | undefined;
+  let terminalResult: QaSuiteResult | undefined;
+  const childCleanupFailures: Array<{ phase: string; error: unknown }> = [];
   let transportArtifacts: QaRunnerTransportArtifacts | undefined;
+  const publishTerminalResult = async () => {
+    if (!terminalScenarios) {
+      throw new Error("QA suite completed without terminal result metadata");
+    }
+    const terminalFinishedAt = new Date();
+    const { evidence, evidencePath, report, reportPath, summaryPath } = await writeQaSuiteArtifacts(
+      {
+        repoRoot,
+        outputDir,
+        startedAt,
+        finishedAt: terminalFinishedAt,
+        scenarios: terminalScenarios,
+        scenarioDefinitions: selectedScenarios,
+        evidenceMode: params?.evidenceMode,
+        recordedEvidence: recording.snapshot(),
+        transport,
+        providerMode,
+        primaryModel,
+        alternateModel,
+        fastMode,
+        concurrency,
+        channel: params?.channelId ?? transport.id,
+        channelDriver: transportFactoryResult.driver,
+        transportArtifacts,
+        isolatedWorkers: true,
+        writeEvidenceFile: params?.writeEvidenceFile,
+        scenarioIds:
+          params?.scenarioIds && params.scenarioIds.length > 0
+            ? selectedScenarios.map((scenario) => scenario.id)
+            : undefined,
+      },
+    );
+    lab.setLatestReport({
+      outputPath: reportPath,
+      markdown: report,
+      generatedAt: terminalFinishedAt.toISOString(),
+    } satisfies QaLabLatestReport);
+    progress.complete([], terminalFinishedAt.toISOString());
+    return {
+      outputDir,
+      evidence,
+      evidencePath,
+      reportPath,
+      summaryPath,
+      report,
+      scenarios: terminalScenarios,
+      startedScenarioIds: selectedScenarios
+        .filter((_scenario, index) => startedScenarioIndexes.has(index))
+        .map((scenario) => scenario.id),
+      watchUrl: lab.baseUrl,
+    } satisfies QaSuiteResult;
+  };
   try {
     if (params?.channelDriver === "live") {
       // The parent only renders aggregate artifacts. Release its live credentials
@@ -254,10 +312,12 @@ export async function runQaFlowSuiteIsolated(
             progressEnabled,
             `scenario ${scenarioResult.status} (${index + 1}/${selectedScenarios.length}): ${scenarioIdForLog}${formatQaScenarioFailureSuffix(scenarioResult)}`,
           );
-          completedScenarioResults[index] = scenarioResult;
           writePartialArtifacts();
           return scenarioResult;
         } catch (error) {
+          if (error instanceof QaSuiteCleanupError) {
+            childCleanupFailures.push({ phase: "isolated worker", error });
+          }
           // A failed evidence write is not a child failure and must not retry
           // the same exclusive artifact name or mask its original error.
           if (recordingStarted && !dispatchCompleted) {
@@ -290,26 +350,32 @@ export async function runQaFlowSuiteIsolated(
             progressEnabled,
             `scenario fail (${index + 1}/${selectedScenarios.length}): ${scenarioIdForLog}${formatQaScenarioFailureSuffix(scenarioResult)}`,
           );
-          completedScenarioResults[index] = scenarioResult;
           writePartialArtifacts();
           return scenarioResult;
         }
       },
       {
+        signal: params?.signal,
+        canStart: () => childCleanupFailures.length === 0,
         startStaggerMs: workerStartStaggerMs,
         shouldStop: (scenarioResult) =>
           params?.failFast === true && scenarioResult.status === "fail",
       },
     );
+    terminalScenarios = scenarios;
     await artifactWriteQueue;
     transportArtifacts = await transport.captureArtifacts?.({ outputDir });
-    terminalScenarios = scenarios;
     completionProgress = "run complete";
   } catch (error) {
     isolatedRunFailed = true;
     isolatedRunError = error;
     throw error;
   } finally {
+    if (!terminalScenarios && completedScenarioResults.some((result) => result !== undefined)) {
+      terminalScenarios = completedScenarioResults.filter(
+        (result): result is QaSuiteScenarioResult => result !== undefined,
+      );
+    }
     const cleanupSteps = [
       // Workers have settled, so this queue cannot grow during teardown.
       { phase: "partial artifacts", run: () => artifactWriteQueue },
@@ -322,61 +388,17 @@ export async function runQaFlowSuiteIsolated(
       cleanupSteps.push({ phase: "lab stop", run: () => lab.stop() });
     }
     const cleanupFailures = await runQaSuiteCleanupSteps(cleanupSteps);
-    throwQaSuiteCleanupErrors({
-      cleanupFailures,
+    terminalResult = await publishQaSuiteTerminalResult({
+      cleanupFailures: [...childCleanupFailures, ...cleanupFailures],
       runFailed: isolatedRunFailed,
       runError: isolatedRunError,
       scenarios: terminalScenarios,
+      publish: terminalScenarios ? publishTerminalResult : undefined,
     });
   }
-  if (!terminalScenarios || !completionProgress) {
+  if (!terminalResult || !completionProgress) {
     throw new Error("QA suite completed without terminal result metadata");
   }
-  const terminalFinishedAt = new Date();
-  const { evidence, evidencePath, report, reportPath, summaryPath } = await writeQaSuiteArtifacts({
-    repoRoot,
-    outputDir,
-    startedAt,
-    finishedAt: terminalFinishedAt,
-    scenarios: terminalScenarios,
-    scenarioDefinitions: selectedScenarios,
-    evidenceMode: params?.evidenceMode,
-    recordedEvidence: recording.snapshot(),
-    transport,
-    providerMode,
-    primaryModel,
-    alternateModel,
-    fastMode,
-    concurrency,
-    channel: params?.channelId ?? transport.id,
-    channelDriver: transportFactoryResult.driver,
-    transportArtifacts,
-    isolatedWorkers: true,
-    writeEvidenceFile: params?.writeEvidenceFile,
-    scenarioIds:
-      params?.scenarioIds && params.scenarioIds.length > 0
-        ? selectedScenarios.map((scenario) => scenario.id)
-        : undefined,
-  });
-  lab.setLatestReport({
-    outputPath: reportPath,
-    markdown: report,
-    generatedAt: terminalFinishedAt.toISOString(),
-  } satisfies QaLabLatestReport);
-  progress.complete([], terminalFinishedAt.toISOString());
-  const result = {
-    outputDir,
-    evidence,
-    evidencePath,
-    reportPath,
-    summaryPath,
-    report,
-    scenarios: terminalScenarios,
-    startedScenarioIds: selectedScenarios
-      .filter((_scenario, index) => startedScenarioIndexes.has(index))
-      .map((scenario) => scenario.id),
-    watchUrl: lab.baseUrl,
-  } satisfies QaSuiteResult;
   writeQaSuiteProgress(progressEnabled, completionProgress);
-  return result;
+  return terminalResult;
 }

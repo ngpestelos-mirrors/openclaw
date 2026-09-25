@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import * as processRuntime from "openclaw/plugin-sdk/process-runtime";
+import * as commandRuntime from "openclaw/plugin-sdk/run-command";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readQaJsonBody } from "./bus-server.js";
+import { QaSuiteCleanupError } from "./errors.js";
 import { startQaLabServer, type QaLabScenarioRun, type QaLabServerHandle } from "./lab-server.js";
 
 const mocks = vi.hoisted(() => ({
@@ -271,6 +274,132 @@ describe("QA Lab accepted-run lifecycle", () => {
   );
 
   it.each(["direct", "http"] as const)(
+    "cancels a %s self-check before joining unwind and report publication",
+    async (entrypoint) => {
+      const { lab, outputPath } = await startLab();
+      const entered = createDeferred<void>();
+      const cancelled = createDeferred<void>();
+      const unwind = createDeferred<void>();
+      const write = holdReportWrite(outputPath);
+      const gatewayStopping = createDeferred<void>();
+      const finishGateway = createDeferred<void>();
+      mocks.runScenario.mockImplementation(
+        async (_scenario: unknown, { signal }: { signal: AbortSignal }) => {
+          expect(signal).toBeInstanceOf(AbortSignal);
+          entered.resolve();
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          cancelled.resolve();
+          await unwind.promise;
+          return {
+            name: "Cancelled self-check",
+            status: "fail",
+            details: String(signal.reason),
+            steps: [{ name: "held action", status: "fail", details: String(signal.reason) }],
+          };
+        },
+      );
+      mocks.gatewayStopped.mockImplementation(async () => {
+        gatewayStopping.resolve();
+        await finishGateway.promise;
+      });
+      await (await fetch(`${lab.listenUrl}/api/capture/sessions`)).json();
+      const run =
+        entrypoint === "direct"
+          ? lab.runSelfCheck()
+          : post(lab, "/api/scenario/self-check").then(async (response) => {
+              expect(response.status).toBe(200);
+              return await response.json();
+            });
+      const settled = run.catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        const stopping = lab.stop();
+        expect(lab.stop()).toBe(stopping);
+        await cancelled.promise;
+        expect(await outcomes(lab)).toMatchObject({ status: "running" });
+        expect(mocks.gatewayStopped).not.toHaveBeenCalled();
+        expect(mocks.releaseCapture).not.toHaveBeenCalled();
+
+        unwind.resolve();
+        await write.entered.promise;
+        expect(mocks.gatewayStopped).not.toHaveBeenCalled();
+        expect(mocks.releaseCapture).not.toHaveBeenCalled();
+        write.release.resolve();
+        const result = await settled;
+        const report = await fs.readFile(outputPath, "utf8");
+        const cancellation = expect.stringContaining("QA Lab run cancelled during shutdown");
+        expect(result).toMatchObject({
+          outputPath,
+          report,
+          checks: [{ name: "QA self-check scenario", status: "fail", details: "0/1 steps passed" }],
+          [entrypoint === "direct" ? "scenarioResult" : "scenario"]: {
+            name: "Cancelled self-check",
+            status: "fail",
+            details: cancellation,
+            steps: [{ name: "held action", status: "fail", details: cancellation }],
+          },
+        });
+        expect(report).toContain("QA Lab run cancelled during shutdown");
+        await gatewayStopping.promise;
+        expect(await outcomes(lab)).toMatchObject({
+          status: "completed",
+          counts: { failed: 1, passed: 0, running: 0 },
+        });
+        finishGateway.resolve();
+        await stopping;
+        expect(mocks.gatewayStopped).toHaveBeenCalledOnce();
+        expect(mocks.releaseCapture).toHaveBeenCalledOnce();
+      } finally {
+        const stopping = lab.stop();
+        unwind.resolve();
+        write.release.resolve();
+        finishGateway.resolve();
+        await Promise.allSettled([settled, stopping]);
+      }
+    },
+  );
+
+  it("records a suite cancellation before closing the Lab gateway", async () => {
+    const { lab } = await startLab();
+    const entered = createDeferred<void>();
+    const gatewayStopping = createDeferred<void>();
+    const finishGateway = createDeferred<void>();
+    mocks.runSuite.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+      entered.resolve();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      signal.throwIfAborted();
+    });
+    mocks.gatewayStopped.mockImplementation(async () => {
+      gatewayStopping.resolve();
+      await finishGateway.promise;
+    });
+    try {
+      const response = await post(lab, "/api/scenario/suite", suiteInput);
+      expect(response.status).toBe(202);
+      await response.json();
+      await entered.promise;
+      const stopping = lab.stop();
+      await gatewayStopping.promise;
+      expect(await outcomes(lab)).toMatchObject({
+        status: "completed",
+        counts: { failed: 1, passed: 0, running: 0 },
+        scenarios: [
+          { status: "fail", details: expect.stringContaining("cancelled during shutdown") },
+        ],
+      });
+      finishGateway.resolve();
+      await expect(stopping).resolves.toBeUndefined();
+    } finally {
+      finishGateway.resolve();
+      await lab.stop();
+    }
+  });
+
+  it.each(["direct", "http"] as const)(
     "records a failed %s self-check when report publication rejects",
     async (entrypoint) => {
       const { lab, outputPath } = await startLab();
@@ -303,6 +432,11 @@ describe("QA Lab accepted-run lifecycle", () => {
           scenarios: [{ status: "fail", details: failure.message }],
         });
         expect(await (await fetch(`${lab.listenUrl}/api/report`)).json()).toEqual({ report: null });
+        vi.mocked(fs.writeFile).mockRestore();
+        const reset = await post(lab, "/api/reset");
+        expect(reset.status).toBe(200);
+        await reset.json();
+        await expect(lab.runSelfCheck()).resolves.toMatchObject({ outputPath });
         // A failure already delivered to its caller is not replayed by a later stop.
         await expect(lab.stop()).resolves.toBeUndefined();
       } finally {
@@ -311,6 +445,233 @@ describe("QA Lab accepted-run lifecycle", () => {
       }
     },
   );
+
+  it.each([
+    ["before", false],
+    ["during", false],
+    ["before", true],
+    ["during", true],
+  ] as const)("retains fatal cleanup %s stop, combined=%s", async (timing, combined) => {
+    const { lab, repoRoot } = await startLab();
+    const entered = createDeferred<void>();
+    const finish = createDeferred<void>();
+    const fatal = new QaSuiteCleanupError([new Error("child still alive")], "cleanup unconfirmed");
+    const gatewayError = new Error("gateway stop failed");
+    const captureError = new Error("capture release failed");
+    const report = {
+      outputPath: path.join(repoRoot, "report.md"),
+      markdown: "# Done",
+      generatedAt: new Date(0).toISOString(),
+    };
+    const reset = vi.spyOn(lab.state, "reset");
+    if (combined) {
+      mocks.gatewayStopped.mockRejectedValue(gatewayError);
+      mocks.releaseCapture.mockImplementation(() => {
+        throw captureError;
+      });
+    }
+    mocks.runSuite.mockImplementation(async () => {
+      entered.resolve();
+      await finish.promise;
+      lab.setLatestReport(report);
+      lab.setScenarioRun({
+        kind: "suite",
+        status: "completed",
+        scenarios: [{ id: "dm-chat-baseline", name: "Completed scenario", status: "pass" }],
+      });
+      throw fatal;
+    });
+    try {
+      await (await fetch(`${lab.listenUrl}/api/capture/sessions`)).json();
+      const response = await post(lab, "/api/scenario/suite", suiteInput);
+      expect(response.status).toBe(202);
+      await response.json();
+      await entered.promise;
+      const earlierStop = timing === "during" ? lab.stop() : undefined;
+      finish.resolve();
+      if (!earlierStop) {
+        const completed = await outcomes(lab);
+        expect(completed).toMatchObject({ status: "completed", counts: { passed: 1 } });
+        for (const route of ["/api/scenario/suite", "/api/scenario/self-check", "/api/reset"]) {
+          const denied = await post(lab, route, suiteInput);
+          expect(denied.status).toBe(503);
+          expect(await denied.json()).toMatchObject({
+            error: expect.stringContaining("restart QA Lab"),
+          });
+        }
+        await expect(lab.runSelfCheck()).rejects.toThrow("restart QA Lab");
+        expect(await outcomes(lab)).toEqual(completed);
+        expect(await (await fetch(`${lab.listenUrl}/api/bootstrap`)).json()).toMatchObject({
+          latestReport: report,
+          runner: { status: "failed" },
+        });
+        expect(reset).toHaveBeenCalledOnce();
+        expect(mocks.runSuite).toHaveBeenCalledOnce();
+        expect(mocks.runScenario).not.toHaveBeenCalled();
+      }
+      const stopping = earlierStop ?? lab.stop();
+      const observed = stopping.catch((error: unknown) => error);
+      expect(lab.stop()).toBe(stopping);
+      const error = await observed;
+      if (combined) {
+        if (!(error instanceof QaSuiteCleanupError)) {
+          throw new Error("expected fatal cleanup marker", { cause: error });
+        }
+        expect(error.errors).toHaveLength(3);
+        for (const [index, original] of [fatal, gatewayError, captureError].entries()) {
+          expect(error.errors[index]).toBe(original);
+        }
+        expect(error.cause).toBe(fatal);
+      } else {
+        expect(error).toBe(fatal);
+      }
+      expect(lab.stop()).toBe(stopping);
+      await expect(lab.stop()).rejects.toBe(error);
+      expect(mocks.gatewayStopped).toHaveBeenCalledOnce();
+      expect(mocks.releaseCapture).toHaveBeenCalledOnce();
+    } finally {
+      finish.resolve();
+    }
+  });
+
+  it.each(["before", "during"] as const)(
+    "retains native preparation cleanup failure %s stop",
+    async (timing) => {
+      const { runQaSuite } = await vi.importActual<typeof import("./suite-launch.runtime.js")>(
+        "./suite-launch.runtime.js",
+      );
+      const { lab } = await startLab();
+      const entered = createDeferred<void>();
+      const finish = createDeferred<void>();
+      const settled = createDeferred<unknown>();
+      const failure = new Error("native preparation process cleanup unconfirmed");
+      vi.spyOn(commandRuntime, "runPluginCommandWithTimeout").mockResolvedValue({
+        code: 0,
+        stdout: "",
+        stderr: "",
+      });
+      vi.spyOn(processRuntime, "withCommandProcessScope").mockImplementationOnce(async (run) => {
+        await run(() => {});
+        entered.resolve();
+        await finish.promise;
+        throw failure;
+      });
+      mocks.runSuite.mockImplementation(async (params) => {
+        try {
+          const result = await runQaSuite(params);
+          settled.resolve(result);
+          return result;
+        } catch (error) {
+          settled.resolve(error);
+          throw error;
+        }
+      });
+      const published = vi.spyOn(lab, "setLatestReport");
+      const reset = vi.spyOn(lab.state, "reset");
+      let stopping: Promise<void> | undefined;
+      let stopped: Promise<unknown> | undefined;
+      try {
+        await (await fetch(`${lab.listenUrl}/api/capture/sessions`)).json();
+        const accepted = await post(lab, "/api/scenario/suite", {
+          ...suiteInput,
+          scenarioIds: ["dm-chat-baseline", "auth-profile-doctor-migration-safety"],
+        });
+        expect(accepted.status).toBe(202);
+        await accepted.json();
+        await entered.promise;
+        if (timing === "during") {
+          stopping = lab.stop();
+          stopped = stopping.catch((error: unknown) => error);
+        }
+        finish.resolve();
+        const terminal = await settled.promise;
+        expect(terminal).toBeInstanceOf(QaSuiteCleanupError);
+        expect(terminal).toMatchObject({
+          cause: expect.objectContaining({ cause: failure, errors: [failure] }),
+        });
+        expect(published).toHaveBeenCalledOnce();
+        const report = published.mock.calls[0]?.[0];
+        if (!report) {
+          throw new Error("expected failed preparation report");
+        }
+        expect(await fs.readFile(report.outputPath, "utf8")).toContain(failure.message);
+        if (timing === "before") {
+          const completed = await outcomes(lab);
+          expect(completed).toMatchObject({
+            status: "completed",
+            counts: { total: 2, failed: 2, passed: 0, running: 0 },
+          });
+          for (const route of ["/api/scenario/suite", "/api/scenario/self-check", "/api/reset"]) {
+            const denied = await post(lab, route, suiteInput);
+            expect(denied.status).toBe(503);
+            expect(await denied.json()).toMatchObject({
+              error: expect.stringContaining("restart QA Lab"),
+            });
+          }
+          await expect(lab.runSelfCheck()).rejects.toThrow("restart QA Lab");
+          expect(await outcomes(lab)).toEqual(completed);
+          expect(await (await fetch(`${lab.listenUrl}/api/report`)).json()).toEqual({ report });
+          expect(reset).toHaveBeenCalledOnce();
+          expect(mocks.runSuite).toHaveBeenCalledOnce();
+          stopping = lab.stop();
+          stopped = stopping.catch((error: unknown) => error);
+        }
+        expect(lab.stop()).toBe(stopping);
+        expect(await stopped).toBe(terminal);
+        await expect(lab.stop()).rejects.toBe(terminal);
+        expect(mocks.gatewayStopped).toHaveBeenCalledOnce();
+        expect(mocks.releaseCapture).toHaveBeenCalledOnce();
+      } finally {
+        finish.resolve();
+        await Promise.allSettled([stopping ?? lab.stop()]);
+      }
+    },
+  );
+
+  it("fences a held suite body after another run reports unconfirmed cleanup", async () => {
+    const { lab } = await startLab();
+    const bodyEntered = createDeferred<void>();
+    const finishBody = createDeferred<void>();
+    const runEntered = createDeferred<void>();
+    const readBody = vi.mocked(readQaJsonBody).getMockImplementation();
+    if (!readBody) {
+      throw new Error("expected real request body implementation");
+    }
+    vi.mocked(readQaJsonBody).mockImplementationOnce(async (...args) => {
+      bodyEntered.resolve();
+      await finishBody.promise;
+      return await readBody(...args);
+    });
+    const fatal = new QaSuiteCleanupError([new Error("child still alive")], "cleanup unconfirmed");
+    mocks.runSuite.mockImplementation(async () => {
+      runEntered.resolve();
+      throw fatal;
+    });
+    const reset = vi.spyOn(lab.state, "reset");
+    const pending = post(lab, "/api/scenario/suite", suiteInput);
+    try {
+      await bodyEntered.promise;
+      const accepted = await post(lab, "/api/scenario/suite", suiteInput);
+      expect(accepted.status).toBe(202);
+      await accepted.json();
+      await runEntered.promise;
+      const completed = await outcomes(lab);
+      expect(completed).toMatchObject({ status: "completed", counts: { failed: 1 } });
+      finishBody.resolve();
+      const denied = await pending;
+      expect(denied.status).toBe(503);
+      expect(await denied.json()).toMatchObject({
+        error: expect.stringContaining("restart QA Lab"),
+      });
+      expect(await outcomes(lab)).toEqual(completed);
+      expect(reset).toHaveBeenCalledOnce();
+      expect(mocks.runSuite).toHaveBeenCalledOnce();
+      await expect(lab.stop()).rejects.toBe(fatal);
+    } finally {
+      finishBody.resolve();
+      await pending.catch(() => undefined);
+    }
+  });
 
   it("fences requests awaiting their suite body without resetting or launching work", async () => {
     const { lab } = await startLab();

@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import fs from "node:fs";
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer } from "node:http";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
@@ -12,14 +12,12 @@ import {
   closeQaHttpServer,
   dispatchQaHttpRequest,
   handleQaBusRequest,
-  isQaMalformedJsonBodyError,
   readQaJsonBody,
   writeError,
   writeJson,
-  writeQaRequestBodyLimitError,
 } from "./bus-server.js";
 import { createQaBusState, type QaBusState } from "./bus-state.js";
-import { toQaError } from "./errors.js";
+import { combineQaSuiteErrors, QaSuiteCleanupError, toQaError } from "./errors.js";
 import {
   QaEvidenceGalleryError,
   buildQaEvidenceGalleryModel,
@@ -33,6 +31,7 @@ import {
   mapCaptureEventForQa,
   probeTcpReachability,
 } from "./lab-server-capture.js";
+import { QaLabRunUnavailableError, writeQaLabServerError } from "./lab-server-errors.js";
 import {
   detectContentType,
   detectQaEvidenceArtifactContentType,
@@ -86,34 +85,6 @@ export type {
   QaLabServerHandle,
   QaLabServerStartParams,
 } from "./lab-server.types.js";
-
-class QaLabRunUnavailableError extends Error {
-  constructor(
-    readonly statusCode: 409 | 503,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-async function writeQaLabServerError(
-  req: IncomingMessage,
-  res: Parameters<typeof writeError>[0],
-  error: unknown,
-): Promise<void> {
-  if (await writeQaRequestBodyLimitError(req, res, error)) {
-    return;
-  }
-  if (isQaMalformedJsonBodyError(error)) {
-    writeError(res, 400, error.message);
-    return;
-  }
-  if (error instanceof QaEvidenceGalleryError || error instanceof QaLabRunUnavailableError) {
-    writeError(res, error.statusCode, error.message);
-    return;
-  }
-  writeError(res, 500, error);
-}
 
 function countQaLabScenarioRun(scenarios: QaLabScenarioOutcome[]) {
   return {
@@ -294,23 +265,39 @@ export async function startQaLabServer(
   };
   let runnerSnapshot = createIdleQaRunnerSnapshot(scorecardReport.profiles);
   runnerSnapshot.plan = await resolveServerRunPlan(runnerSnapshot.selection);
-  let activeRun: Promise<unknown> | null = null;
+  let activeRun: { task: Promise<unknown>; controller: AbortController } | null = null;
+  let runCleanupFailure: QaSuiteCleanupError | undefined;
   const assertRunAvailable = () => {
     if (stopPromise) {
       throw new QaLabRunUnavailableError(503, "QA Lab is stopping");
+    }
+    if (runCleanupFailure) {
+      throw new QaLabRunUnavailableError(
+        503,
+        "QA Lab cleanup is unconfirmed; resolve the failure and restart QA Lab.",
+      );
     }
     if (activeRun) {
       throw new QaLabRunUnavailableError(409, "QA run already in progress");
     }
   };
-  const runAccepted = <T>(run: () => Promise<T>): Promise<T> => {
+  const runAccepted = <T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
     assertRunAvailable();
+    const controller = new AbortController();
     const task = Promise.resolve()
-      .then(run)
+      .then(() => run(controller.signal))
+      .catch((error: unknown) => {
+        // Settled work releases its active slot, but unconfirmed resources must
+        // keep admission closed and remain observable by a later stop().
+        if (error instanceof QaSuiteCleanupError) {
+          runCleanupFailure = error;
+        }
+        throw error;
+      })
       .finally(() => {
         activeRun = null;
       });
-    activeRun = task;
+    activeRun = { task, controller };
     // HTTP suites return before completion; retain their rejection for shutdown
     // without creating an unhandled rejection after publishing the failed outcome.
     void task.catch(() => undefined);
@@ -359,7 +346,7 @@ export async function startQaLabServer(
   };
 
   async function runSelfCheck(): Promise<QaSelfCheckResult> {
-    return await runAccepted(async () => {
+    return await runAccepted(async (signal) => {
       const startedAt = new Date().toISOString();
       latestReport = null;
       latestScenarioRun = withQaLabRunCounts({
@@ -376,6 +363,7 @@ export async function startQaLabServer(
       });
       try {
         const result = await runQaSelfCheckAgainstState({
+          signal,
           state,
           cfg: gateway?.cfg ?? createQaLabConfig(listenUrl),
           transportId: "qa-channel",
@@ -758,12 +746,14 @@ export async function startQaLabServer(
             artifacts: null,
             error: null,
           };
-          void runAccepted(async () => {
+          void runAccepted(async (signal) => {
             // Keep generated artifacts visible when authenticated verdict validation fails.
             let artifacts: ReturnType<typeof createIdleQaRunnerSnapshot>["artifacts"] = null;
             try {
               const { runQaSuite } = await import("./suite-launch.runtime.js");
               const runtimeResult = await runQaSuite({
+                signal,
+                forwardParentSignals: false,
                 lab: labHandle ?? undefined,
                 startLab: startQaLabServer,
                 controlUiEnabled: true,
@@ -898,10 +888,17 @@ export async function startQaLabServer(
 
   const stopLabServerResources = async (): Promise<void> => {
     runnerModelCatalogAbort?.abort();
-    const errors: Error[] = [];
+    const run = activeRun;
+    run?.controller.abort(new DOMException("QA Lab run cancelled during shutdown", "AbortError"));
+    const errors: Error[] = !run && runCleanupFailure ? [runCleanupFailure] : [];
     // Accepted runs own their workers, report writes and terminal publication.
-    // Keep the Gateway and bus alive until that whole operation has settled.
-    for (const result of await Promise.allSettled([activeRun, runnerModelCatalogPromise])) {
+    // Cancel execution first, then keep the Gateway and bus alive through its drain.
+    const cancelledRun = run?.task.catch((error: unknown) => {
+      if (error !== run.controller.signal.reason) {
+        throw error;
+      }
+    });
+    for (const result of await Promise.allSettled([cancelledRun, runnerModelCatalogPromise])) {
       if (result.status === "rejected") {
         errors.push(toQaError(result.reason));
       }
@@ -923,7 +920,7 @@ export async function startQaLabServer(
     if (firstError) {
       throw errors.length === 1
         ? firstError
-        : new AggregateError(errors, "QA Lab shutdown failed", { cause: firstError });
+        : combineQaSuiteErrors(errors, "QA Lab shutdown failed", { cause: firstError });
     }
   };
   // Fence admission synchronously, before any shutdown callback can run.

@@ -67,6 +67,8 @@ export function rejectRemovedQaChannelDriverSelection(value: unknown): void {
 }
 
 export type QaSuiteRunParams = {
+  signal?: AbortSignal;
+  forwardParentSignals?: boolean;
   adapterOptions?: QaTransportFactoryContext["adapterOptions"];
   adapterFactories?: readonly QaTransportAdapterFactory[];
   channelId?: string;

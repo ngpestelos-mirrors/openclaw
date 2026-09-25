@@ -554,20 +554,23 @@ async function runInterruptibleServer(label: string, server: InterruptibleServer
   process.stdout.write(`${label}: ${server.baseUrl}\n`);
   process.stdout.write("Press Ctrl+C to stop.\n");
 
-  const shutdown = async () => {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-    await server.stop();
-    process.exit(0);
-  };
-
-  const onSignal = () => {
-    void shutdown();
-  };
-
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
-  await new Promise(() => {});
+  let onSignal: () => void;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let shutdown: Promise<void> | undefined;
+      onSignal = () => {
+        shutdown ??= Promise.resolve().then(() => server.stop());
+        void shutdown.then(resolve, reject);
+      };
+      // Repeated interrupts must not bypass accepted-run/report cleanup.
+      process.on("SIGINT", onSignal);
+      process.on("SIGTERM", onSignal);
+    });
+  } finally {
+    process.off("SIGINT", onSignal!);
+    process.off("SIGTERM", onSignal!);
+  }
+  process.exit(0);
 }
 
 function resolveQaCredentialPayloadFileMaxBytes(env: NodeJS.ProcessEnv = process.env) {

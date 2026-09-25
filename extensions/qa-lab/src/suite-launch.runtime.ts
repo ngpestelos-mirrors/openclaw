@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { formatErrorMessage, toErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { withCommandProcessScope } from "openclaw/plugin-sdk/process-runtime";
 import { runPluginCommandWithTimeout } from "openclaw/plugin-sdk/run-command";
 import { toRepoRelativePath } from "./cli-paths.js";
-import { QaSuiteArtifactError, QaSuiteInfraError } from "./errors.js";
+import { isQaSuiteInfraRetryableError, QaSuiteCleanupError } from "./errors.js";
 import { captureQaEvidenceLaunchIdentity } from "./evidence-environment.js";
 import { createQaEvidenceInvocation } from "./evidence-invocation.js";
 import { resolveQaEvidenceContainment } from "./evidence-summary-schema.js";
@@ -49,6 +50,7 @@ import {
   resolveQaSuiteScenarioChannels,
   resolveQaSuiteOutputDir,
   resolveQaSuiteWorkerStartStaggerMs,
+  runWeightedQaSuiteTasks,
   scenarioRequiresIsolatedQaSuiteWorker,
 } from "./suite-planning.js";
 import { createQaSuiteProgressController } from "./suite-progress.js";
@@ -62,6 +64,7 @@ import {
   type QaSuiteSummaryJson,
   writeQaSuiteProgress,
 } from "./suite.js";
+import { runQaScenarioCommandLifecycle } from "./test-file-scenario-command-lifecycle.js";
 import * as dockerBatch from "./test-file-scenario-docker-batch.js";
 import {
   isQaTestFileScenario,
@@ -113,13 +116,6 @@ const MAX_ISOLATED_FLOW_CONCURRENCY = 8;
 const MAX_PARALLEL_SCRIPT_CONCURRENCY = 3;
 const ISOLATED_FLOW_WORKER_START_STAGGER_MS = 1_500;
 const QA_SUITE_INFRA_RETRY_LIMIT = 1;
-const QA_SUITE_INFRA_RETRY_NETWORK_ERROR_CODES = new Set([
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "EPIPE",
-  "ETIMEDOUT",
-  "UND_ERR_SOCKET",
-]);
 const CREDENTIAL_POOL_UNAVAILABLE_CODES = new Set(["NO_CREDENTIAL_AVAILABLE", "POOL_EXHAUSTED"]);
 
 type QaUnifiedPartitionResult = {
@@ -512,40 +508,29 @@ function groupQaScenariosByExecutionCell(
   return groups;
 }
 
-function hasQaSuiteRetryableNetworkCode(error: unknown) {
-  let current: unknown = error;
-  for (let depth = 0; depth < 4 && current; depth += 1) {
-    if (typeof current !== "object") {
-      return false;
-    }
-    const record = current as { cause?: unknown; code?: unknown };
-    if (
-      typeof record.code === "string" &&
-      QA_SUITE_INFRA_RETRY_NETWORK_ERROR_CODES.has(record.code.toUpperCase())
-    ) {
-      return true;
-    }
-    current = record.cause;
-  }
-  return false;
-}
-
-function isQaSuiteInfraRetryableError(error: unknown) {
-  if (error instanceof QaSuiteArtifactError || error instanceof QaSuiteInfraError) {
-    return true;
-  }
-  return hasQaSuiteRetryableNetworkCode(error);
-}
-
 export async function runQaSuiteWithInfraRetry<Result>(
   run: (attempt: number) => Promise<Result>,
   maxRetries = QA_SUITE_INFRA_RETRY_LIMIT,
+  signal?: AbortSignal,
+  options?: {
+    canRetry?: () => boolean;
+    onAttemptFailure?: (error: unknown, final: boolean) => void;
+  },
 ) {
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    signal?.throwIfAborted();
     try {
       return await run(attempt);
     } catch (error) {
-      if (!isQaSuiteInfraRetryableError(error) || attempt >= maxRetries) {
+      const retry =
+        !signal?.aborted &&
+        isQaSuiteInfraRetryableError(error) &&
+        attempt < maxRetries &&
+        options?.canRetry?.() !== false;
+      // Retry admission and evidence selection share one synchronous decision;
+      // a sibling cleanup failure must not leave this attempt nonterminal.
+      options?.onAttemptFailure?.(error, !retry);
+      if (!retry) {
         throw error;
       }
       process.stderr.write(
@@ -755,6 +740,8 @@ async function runQaTestFileSuiteFromRuntime(params: {
   const providerMode = normalizeQaProviderMode(runParams?.providerMode ?? DEFAULT_QA_PROVIDER_MODE);
   const primaryModel = runParams?.primaryModel?.trim() || defaultQaModelForMode(providerMode);
   return await runQaTestFileScenarios({
+    signal: runParams?.signal,
+    forwardParentSignals: runParams?.forwardParentSignals,
     evidenceMode: runParams?.evidenceMode,
     evidenceAnchors: runParams?.evidenceAnchors,
     evidenceContinuation: runParams?.evidenceContinuation,
@@ -782,7 +769,8 @@ async function runQaTestFileSuiteFromRuntime(params: {
   });
 }
 
-async function prepareQaSuiteNativeRuntime(repoRoot: string) {
+async function prepareQaSuiteNativeRuntime(repoRoot: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const argv = [
     process.execPath,
     "--import",
@@ -791,7 +779,15 @@ async function prepareQaSuiteNativeRuntime(repoRoot: string) {
     "--config",
     "tsdown.ai.config.ts",
   ];
-  const result = await runPluginCommandWithTimeout({ argv, cwd: repoRoot, timeoutMs: 20 * 60_000 });
+  const result = await withCommandProcessScope(
+    () => runPluginCommandWithTimeout({ argv, cwd: repoRoot, timeoutMs: 20 * 60_000 }),
+    signal,
+  ).catch((error: unknown) => {
+    // The SDK returns ordinary command failures as results. Scope rejection
+    // means process cleanup is unconfirmed and must keep Lab admission closed.
+    throw new QaSuiteCleanupError([error], "QA suite runtime preparation cleanup failed");
+  });
+  signal?.throwIfAborted();
   if (result.code !== 0) {
     throw new Error(`QA suite runtime preparation failed (${argv.join(" ")}): ${result.stderr}`);
   }
@@ -836,89 +832,6 @@ function partitionSharedFlowScenarios(
     partition.push(scenario);
   }
   return partitions.filter((partition) => partition.length > 0);
-}
-
-async function runWeightedUnifiedPartitionTasks(
-  tasks: readonly QaUnifiedPartitionTask[],
-  maxWeight: number,
-) {
-  if (tasks.length === 0) {
-    return [];
-  }
-  const limit = Math.max(1, Math.floor(maxWeight));
-  const results: QaUnifiedPartitionResult[] = [];
-  const pending = tasks.map((task, index) => ({ index, task }));
-  const activeExclusiveKeys = new Set<string>();
-  let activeWeight = 0;
-  return await new Promise<QaUnifiedPartitionResult[]>((resolve, reject) => {
-    let firstError: Error | undefined;
-    let finished = false;
-    const finishIfSettled = () => {
-      if (finished || activeWeight > 0) {
-        return;
-      }
-      finished = true;
-      if (firstError) {
-        reject(toErrorObject(firstError, "QA suite partition failed"));
-        return;
-      }
-      resolve(results);
-    };
-    const launch = () => {
-      if (firstError) {
-        finishIfSettled();
-        return;
-      }
-      while (pending.length > 0) {
-        const pendingIndex = pending.findIndex(({ task }) => {
-          const taskWeight = Math.max(1, Math.min(limit, Math.floor(task.weight)));
-          return (
-            (activeWeight === 0 || activeWeight + taskWeight <= limit) &&
-            (!task.exclusiveKey || !activeExclusiveKeys.has(task.exclusiveKey))
-          );
-        });
-        if (pendingIndex === -1) {
-          return;
-        }
-        const pendingTask = pending.splice(pendingIndex, 1)[0];
-        if (!pendingTask) {
-          throw new Error("failed to select a pending QA suite partition task");
-        }
-        const { index, task } = pendingTask;
-        const taskWeight = Math.max(1, Math.min(limit, Math.floor(task.weight)));
-        activeWeight += taskWeight;
-        if (task.exclusiveKey) {
-          activeExclusiveKeys.add(task.exclusiveKey);
-        }
-        task.run().then(
-          (result) => {
-            results[index] = result;
-            activeWeight -= taskWeight;
-            if (task.exclusiveKey) {
-              activeExclusiveKeys.delete(task.exclusiveKey);
-            }
-            if (pending.length === 0 && activeWeight === 0) {
-              finishIfSettled();
-              return;
-            }
-            launch();
-          },
-          (error: unknown) => {
-            firstError = error instanceof Error ? error : new Error(String(error));
-            activeWeight -= taskWeight;
-            if (task.exclusiveKey) {
-              activeExclusiveKeys.delete(task.exclusiveKey);
-            }
-            finishIfSettled();
-          },
-        );
-      }
-      if (activeWeight === 0) {
-        finishIfSettled();
-      }
-    };
-    launch();
-  });
 }
 
 async function readQaSuiteEvidenceSummary(evidencePath: string) {
@@ -1044,6 +957,7 @@ async function runUnifiedQaSuite(params: {
     rejectFlowOnlySuiteOptionsForUnifiedRun(params.runParams);
   }
   const startedAt = new Date();
+  const cleanupFailures = new Set<QaSuiteCleanupError>();
   const repoRoot = path.resolve(params.runParams?.repoRoot ?? process.cwd());
   const outputDir = await resolveQaSuiteOutputDir(repoRoot, params.runParams?.outputDir);
   await invalidateQaSuiteArtifactGeneration(outputDir);
@@ -1404,6 +1318,9 @@ async function runUnifiedQaSuite(params: {
         const testFileScenarioResults: QaUnifiedPartitionResult["scenarioResults"] = [];
         const testFileStartedInstanceIds: string[] = [];
         for (const [kind, testFileScenarios] of scenariosByKind) {
+          if (params.runParams?.signal?.aborted || cleanupFailures.size > 0) {
+            break;
+          }
           const owner = owners.get(kind)!;
           progress?.markRunning(
             (failFast ? testFileScenarios.slice(0, 1) : testFileScenarios).map((scenario) =>
@@ -1523,6 +1440,9 @@ async function runUnifiedQaSuite(params: {
     started = true,
     final = true,
   ): QaUnifiedPartitionResult => {
+    if (error instanceof QaSuiteCleanupError) {
+      cleanupFailures.add(error);
+    }
     const details = `suite partition failed: ${formatErrorMessage(error)}`;
     const scenarioResults = task.evidenceOwners.flatMap((owner) =>
       owner.active || !started ? owner.failure(details, final) : [],
@@ -1543,19 +1463,17 @@ async function runUnifiedQaSuite(params: {
       run: async () => {
         let failure: QaUnifiedPartitionResult | undefined;
         try {
-          return await runQaSuiteWithInfraRetry(async (attempt) => {
-            try {
-              return await task.run();
-            } catch (error) {
-              failure = capturePartitionFailure(
-                task,
-                error,
-                true,
-                !isQaSuiteInfraRetryableError(error) || attempt === QA_SUITE_INFRA_RETRY_LIMIT,
-              );
-              throw error;
-            }
-          });
+          return await runQaSuiteWithInfraRetry(
+            () => task.run(),
+            QA_SUITE_INFRA_RETRY_LIMIT,
+            params.runParams?.signal,
+            {
+              canRetry: () => cleanupFailures.size === 0,
+              onAttemptFailure: (error, final) => {
+                failure = capturePartitionFailure(task, error, true, final);
+              },
+            },
+          );
         } catch (error) {
           // Failed partitions still own durable failure evidence; rejecting here would
           // discard completed siblings and prevent the unified artifacts from existing.
@@ -1568,30 +1486,62 @@ async function runUnifiedQaSuite(params: {
     }));
     return failFast
       ? await mapQaSuiteWithConcurrency(retryingTasks, 1, (task) => task.run(), {
+          signal: params.runParams?.signal,
+          canStart: () => cleanupFailures.size === 0,
           shouldStop: partitionFailed,
         })
-      : await runWeightedUnifiedPartitionTasks(retryingTasks, maxWeight);
+      : await runWeightedQaSuiteTasks(retryingTasks, maxWeight, {
+          signal: params.runParams?.signal,
+          canStart: () => cleanupFailures.size === 0,
+        });
   };
   // Native children opt out of their destructive global build only after this
   // scheduler has established the shared runtime they consume concurrently.
+  let nativePreparationFailure: QaUnifiedPartitionResult[] | undefined;
   if (concurrentTestFileScenariosByKind.has("vitest")) {
-    await prepareQaSuiteNativeRuntime(repoRoot);
+    try {
+      await prepareQaSuiteNativeRuntime(repoRoot, params.runParams?.signal);
+    } catch (error) {
+      nativePreparationFailure = concurrentPartitionTasks.map((task) =>
+        capturePartitionFailure(task, error, false),
+      );
+      progress?.recordResults(
+        progressEntries(nativePreparationFailure.flatMap((partition) => partition.scenarioResults)),
+      );
+    }
   }
-  const concurrentPartitionResults = await runPartitionTasks(concurrentPartitionTasks, concurrency);
-  const concurrentFailed = failFast && concurrentPartitionResults.some(partitionFailed);
+  const concurrentPartitionResults =
+    nativePreparationFailure ?? (await runPartitionTasks(concurrentPartitionTasks, concurrency));
+  const concurrentFailed =
+    nativePreparationFailure !== undefined ||
+    cleanupFailures.size > 0 ||
+    (failFast && concurrentPartitionResults.some(partitionFailed));
   let scriptPreparationFailure: QaUnifiedPartitionResult | undefined;
-  if (!concurrentFailed && scriptScenarios?.some(dockerBatch.dockerLaneName)) {
+  if (
+    !params.runParams?.signal?.aborted &&
+    !concurrentFailed &&
+    scriptScenarios?.some(dockerBatch.dockerLaneName)
+  ) {
     try {
       preparedScriptEnv = await dockerBatch.prepareDockerE2eEnvironment({
         env: process.env,
         outputDir,
         repoRoot,
         scenarios: scriptScenarios,
+        runCommand: (command) =>
+          runQaScenarioCommandLifecycle({
+            ...command,
+            signal: params.runParams?.signal,
+            forwardParentSignals: params.runParams?.forwardParentSignals,
+          }),
         onPrepared: (evidence) => {
           preparedDockerEvidence = evidence;
         },
       });
     } catch (error) {
+      if (error instanceof QaSuiteCleanupError) {
+        cleanupFailures.add(error);
+      }
       scriptPreparationFailure = capturePartitionFailure(
         {
           channelId: transportId,
@@ -1613,7 +1563,9 @@ async function runUnifiedQaSuite(params: {
       ? []
       : await runPartitionTasks(serialScriptPartitionTasks, 1);
   const parallelScriptPartitionResults =
-    scriptPreparationFailure || (failFast && serialScriptPartitionResults.some(partitionFailed))
+    concurrentFailed ||
+    scriptPreparationFailure ||
+    (failFast && serialScriptPartitionResults.some(partitionFailed))
       ? []
       : await runPartitionTasks(
           parallelScriptPartitionTasks,
@@ -1665,60 +1617,78 @@ async function runUnifiedQaSuite(params: {
     }
     return [result];
   });
-  const unifiedResult = await writeUnifiedQaSuiteArtifacts({
-    alternateModel,
-    channel: channel?.id,
-    channelDriver: channel?.driver,
-    concurrency,
-    evidence,
-    fastMode,
-    finishedAt,
-    outputDir,
-    primaryModel,
-    providerMode,
-    runtimePair: params.runParams?.runtimePair,
-    scenarioIds: params.plan.scenarios.map((scenario) => scenario.id),
-    scenarios,
-    startedAt,
-  });
-  const resultsByIndex = new Map<number, QaSuiteScenarioResult[]>();
-  for (const { scenarioIndex, result } of progressEntries(
-    partitionResults.flatMap((partition) => partition.scenarioResults),
-  )) {
-    const prior = resultsByIndex.get(scenarioIndex) ?? [];
-    prior.push(result);
-    resultsByIndex.set(scenarioIndex, prior);
+  try {
+    const unifiedResult = await writeUnifiedQaSuiteArtifacts({
+      alternateModel,
+      channel: channel?.id,
+      channelDriver: channel?.driver,
+      concurrency,
+      evidence,
+      fastMode,
+      finishedAt,
+      outputDir,
+      primaryModel,
+      providerMode,
+      runtimePair: params.runParams?.runtimePair,
+      scenarioIds: params.plan.scenarios.map((scenario) => scenario.id),
+      scenarios,
+      startedAt,
+    });
+    const resultsByIndex = new Map<number, QaSuiteScenarioResult[]>();
+    for (const { scenarioIndex, result } of progressEntries(
+      partitionResults.flatMap((partition) => partition.scenarioResults),
+    )) {
+      const prior = resultsByIndex.get(scenarioIndex) ?? [];
+      prior.push(result);
+      resultsByIndex.set(scenarioIndex, prior);
+    }
+    const progressResults = [...resultsByIndex].map(([scenarioIndex, results]) => ({
+      scenarioIndex,
+      result: {
+        name: params.plan.scenarios[scenarioIndex]!.title,
+        status: results.some((result) => result.status === "fail")
+          ? ("fail" as const)
+          : results.some((result) => result.status === "skip")
+            ? ("skip" as const)
+            : ("pass" as const),
+        steps: results.flatMap((result) => result.steps),
+      },
+    }));
+    progress?.complete(progressResults, finishedAt.toISOString());
+    params.runParams?.lab?.setLatestReport({
+      outputPath: unifiedResult.reportPath,
+      markdown: unifiedResult.report,
+      generatedAt: finishedAt.toISOString(),
+    });
+    if (cleanupFailures.size > 0) {
+      throw new QaSuiteCleanupError(
+        [...cleanupFailures],
+        `QA suite cleanup failed: ${[...cleanupFailures].map(formatErrorMessage).join("; ")}`,
+      );
+    }
+    return {
+      ...unifiedResult,
+      observedCells: [...observedCellsByKey.values()].toSorted((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right)),
+      ),
+    };
+  } catch (error) {
+    if (cleanupFailures.size > 0 && !(error instanceof QaSuiteCleanupError)) {
+      throw new QaSuiteCleanupError(
+        [...cleanupFailures, error],
+        `QA cleanup and terminal publication failed: ${formatErrorMessage(error)}`,
+      );
+    }
+    throw error;
   }
-  const progressResults = [...resultsByIndex].map(([scenarioIndex, results]) => ({
-    scenarioIndex,
-    result: {
-      name: params.plan.scenarios[scenarioIndex]!.title,
-      status: results.some((result) => result.status === "fail")
-        ? ("fail" as const)
-        : results.some((result) => result.status === "skip")
-          ? ("skip" as const)
-          : ("pass" as const),
-      steps: results.flatMap((result) => result.steps),
-    },
-  }));
-  progress?.complete(progressResults, finishedAt.toISOString());
-  params.runParams?.lab?.setLatestReport({
-    outputPath: unifiedResult.reportPath,
-    markdown: unifiedResult.report,
-    generatedAt: finishedAt.toISOString(),
-  });
-  return {
-    ...unifiedResult,
-    observedCells: [...observedCellsByKey.values()].toSorted((left, right) =>
-      JSON.stringify(left).localeCompare(JSON.stringify(right)),
-    ),
-  };
 }
 
 export async function runQaSuite(...args: [QaSuiteRunParams?]): Promise<QaSuiteRuntimeResult> {
   const runParams = args[0];
+  runParams?.signal?.throwIfAborted();
   rejectRemovedQaChannelDriverSelection(runParams);
   const plan = await resolveSuiteExecutionPlan(runParams);
+  runParams?.signal?.throwIfAborted();
   if (plan.kind === "unified") {
     const { observedCells, ...result } = await runUnifiedQaSuite({
       runParams,
@@ -1736,26 +1706,29 @@ export async function runQaSuite(...args: [QaSuiteRunParams?]): Promise<QaSuiteR
     runParams?.outputDir,
   );
   let continuation = runParams?.evidenceContinuation;
-  const result = await runQaSuiteWithInfraRetry(() =>
-    runQaFlowSuiteFromRuntime({
-      ...runParams,
-      outputDir,
-      ...(continuation
-        ? {
-            evidenceAnchors: resolveQaEvidenceContainment(
-              continuation.occurrences,
-              continuation.entries,
-            ).rootInstances,
-            evidenceContinuation: continuation,
-          }
-        : {}),
-      onEvidence: (summary) => {
-        // Only this invocation's callback supplies retry custody. A suite-wide
-        // cleanup error does not invent a failure for an otherwise passing cell.
-        continuation = structuredClone(summary);
-        runParams?.onEvidence?.(summary);
-      },
-    }),
+  const result = await runQaSuiteWithInfraRetry(
+    () =>
+      runQaFlowSuiteFromRuntime({
+        ...runParams,
+        outputDir,
+        ...(continuation
+          ? {
+              evidenceAnchors: resolveQaEvidenceContainment(
+                continuation.occurrences,
+                continuation.entries,
+              ).rootInstances,
+              evidenceContinuation: continuation,
+            }
+          : {}),
+        onEvidence: (summary) => {
+          // Only this invocation's callback supplies retry custody. A suite-wide
+          // cleanup error does not invent a failure for an otherwise passing cell.
+          continuation = structuredClone(summary);
+          runParams?.onEvidence?.(summary);
+        },
+      }),
+    QA_SUITE_INFRA_RETRY_LIMIT,
+    runParams?.signal,
   );
   const evidence = result.evidence;
   const startedRoots =
