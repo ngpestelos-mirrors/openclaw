@@ -31,6 +31,7 @@ import {
 } from "../../scripts/ci-run-node-test-shard.mts";
 import { encodeNodeTestGroups } from "../../scripts/lib/ci-node-test-groups-codec.mts";
 import {
+  SOURCE_CHANNEL_TEST_POLICY,
   createUiRealGatewayTestShards,
   createUiTestShardGroups,
 } from "../../scripts/lib/ci-node-test-plan.mts";
@@ -1248,16 +1249,31 @@ AFTER_CD
     expect(workflow.jobs.preflight.outputs.run_ios_screenshots).toBe(
       "${{ steps.changed_scope.outputs.run_ios_screenshots }}",
     );
-    const workflowSource = readFileSync(".github/workflows/ci.yml", "utf8");
-    expect(workflowSource).toContain(
-      "OPENCLAW_CI_RUN_MACOS: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.run_macos || 'false' }}",
-    );
-    expect(workflowSource).toContain(
-      "OPENCLAW_CI_RUN_IOS_BUILD: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.run_ios_build || 'false' }}",
-    );
     const manifestEnv = preflightSteps.find(
       (step: WorkflowStep) => step.name === "Build CI manifest",
     ).env;
+    for (const [environmentKey, scopeKey] of [
+      ["OPENCLAW_CI_RUN_MACOS", "run_macos"],
+      ["OPENCLAW_CI_RUN_IOS_BUILD", "run_ios_build"],
+    ] as const) {
+      for (const [eventName, releaseGate, selected, expected] of [
+        ["schedule", false, false, true],
+        ["workflow_dispatch", false, false, true],
+        ["workflow_dispatch", true, false, false],
+        ["workflow_dispatch", true, true, true],
+      ] as const) {
+        expect(
+          evaluateWorkflowExpression(manifestEnv[environmentKey], {
+            eventName,
+            releaseGate,
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            steps: { changed_scope: { outputs: { [scopeKey]: String(selected) } } },
+          }),
+          `${environmentKey}/${eventName}/${releaseGate}/${selected}`,
+        ).toBe(String(expected));
+      }
+    }
     for (const [
       requestedRunnerBackend,
       isReleaseGate,
@@ -3728,7 +3744,6 @@ setImmediate(() => {
 
   it("keeps trusted hybrid controls on Blacksmith when optional hosted admission is closed", () => {
     const workflow = readCiWorkflow();
-    expect(evaluateWorkflowRunner(workflow.jobs["ci-gate"]["runs-on"])).toBe("ubuntu-24.04");
     const context = {
       eventName: "pull_request",
       repository: "openclaw/openclaw",
@@ -3736,7 +3751,7 @@ setImmediate(() => {
       runnerBackend: "hybrid",
     } as const;
 
-    for (const jobName of ["preflight", "security-fast"]) {
+    for (const jobName of ["preflight", "security-fast", "ci-gate"]) {
       const expression = workflow.jobs[jobName]["runs-on"];
       for (const eventName of ["pull_request", "push"] as const) {
         expect(evaluateWorkflowExpression(expression, { ...context, eventName }), jobName).toBe(
@@ -3763,7 +3778,7 @@ setImmediate(() => {
           expect(
             evaluateWorkflowExpression(expression, { ...context, eventName, runnerBackend }),
             jobName,
-          ).toBe(jobName === "security-fast" ? "ubuntu-24.04" : "blacksmith-4vcpu-ubuntu-2404");
+          ).toBe(jobName === "preflight" ? "blacksmith-4vcpu-ubuntu-2404" : "ubuntu-24.04");
         }
       }
     }
@@ -3972,6 +3987,7 @@ setImmediate(() => {
       android: "ubuntu-24.04",
       "build-artifacts": "ubuntu-24.04",
       "check-additional-shard": "ubuntu-24.04",
+      "check-lint-hosted-core-shard": "ubuntu-24.04",
       "check-shard": "ubuntu-24.04",
       "checks-baseline-ratchets": "ubuntu-24.04",
       "checks-fast-channel-contracts-shard": "ubuntu-24.04",
@@ -3982,6 +3998,7 @@ setImmediate(() => {
       "checks-ui": "ubuntu-24.04",
       "checks-ui-e2e": "ubuntu-24.04",
       "checks-ui-e2e-real-gateway": "ubuntu-24.04",
+      "ci-gate": "ubuntu-24.04",
       "control-ui-i18n": "ubuntu-24.04",
       "control-ui-performance": "ubuntu-24.04",
       "docker-seed-e2e": "ubuntu-24.04",
@@ -4006,6 +4023,8 @@ setImmediate(() => {
       "docker-seed-e2e": "blacksmith-16vcpu-ubuntu-2404",
       "qa-smoke-ci-profile": "blacksmith-16vcpu-ubuntu-2404",
       "check-test-types-hosted-core-shard": "blacksmith-16vcpu-ubuntu-2404",
+      "check-lint-hosted-core-shard": "blacksmith-8vcpu-ubuntu-2404",
+      "ci-gate": "blacksmith-4vcpu-ubuntu-2404",
       "checks-ui": "blacksmith-8vcpu-ubuntu-2404",
       "checks-windows": "blacksmith-16vcpu-windows-2025",
     } as const;
@@ -4029,9 +4048,6 @@ setImmediate(() => {
       runAttempt: 1,
     } as const;
     expect(configurableJobs).toEqual(Object.keys(expectedHostedRunners).toSorted());
-    expect(evaluateWorkflowRunner(jobs["check-lint-hosted-core-shard"]?.["runs-on"])).toBe(
-      "ubuntu-24.04",
-    );
     expect(evaluateWorkflowRunner(jobs["check-lint-hosted-extension-shard"]?.["runs-on"])).toBe(
       "ubuntu-24.04",
     );
@@ -4095,6 +4111,73 @@ setImmediate(() => {
           }),
           `${jobName}: returning-contributor fork retry (${runnerBackend || "unset"})`,
         ).toBe(hostedRunner);
+      }
+    }
+
+    for (const jobName of ["check-lint-hosted-core-shard", "ci-gate"] as const) {
+      const expression = jobs[jobName]?.["runs-on"];
+      const runner = expectedHybridFirstAttemptRunners[jobName];
+      for (const [label, overrides, expected] of [
+        ["main", { eventName: "push" }, runner],
+        [
+          "heavy packed core stripe",
+          { runnerProfile: "hybrid", matrix: { stripe: 1 } },
+          jobName === "ci-gate" ? runner : "blacksmith-16vcpu-ubuntu-2404",
+        ],
+        ["lighter packed core stripe", { runnerProfile: "hybrid", matrix: { stripe: 2 } }, runner],
+        ["unpaired core stripe", { runnerProfile: "github", matrix: { stripe: 1 } }, runner],
+        ["noncanonical", { repository: "contributor/openclaw" }, "ubuntu-24.04"],
+        ["manual", { eventName: "workflow_dispatch" }, "ubuntu-24.04"],
+        [
+          "trusted fork with hosted profile",
+          { headRepository: "contributor/openclaw", runnerProfile: "github" },
+          runner,
+        ],
+        ["frozen target", { frozenTarget: true }, jobName === "ci-gate" ? runner : "ubuntu-24.04"],
+        [
+          "admitted qualification overrides configured backend",
+          {
+            eventName: "workflow_dispatch",
+            runnerBackend: "github",
+            preflightOutputs: {
+              ci_qualification: "true",
+              qualification_runner_backend: "hybrid",
+            },
+          },
+          runner,
+        ],
+        [
+          "qualification hosted override",
+          {
+            eventName: "workflow_dispatch",
+            preflightOutputs: {
+              ci_qualification: "true",
+              qualification_runner_backend: "github",
+            },
+          },
+          "ubuntu-24.04",
+        ],
+        [
+          "qualification retry",
+          {
+            eventName: "workflow_dispatch",
+            runAttempt: 2,
+            preflightOutputs: {
+              ci_qualification: "true",
+              qualification_runner_backend: "hybrid",
+            },
+          },
+          "ubuntu-24.04",
+        ],
+      ] as const) {
+        expect(
+          evaluateWorkflowExpression(expression, {
+            ...canonicalPullRequest,
+            runnerBackend: "hybrid",
+            ...overrides,
+          }),
+          `${jobName}: ${label}`,
+        ).toBe(expected);
       }
     }
 
@@ -7051,7 +7134,7 @@ server.listen(0, "127.0.0.1", () => {
     expect(steps[5]).toEqual({
       name: "Run Codex docs agent",
       if: "steps.gate.outputs.run_agent == 'true'",
-      uses: "openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56",
+      uses: "openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e",
       env: {
         DOCS_AGENT_BASE_SHA: "${{ steps.gate.outputs.review_base_sha }}",
         DOCS_AGENT_HEAD_SHA: "${{ steps.gate.outputs.review_head_sha }}",
@@ -7064,7 +7147,6 @@ server.listen(0, "127.0.0.1", () => {
         effort: "medium",
         sandbox: "workspace-write",
         "safety-strategy": "drop-sudo",
-        "codex-args": '["--full-auto"]',
       },
     });
     const gate = expectDefined(steps[2]?.run, "gate policy");
@@ -8801,6 +8883,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       writeFileSync(
         path.join(root, directory, "ci-node-test-plan.mts"),
         `import { readFileSync } from "node:fs";
+         export const SOURCE_CHANNEL_TEST_POLICY = ${JSON.stringify(SOURCE_CHANNEL_TEST_POLICY)};
          export const createNodeTestShardBundles = () =>
            [${JSON.stringify(owner)}, readFileSync("candidate.txt", "utf8")];`,
       );
@@ -8931,6 +9014,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           repository: "openclaw/openclaw",
           runnerProfile: "blacksmith",
           runAttempt: 1,
+          preflightOutputs: { run_lint_core: "true" },
         }),
       ).toBe(false);
       expect(
@@ -8941,6 +9025,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           repository: "openclaw/openclaw",
           runnerProfile: "github",
           runAttempt: 1,
+          preflightOutputs: { run_lint_core: "true" },
         }),
       ).toBe(true);
       for (const [runnerProfile, expected] of [
@@ -8956,11 +9041,11 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             repository: "openclaw/openclaw",
             runnerProfile,
             runAttempt: 1,
+            preflightOutputs: { run_lint_core: "true" },
           }),
         ).toBe(expected);
       }
     }
-    expect(evaluateWorkflowRunner(hostedCoreLint["runs-on"])).toBe("ubuntu-24.04");
     expect(hostedCoreLint.strategy["fail-fast"]).toBe(false);
     expect(hostedCoreLint.strategy["max-parallel"]).toBe(5);
     const coreLintStep = hostedCoreLint.steps.find(
@@ -9091,25 +9176,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       return calls;
     };
 
-    const coreLintRows = (
-      context: Partial<Parameters<typeof evaluateWorkflowExpression>[1]>,
-    ): number[] => {
-      const stripes = hostedCoreLint.strategy.matrix.stripe;
-      return Array.isArray(stripes)
-        ? stripes
-        : evaluateWorkflowExpression(stripes, {
-            eventName: "pull_request",
-            repository: "openclaw/openclaw",
-            runnerProfile: "hybrid",
-            runAttempt: 1,
-            ...context,
-          });
-    };
+    // Manifest tests own row admission; these cases execute every full-layout stripe.
     for (const eventName of ["pull_request", "push"] as const) {
-      const rows = coreLintRows({ eventName });
-      expect(rows).toEqual([1, 2]);
       expect(
-        rows.map((stripe) =>
+        [1, 2].map((stripe) =>
           runLintOwner({ capability: true, eventName, lane: "core", profile: "hybrid", stripe }),
         ),
       ).toEqual(
@@ -9124,24 +9194,9 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         ),
       );
     }
-    for (const context of [
-      { runnerProfile: "github" as const },
-      { eventName: "workflow_dispatch" as const },
-      { frozenTarget: true },
-      { releaseGate: true },
-    ]) {
-      expect(coreLintRows(context)).toEqual([1, 2, 3, 4, 5]);
-    }
     for (const runAttempt of [1, 2]) {
-      const rows = coreLintRows({
-        eventName: "workflow_dispatch",
-        releaseGate: true,
-        runAttempt,
-        preflightOutputs: { node_runner_backend: "runson" },
-      });
-      expect(rows).toEqual([1, 2]);
       expect(
-        rows.flatMap((stripe) =>
+        [1, 2].flatMap((stripe) =>
           runLintOwner({
             capability: true,
             eventName: "workflow_dispatch",
@@ -9224,10 +9279,9 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(runLintOwner({ capability: true, lane: "check", profile: "hybrid" })).toEqual([
       "node --import tsx scripts/run-oxlint-shards.mts --only=scripts --threads=1",
     ]);
-    expect(hostedExtensionLint.strategy.matrix.stripe).toEqual([1, 2, 3, 4, 5, 6]);
     expect(hostedExtensionLint.strategy["fail-fast"]).toBe(false);
     expect(hostedExtensionLint.strategy["max-parallel"]).toBe(6);
-    for (const stripe of hostedExtensionLint.strategy.matrix.stripe) {
+    for (const stripe of [1, 2, 3, 4, 5, 6]) {
       expect(
         runLintOwner({ capability: true, lane: "extensions", profile: "hybrid", stripe }),
       ).toEqual([
@@ -9341,6 +9395,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           CHECKOUT_KIND: "linux-node",
           CHECKOUT_BASE_SHA: String(checkoutBase),
           CHECKOUT_TOKEN: "fixture-checkout-token",
+          NARROW_CHECK_PATHS_JSON: "",
+          CI_TYPE_GRAPHS_JSON: "",
+          CI_CORE_TYPE_GRAPHS_JSON: "",
+          CI_CORE_TYPE_CONCURRENCY: "",
         },
       });
       expect(report.code, report.output).toBe(0);
@@ -9982,7 +10040,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.strict_native_i18n }}",
     );
     expect(manifestStep.env.OPENCLAW_CI_RUN_NATIVE_I18N).toBe(
-      "${{ github.event_name == 'workflow_dispatch' && (steps.runner_profile.outputs.node_runner_backend != 'runson' && steps.runner_profile.outputs.ci_qualification != 'true') && 'true' || steps.changed_scope.outputs.run_native_i18n || 'false' }}",
+      "${{ github.event_name == 'schedule' && 'true' || github.event_name == 'workflow_dispatch' && (steps.runner_profile.outputs.node_runner_backend != 'runson' && steps.runner_profile.outputs.ci_qualification != 'true') && 'true' || steps.changed_scope.outputs.run_native_i18n || 'false' }}",
     );
     expect(sourceStep.run).toContain("pnpm native:i18n:verify");
     expect(sourceStep.run).toContain("Historical release targets");
@@ -10641,6 +10699,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         "ubuntu-24.04",
       ],
       ["check-test-types-hosted-core-shard", {}, "blacksmith-16vcpu-ubuntu-2404", "ubuntu-24.04"],
+      ["check-lint-hosted-core-shard", {}, "blacksmith-8vcpu-ubuntu-2404", "ubuntu-24.04"],
+      ["ci-gate", {}, "blacksmith-4vcpu-ubuntu-2404", "ubuntu-24.04"],
       [
         "check-additional-shard",
         { group: "extension-package-boundary", runner: "blacksmith-16vcpu-ubuntu-2404" },
