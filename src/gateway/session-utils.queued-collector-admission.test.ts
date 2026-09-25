@@ -3,9 +3,11 @@ import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 // oxfmt-ignore
 import { useQueuedCollectorFixture } from "./session-utils.queued-collector.test-support.js";
 import { expectDefined } from "@openclaw/normalization-core";
+import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as preparedModelRuntime from "../agents/prepared-model-runtime.js";
+import * as subagentKill from "../agents/subagents/registry/subagent-control-kill.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { isSubagentRunQueued } from "../agents/subagents/registry/subagent-registry-read.js";
 import { spawnSubagentDirect } from "../agents/subagents/spawn/subagent-spawn.js";
@@ -30,13 +32,53 @@ import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 const { parentKey, requestContext, operatorClient } = useQueuedCollectorFixture();
 
 describe("queued collector native admission", () => {
-  it.each([false, true])(
-    "cancels the native collector's own real preaccept admission (exact=%s)",
-    async (exact) => {
+  it.each([
+    { exact: false, cleanupAlreadyStarted: false },
+    { exact: true, cleanupAlreadyStarted: false },
+    { exact: false, cleanupAlreadyStarted: true },
+  ])(
+    "coordinates native preaccept cancellation (exact=$exact, cleanupStarted=$cleanupAlreadyStarted)",
+    async ({ exact, cleanupAlreadyStarted }) => {
       const context = requestContext();
       const entered = createDeferred();
       const dispatched = createDeferred();
+      const order: string[] = [];
+      const cleanup = cleanupAlreadyStarted
+        ? { entered: createDeferred(), release: createDeferred(), completed: createDeferred() }
+        : undefined;
+      const kill = subagentKill.killSubagentRunAdmin;
+      const publication = vi
+        .spyOn(subagentKill, "killSubagentRunAdmin")
+        .mockImplementation(async (params, control) => {
+          const preparation = cleanup && control?.preparePublication;
+          return kill(
+            {
+              ...params,
+              onResult: (result) => {
+                params.onResult?.(result);
+                if (params.onResult && result.found && !result.error) {
+                  expect(loadGatewaySessionEntryReadOnly(params.sessionKey).entry).toBeDefined();
+                  order.push("published");
+                }
+              },
+            },
+            cleanup && preparation
+              ? {
+                  ...expectDefined(control, "cancellation control"),
+                  preparePublication: {
+                    ...preparation,
+                    prepare: async () => {
+                      cleanup.release.resolve();
+                      await cleanup.completed.promise;
+                      await preparation.prepare();
+                    },
+                  },
+                }
+              : control,
+          );
+        });
       let nativeRunId: string | undefined;
+      let failAdmission: ((error: Error) => void) | undefined;
       const agentResponse = vi.fn();
       const runtimeGate = vi
         .spyOn(preparedModelRuntime, "loadPublishedGatewayReplyDispatchRuntime")
@@ -45,6 +87,7 @@ describe("queued collector native admission", () => {
           signal.throwIfAborted();
           entered.resolve();
           return await new Promise<never>((_resolve, reject) => {
+            failAdmission = reject;
             signal.addEventListener(
               "abort",
               () => {
@@ -84,15 +127,25 @@ describe("queued collector native admission", () => {
           } else if (method === "chat.abort") {
             await handleChatAbortRequest(request);
           } else if (method === "sessions.delete") {
-            await expectDefined(
-              sessionDeleteHandlers["sessions.delete"],
-              "sessions.delete handler",
-            )(request);
+            cleanup?.entered.resolve();
+            await cleanup?.release.promise;
+            try {
+              await expectDefined(
+                sessionDeleteHandlers["sessions.delete"],
+                "sessions.delete handler",
+              )(request);
+            } finally {
+              cleanup?.completed.resolve();
+            }
           } else {
             throw new Error(`Unexpected native cleanup method ${method}`);
           }
           const [ok, payload, error] = respond.mock.calls[0] ?? [];
-          return unwrapGatewayMethodDispatchResponse(method, { ok, payload, error }) as T;
+          const result = unwrapGatewayMethodDispatchResponse(method, { ok, payload, error });
+          if (method === "sessions.delete" && asNullableRecord(result)?.deleted === true) {
+            order.push("deleted");
+          }
+          return result as T;
         },
       });
       try {
@@ -151,6 +204,13 @@ describe("queued collector native admission", () => {
           releaseCapacityWait?.();
         }
         expect(entry.execution.startedAt).toBeUndefined();
+        if (cleanup) {
+          expectDefined(
+            failAdmission,
+            "native admission failure",
+          )(new Error("admission failed before Stop"));
+          await cleanup.entered.promise;
+        }
         const respond = vi.fn();
         await sessionAbortHandlers["sessions.abort"]!({
           req: { type: "req", id: "stop-native-preaccept", method: "sessions.abort" },
@@ -164,25 +224,40 @@ describe("queued collector native admission", () => {
           isWebchatConnect: () => false,
         });
         await dispatched.promise;
-        await vi.waitFor(() => expect(entry.collectorCompletion?.status).toBe("killed"));
-        expect
-          .soft(respond.mock.calls[0]?.slice(0, 2), JSON.stringify(respond.mock.calls[0]?.[2]))
-          .toEqual([true, { ok: true, status: "aborted", abortedRunId: entry.runId }]);
-        expect.soft(context.chatRunState.hasAbortMarker(entry.runId)).toBe(true);
-        expect.soft(admission.abortStopReason).toBe("rpc");
+        await closeSwarmScheduler();
+        expect(entry.collectorCompletion?.status).toBe("killed");
+        if (cleanup) {
+          expect(respond).toHaveBeenCalledExactlyOnceWith(
+            false,
+            undefined,
+            expect.objectContaining({
+              code: "INVALID_REQUEST",
+              message:
+                "Queued collector session changed before cancellation publication; retry Stop.",
+            }),
+          );
+          expect(order).toEqual(["deleted"]);
+        } else {
+          expect
+            .soft(respond.mock.calls[0]?.slice(0, 2), JSON.stringify(respond.mock.calls[0]?.[2]))
+            .toEqual([true, { ok: true, status: "aborted", abortedRunId: entry.runId }]);
+          expect.soft(context.chatRunState.hasAbortMarker(entry.runId)).toBe(true);
+          expect.soft(admission.abortStopReason).toBe("rpc");
+          expect(order).toEqual(["published", "deleted"]);
+        }
         expect.soft(entry.execution.startedAt).toBeUndefined();
         expect.soft(entry.sessionStartedAt).toBeUndefined();
         expect(context.chatAbortControllers.has(entry.runId)).toBe(false);
-        // This unadopted launch still owns its provisional session; join its real cleanup.
-        await closeSwarmScheduler();
         expect(loadGatewaySessionEntryReadOnly(entry.childSessionKey).entry).toBeUndefined();
       } finally {
+        cleanup?.release.resolve();
         if (nativeRunId) {
           context.chatAbortControllers.get(nativeRunId)?.controller.abort();
           await dispatched.promise;
           clearAgentRunContext(nativeRunId);
         }
         runtimeGate.mockRestore();
+        publication.mockRestore();
       }
     },
   );

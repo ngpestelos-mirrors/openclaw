@@ -7,7 +7,7 @@ import {
   getAsyncWorkSignal,
   trackAsyncWork,
 } from "../../../shared/async-work-scope.js";
-import { createDeferredCore } from "../../../shared/deferred.js";
+import { createDeferredCore, type Deferred } from "../../../shared/deferred.js";
 
 type SwarmRemovalReason = "cancelled" | "shutdown";
 
@@ -32,6 +32,7 @@ type QueuedSwarmRun = {
   callbackWork?: AsyncWorkScope;
   removeAbortListener?: () => void;
   holds: number;
+  holdsReleased?: Deferred;
   retryReady: boolean;
 };
 
@@ -143,6 +144,10 @@ async function startQueuedRun(lane: SwarmGroupLane, item: QueuedSwarmRun, launch
     // Acquiring capacity and invoking launch are one synchronous dispatch boundary.
     await launch.start();
   } catch (error) {
+    // A Stop receipt still owns this launch's provisional session until publication.
+    while (item.holds > 0) {
+      await (item.holdsReleased ??= createDeferredCore()).promise;
+    }
     let failurePersisted = false;
     try {
       failurePersisted = await launch.onStartFailure(error);
@@ -410,13 +415,14 @@ export function isSwarmRunActive(runId: string): boolean {
   return runLocations.get(runId)?.state === "active";
 }
 
-/** Holds this exact reservation, including preparation that has not activated yet. */
-export function holdQueuedSwarmRun(runId: string) {
+/** Prevents preparation and failed-launch cleanup from starting for this exact reservation. */
+export function holdSwarmRunReservation(runId: string) {
   const location = runLocations.get(runId);
-  if (location?.state !== "queued") {
+  const item = location?.item;
+  if (!location || !item) {
     return undefined;
   }
-  const { lane, item } = location;
+  const { lane } = location;
   item.holds += 1;
   publishCapacityChange(item);
   let released = false;
@@ -426,6 +432,11 @@ export function holdQueuedSwarmRun(runId: string) {
       if (!released) {
         released = true;
         item.holds -= 1;
+        if (item.holds === 0) {
+          const releasedHolds = item.holdsReleased;
+          item.holdsReleased = undefined;
+          releasedHolds?.resolve();
+        }
         if (runLocations.get(runId) === location) {
           publishCapacityChange(item);
         }
@@ -436,7 +447,12 @@ export function holdQueuedSwarmRun(runId: string) {
     withdraw() {
       // A retained durable kill may withdraw only its never-started reservation.
       // Reused IDs and lanes must not inherit an older cancellation scope.
-      return !released && runLocations.get(runId) === location && removeQueuedSwarmRun(runId);
+      return (
+        !released &&
+        location.state === "queued" &&
+        runLocations.get(runId) === location &&
+        removeQueuedSwarmRun(runId)
+      );
     },
   };
 }
