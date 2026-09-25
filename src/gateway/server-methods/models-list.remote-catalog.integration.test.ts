@@ -434,7 +434,6 @@ it(
             "Concurrent publication did not finish",
           );
           expect(dispatch?.agentId).toBe("main");
-          await settleInterrupted(pending, publication);
           const current = await withTestTimeout(
             list(),
             1_000,
@@ -444,6 +443,9 @@ it(
           expect(kimiIds(current)).not.toContain("remote-last");
           expect(currentPrice()).toBe(7);
           releaseProvider();
+          await settleInterrupted(pending, publication);
+          expect(kimiIds(await list())).not.toContain("remote-last");
+          expect(currentPrice()).toBe(7);
         }
         expect(kimiIds(await list(true))).toContain("remote-last");
         expect(currentPrice()).toBe(11);
