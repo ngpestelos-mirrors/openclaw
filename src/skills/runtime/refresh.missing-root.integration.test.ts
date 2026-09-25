@@ -468,7 +468,12 @@ describe("shared missing skill ancestors", () => {
           expect(actualContentErrors[index]).toBe(error);
           assert.ok(loss, errorPhase);
           assert.ok(error instanceof Error && "code" in error && "path" in error);
-          expect(error.code).toBe("ENOENT");
+          if (process.platform === "win32" && error.code === "EPERM") {
+            // Windows reports deletion of a watched directory as EPERM.
+            expect(error).toHaveProperty("syscall", "watch");
+          } else {
+            expect(error.code).toBe("ENOENT");
+          }
           assert.ok(typeof error.path === "string");
           expect(path.resolve(error.path)).toBe(loss.sourceRoot);
           expect(observation.watcher.closed).toBe(true);
