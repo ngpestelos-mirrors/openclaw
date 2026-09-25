@@ -29,13 +29,26 @@ afterEach(() => vi.restoreAllMocks());
 describe("session sharing store", () => {
   it("joins exited maintenance leases before removing sharing fixture state", async () => {
     let fixtureRoot = "";
-    let worker: Worker | undefined;
+    const workers: Worker[] = [];
     const maintenance = createDeferred<{
       raw: ReturnType<typeof reclamation.runSqliteSessionReclamation>;
     }>();
     const spawn = sqliteArchive.createSqliteTranscriptArchiveWorker;
     vi.spyOn(sqliteArchive, "createSqliteTranscriptArchiveWorker").mockImplementation((data) => {
-      worker = spawn(data);
+      const worker = spawn(data);
+      if (
+        expect
+          .objectContaining({
+            type: "sqlite-transcript-archive-v2",
+            operation: "reclaim",
+            databaseOptions: expect.objectContaining({
+              env: expect.objectContaining({ OPENCLAW_STATE_DIR: fixtureRoot }),
+            }),
+          })
+          .asymmetricMatch(data)
+      ) {
+        workers.push(worker);
+      }
       return worker;
     });
     const run = reclamation.runSqliteSessionReclamation;
@@ -60,6 +73,8 @@ describe("session sharing store", () => {
       await expect((await maintenance.promise).raw).resolves.toMatchObject({
         kind: "maintenance-plan",
       });
+      expect(workers).toHaveLength(1);
+      const worker = workers[0];
       if (!worker) {
         throw new Error("Expected the automatic maintenance worker");
       }
