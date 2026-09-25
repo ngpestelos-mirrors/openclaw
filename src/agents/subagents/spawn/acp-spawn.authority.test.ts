@@ -29,9 +29,16 @@ import {
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
 import * as gatewayCall from "../../../gateway/call.js";
 import { registerChatAbortController } from "../../../gateway/chat-abort.js";
+import {
+  captureGatewayDeviceRevocation,
+  invalidateGatewayDeviceRevocation,
+} from "../../../gateway/device-revocation.js";
 import { withLocalGatewayRequestScope } from "../../../gateway/local-request-context.js";
+import { invalidateOperatorRolePolicy } from "../../../gateway/operator-role-policy.js";
+import { captureGatewayOperatorRunAuthority } from "../../../gateway/operator-run-authority.js";
 import { handleChatAbortRequest } from "../../../gateway/server-methods/chat-abort-handler.js";
 import { dispatchGatewayMethodInProcess } from "../../../gateway/server-plugin-in-process-dispatch.js";
+import { createOperatorClient } from "../../../gateway/server-plugin-in-process-dispatch.test-support.js";
 import { createSyntheticPluginRuntimeClient } from "../../../gateway/server-plugin-runtime-client.js";
 import { getSessionRowProjection } from "../../../gateway/session-row-projection-access.js";
 import {
@@ -46,6 +53,7 @@ import {
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
+import { setCanonicalUserProfileRole } from "../../../state/user-profile-writes.js";
 import { listTasksForRelatedSessionKey } from "../../../tasks/task-registry-query.js";
 import { resetTaskRegistryForTests } from "../../../tasks/task-registry.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
@@ -112,6 +120,19 @@ beforeEach(async () => {
     JSON.stringify({
       logging: { file: path.join(stateDir, "gateway.log"), audit: { enabled: false } },
       acp: { enabled: true, backend: backendId, allowedAgents: ["fixture"] },
+      gateway: {
+        roles: {
+          default: "allowed",
+          definitions: {
+            allowed: {
+              sessions: { others: "write" },
+              agents: ["main", "fixture"],
+              scopes: ["operator.admin", "operator.read", "operator.write"],
+            },
+            denied: { sessions: { others: "none" }, agents: [], scopes: [] },
+          },
+        },
+      },
       tools: {
         profile: "full",
         fs: { workspaceOnly: false },
@@ -184,7 +205,9 @@ describe("pending ACP spawn authority", () => {
   it.each([
     ["runtime", "abort"],
     ["runtime", "admission close"],
-    ["runtime", "live"],
+    ["runtime", "live", "unchanged"],
+    ["runtime", "live", "device revoked"],
+    ["runtime", "live", "role reassigned"],
     ["row", "admission close"],
     ["transcript", "admission close"],
     ["thread", "admission close"],
@@ -193,8 +216,8 @@ describe("pending ACP spawn authority", () => {
     ["metadata", "admission close"],
     ["initialized", "admission close"],
   ] as const)(
-    "transfers initialized ACP work only from its live parent: %s / %s",
-    async (stage, closure) => {
+    "transfers initialized ACP work only from its live parent: %s / %s / %s",
+    async (stage, closure, operatorChange?: "unchanged" | "device revoked" | "role reassigned") => {
       const cfg = getRuntimeConfig();
       await writeSubagentSessionEntry({
         stateDir,
@@ -206,8 +229,9 @@ describe("pending ACP spawn authority", () => {
         { sessionKey: parentSessionKey, agentId: "main" },
         () => ({ permissionMode: "full", sessionRoot: stateDir }),
       );
-      const proveDelegatedCredit = stage === "runtime" && closure === "live";
-      if (proveDelegatedCredit) {
+      const realGatewayTurn = stage === "runtime" && closure === "live";
+      const proveDelegatedCredit = realGatewayTurn && operatorChange === "unchanged";
+      if (realGatewayTurn) {
         await refreshPreparedModelRuntimeSnapshots(cfg, {
           gatewayLifecycle: true,
           catalogMode: "static",
@@ -225,7 +249,33 @@ describe("pending ACP spawn authority", () => {
       const work = new AsyncWorkScope();
       const trackExecution = context.trackExecution;
       context.trackExecution = (run) => work.track(() => trackExecution(run));
+      const connection = new AbortController();
+      const operatorClient = realGatewayTurn
+        ? createOperatorClient({
+            profileName: "acp-spawn-operator",
+            scopes: ["operator.admin", "operator.read", "operator.write"],
+          })
+        : undefined;
+      const device = operatorClient
+        ? captureGatewayDeviceRevocation(
+            context,
+            { deviceId: "acp-operator-device", role: "operator" },
+            () => !connection.signal.aborted,
+            connection.signal,
+          )
+        : undefined;
+      const operator = operatorClient
+        ? await captureGatewayOperatorRunAuthority({
+            client: operatorClient,
+            context,
+            hasCurrentClientAuthority: device?.isCurrent,
+          })
+        : undefined;
+      if (realGatewayTurn && !operator) {
+        throw new Error("The ACP effect proof requires captured operator authority");
+      }
       const admission = prepareAgentRunAdmission({
+        operatorAuthority: operator?.authority,
         cfg,
         operationalRunInstance: createOperationalRunInstanceRef(parentRunId),
         facts: {
@@ -296,6 +346,22 @@ describe("pending ACP spawn authority", () => {
       const release = createDeferred();
       const backendPrompt = vi.fn<(text: string) => void>();
       const finishBackend = createDeferred();
+      const beforePrompt = createDeferred();
+      const resumePrompt = createDeferred();
+      if (realGatewayTurn) {
+        const manager = getAcpSessionManager();
+        const runTurn = manager.runTurn.bind(manager);
+        vi.spyOn(manager, "runTurn").mockImplementation((input) =>
+          runTurn({
+            ...input,
+            onBeforePrompt: async () => {
+              beforePrompt.resolve();
+              await resumePrompt.promise;
+              await input.onBeforePrompt?.();
+            },
+          }),
+        );
+      }
       const pause = async (sessionKey: string) => {
         entered.resolve(sessionKey);
         await release.promise;
@@ -411,7 +477,7 @@ describe("pending ACP spawn authority", () => {
           };
         },
         async *runTurn(input): AsyncGenerator<AcpRuntimeEvent> {
-          if (!proveDelegatedCredit) {
+          if (!realGatewayTurn) {
             throw new Error("No external harness turn belongs in this boundary test");
           }
           backendPrompt(input.text);
@@ -439,11 +505,13 @@ describe("pending ACP spawn authority", () => {
           if (typeof params.sessionKey !== "string" || typeof params.idempotencyKey !== "string") {
             throw new Error("Accepted ACP work requires session and run identities");
           }
-          if (proveDelegatedCredit) {
+          if (realGatewayTurn) {
             const receipt = await dispatchGatewayMethodInProcess<T>(method, params, options);
             expect(receipt).toMatchObject({ status: "accepted", runId: params.idempotencyKey });
             acceptedRunId = params.idempotencyKey;
             admission.close();
+            operator?.release();
+            device?.release();
             return receipt;
           }
           const task = createBackgroundTaskRecord(
@@ -519,7 +587,12 @@ describe("pending ACP spawn authority", () => {
         abortSignal: parent.controller.signal,
       });
       const wrapped = withPluginRuntimeGatewayRequestScope(
-        { context, isWebchatConnect: () => false },
+        {
+          context,
+          client: operatorClient,
+          hasCurrentClientAuthority: device?.isCurrent,
+          isWebchatConnect: () => false,
+        },
         () =>
           withGatewayToolCallerIdentity(
             createAdmittedGatewayToolCallerIdentity({
@@ -580,9 +653,37 @@ describe("pending ACP spawn authority", () => {
           closes: closeRuntime.mock.calls.length,
         };
         await wrappedOutcome;
+        if (realGatewayTurn) {
+          expect(result, JSON.stringify(result)).toMatchObject({
+            details: { status: "accepted", childSessionKey },
+          });
+          expect(acceptedRunId).toBeDefined();
+          expect(getAdmittedRunDelegatedAuthority(admitted)).toBeUndefined();
+          expect(parent.controller.signal.aborted).toBe(false);
+          await Promise.race([
+            beforePrompt.promise,
+            work.runWhenIdle(() => {
+              throw new Error("Accepted ACP work ended before its final prompt boundary");
+            }),
+          ]);
+          expect(backendPrompt).not.toHaveBeenCalled();
+          operator!.authority.assertCurrent();
+          if (operatorChange === "device revoked") {
+            invalidateGatewayDeviceRevocation(context, "acp-operator-device", "operator");
+          } else if (operatorChange === "role reassigned") {
+            await setCanonicalUserProfileRole(operator!.authority.profileId, "denied", {
+              onCommitted: invalidateOperatorRolePolicy,
+            });
+          }
+          if (operatorChange !== "unchanged") {
+            expect(operator!.authority.assertCurrent).toThrow();
+          }
+          resumePrompt.resolve();
+        }
         finishBackend.resolve();
         await work.runWhenIdle(() => {});
-        if (proveDelegatedCredit) {
+        if (realGatewayTurn) {
+          expect(backendPrompt).toHaveBeenCalledTimes(operatorChange === "unchanged" ? 1 : 0);
           acceptedTaskId = listTasksForRelatedSessionKey(childSessionKey).find(
             (task) => task.runId === acceptedRunId,
           )?.taskId;
@@ -652,21 +753,23 @@ describe("pending ACP spawn authority", () => {
               }),
             );
             await expect(
-              withPluginRuntimeGatewayRequestScope({ context, isWebchatConnect: () => false }, () =>
-                dispatchGatewayMethodInProcess(
-                  "agent",
-                  {
-                    sessionKey: childSessionKey,
-                    message: "must not reach the external harness",
-                    idempotencyKey: "acp-retained-restriction",
-                    acpTurnSource: "manual_spawn",
-                  },
-                  { forceSyntheticClient: true, expectFinal: true },
-                ),
+              withPluginRuntimeGatewayRequestScope(
+                { context, client: operatorClient, isWebchatConnect: () => false },
+                () =>
+                  dispatchGatewayMethodInProcess(
+                    "agent",
+                    {
+                      sessionKey: childSessionKey,
+                      message: "must not reach the external harness",
+                      idempotencyKey: "acp-retained-restriction",
+                      acpTurnSource: "manual_spawn",
+                    },
+                    { forceSyntheticClient: true, expectFinal: true },
+                  ),
               ),
             ).rejects.toThrow("ACP cannot satisfy the source action restrictions");
             expect(backendPrompt).toHaveBeenCalledTimes(1);
-          } else {
+          } else if (!realGatewayTurn) {
             expect(closeRuntime).not.toHaveBeenCalled();
           }
         } else {
@@ -691,12 +794,16 @@ describe("pending ACP spawn authority", () => {
         }
       } finally {
         release.resolve();
+        resumePrompt.resolve();
         finishBackend.resolve();
         await forwarded;
         await wrappedOutcome;
         admission.close();
         parent.cleanup();
         await work.drain();
+        operator?.release();
+        device?.release();
+        connection.abort();
         const projection = getSessionRowProjection(context);
         projection?.dispose();
         await projection?.ensureMaterialized();

@@ -6,7 +6,10 @@ import {
   isIncognitoOpenClawAgentSqlitePath,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { publishSessionStateArchives } from "./session-accessor.sqlite-archive-store.js";
+import {
+  publishSessionStateArchives,
+  publishSessionStateArchivesInWorker,
+} from "./session-accessor.sqlite-archive-store.js";
 import type { SessionStateDeletePlan } from "./session-accessor.sqlite-archive-types.js";
 import {
   materializeSessionStateDeletePlans,
@@ -491,9 +494,7 @@ export async function finalizeSessionEntryMaintenancePlansAfterWriterReleaseBest
     }
     try {
       const published = options.workerDatabaseIdentity
-        ? await (
-            await import("./session-accessor.sqlite-maintenance-execution.js")
-          ).publishMaintenanceArchivesInWorker(
+        ? await publishSessionStateArchivesInWorker(
             scope,
             options.workerDatabaseIdentity,
             archivedTranscripts,

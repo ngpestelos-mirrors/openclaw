@@ -33,7 +33,7 @@ import {
 } from "./worker-portal-tool-executor.js";
 import {
   computeRequestDigest,
-  operationKey,
+  workerSessionOperationKey,
   childSessionKey,
 } from "./worker-session-tool-identity.js";
 import { applyWorkerSessionToolPolicy } from "./worker-session-tool-policy.js";
@@ -385,7 +385,7 @@ export function createWorkerSessionToolExecutor(params: {
             assertActiveChildPlacement();
             assertSourcePolicy();
             assertChild();
-            const childRunId = operationKey(operation.operationSeed, "initial-task");
+            const childRunId = workerSessionOperationKey(operation.operationSeed, "initial-task");
             const config = getRuntimeConfig();
             const sessionSpawnContext = collectExecutionIdentity
               ? buildSubagentExecutionSessionSpawnContext({
@@ -645,7 +645,7 @@ export function createWorkerSessionToolExecutor(params: {
                   resolveGatewayContext: params.resolveGatewayContext,
                   readSourceEntry: readEntry,
                   request: operationRequest.request,
-                  idempotencyKey: `worker-session-send:${operationKey(
+                  idempotencyKey: `worker-session-send:${workerSessionOperationKey(
                     started.operationSeed,
                     "target-send",
                   )}`,

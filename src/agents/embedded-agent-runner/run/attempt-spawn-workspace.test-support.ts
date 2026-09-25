@@ -615,11 +615,24 @@ vi.mock("../../cache-trace.js", () => ({
   createCacheTrace: () => undefined,
 }));
 
-vi.mock("../../agent-tools.js", () => ({
-  createOpenClawCodingTools: hoisted.createOpenClawCodingToolsMock,
-  createOpenClawCodingToolsInternal: hoisted.createOpenClawCodingToolsMock,
-  resolveToolLoopDetectionConfig: () => undefined,
-}));
+vi.mock("../../agent-tools.js", () => {
+  const createTools = (...args: unknown[]) => {
+    const options = args[0] as OpenClawCodingToolsOptions | undefined;
+    if (options?.inheritedToolPolicyRef) {
+      options.inheritedToolPolicyRef.current = captureInheritedToolPolicy({
+        policies: [options.config?.tools],
+        runtimeAllow: options.runtimeToolAllowlist,
+        parameters: emptyDelegatedToolParameterPolicy(),
+      });
+    }
+    return hoisted.createOpenClawCodingToolsMock(...args);
+  };
+  return {
+    createOpenClawCodingTools: createTools,
+    createOpenClawCodingToolsInternal: createTools,
+    resolveToolLoopDetectionConfig: () => undefined,
+  };
+});
 
 vi.mock("../../agent-bundle-mcp-tools.js", () => ({
   createBundleMcpToolRuntime: async () => undefined,
@@ -948,13 +961,6 @@ export function resetEmbeddedAttemptHarness(
   hoisted.ensureGlobalUndiciStreamTimeoutsMock.mockReset();
   hoisted.createOpenClawCodingToolsMock.mockReset().mockImplementation((...args: unknown[]) => {
     const options = args[0] as OpenClawCodingToolsOptions | undefined;
-    if (options?.inheritedToolPolicyRef) {
-      options.inheritedToolPolicyRef.current = captureInheritedToolPolicy({
-        policies: [options.config?.tools],
-        runtimeAllow: options.runtimeToolAllowlist,
-        parameters: emptyDelegatedToolParameterPolicy(),
-      });
-    }
     return [
       {
         name: "sessions_spawn",

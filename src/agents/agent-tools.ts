@@ -682,6 +682,7 @@ export function createOpenClawCodingToolsInternal(
   const toolsForModelProvider = applyModelProviderToolPolicy(toolsForMessageProvider, {
     ...options,
     agentId,
+    conversationCapabilityProfile: capabilityProfile,
     localModelLeanPreserveToolNames,
   });
   options?.recordToolPrepStage?.("model-provider-policy");

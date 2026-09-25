@@ -172,6 +172,20 @@ describe("resolveRequesterToolPolicies", () => {
         sessionKey: childSessionKey,
       }),
     ).toEqual({ allowed: false, persistentAllowed: false });
+    await writeSession(childSessionKey, {
+      spawnedBy: "agent:main:discord:direct:alice",
+      completionOwnerSessionKey: "agent:main:discord:direct:alice",
+      spawnDepth: 1,
+      inheritedToolPolicyVersion: 2,
+      inheritedToolPolicy: {
+        clauses: [{ kind: "configured", deny: ["web_search"] }],
+        parameters: { fileTools: [], exec: [], sandbox: [], unsupported: [] },
+      },
+    });
+    expect(
+      resolveWebSearchToolPolicy({ config: cfg, agentId: "main", sessionKey: childSessionKey }),
+    ).toEqual({ allowed: false, persistentAllowed: false });
+
     expect(
       resolveWebSearchToolPolicy({
         config: cfg,

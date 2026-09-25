@@ -2,12 +2,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { SqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
-import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
-import type { AgentDatabaseExecutionScope } from "../../state/openclaw-agent-execution-native.js";
-import { withSqliteTranscriptArchiveSession } from "./session-accessor.sqlite-archive-session.js";
-import { publishSessionStateArchives } from "./session-accessor.sqlite-archive-store.js";
 import { runExclusiveSqliteTranscriptArchiveWorker } from "./session-accessor.sqlite-archive.js";
-import type { SessionLifecycleArchivedTranscript } from "./session-accessor.sqlite-contract.js";
 import {
   retainSessionEntryWorkerPublication,
   type SessionEntryReplacementPublication,
@@ -21,11 +16,6 @@ import {
   rejectUnknownSessionWriteOutcome,
   withSessionEntryWorker,
 } from "./session-accessor.sqlite-replacement-worker.js";
-import {
-  resolveSqliteTranscriptArchiveDirectory,
-  toDatabaseOptions,
-  type ResolvedSqliteReadScope,
-} from "./session-accessor.sqlite-scope.js";
 import { withSqliteMutationWorkerLifetime } from "./session-accessor.sqlite-worker-request.js";
 
 type SessionMaintenanceWorkerParams = {
@@ -132,57 +122,5 @@ async function runRetainedSessionMaintenanceInWorker(
       admitted = { admission, retained };
       publication.begin(facts.publication.changedKeys, facts.publication.membershipInvalidatedKeys);
     },
-  );
-}
-
-/** Archive files retain their existing owner; canonical publication rows use the same worker. */
-export async function publishMaintenanceArchivesInWorker(
-  scope: Pick<ResolvedSqliteReadScope, "agentId" | "env" | "path">,
-  databaseIdentity: string,
-  requested: readonly SessionLifecycleArchivedTranscript[],
-  assertCurrent: () => void,
-): Promise<SessionLifecycleArchivedTranscript[]> {
-  const databaseOptions = toDatabaseOptions(scope);
-  const options = {
-    ...databaseOptions,
-    path: resolveOpenClawAgentSqlitePath(databaseOptions),
-  };
-  const run = <T>(operation: (worker: AgentDatabaseExecutionScope) => Promise<T>) =>
-    withSessionEntryWorker(options, databaseIdentity, assertCurrent, async (execution, source) => {
-      const result = await execution.runExisting(source, async (worker) => ({
-        value: await operation(worker),
-      }));
-      if (!result) {
-        throw new Error("Session archive publication lost its database");
-      }
-      return result.value;
-    });
-  return withSqliteTranscriptArchiveSession(
-    options,
-    () =>
-      publishSessionStateArchives(scope, requested, {
-        prepare: async (archives) => {
-          const plans = await run((worker) =>
-            worker.execute({
-              type: "session.archives.preparePublication",
-              input: {
-                archiveDirectory: resolveSqliteTranscriptArchiveDirectory(scope),
-                requested: archives,
-              },
-            }),
-          );
-          assertCurrent();
-          // The file worker must read the same physical database as metadata preparation.
-          return plans.map((plan) => ({ ...plan, databaseIdentity }));
-        },
-        record: (results) =>
-          run((worker) =>
-            worker.execute({
-              type: "session.archives.recordPublication",
-              input: { results, nowMs: Date.now() },
-            }),
-          ),
-      }),
-    assertCurrent,
   );
 }

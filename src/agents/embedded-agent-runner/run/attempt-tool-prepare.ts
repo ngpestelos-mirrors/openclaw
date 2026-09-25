@@ -46,7 +46,7 @@ import {
 } from "../../local-model-lean.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
 import { supportsModelTools } from "../../model-tool-support.js";
-import { recordAgentCleanupFailure } from "../../run-cleanup-timeout.js";
+import { recordAgentCleanupFailure, runOwnedAgentCleanup } from "../../run-cleanup-timeout.js";
 import { resolveSessionPlacementComputer } from "../../session-placement-computer.js";
 import {
   resolveSessionPermissionExecMode,
@@ -471,115 +471,134 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   const baseExecOverrides = {
     ...(attempt.permissionChange?.baseExecOverrides ?? attempt.execOverrides),
   };
-  const toolsRaw = constructTools(params.setup.sessionPermissionPolicy, toolAbortSignal);
-  const pendingPolicy = readUserTurnDelegatedInputPolicy(
-    attempt.userTurnTranscriptRecorder?.getPendingInputMessage?.(),
-  );
-  // Prompt hooks may narrow the final surface. Defer compatibility until that
-  // boundary; retaining a requirement never changes the target's own policy.
-  for (const policy of [pendingPolicy, attempt.delegatedInputPolicy]) {
-    if (
-      policy &&
-      !readAcceptedInputPolicies().some((saved) => JSON.stringify(saved) === JSON.stringify(policy))
-    ) {
-      retainAdmittedRunDelegatedInputPolicies(attempt.admittedRunContext, [policy]);
-    }
-  }
-  runCleanups.push(async (reason) => {
+  const releaseTools = async (reason: string) => {
     toolAbortController.abort();
     retireToolGeneration(reason);
     await Promise.all(retiringGenerations);
     if (retiredCleanupFailed) {
       recordAgentCleanupFailure();
     }
-  });
-
-  return {
-    toolHookContext: {
-      agentId: params.setup.sessionAgentId,
-      config: attempt.config,
-      cwd: params.setup.effectiveCwd,
-      sessionKey: params.setup.sandboxSessionKey,
-      sessionId: attempt.sessionId,
-      runId: attempt.runId,
-      approvalReviewerDeviceId: attempt.approvalReviewerDeviceId,
-      channelId: attempt.currentChannelId,
-      trace: params.runTrace,
-      loopDetection: resolveToolLoopDetectionConfig({
-        cfg: attempt.config,
-        agentId: params.setup.sessionAgentId,
-      }),
-      onToolOutcome: attempt.onToolOutcome,
-      allocateToolOutcomeOrdinal: attempt.allocateToolOutcomeOrdinal,
-    },
-    get toolAbortSignal() {
-      return toolAbortSignal;
-    },
-    refreshPermissionMode: (mode: SessionPermissionMode | null, revokeApprovals: () => void) => {
-      // Revoke prepared calls before resolving approval waiters; their old
-      // signal must already be closed when an allowed decision wakes them.
-      toolAbortController.abort(createCodeModePermissionChangeReason());
-      revokeApprovals();
-      retireToolGeneration("cancel");
-      params.runAbortController.signal.throwIfAborted();
-      toolAbortController = new AbortController();
-      toolAbortSignal = AbortSignal.any([
-        params.runAbortController.signal,
-        toolAbortController.signal,
-      ]);
-      attempt.permissionMode = mode ?? undefined;
-      attempt.execOverrides = { ...baseExecOverrides };
-      const policy = mode ? { root: params.setup.sessionPermissionRoot, mode } : undefined;
-      const nextTools = constructTools(policy, toolAbortSignal);
-      toolsRaw.splice(0, toolsRaw.length, ...nextTools);
-    },
-    codeModeControlsEnabledForRun,
-    codeModeSkills,
-    computerContextEpoch,
-    skillInstructionDeliveryCache,
-    cronCreatorToolAllowlist,
-    cronCreatorToolAllowlistCaptureRef,
-    effectiveToolsAllow,
-    forceDirectMessageTool,
-    requireExplicitMessageTarget,
-    getInheritedToolPolicy,
-    getEnforcedDelegatedToolParameterPolicy: () => {
-      getInheritedToolPolicy();
-      return runtimeCapabilityProfile.policy.inheritedActionPolicy?.parameters;
-    },
-    getDelegatedToolParameterPolicy: () => {
-      getInheritedToolPolicy();
-      const restrictions = [
-        runtimeCapabilityProfile.policy.inheritedActionPolicy,
-        ...readAcceptedInputPolicies(),
-      ].filter((policy): policy is InheritedToolPolicyV2 => policy !== undefined);
-      return captureInheritedToolPolicy({
-        policies: [],
-        parameters: {
-          fileTools: restrictions.flatMap((policy) => policy.parameters.fileTools),
-          exec: restrictions.flatMap((policy) => policy.parameters.exec),
-          sandbox: restrictions.flatMap((policy) => policy.parameters.sandbox),
-          unsupported: restrictions.flatMap((policy) => policy.parameters.unsupported),
-        },
-      }).parameters;
-    },
-    addDelegatedInputPolicies,
-    setPromptToolPolicy: (toolsAllow: string[] | undefined) => {
-      promptToolsAllow = toolsAllow;
-      getInheritedToolPolicy();
-    },
-    localModelLeanEnabled,
-    localModelLeanPreserveToolNames,
-    replaySafetyOptions,
-    runtimeCapabilityProfile,
-    runCleanups,
-    toolSearchCatalogRef,
-    toolSurfaceRuntime,
-    toolSearchConfig,
-    toolSearchControlsEnabledForRun,
-    toolSearchRuntimeConfig,
-    nestedToolActivities,
-    toolsEnabled,
-    toolsRaw,
   };
+  runCleanups.push(releaseTools);
+
+  // Until preparation returns, the attempt cannot own these registered resources.
+  try {
+    const toolsRaw = constructTools(params.setup.sessionPermissionPolicy, toolAbortSignal);
+    const pendingPolicy = readUserTurnDelegatedInputPolicy(
+      attempt.userTurnTranscriptRecorder?.getPendingInputMessage?.(),
+    );
+    // Prompt hooks may narrow the final surface. Defer compatibility until that
+    // boundary; retaining a requirement never changes the target's own policy.
+    for (const policy of [pendingPolicy, attempt.delegatedInputPolicy]) {
+      if (
+        policy &&
+        !readAcceptedInputPolicies().some(
+          (saved) => JSON.stringify(saved) === JSON.stringify(policy),
+        )
+      ) {
+        retainAdmittedRunDelegatedInputPolicies(attempt.admittedRunContext, [policy]);
+      }
+    }
+
+    return {
+      toolHookContext: {
+        agentId: params.setup.sessionAgentId,
+        config: attempt.config,
+        cwd: params.setup.effectiveCwd,
+        sessionKey: params.setup.sandboxSessionKey,
+        sessionId: attempt.sessionId,
+        runId: attempt.runId,
+        approvalReviewerDeviceId: attempt.approvalReviewerDeviceId,
+        channelId: attempt.currentChannelId,
+        trace: params.runTrace,
+        loopDetection: resolveToolLoopDetectionConfig({
+          cfg: attempt.config,
+          agentId: params.setup.sessionAgentId,
+        }),
+        onToolOutcome: attempt.onToolOutcome,
+        allocateToolOutcomeOrdinal: attempt.allocateToolOutcomeOrdinal,
+      },
+      get toolAbortSignal() {
+        return toolAbortSignal;
+      },
+      refreshPermissionMode: (mode: SessionPermissionMode | null, revokeApprovals: () => void) => {
+        // Revoke prepared calls before resolving approval waiters; their old
+        // signal must already be closed when an allowed decision wakes them.
+        toolAbortController.abort(createCodeModePermissionChangeReason());
+        revokeApprovals();
+        retireToolGeneration("cancel");
+        params.runAbortController.signal.throwIfAborted();
+        toolAbortController = new AbortController();
+        toolAbortSignal = AbortSignal.any([
+          params.runAbortController.signal,
+          toolAbortController.signal,
+        ]);
+        attempt.permissionMode = mode ?? undefined;
+        attempt.execOverrides = { ...baseExecOverrides };
+        const policy = mode ? { root: params.setup.sessionPermissionRoot, mode } : undefined;
+        const nextTools = constructTools(policy, toolAbortSignal);
+        toolsRaw.splice(0, toolsRaw.length, ...nextTools);
+      },
+      codeModeControlsEnabledForRun,
+      codeModeSkills,
+      computerContextEpoch,
+      skillInstructionDeliveryCache,
+      cronCreatorToolAllowlist,
+      cronCreatorToolAllowlistCaptureRef,
+      effectiveToolsAllow,
+      forceDirectMessageTool,
+      requireExplicitMessageTarget,
+      getInheritedToolPolicy,
+      getEnforcedDelegatedToolParameterPolicy: () => {
+        getInheritedToolPolicy();
+        return runtimeCapabilityProfile.policy.inheritedActionPolicy?.parameters;
+      },
+      getDelegatedToolParameterPolicy: () => {
+        getInheritedToolPolicy();
+        const restrictions = [
+          runtimeCapabilityProfile.policy.inheritedActionPolicy,
+          ...readAcceptedInputPolicies(),
+        ].filter((policy): policy is InheritedToolPolicyV2 => policy !== undefined);
+        return captureInheritedToolPolicy({
+          policies: [],
+          parameters: {
+            fileTools: restrictions.flatMap((policy) => policy.parameters.fileTools),
+            exec: restrictions.flatMap((policy) => policy.parameters.exec),
+            sandbox: restrictions.flatMap((policy) => policy.parameters.sandbox),
+            unsupported: restrictions.flatMap((policy) => policy.parameters.unsupported),
+          },
+        }).parameters;
+      },
+      addDelegatedInputPolicies,
+      setPromptToolPolicy: (toolsAllow: string[] | undefined) => {
+        promptToolsAllow = toolsAllow;
+        getInheritedToolPolicy();
+      },
+      localModelLeanEnabled,
+      localModelLeanPreserveToolNames,
+      replaySafetyOptions,
+      runtimeCapabilityProfile,
+      runCleanups,
+      toolSearchCatalogRef,
+      toolSurfaceRuntime,
+      toolSearchConfig,
+      toolSearchControlsEnabledForRun,
+      toolSearchRuntimeConfig,
+      nestedToolActivities,
+      toolsEnabled,
+      toolsRaw,
+    };
+  } catch (error) {
+    try {
+      await runOwnedAgentCleanup({
+        ...attempt,
+        step: "embedded-tool-preparation",
+        cleanup: () => releaseTools("error"),
+        log,
+      });
+    } catch {
+      recordAgentCleanupFailure();
+    }
+    throw error;
+  }
 }

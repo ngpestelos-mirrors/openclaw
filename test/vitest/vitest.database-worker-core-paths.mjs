@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/agents/openclaw-tools.subagents.sessions-spawn.lifecycle.test.ts",
   "src/trajectory/runtime-store-writer.test.ts",
   "src/trajectory/runtime.test.ts",
   "src/infra/outbound/bound-delivery-router.test.ts",
@@ -65,7 +66,9 @@ export const databaseWorkerCoreTestFiles = [
   "src/channels/message-access/operator-authority.test.ts",
   "src/auto-reply/reply/commands-allowlist.owner.test.ts",
   "src/channels/message-access/discord-native-acp-owner.test.ts",
+  "src/channels/message-access/discord-native-owner.test.ts",
   "src/channels/message-access/telegram-native-acp-owner.test.ts",
+  "src/channels/message-access/telegram-native-owner.test.ts",
   "src/auto-reply/reply/commands-acp.owner.test.ts",
   "src/auto-reply/reply/commands-config.owner.test.ts",
   "src/auto-reply/reply/commands-plugins.owner.test.ts",

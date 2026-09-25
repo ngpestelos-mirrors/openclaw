@@ -1039,7 +1039,7 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
   return bindAgentToolAvailability(tool, {
     prepare: (current, callableTools) => {
       current.description = describeSessionsSendTool({
-        spawnAvailable: callableTools.has("sessions_spawn"),
+        availableTools: new Set(callableTools.keys()),
       });
     },
   });

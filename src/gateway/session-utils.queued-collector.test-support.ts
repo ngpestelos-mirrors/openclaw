@@ -238,27 +238,26 @@ export function useQueuedCollectorFixture() {
     const runId = `${name}-collector`;
     const groupId = `swarm:${parentKey}:parent-turn`;
     reserveSwarmRun({ runId, groupId, maxConcurrent: 1, activeRunIds: [] });
-    expect(
-      await createInitialSubagentSession({
-        inheritedToolPolicy: {
-          clauses: [],
-          parameters: { fileTools: [], exec: [], sandbox: [], unsupported: [] },
-        },
-        cfg: getRuntimeConfig(),
-        targetAgentId: "main",
-        childSessionKey,
-        label: "Reserved collector",
-        incognito: false,
-        requesterInternalKey: parentKey,
-        requesterAgentId: "main",
-        completionOwnerSessionKey: parentKey,
-        creationPolicy,
-        admissionPatch: { spawnDepth: 1 },
-        modelPatch: {},
-        swarmGroupId: groupId,
-        collect: true,
-      }),
-    ).toMatchObject({ status: "ok" });
+    const creation = await createInitialSubagentSession({
+      inheritedToolPolicy: {
+        clauses: [],
+        parameters: { fileTools: [], exec: [], sandbox: [], unsupported: [] },
+      },
+      cfg: getRuntimeConfig(),
+      targetAgentId: "main",
+      childSessionKey,
+      label: "Reserved collector",
+      incognito: false,
+      requesterInternalKey: parentKey,
+      requesterAgentId: "main",
+      completionOwnerSessionKey: parentKey,
+      creationPolicy,
+      admissionPatch: { spawnDepth: 1 },
+      modelPatch: {},
+      swarmGroupId: groupId,
+      collect: true,
+    });
+    expect(creation, JSON.stringify(creation)).toMatchObject({ status: "ok" });
     const registration = {
       runId,
       childSessionKey,

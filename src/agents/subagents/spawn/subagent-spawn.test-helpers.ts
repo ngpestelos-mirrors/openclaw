@@ -10,6 +10,7 @@ import type { SessionEntry } from "../../../config/sessions/types.js";
 import { resolveLeastPrivilegeOperatorScopesForMethod } from "../../../gateway/method-scopes.js";
 import type { SubagentLifecycleHookRunner } from "../../../plugins/hooks.js";
 import type { InheritedToolPolicySourceCapture } from "../../inherited-tool-policy.schema.js";
+import { captureGatewayToolCallerAssertion } from "../../tools/gateway-caller-context.js";
 import type { RegisterSubagentRunParams } from "../registry/subagent-registry-run-launch-record.js";
 import type { RegisterSubagentRunOptions } from "../registry/subagent-registry.types.js";
 import type {
@@ -22,6 +23,17 @@ export const captureTestSpawnToolPolicy: InheritedToolPolicySourceCapture = asyn
   policy: { clauses: [], parameters: { fileTools: [], exec: [], sandbox: [], unsupported: [] } },
   assertCurrent: () => {},
 });
+
+export const captureAdmittedTestSpawnToolPolicy: InheritedToolPolicySourceCapture = async () => {
+  const assertCurrent = captureGatewayToolCallerAssertion();
+  if (!assertCurrent) {
+    throw new Error("Delegation fixture requires an admitted source");
+  }
+  assertCurrent();
+  const { policy } = await captureTestSpawnToolPolicy();
+  assertCurrent();
+  return { policy, assertCurrent };
+};
 
 export type SpawnSubagentForTest = (
   params: SpawnSubagentParams,

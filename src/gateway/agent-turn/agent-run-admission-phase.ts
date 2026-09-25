@@ -441,7 +441,7 @@ export async function prepareAgentRunDispatch(
     sendPolicy?.assertCurrent?.();
   };
   let resumedTaskAdopted = false;
-  let userTurn: PreparedAgentRunUserTurn;
+  let preparedUserTurn: PreparedAgentRunUserTurn | undefined;
   const assertInputOwnerCurrent = (terminal = false) => {
     assertInputAdmissionCurrent?.();
     if (parentResume && resumedTaskAdopted && !terminal) {
@@ -462,8 +462,9 @@ export async function prepareAgentRunDispatch(
     if (sendPolicy?.kind === "recovery" && !params.isRestartRecoveryResumeRun) {
       throw new Error("Recovered input restrictions require an admitted restart recovery.");
     }
-    const prepareUserTurn = (assertTargetCurrent?: () => void) =>
-      prepareAgentRunUserTurn({
+    const prepareUserTurn = async (assertTargetCurrent?: () => void) => {
+      // Retain custody before the enclosing policy scope revalidates on return.
+      preparedUserTurn = await prepareAgentRunUserTurn({
         assertPreparationCurrent: assertTargetCurrent,
         assertCurrent: () => {
           assertInputOwnerCurrent();
@@ -498,11 +499,17 @@ export async function prepareAgentRunDispatch(
         client: params.client,
         context: params.context,
       });
+      if (preparedUserTurn.recorder) {
+        // Admission rejection must preserve media already retained by durable input.
+        params.onUserTurnMediaPersisted();
+      }
+      return preparedUserTurn;
+    };
     if (sendPolicy?.kind === "delegation") {
       if (!params.resolvedSessionKey || params.execApprovalFollowupApprovalId) {
         throw new Error("Delegated session input has no supported native target admission.");
       }
-      userTurn = await withCompatibleSessionSendTarget({
+      preparedUserTurn = await withCompatibleSessionSendTarget({
         context: params.context,
         config: replyDispatchRuntime.config,
         agentId: params.activeSessionAgentId,
@@ -517,16 +524,19 @@ export async function prepareAgentRunDispatch(
         consume: prepareUserTurn,
       });
     } else {
-      userTurn = await prepareUserTurn();
-    }
-    if (userTurn.recorder) {
-      // Accepted input owns these media references before it enters the transcript.
-      // Later admission rejection must preserve the files retained by that custody.
-      params.onUserTurnMediaPersisted();
+      preparedUserTurn = await prepareUserTurn();
     }
   } catch (err) {
-    return rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, err));
+    const failure = preparedUserTurn
+      ? releasePreparedAgentRunUserTurnAfterFailure(
+          preparedUserTurn,
+          err,
+          parentResume ? "cancelled" : "interrupted",
+        )
+      : err;
+    return rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, failure));
   }
+  const userTurn = preparedUserTurn;
   const inputAdmission = revalidateAdmission();
   if (inputAdmission !== true) {
     try {
