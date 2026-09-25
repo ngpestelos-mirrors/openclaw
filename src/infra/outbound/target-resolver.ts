@@ -389,12 +389,6 @@ export async function resolveChannelTarget(params: {
   const providerLabel = plugin?.meta?.label ?? params.channel;
   const hint = plugin?.messaging?.targetResolver?.hint;
   const channelNamespace = resolveBareTargetChannelNamespace({ raw, plugin });
-  if (channelNamespace) {
-    return {
-      ok: false,
-      error: missingChannelDestinationError(providerLabel, channelNamespace, hint),
-    };
-  }
   const kind = detectTargetKind(params.channel, raw, params.preferredKind, plugin);
   const normalizedInput = resolveNormalizedTargetInput(params.channel, raw, plugin);
   const normalized = normalizedInput?.normalized ?? raw;
@@ -402,6 +396,7 @@ export async function resolveChannelTarget(params: {
   if (
     normalizedInput &&
     !reservedLiteral &&
+    !channelNamespace &&
     looksLikeTargetId({
       channel: params.channel,
       raw: normalizedInput.raw,
@@ -444,7 +439,7 @@ export async function resolveChannelTarget(params: {
     entries,
     query,
     plugin,
-    exactOnly: Boolean(reservedLiteral),
+    exactOnly: Boolean(reservedLiteral || channelNamespace),
   });
   if (match.kind === "single") {
     const entry = match.entry;
@@ -468,6 +463,17 @@ export async function resolveChannelTarget(params: {
       ok: false,
       error: ambiguousTargetError(providerLabel, raw, hint),
       candidates: match.entries,
+    };
+  }
+  if (channelNamespace) {
+    return {
+      ok: false,
+      error: missingChannelDestinationError(
+        providerLabel,
+        channelNamespace.namespace,
+        channelNamespace.destinationPrefix,
+        hint,
+      ),
     };
   }
   // Directory misses are the fail-closed boundary for reserved literals.
