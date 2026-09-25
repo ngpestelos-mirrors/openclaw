@@ -50,6 +50,7 @@ export async function inspectDisabledDiscoveryTasks(params: {
   installRoot: string;
   admissions: Array<Record<string, unknown>>;
   admissionPath: string;
+  recordProgress: (phase: string, error?: Error) => Promise<void>;
 }) {
   const {
     selected,
@@ -64,6 +65,7 @@ export async function inspectDisabledDiscoveryTasks(params: {
     installRoot,
     admissions,
     admissionPath,
+    recordProgress,
   } = params;
   const { resolveGatewayWindowsTaskName } = await import("./constants.js");
   const { execSchtasks } = await import("./schtasks-exec.js");
@@ -96,6 +98,7 @@ export async function inspectDisabledDiscoveryTasks(params: {
   let directInspection: Record<string, unknown> | undefined;
   try {
     for (const role of ["non-gateway", "missing", "direct", "extra"] as const) {
+      await recordProgress(`disabled-discovery:${role}`);
       const profile: string = ["schtasks-int", id, cellIndex, role].join("-");
       const taskName: string =
         role === "non-gateway"
@@ -219,6 +222,7 @@ export async function inspectDisabledDiscoveryTasks(params: {
         const direct = fixture.gateway;
         const configBefore = await fs.readFile(direct.configPath);
         assert.equal(await owners.canBindLoopbackPort(direct.gatewayPort), true);
+        await recordProgress("disabled-discovery:direct-state");
         const state = await readGatewayServiceState(resolveGatewayService(), {
           env: direct.env,
           requireEffective: true,
@@ -232,6 +236,7 @@ export async function inspectDisabledDiscoveryTasks(params: {
         assert.equal(state.runtime?.status, "stopped");
         assert.equal(state.runtime?.pid, undefined);
         assert.equal(await owners.canBindLoopbackPort(direct.gatewayPort), true);
+        await recordProgress("disabled-discovery:direct-preview");
         const directPreview = await preview(direct);
         assert.ok(
           directPreview.notes.some((note) =>
@@ -297,6 +302,14 @@ export async function inspectDisabledDiscoveryTasks(params: {
     assert.deepEqual(await fs.readFile(selected.configPath), selectedConfig);
   } catch (error) {
     inspectionFailure = toErrorObject(error, "Installed Scheduled Task fixture failed");
+    try {
+      await recordProgress("disabled-discovery:before-cleanup", inspectionFailure);
+    } catch (recordError) {
+      inspectionFailure = new AggregateError(
+        [inspectionFailure, recordError],
+        "Disabled discovery proof recording failed",
+      );
+    }
   }
   for (const fixture of fixtures.toReversed()) {
     try {
