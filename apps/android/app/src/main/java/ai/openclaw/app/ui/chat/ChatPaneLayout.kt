@@ -27,7 +27,7 @@ import androidx.window.layout.DisplayFeature
 internal fun ChatPaneLayout(
   tabletopPanes: TabletopPaneBounds?,
   features: List<DisplayFeature>,
-  minimumInputHeight: Dp,
+  minimumInputHeight: (width: Dp, compact: Boolean) -> Dp,
   minimumHeaderHeight: Dp,
   minimumReaderHeight: Dp,
   touchTarget: Dp,
@@ -42,7 +42,6 @@ internal fun ChatPaneLayout(
     val height = constraints.maxHeight
     val padding = 10.dp.roundToPx()
     val gap = 8.dp.roundToPx()
-    val inputFloor = minimumInputHeight.roundToPx()
     val headerFloor = minimumHeaderHeight.roundToPx()
     val readerFloor = minimumReaderHeight.roundToPx()
     val statusFloor = touchTarget.roundToPx()
@@ -57,12 +56,14 @@ internal fun ChatPaneLayout(
         upper != null && lower != null &&
           upper.width >= widthFloor && lower.width >= widthFloor &&
           upper.height >= headerFloor + readerFloor + statusFloor + padding * 2 + gap * 2 &&
-          lower.height >= inputFloor + padding * 2
+          lower.height >= minimumInputHeight(lower.width.toDp(), false).roundToPx() + padding * 2
       val fallback = if (tabletop) host else foldSafeRegion(host, features, layoutDirection)
       val upperBounds = (if (tabletop) checkNotNull(upper) else fallback).translate(-origin)
       val lowerBounds = (if (tabletop) checkNotNull(lower) else fallback).translate(-origin)
       val lowerHeight = lowerBounds.height - if (tabletop) padding * 2 else 0
+      var inputFloor = minimumInputHeight(lowerBounds.width.toDp(), false).roundToPx()
       val compact = lowerHeight < inputFloor + statusFloor * 2 + padding * 2 + gap * 2
+      if (compact) inputFloor = minimumInputHeight(lowerBounds.width.toDp(), true).roundToPx()
       val inset = if (tabletop || !compact) padding else 0
       val spacing = if (tabletop || !compact) gap else 0
       subcompose(Unit) {

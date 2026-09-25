@@ -415,15 +415,20 @@ openclaw gateway call node.list --params "{}"
 The draft has its own full-width row above the attachment and voice/send controls,
 so larger text and narrow screens do not squeeze it between buttons. The empty
 hint stays on one line; drafts show up to six lines and scroll when space is limited.
-The composer has narrower side gutters than the transcript, with readable draft
-text and 48dp action targets. Typography still follows system text scaling.
-Model and thinking controls sit together, opposite the microphone and primary
-action. The model name stays on one line and follows system text scaling;
-long names use a middle ellipsis to keep both ends visible. The full name remains
-in the model sheet and accessibility text. The thinking dial opens a menu without
-expanding the composer.
-Context usage is available in the model sheet and the model control's
-accessibility value, leaving more room for the model name in the toolbar.
+The composer has narrower side gutters than the transcript and keeps 48dp touch
+targets. Controls wrap when space is limited. In very short views, **Details**
+provides access to permissions and context so the draft retains a complete line.
+The placeholder and typed text share the same alignment.
+
+Tap the shield to change session permissions and the context ring to inspect
+usage. Tap the model name to search by model or provider and expand provider
+groups; pinned and recent models remain available. Long model names use a middle
+ellipsis, with the full name available in the picker. The effort dial opens its
+slider and Fast mode without expanding the composer. Dragging the slider previews
+the effort on the dial; releasing it applies the selection.
+
+With an empty draft and no active run, the trailing button starts Talk. Entering
+text changes it to Send; an active run with no draft shows Stop.
 During Talk, the live waveform replaces the microphone and remains tappable to
 end Talk. If a run is also active, a separate, softly tinted Stop button stays at
 the trailing edge to abort that run.
