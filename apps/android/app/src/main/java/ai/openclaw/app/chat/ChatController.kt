@@ -4595,6 +4595,7 @@ class ChatController internal constructor(
     markCompletedTranscript: Boolean = false,
     refreshBranches: Boolean = false,
     mutationReconciliationState: ChatOutboxBranchState? = null,
+    transcriptOwner: ChatTranscriptHistoryRefresh.Owner? = null,
   ): HistoryRefreshResult {
     var requestSequence = historyRequestSequence.incrementAndGet()
     val healthRefresh =
@@ -4620,12 +4621,15 @@ class ChatController internal constructor(
           } else {
             runIdsToReconcile
           }
-        val requestCacheScope = currentCacheScope()
-        val requestTracksDefaultAgent = activeSessionTracksDefaultAgent(sessionKey)
+        val requestCacheScope = if (transcriptOwner != null) transcriptOwner.gatewayScope else currentCacheScope()
+        val requestTracksDefaultAgent =
+          if (transcriptOwner != null) transcriptOwner.defaultAgentRevision != null else activeSessionTracksDefaultAgent(sessionKey)
         awaitMainSessionReadiness(sessionKey, requestCacheScope)
         val requestSettingsGeneration = settingsPublicationGeneration.get()
-        val requestDefaultAgentRevision = currentDefaultAgentRevision()
-        val requestAgentId = resolveAgentIdForSessionKey(sessionKey) ?: return HistoryRefreshResult.OwnerUnavailable
+        val requestDefaultAgentRevision = transcriptOwner?.defaultAgentRevision ?: currentDefaultAgentRevision()
+        val requestAgentId =
+          (if (transcriptOwner != null) transcriptOwner.agentId else resolveAgentIdForSessionKey(sessionKey))
+            ?: return HistoryRefreshResult.OwnerUnavailable
 
         fun requestOwnerIsCurrent(): Boolean =
           resolveAgentIdForSessionKey(_sessionKey.value) == requestAgentId &&
@@ -4656,15 +4660,23 @@ class ChatController internal constructor(
           try {
             history =
               try {
+                val historyParams =
+                  buildJsonObject {
+                    put("sessionKey", JsonPrimitive(sessionKey))
+                    put("agentId", JsonPrimitive(requestAgentId))
+                  }.toString()
                 val historyJson =
-                  requestGatewayBound(
-                    requestCacheScope?.gatewayId,
-                    "chat.history",
-                    buildJsonObject {
-                      put("sessionKey", JsonPrimitive(sessionKey))
-                      put("agentId", JsonPrimitive(requestAgentId))
-                    }.toString(),
-                  )
+                  if (transcriptOwner == null) {
+                    requestGatewayBound(requestCacheScope?.gatewayId, "chat.history", historyParams)
+                  } else {
+                    val lease = captureRequestLease(requestCacheScope) ?: throw GatewayRequestNotEnqueued("not connected")
+                    lease.request("chat.history", historyParams) { enqueue ->
+                      synchronized(gatewayScopeApplyLock) {
+                        if (!isCurrent()) throw GatewayRequestNotEnqueued("history owner changed")
+                        enqueue()
+                      }
+                    }
+                  }
                 parseHistory(historyJson, sessionKey = sessionKey, previousMessages = _messages.value)
               } catch (err: CancellationException) {
                 throw err
@@ -7678,7 +7690,7 @@ class ChatController internal constructor(
     val sessionKey = _sessionKey.value
     val generation = historyLoadGeneration.get()
 
-    suspend fun refresh() {
+    suspend fun refresh(transcriptOwner: ChatTranscriptHistoryRefresh.Owner? = null) {
       val result =
         try {
           fetchAndApplyHistory(
@@ -7687,6 +7699,7 @@ class ChatController internal constructor(
             purpose = purpose,
             runIdsToReconcile = runIdsToReconcile,
             markCompletedTranscript = runIdsToReconcile.isNotEmpty(),
+            transcriptOwner = transcriptOwner,
           )
         } catch (err: Throwable) {
           if (purpose == HistoryRefreshPurpose.Transcript) throw err
@@ -7704,7 +7717,13 @@ class ChatController internal constructor(
       val owner =
         synchronized(gatewayScopeApplyLock) {
           if (!isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())) return
-          ChatTranscriptHistoryRefresh.Owner(sessionKey, generation, currentCacheScope(), resolveAgentIdForSessionKey(sessionKey))
+          ChatTranscriptHistoryRefresh.Owner(
+            sessionKey,
+            generation,
+            currentCacheScope(),
+            resolveAgentIdForSessionKey(sessionKey),
+            currentDefaultAgentRevision().takeIf { activeSessionTracksDefaultAgent(sessionKey) },
+          )
         }
       transcriptHistoryRefresh.request(
         owner,
@@ -7714,7 +7733,7 @@ class ChatController internal constructor(
               owner.gatewayScope == currentCacheScope() && owner.agentId == resolveAgentIdForSessionKey(_sessionKey.value)
           }
         },
-        refresh = ::refresh,
+        refresh = { refresh(owner) },
       )
       return
     }

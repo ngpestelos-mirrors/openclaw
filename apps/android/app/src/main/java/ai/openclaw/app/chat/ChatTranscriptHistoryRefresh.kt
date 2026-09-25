@@ -18,6 +18,7 @@ internal class ChatTranscriptHistoryRefresh(
     val generation: Long,
     val gatewayScope: ChatCacheScope?,
     val agentId: String?,
+    val defaultAgentRevision: Long? = null,
   )
 
   private class Pending(
