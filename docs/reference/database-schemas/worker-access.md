@@ -354,10 +354,12 @@ Other native task mutation callers remain migration debt. Transaction diagnostic
 report slow native admission and transaction holds with the operation label.
 Schemas, retention, and update behavior are unchanged.
 
-Concurrent first opens wait for a transient schema initializer within the
-database's busy timeout. This admission wait ends before a user mutation callback
-is entered; callbacks and uncertain rollbacks are never replayed. Existing
-handles and true offline maintenance retain their normal admission rules.
+Concurrent first opens wait for owner-record publication and a transient schema
+initializer within one database busy timeout. Incomplete records never grant
+access; each attempt rechecks ownership, and records that remain malformed still
+refuse admission. This wait ends before a user mutation callback is entered;
+callbacks and uncertain rollbacks are never replayed. Existing handles and true
+offline maintenance retain their normal admission rules.
 Completed leases discard their saved async context. Exact retained native handles
 can be disposed after request revocation; new application mutations still require
 live operation authority.

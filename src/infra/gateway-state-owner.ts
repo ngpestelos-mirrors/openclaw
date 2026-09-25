@@ -97,14 +97,15 @@ export type GatewayStateOwnerContentionError = InstanceType<
   typeof GatewayStateOwnerContentionError
 >;
 
-const ForeignStateSchemaOwnerError = resolveGlobalSingleton(
-  Symbol.for("openclaw.foreignStateSchemaOwnerError"),
+const StateDatabaseAdmissionPendingError = resolveGlobalSingleton(
+  Symbol.for("openclaw.stateDatabaseAdmissionPendingError"),
   () =>
     class extends Error {
-      constructor(readonly databasePath: string) {
-        super(
-          `OpenClaw state at ${databasePath} is undergoing offline maintenance; retry when it finishes.`,
-        );
+      constructor(
+        readonly databasePath: string,
+        message: string,
+      ) {
+        super(message);
       }
     },
 );
@@ -125,7 +126,7 @@ export function withStateDatabaseColdAdmission<T>(
       return open(remainingBusyTimeoutMs);
     } catch (error) {
       if (
-        !(error instanceof ForeignStateSchemaOwnerError) ||
+        !(error instanceof StateDatabaseAdmissionPendingError) ||
         resolveIdentityPathViaExistingAncestorSync(error.databasePath) !== canonical ||
         params.canRetry?.() === false
       ) {
@@ -417,7 +418,7 @@ export function acquireStateDatabaseSchemaLease(
       try {
         assertStateDatabaseAccessAllowed(databasePath);
       } catch (currentOwnerError) {
-        if (currentOwnerError instanceof ForeignStateSchemaOwnerError) {
+        if (currentOwnerError instanceof StateDatabaseAdmissionPendingError) {
           throw currentOwnerError;
         }
       }
@@ -560,7 +561,11 @@ export function assertStateDatabaseAccessAllowed(
     throw new Error(unavailable, { cause: error });
   }
   const owner = parseGatewayLockPayload(raw);
-  if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
+  if (!owner) {
+    // Native exclusive creation precedes the payload write; cold admission may wait for publication.
+    throw new StateDatabaseAdmissionPendingError(databasePath, unavailable);
+  }
+  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
     throw new Error(unavailable);
   }
   if (
@@ -587,7 +592,10 @@ export function assertStateDatabaseAccessAllowed(
     return;
   }
   if (owner.stateOwnerKind === "schema" && owner.role === "sqlite-maintenance") {
-    throw new ForeignStateSchemaOwnerError(databasePath);
+    throw new StateDatabaseAdmissionPendingError(
+      databasePath,
+      `OpenClaw state at ${databasePath} is undergoing offline maintenance; retry when it finishes.`,
+    );
   }
   throw new Error(
     `OpenClaw state at ${databasePath} is undergoing offline maintenance; retry when it finishes.`,
