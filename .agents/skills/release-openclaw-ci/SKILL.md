@@ -49,10 +49,13 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   main failures, report that blocker and keep independent release work moving
   instead of healing broader main.
 - `OPENCLAW_RELEASE_RUNNER_GROUP` optionally routes validation parents and workers
-  to reserved capacity with unchanged labels. Configure eligible runners and repo
+  and the Release Publish parent plus its publish children to reserved capacity
+  with unchanged labels; credentialed publish and approval jobs stay on default
+  GitHub-hosted labels. Configure eligible runners and repo
   access first; unset preserves ordinary routing. Shared workers inherit the
   caller group; PR/main CI and unrelated scheduled work remain outside it.
 - Validate provider secrets before dispatching expensive full release matrices.
+- Check the nightly parent for the Code SHA before dispatching a fresh main validation; it seals per-child receipts that exact-target dispatches adopt when inputs match.
 - Two publication modes (RELEASING.md "Publication modes"). Strict default: a
   stable tag needs stable/full evidence with soak and blocking performance and no
   failed non-proof lane. Operator fast path: `stable_soak_waiver` /
@@ -392,6 +395,8 @@ gh workflow run openclaw-performance.yml \
 - Record regressions in release evidence and investigate their product impact.
   Performance results are advisory for beta, stable, and full profiles; no
   performance waiver is needed for npm/ClawHub publication or main closeout.
+- Closeout replay reuses sealed waiver text without retyping; only new operator
+  text must carry the version prefix.
 - `npm-beta-v1` defers the performance child. Every selected child still needs
   terminal evidence and must prove artifact-only publication.
 
@@ -520,16 +525,22 @@ and must be cleared after the release.
 
 ### Publish children
 
+- `pnpm release:stable <version>` (RELEASING.md "Orchestrated stable release")
+  dispatches the parent once, approves the parent's `npm-release` gate, prints
+  the child-approval and stale-child sweep commands below instead of running
+  them (it never mutates a child run), and on any refusal prints `Next:` with
+  the exact recovery command.
 - The parent's `npm-release` approval mints the attested
   `openclaw-release-approval-v1-<parent run>-<attempt>` receipt; bot-dispatched
   children verify it (`scripts/release-approval-receipt.mjs verify`) before
   their gates. The ClawHub OIDC child skips its `clawhub-plugin-release` gate
-  on a verified receipt. npm children (`Plugin NPM Release`,
-  `openclaw-npm-release.yml`) keep `npm-release` (npm trusted publishers are
-  bound to it, `npm trust list openclaw`) and the workflow token cannot
-  approve it (`canApprove=false`), so an unapproved npm child sits `waiting`
-  silently. Watch every child and approve npm children only (environment id
-  `13010111854`):
+  on a verified receipt and instead waits for the parent's
+  `openclaw-clawhub-parent-authorization-v2-*` receipt before publishing. npm
+  children (`Plugin NPM Release`, `openclaw-npm-release.yml`) keep
+  `npm-release` (npm trusted publishers are bound to it, `npm trust list
+  openclaw`) and the workflow token cannot approve it (`canApprove=false`), so
+  an unapproved npm child sits `waiting` silently. Watch every child and
+  approve npm children only (environment id `13010111854`):
   ```bash
   gh api repos/openclaw/openclaw/actions/runs/<child>/pending_deployments
   gh api -X POST repos/openclaw/openclaw/actions/runs/<child>/pending_deployments \
@@ -543,11 +554,17 @@ and must be cleared after the release.
   `parent state completed/failure is not allowed by authorization route`
   once the parent has died (2026.9.6: runs 35930335388/35930341394). If the
   parent died, cancel the children and re-dispatch the parent.
-- Before re-dispatching a failed publish parent, sweep its stale children;
-  otherwise the next parent fails at `Dispatch publish workflows` with
-  `ClawHub dispatch blocked by waiting run`. The parent's own cleanup misses
-  children that reach `waiting` after it dies. List `workflow_dispatch` runs by
-  `github-actions[bot]` created for this release, reject their gate, cancel:
+- Before every child dispatch the parent sweeps a failed earlier parent's
+  `waiting`/`queued` children of the same release (ClawHub and core by the
+  `parent=<run>/<attempt>` run title; plugin npm by the release SHA, only
+  while no other publish parent is live): it
+  rejects their gate, cancels, and waits up to 5 minutes for GitHub to report
+  them cancelled (a waiting run takes ~2 minutes). A parent failure also
+  cancels its own waiting npm children. Only legacy children without a parent
+  identity in their title, or a live publisher job, still block with
+  `ClawHub dispatch blocked by waiting run`; sweep those by hand. List
+  `workflow_dispatch` runs by `github-actions[bot]` created for this release,
+  reject their gate, cancel:
   ```bash
   for s in waiting queued; do gh api "repos/openclaw/openclaw/actions/runs?status=$s&per_page=100" \
     --jq '.workflow_runs[] | select(.event=="workflow_dispatch" and .actor.login=="github-actions[bot]") | select(.name | test("plugin-clawhub|Plugin NPM Release|openclaw-npm-release")) | [.id,.name,.created_at] | @tsv'; done
