@@ -1815,6 +1815,7 @@ describe("ci workflow guards", () => {
     };
     const fixtureTier = JSON.stringify({
       includeReleaseOnlyTests: scenario.includeReleaseOnlyTests,
+      includePrExemptRuntimeTests: scenario.eventName !== "pull_request",
       changedPaths: scenario.changedPaths,
     });
     for (const [name, config, output, job, stepName] of [
@@ -2001,6 +2002,7 @@ describe("ci workflow guards", () => {
         includeProofTests: true,
         includeReleaseOnlyToolingShards: release,
         includeReleaseOnlyRuntimeTests: release,
+        includePrExemptRuntimeTests: true,
         includeReleaseOnlyPluginShards: false,
         compact: !release,
       });
@@ -2012,7 +2014,11 @@ describe("ci workflow guards", () => {
       ).toEqual([
         expect.objectContaining({
           env: {
-            fixtureTier: JSON.stringify({ includeReleaseOnlyTests: release, changedPaths: [] }),
+            fixtureTier: JSON.stringify({
+              includeReleaseOnlyTests: release,
+              includePrExemptRuntimeTests: true,
+              changedPaths: [],
+            }),
           },
         }),
       ]);
@@ -4016,6 +4022,7 @@ describe("ci workflow guards", () => {
       expect(JSON.parse(coverage.slice("dedicated-coverage:".length))).toEqual({
         includeReleaseOnlyToolingShards: false,
         includeReleaseOnlyRuntimeTests: false,
+        includePrExemptRuntimeTests: false,
         releaseFastLane: false,
         runnerBackend: runnerProfile,
         dedicatedContractShards: dedicated,
@@ -4703,6 +4710,7 @@ describe("ci workflow guards", () => {
         runnerBackend: backend,
         includeProofTests: true,
         includeReleaseOnlyToolingShards: false,
+        includePrExemptRuntimeTests: true,
       });
       // The real manifest owns every selected lane; only hosted preflight admission differs.
       const coverage = (outputs: Record<string, string>) =>
@@ -7398,6 +7406,9 @@ describe("ci workflow guards", () => {
             if (options.includeReleaseOnlyRuntimeTests !== false) {
               throw new Error("automatic precise plan must defer release-only runtime tests");
             }
+            if (options.includePrExemptRuntimeTests !== false) {
+              throw new Error("automatic precise plan must defer unrelated PR-exempt tests");
+            }
             return null;
           };
           export const createChangedExtensionFallbackShards = () => [];
@@ -7420,6 +7431,8 @@ describe("ci workflow guards", () => {
           eventName === "workflow_dispatch" || repository !== "openclaw/openclaw",
         includeReleaseOnlyRuntimeTests:
           (eventName === "workflow_dispatch" && !releaseGate) || repository !== "openclaw/openclaw",
+        includePrExemptRuntimeTests:
+          (eventName !== "pull_request" && !releaseGate) || repository !== "openclaw/openclaw",
       });
       const rows = JSON.parse(
         expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "fallback matrix"),
