@@ -153,10 +153,10 @@ final class NativeNarrationUITests: XCTestCase {
 
     @MainActor
     private func clickDisclosureChevron(_ disclosure: XCUIElement) {
-        // Xcode 27 reports the whole heading as AXDisclosureTriangle, but its
-        // center hits the inert label. Native captures place the chevron 26pt from its leading edge.
-        disclosure.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
-            .withOffset(CGVector(dx: 26, dy: 0)).click()
+        // Xcode 27 includes the label and expanded body in AXDisclosureTriangle.
+        // Its visible header chevron stays 26pt right and 7.5pt below the origin in both states.
+        disclosure.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+            .withOffset(CGVector(dx: 26, dy: 7.5)).click()
     }
 
     @MainActor
