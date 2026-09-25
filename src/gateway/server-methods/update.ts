@@ -425,11 +425,10 @@ export const updateHandlers: GatewayRequestHandlers = {
       } else if (installSurface.kind === "missing") {
         result = refusedUpdate("error", "not-openclaw-root");
       } else if (isGatewayExternallySupervised()) {
-        const beforeVersion = await readPackageVersion(installSurface.root);
         result = refusedUpdate(
           "skipped",
           EXTERNAL_SUPERVISOR_UPDATE_REQUIRED_REASON,
-          beforeVersion,
+          await readPackageVersion(installSurface.root),
         );
       } else if (installSurface.kind === "package-root") {
         result = refusedUpdate(

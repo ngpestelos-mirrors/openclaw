@@ -65,23 +65,25 @@ it("settles heartbeat wakes and cancels scheduled cron before public close joins
     cancelled.resolve();
     return { status: "error", error: "Cancelled by Gateway shutdown" };
   });
+  const captured: {
+    kernel?: Awaited<ReturnType<typeof kernelModule.createGatewayKernel>>;
+    heartbeatRunner?: HeartbeatRunner;
+    heartbeatRun?: ReturnType<typeof executeJobCoreWithTimeout>;
+  } = {};
   let emergencyUsed = false;
-  let heartbeatRunner: HeartbeatRunner | undefined;
-  let heartbeatRun: ReturnType<typeof executeJobCoreWithTimeout> | undefined;
   const emergencyAbort = () => {
     emergencyUsed = true;
-    heartbeatRunner?.stop();
+    captured.heartbeatRunner?.stop();
     abortActiveCronTaskRuns("Fixture cleanup after failed shutdown proof");
   };
   signal.addEventListener("abort", emergencyAbort, { once: true });
-  const captured: { kernel?: Awaited<ReturnType<typeof kernelModule.createGatewayKernel>> } = {};
   let server: GatewayServer | undefined;
   let pendingWake: void | Promise<void> = undefined;
   onTestFinished(async () => {
-    heartbeatRunner?.stop();
+    captured.heartbeatRunner?.stop();
     abortActiveCronTaskRuns("Fixture cleanup");
     try {
-      await heartbeatRun;
+      await captured.heartbeatRun;
       await pendingWake;
       try {
         await (server?.close() ?? captured.kernel?.closeOnStartupFailure());
@@ -141,10 +143,11 @@ it("settles heartbeat wakes and cancels scheduled cron before public close joins
   });
   pendingWake = clock.advanceBy(1_000);
   await started.promise;
-  heartbeatRunner = startHeartbeatRunner({
+  const heartbeatRunner = startHeartbeatRunner({
     cfg: { agents: { defaults: { heartbeat: { every: "30m" } } } },
     runOnce: async () => ({ status: "skipped", reason: "requests-in-flight" }),
   });
+  captured.heartbeatRunner = heartbeatRunner;
   kernel.kernel.swapHeartbeatRunner(heartbeatRunner).stop();
   const heartbeatStop = vi.spyOn(heartbeatRunner, "stop");
   const heartbeatQueued = createDeferred();
@@ -162,7 +165,7 @@ it("settles heartbeat wakes and cancels scheduled cron before public close joins
     },
     runIsolatedAgentJob: async () => ({ status: "ok" }),
   });
-  heartbeatRun = executeJobCoreWithTimeout(heartbeatState, {
+  const heartbeatRun = executeJobCoreWithTimeout(heartbeatState, {
     id: "shutdown-heartbeat-monitor",
     agentId: "main",
     name: "heartbeat-main",
@@ -175,6 +178,7 @@ it("settles heartbeat wakes and cancels scheduled cron before public close joins
     wakeMode: "next-heartbeat",
     state: {},
   });
+  captured.heartbeatRun = heartbeatRun;
   await heartbeatQueued.promise;
   const stopAndDrain = cron.stopAndDrain?.bind(cron);
   if (!stopAndDrain) {
