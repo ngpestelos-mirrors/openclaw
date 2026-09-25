@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
@@ -13,12 +13,16 @@ import {
   captureUpdateCommandExecutorCurrentStores,
   captureUpdateCommandRecoveryGenerationAuthority,
   publishUpdateCommandPackageGeneration,
+  publishUpdateCommandRecoveryGeneration,
   requestUpdateCommandExecutorCancellation,
   withUpdateCommandExecutor,
   withUpdateCommandExecutorChild,
 } from "../cli/update-cli/update-command-executor.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
+import {
+  createOpenClawDatabaseMaintenanceScope,
+  getOpenClawDatabaseMaintenanceScope,
+} from "../state/openclaw-state-db-async-lifecycle.js";
 import {
   encodePackageActivationLauncher,
   openPackageActivationJournal,
@@ -26,8 +30,10 @@ import {
 import {
   createPackageActivationForwardProvider,
   preparePackageActivation,
+  readPackageActivationReceipt,
 } from "./package-update-activation.js";
 import { createPackageIntegrityReader } from "./package-update-integrity.js";
+import { createUnchangedReversePreparation } from "./package-update-reverse-recovery.test-support.js";
 import { createPackageSwapFixture } from "./package-update-swap.test-support.js";
 import * as runtimeWorker from "./runtime-worker-url.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "./state-database-coordinator.js";
@@ -37,6 +43,7 @@ import {
 } from "./update-initial-store-invocation.js";
 import { createManagedHandoffLeaseDatabase } from "./update-managed-service-handoff-database.js";
 import { createManagedHandoffLeaseStore } from "./update-managed-service-handoff-lease.js";
+import { enterUpdateRecoveryStartup } from "./update-recovery-startup-entry.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 
 const roots: string[] = [];
@@ -65,7 +72,7 @@ const identity = (file: string) => {
   return `${stat.dev}:${stat.ino}`;
 };
 
-async function fixture() {
+async function fixture(options: { realHelper?: boolean } = {}) {
   const root = fs.realpathSync(dirs.make("forward-generation-"));
   fs.chmodSync(root, 0o700);
   const packageFixture = await createPackageSwapFixture(root);
@@ -103,14 +110,16 @@ async function fixture() {
   vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(root, "openclaw.json"));
   // Only the helper's executable bytes/capability probe are inert fixtures. All
   // owner, journal, inode, native lease, child and publication checks are real.
-  const helper = path.join(root, "sealed.mjs");
-  fs.writeFileSync(helper, "// inert sealed helper fixture\n");
-  const originalResolve = runtimeWorker.resolveRuntimeWorkerUrl;
-  vi.spyOn(runtimeWorker, "resolveRuntimeWorkerUrl").mockImplementation((entry) =>
-    entry.sourceWorkerName === "package-update-activation-sealed"
-      ? pathToFileURL(helper)
-      : originalResolve(entry),
-  );
+  if (!options.realHelper) {
+    const helper = path.join(root, "sealed.mjs");
+    fs.writeFileSync(helper, "// inert sealed helper fixture\n");
+    const originalResolve = runtimeWorker.resolveRuntimeWorkerUrl;
+    vi.spyOn(runtimeWorker, "resolveRuntimeWorkerUrl").mockImplementation((entry) =>
+      entry.sourceWorkerName === "package-update-activation-sealed"
+        ? pathToFileURL(helper)
+        : originalResolve(entry),
+    );
+  }
   const probe = path.join(
     packageFixture.params.stage.packageRoot,
     "dist/infra/update-migrated-finalize.worker.js",
@@ -129,6 +138,14 @@ console.log(${JSON.stringify(JSON.stringify({ postCoreExecutor: "fd3-pid-start-v
   fs.writeFileSync(
     path.join(packageFixture.packageRoot, "dist/build-info.json"),
     JSON.stringify({ buildId: "forward-fixture", commit: "a".repeat(40) }),
+  );
+  fs.writeFileSync(
+    path.join(packageFixture.packageRoot, "dist/index.js"),
+    `const agent = process.argv.includes("preflight-agent");
+console.log(JSON.stringify({
+  schema: agent ? "openclaw.agent-schema-preflight.v1" : "openclaw.state-schema-preflight.v1",
+  status: "exact", foundVersion: 19, targetVersion: 19, requiresWrite: false, issues: []
+}));\n`,
   );
   const childGuard = path.join(root, "private-sqlite.cjs");
   fs.writeFileSync(
@@ -327,6 +344,293 @@ it.skipIf(process.platform === "win32")(
     expect(old.assertCurrent).toThrow(/settled/);
     expect(f.store.read(f.packageRoot)).toEqual({ kind: "absent" });
   },
+);
+
+it.skipIf(process.platform === "win32")(
+  "allows only the selected retained runtime's shipped database preflight",
+  async () => {
+    const f = await fixture({ realHelper: true });
+    let anchor = "";
+    await f.execute(async (fence) => {
+      fs.copyFileSync(f.launcher, path.join(f.params.stage.layout.binDir, "openclaw"));
+      const prepared = await f.prepare(fence);
+      await prepared.publish(false);
+      anchor = prepared.anchor;
+    });
+    const retainedRoot = path.join(anchor, "previous");
+    const entryFile = path.join(retainedRoot, "dist/index.js");
+    const copiedDatabase = path.join(f.root, "prepared.sqlite");
+    await expect(
+      enterUpdateRecoveryStartup({
+        installRoot: retainedRoot,
+        entryFile,
+        argv: [process.execPath, entryFile, "database", "preflight", copiedDatabase, "--json"],
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      enterUpdateRecoveryStartup({
+        installRoot: retainedRoot,
+        entryFile,
+        argv: [process.execPath, entryFile, "gateway"],
+      }),
+    ).rejects.toThrow("recovery-inspection only");
+  },
+  180_000,
+);
+
+it.skipIf(process.platform === "win32")(
+  "repairs reverse-complete through the sealed helper before terminal retirement",
+  async () => {
+    const f = await fixture({ realHelper: true });
+    let anchor = "";
+    let interrupted: unknown;
+    try {
+      await f.execute(async (fence) => {
+        fs.copyFileSync(f.launcher, path.join(f.params.stage.layout.binDir, "openclaw"));
+        const prepared = await f.prepare(fence);
+        await prepared.publish(false);
+        anchor = prepared.anchor;
+        const record = prepared.journal.read();
+        const current = captureUpdateCommandExecutorCurrentStores(fence, f.runId);
+        const maintenance = getOpenClawDatabaseMaintenanceScope();
+        if (!current || !maintenance) {
+          throw new Error("Missing selected current stores or maintenance scope");
+        }
+        const custody = await prepared.resourceCustody({
+          assertCurrent: prepared.assertCurrent,
+          assertWritersSettled: prepared.assertCurrent,
+        });
+        const preparation = await createUnchangedReversePreparation({
+          root: f.root,
+          runId: f.runId,
+          state: f.state,
+          packageRoot: f.packageRoot,
+          operationId: record.descriptor.operationId,
+          descriptor: record.descriptor,
+          selection: current.selection,
+          packageResources: [...custody.packageResources],
+          stagingParent: custody.stagingParent(f.state),
+        });
+        vi.spyOn(prepared, "commitCompletion").mockRejectedValueOnce(
+          new Error("simulated death before terminal acknowledgement"),
+        );
+        await publishUpdateCommandRecoveryGeneration(fence, f.runId, {
+          binding: preparation,
+          transaction: {
+            backupRoot: prepared.anchor,
+            reversePublication: {
+              selection: () => ({
+                anchor: prepared.anchor,
+                operationId: record.descriptor.operationId,
+                originalRunId: record.descriptor.originalRunId,
+                previous: record.descriptor.previous,
+                previousRuntime: record.descriptor.previousRuntime,
+              }),
+              resourceCustody: prepared.resourceCustody,
+              prepare: prepared.prepareReverse,
+              publish: prepared.reverse,
+              settle: prepared.settleReverse,
+              verifyCompletion: prepared.verifyCompletion,
+              commitCompletion: prepared.commitCompletion,
+            },
+            rollback: vi.fn(),
+            complete: vi.fn(),
+          },
+          maintenance,
+          assertWritersSettled: () => maintenance.assertAdmission(),
+          assertCapturedSource: vi.fn(),
+          validateTarget: vi.fn(async () => maintenance.assertAdmission()),
+        });
+      });
+    } catch (error) {
+      interrupted = error;
+    }
+    if (openPackageActivationJournal(anchor).read().phase !== "reverse-complete") {
+      throw interrupted;
+    }
+    fs.rmSync(path.join(path.dirname(f.state), "openclaw.json.lock"), { force: true });
+    expect(interrupted).toBeInstanceOf(Error);
+    expect(openPackageActivationJournal(anchor).read().phase).toBe("reverse-complete");
+    const restoredEntry = path.join(f.packageRoot, "dist/index.js");
+    await expect(
+      enterUpdateRecoveryStartup({
+        installRoot: f.packageRoot,
+        entryFile: restoredEntry,
+        argv: [
+          process.execPath,
+          restoredEntry,
+          "database",
+          "preflight",
+          path.join(f.root, "prepared.sqlite"),
+          "--json",
+        ],
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      enterUpdateRecoveryStartup({
+        installRoot: f.packageRoot,
+        entryFile: restoredEntry,
+        argv: [process.execPath, restoredEntry, "gateway"],
+      }),
+    ).rejects.toThrow("use its retained recovery helper");
+    const receipt = readPackageActivationReceipt(f.packageRoot);
+    const statusCommand = receipt?.recoveryCommand;
+    if (!statusCommand) {
+      throw new Error("Reverse-complete receipt did not expose its sealed helper");
+    }
+    const prematureRetire = spawnSync(
+      "/bin/sh",
+      ["-c", statusCommand.replace(/ status$/u, " retire")],
+      {
+        env: { ...process.env, HOME: f.root, USERPROFILE: f.root },
+        encoding: "utf8",
+        timeout: 60_000,
+        killSignal: "SIGKILL",
+      },
+    );
+    expect(prematureRetire.status).toBe(1);
+    expect(openPackageActivationJournal(anchor).read().phase).toBe("reverse-complete");
+    const repair = spawnSync("/bin/sh", ["-c", statusCommand.replace(/ status$/u, " repair")], {
+      env: { ...process.env, HOME: f.root, USERPROFILE: f.root },
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    });
+    expect(repair.error, repair.stderr).toBeUndefined();
+    expect(repair.status, repair.stderr).toBe(0);
+    expect(JSON.parse(repair.stdout)).toMatchObject({ phase: "rolled-back" });
+    expect(openPackageActivationJournal(anchor).read().phase).toBe("rolled-back");
+    const readmit = spawnSync("/bin/sh", ["-c", statusCommand.replace(/ status$/u, " repair")], {
+      env: { ...process.env, HOME: f.root, USERPROFILE: f.root },
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    });
+    expect(readmit.error, readmit.stderr).toBeUndefined();
+    expect(readmit.status, readmit.stderr).toBe(0);
+    expect(JSON.parse(readmit.stdout)).toMatchObject({ phase: "rolled-back" });
+    await expect(
+      enterUpdateRecoveryStartup({
+        installRoot: f.packageRoot,
+        entryFile: path.join(f.packageRoot, "dist/index.js"),
+        argv: [process.execPath, path.join(f.packageRoot, "dist/index.js"), "gateway"],
+      }),
+    ).resolves.toBe(false);
+    const retire = spawnSync("/bin/sh", ["-c", statusCommand.replace(/ status$/u, " retire")], {
+      env: { ...process.env, HOME: f.root, USERPROFILE: f.root },
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    });
+    expect(retire.error, retire.stderr).toBeUndefined();
+    expect(retire.status, retire.stderr).toBe(0);
+  },
+  180_000,
+);
+
+it.skipIf(process.platform === "win32")(
+  "resumes durable reverse preparation after a staged-state copy is torn",
+  async () => {
+    const f = await fixture({ realHelper: true });
+    let anchor = "";
+    const interruptedCopy = new Error("simulated death during staged-state copy");
+    let interruption: unknown;
+    try {
+      await f.execute(async (fence) => {
+        fs.copyFileSync(f.launcher, path.join(f.params.stage.layout.binDir, "openclaw"));
+        const prepared = await f.prepare(fence);
+        await prepared.publish(false);
+        anchor = prepared.anchor;
+        const record = prepared.journal.read();
+        const current = captureUpdateCommandExecutorCurrentStores(fence, f.runId);
+        const maintenance = getOpenClawDatabaseMaintenanceScope();
+        if (!current || !maintenance) {
+          throw new Error("Missing selected current stores or maintenance scope");
+        }
+        const custody = await prepared.resourceCustody({
+          assertCurrent: prepared.assertCurrent,
+          assertWritersSettled: prepared.assertCurrent,
+        });
+        const preparation = await createUnchangedReversePreparation({
+          root: f.root,
+          runId: f.runId,
+          state: f.state,
+          packageRoot: f.packageRoot,
+          operationId: record.descriptor.operationId,
+          descriptor: record.descriptor,
+          selection: current.selection,
+          packageResources: [...custody.packageResources],
+          stagingParent: custody.stagingParent(f.state),
+          preparedValue: "prepared recovery value",
+        });
+        vi.spyOn(fsp, "copyFile").mockImplementationOnce(async (_source, destination) => {
+          await fsp.writeFile(destination, "partial staged copy", { flag: "wx", mode: 0o600 });
+          throw interruptedCopy;
+        });
+        await publishUpdateCommandRecoveryGeneration(fence, f.runId, {
+          binding: preparation,
+          transaction: {
+            backupRoot: prepared.anchor,
+            reversePublication: {
+              selection: () => ({
+                anchor: prepared.anchor,
+                operationId: record.descriptor.operationId,
+                originalRunId: record.descriptor.originalRunId,
+                previous: record.descriptor.previous,
+                previousRuntime: record.descriptor.previousRuntime,
+              }),
+              resourceCustody: prepared.resourceCustody,
+              prepare: prepared.prepareReverse,
+              publish: prepared.reverse,
+              settle: prepared.settleReverse,
+              verifyCompletion: prepared.verifyCompletion,
+              commitCompletion: prepared.commitCompletion,
+            },
+            rollback: vi.fn(),
+            complete: vi.fn(),
+          },
+          maintenance,
+          assertWritersSettled: () => maintenance.assertAdmission(),
+          assertCapturedSource: vi.fn(),
+          validateTarget: vi.fn(async () => maintenance.assertAdmission()),
+        });
+      });
+    } catch (error) {
+      interruption = error;
+    }
+    if (openPackageActivationJournal(anchor).read().phase !== "reverse-preparing") {
+      throw interruption;
+    }
+    fs.rmSync(path.join(path.dirname(f.state), "openclaw.json.lock"), { force: true });
+    expect(interruption).toBeInstanceOf(Error);
+    expect(openPackageActivationJournal(anchor).read()).toMatchObject({
+      phase: "reverse-preparing",
+      intent: { kind: "reverse-prepare", effect: "copy" },
+    });
+    const statusCommand = readPackageActivationReceipt(f.packageRoot)?.recoveryCommand;
+    if (!statusCommand) {
+      throw new Error("Reverse preparation did not expose its sealed helper");
+    }
+    const repair = spawnSync("/bin/sh", ["-c", statusCommand.replace(/ status$/u, " repair")], {
+      env: { ...process.env, HOME: f.root, USERPROFILE: f.root },
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    });
+    expect(repair.error, repair.stderr).toBeUndefined();
+    expect(repair.status, repair.stderr).toBe(0);
+    expect(JSON.parse(repair.stdout)).toMatchObject({ phase: "rolled-back" });
+    const database = new DatabaseSync(f.state, { readOnly: true });
+    try {
+      expect(database.prepare("SELECT value FROM acknowledged ORDER BY rowid").all()).toEqual([
+        { value: "newer write" },
+        { value: "prepared recovery value" },
+      ]);
+    } finally {
+      database.close();
+    }
+  },
+  180_000,
 );
 
 it

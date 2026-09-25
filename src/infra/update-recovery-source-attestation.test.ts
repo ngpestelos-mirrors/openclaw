@@ -116,6 +116,9 @@ it.each([
       fs.chmodSync(state, 0o600);
       const originalBytes = fs.readFileSync(state);
       const before = await readPackageReverseImage(state);
+      if (before.kind !== "file") {
+        throw new Error("Missing state fixture");
+      }
       for (const suffix of ["-wal", "-shm", "-journal"]) {
         expect(fs.existsSync(state + suffix)).toBe(false);
       }
@@ -256,6 +259,20 @@ it.each([
           ...runtime,
           admissionSha256: hash("controlled-admission"),
           startupProtocol: "package-state-reverse-v1",
+        },
+        initialStores: {
+          privateRoot: { path: root, identity: identity(root) },
+          installation: { path: installation, identity: pkg.identity },
+          handoff: {
+            databasePath: descriptor.authority.databasePath,
+            databaseIdentity: descriptor.authority.databaseIdentity,
+            parentIdentity: descriptor.authority.parentIdentity,
+          },
+          state: {
+            databasePath: state,
+            databaseIdentity: before.identity,
+            parentIdentity: identity(stateDir),
+          },
         },
         resources: [
           {
@@ -470,6 +487,8 @@ it.each([
                 read: () => record,
                 readForRecovery: async () => unexpectedJournalWrite(),
                 replaceCompleted: unexpectedJournalWrite,
+                prepareReverse: unexpectedJournalWrite,
+                sealReverse: unexpectedJournalWrite,
                 transition: unexpectedJournalWrite,
                 assertCurrent: (expected: PackageActivationRecord) => {
                   assertCurrent();
@@ -480,6 +499,8 @@ it.each([
                 journal,
                 current: () => record,
                 transition,
+                prepareReverse: unexpectedJournalWrite,
+                sealReverse: unexpectedJournalWrite,
                 assertCurrent,
                 verifyClosure: async () => {
                   assertCurrent();

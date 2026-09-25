@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { requireDirectorySync, syncDirectory } from "./directory-durability.js";
 import {
   readPackageActivationRecordStatus,
   resolvePackageActivationAnchor,
@@ -14,20 +12,29 @@ import {
 } from "./package-update-activation-journal.js";
 import {
   assertPackageReverseBinding,
-  assertPackageReverseTarget,
-  assertReverseLauncher,
   readPackageReverseGenerations,
 } from "./package-update-activation-reverse-binding.js";
 import {
   assertReverseParents,
-  readPackageReverseImage,
   syncPackageReverseInputs,
 } from "./package-update-activation-reverse-files.js";
+import {
+  assertPackageReverseProgress,
+  inspectPackageReverseTargetAndLaunchers,
+  observePackageReverseResources,
+  syncPackageReverseParents,
+} from "./package-update-activation-reverse-observation.js";
+import {
+  assertPackageReversePreparation,
+  materializePackageReversePreparation,
+} from "./package-update-activation-reverse-preparation.js";
 import { readPackageReverseResourceCustody } from "./package-update-activation-reverse-resources.js";
 import {
   packageActivationReverseBindingSchema,
+  packageActivationReversePreparationSchema,
   type PackageActivationReverseBinding,
   type PackageActivationReverseIntent,
+  type PackageActivationReversePreparation,
   type PackageActivationReverseResource,
 } from "./package-update-activation-reverse-schema.js";
 import { renamePackageReverseResource } from "./package-update-activation-symlink.js";
@@ -39,6 +46,7 @@ import type { UpdateRecoveryPublicationCompletion } from "./package-update-swap-
 import {
   assertUpdateRecoverySourceAttestationCurrent,
   assertUpdateRecoverySourceAttestationAdmission,
+  readUpdateRecoverySourceAttestation,
 } from "./update-recovery-source-attestation.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 
@@ -84,127 +92,6 @@ function freeze<T>(value: T): T {
   }
   return value;
 }
-export async function observePackageReverseResources(record: PackageActivationRecord) {
-  const binding = record.descriptor.reverse;
-  if (!binding) {
-    throw new Error("Reverse publication has no bound generation.");
-  }
-  assertPackageReverseBinding(binding, record.descriptor);
-  const rows = [];
-  for (const resource of binding.resources) {
-    assertReverseParents(resource);
-    const read = async (file: string) => {
-      let logical: string | undefined;
-      if (resource.role === "package" && fs.lstatSync(file, { throwIfNoEntry: false })) {
-        const stat = fs.lstatSync(file, { bigint: true });
-        const identity = `${stat.dev}:${stat.ino}`;
-        logical =
-          identity === record.descriptor.previous.identity
-            ? record.descriptor.authority.installKey
-            : record.descriptor.originalStageRoot;
-      }
-      return readPackageReverseImage(file, logical);
-    };
-    const live = await read(resource.live);
-    if (!resource.move) {
-      if (!isDeepStrictEqual(live, resource.after)) {
-        throw new Error("Unchanged reverse resource was replaced.");
-      }
-      rows.push("unchanged" as const);
-      continue;
-    }
-    const staged = await read(resource.move.staged);
-    const displaced = await read(resource.move.displaced);
-    const missing = { kind: "missing" };
-    const equal = isDeepStrictEqual;
-    const state =
-      equal(live, resource.after) && equal(staged, missing) && equal(displaced, resource.before)
-        ? "published"
-        : equal(live, resource.before) && equal(staged, resource.after) && equal(displaced, missing)
-          ? "initial"
-          : equal(live, missing) &&
-              equal(staged, resource.after) &&
-              equal(displaced, resource.before)
-            ? "displaced"
-            : undefined;
-    if (!state) {
-      throw new Error(`Reverse publication lost exact resource custody: ${resource.live}`);
-    }
-    rows.push(state);
-  }
-  return rows;
-}
-function assertProgress(
-  record: PackageActivationRecord,
-  rows: Awaited<ReturnType<typeof observePackageReverseResources>>,
-) {
-  if (record.intent?.kind !== "reverse" || !record.descriptor.reverse) {
-    throw new Error("Reverse progress is missing.");
-  }
-  const { completed, effect } = record.intent;
-  if (completed > rows.length || (completed === rows.length && effect !== null)) {
-    throw new Error("Reverse progress is invalid.");
-  }
-  rows.forEach((row, i) => {
-    if (row === "unchanged") {
-      return;
-    }
-    const resource = record.descriptor.reverse!.resources[i]!;
-    const allowed =
-      i < completed
-        ? ["published"]
-        : i > completed || effect === null
-          ? ["initial"]
-          : effect === "displace"
-            ? ["initial", "displaced", ...(resource.after.kind === "missing" ? ["published"] : [])]
-            : [
-                "displaced",
-                "published",
-                ...(resource.before.kind === "missing" ? ["initial"] : []),
-              ];
-    if (!allowed.includes(row)) {
-      throw new Error("Reverse filesystem effect has no durable progress intent.");
-    }
-  });
-  if (record.phase === "reverse-complete" && completed !== rows.length) {
-    throw new Error("Reverse completion is not exhaustive.");
-  }
-}
-async function syncParents(resource: PackageActivationReverseResource) {
-  if (!resource.move) {
-    return;
-  }
-  for (const parent of new Set(
-    [resource.live, resource.move.staged, resource.move.displaced].map((file) =>
-      path.dirname(file),
-    ),
-  )) {
-    requireDirectorySync(await syncDirectory(parent), "Reverse resource publication");
-  }
-}
-async function inspectTargetAndLaunchers(
-  record: PackageActivationRecord,
-  rows: Awaited<ReturnType<typeof observePackageReverseResources>>,
-) {
-  const binding = record.descriptor.reverse!;
-  const index = binding.resources.findIndex((r) => r.role === "package");
-  const resource = binding.resources[index]!;
-  await assertPackageReverseTarget(
-    binding,
-    record.descriptor,
-    rows[index] === "published" ? resource.live : resource.move!.staged,
-  );
-  for (const entry of record.descriptor.launchers) {
-    const r = binding.resources.find(
-      (v) => v.live === path.join(record.descriptor.binDir, entry.name),
-    )!;
-    const state = rows[binding.resources.indexOf(r)];
-    await assertReverseLauncher(
-      state === "published" || !r.move ? r.live : r.move.staged,
-      entry.previous,
-    );
-  }
-}
 export function createPackageActivationReverseOwner(params: {
   journal: PackageActivationJournal;
   current: () => PackageActivationRecord;
@@ -215,6 +102,11 @@ export function createPackageActivationReverseOwner(params: {
     reverse?: PackageActivationReverseBinding,
     assertExecutor?: () => void,
   ) => void;
+  prepareReverse: (
+    preparation: PackageActivationReversePreparation,
+    assertExecutor: () => void,
+  ) => void;
+  sealReverse: (binding: PackageActivationReverseBinding, assertExecutor: () => void) => void;
   assertCurrent: (assertExecutor?: () => void) => void;
   verifyClosure: (assertExecutor?: () => void) => Promise<void>;
   verifyForward: (assertExecutor?: () => void) => Promise<void>;
@@ -252,7 +144,10 @@ export function createPackageActivationReverseOwner(params: {
     if (params.resuming) {
       const { owner: _owner, ...current } = authority;
       const { owner: _originalOwner, ...expected } = original;
-      if (!isDeepStrictEqual(current, expected) || !params.current().descriptor.reverse) {
+      if (
+        !isDeepStrictEqual(current, expected) ||
+        (!params.current().descriptor.reverse && !params.current().descriptor.reversePreparation)
+      ) {
         throw new Error("Reverse continuation changed original authority.");
       }
     } else if (!isDeepStrictEqual(authority, original)) {
@@ -302,8 +197,8 @@ export function createPackageActivationReverseOwner(params: {
     assertAuthority(binding, guard);
     await params.verifyClosure(assertExecutor);
     const rows = await observePackageReverseResources(record);
-    assertProgress(record, rows);
-    await inspectTargetAndLaunchers(record, rows);
+    assertPackageReverseProgress(record, rows);
+    await inspectPackageReverseTargetAndLaunchers(record, rows);
     assertAuthority(binding, guard);
     return rows;
   };
@@ -362,10 +257,10 @@ export function createPackageActivationReverseOwner(params: {
               assertReverseParents(resource);
             },
           });
-          await syncParents(resource);
+          await syncPackageReverseParents(resource);
         }
         await inspect(guard);
-        await syncParents(resource);
+        await syncPackageReverseParents(resource);
         assertAuthority(binding, guard);
         transition("reverse-in-progress", { ...progress, effect: "publish" });
         rows = await inspect(guard);
@@ -380,7 +275,7 @@ export function createPackageActivationReverseOwner(params: {
           });
         }
         // Also sync observed lost acknowledgements before advancing the journal.
-        await syncParents(resource);
+        await syncPackageReverseParents(resource);
         rows = await inspect(guard);
         if (rows[progress.completed] !== "published") {
           throw new Error("Reverse publication postimage is incomplete.");
@@ -397,6 +292,19 @@ export function createPackageActivationReverseOwner(params: {
     await inspect(guard);
     return readPackageActivationRecordStatus(params.current());
   };
+  const materializePreparation = (guard: PackageReverseAuthority) =>
+    materializePackageReversePreparation(
+      {
+        current: params.current,
+        resuming: params.resuming,
+        assertAuthority,
+        assertExecutor,
+        transition: (phase, intent) => transition(phase, intent),
+        sealReverse: params.sealReverse,
+        publish,
+      },
+      guard,
+    );
   let active = false;
   const exclusively = async <T>(run: () => Promise<T>) => {
     if (active) {
@@ -443,6 +351,75 @@ export function createPackageActivationReverseOwner(params: {
         return freeze(result);
       });
     },
+    prepareReverse: (
+      preparationInput: PackageActivationReversePreparation,
+      authority: PackageReverseAuthority,
+    ) =>
+      exclusively(async () => {
+        const guard = capturePackageReverseAuthority(authority);
+        const preparation = freeze(
+          packageActivationReversePreparationSchema.parse(preparationInput),
+        );
+        const record = params.current();
+        if (
+          record.phase !== "publication-complete" ||
+          record.descriptor.reverse ||
+          record.descriptor.reversePreparation ||
+          params.resuming
+        ) {
+          throw new Error("Reverse preparation requires untouched original publication.");
+        }
+        assertAuthority(preparation, guard);
+        const { generations } = assertPackageReversePreparation(preparation, record);
+        const sourceAttestation = readUpdateRecoverySourceAttestation(
+          preparation.sourceAttestation,
+          {
+            runId: preparation.runId,
+            operationId: preparation.operationId,
+            candidateManifestSha256: preparation.candidate.manifestSha256,
+            entries: generations.candidate.entries,
+          },
+        );
+        await assertUpdateRecoverySourceAttestationAdmission(
+          sourceAttestation,
+          generations.candidate.entries,
+          {
+            assertCurrent: () => assertAuthority(preparation, guard),
+            assertCapturedSource: guard.assertCapturedSource,
+            sourceAttestation: preparation.sourceAttestation,
+          },
+        );
+        await params.verifyForward(assertExecutor);
+        await guard.validateTarget(
+          packageActivationReverseBindingSchema.parse({
+            protocol: "package-state-reverse-v1",
+            operationId: preparation.operationId,
+            runId: preparation.runId,
+            baseline: preparation.baseline,
+            candidate: preparation.candidate,
+            prepared: preparation.prepared,
+            sourceAttestation: preparation.sourceAttestation,
+            target: preparation.target,
+            initialStores: preparation.initialStores,
+            resources: [
+              ...preparation.state.map((resource) => ({
+                role: "state" as const,
+                live: resource.live,
+                parentIdentity: resource.parentIdentity,
+                before: resource.before,
+                after: resource.before,
+                move: null,
+              })),
+              ...preparation.packageResources,
+            ],
+          }),
+        );
+        assertAuthority(preparation, guard);
+        params.prepareReverse(preparation, assertExecutor);
+        return materializePreparation(guard);
+      }),
+    resumePreparation: (authority: PackageReverseAuthority) =>
+      exclusively(() => materializePreparation(capturePackageReverseAuthority(authority))),
     reverse: (bindingInput: PackageActivationReverseBinding, authority: PackageReverseAuthority) =>
       exclusively(async () => {
         const guard = capturePackageReverseAuthority(authority);
@@ -473,8 +450,8 @@ export function createPackageActivationReverseOwner(params: {
           },
         };
         const rows = await observePackageReverseResources(provisional);
-        assertProgress(provisional, rows);
-        await inspectTargetAndLaunchers(provisional, rows);
+        assertPackageReverseProgress(provisional, rows);
+        await inspectPackageReverseTargetAndLaunchers(provisional, rows);
         await guard.validateTarget(binding);
         await syncPackageReverseInputs(
           binding.resources,
@@ -500,8 +477,11 @@ export function createPackageActivationReverseOwner(params: {
           ],
         );
         await params.verifyClosure(assertExecutor);
-        assertProgress(provisional, await observePackageReverseResources(provisional));
-        await inspectTargetAndLaunchers(provisional, rows);
+        assertPackageReverseProgress(
+          provisional,
+          await observePackageReverseResources(provisional),
+        );
+        await inspectPackageReverseTargetAndLaunchers(provisional, rows);
         assertAuthority(binding, guard);
         const assertPinCapture = await verifyCapturedSource(binding, guard);
         assertPinCapture?.();
@@ -521,8 +501,7 @@ export function createPackageActivationReverseOwner(params: {
         const binding = freeze(packageActivationReverseBindingSchema.parse(bindingInput));
         const record = params.current();
         if (
-          params.resuming ||
-          record.phase !== "rolled-back" ||
+          !["reverse-complete", "rolled-back"].includes(record.phase) ||
           record.intent?.kind !== "reverse" ||
           record.intent.completed !== binding.resources.length ||
           record.intent.effect !== null ||
@@ -580,6 +559,42 @@ export function createPackageActivationReverseOwner(params: {
           },
         }) satisfies UpdateRecoveryPublicationCompletion;
       }),
+    commitCompletion: (
+      bindingInput: Readonly<PackageActivationReverseBinding>,
+      authority: PackageReverseAuthority,
+    ) =>
+      exclusively(async () => {
+        const guard = capturePackageReverseAuthority(authority);
+        const binding = freeze(packageActivationReverseBindingSchema.parse(bindingInput));
+        const record = params.current();
+        if (
+          !["reverse-complete", "rolled-back"].includes(record.phase) ||
+          record.intent?.kind !== "reverse" ||
+          record.intent.completed !== binding.resources.length ||
+          record.intent.effect !== null ||
+          !isDeepStrictEqual(record.descriptor.reverse, binding)
+        ) {
+          throw new Error("Reverse terminal commit requires the verified complete binding.");
+        }
+        assertAuthority(binding, guard);
+        await guard.validateTarget(binding);
+        const rows = await inspect(guard);
+        if (rows.some((row) => row !== "published" && row !== "unchanged")) {
+          throw new Error("Reverse terminal commit found incomplete publication.");
+        }
+        assertAuthority(binding, guard);
+        params.journal.assertCurrent(record);
+        if (record.phase === "rolled-back") {
+          return readPackageActivationRecordStatus(record);
+        }
+        const publications = binding.resources.flatMap((resource) =>
+          resource.role === "launcher" && resource.after.kind !== "missing"
+            ? [{ name: path.basename(resource.live), identity: resource.after.identity }]
+            : [],
+        );
+        transition("rolled-back", record.intent, publications);
+        return readPackageActivationRecordStatus(params.current());
+      }),
     resumeReverse: (authority: PackageReverseAuthority) =>
       exclusively(() => publish(capturePackageReverseAuthority(authority))),
     settleReverse: (authority: PackageReverseAuthority) =>
@@ -590,15 +605,13 @@ export function createPackageActivationReverseOwner(params: {
         }
         await inspect(guard);
         const binding = params.current().descriptor.reverse!;
-        const publications = binding.resources
-          .filter((r) => r.role === "launcher" && r.after.kind !== "missing")
-          .map((r) => ({
-            name: path.basename(r.live),
-            // SAFETY: the preceding filter excludes missing postimages.
-            identity: (r.after as Exclude<typeof r.after, { kind: "missing" }>).identity,
-          }));
+        const publications = binding.resources.flatMap((resource) =>
+          resource.role === "launcher" && resource.after.kind !== "missing"
+            ? [{ name: path.basename(resource.live), identity: resource.after.identity }]
+            : [],
+        );
         assertAuthority(binding, guard);
-        transition("rolled-back", params.current().intent, publications);
+        transition("reverse-complete", params.current().intent, publications);
         return readPackageActivationRecordStatus(params.current());
       }),
   };

@@ -8,7 +8,19 @@ import { z } from "zod";
 import { requireDirectorySync, syncDirectorySync } from "./directory-durability.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "./node-sqlite.js";
-import type { PackageActivationReverseBinding } from "./package-update-activation-reverse-schema.js";
+import {
+  assertPackageActivationLayout,
+  isPackageActivationComplete,
+  packageActivationIdentity,
+  resolvePackageActivationAnchor,
+  resolvePackageActivationControl,
+  resolvePackageActivationHelper,
+  resolvePackageActivationJournalPath,
+} from "./package-update-activation-paths.js";
+import type {
+  PackageActivationReverseBinding,
+  PackageActivationReversePreparation,
+} from "./package-update-activation-reverse-schema.js";
 import {
   identity,
   basename,
@@ -21,12 +33,20 @@ import {
   type PackageActivationRecord,
 } from "./package-update-activation-schema.js";
 import { withPackageRecoverySnapshot } from "./package-update-activation-snapshot.js";
-import type { PackageLauncherFingerprint } from "./package-update-integrity.js";
 import {
   withExistingSqliteRollbackDatabase,
   type ExistingSqliteTransaction,
 } from "./sqlite-existing-database.js";
 import { createVerifiedSqliteSnapshot } from "./sqlite-snapshot.js";
+export {
+  assertPackageActivationLayout,
+  isPackageActivationComplete,
+  packageActivationIdentity,
+  resolvePackageActivationAnchor,
+  resolvePackageActivationControl,
+  resolvePackageActivationHelper,
+  resolvePackageActivationJournalPath,
+} from "./package-update-activation-paths.js";
 
 export type {
   PackageActivationDescriptor,
@@ -34,11 +54,12 @@ export type {
   PackageActivationIntent,
   PackageActivationRecord,
 } from "./package-update-activation-schema.js";
-
-/** Keep the journal's version-1 launcher encoding while the live reader exposes metadata. */
-export function encodePackageActivationLauncher(value: PackageLauncherFingerprint): string {
-  return JSON.stringify([value.type, value.mode, value.uid, value.gid, value.contents]);
-}
+export { encodePackageActivationLauncher } from "./package-update-activation-launcher.js";
+export {
+  assertPackageActivationOperation,
+  readPackageActivationRecordStatus,
+  type PackageActivationStatus,
+} from "./package-update-activation-status.js";
 
 const PACKAGE_ACTIVATION_JOURNAL = "operation.sqlite";
 const MAX_PACKAGE_ACTIVATION_DESCRIPTOR_BYTES = 1024 * 1024;
@@ -52,76 +73,6 @@ type ActivationRow = {
 };
 const queries = (db: DatabaseSync) =>
   getNodeSqliteKysely<{ package_activation: ActivationRow }>(db);
-
-export function packageActivationIdentity(file: string, directory: boolean | "launcher"): string {
-  const stat = fs.lstatSync(file, { bigint: true });
-  if (
-    stat.ino === 0n ||
-    !(directory === "launcher"
-      ? stat.isSymbolicLink() || stat.isFile()
-      : directory
-        ? stat.isDirectory() && !stat.isSymbolicLink()
-        : stat.isFile()) ||
-    (process.getuid && stat.uid !== BigInt(process.getuid()))
-  ) {
-    throw new Error("Package publication object has an unsafe identity");
-  }
-  return `${stat.dev}:${stat.ino}`;
-}
-
-export function resolvePackageActivationAnchor(installKey: string): string {
-  const key = createHash("sha256").update(installKey).digest("hex").slice(0, 24);
-  return path.join(path.dirname(installKey), `.openclaw.package-activation-${key}`);
-}
-
-// Publish the helper and complete journal together, outside the disposable anchor.
-export function resolvePackageActivationControl(anchor: string): string {
-  return `${anchor}.control`;
-}
-export function resolvePackageActivationJournalPath(anchor: string): string {
-  return path.join(resolvePackageActivationControl(anchor), PACKAGE_ACTIVATION_JOURNAL);
-}
-export function resolvePackageActivationHelper(anchor: string): string {
-  return path.join(resolvePackageActivationControl(anchor), "recovery.mjs");
-}
-
-export function assertPackageActivationLayout(anchor: string): void {
-  if (
-    [
-      path.join(anchor, PACKAGE_ACTIVATION_JOURNAL),
-      `${anchor}.sqlite`,
-      `${anchor}.recovery.mjs`,
-    ].some((file) => fs.lstatSync(file, { throwIfNoEntry: false }))
-  ) {
-    throw new Error(
-      "Legacy package activation artifacts require their original recovery owner; no migration is performed.",
-    );
-  }
-}
-
-/** A receipt is a read-only completion fact, never a grant for another effect. */
-export function isPackageActivationComplete(
-  anchor: string,
-  record: PackageActivationRecord,
-): boolean {
-  if (record.phase !== "anchor-retired" || record.intent?.kind !== "unlink-helper") {
-    return false;
-  }
-  if (record.intent.identity !== record.descriptor.helperIdentity) {
-    throw new Error("Final helper unlink identity is invalid.");
-  }
-  for (const file of [anchor, resolvePackageActivationHelper(anchor)]) {
-    try {
-      fs.lstatSync(file);
-      return false;
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-        throw error;
-      }
-    }
-  }
-  return true;
-}
 
 function assertPrivate(file: string, directory: boolean): string {
   const value = packageActivationIdentity(file, directory);
@@ -232,6 +183,21 @@ export function openPackageActivationJournal(anchor: string) {
     const intent = intentSchema.parse(JSON.parse(row.intent_json));
     const names = new Set(descriptor.launchers.map((entry) => entry.name));
     if (
+      descriptor.reversePreparation &&
+      (descriptor.reverse ||
+        descriptor.reversePreparation.operationId !== descriptor.operationId ||
+        descriptor.reversePreparation.runId !== descriptor.originalRunId ||
+        row.phase !== "reverse-preparing" ||
+        intent?.kind !== "reverse-prepare" ||
+        intent.completed > descriptor.reversePreparation.state.length ||
+        (intent.completed === descriptor.reversePreparation.state.length && intent.effect !== null))
+    ) {
+      throw new Error("Reverse preparation is not in its original operation phase.");
+    }
+    if (row.phase === "reverse-preparing" && !descriptor.reversePreparation) {
+      throw new Error("Reverse preparation phase has no durable plan.");
+    }
+    if (
       descriptor.reverse &&
       (descriptor.reverse.operationId !== descriptor.operationId ||
         descriptor.reverse.runId !== descriptor.originalRunId ||
@@ -245,7 +211,10 @@ export function openPackageActivationJournal(anchor: string) {
     ) {
       throw new Error("Reverse binding is not in its original operation phase.");
     }
-    if (row.phase.startsWith("reverse-") && (!descriptor.reverse || intent?.kind !== "reverse")) {
+    if (
+      ["reverse-in-progress", "reverse-complete"].includes(row.phase) &&
+      (!descriptor.reverse || intent?.kind !== "reverse")
+    ) {
       throw new Error("Reverse phase has no durable binding/progress.");
     }
     if (
@@ -311,6 +280,50 @@ export function openPackageActivationJournal(anchor: string) {
     if (JSON.stringify(expected) !== JSON.stringify(actual)) {
       throw new Error("Package publication intent is no longer current");
     }
+  };
+  const transitionRecord = (
+    expected: PackageActivationRecord,
+    phase: PackageActivationPhase,
+    descriptor: PackageActivationDescriptor,
+    intent: PackageActivationIntent,
+    publications: PackageActivationRecord["publications"],
+    assertCurrent: () => void,
+  ) => {
+    const descriptorJsonValue = descriptorJson(descriptor);
+    const intentJson = JSON.stringify(intentSchema.parse(intent));
+    PackageActivationPhaseSchema.parse(phase);
+    assertCurrent();
+    return withDatabase(true, (db, transact) =>
+      transact(
+        () => {
+          assertFiles();
+          assertCurrent();
+          assertRecord(expected, decode(readRow(db)));
+          executeSqliteQuerySync(
+            db,
+            queries(db)
+              .updateTable("package_activation")
+              .set({
+                revision: expected.revision + 1,
+                phase,
+                descriptor_json: descriptorJsonValue,
+                intent_json: intentJson,
+                publications_json: JSON.stringify(publications),
+              })
+              .where("slot", "=", 1)
+              .where("revision", "=", expected.revision),
+          );
+          return decode(readRow(db));
+        },
+        {
+          withCommit: (commit) => {
+            assertFiles();
+            assertCurrent();
+            commit();
+          },
+        },
+      ),
+    );
   };
   return {
     read,
@@ -452,6 +465,62 @@ export function openPackageActivationJournal(anchor: string) {
     assertCurrent(expected: PackageActivationRecord) {
       assertRecord(expected, read());
     },
+    prepareReverse(
+      expected: PackageActivationRecord,
+      preparation: PackageActivationReversePreparation,
+      assertCurrent: () => void,
+    ): PackageActivationRecord {
+      if (
+        expected.phase !== "publication-complete" ||
+        expected.descriptor.reverse ||
+        expected.descriptor.reversePreparation ||
+        preparation.operationId !== expected.descriptor.operationId ||
+        preparation.runId !== expected.descriptor.originalRunId
+      ) {
+        throw new Error("Reverse preparation requires the untouched original publication.");
+      }
+      const descriptor = {
+        ...expected.descriptor,
+        reversePreparation: preparation,
+      };
+      return transitionRecord(
+        expected,
+        "reverse-preparing",
+        descriptor,
+        { kind: "reverse-prepare", completed: 0, effect: null },
+        expected.publications,
+        assertCurrent,
+      );
+    },
+    sealReverse(
+      expected: PackageActivationRecord,
+      reverse: PackageActivationReverseBinding,
+      assertCurrent: () => void,
+    ): PackageActivationRecord {
+      const preparation = expected.descriptor.reversePreparation;
+      if (
+        expected.phase !== "reverse-preparing" ||
+        !preparation ||
+        expected.descriptor.reverse ||
+        expected.intent?.kind !== "reverse-prepare" ||
+        expected.intent.completed !== preparation.state.length ||
+        expected.intent.effect !== null ||
+        reverse.operationId !== preparation.operationId ||
+        reverse.runId !== preparation.runId
+      ) {
+        throw new Error("Reverse binding requires completely sealed durable preparation.");
+      }
+      const { reversePreparation: _preparation, ...base } = expected.descriptor;
+      const descriptor = { ...base, reverse };
+      return transitionRecord(
+        expected,
+        "reverse-in-progress",
+        descriptor,
+        { kind: "reverse", direction: "reverse", completed: 0, effect: null },
+        expected.publications,
+        assertCurrent,
+      );
+    },
     transition(
       expected: PackageActivationRecord,
       phase: PackageActivationPhase,
@@ -475,43 +544,14 @@ export function openPackageActivationJournal(anchor: string) {
           "Reverse binding can only be committed once by original publication admission.",
         );
       }
-      const encodedDescriptor = descriptorJson(
+      return transitionRecord(
+        expected,
+        phase,
         reverse ? { ...expected.descriptor, reverse } : expected.descriptor,
+        intent,
+        publications,
+        assertCurrent,
       );
-      const intentJson = JSON.stringify(intentSchema.parse(intent));
-      PackageActivationPhaseSchema.parse(phase);
-      return withDatabase(true, (db, transact) => {
-        assertCurrent();
-        return transact(
-          () => {
-            assertFiles();
-            assertCurrent();
-            assertRecord(expected, decode(readRow(db)));
-            executeSqliteQuerySync(
-              db,
-              queries(db)
-                .updateTable("package_activation")
-                .set({
-                  revision: expected.revision + 1,
-                  phase,
-                  descriptor_json: encodedDescriptor,
-                  intent_json: intentJson,
-                  publications_json: JSON.stringify(publications),
-                })
-                .where("slot", "=", 1)
-                .where("revision", "=", expected.revision),
-            );
-            return decode(readRow(db));
-          },
-          {
-            withCommit: (commit) => {
-              assertFiles();
-              assertCurrent();
-              commit();
-            },
-          },
-        );
-      });
     },
   };
 }
@@ -670,33 +710,4 @@ export function createPackageActivationJournal(
   }
   assertCurrent();
   return journal;
-}
-
-export function assertPackageActivationOperation(
-  record: PackageActivationRecord,
-  operationId: string,
-): void {
-  if (record.descriptor.operationId !== operationId) {
-    throw new Error("Package recovery command belongs to a different operation.");
-  }
-}
-
-export type PackageActivationStatus = {
-  phase: PackageActivationPhase | "complete";
-  operationId: string;
-  installKey: string;
-};
-export function readPackageActivationRecordStatus(
-  record: PackageActivationRecord,
-): PackageActivationStatus {
-  return {
-    phase: isPackageActivationComplete(
-      resolvePackageActivationAnchor(record.descriptor.authority.installKey),
-      record,
-    )
-      ? "complete"
-      : record.phase,
-    operationId: record.descriptor.operationId,
-    installKey: record.descriptor.authority.installKey,
-  };
 }

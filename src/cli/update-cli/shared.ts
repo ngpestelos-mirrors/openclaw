@@ -80,12 +80,8 @@ export type UpdateCommandOptions = {
     requesterAuthority?: UpdateRequesterAuthority;
     /** Live local executor only. A child must independently acquire its owner. */
     executorFence?: UpdateRecoveryFence;
-    /** Live private B/C preparation input; never serialized or inferred from retained history. */
-    recoveryPreparation?: {
-      baseline: UpdateRecoveryBackupRef;
-      candidate: UpdateRecoveryBackupRef;
-      assertOwned: () => void;
-    };
+    /** Immutable B locator, never authority; retained by the original rollback caller. */
+    recoveryBaseline?: UpdateRecoveryBackupRef;
   };
   acceptCapabilities?: boolean;
   admission?: "auto" | "installed";

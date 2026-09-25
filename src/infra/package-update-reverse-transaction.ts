@@ -20,9 +20,11 @@ export function withPackageReverseTransaction(
   const assertLegacyRollback = activation.assertLegacyRollback.bind(activation);
   const read = activation.journal.read.bind(activation.journal);
   const publish = activation.reverse.bind(activation);
+  const prepare = activation.prepareReverse.bind(activation);
   const settle = activation.settleReverse.bind(activation);
   const resources = activation.resourceCustody.bind(activation);
   const verify = activation.verifyCompletion.bind(activation);
+  const commitCompletion = activation.commitCompletion.bind(activation);
   let reverse: ReturnType<Publication["publish"]> | undefined;
   let settlement: ReturnType<Publication["settle"]> | undefined;
   let settled = false;
@@ -118,6 +120,34 @@ export function withPackageReverseTransaction(
         });
         return reverse;
       },
+      prepare: (preparation, authority) => {
+        assertOpen();
+        if (reverse) {
+          throw new Error("Package reverse publication has already started.");
+        }
+        const before = read();
+        const preparing = prepare(preparation, authority).catch((error: unknown) => {
+          try {
+            assertCurrent();
+            if (
+              !hasCommandProcessCleanupError(error) &&
+              before.phase === "publication-complete" &&
+              !before.descriptor.reverse &&
+              !before.descriptor.reversePreparation &&
+              isDeepStrictEqual(before, read())
+            ) {
+              reverse = undefined;
+              settlement = undefined;
+              settled = false;
+            }
+          } catch {
+            /* Durable preparation, revocation, or uncertain effects remain latched. */
+          }
+          throw error;
+        });
+        reverse = preparing.then((result) => result.status);
+        return preparing;
+      },
       settle: (authority) => {
         assertOpen();
         if (!reverse) {
@@ -142,6 +172,15 @@ export function withPackageReverseTransaction(
           throw new Error("Reverse completion requires exhaustive settlement.");
         }
         const result = await verify(binding, authority);
+        assertOpen();
+        return result;
+      },
+      commitCompletion: async (binding, authority) => {
+        assertOpen();
+        if (!settled) {
+          throw new Error("Reverse completion requires exhaustive settlement.");
+        }
+        const result = await commitCompletion(binding, authority);
         assertOpen();
         return result;
       },

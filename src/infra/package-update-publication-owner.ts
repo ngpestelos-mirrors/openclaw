@@ -266,6 +266,11 @@ export function createPublicationOwner(
     assertCurrent(assertExecutor);
   };
   const preflight = async (action: "repair" | "retire", assertExecutor = assertion) => {
+    if (action === "retire" && record.descriptor.reverse && record.phase !== "rolled-back") {
+      throw new Error(
+        "Reverse-bound evidence requires verified successor admission before retirement.",
+      );
+    }
     if (
       action === "repair" &&
       !["preparing", "prepared", "publishing", "publication-complete"].includes(record.phase)
@@ -415,6 +420,11 @@ export function createPublicationOwner(
   };
   const retire = async () => {
     await verifyClosure();
+    if (record.descriptor.reverse && record.phase !== "rolled-back") {
+      throw new Error(
+        "Reverse-bound evidence requires verified successor admission before retirement.",
+      );
+    }
     if (
       !["publication-complete", "rolled-back", "aborted", "retiring", "anchor-retired"].includes(
         record.phase,
@@ -554,6 +564,14 @@ export function createPublicationOwner(
       journal,
       current: () => record,
       transition,
+      prepareReverse: (preparation, assertExecutor) => {
+        assertCurrent(assertExecutor);
+        record = journal.prepareReverse(record, preparation, () => assertCurrent(assertExecutor));
+      },
+      sealReverse: (binding, assertExecutor) => {
+        assertCurrent(assertExecutor);
+        record = journal.sealReverse(record, binding, () => assertCurrent(assertExecutor));
+      },
       assertCurrent,
       verifyClosure,
       verifyForward: (assertExecutor) => preflight("repair", assertExecutor),

@@ -64,12 +64,17 @@ function fixture(legacyRollbackAllowed = true) {
     }),
     journal: { read: () => structuredClone(record) },
     reverse: vi.fn(() => work.promise),
+    prepareReverse: vi.fn(async () => ({
+      status,
+      binding: {} as never,
+    })),
     settleReverse: vi.fn(() => settlement.promise),
     resourceCustody: vi.fn(async () => ({
       packageResources: [],
       stagingParent: () => "/original-parent",
     })),
     verifyCompletion: vi.fn(async () => ({ ...status, publishedState: {} })),
+    commitCompletion: vi.fn(async () => status),
   } as unknown as NonNullable<Parameters<typeof withPackageReverseTransaction>[1]>;
   const legacy = {
     backupRoot: "/backup",

@@ -11,3 +11,17 @@ export const updateRecoveryBackupRefSchema = z
   .strict();
 
 export type UpdateRecoveryBackupRef = z.infer<typeof updateRecoveryBackupRefSchema>;
+
+/** Merge one owner-authored receipt update without dropping previously sealed fields. */
+export function mergeUpdateRunRecoveryCaptureState(
+  record: { origin: { updateRecoveryCapture?: UpdateRecoveryCaptureState } },
+  patch: Partial<UpdateRecoveryCaptureState> & { manifestSha256: string },
+): UpdateRecoveryCaptureState {
+  const current = record.origin.updateRecoveryCapture;
+  return updateRecoveryCaptureStateSchema.parse({
+    ...current,
+    ...patch,
+    status: patch.status ?? current?.status ?? "pending",
+    configWrites: patch.configWrites ?? current?.configWrites ?? [],
+  });
+}

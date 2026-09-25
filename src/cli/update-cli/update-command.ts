@@ -35,6 +35,7 @@ import { admitUpdateRequesterContinuation } from "./update-command-managed-conte
 import { prepareMutableUpdateRuntime } from "./update-command-mutable-runtime.js";
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
 import type { StagedPackageInstallUpdate } from "./update-command-package.js";
+import { withOriginalUpdateRecoveryCapture } from "./update-command-recovery-config.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
 import {
@@ -56,7 +57,6 @@ import {
   withUpdateCommandTerminalResult,
 } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
-import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
 
 type PreparedUpdate = NonNullable<Awaited<ReturnType<typeof prepareUpdateCommand>>>;
 
@@ -201,7 +201,7 @@ async function runAdmittedUpdate(
       );
       const execute = () => {
         executionStarted = true;
-        return withUpdateCommandRecoveryUnwind(opts, recoveryState, () =>
+        return withOriginalUpdateRecoveryCapture(opts, recoveryState, () =>
           updateCommandInternal(
             opts,
             recoveryState,

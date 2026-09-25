@@ -4,6 +4,8 @@ import {
   packageActivationPreviousRuntimeSchema,
   packageActivationReverseBindingSchema,
   packageActivationReverseIntentSchema,
+  packageActivationReversePreparationIntentSchema,
+  packageActivationReversePreparationSchema,
 } from "./package-update-activation-reverse-schema.js";
 
 const absolutePath = z
@@ -34,6 +36,7 @@ export const PackageActivationDescriptorSchema = z.strictObject({
   // Older receipts may omit the executable; new preparation always records it.
   recoveryNodePath: absolutePath.optional(),
   previousRuntime: packageActivationPreviousRuntimeSchema.optional(),
+  reversePreparation: packageActivationReversePreparationSchema.optional(),
   reverse: packageActivationReverseBindingSchema.optional(),
   authority: z.strictObject({
     databasePath: absolutePath,
@@ -85,6 +88,7 @@ export const PackageActivationPhaseSchema = z.enum([
   "publishing",
   "publication-complete",
   "rollback-in-progress",
+  "reverse-preparing",
   "reverse-in-progress",
   "reverse-complete",
   "rolled-back",
@@ -96,6 +100,7 @@ export type PackageActivationPhase = z.infer<typeof PackageActivationPhaseSchema
 export const intentSchema = z
   .union([
     packageActivationReverseIntentSchema,
+    packageActivationReversePreparationIntentSchema,
     z.strictObject({
       kind: z.literal("prepare"),
       completed: z.array(transferName).max(5),

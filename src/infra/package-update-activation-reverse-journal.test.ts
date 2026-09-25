@@ -153,6 +153,20 @@ function fixture(original = true) {
     prepared: ref("T"),
     sourceAttestation: { path: path.join(root, "captured-source.json"), sha256: digest },
     target: { ...runtime, admissionSha256: digest, startupProtocol: "package-state-reverse-v1" },
+    initialStores: {
+      privateRoot: { path: root, identity: id(root) },
+      installation: { path: live, identity: descriptor.candidate.identity },
+      handoff: {
+        databasePath: descriptor.authority.databasePath,
+        databaseIdentity: descriptor.authority.databaseIdentity,
+        parentIdentity: descriptor.authority.parentIdentity,
+      },
+      state: {
+        databasePath: path.join(root, "state.sqlite"),
+        databaseIdentity: id(root),
+        parentIdentity: id(root),
+      },
+    },
     resources: [
       {
         role: "state",

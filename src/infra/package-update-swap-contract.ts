@@ -5,7 +5,10 @@ import type {
   PackageActivationStatus,
 } from "./package-update-activation-journal.js";
 import type { PackageReverseResourceCustody } from "./package-update-activation-reverse-resources.js";
-import type { PackageActivationReverseBinding } from "./package-update-activation-reverse-schema.js";
+import type {
+  PackageActivationReverseBinding,
+  PackageActivationReversePreparation,
+} from "./package-update-activation-reverse-schema.js";
 import type { PackageReverseAuthority } from "./package-update-activation-reverse.js";
 import type { PackagePostInstallVerifier } from "./package-update-verification-step.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
@@ -26,7 +29,7 @@ type UpdatePublishedStateGeneration = Readonly<
 export type UpdateRecoveryPublicationCompletion = PackageActivationStatus & {
   publishedState: UpdatePublishedStateGeneration;
 };
-type PackageReversePublication = {
+export type PackageReversePublication = {
   resourceCustody: (
     authority: Pick<PackageReverseAuthority, "assertCurrent" | "assertWritersSettled">,
   ) => Promise<PackageReverseResourceCustody>;
@@ -38,11 +41,19 @@ type PackageReversePublication = {
     binding: PackageActivationReverseBinding,
     authority: PackageReverseAuthority,
   ) => Promise<PackageActivationStatus>;
+  prepare: (
+    preparation: PackageActivationReversePreparation,
+    authority: PackageReverseAuthority,
+  ) => Promise<{ status: PackageActivationStatus; binding: PackageActivationReverseBinding }>;
   settle: (authority: PackageReverseAuthority) => Promise<PackageActivationStatus>;
   verifyCompletion: (
     binding: Readonly<PackageActivationReverseBinding>,
     authority: PackageReverseAuthority,
   ) => Promise<UpdateRecoveryPublicationCompletion>;
+  commitCompletion: (
+    binding: Readonly<PackageActivationReverseBinding>,
+    authority: PackageReverseAuthority,
+  ) => Promise<PackageActivationStatus>;
 };
 
 export type PackageActivationOptions = {

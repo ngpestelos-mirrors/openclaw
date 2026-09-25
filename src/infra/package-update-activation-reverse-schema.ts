@@ -33,6 +33,17 @@ const reverseImageSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 const ref = z.strictObject({ directory: absolute, manifestPath: absolute, manifestSha256: digest });
+const database = z.strictObject({
+  databasePath: absolute,
+  databaseIdentity: identity,
+  parentIdentity: identity,
+});
+const initialStores = z.strictObject({
+  privateRoot: z.strictObject({ path: absolute, identity }),
+  installation: z.strictObject({ path: absolute, identity }),
+  handoff: database,
+  state: database,
+});
 export const packageActivationPreviousRuntimeSchema = z.strictObject({
   packageManifestSha256: digest,
   buildInfoSha256: digest.nullable(),
@@ -65,6 +76,75 @@ export const packageActivationPreviousRuntimeSchema = z.strictObject({
   entrypointSha256: digest.nullable(),
 });
 
+const selectedTarget = packageActivationPreviousRuntimeSchema.extend({
+  buildInfoSha256: digest,
+  buildId: z.string().min(1).max(512),
+  sourceCommit: z.string().regex(/^[a-f0-9]{40}$/u),
+  entrypoint: packageActivationPreviousRuntimeSchema.shape.entrypoint.unwrap(),
+  entrypointSha256: digest,
+  admissionSha256: digest,
+  startupProtocol: z.literal("package-state-reverse-v1"),
+});
+const reverseResource = z.strictObject({
+  role: z.enum(["state", "package", "launcher"]),
+  live: absolute,
+  parentIdentity: identity,
+  before: reverseImageSchema,
+  after: reverseImageSchema,
+  move: z
+    .strictObject({
+      staged: absolute,
+      stagedParentIdentity: identity,
+      displaced: absolute,
+      displacedParentIdentity: identity,
+    })
+    .nullable(),
+});
+const desiredStateImage = z.union([
+  z.strictObject({
+    kind: z.literal("file"),
+    uid: z.string().regex(/^\d+$/u),
+    gid: z.string().regex(/^\d+$/u),
+    mode: z.number().int().min(0).max(0o7777),
+    sha256: digest,
+    size: z.number().int().nonnegative(),
+  }),
+  reverseImageSchema,
+]);
+
+export const packageActivationReversePreparationSchema = z.strictObject({
+  protocol: z.literal("package-state-reverse-preparation-v1"),
+  operationId: z.uuid(),
+  runId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/u),
+  baseline: ref,
+  candidate: ref,
+  prepared: ref,
+  sourceAttestation: updateRecoverySourceRefSchema,
+  target: selectedTarget,
+  initialStores,
+  state: z.array(
+    z.strictObject({
+      role: z.literal("state"),
+      live: absolute,
+      parentIdentity: identity,
+      before: reverseImageSchema,
+      desired: desiredStateImage,
+      move: z
+        .strictObject({
+          directory: absolute,
+          parentIdentity: identity,
+          staged: absolute,
+          displaced: absolute,
+        })
+        .nullable(),
+    }),
+  ),
+  packageResources: z.array(reverseResource).min(1),
+});
+export type PackageActivationReversePreparation = z.infer<
+  typeof packageActivationReversePreparationSchema
+>;
+
 export const packageActivationReverseBindingSchema = z.strictObject({
   protocol: z.literal("package-state-reverse-v1"),
   operationId: z.uuid(),
@@ -74,36 +154,9 @@ export const packageActivationReverseBindingSchema = z.strictObject({
   prepared: ref,
   // Sealed with the reverse direction in the original journal transaction.
   sourceAttestation: updateRecoverySourceRefSchema,
-  target: packageActivationPreviousRuntimeSchema.extend({
-    buildInfoSha256: digest,
-    buildId: z.string().min(1).max(512),
-    sourceCommit: z.string().regex(/^[a-f0-9]{40}$/u),
-    entrypoint: packageActivationPreviousRuntimeSchema.shape.entrypoint.unwrap(),
-    entrypointSha256: digest,
-    admissionSha256: digest,
-    startupProtocol: z.literal("package-state-reverse-v1"),
-  }),
-  resources: z
-    .array(
-      z.strictObject({
-        role: z.enum(["state", "package", "launcher"]),
-        live: absolute,
-        parentIdentity: identity,
-        before: reverseImageSchema,
-        after: reverseImageSchema,
-        // Null means an unchanged resource. Moving resources retain both original
-        // inodes; immutable B/C/T payloads are never used as rename sources.
-        move: z
-          .strictObject({
-            staged: absolute,
-            stagedParentIdentity: identity,
-            displaced: absolute,
-            displacedParentIdentity: identity,
-          })
-          .nullable(),
-      }),
-    )
-    .min(1),
+  target: selectedTarget,
+  initialStores,
+  resources: z.array(reverseResource).min(1),
 });
 export type PackageActivationReverseBinding = z.infer<typeof packageActivationReverseBindingSchema>;
 export type PackageActivationReverseImage = z.infer<typeof reverseImageSchema>;
@@ -115,3 +168,8 @@ export const packageActivationReverseIntentSchema = z.strictObject({
   effect: z.enum(["displace", "publish"]).nullable(),
 });
 export type PackageActivationReverseIntent = z.infer<typeof packageActivationReverseIntentSchema>;
+export const packageActivationReversePreparationIntentSchema = z.strictObject({
+  kind: z.literal("reverse-prepare"),
+  completed: z.number().int().nonnegative(),
+  effect: z.enum(["create", "copy"]).nullable(),
+});

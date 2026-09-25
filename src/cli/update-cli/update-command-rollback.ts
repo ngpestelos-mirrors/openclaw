@@ -39,7 +39,7 @@ import {
   type UpdateConfigSnapshot,
 } from "./update-command-config-snapshot.js";
 import { readPackageUpdateIdentity } from "./update-command-package.js";
-import { prepareFailedUpdateRecovery } from "./update-command-recovery-preparation.js";
+import { rollbackOriginalUpdateGeneration } from "./update-command-recovery-rollback.js";
 import type {
   UpdateServiceDefinitionRecovery,
   OriginalManagedServiceRuntime,
@@ -97,32 +97,10 @@ export async function rollbackFailedUpdate(params: {
     executor?.assertCurrent();
   };
   const env = before?.serviceEnv ?? opts.run?.env ?? process.env;
-  if (!opts.recovery && run?.recoveryPreparation) {
-    try {
-      const prepared = await prepareFailedUpdateRecovery(opts);
-      assertCurrent();
-      return {
-        result: {
-          ...params.result,
-          status: "error",
-          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-        },
-        rolledBack: false,
-        pendingRecoveryReason: prepared
-          ? `Prepared recovery generation retained at ${prepared.manifestPath}; state/package publication remains pending.`
-          : "Recovery preparation input was unavailable.",
-      };
-    } catch (error) {
-      return {
-        result: {
-          ...params.result,
-          status: "error",
-          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-        },
-        rolledBack: false,
-        pendingRecoveryReason: formatErrorMessage(error),
-      };
-    }
+  // A retained B belongs to full recovery even when its publication owner is
+  // unavailable. Refuse there; never downgrade to package-only restoration.
+  if (!opts.recovery && run?.recoveryBaseline) {
+    return rollbackOriginalUpdateGeneration(params);
   }
   if (!opts.recovery) {
     try {

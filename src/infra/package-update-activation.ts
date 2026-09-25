@@ -25,6 +25,8 @@ import {
   resolvePackageActivationRecoveryCommand as recoveryCommand,
   type PackageActivationPreparation,
 } from "./package-update-activation-prepare.js";
+import { readPackageReverseGenerations } from "./package-update-activation-reverse-binding.js";
+import type { PackageReverseAuthority } from "./package-update-activation-reverse.js";
 import {
   createPublicationOwner,
   packageActivationStatus as status,
@@ -32,8 +34,11 @@ import {
 } from "./package-update-publication-owner.js";
 import { capturePackageReverseExecutor } from "./package-update-reverse-authority.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
+import { admitUpdateInitialStores } from "./update-initial-store-admission.js";
 import { assertManagedUpdateLeaseDatabaseIdentity } from "./update-managed-service-handoff-database.js";
 import { supportsPostCoreExecutor } from "./update-post-core-capability.js";
+import { withUpdateRecoveryResumeCustody } from "./update-recovery-resume-custody.js";
+import { admitSelectedRuntimeUpdateRecoveryPublication } from "./update-recovery-startup-admission.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 
 export type { PackageActivationStatus } from "./package-update-publication-owner.js";
@@ -273,6 +278,122 @@ export async function readPackageActivationStatus(
   assertManagedUpdateLeaseDatabaseIdentity(record.descriptor.authority);
   return status(record);
 }
+
+async function runPackageActivationReverseRecovery(
+  anchor: string,
+  operationId: string,
+): Promise<PackageActivationStatus> {
+  const journal = openPackageActivationJournal(anchor);
+  const admission = await journal.readForRecovery();
+  const initial = admission.record;
+  assertPackageActivationOperation(initial, operationId);
+  const durable = initial.descriptor.reverse ?? initial.descriptor.reversePreparation;
+  if (
+    !durable ||
+    !["reverse-preparing", "reverse-in-progress", "reverse-complete", "rolled-back"].includes(
+      initial.phase,
+    )
+  ) {
+    throw new Error("Reverse repair does not match a durable original operation.");
+  }
+  const generations = readPackageReverseGenerations(
+    durable,
+    durable.runId,
+    initial.descriptor.authority.installKey,
+  );
+  assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
+  return withUpdateCommandExecutor(
+    durable.runId,
+    async (executor) => {
+      const fence = await executor.enter(initial.descriptor.authority.installKey);
+      assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
+      admission.admit(fence.assertCurrent);
+      journal.assertCurrent(initial);
+      const owner = createPublicationOwner(
+        anchor,
+        journal,
+        fence.assertCurrent,
+        initial,
+        undefined,
+        fence,
+        true,
+      );
+      const selection = () => {
+        const descriptor = journal.read().descriptor;
+        return {
+          anchor,
+          operationId: descriptor.operationId,
+          originalRunId: descriptor.originalRunId,
+          previous: descriptor.previous,
+          previousRuntime: descriptor.previousRuntime,
+        };
+      };
+      return withUpdateRecoveryResumeCustody(
+        {
+          manifest: generations.prepared,
+          assertOwned: owner.assertCurrent,
+        },
+        async ({ assertCurrent }) => {
+          const admitted = await admitSelectedRuntimeUpdateRecoveryPublication(
+            {
+              baseline: durable.baseline,
+              candidate: durable.candidate,
+              prepared: durable.prepared,
+            },
+            { assertOwned: assertCurrent },
+            { selection, timeoutMs: 10 * 60_000 },
+            initial.descriptor.reverse,
+          );
+          if (!isDeepStrictEqual(admitted.target, durable.target)) {
+            throw new Error("Reverse repair changed its selected target runtime.");
+          }
+          const authority: PackageReverseAuthority = {
+            assertCurrent,
+            assertWritersSettled: assertCurrent,
+            validateTarget: admitted.validateTarget,
+            beforeStatePublication: () => assertCurrent(),
+          };
+          if (journal.read().phase === "reverse-preparing") {
+            await owner.resumePreparation(authority);
+          } else if (journal.read().phase === "reverse-in-progress") {
+            await owner.resumeReverse(authority);
+          }
+          if (journal.read().phase === "reverse-complete") {
+            await owner.settleReverse(authority);
+          }
+          const binding = journal.read().descriptor.reverse;
+          if (!binding) {
+            throw new Error("Reverse repair did not seal its durable binding.");
+          }
+          const completion = await owner.verifyCompletion(binding, authority);
+          const packageResource = binding.resources.find((resource) => resource.role === "package");
+          if (!packageResource || packageResource.after.kind !== "package") {
+            throw new Error("Reverse repair lost its package postimage.");
+          }
+          const next = admitUpdateInitialStores({
+            ...binding.initialStores,
+            installation: {
+              path: binding.initialStores.installation.path,
+              identity: packageResource.after.identity,
+            },
+            state: completion.publishedState.state,
+          });
+          try {
+            assertCurrent();
+            next.assertCurrent();
+            const final = await owner.commitCompletion(binding, authority);
+            assertCurrent();
+            next.assertCurrent();
+            return final;
+          } finally {
+            next.close();
+          }
+        },
+      );
+    },
+    { existingAuthority: initial.descriptor.authority },
+  );
+}
 export async function runPackageActivationRecovery(
   anchor: string,
   action: "repair" | "retire",
@@ -285,6 +406,12 @@ export async function runPackageActivationRecovery(
   if (isPackageActivationComplete(anchor, initial)) {
     assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
     return status(initial);
+  }
+  if (
+    action === "repair" &&
+    (initial.descriptor.reversePreparation || initial.descriptor.reverse)
+  ) {
+    return runPackageActivationReverseRecovery(anchor, operationId);
   }
   // Reject malformed/foreign/disarmed recovery before acquiring a new writer.
   // Admission is still followed by the same observations under the fresh fence.

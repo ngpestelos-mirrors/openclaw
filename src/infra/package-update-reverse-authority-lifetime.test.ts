@@ -102,6 +102,8 @@ function fixture(phase: "rolled-back" | "reverse-complete") {
       typeof createPackageActivationReverseOwner
     >[0]["journal"],
     transition,
+    prepareReverse: () => {},
+    sealReverse: () => {},
     assertCurrent: () => {},
     verifyForward: async () => {},
     verifyClosure: async () => {
@@ -173,7 +175,7 @@ it.each(["completion", "settlement"] as const)(
     await f.waiting;
     f.release();
     const result = await pending;
-    expect(result.phase).toBe("rolled-back");
+    expect(result.phase).toBe(operation === "completion" ? "rolled-back" : "reverse-complete");
     if (operation === "completion") {
       expect(result).toMatchObject({
         publishedState: {
@@ -183,7 +185,7 @@ it.each(["completion", "settlement"] as const)(
       expect(f.transition).not.toHaveBeenCalled();
     } else {
       expect(f.transition).toHaveBeenCalledOnce();
-      expect(f.record().phase).toBe("rolled-back");
+      expect(f.record().phase).toBe("reverse-complete");
     }
   },
 );

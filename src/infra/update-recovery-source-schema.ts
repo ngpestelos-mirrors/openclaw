@@ -135,7 +135,7 @@ export type UpdateRecoverySourceAttestation = z.infer<typeof updateRecoverySourc
 export type UpdateRecoverySourceRef = z.infer<typeof updateRecoverySourceRefSchema>;
 
 /** This is the exact wire encoding. Canonical readback also rejects duplicate JSON keys. */
-function serializeUpdateRecoverySourceAttestation(input: UpdateRecoverySourceAttestation) {
+export function serializeUpdateRecoverySourceAttestation(input: UpdateRecoverySourceAttestation) {
   const raw = JSON.stringify(updateRecoverySourceAttestationSchema.parse(input)) + "\n";
   if (Buffer.byteLength(raw) > MAX_SOURCE_ATTESTATION_BYTES) {
     throw new Error("Update recovery source attestation exceeds its bound.");

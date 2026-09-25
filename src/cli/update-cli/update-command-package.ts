@@ -427,6 +427,7 @@ export type PackageInstallUpdateParams = {
   validateCandidate: (root: string) => Promise<UpdateStepResult[]>;
   beforeActivate: () => Promise<void>;
   assertCurrent?: () => void;
+  reserveInstallSlot?: (root: string) => void;
   onTransaction: (transaction: PackageUpdateTransaction) => void;
   onConfigSnapshot?: PackageDoctorOptions["onConfigSnapshot"];
   getDoctorContext?: PackageDoctorOptions["getDoctorContext"];
@@ -578,6 +579,7 @@ export async function runPackageInstallUpdate(
     resolveLifecycleNodeRunner: params.resolveLifecycleNodeRunner ?? (() => params.nodeRunner),
     beforeActivate: params.beforeActivate,
     assertCurrent: params.assertCurrent,
+    reserveInstallSlot: params.reserveInstallSlot,
     onTransaction: params.onTransaction,
     activation: params.activation,
     installTarget,

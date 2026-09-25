@@ -142,9 +142,16 @@ export function assertPackageReverseBinding(
   packageActivationReverseBindingSchema.parse(binding);
   if (
     binding.operationId !== descriptor.operationId ||
-    binding.target.inventoryDigest !== descriptor.previous.digest
+    binding.target.inventoryDigest !== descriptor.previous.digest ||
+    binding.initialStores.installation.path !== descriptor.authority.installKey ||
+    binding.initialStores.installation.identity !== descriptor.candidate.identity ||
+    !isDeepStrictEqual(binding.initialStores.handoff, {
+      databasePath: descriptor.authority.databasePath,
+      databaseIdentity: descriptor.authority.databaseIdentity,
+      parentIdentity: descriptor.authority.parentIdentity,
+    })
   ) {
-    throw new Error("Reverse binding names another operation or target.");
+    throw new Error("Reverse binding names another operation, target, or initial store pair.");
   }
   const { admissionSha256: _admission, startupProtocol: _startup, ...selected } = binding.target;
   if (
@@ -181,6 +188,17 @@ export function assertPackageReverseBinding(
     )
   ) {
     throw new Error("Reverse publication omits or duplicates a captured resource.");
+  }
+  const global = prepared.databases?.find((database) => database.role === "global");
+  const selectedState = states.find((resource) => resource.live === global?.path);
+  if (
+    !global ||
+    !selectedState ||
+    selectedState.before.kind !== "file" ||
+    selectedState.before.identity !== binding.initialStores.state.databaseIdentity ||
+    selectedState.parentIdentity !== binding.initialStores.state.parentIdentity
+  ) {
+    throw new Error("Reverse binding changed its selected global state generation.");
   }
   const packages = resources.filter((r) => r.role === "package");
   const packageResource = packages[0];

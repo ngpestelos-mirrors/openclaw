@@ -16,12 +16,12 @@ type Metadata = {
   ctimeNs: string;
   birthtimeNs: string;
 };
-type UpdateRecoverySourceImage =
+export type UpdateRecoverySourceImage =
   | { kind: "missing" }
   | (Metadata & { kind: "file"; sha256: string; size: number })
   | (Metadata & { kind: "directory"; children: string[] })
   | (Metadata & { kind: "symlink"; target: string });
-type UpdateRecoverySourceResource = {
+export type UpdateRecoverySourceResource = {
   sourcePath: string;
   kind: UpdateRecoverySourceImage["kind"];
   sqlite?: boolean;
@@ -171,7 +171,7 @@ function freeze<T>(value: T): T {
 }
 
 /** Capture physical images without opening live SQLite or changing its artifacts. */
-async function captureUpdateRecoverySourceInventory(
+export async function captureUpdateRecoverySourceInventory(
   params: CaptureParams,
 ): Promise<UpdateRecoverySourceInventory> {
   const { runId, operationId, assertCurrent } = params;
@@ -235,7 +235,23 @@ export async function assertUpdateRecoverySourceInventory(
     throw new Error("Update recovery source names another run or operation.");
   }
   const actual = await captureUpdateRecoverySourceInventory(params);
-  if (!isDeepStrictEqual(actual, expected)) {
+  const normalize = (inventory: UpdateRecoverySourceInventory) => ({
+    ...inventory,
+    resources: inventory.resources.map((resource) => ({
+      ...resource,
+      image:
+        resource.image.kind === "directory"
+          ? (({
+              nlink: _nlink,
+              mtimeNs: _mtime,
+              ctimeNs: _ctime,
+              birthtimeNs: _birth,
+              ...stable
+            }) => stable)(resource.image)
+          : resource.image,
+    })),
+  });
+  if (!isDeepStrictEqual(normalize(actual), normalize(expected))) {
     throw new Error("Update recovery source changed after capture.");
   }
   params.assertCurrent();
