@@ -96,6 +96,7 @@ describe("gateway worker environment startup", () => {
         });
         const registry = createEmptyPluginRegistry();
         const creating = createGatewayWorkerEnvironmentRuntime({
+          scheduler: createTestGatewayScheduler(),
           getPluginRegistry: () => registry,
           getPortalRuntime: () => undefined,
           resolveGatewayContext: () => undefined,
