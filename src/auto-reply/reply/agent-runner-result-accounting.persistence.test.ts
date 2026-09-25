@@ -16,8 +16,9 @@ import {
 import { drainSessionStoreWriterQueuesForTest } from "../../config/sessions/store-writer-state.test-support.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
-import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   isOpenClawAgentDatabaseOpen,
@@ -266,33 +267,42 @@ async function createFixture() {
         source: "test",
         provider: { id: diagnostic.provider, label: "Synthetic provider", auth: [] },
       });
-      return withPluginRuntimeRegistryScope(registry, async () => {
-        const delivered: ReplyPayload[] = [];
-        const accounting = await accountQueued(context.execution);
-        const decision = await resolveFollowupDeliveryDecision({
-          turn,
-          execution: { runId: context.runId, outcome: context.execution },
-          accounting,
-          opts: { onBlockReply: async () => {} },
-        });
-        await deliverFollowupDecision({
-          decision,
-          turn,
-          defaults: {
-            defaultModel: diagnostic.model,
-            typing: createMockTypingController(),
-            typingMode: "never",
-            opts: {
-              onBlockReply: async (payload) => {
-                delivered.push(payload);
+      const metadataSnapshot = {
+        ...createPluginMetadataSnapshotFixture({
+          plugins: [{ id: "synthetic", providers: [diagnostic.provider] }],
+        }),
+        workspaceDir: root,
+      };
+      return withPluginRuntimeGenerationScope(
+        { metadataSnapshot, pluginRegistry: registry },
+        async () => {
+          const delivered: ReplyPayload[] = [];
+          const accounting = await accountQueued(context.execution);
+          const decision = await resolveFollowupDeliveryDecision({
+            turn,
+            execution: { runId: context.runId, outcome: context.execution },
+            accounting,
+            opts: { onBlockReply: async () => {} },
+          });
+          await deliverFollowupDecision({
+            decision,
+            turn,
+            defaults: {
+              defaultModel: diagnostic.model,
+              typing: createMockTypingController(),
+              typingMode: "never",
+              opts: {
+                onBlockReply: async (payload) => {
+                  delivered.push(payload);
+                },
               },
             },
-          },
-          runId: context.runId,
-          runFollowup: async () => {},
-        });
-        return delivered;
-      });
+            runId: context.runId,
+            runFollowup: async () => {},
+          });
+          return delivered;
+        },
+      );
     },
     recordCompaction,
     accountAborted: (reason: "user" | "restart") => {
