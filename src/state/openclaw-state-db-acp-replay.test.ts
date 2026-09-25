@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -71,6 +72,7 @@ async function withoutHistoricalPayloadReads<T>(
   operation: () => T | Promise<T>,
 ): Promise<T> {
   const open = nodeSqlite.openNodeSqliteDatabase;
+  const databaseLocation = path.toNamespacedPath(fs.realpathSync(pathname));
   const opened = new Set<DatabaseSync>();
   const historicalReads: string[] = [];
   const historicalColumns = new Set([
@@ -84,7 +86,8 @@ async function withoutHistoricalPayloadReads<T>(
   ]);
   const spy = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
     const database = open(...args);
-    if (args[0] === pathname) {
+    const location = database.location();
+    if (location !== null && path.toNamespacedPath(location) === databaseLocation) {
       opened.add(database);
       database.setAuthorizer((action, table, column) => {
         const field = `${table}.${column}`;

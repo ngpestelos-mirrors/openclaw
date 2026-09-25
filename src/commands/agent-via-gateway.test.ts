@@ -16,17 +16,14 @@ import { recordAgentRunTerminalOutcome } from "../channels/turn/agent-run-termin
 import { formatCliFailureLines, formatCliJsonFailure } from "../cli/failure-output.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
-import {
-  acquireGatewayLock,
-  GatewayLockError,
-  type GatewayLockOptions,
-} from "../infra/gateway-lock.js";
+import { acquireGatewayLock, GatewayLockError } from "../infra/gateway-lock.js";
 import { GatewayStateOwnerContentionError } from "../infra/gateway-state-owner.js";
 import { loggingState } from "../logging/state.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE } from "../sessions/agent-harness-session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { agentCliCommand, agentViaGatewayTesting } from "./agent-via-gateway.js";
+import { createLocalGatewayLockOptions } from "./agent-via-gateway.test-support.js";
 import type { agentCommand as AgentCommand } from "./agent.js";
 
 const loadConfig = vi.hoisted(() => vi.fn());
@@ -154,23 +151,6 @@ function mockLocalAgentReply(text = "local") {
       meta: { durationMs: 1, agentMeta: { sessionId: "s", provider: "p", model: "m" } },
     } as unknown as Awaited<ReturnType<typeof AgentCommand>>;
   });
-}
-
-function createLocalGatewayLockOptions(
-  stateDir: string,
-  overrides: Partial<GatewayLockOptions> = {},
-): GatewayLockOptions {
-  return {
-    allowInTests: true,
-    env: {
-      ...process.env,
-      OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
-      OPENCLAW_STATE_DIR: stateDir,
-    },
-    lockDir: path.join(stateDir, "gateway-locks"),
-    timeoutMs: 100,
-    ...overrides,
-  };
 }
 
 function requireFirstCallArg(mock: { mock: { calls: unknown[][] } }, label: string): unknown {

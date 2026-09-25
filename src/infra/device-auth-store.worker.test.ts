@@ -218,7 +218,7 @@ it("retains host lifecycle custody while a native writer overlaps a token commit
     const originalAdmission = mutationAdmission.createSqliteWorkerOperationAdmission;
     let nativeWriteStarted = false;
     vi.spyOn(mutationAdmission, "createSqliteWorkerOperationAdmission").mockImplementation(
-      (admit) =>
+      (admit, attachment) =>
         originalAdmission((request, grant) => {
           admit(request, grant);
           if (request.stage === "transaction" && !nativeWriteStarted) {
@@ -234,7 +234,7 @@ it("retains host lifecycle custody while a native writer overlaps a token commit
               { env: state.env },
             );
           }
-        }),
+        }, attachment),
     );
     await expect(
       tokens.storeDeviceAuthToken({

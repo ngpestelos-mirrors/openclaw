@@ -39,6 +39,7 @@ describe("Gateway state ownership", () => {
       await withTempDir("openclaw-cold-schema-owner-", async (root) => {
         const databasePath = path.join(root, "openclaw.sqlite");
         fs.writeFileSync(databasePath, "");
+        const databaseLocation = path.toNamespacedPath(fs.realpathSync(databasePath));
         const seed = acquireGatewayStateOwner({ databasePath });
         const marker = seed.path;
         seed.release();
@@ -63,7 +64,13 @@ describe("Gateway state ownership", () => {
           .spyOn(nodeSqlite, "openNodeSqliteDatabase")
           .mockImplementation((...args) => {
             const database = native(...args);
-            if (arrival === "after native open" && args[0] === databasePath && !intercepted) {
+            const location = database.location();
+            if (
+              arrival === "after native open" &&
+              location !== null &&
+              path.toNamespacedPath(location) === databaseLocation &&
+              !intercepted
+            ) {
               intercepted = true;
               publishMarker();
             }

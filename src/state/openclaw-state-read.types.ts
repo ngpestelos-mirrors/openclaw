@@ -69,6 +69,11 @@ import type {
   TaskRegistryStoreSnapshot,
 } from "../tasks/task-registry.store.types.js";
 import type {
+  AgentDatabaseDeletionSnapshot,
+  AgentDeletionJournalPurpose,
+  AgentDeletionJournalStatus,
+} from "./agent-deletion-journal.types.js";
+import type {
   GitHubPublicationReceiptTarget,
   GitHubPublicationRow,
   RepositoryGitHubPublicationReceiptTarget,
@@ -140,6 +145,8 @@ export type OpenClawStateReadCommand =
       };
     }[keyof SkillLibraryReadOnlyOperations]
   | { type: "agentDatabaseRegistry.read" }
+  | { type: "agentDatabaseDeletion.snapshot"; purpose: AgentDeletionJournalPurpose }
+  | { type: "agentDeletionJournal.status"; agentId: string }
   | { type: "workerEnvironments.snapshot"; ids?: readonly string[] }
   | { type: "workerEnvironments.pruneCandidates"; input: WorkerEnvironmentPruneReadInput }
   | {
@@ -202,6 +209,12 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply = (
+  | {
+      ok: true;
+      type: "agentDeletionJournal.status";
+      sourceAdmitted: true;
+      status: AgentDeletionJournalStatus;
+    }
   | {
       ok: true;
       type: "deliveryQueue.outbound";
@@ -341,6 +354,12 @@ export type OpenClawStateReadReply = (
       type: "agentDatabaseRegistry.read";
       sourceAdmitted?: true;
       result: OpenClawAgentDatabaseRegistryReadResult;
+    }
+  | {
+      ok: true;
+      type: "agentDatabaseDeletion.snapshot";
+      sourceAdmitted: true;
+      snapshot: AgentDatabaseDeletionSnapshot;
     }
   | {
       ok: true;
@@ -511,6 +530,8 @@ export type OpenClawStateReadOutcome =
 
 export type OpenClawStateReadPhase = "before-read" | "read" | "unobserved";
 export type OpenClawStateReadOptions = {
+  /** Cancellation abandons delivery only after the accepted read and cleanup settle. */
+  signal?: AbortSignal;
   /** Reuse the caller's captured authority instead of admitting a newer lifecycle. */
   context?: OpenClawStateWorkerContext;
   /** Publication and authority reads must not inherit an inspection snapshot. */

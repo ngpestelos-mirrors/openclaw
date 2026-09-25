@@ -121,7 +121,7 @@ export function trackSqliteStatementExecutions<Key extends string>(
 }
 
 /** Observe all host data SQL, including statements prepared before observation began. */
-export function observeHostDataSql(): {
+export function observeHostDataSql(onQuery?: (sql: string) => void): {
   calls: Mock[];
   queries: string[];
   restore: () => void;
@@ -130,6 +130,10 @@ export function observeHostDataSql(): {
   // probes are setup, not an exemption for arbitrary in-memory database SQL.
   const native = requireNodeSqlite();
   const queries: string[] = [];
+  const recordQuery = (sql: string) => {
+    queries.push(sql);
+    onQuery?.(sql);
+  };
   const prepare = vi.fn();
   const exec = vi.fn();
   // oxlint-disable-next-line typescript/unbound-method -- Called below with the intercepted database receiver.
@@ -142,7 +146,7 @@ export function observeHostDataSql(): {
       sql,
     ) {
       prepare(sql);
-      queries.push(sql);
+      recordQuery(sql);
       return originalPrepare.call(this, sql);
     }),
     vi.spyOn(native.DatabaseSync.prototype, "exec").mockImplementation(function (
@@ -150,7 +154,7 @@ export function observeHostDataSql(): {
       sql,
     ) {
       exec(sql);
-      queries.push(sql);
+      recordQuery(sql);
       return originalExec.call(this, sql);
     }),
   ];
@@ -161,7 +165,7 @@ export function observeHostDataSql(): {
       new Proxy(original, {
         apply(target, receiver: StatementSync, args) {
           called(...args);
-          queries.push(receiver.sourceSQL);
+          recordQuery(receiver.sourceSQL);
           return Reflect.apply(target, receiver, args);
         },
       }),

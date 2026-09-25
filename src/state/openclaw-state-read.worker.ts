@@ -60,6 +60,10 @@ import {
   readTaskRegistryMutationSnapshotInDatabase,
   readTaskRegistrySnapshot,
 } from "../tasks/task-registry.store.kernel.js";
+import {
+  readAgentDatabaseDeletionSnapshotInDatabase,
+  readAgentDeletionJournalStatusInDatabase,
+} from "./agent-deletion-journal.read.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
 import { readGitHubPublicationSessionLifecycle } from "./github-publication-session-lifecycles.js";
 import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
@@ -119,18 +123,21 @@ serveOwnedWorkerTasks(
         if (command.type === "admit") {
           return { ok: true, type: "admit" };
         }
+        const locationArgs = [
+          input.databasePath,
+          input.location,
+          undefined,
+          input.expectedIdentity,
+          input.snapshotRoot,
+          true,
+        ] as const;
         if (command.type === "agentDatabaseRegistry.read") {
           const result = readOpenClawStateReadOnlyLocation(
             ({ db }) => {
               sourceAdmitted = true;
               return readRegisteredAgentDatabaseRows(db, input.databasePath, false);
             },
-            input.databasePath,
-            input.location,
-            undefined,
-            input.expectedIdentity,
-            input.snapshotRoot,
-            true,
+            ...locationArgs,
           );
           return {
             ok: true,
@@ -148,12 +155,7 @@ serveOwnedWorkerTasks(
               sourceAdmitted = true;
               return loadSubagentSessionListRunsFromSqlite(undefined, { db });
             },
-            input.databasePath,
-            input.location,
-            undefined,
-            input.expectedIdentity,
-            input.snapshotRoot,
-            true,
+            ...locationArgs,
           );
           if (result.status === "unavailable" && sourceAdmitted !== true) {
             throw result.error;
@@ -175,6 +177,26 @@ serveOwnedWorkerTasks(
         return withOpenClawStateReadOnlyLocation(
           ({ db }) => {
             sourceAdmitted = true;
+            if (command.type === "agentDatabaseDeletion.snapshot") {
+              return {
+                ok: true,
+                type: command.type,
+                sourceAdmitted,
+                snapshot: readAgentDatabaseDeletionSnapshotInDatabase(
+                  db,
+                  input.databasePath,
+                  command.purpose,
+                ),
+              };
+            }
+            if (command.type === "agentDeletionJournal.status") {
+              return {
+                ok: true,
+                type: command.type,
+                sourceAdmitted,
+                status: readAgentDeletionJournalStatusInDatabase(db, command.agentId),
+              };
+            }
             if (command.type === "deliveryQueue.outbound") {
               // Custody reads retain queue ownership admission even on a read-only connection.
               assertOpenClawStateWriteAllowed({
@@ -619,12 +641,7 @@ serveOwnedWorkerTasks(
             }
             return readStateRegistryCommand(db, command);
           },
-          input.databasePath,
-          input.location,
-          undefined,
-          input.expectedIdentity,
-          input.snapshotRoot,
-          true,
+          ...locationArgs,
         );
       });
       return nativeCleanupFailure ? { ...reply, nativeCleanupFailure } : reply;

@@ -39,6 +39,7 @@ const edge = vi.hoisted(() => {
       ) => typeof database
     >(),
     request: vi.fn<(request: SqliteWorkerAdmissionRequest) => void>(),
+    attachment: vi.fn(() => ({ kind: "agent-execution", startupJournal: false })),
     nativeClose: vi.fn(() => {
       database.db.isOpen = false;
       return true;
@@ -85,6 +86,7 @@ vi.mock("../infra/sqlite-worker-operation-admission.js", async (importOriginal) 
   return {
     ...actual,
     requestSqliteWorkerOperationAdmission: edge.request,
+    takeSqliteWorkerOperationAdmissionAttachment: edge.attachment,
   };
 });
 vi.mock("../infra/sqlite-worker-broker-admission.js", () => ({
@@ -646,6 +648,7 @@ describe("committed agent registration across failed native opening", () => {
     vi.doMock("../infra/sqlite-worker-operation-admission.js", () => ({
       ...duplicateAdmission,
       requestSqliteWorkerOperationAdmission: edge.request,
+      takeSqliteWorkerOperationAdmissionAttachment: edge.attachment,
       withSqliteWorkerOperationAdmission: edge.forbidden,
     }));
     const refused = new Error("Authority revoked after preflight and before native agent open");
