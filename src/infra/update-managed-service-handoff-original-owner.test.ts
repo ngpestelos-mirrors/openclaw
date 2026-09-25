@@ -3,12 +3,14 @@ import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   installPrivateUpdateHandoffStore,
   writePrivateUpdateHandoffChildGuard,
 } from "../../test/helpers/private-update-handoff-store.js";
+import { killProcessTree } from "../process/kill-tree.js";
 import {
   createManagedHandoffLeaseStore,
   type ManagedHandoffLease,
@@ -288,17 +290,6 @@ process.send({ ready: true, pid: process.pid, ppid: process.ppid });
       stdio: ["ignore", "pipe", "inherit", "ipc"],
     });
     child.stdout?.resume();
-    const descendants = new Set<number>();
-    child.on("message", (message) => {
-      if (
-        message &&
-        typeof message === "object" &&
-        "holder" in message &&
-        typeof message.holder === "number"
-      ) {
-        descendants.add(message.holder);
-      }
-    });
     const closed = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
     });
@@ -321,27 +312,15 @@ process.send({ ready: true, pid: process.pid, ppid: process.ppid });
       }
     };
     const stop = async () => {
-      for (const pid of descendants) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch (cause) {
-          if ((cause as NodeJS.ErrnoException).code !== "ESRCH") {
-            throw cause;
-          }
-        }
-      }
-      descendants.clear();
-      if (process.platform !== "win32" && child.pid) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch (cause) {
-          if ((cause as NodeJS.ErrnoException).code !== "ESRCH") {
-            throw cause;
-          }
-        }
-      }
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
+      const termination = child.pid
+        ? killProcessTree(child.pid, {
+            detached: process.platform !== "win32",
+            graceMs: 1_000,
+          })
+        : undefined;
+      if (termination) {
+        await delay(1_000);
+        termination.force();
       }
       await join();
       stops.delete(stop);
