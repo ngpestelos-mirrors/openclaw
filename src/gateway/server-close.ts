@@ -509,12 +509,17 @@ async function closeGatewayResources(
     await measureCloseStep("gmail-watcher", () =>
       shutdownStep("gmail-watcher", () => params.stopGmailWatcher(), warnings),
     );
-    await shutdownStep(
-      "cron",
-      () => (params.cron.stopAndDrain ? params.cron.stopAndDrain() : params.cron.stop()),
-      warnings,
-    );
-    await shutdownStep("heartbeat-runner", () => params.heartbeatRunner.stop(), warnings);
+    // Cron fences admission synchronously before heartbeat retirement. Its drain
+    // can include queued heartbeat waiters, which only settle when that runner
+    // stops; join both owners without making either wait for the other's stop.
+    await Promise.all([
+      shutdownStep(
+        "cron",
+        () => (params.cron.stopAndDrain ? params.cron.stopAndDrain() : params.cron.stop()),
+        warnings,
+      ),
+      shutdownStep("heartbeat-runner", () => params.heartbeatRunner.stop(), warnings),
+    ]);
     await shutdownStep(
       "task-registry-maintenance",
       () => params.stopTaskRegistryMaintenance?.(),
