@@ -4,6 +4,7 @@ import { runSqliteReadOnlyWorkerSync } from "../../infra/sqlite-readonly-worker.
 import { serveWorkerTasks } from "../../infra/worker-task-server.js";
 import { openOpenClawStateReadConnection } from "../../state/openclaw-state-db-read-connection.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
+import { inspectCronRowsForDoctor } from "./doctor-inventory.js";
 import { serializeCronLoadError } from "./load-error.js";
 import { loadCronStoreFromDatabase } from "./load.kernel.js";
 import type { CronReadOnlyResult } from "./read-only.types.js";
@@ -13,10 +14,12 @@ serveWorkerTasks(async (input, _channel, control): Promise<CronReadOnlyResult> =
     if (
       !isRecord(input) ||
       typeof input.location !== "string" ||
-      typeof input.storeKey !== "string" ||
+      (input.storeKey !== undefined && typeof input.storeKey !== "string") ||
       (input.stagingRoot !== undefined && typeof input.stagingRoot !== "string")
     ) {
-      throw new Error("Cron read-only worker requires a database location and store key");
+      throw new Error(
+        "Cron read-only worker requires a database location and an optional store key",
+      );
     }
     const { location, storeKey, stagingRoot } = input;
     return await control.runNativeSection(() => {
@@ -34,9 +37,11 @@ serveWorkerTasks(async (input, _channel, control): Promise<CronReadOnlyResult> =
       try {
         return {
           ok: true,
-          loaded: tableExists(db, "cron_jobs")
-            ? loadCronStoreFromDatabase(db, storeKey)
-            : undefined,
+          inventory: storeKey === undefined ? inspectCronRowsForDoctor(db) : undefined,
+          loaded:
+            storeKey !== undefined && tableExists(db, "cron_jobs")
+              ? loadCronStoreFromDatabase(db, storeKey)
+              : undefined,
         } satisfies CronReadOnlyResult;
       } finally {
         if (connection) {
