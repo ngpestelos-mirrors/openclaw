@@ -1,4 +1,3 @@
-// Matrix plugin module implements startup verification behavior.
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -99,7 +98,7 @@ function buildStartupVerificationImportKey(params: {
   auth: MatrixAuth;
   legacyFilePath: string;
 }): string {
-  const accountId = params.auth.accountId.trim() || "default";
+  const accountId = buildStartupVerificationKey(params.auth);
   const digest = createHash("sha256")
     .update(accountId)
     .update("\0")

@@ -14,6 +14,7 @@ import { AUTH_STORE_VERSION, authProfilesLog } from "./constants.js";
 import { oauthCredentialMetadataSchema } from "./credential-schema.js";
 import { hasUsableOAuthCredential } from "./credential-state.js";
 import { isLegacyOAuthRef } from "./legacy-oauth-ref.js";
+import { hasOidcRegistration, isSafeToCopyOAuthIdentity } from "./oauth-identity.js";
 import {
   hasOAuthIdentity,
   isSafeToAdoptMainStoreOAuthIdentity,
@@ -182,7 +183,8 @@ function normalizeRawCredentialEntry(raw: Record<string, unknown>): Partial<Auth
     const keyRef = coerceSecretRef(entry.keyRef);
     const metadata = normalizeCredentialMetadata(entry.metadata);
     if (keyRef) {
-      normalized.keyRef = keyRef;
+      // Canonical refs can alias frozen cached rows; runtime stores remain mutable.
+      normalized.keyRef = structuredClone(keyRef);
     } else if (key !== undefined) {
       normalized.key = key;
     }
@@ -203,7 +205,7 @@ function normalizeRawCredentialEntry(raw: Record<string, unknown>): Partial<Auth
       normalized.token = token;
     }
     if (tokenRef) {
-      normalized.tokenRef = tokenRef;
+      normalized.tokenRef = structuredClone(tokenRef);
     }
     if (expires !== undefined) {
       normalized.expires = expires;
@@ -216,7 +218,7 @@ function normalizeRawCredentialEntry(raw: Record<string, unknown>): Partial<Auth
       ...normalizeCommonCredentialFields(entry),
     };
     if (isLegacyOAuthRef(entry.oauthRef)) {
-      normalized.oauthRef = entry.oauthRef;
+      normalized.oauthRef = structuredClone(entry.oauthRef);
     }
     for (const field of [
       "access",
@@ -434,6 +436,10 @@ function hasComparableOAuthIdentityConflict(
   existing: OAuthCredential,
   candidate: OAuthCredential,
 ): boolean {
+  // Registered identities cannot use the legacy fallback for missing account fields.
+  if (hasOidcRegistration(existing) || hasOidcRegistration(candidate)) {
+    return !isSafeToCopyOAuthIdentity(existing, candidate);
+  }
   const existingAccountId = normalizeAuthIdentityToken(existing.accountId);
   const candidateAccountId = normalizeAuthIdentityToken(candidate.accountId);
   if (

@@ -9,6 +9,8 @@ import { hasExplicitOptions } from "../command-options.js";
 import { isDoctorMachineOutput } from "../doctor-output-mode.js";
 import { formatCliJsonFailure } from "../failure-output.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
+import { hasCliProcessScope } from "../runtime-cleanup-scope.js";
+import { installCliDoctorSignalExitHandlers } from "../signal-exit-barrier.js";
 import type { ProgramContext } from "./context.js";
 import { setCommandJsonMode } from "./json-mode.js";
 
@@ -116,6 +118,9 @@ export function registerMaintenanceCommands(
       [],
     )
     .action(async (opts, command) => {
+      if (hasCliProcessScope()) {
+        installCliDoctorSignalExitHandlers();
+      }
       if (
         typeof opts.stateSqlite === "string" &&
         hasExplicitOptions(command, STATE_SQLITE_CONFLICTING_OPTION_NAMES)
@@ -238,6 +243,11 @@ export function registerMaintenanceCommands(
         // Completed reports retain their status and the shared output-drain lifecycle.
         if (error instanceof ExitError || (!lintMode && !opts.json)) {
           throw error;
+        }
+        if (lintMode && (opts.json === true || !process.stdout.isTTY)) {
+          const { formatDoctorLintFailure } = await import("../../commands/doctor-lint-output.js");
+          defaultRuntime.writeJson(formatDoctorLintFailure(error));
+          exitCliAfterOutput(defaultRuntime, 2);
         }
         exitDoctorError(error, opts.json === true || !process.stdout.isTTY);
       }

@@ -1,8 +1,9 @@
 // Media store persists loaded media files and metadata for later references.
-import "../infra/fs-safe-defaults.js";
 import crypto from "node:crypto";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { sanitizeUntrustedFileName } from "@openclaw/fs-safe/advanced";
+import { fileStore } from "@openclaw/fs-safe/store";
 import {
   basenameFromAnyPath,
   extnameFromAnyPath,
@@ -16,8 +17,6 @@ import {
 } from "@openclaw/media-core/mime";
 import { hasHttpUrlPrefix } from "@openclaw/net-policy/url-protocol";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import { fileStore } from "../infra/file-store.js";
-import { sanitizeUntrustedFileName } from "../infra/fs-safe-advanced.js";
 import { FsSafeError, isPathInside, readLocalFileSafely } from "../infra/fs-safe.js";
 import { retryAsync } from "../infra/retry.js";
 import { writeSiblingTempFile } from "../infra/sibling-temp-file.js";
@@ -417,15 +416,30 @@ async function writeSavedMediaBuffer(params: {
   id: string;
   buffer: Buffer;
 }): Promise<string> {
+  const readScope = captureChannelReadScope();
+  readScope?.assertCurrent();
   const dir = resolveMediaScopedDir(params.subdir, "writeSavedMediaBuffer");
   const relativePath = resolveMediaRelativePath(params.id, params.subdir, "writeSavedMediaBuffer");
-  return await retryAfterRecreatingDir(
-    dir,
-    async () =>
-      await openMediaStore(params.buffer.byteLength).write(relativePath, params.buffer, {
+  return await retryAfterRecreatingDir(dir, async () => {
+    if (readScope) {
+      const { writeReadScopeMedia } = await import("./store.read-scope.js");
+      await writeReadScopeMedia({
+        dir,
         tempPrefix: `.${params.id}`,
-      }),
-  );
+        scope: readScope,
+        durable: true,
+        write: async (handle) => {
+          readScope.assertCurrent();
+          await handle.writeFile(params.buffer);
+          return { id: params.id };
+        },
+      });
+      return path.join(dir, params.id);
+    }
+    return await openMediaStore(params.buffer.byteLength).write(relativePath, params.buffer, {
+      tempPrefix: `.${params.id}`,
+    });
+  });
 }
 
 async function writeMediaStreamToFile(params: {
@@ -518,12 +532,18 @@ export async function saveMediaSource(
   }
   const baseId = crypto.randomUUID();
   try {
-    const { buffer, stat } = await readLocalFileSafely({ filePath: source, maxBytes });
+    let buffer: Buffer;
+    if (captureChannelReadScope()) {
+      const { readLocalMediaFile } = await import("./local-media-access.js");
+      buffer = await readLocalMediaFile(source, "any", { maxBytes });
+    } else {
+      buffer = (await readLocalFileSafely({ filePath: source, maxBytes })).buffer;
+    }
     const mime = await detectMime({ buffer, filePath: source });
     const ext = extensionForMime(mime) ?? path.extname(source);
     const id = buildSavedMediaId({ baseId, ext });
     await writeSavedMediaBuffer({ subdir, id, buffer });
-    return buildSavedMediaResult({ dir, id, size: stat.size, contentType: mime });
+    return buildSavedMediaResult({ dir, id, size: buffer.byteLength, contentType: mime });
   } catch (err) {
     if (err instanceof FsSafeError) {
       throw toSaveMediaSourceError(err, maxBytes);
@@ -669,7 +689,7 @@ export async function saveMediaStream(
  */
 export async function resolveMediaBufferPath(id: string, subdir = "inbound"): Promise<string> {
   const relativePath = resolveMediaRelativePath(id, subdir, "resolveMediaBufferPath");
-  const opened = await openMediaStore()
+  await using opened = await openMediaStore()
     .open(relativePath)
     .catch(() => null);
   if (!opened?.stat.isFile()) {
@@ -677,11 +697,7 @@ export async function resolveMediaBufferPath(id: string, subdir = "inbound"): Pr
       `resolveMediaBufferPath: media ID does not resolve to a file: ${JSON.stringify(id)}`,
     );
   }
-  try {
-    return opened.realPath;
-  } finally {
-    await opened.handle.close().catch(() => undefined);
-  }
+  return opened.realPath;
 }
 
 /** Read result for callers that need media bytes plus the resolved file path. */
@@ -699,28 +715,24 @@ export async function readMediaBuffer(
   maxBytes = MAX_BYTES,
 ): Promise<ReadMediaBufferResult> {
   const relativePath = resolveMediaRelativePath(id, subdir, "readMediaBuffer");
-  const opened = await openMediaStore(maxBytes)
+  await using opened = await openMediaStore(maxBytes)
     .open(relativePath)
     .catch(() => null);
   if (!opened?.stat.isFile()) {
     throw new Error(`readMediaBuffer: media ID does not resolve to a file: ${JSON.stringify(id)}`);
   }
-  try {
-    if (opened.stat.size > maxBytes) {
-      throw new Error(
-        `readMediaBuffer: media ID ${JSON.stringify(id)} is ${opened.stat.size} bytes; maximum is ${maxBytes} bytes`,
-      );
-    }
-    const buffer = await opened.handle.readFile();
-    if (buffer.byteLength > maxBytes) {
-      throw new Error(
-        `readMediaBuffer: media ID ${JSON.stringify(id)} read ${buffer.byteLength} bytes; maximum is ${maxBytes} bytes`,
-      );
-    }
-    return { id, path: opened.realPath, buffer, size: buffer.byteLength };
-  } finally {
-    await opened.handle.close().catch(() => undefined);
+  if (opened.stat.size > maxBytes) {
+    throw new Error(
+      `readMediaBuffer: media ID ${JSON.stringify(id)} is ${opened.stat.size} bytes; maximum is ${maxBytes} bytes`,
+    );
   }
+  const buffer = await opened.handle.readFile();
+  if (buffer.byteLength > maxBytes) {
+    throw new Error(
+      `readMediaBuffer: media ID ${JSON.stringify(id)} read ${buffer.byteLength} bytes; maximum is ${maxBytes} bytes`,
+    );
+  }
+  return { id, path: opened.realPath, buffer, size: buffer.byteLength };
 }
 
 /**

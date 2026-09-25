@@ -14,12 +14,14 @@ import {
   agentSessionAutomaticCompaction,
   agentSessionSetContextReplacementHook,
 } from "../sessions/agent-session-compaction.js";
-import type { SessionManager } from "../sessions/session-manager.js";
 import {
   acquireCompactHooksPreparedModelRuntime,
   emptyPluginMetadataSnapshot,
+  getCurrentPluginMetadataSnapshotMock,
+  mockCompactHooksPluginMetadata,
 } from "./compact.hooks.metadata.test-support.js";
-import { createMockToolDefinitions } from "./compact.hooks.tools.test-support.js";
+import { mockCompactHooksTools } from "./compact.hooks.tools.test-support.js";
+import { createCompactionSessionManagerMock } from "./compact.session-manager.test-support.js";
 import type { resolveModelAsync } from "./model.js";
 import type { attemptServerEndpointCompaction } from "./server-endpoint-compaction.js";
 import type { buildEmbeddedSystemPrompt } from "./system-prompt.js";
@@ -147,7 +149,7 @@ export const resolveSessionAgentIdsMock = vi.fn<
 export const resolveAgentConfigMock = vi.fn(
   (_config?: unknown, _agentId?: string): unknown => undefined,
 );
-let fixtureWorkspaceDir: string;
+let fixture: { workspaceDir: string; sessionId: string };
 export const resolveDefaultAgentDirMock = vi.fn<() => string>();
 export const estimateTokensMock = vi.fn((_message?: unknown) => 10);
 export const resolveAgentHarnessPolicyMock = vi.fn(() => ({ runtime: "openclaw" }));
@@ -197,7 +199,7 @@ export const resolveCliBackendConfigMock = vi.fn(() => null as Record<string, un
 function createMockCompactionSession() {
   let onContextReplaced: ((tokensAfter: number, tokensBefore: number) => void) | undefined;
   const session = {
-    sessionId: "session-1",
+    sessionId: fixture.sessionId,
     messages: sessionMessages.map((message) => structuredClone(message)),
     agent: {
       streamFn: vi.fn(),
@@ -424,9 +426,6 @@ export const buildAgentRuntimePlanMock = vi.fn((params: BuildAgentRuntimePlanPar
 export const acquireAgentRunPreparedModelRuntimeMock = vi.fn(
   acquireCompactHooksPreparedModelRuntime,
 );
-const getCurrentPluginMetadataSnapshotMock: Mock<
-  typeof import("../../plugins/current-plugin-metadata-snapshot.js").getCurrentPluginMetadataSnapshot
-> = vi.fn(() => emptyPluginMetadataSnapshot);
 
 export function resetCompactSessionStateMocks(): void {
   sanitizeSessionHistoryMock.mockReset();
@@ -549,8 +548,8 @@ export function resetCompactSessionStateMocks(): void {
   resolveSkillsPromptMock.mockReturnValue(undefined);
 }
 
-export function resetCompactHooksHarnessMocks(workspaceDir: string): void {
-  fixtureWorkspaceDir = workspaceDir;
+export function resetCompactHooksHarnessMocks(workspaceDir: string, sessionId = "session-1"): void {
+  fixture = { workspaceDir, sessionId };
   runCliAgentMock.mockClear();
   resolveCliBackendConfigMock.mockReset();
   resolveCliBackendConfigMock.mockReturnValue(null);
@@ -668,12 +667,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     runGlobalGatewayStopSafely: vi.fn(async () => undefined),
   }));
 
-  vi.doMock("../../plugins/current-plugin-metadata-snapshot.js", () => ({
-    getCurrentPluginMetadataSnapshot: getCurrentPluginMetadataSnapshotMock,
-    isCurrentPluginMetadataSnapshotRuntimeGeneration: () => false,
-    resolvePluginMetadataControlPlaneFingerprint: vi.fn(() => "test-plugin-fingerprint"),
-    withPluginMetadataSnapshotScope: (_snapshot: unknown, run: () => unknown) => run(),
-  }));
+  mockCompactHooksPluginMetadata();
 
   vi.doMock("../../plugins/command-registry-state.js", () => ({
     clearPluginCommands: vi.fn(),
@@ -751,12 +745,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     vi.doMock("../sessions/index.js", () => ({
       AuthStorage: function AuthStorage() {},
       ModelRegistry: function ModelRegistry() {},
-      SessionManager: {
-        open: vi.fn((target: Parameters<typeof SessionManager.open>[0]) => ({
-          getSessionTarget: () => ({ ...target }),
-          buildSessionContext: vi.fn(() => ({ messages: sessionMessages })),
-        })),
-      },
+      SessionManager: createCompactionSessionManagerMock(sessionMessages),
       SettingsManager: {
         create: vi.fn(() => ({})),
       },
@@ -898,19 +887,11 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     resolveChannelMessageToolHints: vi.fn(() => undefined),
   }));
 
-  vi.doMock("../agent-tools.js", () => ({
-    createOpenClawCodingTools: createOpenClawCodingToolsMock,
-    createOpenClawCodingToolsInternal: createOpenClawCodingToolsMock,
-  }));
+  mockCompactHooksTools(createOpenClawCodingToolsMock);
 
   vi.doMock("./replay-history.js", () => ({
     sanitizeSessionHistory: sanitizeSessionHistoryMock,
     validateReplayTurns: validateReplayTurnsMock,
-  }));
-
-  vi.doMock("./tool-schema-runtime.js", () => ({
-    logProviderToolSchemaDiagnostics: vi.fn(),
-    normalizeProviderToolSchemas: vi.fn(({ tools }: { tools: unknown[] }) => tools),
   }));
 
   vi.doMock("./stream-resolution.js", () => ({
@@ -923,12 +904,6 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     applyExtraParamsToAgent: applyExtraParamsToAgentMock,
     resolveAgentTransportOverride: resolveAgentTransportOverrideMock,
     resolvePreparedExtraParams: vi.fn(() => ({})),
-  }));
-
-  vi.doMock("./tool-split.js", () => ({
-    splitSdkTools: vi.fn(({ tools }: { tools?: unknown[] }) => ({
-      customTools: createMockToolDefinitions(tools),
-    })),
   }));
 
   vi.doMock("./compaction-safety-timeout.js", async () => {
@@ -985,13 +960,14 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     const { listAgentIds } = await import("../agent-scope-config.js");
     return {
       listAgentEntries: vi.fn(() => []),
+      listAgentEntriesWithSource: vi.fn(() => []),
       listAgentIds,
       resolveAgentConfig: resolveAgentConfigMock,
       resolveAgentDir: vi.fn((_cfg: unknown, agentId: string) =>
-        join(fixtureWorkspaceDir, "agents", agentId, "agent"),
+        join(fixture.workspaceDir, "agents", agentId, "agent"),
       ),
       resolveAgentModelFallbacksOverride: vi.fn(() => undefined),
-      resolveAgentWorkspaceDir: vi.fn(() => fixtureWorkspaceDir),
+      resolveAgentWorkspaceDir: vi.fn(() => fixture.workspaceDir),
       resolveDefaultAgentDir: resolveDefaultAgentDirMock,
       resolveDefaultAgentId: vi.fn(() => "main"),
       resolveAgentIdFromSessionKey: vi.fn(

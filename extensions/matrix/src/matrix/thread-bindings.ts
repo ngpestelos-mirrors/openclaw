@@ -1,4 +1,3 @@
-// Matrix plugin module implements thread bindings behavior.
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +9,7 @@ import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runti
 import {
   registerSessionBindingAdapter,
   resolveThreadBindingFarewellText,
+  resolveThreadBindingLifecycle,
   type SessionBindingAdapter,
   unregisterSessionBindingAdapter,
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
@@ -26,7 +26,6 @@ import {
   listBindingsForAccount,
   removeBindingRecord,
   resolveBindingKey,
-  resolveEffectiveBindingExpiry,
   setBindingRecord,
   setMatrixThreadBindingManagerEntry,
   toMatrixBindingTargetKind,
@@ -512,9 +511,6 @@ export async function createMatrixThreadBindingManager(params: {
 
   let sweepTimer: NodeJS.Timeout | null = null;
   const removeRecords = (records: MatrixThreadBindingRecord[]) => {
-    if (records.length === 0) {
-      return [];
-    }
     return records
       .map((record) => removeBindingRecord(record))
       .filter((record): record is MatrixThreadBindingRecord => Boolean(record));
@@ -659,7 +655,7 @@ export async function createMatrixThreadBindingManager(params: {
       const expired = listBindingsForAccount(params.accountId)
         .map((record) => ({
           record,
-          lifecycle: resolveEffectiveBindingExpiry({
+          lifecycle: resolveThreadBindingLifecycle({
             record,
             defaultIdleTimeoutMs: defaults.idleTimeoutMs,
             defaultMaxAgeMs: defaults.maxAgeMs,
