@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import childProcess, { type ChildProcess, type SpawnSyncReturns } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
@@ -242,6 +242,29 @@ async function managedProbe(taskName: string, env: NodeJS.ProcessEnv, cwd: strin
   };
 }
 
+function environmentShape(env: NodeJS.ProcessEnv) {
+  const moduleCache = Object.entries(env).find(
+    ([key]) => key.toUpperCase() === "PSMODULEANALYSISCACHEPATH",
+  )?.[1];
+  return {
+    keys: Object.keys(env).toSorted(),
+    moduleAnalysisCachePath: {
+      kind:
+        moduleCache === undefined
+          ? "absent"
+          : moduleCache === ""
+            ? "empty"
+            : path.win32.isAbsolute(moduleCache)
+              ? "absolute"
+              : "relative",
+      sha256:
+        moduleCache === undefined
+          ? undefined
+          : createHash("sha256").update(moduleCache).digest("hex"),
+    },
+  };
+}
+
 async function main(inputPath: string) {
   const input = await readInput(inputPath);
   assert.equal(input.sourceSha, input.candidate.packageSourceSha);
@@ -258,6 +281,7 @@ async function main(inputPath: string) {
   await fs.mkdir(root);
   const rows: Array<{
     context: (typeof order)[number];
+    environment: ReturnType<typeof environmentShape>;
     result: Awaited<ReturnType<typeof managedProbe>> | { observation: Observation; joined: true };
     passed: boolean;
     cleanup: "removed" | "retained-unjoined" | "failed";
@@ -320,7 +344,14 @@ async function main(inputPath: string) {
       result.joined &&
       cleanup === "removed" &&
       (!managed || ("code" in result && result.code === 0 && result.signal === null));
-    rows.push({ context, result, passed, cleanup, cleanupError });
+    rows.push({
+      context,
+      environment: environmentShape(env),
+      result,
+      passed,
+      cleanup,
+      cleanupError,
+    });
     await save();
     // An indeterminate managed group cannot overlap the next control or lose its inputs.
     if (!result.joined) {
