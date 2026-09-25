@@ -586,6 +586,7 @@ export async function loadSubagentSpawnModuleForTest(params: {
               canCleanupSession: () => true,
               canRetireReservation: () => true,
               waitForClaim: () => undefined,
+              waitForRetirementPublication: () => undefined,
               settleFailedLaunch: async (error) => {
                 params.settleFailedQueuedSubagentLaunchMock?.(record.runId, error);
               },

@@ -23,6 +23,7 @@ import {
   type SessionEntryMaintenanceAgeCapture,
 } from "./session-accessor.sqlite-maintenance-age.js";
 import { finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort } from "./session-accessor.sqlite-maintenance.js";
+import { SqliteReclamationInputsChangedError } from "./session-accessor.sqlite-reclamation-worker-diagnostics.js";
 import {
   createSessionMaintenancePlanningOperation,
   runSqliteSessionReclamation,
@@ -300,7 +301,9 @@ async function runPendingMaintenance(
           ))
       ) {
         planningChanged = true;
-        throw new Error("SQLite automatic maintenance inputs changed before commit");
+        throw new SqliteReclamationInputsChangedError(
+          "SQLite automatic maintenance inputs changed before commit",
+        );
       }
     };
     const assertCurrent = () => {
@@ -310,7 +313,9 @@ async function runPendingMaintenance(
         !isSessionEntryMaintenanceAgeCaptureCurrent(owner.database.db, ageCapture)
       ) {
         planningChanged = true;
-        throw new Error("SQLite automatic maintenance age fact changed before commit");
+        throw new SqliteReclamationInputsChangedError(
+          "SQLite automatic maintenance age fact changed before commit",
+        );
       }
     };
     const runPlanning = () =>
@@ -355,7 +360,7 @@ async function runPendingMaintenance(
       if (owner.database) {
         if (!isOpenClawAgentDatabasePathCurrent(owner.database)) {
           planningChanged = true;
-          throw new Error(
+          throw new SqliteReclamationInputsChangedError(
             "SQLite automatic maintenance database path changed after no-op planning",
           );
         }
@@ -365,7 +370,9 @@ async function runPendingMaintenance(
           result.ageFact
         ) {
           planningChanged = true;
-          throw new Error("SQLite automatic maintenance age fact changed after no-op planning");
+          throw new SqliteReclamationInputsChangedError(
+            "SQLite automatic maintenance age fact changed after no-op planning",
+          );
         }
       }
     }
