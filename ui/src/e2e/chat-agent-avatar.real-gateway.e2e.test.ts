@@ -167,7 +167,7 @@ async function startAvatarStreams(origin: string, image: Buffer) {
 
 async function observeAvatarResponses(page: Page, pathname: string | RegExp) {
   await page.addInitScript(
-    ({ path, isRegex }) => {
+    ({ path: observedPath, isRegex }) => {
       const proof: BrowserResponseProof[] = [];
       (window as ProofWindow).avatarResponseProof = proof;
       const originalFetch = window.fetch.bind(window);
@@ -177,7 +177,9 @@ async function observeAvatarResponses(page: Page, pathname: string | RegExp) {
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
           location.href,
         );
-        if (!(isRegex ? new RegExp(path).test(url.pathname) : url.pathname === path)) {
+        if (
+          !(isRegex ? new RegExp(observedPath).test(url.pathname) : url.pathname === observedPath)
+        ) {
           return originalFetch(input, init);
         }
         const record: BrowserResponseProof = {
@@ -357,11 +359,11 @@ async function mountWorkspaceIcon(
 ) {
   await page.waitForFunction(() => Boolean(customElements.get("openclaw-workspace-icon")));
   await page.evaluate(
-    async ({ routeUrl, authTokens }) => {
+    async ({ routeUrl, authTokens: tokens }) => {
       const element = document.createElement("openclaw-workspace-icon") as WorkspaceIconElement;
       element.id = "avatar-stream-consumer";
       element.routeUrl = routeUrl;
-      element.authTokens = authTokens;
+      element.authTokens = tokens;
       element.authReady = true;
       const fixture = document.createElement("div");
       fixture.className = "chat-pane__workspace-chip";
@@ -551,7 +553,10 @@ suite.define(() => {
         expect(await image.getAttribute("src")).toMatch(/^blob:/);
         expect(await image.isVisible()).toBe(true);
         expect(
-          readServerResponses(caseName).map(({ status, credential }) => ({ status, credential })),
+          readServerResponses(caseName).map(({ status: responseStatus, credential }) => ({
+            status: responseStatus,
+            credential,
+          })),
         ).toEqual([
           { status, credential: "stale" },
           { status: 200, credential: "valid" },
