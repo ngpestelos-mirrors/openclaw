@@ -5,7 +5,6 @@ import { inspectLocalAudioSelection } from "../../media-understanding/local-audi
 import { buildMediaUnderstandingRegistry } from "../../media-understanding/provider-registry.js";
 import { transcribeAudioFile } from "../../media-understanding/runtime.js";
 import { defaultRuntime } from "../../runtime.js";
-import { getProviderEnvVars } from "../../secrets/provider-env-vars.js";
 import { runCommandWithRuntime } from "../cli-utils.js";
 import { getModelsCommandSecretTargetIds } from "../command-secret-targets.js";
 import { prepareLocalCapabilityAccountSecrets } from "./local-account-secrets.js";
@@ -39,6 +38,7 @@ async function runAudioTranscribe(params: {
     activeModel: requireProviderModelOverride(params.model),
     filePath: path.resolve(params.file),
     cfg,
+    agentId,
     language: params.language,
     prompt: params.prompt,
   });
@@ -101,10 +101,6 @@ export function registerAudioCapabilityCommands(capability: Command): void {
             cfg,
             providerId: provider.id,
             agentId,
-            envVars: getProviderEnvVars(provider.id, {
-              config: cfg,
-              includeUntrustedWorkspacePlugins: false,
-            }),
           }),
           selected: false,
           id: provider.id,

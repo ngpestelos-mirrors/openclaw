@@ -22,6 +22,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { parse as parseYaml } from "yaml";
 import {
   normalizePublicationIntent,
+  publicationAdmissionContract,
   publicationDispatchEnvelope,
   publicationSourceContract,
   type PublicationSelection,
@@ -37,6 +38,7 @@ import { readBoundedResponseText } from "./lib/bounded-response.mjs";
 import { parsePluginReleaseSelection } from "./lib/plugin-npm-release.ts";
 import { loadChangelogCollection, loadReleaseChangelog } from "./lib/release-changelog.mjs";
 import { releaseBranchForTag } from "./lib/release-context.mjs";
+import { formatReleasePublishPreflight } from "./lib/release-publish-preflight-interface.mts";
 import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version.mjs";
 import {
   downloadFullReleaseNpmPreflight,
@@ -45,6 +47,7 @@ import {
 } from "./npm-preflight-tooling-identity.mjs";
 import { validateNpmPreflightDistTag } from "./openclaw-npm-extended-stable-release.mjs";
 import { validatePluginSdkApiReleaseEvidence } from "./plugin-sdk-api-release-evidence.mjs";
+import { runReleasePublishPreflight } from "./release-publish-preflight.mts";
 import { verifyReleaseToolingIdentity } from "./release-tooling-identity.mjs";
 import {
   dedicatedSectionVersionForTag,
@@ -60,8 +63,7 @@ import {
 } from "./render-github-release-notes.mts";
 import {
   isShaPinnedReleaseValidationBranch,
-  runStrictReleaseEvidenceValidation,
-  validateFullReleaseValidationEvidence,
+  authenticateFullReleaseValidationEvidence,
 } from "./validate-full-release-validation-evidence.mjs";
 
 type JsonRecord = Record<string, unknown>;
@@ -159,7 +161,7 @@ selected publication command. --publication-route prepared selects the
 prepare-once release button for complete regular beta/stable releases.
 
 Options:
-  --tag <tag>                         Planned release tag. The tag must not exist yet.
+  --tag <tag>                         Release tag. An existing tag must resolve to the target SHA.
   --target-sha <sha>                  Frozen release SHA. Defaults to the current HEAD.
   --workflow-ref <ref>                Trusted workflow ref. Default: main; matching Tideclaw branch required for alpha.
   --publish-workflow-ref <tag>         Protected publication tooling tag matching the trusted helper checkout.
@@ -171,7 +173,9 @@ Options:
   --plugin-sdk-api-acknowledgement <digest>
                                       8-character digest from the Plugin SDK API diff report.
   --windows-node-tag <tag>            Optional exact Windows Node tag for postpublish asset promotion.
-  --skip-dispatch                     Require Full Release Validation run; separate npm run only for historical recovery.
+  --stable-soak-waiver <reason>       Operator-approved reason to publish stable from beta-profile validation without soak.
+  --lane-waiver <reason>              Operator acknowledgement for evidence sealed under a Full Release Validation lane waiver.
+  --skip-dispatch                    Require Full Release Validation run; separate npm run only for historical recovery.
   --skip-local-generated-check        Do not run local generated release baseline checks before dispatch.
   --run-parallels                    Force candidate Parallels smoke; beta defaults to postpublish release:beta-smoke.
   --skip-parallels                   Force-skip candidate Parallels smoke; stable/full run by default.
@@ -226,6 +230,8 @@ export function parseArgs(argv: string[]) {
     pluginSdkApiAcknowledgement: "",
     windowsNodeTag: "",
     windowsNodeInstallerDigests: "",
+    stableSoakWaiver: "",
+    laneWaiver: "",
     outputDir: "",
   };
   const helpIndex = cliArgs.findIndex((arg) => arg === "-h" || arg === "--help");
@@ -245,6 +251,8 @@ export function parseArgs(argv: string[]) {
           ["--npm-preflight-run", "npmPreflightRunId"],
           ["--plugin-sdk-api-acknowledgement", "pluginSdkApiAcknowledgement"],
           ["--windows-node-tag", "windowsNodeTag"],
+          ["--stable-soak-waiver", "stableSoakWaiver"],
+          ["--lane-waiver", "laneWaiver"],
           ["--telegram-provider-mode", "telegramProviderMode"],
           ["--provider", "provider"],
           ["--mode", "mode"],
@@ -330,6 +338,17 @@ export function parseArgs(argv: string[]) {
     options.tag.includes("-alpha.") || options.tag.includes("-beta.") ? "beta" : "stable";
   if (!["beta", "stable", "full"].includes(options.releaseProfile)) {
     throw new Error("--release-profile must be beta, stable, or full");
+  }
+  // Strict default for stable tags; the operator fast path needs an explicit waiver.
+  if (
+    !options.tag.includes("-alpha.") &&
+    !options.tag.includes("-beta.") &&
+    options.releaseProfile === "beta" &&
+    !options.stableSoakWaiver.trim()
+  ) {
+    throw new Error(
+      "stable release candidates require --release-profile stable or full, or an explicit --stable-soak-waiver",
+    );
   }
   if (options.runParallels && options.skipParallels) {
     throw new Error("--run-parallels and --skip-parallels cannot be combined");
@@ -821,40 +840,37 @@ export function validateCandidateCheckout({
   return { status: "passed", targetSha, toolingSha, workflowRef };
 }
 
-/**
- * Keeps release validation pre-publication: the final immutable tag is created
- * only after this helper has recorded green evidence for the frozen SHA.
- */
-export function assertPlannedReleaseTagIsAbsent(
-  tag: string,
-  checkRemoteTagExists: (tag: string) => boolean,
-) {
-  if (checkRemoteTagExists(tag)) {
-    throw new Error(
-      `release candidate tag ${tag} already exists; validate a new patch instead of reusing a published tag`,
-    );
-  }
-}
-
-function remoteTagExists(tag: string, cwd: string) {
+export function assertReleaseCandidateTag(tag: string, targetSha: string, cwd: string) {
+  const ref = `refs/tags/${tag}`;
   const result = spawnSync(
     "git",
-    ["ls-remote", "--exit-code", "--tags", "origin", `refs/tags/${tag}`],
-    {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    },
+    ["ls-remote", "--exit-code", "--tags", "origin", ref, `${ref}^{}`],
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
-  if (result.status === 0) {
-    return true;
-  }
   if (result.status === 2) {
-    return false;
+    return;
   }
-  throw new Error(
-    `could not determine whether planned release tag ${tag} already exists: ${result.stderr.trim() || result.stdout.trim() || `git exited ${result.status ?? "without a status"}`}`,
+  if (result.status !== 0) {
+    throw new Error(
+      `could not resolve release candidate tag ${tag}: ${result.stderr?.trim() || result.error?.message || `git exited ${result.status ?? "without a status"}`}`,
+    );
+  }
+  const refs = new Map(
+    result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const [sha, name] = line.split(/\s+/u);
+        return [name, sha];
+      }),
   );
+  // Annotated tags advertise an object SHA and a separate peeled target.
+  const tagSha = refs.get(`${ref}^{}`) ?? refs.get(ref);
+  if (tagSha !== targetSha) {
+    throw new Error(
+      `release candidate tag ${tag} resolves to ${tagSha ?? "an unknown target"}, expected ${targetSha}; use the matching release target or a new tag`,
+    );
+  }
 }
 
 function gitIsAncestor(ancestor: string, target: string) {
@@ -1638,6 +1654,12 @@ export function buildPublishCommand(
   if (options.plugins.trim()) {
     fields.push(["plugins", options.plugins]);
   }
+  if (options.stableSoakWaiver.trim()) {
+    fields.push(["stable_soak_waiver", options.stableSoakWaiver]);
+  }
+  if (options.laneWaiver.trim()) {
+    fields.push(["lane_waiver", options.laneWaiver]);
+  }
   if (
     mode === "prepare" &&
     (!/^release-publish\/[a-f0-9]{12}-[1-9][0-9]*$/u.test(workflowRef) ||
@@ -1778,10 +1800,6 @@ export function validateFullManifest(manifest: JsonRecord, params: JsonRecord) {
     throw new Error(
       `full validation must record runReleaseSoak=true for ${formatJsonValue(params.releaseProfile)} release candidates`,
     );
-  }
-  const controls = isRecord(manifest.controls) ? manifest.controls : undefined;
-  if (params.releaseProfile !== "beta" && controls?.performanceBlocking !== true) {
-    throw new Error("full validation manifest must record blocking product performance evidence");
   }
 }
 
@@ -1992,7 +2010,7 @@ async function main() {
   }
   options.outputDir ||= join(".artifacts", "release-candidate", options.tag);
   const targetSha = gitRevParse(options.targetSha || "HEAD", targetRoot);
-  assertPlannedReleaseTagIsAbsent(options.tag, (tag) => remoteTagExists(tag, targetRoot));
+  assertReleaseCandidateTag(options.tag, targetSha, targetRoot);
   const toolingSha = gitRevParse("HEAD", TOOLING_ROOT);
   const latestTrustedToolingSha = fetchTrustedWorkflowSha(options.workflowRef, TOOLING_ROOT);
   // The outer process pins a clean main commit before creating this tooling checkout.
@@ -2042,13 +2060,16 @@ async function main() {
   options.fullReleaseRunId = candidateState.fullReleaseRunId;
   options.npmPreflightRunId = candidateState.npmPreflightRunId;
   if (!options.fullReleaseRunId && !options.skipDispatch) {
+    const workflowSource = readFileSync(
+      join(TOOLING_ROOT, ".github/workflows/full-release-validation.yml"),
+      "utf8",
+    );
     if (
-      publicationSourceContract(
-        readFileSync(join(TOOLING_ROOT, ".github/workflows/full-release-validation.yml"), "utf8"),
-      ) !== "1"
+      publicationSourceContract(workflowSource) !== "1" ||
+      publicationAdmissionContract(workflowSource) !== "1"
     ) {
       throw new Error(
-        "Fresh checklist dispatch requires source-admission-capable frozen tooling; existing run recovery is unchanged.",
+        "Fresh checklist dispatch requires source and registry admission in frozen tooling; existing run recovery is unchanged.",
       );
     }
     const version = parseReleaseVersion(options.tag.replace(/^v/u, ""));
@@ -2099,17 +2120,6 @@ async function main() {
       )
     : "";
   const localGeneratedCheck = runLocalGeneratedCheckIfNeeded(options);
-
-  // Discover invalid plugin inputs and registry failures before starting expensive validation.
-  // Publishers rebuild these read-only plans; this snapshot never authorizes publication.
-  const pluginNpmPlan = await collectPluginPlanWithRetry(
-    "scripts/plugin-npm-release-plan.ts",
-    options,
-  );
-  const pluginClawHubPlan = await collectPluginPlanWithRetry(
-    "scripts/plugin-clawhub-release-plan.ts",
-    options,
-  );
 
   if (!options.fullReleaseRunId && !options.skipDispatch) {
     const workflowFile = "full-release-validation.yml";
@@ -2188,28 +2198,33 @@ async function main() {
   run("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
     capture: true,
   });
-  const fullValidationEvidence = validateFullReleaseValidationEvidence({
+  const fullValidationEvidence = await authenticateFullReleaseValidationEvidence({
     run: fullRun,
     manifest: fullManifest,
     expectedRepository: options.repo,
     expectedRunId: options.fullReleaseRunId,
+    expectedRunAttempt: fullRun.runAttempt,
     expectedTargetSha: targetSha,
     expectedReleaseTag: options.tag,
     expectedWorkflowBranch: options.workflowRef,
     expectedPublicationSelection: () => publicationSelectionForChecklist(options),
-    getWorkflowSource: (sha: string) =>
-      run(
-        "git",
-        ["--no-lazy-fetch", "show", `${sha}:.github/workflows/full-release-validation.yml`],
-        { cwd: TOOLING_ROOT, capture: true },
-      ),
     isTrustedMainAncestor: (sha: string) => gitIsAncestor(sha, "refs/remotes/origin/main"),
-    validateEvidenceReuseStrictly: ({ repository, runId }: { repository: string; runId: string }) =>
-      runStrictReleaseEvidenceValidation({ repository, runId }),
+    manifestPath: join(fullDir, "full-release-validation-manifest.json"),
+    verifierSourceSha: toolingSha,
+    verifierSourceContent: readFileSync(join(TOOLING_ROOT, "scripts/release-ci-summary.mjs")),
   });
   if (fullValidationEvidence.source === "direct" && fullRun.headSha !== targetSha) {
     throw new Error(`run SHA mismatch: tag=${targetSha} full=${fullRun.headSha}`);
   }
+  // Only exact historical producers retain local, non-authoritative planning.
+  // B recovery consumes its original hosted observations without another sweep.
+  const publicationAdmission = fullValidationEvidence.publicationAdmission;
+  const pluginNpmPlan = publicationAdmission
+    ? publicationAdmission.observations.plans.npm
+    : await collectPluginPlanWithRetry("scripts/plugin-npm-release-plan.ts", options);
+  const pluginClawHubPlan = publicationAdmission
+    ? publicationAdmission.observations.plans.clawhub
+    : await collectPluginPlanWithRetry("scripts/plugin-clawhub-release-plan.ts", options);
   if (npmUsesFullRun) {
     rmSync(npmDir, { recursive: true, force: true });
   }
@@ -2363,14 +2378,55 @@ async function main() {
     fullReleaseRunAttempt: fullRun.runAttempt,
     npmTelegramRunId: npmTelegram.runId,
   };
+  const publicationSelection = publicationSelectionForChecklist(options);
+  const publishPreflight = await runReleasePublishPreflight(
+    {
+      repo: options.repo,
+      tag: options.tag,
+      fullReleaseValidationRunId: options.fullReleaseRunId,
+      fullReleaseValidationRunAttempt: fullRun.runAttempt,
+      preflightRunId: options.npmPreflightRunId,
+      npmDistTag: options.npmDistTag,
+      pluginPublishScope: publicationSelection.pluginPublishScope,
+      plugins: options.plugins,
+      stableSoakWaiver: options.stableSoakWaiver,
+      laneWaiver: options.laneWaiver,
+      workflowRef:
+        options.publishWorkflowRef || npmPreflightSource?.workflowRef || options.workflowRef,
+      releaseProfile: "from-validation",
+      publicationRoute: publicationSelection.route === "prepared" ? "prepared" : "normal",
+      publishOpenclawNpm: true,
+      openclawNpmResumeRunId: "",
+      pluginSdkApiAcknowledgement: options.pluginSdkApiAcknowledgement,
+      windowsNodeTag: options.windowsNodeTag,
+      windowsNodeInstallerDigests: options.windowsNodeInstallerDigests,
+      npmTelegramRunId: npmTelegram.runId ?? "",
+    },
+    {
+      manifest: fullManifest,
+      manifestPath: join(fullDir, "full-release-validation-manifest.json"),
+      run: fullRun,
+      targetSha,
+      toolingSha,
+      allowPlannedTag: true,
+      npmManifest,
+      npmManifestPath: join(npmDir, "preflight-manifest.json"),
+      npmPreflightRun: npmRun,
+      fullValidationEvidence,
+    },
+  );
+  const publishPreflightTable = formatReleasePublishPreflight(publishPreflight, {
+    includeCommand: false,
+  });
   const publishCommand =
-    options.publicationRoute === "normal"
-      ? buildPublishCommand(publicationOptions, npmPreflightSource)
-      : undefined;
+    options.publicationRoute === "normal" ? publishPreflight.command : undefined;
   const prepareCommand =
     options.publicationRoute === "prepared"
       ? buildPublishCommand(publicationOptions, npmPreflightSource, "prepare")
       : undefined;
+  if (prepareCommand) {
+    publishPreflight.command = prepareCommand;
+  }
   const evidence = {
     version: 1,
     tag: options.tag,
@@ -2379,6 +2435,7 @@ async function main() {
     publishWorkflowIdentity,
     publicationRoute: options.publicationRoute,
     sourceAdmission: fullManifest.sourceAdmission ?? null,
+    publicationAdmission,
     npmDistTag: options.npmDistTag,
     fullReleaseValidationRunId: options.fullReleaseRunId,
     fullReleaseValidationRunAttempt: fullRun.runAttempt,
@@ -2411,6 +2468,7 @@ async function main() {
     npmTelegram,
     pluginNpmPlan,
     pluginClawHubPlan,
+    publishPreflight,
     publishCommand,
     prepareCommand,
   };
@@ -2455,13 +2513,17 @@ async function main() {
       `- tarball sha256: ${actualTarballSha}`,
       `- npm dist-tag: ${options.npmDistTag}`,
       `- intended publication route: ${options.publicationRoute}`,
-      "- FRV source admission is source-only, not registry eligibility or publication authority.",
+      publicationAdmission
+        ? "- FRV registry observations are authenticated retained admission evidence, not publication authority. Pending owner actions and final publisher checks remain required."
+        : "- Historical FRV source admission and local registry plans are not registry eligibility or publication authority.",
       ...formatPluginPlanSummary("plugin npm plan", pluginNpmPlan),
       ...formatPluginPlanSummary("ClawHub plan", pluginClawHubPlan),
       `- Parallels: ${parallels.status}${parallels.reason ? ` (${parallels.reason})` : ""}`,
       `- NPM Telegram E2E: ${npmTelegram.status}${
         npmTelegram.runId ? ` ${npmTelegram.runId} ${npmTelegram.url}` : ""
       }`,
+      "",
+      publishPreflightTable,
       "",
       ...(prepareCommand
         ? [
@@ -2480,10 +2542,13 @@ async function main() {
         : []),
     ].join("\n"),
   );
-  updateReleaseCandidateState(statePath, candidateState, "completed");
-
   console.log(`release candidate evidence: ${evidencePath}`);
   console.log(`release candidate summary: ${evidenceMarkdownPath}`);
+  console.log(publishPreflightTable);
+  if (publishPreflight.failed) {
+    throw new Error("Publish preflight failed; resolve the reported gates before publication.");
+  }
+  updateReleaseCandidateState(statePath, candidateState, "completed");
   if (androidVersionCheck) {
     console.log(androidVersionCheck.message);
   }

@@ -7,7 +7,10 @@ import {
   prepareChannelAccountConfiguration,
 } from "../../channels/plugins/account-config-mutation.js";
 import { getBundledChannelSetupPlugin } from "../../channels/plugins/bundled.js";
-import { resolveChannelSetupCliOptionMetadata } from "../../channels/plugins/cli-add-options.js";
+import {
+  channelOmitsEnvBackedSetupOption,
+  resolveChannelSetupCliOptionMetadata,
+} from "../../channels/plugins/cli-add-options.js";
 import { parseOptionalDelimitedEntries } from "../../channels/plugins/helpers.js";
 import { getLoadedChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import type { ChannelId, ChannelSetupInput } from "../../channels/plugins/types.public.js";
@@ -87,7 +90,7 @@ function buildChannelSetupInput(opts: ChannelsAddOptions): ChannelSetupInput {
           : value;
       continue;
     }
-    if (value === null || value === "") {
+    if (value === null) {
       input[key] = undefined;
       continue;
     }
@@ -100,9 +103,9 @@ function buildChannelSetupInput(opts: ChannelsAddOptions): ChannelSetupInput {
   return input as ChannelSetupInput;
 }
 
-// Safe to forward every defined key: CLI registration is selection-scoped and
-// resolveChannelsAddOptions drops non-user-authored values (Commander defaults),
-// so no other channel's options or defaults can reach the selected contract.
+// Safe to forward every defined key: CLI registration is selection-scoped.
+// Modern setup drops Commander defaults in resolveChannelsAddOptions; legacy
+// setup keeps manifest defaults and drops empty-string defaults only for ints.
 function buildChannelOwnedSetupInput(opts: ChannelsAddOptions): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(opts).filter(
@@ -158,7 +161,9 @@ async function configureChannelAccount(
     const prompter = createClackPrompter();
     if (!isTerminalInteractive()) {
       runtime.error(
-        "Interactive channel setup requires a TTY. Use `openclaw channels add --channel <id> --use-env` or pass the channel's credential flags for non-interactive setup.",
+        channelOmitsEnvBackedSetupOption(opts.channel)
+          ? `Interactive channel setup requires a TTY. Run ${formatCliCommand(`openclaw channels add --channel ${opts.channel?.trim() || "<id>"} --help`)} to list the setup flags this channel accepts, then pass them for non-interactive setup.`
+          : "Interactive channel setup requires a TTY. Use `openclaw channels add --channel <id> --use-env` or pass the channel's credential flags for non-interactive setup.",
       );
       runtime.exit(1);
       return;

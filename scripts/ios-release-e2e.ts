@@ -61,7 +61,7 @@ export class OperationError extends Error {
   constructor(operation: Operation, code: OperationCode, exitCode?: number, output = "") {
     super(`${operation}:${code}`);
     // Export recognized categories, never arbitrary tool output or process arguments.
-    const markers = [
+    const markers: [string, string][] = [
       ["unable to find a destination", "destination-unavailable"],
       ["could not resolve package dependencies", "package-resolution-failed"],
       ["build failed", "build-failed"],
@@ -139,11 +139,13 @@ export function requireExactTestResult(value: unknown, expected: TestIdentity): 
   if (cases.some(({ node }) => node.result === "Skipped")) {
     throw new Error("test-skipped");
   }
+  const [testCase] = cases;
   if (
     cases.length !== 1 ||
-    cases[0].bundle !== expected.split("/")[0] ||
-    cases[0].node.nodeIdentifier !== `${expected.split("/").slice(1).join("/")}()` ||
-    cases[0].node.result !== "Passed"
+    !testCase ||
+    testCase.bundle !== expected.split("/")[0] ||
+    testCase.node.nodeIdentifier !== `${expected.split("/").slice(1).join("/")}()` ||
+    testCase.node.result !== "Passed"
   ) {
     throw new Error("test-identity-or-result");
   }
@@ -164,7 +166,7 @@ export function requireExactTestResult(value: unknown, expected: TestIdentity): 
       node.children.forEach(checkRuns);
     }
   };
-  checkRuns(cases[0].node);
+  checkRuns(testCase.node);
   if (repetitions > 1 || runs > 1) {
     throw new Error("repeated-test");
   }
@@ -189,8 +191,12 @@ export function parseMeasurement(value: unknown): Measurement {
 
 export type Sample = Measurement & { atMs: number };
 export function summarizeMeasurements(samples: Sample[], errors: number, durationMs: number) {
-  const boundaries = [0, ...samples.map((sample) => sample.atMs), durationMs];
-  const gaps = boundaries.slice(1).map((at, index) => at - boundaries[index]);
+  let previous = 0;
+  const gaps = [...samples.map((sample) => sample.atMs), durationMs].map((at) => {
+    const gap = at - previous;
+    previous = at;
+    return gap;
+  });
   const gapCount = gaps.filter((gap) => gap < 0 || gap > MAX_SAMPLE_GAP_MS).length;
   return {
     window: "boot-complete-test" as const,

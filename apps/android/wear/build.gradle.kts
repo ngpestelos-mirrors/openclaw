@@ -48,6 +48,7 @@ android {
     applicationId = "ai.openclaw.app"
     minSdk = 31
     targetSdk = 36
+    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     versionCode = openClawAndroidWearVersionCode
     versionName = requireOpenClawAndroidVersionProperty("OPENCLAW_ANDROID_VERSION_NAME")
   }
@@ -71,6 +72,10 @@ android {
     compose = true
   }
 
+  testOptions {
+    unitTests.isIncludeAndroidResources = true
+  }
+
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
@@ -80,10 +85,6 @@ android {
     resources {
       excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
-  }
-
-  testOptions {
-    unitTests.isIncludeAndroidResources = true
   }
 
   lint {
@@ -121,6 +122,7 @@ dependencies {
   implementation(project(":wear-shared"))
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.core.ktx)
+  implementation(libs.androidx.core.splashscreen)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.ktx)
   implementation(libs.androidx.compose.ui)
@@ -140,4 +142,9 @@ dependencies {
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.robolectric)
+  testImplementation(libs.androidx.compose.ui.test.junit4)
+
+  androidTestImplementation(libs.androidx.test.ext.junit)
+  androidTestImplementation(libs.androidx.test.runner)
+  androidTestImplementation(libs.androidx.uiautomator)
 }

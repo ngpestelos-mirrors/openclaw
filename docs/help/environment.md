@@ -53,6 +53,8 @@ When set, `OPENCLAW_HOME` replaces the system home directory (`$HOME` / `os.home
 
 **Precedence:** `OPENCLAW_HOME` > `$HOME` > `USERPROFILE` > Termux `PREFIX` home fallback on Android > `os.homedir()`
 
+Blank values and the literal strings `undefined` and `null` (after trimming) are treated as unset. CLI home-path display uses `~` in that case; valid overrides use `$OPENCLAW_HOME`.
+
 **Example** (macOS LaunchDaemon):
 
 ```xml
@@ -66,6 +68,22 @@ When set, `OPENCLAW_HOME` replaces the system home directory (`$HOME` / `os.home
 `OPENCLAW_HOME` can also be set to a tilde path (e.g. `~/svc`), which gets expanded using the same OS home fallback chain before use.
 
 Explicit path variables such as `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, and `OPENCLAW_GIT_DIR` still take precedence. OS-account tasks such as shell startup file detection, package-manager setup, and host `~` expansion may still use the real system home.
+
+### Temporary compile cache
+
+Packaged OpenClaw uses `NODE_COMPILE_CACHE/openclaw/<version>/<build>` when
+`NODE_COMPILE_CACHE` is set, or `node-compile-cache/openclaw` under the OS temporary
+directory otherwise. Child processes reuse the same build namespace. Source
+checkouts keep their existing cache-disable policy.
+
+The compile-cache bootstrap owner performs asynchronous, best-effort maintenance
+at startup. It removes superseded build directories as units. At most once an
+hour, or after retiring another build, it removes bytecode older than seven days
+and trims the current cache to 512 MiB, oldest files first. This is a maintenance
+target, not a hard disk quota: concurrent writes and processes that exit before
+cleanup completes can temporarily exceed it. Interrupted maintenance is eligible
+for another attempt after an hour. Other applications' caches outside
+the `openclaw` subtree are preserved.
 
 ### Gateway and authentication
 

@@ -13,6 +13,7 @@ import { getBeforeToolCallFailureDisposition } from "./agent-tools.before-tool-c
 import { redactCodeModeCatalogIds, type CodeModeCatalogProjection } from "./code-mode-catalog.js";
 import type { CodeModeNamespaceRuntime } from "./code-mode-namespaces.js";
 import type { CodeModeReplyLease } from "./code-mode-program-data.js";
+import type { CodeModeResultsAccess } from "./code-mode-results.js";
 import type { PendingBridgeRequest } from "./code-mode-runtime.js";
 import { readCodeModeSkill } from "./code-mode-skills.js";
 import { createCodeModeToolApiFile } from "./code-mode-tool-api.js";
@@ -213,6 +214,7 @@ export async function runBridgeRequest(params: {
   parentToolCallId: string;
   codeModeRunId: string;
   reply: CodeModeReplyLease;
+  results: CodeModeResultsAccess;
   remainingMs: number;
   ctx: ToolSearchToolContext;
   request: PendingBridgeRequest;
@@ -225,28 +227,47 @@ export async function runBridgeRequest(params: {
     const values = Array.isArray(params.request.args) ? params.request.args : [];
     let value: unknown;
     switch (params.request.method) {
+      case "resultSave":
+      case "resultLoad":
+      case "resultDelete": {
+        if (params.request.method === "resultSave") {
+          value = params.results.save(values[0], params.runtime.hasNetworkContent());
+        } else if (params.request.method === "resultLoad") {
+          const loaded = params.results.load(values[0]);
+          if (loaded.networkContent) {
+            params.runtime.observeNetworkContent(params.parentToolCallId);
+          }
+          value = loaded.value;
+        } else {
+          value = params.results.delete(values[0]);
+        }
+        break;
+      }
       case "search": {
         const query = values[0];
         if (typeof query !== "string") {
           throw new ToolInputError("search query must be a string.");
         }
         const options = isRecord(values[1]) ? values[1] : undefined;
-        const exact = query.trim().toLowerCase();
+        const spelling = query.trim();
+        const exact = spelling.toLowerCase();
         const mcpBindings = params.namespaceRuntime.mcpBindings;
         const mcpRoutes = [...mcpBindings];
-        const exactMcpId = (mcpRoutes.find(
-          ([, binding]) => binding.callableName === query.trim(),
-        ) ?? mcpRoutes.find(([, binding]) => binding.callableName.toLowerCase() === exact))?.[0];
+        const exactMcpId = (mcpRoutes.find(([, binding]) => binding.callableName === spelling) ??
+          mcpRoutes.find(([, binding]) => binding.callableName.toLowerCase() === exact))?.[0];
         const exactBinding = exactMcpId
           ? undefined
-          : catalogProjection.bindings.find(
+          : (catalogProjection.byCallableName.get(spelling) ??
+            catalogProjection.bindings.find((binding) => binding.name === spelling) ??
+            catalogProjection.bindings.find(
               (binding) =>
                 binding.name.toLowerCase() === exact ||
                 binding.callableName.toLowerCase() === exact,
-            );
+            ));
         const matches = await params.runtime.search(exactBinding?.id ?? exactMcpId ?? query, {
           limit: typeof options?.limit === "number" ? options.limit : undefined,
           allowedIds: catalogProjection.searchableIds,
+          parentToolCallId: params.parentToolCallId,
         });
         value = exactBinding
           ? [exactBinding.callableName]
@@ -259,7 +280,6 @@ export async function runBridgeRequest(params: {
               if (!mcp) {
                 throw new ToolInputError("Search result has no callable namespace route.");
               }
-              params.runtime.observeNetworkContent(params.parentToolCallId);
               return {
                 callableName: mcp.callableName,
                 namespaceId: mcp.namespaceId,
@@ -283,6 +303,8 @@ export async function runBridgeRequest(params: {
         }
         const described = await params.runtime.describe(binding.id, {
           includeMcp: false,
+          recoverySurface: "catalog",
+          parentToolCallId: params.parentToolCallId,
         });
         const { id: _id, sourceName: _sourceName, mcp: _mcp, ...guestDescription } = described;
         value =
@@ -318,6 +340,7 @@ export async function runBridgeRequest(params: {
           };
         }
         const called = await params.runtime.callExactId(binding.id, input, {
+          recoverySurface: "catalog",
           parentToolCallId: params.parentToolCallId,
           signal: params.signal,
           onUpdate: params.onUpdate,
@@ -351,41 +374,25 @@ export async function runBridgeRequest(params: {
           pathLocal,
           Array.isArray(callArgs) ? callArgs : [],
           async (request) => {
-            const entry = request.catalogId
-              ? params.runtime
-                  .namespaceEntries()
-                  .find((candidate) => candidate.id === request.catalogId)
-              : params.runtime
-                  .namespaceEntries()
-                  .find(
-                    (candidate) =>
-                      candidate.name === request.toolName &&
-                      candidate.sourceName === request.pluginId,
-                  );
-            if (!entry) {
-              throw new ToolInputError(
-                `namespace tool is not visible in the run catalog: ${request.toolName}`,
-              );
-            }
-            const called = await params.runtime.callExactId(entry.id, request.input, {
+            const called = await params.runtime.callExactId(request.catalogId, request.input, {
+              recoverySurface: "catalog",
               parentToolCallId: params.parentToolCallId,
               signal: params.signal,
               onUpdate: params.onUpdate,
+              mcpNamespaceGuest: true,
             });
-            if (request.catalogId) {
-              const guestResult = consumeMcpCodeModeGuestResult(called.result);
-              if (guestResult === undefined) {
-                throw new ToolInputError(
-                  "MCP namespace tool result is missing its owned guest projection.",
-                );
-              }
-              return guestResult;
+            const guestResult = consumeMcpCodeModeGuestResult(called.result);
+            if (guestResult === undefined) {
+              throw new ToolInputError(
+                "MCP namespace tool result is missing its owned guest projection.",
+              );
             }
-            return isRecord(called.result) && "details" in called.result
-              ? called.result.details
-              : called.result;
+            return guestResult;
           },
         );
+        if (namespaceId === "mcp" && pathLocal.at(-1) === "$api") {
+          params.runtime.observeNetworkContent(params.parentToolCallId);
+        }
         break;
       }
       case "agentSpawn":

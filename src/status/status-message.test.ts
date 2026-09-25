@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { testing as cliBackendsTesting } from "../agents/cli-backends.test-support.js";
 import { SESSION_TOTAL_TOKENS_VERSION } from "../config/sessions/types.js";
 import type { ModelDefinitionConfig } from "../config/types.models.js";
-import * as transcriptReaders from "../gateway/session-transcript-readers.js";
+import * as transcriptReaders from "../gateway/session-transcript-usage.js";
 
 vi.mock("../version.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../version.js")>();
@@ -130,6 +130,29 @@ describe("buildStatusMessageParts presentation", () => {
     expect(rows.get("🪢 Queue")).toBe("steer");
     expect(String(rows.get("📚 Context"))).not.toContain("▰");
     expect(parts.presentation.blocks.some((block) => block.type === "text")).toBe(false);
+  });
+
+  it("shows the sanitized endpoint in text and tables", () => {
+    const parts = buildStatusMessageParts({
+      modelRefs: statusModelRefs({ provider: "openai", model: "selected-model" }),
+      agent: { model: "openai/selected-model" },
+      selectedEndpoint: "https://user:secret@api.openai.com/v1?token=private#private",
+    });
+    const table = parts.presentation.blocks.find((block) => block.type === "table");
+    const rows = new Map(table?.type === "table" ? table.rows.map((row) => [row[0], row[1]]) : []);
+    expect(parts.text).toContain("Endpoint: https://api.openai.com/v1");
+    expect(rows.get("🌐 Endpoint")).toBe("https://api.openai.com/v1");
+    expect(JSON.stringify(parts)).not.toMatch(/secret|private|user:/);
+  });
+
+  it("does not infer endpoints from a model or credential label without route facts", () => {
+    const parts = buildStatusMessageParts({
+      modelRefs: statusModelRefs({ provider: "openai", model: "selected-model" }),
+      agent: { model: "openai/selected-model" },
+      modelAuth: "oauth (codex)",
+    });
+    expect(parts.text).toContain("Endpoint: unknown");
+    expect(JSON.stringify(parts)).not.toContain("https://");
   });
 
   it("shows a context meter and a pressure warning when the window runs hot", () => {

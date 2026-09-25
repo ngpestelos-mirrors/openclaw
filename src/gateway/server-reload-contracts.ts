@@ -14,7 +14,7 @@ import type {
   SharedGatewayAuthClient,
   SharedGatewaySessionGenerationState,
 } from "./server-shared-auth-generation.js";
-import type { ActivateRuntimeSecrets } from "./server-startup-config.js";
+import type { ActivateRuntimeSecrets } from "./server-startup-config.types.js";
 import type { HookClientIpConfig } from "./server/hooks-request-handler.js";
 
 export type RuntimeSecretsPreflightParams = Omit<
@@ -164,11 +164,11 @@ export type GatewayReloadHandlerParams = {
     changedPaths: readonly string[];
     reloadPluginIds?: ReadonlySet<string>;
     pluginLifecycle?: GatewayReloadPlan["pluginLifecycle"];
-    /** Validate remaining config effects before the prepared plugin owner starts drainage. */
+    /** Fence config consumers before drain; return their publication after successful rollback. */
     prepareConfigEffects: (replacement: {
       pluginIds: ReadonlySet<string>;
       channels: ReadonlySet<ChannelKind>;
-    }) => void;
+    }) => () => Promise<void>;
     commitRuntime: (publication?: GatewayRuntimePublication) => Promise<void>;
     env: NodeJS.ProcessEnv;
     isAborted?: () => boolean;
@@ -211,7 +211,6 @@ export type ManagedGatewayConfigReloaderParams = Omit<
   initialIncludedPaths?: readonly string[];
   initialSnapshotValid: boolean;
   initialSnapshotIssues: ConfigFileSnapshot["issues"];
-  initialInternalWriteHash: string | null;
   watchPath: string;
   readSnapshot: typeof import("../config/io.js").readConfigFileSnapshotForRuntimeTransaction;
   promoteSnapshot: typeof import("../config/config.js").promoteConfigSnapshotToLastKnownGood;

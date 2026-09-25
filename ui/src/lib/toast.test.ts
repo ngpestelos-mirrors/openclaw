@@ -136,7 +136,7 @@ describe("shared toast", () => {
     },
   );
 
-  it("reconciles focus in the new root after relocation out of a shadow root", async () => {
+  it("resumes remaining time when relocation out of a shadow root drops focus", async () => {
     vi.useFakeTimers();
     const host = await mountHost();
     const shadowOwner = document.createElement("div");
@@ -155,10 +155,7 @@ describe("shared toast", () => {
     expect(onDismiss).not.toHaveBeenCalled();
     document.body.append(host);
     await host.updateComplete;
-    expect(host.contains(document.activeElement)).toBe(true);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(onDismiss).not.toHaveBeenCalled();
-    host.querySelector<HTMLButtonElement>(".app-toast__dismiss")!.blur();
+    expect(host.contains(document.activeElement)).toBe(false);
     await vi.advanceTimersByTimeAsync(59);
     expect(onDismiss).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
@@ -292,14 +289,25 @@ describe("shared toast", () => {
 
   it("cleans up paused toasts and queued outcomes on removal", async () => {
     vi.useFakeTimers();
+    const media = vi.fn(() => ({ matches: false }));
+    vi.stubGlobal("matchMedia", media);
     const host = await mountHost();
+    const anchor = document.createElement("div");
+    document.body.append(anchor);
+    const bounds = vi
+      .spyOn(anchor, "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(0, 0, 100, 100));
     const firstDismiss = vi.fn();
     const queuedDismiss = vi.fn();
-    showToast({ message: "First", onDismiss: firstDismiss });
+    showToast({ anchor, message: "First", onDismiss: firstDismiss });
     showToast({ message: "Queued", fifo: true, onDismiss: queuedDismiss });
     await host.updateComplete;
     host.querySelector<HTMLButtonElement>(".app-toast__dismiss")!.focus();
+    bounds.mockClear();
+    media.mockClear();
     host.remove();
+    expect(bounds).not.toHaveBeenCalled();
+    expect(media).not.toHaveBeenCalled();
     expect(firstDismiss).toHaveBeenCalledExactlyOnceWith("disconnected");
     expect(queuedDismiss).toHaveBeenCalledExactlyOnceWith("disconnected");
     await vi.advanceTimersByTimeAsync(0);
@@ -311,14 +319,14 @@ describe("shared toast", () => {
 
   it("still runs a focused action immediately and honors reduced-motion dismissal", async () => {
     vi.useFakeTimers();
-    vi.stubGlobal(
-      "matchMedia",
-      vi.fn(() => ({ matches: true })),
-    );
+    const media = vi.fn(() => ({ matches: true }));
+    vi.stubGlobal("matchMedia", media);
     const host = await mountHost();
     const anchor = document.createElement("div");
     document.body.append(anchor);
-    vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 100, 100));
+    const bounds = vi
+      .spyOn(anchor, "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(0, 0, 100, 100));
     const onAction = vi.fn();
     const onDismiss = vi.fn();
     showToast({ anchor, message: "Session archived", actionLabel: "Undo", onAction, onDismiss });
@@ -326,15 +334,22 @@ describe("shared toast", () => {
     const action = host.querySelector<HTMLButtonElement>(".app-toast__action")!;
     action.focus();
     await vi.advanceTimersByTimeAsync(6_100);
+    bounds.mockClear();
+    media.mockClear();
     action.click();
     await host.updateComplete;
+    expect(bounds).not.toHaveBeenCalled();
+    expect(media).not.toHaveBeenCalled();
     expect(onAction).toHaveBeenCalledOnce();
     expect(onDismiss).toHaveBeenCalledExactlyOnceWith("action");
     showToast({ anchor, message: "Temporary", durationMs: 100 });
     await host.updateComplete;
+    bounds.mockClear();
     await vi.advanceTimersByTimeAsync(100);
     await host.updateComplete;
     expect(host.querySelector(".app-toast")).toBeNull();
+    expect(bounds).not.toHaveBeenCalled();
+    expect(media).toHaveBeenCalledExactlyOnceWith("(prefers-reduced-motion: reduce)");
     expect(vi.getTimerCount()).toBe(0);
   });
 

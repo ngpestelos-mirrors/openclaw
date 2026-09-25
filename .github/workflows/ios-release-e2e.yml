@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   qualify:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 240
     env:
       TARGET_SHA: ${{ inputs.target_sha }}
@@ -80,17 +80,12 @@ jobs:
           install-bun: "false"
           cache-mode: "off"
 
-      - name: Select Xcode 26.6 and install pinned native tools
+      - name: Select Xcode 27 and install pinned native tools
         shell: bash
         run: |
           set -euo pipefail
-          for xcode_app in /Applications/Xcode_26.6.app /Applications/Xcode-26.6.0.app; do
-            if [ -d "$xcode_app/Contents/Developer" ]; then
-              sudo xcode-select -s "$xcode_app/Contents/Developer"
-              break
-            fi
-          done
-          [[ "$(xcodebuild -version | awk 'NR == 1 { print $2 }')" == 26.6 ]]
+          source scripts/lib/swift-toolchain.sh
+          select_xcode_toolchain 27.0
           swift_tools_dir="$RUNNER_TEMP/ios-release-e2e-tools"
           ./scripts/install-xcodegen.sh "$swift_tools_dir"
           ./scripts/install-swift-tools.sh "$swift_tools_dir"

@@ -153,9 +153,19 @@ class ArchiveSession {
         connection.worker.off("exit", exit);
       };
       const receive = (response: unknown) => {
+        const expectedType =
+          request.operation === "materialize"
+            ? "done"
+            : request.operation === "publish"
+              ? "published"
+              : request.operation === "pending"
+                ? "pending"
+                : request.operation === "read-page"
+                  ? "page-read"
+                  : "final-read";
         if (
           !isRecord(response) ||
-          response.type !== (request.operation === "materialize" ? "done" : "published") ||
+          response.type !== expectedType ||
           response.operationId !== operationId ||
           response.settled !== true ||
           !Array.isArray(response.results)

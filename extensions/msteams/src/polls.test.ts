@@ -7,19 +7,21 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildMSTeamsPollCard,
   createMSTeamsPollStoreState,
   extractMSTeamsPollVote,
-  type MSTeamsPoll,
+  type MSTeamsPollStore,
 } from "./polls.js";
 import { setMSTeamsRuntime } from "./runtime.js";
 import { msteamsRuntimeStub } from "./test-support/runtime.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
-  afterAll(() => {
+  afterAll(async () => {
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     cleanup();
   }),
@@ -263,14 +265,13 @@ describe("state poll store", () => {
     async ({ existing, expired, removed, scans }) => {
       const stateDir = tempDirs.make("openclaw-msteams-polls-");
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-      const metadataStore = createPluginStateKeyedStoreForTests<Omit<MSTeamsPoll, "votes">>(
-        "msteams",
-        {
-          namespace: "polls",
-          maxEntries: 2000,
-          env,
-        },
-      );
+      const metadataStore = createPluginStateKeyedStoreForTests<
+        Omit<Parameters<MSTeamsPollStore["createPoll"]>[0], "votes">
+      >("msteams", {
+        namespace: "polls",
+        maxEntries: 2000,
+        env,
+      });
       const voteBucketStore = createPluginStateKeyedStoreForTests<{
         pollId: string;
         bucket: string;

@@ -40,7 +40,11 @@ afterEach(() => {
   nativeMocks.gateway.mockReset();
 });
 
-function result(test: string = IOS_RELEASE_TESTS[0], overrides: Record<string, unknown> = {}) {
+function result(
+  test: string = IOS_RELEASE_TESTS[0],
+  overrides: Record<string, unknown> = {},
+  bundleOverrides: Record<string, unknown> = {},
+) {
   return {
     testNodes: [
       {
@@ -62,6 +66,7 @@ function result(test: string = IOS_RELEASE_TESTS[0], overrides: Record<string, u
                 ],
               },
             ],
+            ...bundleOverrides,
           },
         ],
       },
@@ -70,7 +75,7 @@ function result(test: string = IOS_RELEASE_TESTS[0], overrides: Record<string, u
 }
 
 describe("iOS release test identity", () => {
-  it("accepts Xcode 26 XCTest class/method identity under its exact UI bundle", () => {
+  it("accepts XCTest class/method identity under its exact UI bundle", () => {
     for (const test of IOS_RELEASE_TESTS) {
       requireExactTestResult(
         result(test, { children: [{ nodeType: "Test Case Run", result: "Passed" }] }),
@@ -110,11 +115,9 @@ describe("iOS release test identity", () => {
   });
 
   it("rejects a wrong target or a unit bundle even with the exact class/method", () => {
-    const wrongTarget = result();
-    wrongTarget.testNodes[0].children[0].name = "OtherUITests";
+    const wrongTarget = result(undefined, {}, { name: "OtherUITests" });
     expect(() => requireExactTestResult(wrongTarget, IOS_RELEASE_TESTS[0])).toThrow();
-    const unitBundle = result();
-    unitBundle.testNodes[0].children[0].nodeType = "Unit test bundle";
+    const unitBundle = result(undefined, {}, { nodeType: "Unit test bundle" });
     expect(() => requireExactTestResult(unitBundle, IOS_RELEASE_TESTS[0])).toThrow();
   });
 
@@ -283,8 +286,8 @@ describe("fresh trial ownership", () => {
     ]);
     expect(deps.create).toHaveBeenCalledTimes(16);
     expect(report.trials).toHaveLength(16);
-    expect(report.trials[0].status).toBe("failed");
-    expect(report.trials[0].errors).toEqual(["test-timeout"]);
+    expect(report.trials[0]?.status).toBe("failed");
+    expect(report.trials[0]?.errors).toEqual(["test-timeout"]);
     expect(report.trials.slice(1).every((trial) => trial.status === "passed")).toBe(true);
     expect(trace.filter((entry) => entry.startsWith("cleanup:"))).toHaveLength(16);
     expect(JSON.stringify(report)).not.toContain("private");
@@ -297,7 +300,7 @@ describe("fresh trial ownership", () => {
   it("does not retry failed preparation or start its test/meter", async () => {
     const { deps, trace } = fixture({ fail: "prepare" });
     const report = await runTrials("stock", deps);
-    expect(report.trials[0].errors).toEqual(["preparation-failed"]);
+    expect(report.trials[0]?.errors).toEqual(["preparation-failed"]);
     expect(trace.filter((entry) => entry === "prepare:1")).toHaveLength(1);
     expect(trace).not.toContain("test:1");
     expect(trace).toContain("cleanup:1");
@@ -318,7 +321,7 @@ describe("fresh trial ownership", () => {
       const report = await runTrials("stock", deps);
       expect(report.complete).toBe(false);
       expect(report.trials).toHaveLength(1);
-      expect(report.trials[0].status).toBe("failed");
+      expect(report.trials[0]?.status).toBe("failed");
       expect(trace).toContain("cleanup:1");
     }
   });
@@ -371,7 +374,7 @@ describe("release qualification workflow authority", () => {
       `ios-release-e2e=\${{ needs.ios-release-e2e.result }}|${job.if}`,
     );
   });
-  it("uses unsigned Debug products, exact destinations and the Xcode 26 result CLI", () => {
+  it("uses unsigned Debug products, exact destinations and the XCTest result CLI", () => {
     const source = readFileSync("scripts/lib/ios-release-e2e-native.ts", "utf8");
     expect(source).toContain('"CODE_SIGNING_ALLOWED=NO"');
     expect(source).toContain('"Debug"');
@@ -388,6 +391,9 @@ describe("native command adapter", () => {
     "success",
     "dirty-tracked",
     "dirty-untracked",
+    "wrong-xcode",
+    "wrong-xcode-build",
+    "wrong-runtime",
     "cleanup-failure",
     "build-unjoined",
     "build-exit",
@@ -454,15 +460,21 @@ describe("native command adapter", () => {
       } else if (options.bin === "git") {
         stdout.write("1".repeat(40));
       } else if (args.includes("-version")) {
-        stdout.write("Xcode 26.6\nBuild version synthetic\n");
+        stdout.write(
+          scenario === "wrong-xcode"
+            ? "Xcode 26.6\nBuild version 17F113\n"
+            : scenario === "wrong-xcode-build"
+              ? "Xcode 27.0\nBuild version 27A000\n"
+              : "Xcode 27.0\nBuild version 27A266a\n",
+        );
       } else if (args.includes("runtimes")) {
         stdout.write(
           JSON.stringify({
             runtimes: [
               {
                 isAvailable: true,
-                version: "26.6",
-                identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-6",
+                version: scenario === "wrong-runtime" ? "26.6" : "26.5",
+                identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
               },
             ],
           }),
@@ -514,6 +526,19 @@ describe("native command adapter", () => {
       expect(readdirSync(temp)).toEqual([]);
       return;
     }
+    if (scenario.startsWith("wrong-")) {
+      await expect(admission).rejects.toMatchObject({
+        diagnostic:
+          scenario === "wrong-runtime"
+            ? { operation: "simulator-runtime", code: "not-found" }
+            : { operation: "xcode-version", code: "unsupported" },
+      });
+      expect(
+        nativeMocks.command.mock.calls.some(([{ args }]) => args.includes("build-for-testing")),
+      ).toBe(false);
+      expect(readdirSync(temp)).toEqual([]);
+      return;
+    }
     if (scenario.startsWith("build-")) {
       await expect(admission).rejects.toMatchObject({
         diagnostic:
@@ -526,18 +551,24 @@ describe("native command adapter", () => {
       return;
     }
     const native = await admission;
+    expect(proof).toMatchObject({
+      xcode: "27.0",
+      xcodeBuild: "27A266a",
+      runtime: "26.5",
+      runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+    });
     try {
       const report = await runTrials("stock", native.dependencies);
       if (scenario === "cleanup-failure" || scenario === "test-unjoined") {
         expect(report.complete).toBe(false);
         expect(report.trials).toHaveLength(1);
-        expect(report.trials[0].errors).toContain("cleanup-failed");
+        expect(report.trials[0]?.errors).toContain("cleanup-failed");
         expect(proof.resourcesPreserved).toBe(true);
         return;
       }
       if (scenario === "test-exit") {
         expect(report.trials.map((trial) => trial.status)).toEqual(["failed", "failed"]);
-        expect(report.trials[0].diagnostics).toEqual([
+        expect(report.trials[0]?.diagnostics).toEqual([
           {
             operation: "native-test",
             code: "exit",
@@ -570,7 +601,7 @@ describe("native command adapter", () => {
       expect(
         commands.filter(({ args }) => args.includes("delete")).map(({ args }) => args.at(-1)),
       ).toEqual(["11111111-2222-3333-4444-000000000001", "11111111-2222-3333-4444-000000000002"]);
-      expect(nativeMocks.gateway.mock.calls[0][0]).toMatchObject({
+      expect(nativeMocks.gateway.mock.calls[0]?.[0]).toMatchObject({
         config: {
           gateway: { controlUi: { enabled: false } },
           agents: { defaults: { model: { primary: "openai/ios-e2e" } } },

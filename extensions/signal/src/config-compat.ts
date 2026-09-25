@@ -13,7 +13,11 @@ import {
   isValidSignalManagedNativePort,
   resolveLocalSignalTransportPort,
 } from "./transport-policy.js";
-import { buildSignalTransportHttpUrl, normalizeSignalTransportUrl } from "./transport-url.js";
+import {
+  assertSignalSocketTransport,
+  buildSignalTransportHttpUrl,
+  normalizeSignalTransportUrl,
+} from "./transport-url.js";
 
 const LEGACY_TRANSPORT_FIELDS = [
   "configPath",
@@ -47,30 +51,21 @@ function isSignalTransportConfig(value: unknown): value is SignalTransportConfig
   if (!isRecord(value)) {
     return false;
   }
-  if (value.kind === "managed-native") {
-    if (value.httpPort !== undefined && !isValidSignalManagedNativePort(value.httpPort)) {
+  try {
+    if (value.kind === "managed-native") {
+      assertSignalSocketTransport(value);
+      if (value.httpPort !== undefined && !isValidSignalManagedNativePort(value.httpPort)) {
+        return false;
+      }
+      if (value.url === undefined) {
+        return true;
+      }
+    } else if (value.kind !== "external-native" && value.kind !== "container") {
       return false;
-    }
-    if (value.url === undefined) {
-      return true;
     }
     if (typeof value.url !== "string") {
       return false;
     }
-    try {
-      normalizeSignalTransportUrl(value.url);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  if (
-    (value.kind !== "external-native" && value.kind !== "container") ||
-    typeof value.url !== "string"
-  ) {
-    return false;
-  }
-  try {
     normalizeSignalTransportUrl(value.url);
     return true;
   } catch {
@@ -425,6 +420,9 @@ function allocateMigratedManagedPorts(params: {
     if (!transport || (index === 0 && canonicalDefaultIndex !== 0)) {
       continue;
     }
+    if (transport.kind === "managed-native" && transport.socketPath !== undefined) {
+      continue;
+    }
     if (transport.kind !== "managed-native") {
       const localPort = resolveLocalSignalTransportPort(transport.url);
       if (localPort !== undefined) {
@@ -446,7 +444,7 @@ function allocateMigratedManagedPorts(params: {
     if (!transport || (index === 0 && canonicalDefaultIndex !== 0)) {
       return transport;
     }
-    if (transport.kind !== "managed-native") {
+    if (transport.kind !== "managed-native" || transport.socketPath !== undefined) {
       return transport;
     }
     const existingCanonical = isRecord(params.entries[index]?.transport);
@@ -550,6 +548,13 @@ function hasContainerTransportWithoutEffectiveAccount(cfg: OpenClawConfig): bool
   return false;
 }
 
+function pendingSignalTransportMigration(
+  cfg: OpenClawConfig,
+  warning: string,
+): ChannelDoctorConfigMutation {
+  return { config: cfg, changes: [], warnings: [warning] };
+}
+
 function prepareLegacySignalTransportMigration(cfg: OpenClawConfig):
   | ChannelDoctorConfigMutation
   | {
@@ -572,28 +577,35 @@ function prepareLegacySignalTransportMigration(cfg: OpenClawConfig):
   }
   const apiMode = signal.apiMode;
   const entries = [signal, ...Object.values(accounts).filter(isRecord)];
+  // A malformed explicit socket opt-in must never become an HTTP daemon during repair.
+  if (
+    entries.some(
+      (entry) =>
+        isRecord(entry.transport) &&
+        Object.hasOwn(entry.transport, "socketPath") &&
+        (entry.transport.kind !== "managed-native" || !isSignalTransportConfig(entry.transport)),
+    )
+  ) {
+    return pendingSignalTransportMigration(
+      cfg,
+      "- channels.signal: invalid transport.socketPath configuration; correct the socket path and remove conflicting HTTP or receiveMode on-start options, then run openclaw doctor --fix.",
+    );
+  }
   const migrationEntries = entries.filter((_, index) => shouldMaterializeTransport(entries, index));
   const legacyResolutionEntries = migrationEntries.filter(
     (entry) => !isSignalTransportConfig(entry.transport),
   );
   const invalidDerivedEndpoint = findInvalidLegacyDerivedEndpoint(legacyResolutionEntries, signal);
   if (invalidDerivedEndpoint) {
-    return {
-      config: cfg,
-      changes: [],
-      warnings: [
-        invalidDerivedEndpoint === "port"
-          ? PENDING_LEGACY_INVALID_PORT_WARNING
-          : PENDING_LEGACY_INVALID_HOST_WARNING,
-      ],
-    };
+    return pendingSignalTransportMigration(
+      cfg,
+      invalidDerivedEndpoint === "port"
+        ? PENDING_LEGACY_INVALID_PORT_WARNING
+        : PENDING_LEGACY_INVALID_HOST_WARNING,
+    );
   }
   if (hasInvalidLegacyHttpUrl(legacyResolutionEntries, signal)) {
-    return {
-      config: cfg,
-      changes: [],
-      warnings: [PENDING_LEGACY_INVALID_URL_WARNING],
-    };
+    return pendingSignalTransportMigration(cfg, PENDING_LEGACY_INVALID_URL_WARNING);
   }
   return { signal, apiMode, entries, legacyResolutionEntries };
 }
@@ -604,11 +616,7 @@ function finishLegacySignalTransportMigration(
   resolvedTransports: Array<SignalTransportConfig | undefined>,
 ): ChannelDoctorConfigMutation {
   if (hasInvalidManagedTransportPort(resolvedTransports)) {
-    return {
-      config: cfg,
-      changes: [],
-      warnings: [PENDING_LEGACY_INVALID_PORT_WARNING],
-    };
+    return pendingSignalTransportMigration(cfg, PENDING_LEGACY_INVALID_PORT_WARNING);
   }
   const transports = allocateMigratedManagedPorts({
     entries,
@@ -617,22 +625,14 @@ function finishLegacySignalTransportMigration(
   if (
     transports.some((transport, index) => shouldMaterializeTransport(entries, index) && !transport)
   ) {
-    return {
-      config: cfg,
-      changes: [],
-      warnings: [PENDING_LEGACY_TRANSPORT_WARNING],
-    };
+    return pendingSignalTransportMigration(cfg, PENDING_LEGACY_TRANSPORT_WARNING);
   }
   const next = applyMigratedSignalTransports({ cfg, entries, transports });
   if (!next) {
     return { config: cfg, changes: [] };
   }
   if (hasContainerTransportWithoutEffectiveAccount(next)) {
-    return {
-      config: cfg,
-      changes: [],
-      warnings: [PENDING_LEGACY_CONTAINER_ACCOUNT_WARNING],
-    };
+    return pendingSignalTransportMigration(cfg, PENDING_LEGACY_CONTAINER_ACCOUNT_WARNING);
   }
   return {
     config: next,
@@ -655,11 +655,7 @@ export async function migrateLegacySignalTransportConfig(params: {
     !params.detect &&
     legacyResolutionEntries.some((entry) => requiresDetection(entry, signal, apiMode))
   ) {
-    return {
-      config: params.cfg,
-      changes: [],
-      warnings: [PENDING_LEGACY_TRANSPORT_WARNING],
-    };
+    return pendingSignalTransportMigration(params.cfg, PENDING_LEGACY_TRANSPORT_WARNING);
   }
   const resolvedTransports = await Promise.all(
     entries.map(async (entry, index) =>

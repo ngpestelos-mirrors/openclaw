@@ -19,6 +19,7 @@ import {
   resolveTaskScriptPath,
 } from "./schtasks-layout.js";
 import {
+  findInstalledGatewayChildPid,
   findInstalledProcessPid,
   isNodeHostArgv,
   probeProcessState,
@@ -30,6 +31,7 @@ import {
   terminateGatewayProcessTree,
 } from "./schtasks-process.js";
 import { probeScheduledTaskExists, probeScheduledTaskState } from "./schtasks-state-probe.js";
+import { mergeGatewayServiceEnv } from "./service-env-merge.js";
 import { resolveServiceManagerEnv } from "./service-process-env.js";
 import {
   createServiceRuntimeInspectionFailure,
@@ -258,7 +260,7 @@ export async function resolveFallbackRuntime(
   const snapshot = shouldInspectProcess ? readWindowsProcessSnapshot() : null;
   const processPid =
     snapshot && installedArguments
-      ? findInstalledProcessPid(snapshot, port, installedArguments, () => true)
+      ? findInstalledGatewayChildPid(snapshot, port, installedArguments)
       : null;
   if (processPid) {
     return {
@@ -304,9 +306,9 @@ export async function resolveFallbackRuntime(
   }
   const matchedGatewayPids = resolveGatewayListenerPids(diagnostics.listeners);
   const scopedListenerPids = new Set(diagnostics.listeners.map((listener) => listener.pid));
-  const verifiedGatewayPids = findVerifiedGatewayListenerPidsOnPortSync(port).filter((pid) =>
-    scopedListenerPids.has(pid),
-  );
+  const verifiedGatewayPids = findVerifiedGatewayListenerPidsOnPortSync(port, {
+    env: mergeGatewayServiceEnv(env, command),
+  }).filter((pid) => scopedListenerPids.has(pid));
   const ownedGatewayPids = matchedGatewayPids.length > 0 ? matchedGatewayPids : verifiedGatewayPids;
   if (ownedGatewayPids.length > 0) {
     return requireCommandOwnership

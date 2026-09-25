@@ -33,6 +33,7 @@ import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { loadChatHistory } from "./chat-history.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
+import { createChatPageStateContext } from "./chat-page.test-support.ts";
 import { removeQueuedMessage } from "./chat-queue.ts";
 import { ChatStateController } from "./chat-state-controller.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
@@ -46,7 +47,7 @@ import {
   refreshChatModelAuthStatus,
   retireChatMetadataRequests,
 } from "./chat-state-refresh.ts";
-import { resolveChatAvatarUrl, selectedChatSessionRow } from "./chat-state-route.ts";
+import { selectedChatSessionRow } from "./chat-state-route.ts";
 import { buildChatItems } from "./chat-thread-build.ts";
 import { renderAssistantAttachments } from "./components/chat-message-attachments.ts";
 import { getChatSessionProjection, reduceChatSessionProjection } from "./history-merge.ts";
@@ -54,6 +55,7 @@ import { scheduleControlUiAfterPaint } from "./performance.ts";
 import { applySessionMessagePayload } from "./session-message-apply.ts";
 import { activatePanel, openSlot } from "./sidebar-layout.ts";
 import { buildToolStreamIdentity } from "./tool-stream-identity.ts";
+import { createHost as createToolStreamHost } from "./tool-stream.test-helpers.ts";
 
 beforeEach(() => {
   vi.spyOn(assistantIdentity, "loadLocalAssistantIdentity").mockReturnValue({
@@ -82,10 +84,6 @@ describe("canonical session message recovery", () => {
       ...overrides,
     });
     if (!overrides.sessions) {
-      vi.spyOn(host.sessions, "reconcileChanged").mockImplementation(() => ({
-        applied: false,
-        result: host.sessions.state.result,
-      }));
       vi.spyOn(host.sessions, "refresh").mockResolvedValue(undefined);
       vi.spyOn(host.sessions, "listBranches").mockResolvedValue([]);
     }
@@ -2176,7 +2174,7 @@ describe("canonical session message recovery", () => {
   it.each([
     { name: "without a pending session-message reload", pendingReload: false },
     { name: "after a pending session-message reload", pendingReload: true },
-  ])("starts a fresh history request $name", async ({ pendingReload }) => {
+  ])("waits for the old read before fresh terminal history $name", async ({ pendingReload }) => {
     const runId = "run-with-pre-final-history";
     const prompt = {
       role: "user",
@@ -2227,9 +2225,10 @@ describe("canonical session message recovery", () => {
       },
     });
 
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(1);
     staleHistory.resolve({ messages: [prompt], sessionId: "selected-session", sessionInfo });
     await preFinalLoad;
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     expect(renderedTranscript(state)).toEqual([
       { role: "user", text: "Finish after the stale snapshot" },
     ]);
@@ -2851,18 +2850,19 @@ describe("canonical session message recovery", () => {
       ],
       chatBranchesConnectionEpoch: 1,
       chatBranchesSessionKey: "agent:main:main",
-      sessions: {
-        listBranches,
-        reconcileChanged: vi.fn().mockReturnValue({ applied: false }),
-        refresh: vi.fn().mockResolvedValue(undefined),
-      } as never,
     });
+    vi.spyOn(state.sessions, "listBranches").mockImplementation(listBranches);
 
-    handlePageGatewayEvent(state, {
-      type: "event",
-      event: "sessions.changed",
-      payload: { sessionKey: state.sessionKey, agentId: "main", reason: "branch-switch" },
-    });
+    handlePageGatewayEvent(
+      state,
+      {
+        type: "event",
+        event: "sessions.changed",
+        payload: { sessionKey: state.sessionKey, agentId: "main", reason: "branch-switch" },
+      },
+      undefined,
+      { applied: false },
+    );
 
     expect(state.chatBranches).toEqual([]);
     expect(state.chatBranchesSessionKey).toBeNull();
@@ -2892,16 +2892,11 @@ describe("canonical session message recovery", () => {
     expect(state.chatBranchesSessionKey).toBe("agent:main:main");
   });
 
-  it("keeps the routed row when a hidden pane observes its archive first", () => {
+  it("keeps the routed row when a hidden pane observes its archive first", async () => {
     const archivedKey = "agent:main:dashboard:archived";
-    const sharedHost = makeChatHost({
-      sessionKey: archivedKey,
-      sessionsResult: {
-        ts: 1,
-        path: "",
-        count: 1,
-        defaults: { modelProvider: null, model: null, contextTokens: null },
-        sessions: [
+    const client = createTestGatewayClient(async () =>
+      sessionsResult(
+        [
           {
             key: archivedKey,
             kind: "direct",
@@ -2910,24 +2905,42 @@ describe("canonical session message recovery", () => {
             updatedAt: 1,
           },
         ],
+        1,
+      ),
+    );
+    const { gateway, emitEvent } = createGatewayHarness(client);
+    gateway.snapshot.sessionKey = archivedKey;
+    const sessions = createTestSessionCapability(gateway);
+    const { state } = createSessionEventState({ sessions });
+    const delivered = vi.fn();
+    const hidden = sessions.observeRow({ key: state.sessionKey, agentId: "main" }, () => {}, {
+      onEvent: (event, result) => {
+        delivered(event, result);
+        handlePageGatewayEvent(state, event, () => false, result);
       },
     });
-    expect(sharedHost.sessions.state.result?.sessions).toHaveLength(1);
-    const { state } = createSessionEventState({ sessions: sharedHost.sessions });
+    try {
+      await sessions.refresh({ agentId: "main", force: true });
+      expect(sessions.state.result?.sessions).toHaveLength(1);
+      const event = {
+        type: "event" as const,
+        event: "sessions.changed",
+        payload: { key: archivedKey, sessionKey: archivedKey, archived: true, reason: "update" },
+      };
+      emitEvent(event);
 
-    handlePageGatewayEvent(state, {
-      type: "event",
-      event: "sessions.changed",
-      payload: { key: archivedKey, sessionKey: archivedKey, archived: true, reason: "update" },
-    });
-
-    expect(state.sessions.state.result?.sessions).toEqual([
-      expect.objectContaining({
-        key: archivedKey,
-        archived: true,
-        derivedTitle: "Archived title",
-      }),
-    ]);
+      expect(delivered).toHaveBeenCalledExactlyOnceWith(event, { applied: false });
+      expect(state.sessions.state.result?.sessions).toEqual([
+        expect.objectContaining({
+          key: archivedKey,
+          archived: true,
+          derivedTitle: "Archived title",
+        }),
+      ]);
+    } finally {
+      hidden.dispose();
+      sessions.dispose();
+    }
   });
 
   it("does not mistake identity-only message invalidation for a session reset", () => {
@@ -3035,7 +3048,6 @@ describe("canonical session message recovery", () => {
     state.sessions = {
       ...state.sessions,
       listBranches,
-      reconcileChanged: vi.fn().mockReturnValue({ applied: false }),
       refresh: vi.fn(async () => {
         await refreshFinished.promise;
         state.sessionsResult = {
@@ -3074,6 +3086,7 @@ describe("canonical session message recovery", () => {
         },
       },
       () => presented,
+      { applied: false },
     );
     presented = false;
     refreshFinished.resolve();
@@ -3167,29 +3180,9 @@ describe("ChatStateController render lifecycle", () => {
     } as unknown as ChatPageHost;
   }
 
-  function createPageContext() {
-    return {
-      agents: {
-        state: { agentsList: null },
-        ensureList: vi.fn(async () => null),
-      },
-      agentSelection: { state: { selectedId: "main" } },
-      basePath: "",
-      config: {
-        current: {
-          allowExternalEmbedUrls: false,
-          assistantIdentity: { name: "Assistant" },
-          embedSandboxMode: "scripts",
-        },
-      },
-      chatSubmissions: createChatSubmissions(),
-      sessions: {},
-    } as unknown as ApplicationContext;
-  }
-
   it("owns attachment views in Files without replacing Detail content", () => {
     const state = createPageState(
-      createPageContext(),
+      createChatPageStateContext(),
       { invalidate: vi.fn(), afterCommit: () => () => {} },
       {
         dispatchEvent: () => true,
@@ -3529,19 +3522,14 @@ describe("ChatStateController render lifecycle", () => {
   it("tracks waiting approval only for the selected session until resolution", () => {
     const requestUpdate = vi.fn();
     const state = {
-      sessionKey: "agent:main:current",
-      assistantAgentId: "main",
+      ...createToolStreamHost({
+        sessionKey: "agent:main:current",
+        assistantAgentId: "main",
+        chatRunId: "client-run-1",
+        chatStreamStartedAt: 1,
+      }),
       agentsList: { defaultId: "main" },
-      chatRunId: "client-run-1",
-      chatStream: null,
-      chatStreamStartedAt: 1,
-      chatStreamSegments: [],
-      chatToolMessages: [],
-      toolStreamById: new Map(),
-      toolStreamOrder: [],
-      toolStreamSyncTimer: null,
       waitingApprovalStatuses: new Map(),
-      sessions: { refreshReplacement: vi.fn(async () => undefined) },
       chatStreamRenderFrame: null,
       renderLifecycle: { invalidate: requestUpdate },
       requestUpdate,
@@ -3604,7 +3592,9 @@ describe("ChatStateController render lifecycle", () => {
       toolStreamById: new Map(),
       toolStreamOrder: [],
       toolStreamSyncTimer: null,
-      sessions: { refreshReplacement: vi.fn(async () => undefined) } as never,
+      sessions: {
+        reconcileMutation: vi.fn(async () => ({ status: "refreshed" as const })),
+      } as never,
     });
     const emitAgent = (seq: number, stream: string, data: Record<string, unknown>) =>
       handlePageGatewayEvent(state, {
@@ -3763,7 +3753,7 @@ describe("ChatStateController render lifecycle", () => {
 
     delta("opened https://github.com/openclaw/openclaw/pull/113840 for review ");
     expect(refreshSessionPullRequests).toHaveBeenCalledTimes(1);
-    expect(refreshSessionPullRequests).toHaveBeenCalledWith({ refresh: true });
+    expect(refreshSessionPullRequests).toHaveBeenCalledWith({ refresh: true, automatic: true });
 
     // One refresh reloads all of the branch's PRs; further links in the same
     // run must not spend more GitHub quota.
@@ -3835,7 +3825,7 @@ describe("ChatStateController render lifecycle", () => {
     const controller = new ChatStateController<ChatPageHost>(host);
     controller.hostConnected();
     const renderLifecycle = controller.createRenderLifecycle();
-    const state = createPageState(createPageContext(), renderLifecycle, {
+    const state = createPageState(createChatPageStateContext(), renderLifecycle, {
       dispatchEvent: () => true,
       querySelector: () => null,
     });
@@ -4098,7 +4088,7 @@ describe("session pull request refresh", () => {
     });
 
     if (refresh) {
-      expect(refreshSessionPullRequests).toHaveBeenCalledWith({ refresh: true });
+      expect(refreshSessionPullRequests).toHaveBeenCalledWith({ refresh: true, automatic: true });
     } else {
       expect(refreshSessionPullRequests).not.toHaveBeenCalled();
     }
@@ -4107,22 +4097,8 @@ describe("session pull request refresh", () => {
 
 describe("image lightbox lifecycle", () => {
   it("accepts only matching base64 video at the page boundary", () => {
-    const context = {
-      agents: { state: { agentsList: null }, ensureList: vi.fn(async () => null) },
-      agentSelection: { state: { selectedId: "main" } },
-      basePath: "",
-      config: {
-        current: {
-          allowExternalEmbedUrls: false,
-          assistantIdentity: { name: "Assistant" },
-          embedSandboxMode: "scripts",
-        },
-      },
-      chatSubmissions: createChatSubmissions(),
-      sessions: {},
-    } as unknown as ApplicationContext;
     const state = createPageState(
-      context,
+      createChatPageStateContext(),
       { invalidate: vi.fn(), afterCommit: () => () => {} },
       { dispatchEvent: () => true, querySelector: () => null },
     );
@@ -4154,25 +4130,8 @@ describe("image lightbox lifecycle", () => {
 
   it("invalidates immediately when beginning a deferred image open", () => {
     const invalidate = vi.fn();
-    const context = {
-      agents: {
-        state: { agentsList: null },
-        ensureList: vi.fn(async () => null),
-      },
-      agentSelection: { state: { selectedId: "main" } },
-      basePath: "",
-      config: {
-        current: {
-          allowExternalEmbedUrls: false,
-          assistantIdentity: { name: "Assistant" },
-          embedSandboxMode: "scripts",
-        },
-      },
-      chatSubmissions: createChatSubmissions(),
-      sessions: {},
-    } as unknown as ApplicationContext;
     const state = createPageState(
-      context,
+      createChatPageStateContext(),
       {
         invalidate,
         afterCommit: () => () => {},
@@ -4192,19 +4151,6 @@ describe("image lightbox lifecycle", () => {
     expect(state.imageLightbox).toBeNull();
     expect(release).toHaveBeenCalledOnce();
     expect(invalidate).toHaveBeenCalledOnce();
-  });
-});
-
-describe("resolveChatAvatarUrl", () => {
-  it("prefers the authenticated avatar blob over persisted and protected URLs", () => {
-    const state = {
-      sessionKey: "agent:main:main",
-      chatAvatarUrl: "blob:authenticated-avatar",
-      assistantAvatar: "/avatar/main",
-      assistantAgentId: "main",
-    } as unknown as ChatPageHost;
-
-    expect(resolveChatAvatarUrl(state)).toBe("blob:authenticated-avatar");
   });
 });
 

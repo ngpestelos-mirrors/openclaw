@@ -18,7 +18,9 @@ import {
 import { hasUnjoinedWork, runManagedCommand } from "./managed-child-process.mjs";
 
 const DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro";
-const RUNTIME_VERSION = "26.6";
+const XCODE_VERSION = "27.0";
+const XCODE_BUILD = "27A266a";
+const RUNTIME_VERSION = "26.5";
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
 
 export async function createNativeDependencies(options: {
@@ -88,7 +90,8 @@ export async function createNativeDependencies(options: {
     throw new OperationError("source-status", "dirty-source");
   }
   options.proof.harnessSha = head;
-  if (!(await command("xcode-version", "xcodebuild", ["-version"])).startsWith("Xcode 26.6\n")) {
+  const xcodeVersion = await command("xcode-version", "xcodebuild", ["-version"]);
+  if (xcodeVersion !== `Xcode ${XCODE_VERSION}\nBuild version ${XCODE_BUILD}`) {
     throw new OperationError("xcode-version", "unsupported");
   }
   const binary = process.env.OPENCLAW_CI_SIMSLIM_BINARY;
@@ -111,8 +114,10 @@ export async function createNativeDependencies(options: {
     throw new OperationError("simulator-runtime", "not-found");
   }
   Object.assign(options.proof, {
-    xcode: "26.6",
+    xcode: XCODE_VERSION,
+    xcodeBuild: XCODE_BUILD,
     runtime: RUNTIME_VERSION,
+    runtimeIdentifier: runtime.identifier,
     deviceType: DEVICE_TYPE,
     simslim: binary ? "0.8.0" : null,
   });
