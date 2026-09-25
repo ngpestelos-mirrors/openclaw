@@ -30,7 +30,7 @@ const workerColumns = [
 ] as const;
 
 function rows(database: DatabaseSync, sql: string): Row[] {
-  const query = database.prepare(sql);
+  const query = database.prepare(sql); // sqlite-allow-raw -- Private recovery schema/metadata inspection; never application writes.
   query.setReadBigInts(true);
   return query.all();
 }
@@ -370,7 +370,7 @@ function assertSharedStoreIdentity(
   publishedVersion: number,
   generation: "baseline" | "candidate",
 ): void {
-  const identity = database
+  const identity = database // sqlite-allow-raw -- Validate the private copy's canonical shared-store identity row.
     .prepare("SELECT role,agent_id,schema_version FROM schema_meta WHERE meta_key='primary'")
     .get();
   if (

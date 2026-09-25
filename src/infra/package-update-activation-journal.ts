@@ -399,7 +399,9 @@ export function openPackageActivationJournal(anchor: string) {
           try {
             assertFiles();
             assertFence();
-            const mode = database.prepare("PRAGMA journal_mode").get()?.journal_mode;
+            const mode = database // sqlite-allow-raw -- Read-only hot-journal recovery must verify the native rollback mode.
+              .prepare("PRAGMA journal_mode")
+              .get()?.journal_mode;
             if (!["delete", "truncate", "persist"].includes(String(mode))) {
               throw new Error("Package publication recovery requires rollback journal mode");
             }

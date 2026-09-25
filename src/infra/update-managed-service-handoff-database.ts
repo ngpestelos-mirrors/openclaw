@@ -22,6 +22,7 @@ import {
   type SqliteTransactionOptions,
 } from "./sqlite-transaction.js";
 import type { admitUpdateInitialStores } from "./update-initial-store-admission.js";
+import type { ManagedUpdateLeaseDatabaseIdentity } from "./update-managed-service-handoff-identity.js";
 import { quarantineManagedHandoffStore } from "./update-managed-service-handoff-store-repair.js";
 import { createPrivateWindowsFile } from "./windows-private-directory.js";
 
@@ -50,11 +51,7 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
-export type ManagedUpdateLeaseDatabaseIdentity = Readonly<{
-  databasePath: string;
-  databaseIdentity: string;
-  parentIdentity: string;
-}>;
+export type { ManagedUpdateLeaseDatabaseIdentity } from "./update-managed-service-handoff-identity.js";
 
 function assertPath(stat: Stats | BigIntStats, kind: "directory" | "file") {
   if (

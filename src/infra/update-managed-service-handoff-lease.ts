@@ -7,14 +7,18 @@ import { hasErrnoCode } from "./errno.js";
 import { executeSqliteQuerySync } from "./kysely-sync.js";
 import type { SqliteTransactionOptions } from "./sqlite-transaction.js";
 import { resolvePreferredOpenClawTmpDir } from "./tmp-openclaw-dir.js";
-import type { admitUpdateInitialStores } from "./update-initial-store-admission.js";
 import { createManagedHandoffBootIdentityReader } from "./update-managed-service-handoff-boot.js";
 import { createManagedHandoffCancellation } from "./update-managed-service-handoff-cancellation.js";
 import {
   createManagedHandoffLeaseDatabase,
   leaseQueries,
-  type ManagedUpdateLeaseDatabaseIdentity,
 } from "./update-managed-service-handoff-database.js";
+import type {
+  LeaseAcquisition,
+  ManagedHandoffLease,
+  ManagedHandoffLeaseStoreOptions,
+  ManagedHandoffParent,
+} from "./update-managed-service-handoff-lease-types.js";
 import {
   readBorrowedLegacyHandoffParent,
   type BorrowedLegacyHandoffParent,
@@ -43,18 +47,10 @@ import {
   parseManagedHandoffLeasePayload,
   type HandoffProcessIdentity,
   type ManagedHandoffLeaseAction,
-  type ManagedHandoffLeasePayload,
 } from "./update-managed-service-handoff-schema.js";
 import { createManagedHandoffScopeReader } from "./update-managed-service-handoff-scope.js";
 import { hasManagedHandoffSchemaObject } from "./update-managed-service-handoff-source-inspection.js";
 
-export type ManagedHandoffLease = ManagedHandoffLeasePayload & {
-  key: string;
-  owner: string;
-  payload: string;
-  updatedAt: number;
-};
-export type ManagedHandoffParent = ManagedHandoffLease | BorrowedLegacyHandoffParent;
 // Identity is earned by this process's original acquisition, not by decoding a
 // row or copying a grant. Survives the executor pinning/reopening the same DB.
 const originalUpdateAdmissions = new WeakMap<
@@ -63,32 +59,20 @@ const originalUpdateAdmissions = new WeakMap<
 >();
 
 export type { BorrowedLegacyHandoffParent } from "./update-managed-service-handoff-legacy-parent.js";
+export type {
+  LeaseAcquisition,
+  ManagedHandoffLease,
+  ManagedHandoffLeaseStoreOptions,
+  ManagedHandoffParent,
+} from "./update-managed-service-handoff-lease-types.js";
 
 export function resolveManagedUpdateLeaseDatabasePath(): string {
   return path.join(resolvePreferredOpenClawTmpDir(), "managed-update-handoffs.sqlite");
 }
 
-export type LeaseAcquisition =
-  | { kind: "busy"; owner: string }
-  | {
-      kind: "acquired";
-      lease: ManagedHandoffLease;
-      originalDatabaseIdentity?: ManagedUpdateLeaseDatabaseIdentity;
-      retainedLease?: ManagedHandoffLease;
-    };
-
 /** One lease implementation, preloaded normally and sealed before package replacement. */
 export function createManagedHandoffLeaseStore(
-  options: {
-    databasePath: string;
-    serviceManagerEnv: NodeJS.ProcessEnv;
-    existingIdentity?: ManagedUpdateLeaseDatabaseIdentity;
-    originalUpdateKey?: string;
-    /** Known service/install pair selected by the original helper before admission. */
-    originalUpdateRetainedKey?: string;
-    initialStoreAdmission?: ReturnType<typeof admitUpdateInitialStores>;
-    onProcessIdentityWarning?: (pid: number, message: string) => void;
-  } = {
+  options: ManagedHandoffLeaseStoreOptions = {
     databasePath: resolveManagedUpdateLeaseDatabasePath(),
     serviceManagerEnv: resolveServiceManagerEnv(),
   },

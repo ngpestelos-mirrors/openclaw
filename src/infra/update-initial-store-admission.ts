@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
-import type { ManagedUpdateLeaseDatabaseIdentity } from "./update-managed-service-handoff-database.js";
+import type { ManagedUpdateLeaseDatabaseIdentity } from "./update-managed-service-handoff-identity.js";
 
 export type UpdateInitialStoreSelection = Readonly<{
   privateRoot: Readonly<{ path: string; identity: string }>;

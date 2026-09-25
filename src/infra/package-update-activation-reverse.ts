@@ -42,6 +42,7 @@ import {
   capturePackageReverseExecutor,
   assertPackageReverseExecutor,
 } from "./package-update-reverse-authority.js";
+import type { PackageReverseAuthority } from "./package-update-reverse-types.js";
 import type { UpdateRecoveryPublicationCompletion } from "./package-update-swap-contract.js";
 import {
   assertUpdateRecoverySourceAttestationCurrent,
@@ -50,25 +51,7 @@ import {
 } from "./update-recovery-source-attestation.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 
-/** Live maintenance and selected-runtime validation are supplied by the existing
- * preservation owner. Neither serialized admission nor callback success proves
- * publication: every effect is independently reconciled against recorded inodes. */
-export type PackageReverseAuthority = {
-  assertCurrent: () => void;
-  assertWritersSettled: () => void;
-  /** Mandatory for first admission. The producer compares the immutable ref/body
-   * with its original pre-snapshot capture under continuing stopped-C maintenance.
-   * A schema pass, current re-stat, or a caller-authored object is not capture proof.
-   * Resume uses the already authenticated durable binding, not a new capture. */
-  assertCapturedSource?: (
-    ref: Readonly<import("./update-recovery-source-schema.js").UpdateRecoverySourceRef>,
-    source: Readonly<import("./update-recovery-source-schema.js").UpdateRecoverySourceAttestation>,
-  ) => void;
-  validateTarget: (binding: Readonly<PackageActivationReverseBinding>) => Promise<void>;
-  /** Retire only the admitted prior state selection. Executor/maintenance ownership
-   * remains live through publication, settlement and completion verification. */
-  beforeStatePublication: (binding: Readonly<PackageActivationReverseBinding>) => void;
-};
+export type { PackageReverseAuthority } from "./package-update-reverse-types.js";
 export function capturePackageReverseAuthority(
   authority: PackageReverseAuthority,
 ): PackageReverseAuthority {

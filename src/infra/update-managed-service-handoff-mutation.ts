@@ -5,7 +5,7 @@ import {
   createManagedHandoffLeaseDatabase,
   leaseQueries,
 } from "./update-managed-service-handoff-database.js";
-import type { ManagedHandoffParent } from "./update-managed-service-handoff-lease.js";
+import type { ManagedHandoffParent } from "./update-managed-service-handoff-lease-types.js";
 import type { createManagedHandoffLeaseRows } from "./update-managed-service-handoff-rows.js";
 import { isRetiredManagedHandoffLeasePayload } from "./update-managed-service-handoff-schema.js";
 

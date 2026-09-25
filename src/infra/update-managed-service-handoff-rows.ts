@@ -9,7 +9,7 @@ import {
   type LeaseTable,
   type ManagedUpdateLeaseDatabaseIdentity,
 } from "./update-managed-service-handoff-database.js";
-import type { ManagedHandoffLease } from "./update-managed-service-handoff-lease.js";
+import type { ManagedHandoffLease } from "./update-managed-service-handoff-lease-types.js";
 import {
   readBorrowedLegacyHandoffParent,
   isBorrowedLegacyHandoffParentCurrent,

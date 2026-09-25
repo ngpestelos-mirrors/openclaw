@@ -17,7 +17,7 @@ import {
   type UpdateRestartSentinelMeta,
 } from "./update-restart-sentinel-payload.js";
 import { getUpdateRun } from "./update-run-ledger.js";
-import type { UpdateRunResult } from "./update-runner-types.js";
+import type { UpdateRunResult } from "./update-run-result.js";
 
 // Control-plane update sentinel helpers preserve update metadata while a
 // managed service handoff waits for restart health to complete.

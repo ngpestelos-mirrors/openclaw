@@ -13,7 +13,7 @@ import type {
   LeaseAcquisition,
   ManagedHandoffLease,
   ManagedHandoffParent,
-} from "./update-managed-service-handoff-lease.js";
+} from "./update-managed-service-handoff-lease-types.js";
 import type { createManagedHandoffProcessIdentityReader } from "./update-managed-service-handoff-process.js";
 import type { createManagedHandoffLeaseRows } from "./update-managed-service-handoff-rows.js";
 import {

@@ -29,8 +29,8 @@ import {
   type PackageActivationReversePreparation,
   type PackageActivationReverseResource,
 } from "./package-update-activation-reverse-schema.js";
-import type { PackageReverseAuthority } from "./package-update-activation-reverse.js";
-import type { PackageActivationStatus } from "./package-update-publication-owner.js";
+import type { PackageActivationStatus } from "./package-update-activation-status.js";
+import type { PackageReverseAuthority } from "./package-update-reverse-types.js";
 import {
   assertUpdateRecoverySourceAttestationAdmission,
   assertUpdateRecoverySourceAttestationCurrent,

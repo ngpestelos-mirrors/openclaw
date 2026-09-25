@@ -12,7 +12,7 @@ import {
 import type {
   ManagedHandoffLease,
   ManagedHandoffParent,
-} from "./update-managed-service-handoff-lease.js";
+} from "./update-managed-service-handoff-lease-types.js";
 import {
   readManagedHandoffOriginalAdmission,
   readOriginalUpdateDependents,

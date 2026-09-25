@@ -23,6 +23,7 @@ import {
 } from "./package-update-activation-journal.js";
 import type { PackageActivationReverseBinding } from "./package-update-activation-reverse-schema.js";
 import { createPackageActivationReverseOwner } from "./package-update-activation-reverse.js";
+import type { PackageActivationStatus } from "./package-update-activation-status.js";
 import {
   activateStagedNpmPackageRoot,
   copyPackagePathEntry,
@@ -37,11 +38,7 @@ import { capturePackageReverseExecutor } from "./package-update-reverse-authorit
 import { assertManagedUpdateLeaseDatabaseIdentity } from "./update-managed-service-handoff-database.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 
-export type PackageActivationStatus = {
-  phase: PackageActivationPhase | "complete";
-  operationId: string;
-  installKey: string;
-};
+export type { PackageActivationStatus } from "./package-update-activation-status.js";
 export const packageActivationStatus = (
   record: PackageActivationRecord,
 ): PackageActivationStatus => ({

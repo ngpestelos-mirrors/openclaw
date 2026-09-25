@@ -9,7 +9,7 @@ import type {
   PackageActivationReverseBinding,
   PackageActivationReversePreparation,
 } from "./package-update-activation-reverse-schema.js";
-import type { PackageReverseAuthority } from "./package-update-activation-reverse.js";
+import type { PackageReverseAuthority } from "./package-update-reverse-types.js";
 import type { PackagePostInstallVerifier } from "./package-update-verification-step.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
 import type { NativePackageStage } from "./update-native-package-stage.js";

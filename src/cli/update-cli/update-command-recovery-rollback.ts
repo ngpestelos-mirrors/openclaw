@@ -13,7 +13,10 @@ import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { captureUpdateCommandRecoveryGenerationAuthority } from "./update-command-executor.js";
 import { publishOriginalUpdateRecoveryGeneration } from "./update-command-recovery-generation.js";
 import { withOriginalUpdateRecoveryGeneration } from "./update-command-recovery-source.js";
-import type { rollbackFailedUpdate } from "./update-command-rollback.js";
+import type {
+  RollbackFailedUpdateParams,
+  RollbackFailedUpdateResult,
+} from "./update-command-rollback-types.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import {
   createWindowsTaskAutoStartGuard,
@@ -25,8 +28,8 @@ import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-ser
 /** Full recovery is selected only by the retained original run/capture/transaction.
  * A serialized legacy recovery request cannot enter this branch. */
 export async function rollbackOriginalUpdateGeneration(
-  params: Parameters<typeof rollbackFailedUpdate>[0],
-): ReturnType<typeof rollbackFailedUpdate> {
+  params: RollbackFailedUpdateParams,
+): Promise<RollbackFailedUpdateResult> {
   const { opts, packageTransaction: transaction } = params;
   const run = opts.run;
   const executor = run?.executorFence;

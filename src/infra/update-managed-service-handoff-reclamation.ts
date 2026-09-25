@@ -4,7 +4,7 @@ import { executeSqliteQuerySync } from "./kysely-sync.js";
 import { canCleanupLegacyManagedHandoff } from "./update-managed-service-handoff-cleanup.js";
 import type { LeaseRow } from "./update-managed-service-handoff-database.js";
 import { leaseQueries } from "./update-managed-service-handoff-database.js";
-import type { ManagedHandoffLease } from "./update-managed-service-handoff-lease.js";
+import type { ManagedHandoffLease } from "./update-managed-service-handoff-lease-types.js";
 import type { createManagedHandoffProcessIdentityReader } from "./update-managed-service-handoff-process.js";
 import { managedHandoffLeaseText as text } from "./update-managed-service-handoff-rows.js";
 import type { createManagedHandoffLeaseRows } from "./update-managed-service-handoff-rows.js";

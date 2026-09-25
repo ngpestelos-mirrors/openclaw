@@ -5,12 +5,12 @@ import {
   type createManagedHandoffLeaseDatabase,
 } from "./update-managed-service-handoff-database.js";
 import type {
-  createManagedHandoffLeaseStore,
-  ManagedHandoffLease,
-  ManagedHandoffParent,
-  BorrowedLegacyHandoffParent,
   LeaseAcquisition,
-} from "./update-managed-service-handoff-lease.js";
+  ManagedHandoffLease,
+  ManagedHandoffLeaseStoreOptions,
+  ManagedHandoffParent,
+} from "./update-managed-service-handoff-lease-types.js";
+import type { BorrowedLegacyHandoffParent } from "./update-managed-service-handoff-legacy-parent.js";
 import {
   readManagedHandoffDescendant,
   type ManagedHandoffOriginalAdmission,
@@ -25,9 +25,9 @@ import {
 
 /** Cancellation-aware acquisition uses the original receiver admission transaction. */
 export function createManagedHandoffOriginalAcquisition(deps: {
-  options: NonNullable<Parameters<typeof createManagedHandoffLeaseStore>[0]>;
+  options: ManagedHandoffLeaseStoreOptions;
   acquirePinnedOriginal: (
-    pinnedOptions: NonNullable<Parameters<typeof createManagedHandoffLeaseStore>[0]>,
+    pinnedOptions: ManagedHandoffLeaseStoreOptions,
     root: string,
     owner: string,
     action: ManagedHandoffLeaseAction,
