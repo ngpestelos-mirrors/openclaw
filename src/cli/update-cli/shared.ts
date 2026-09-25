@@ -29,6 +29,7 @@ import {
 } from "../../infra/update-global.js";
 import { cleanupUpdateTemporaryDirectory } from "../../infra/update-maintenance.js";
 import { createUpdatePreflightFailure } from "../../infra/update-preflight-details.js";
+import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
 import type { UpdateRequesterAuthority } from "../../infra/update-requester-authority.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { runStep } from "../../infra/update-runner-command.js";
@@ -76,6 +77,12 @@ export type UpdateCommandOptions = {
     requesterAuthority?: UpdateRequesterAuthority;
     /** Live local executor only. A child must independently acquire its owner. */
     executorFence?: UpdateRecoveryFence;
+    /** Live private B/C preparation input; never serialized or inferred from retained history. */
+    recoveryPreparation?: {
+      baseline: UpdateRecoveryBackupRef;
+      candidate: UpdateRecoveryBackupRef;
+      assertOwned: () => void;
+    };
   };
   acceptCapabilities?: boolean;
   admission?: "auto" | "installed";

@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { prepareOpenClawStateRecoveryCopy } from "./openclaw-state-recovery-preparation.js";
+import { prepareOpenClawStateRecoveryCopyInProcess } from "./openclaw-state-recovery-preparation.impl.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
@@ -58,7 +58,7 @@ it("prepares same-version schema 19 from current C without reviving retired auth
     candidate.close();
   }
   const before = await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)]);
-  await prepareOpenClawStateRecoveryCopy(f);
+  await prepareOpenClawStateRecoveryCopyInProcess(f);
   const prepared = openNodeSqliteDatabase(f.targetPath, { readOnly: true });
   try {
     expect(prepared.prepare("SELECT * FROM acknowledged ORDER BY id").all()).toEqual([
@@ -90,7 +90,7 @@ it("refuses inconsistent candidate schema metadata before inverse migration", as
     candidate.close();
   }
   const before = await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)]);
-  await expect(prepareOpenClawStateRecoveryCopy(f)).rejects.toThrow(
+  await expect(prepareOpenClawStateRecoveryCopyInProcess(f)).rejects.toThrow(
     "candidate identity does not match published schema 17",
   );
   expect(await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)])).toEqual(
@@ -110,7 +110,7 @@ it("refuses schema 19 to 17 reverse preparation without lowering permission mark
     candidate.close();
   }
   const before = await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)]);
-  await expect(prepareOpenClawStateRecoveryCopy(f)).rejects.toThrow(
+  await expect(prepareOpenClawStateRecoveryCopyInProcess(f)).rejects.toThrow(
     "permission-bearing schema transition 19 -> 17 requires its owner's recovery contract",
   );
   expect(await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)])).toEqual(
@@ -136,7 +136,7 @@ it.each(["schema", "owner", "version"] as const)(
       candidate.close();
     }
     const before = await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)]);
-    await expect(prepareOpenClawStateRecoveryCopy(f)).rejects.toThrow(
+    await expect(prepareOpenClawStateRecoveryCopyInProcess(f)).rejects.toThrow(
       /schema18 changed|candidate identity does not match|permission-bearing schema transition/,
     );
     expect(await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)])).toEqual(
@@ -151,7 +151,7 @@ it("retains original evidence when native ownership is revoked during copy", asy
   const before = await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)]);
   let assertions = 0;
   await expect(
-    prepareOpenClawStateRecoveryCopy({
+    prepareOpenClawStateRecoveryCopyInProcess({
       ...f,
       assertOwned: () => {
         if (++assertions > 1) {
@@ -164,7 +164,7 @@ it("retains original evidence when native ownership is revoked during copy", asy
     before,
   );
   await expect(fs.access(f.targetPath)).rejects.toThrow();
-  await prepareOpenClawStateRecoveryCopy({ ...f, assertOwned: () => {} });
+  await prepareOpenClawStateRecoveryCopyInProcess({ ...f, assertOwned: () => {} });
   await expect(fs.access(f.targetPath)).resolves.toBeUndefined();
 });
 
@@ -175,17 +175,19 @@ it("removes an incomplete exclusive copy without deleting a pre-existing target"
     await fs.writeFile(target, "partial");
     throw Object.assign(new Error("copy failed"), { code: "EIO" });
   });
-  await expect(prepareOpenClawStateRecoveryCopy(f)).rejects.toThrow("copy failed");
+  await expect(prepareOpenClawStateRecoveryCopyInProcess(f)).rejects.toThrow("copy failed");
   await expect(fs.access(f.targetPath)).rejects.toThrow();
   expect(await Promise.all([fs.readFile(f.baselinePath), fs.readFile(f.candidatePath)])).toEqual(
     before,
   );
 
   await fs.writeFile(f.targetPath, "existing");
-  await expect(prepareOpenClawStateRecoveryCopy(f)).rejects.toMatchObject({ code: "EEXIST" });
+  await expect(prepareOpenClawStateRecoveryCopyInProcess(f)).rejects.toMatchObject({
+    code: "EEXIST",
+  });
   await expect(fs.readFile(f.targetPath, "utf8")).resolves.toBe("existing");
   await expect(
-    prepareOpenClawStateRecoveryCopy({
+    prepareOpenClawStateRecoveryCopyInProcess({
       ...f,
       candidatePath: path.join(f.root, "missing.sqlite"),
     }),
@@ -200,7 +202,7 @@ it("removes the prepared target when database finalization fails", async () => {
   vi.spyOn(DatabaseSync.prototype, "close").mockImplementationOnce(() => {
     throw new Error("close failed");
   });
-  await expect(prepareOpenClawStateRecoveryCopy(f)).rejects.toThrow(
+  await expect(prepareOpenClawStateRecoveryCopyInProcess(f)).rejects.toThrow(
     "Prepared recovery database close failed: close failed",
   );
   await expect(fs.access(f.targetPath)).rejects.toThrow();

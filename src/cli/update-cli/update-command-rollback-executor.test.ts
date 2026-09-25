@@ -6,6 +6,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { createConfigIO } from "../../config/config.js";
 import { createRetainedPackageSwap } from "../../infra/package-update-swap.test-support.js";
 import { readUpdateStateSchemaVersions } from "../../infra/update-candidate-state.js";
+import * as recoveryPreparation from "../../infra/update-recovery-preparation.js";
 import { createRetainedUpdateRecovery } from "../../infra/update-retained-recovery.test-support.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
@@ -21,6 +22,58 @@ async function readPreviousConfig(env: NodeJS.ProcessEnv) {
 }
 
 describe("package rollback executor ownership", () => {
+  it("routes a bound B/C pair through preparation before package rollback", async () => {
+    const root = dirs.make("rollback-recovery-preparation-");
+    const env = { OPENCLAW_STATE_DIR: dirs.make("rollback-recovery-state-") };
+    const baseline = {
+      directory: path.join(root, "capture"),
+      manifestPath: path.join(root, "capture", "manifest.json"),
+      manifestSha256: "a".repeat(64),
+    };
+    const candidate = {
+      directory: path.join(root, "capture", "candidate"),
+      manifestPath: path.join(root, "capture", "candidate", "manifest.json"),
+      manifestSha256: "b".repeat(64),
+    };
+    const prepared = {
+      directory: path.join(root, "capture", "prepared"),
+      manifestPath: path.join(root, "capture", "prepared", "manifest.json"),
+      manifestSha256: "c".repeat(64),
+    };
+    const prepare = vi
+      .spyOn(recoveryPreparation, "prepareUpdateRecoveryGeneration")
+      .mockResolvedValue(prepared);
+    const assertOwned = vi.fn();
+    const rollback = vi.fn();
+    const run = {
+      runId: "run",
+      env,
+      executorFence: { assertCurrent: vi.fn() },
+      recoveryPreparation: { baseline, candidate, assertOwned },
+    };
+    const outcome = await rollbackFailedUpdate({
+      definitionRecovery: {},
+      result: { status: "error", mode: "npm", root, steps: [], durationMs: 0 },
+      previousRoot: root,
+      configSnapshot: await readPreviousConfig(env),
+      opts: { run },
+      timeoutMs: 1_000,
+      packageTransaction: { backupRoot: root, rollback, complete: vi.fn() },
+    });
+    expect(prepare).toHaveBeenCalledWith(baseline, candidate, {
+      assertOwned: expect.any(Function),
+      env,
+    });
+    expect(assertOwned).toHaveBeenCalledTimes(2);
+    expect(run.executorFence.assertCurrent).toHaveBeenCalledTimes(3);
+    expect(rollback).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({
+      rolledBack: false,
+      pendingRecoveryReason: expect.stringContaining(prepared.manifestPath),
+      result: { status: "error", recovery: { serviceRestartSafe: false } },
+    });
+  });
+
   it("checks the new history target after its admission environment changes", async () => {
     const env = { OPENCLAW_STATE_DIR: dirs.make("rollback-first-target-") };
     const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
