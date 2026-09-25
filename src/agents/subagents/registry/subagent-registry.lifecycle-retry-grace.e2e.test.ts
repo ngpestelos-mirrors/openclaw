@@ -6,6 +6,7 @@ import { getRuntimeConfig } from "../../../config/config.js";
 import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
 import { callGateway } from "../../../gateway/call.js";
 import { onAgentEvent } from "../../../infra/agent-events.js";
+import { matchesTranscriptEvent } from "../../../sessions/transcript-visible-record.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -190,7 +191,7 @@ describe("subagent registry lifecycle error grace", () => {
     subagentAnnounceOutputTesting.setDepsForTest({
       findTranscriptEvent: async ({ sessionKey }, match) => {
         const events = sessionKey ? transcriptEventsBySessionKey.get(sessionKey) : undefined;
-        const event = events?.findLast(match);
+        const event = events?.findLast((candidate) => matchesTranscriptEvent(candidate, match));
         return event === undefined ? undefined : { event };
       },
       findSessionTranscriptArchiveEventReadOnly: async () => undefined,
@@ -209,6 +210,7 @@ describe("subagent registry lifecycle error grace", () => {
     releaseAgentCallGate?.();
     releaseAgentCallGate = undefined;
     await vi.advanceTimersByTimeAsync(0);
+    await flushAsync();
     lifecycleHandler = undefined;
     subagentAnnounceDeliveryTesting.setDepsForTest();
     subagentAnnounceOutputTesting.setDepsForTest();
@@ -749,7 +751,6 @@ describe("subagent registry lifecycle error grace", () => {
       { sessionKey: "agent:main:subagent:freeze" },
     );
     const refreshed = await waitForFrozenResultText("run-freeze", "Late reply Y");
-    expect(refreshed.completion?.resultText).toBe("Late reply Y");
     expect(refreshed.completion?.capturedAt).toBeGreaterThanOrEqual(firstCapturedAt ?? 0);
     expect(refreshed.completion?.terminalReply).toEqual({
       disposition: "visible",
