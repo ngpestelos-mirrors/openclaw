@@ -1124,6 +1124,80 @@ struct ChatStreamingAssistantText {
     }
 }
 
+// Temporary investigation-only observation. No view, model, or snapshot is retained here.
+@MainActor
+enum ChatStreamingEqualityDiagnostic {
+    struct Input: Codable, Equatable {
+        let name: String
+        let thinking: Bool
+    }
+
+    struct Measurement: Codable {
+        let kind: String
+        let input: Input
+        let result: [String]
+        let parent: String?
+        var calls: Int
+        var nanoseconds: UInt64
+    }
+
+    struct Checkpoint: Codable {
+        let arm: String
+        let stage: String
+        var measurements: [Measurement] = []
+        var renderedMath: [String]?
+    }
+
+    static var arm: String?
+    static var inputs: [String: String] = [:]
+    static var checkpoints: [Checkpoint] = []
+    static var failure: String?
+
+    static func input(source: String, thinking: Bool) -> Input? {
+        guard self.arm != nil, let name = self.inputs[source] else { return nil }
+        return Input(name: name, thinking: thinking)
+    }
+
+    static func begin(_ stage: String) {
+        guard let arm = self.arm, self.checkpoints.count < 32 else {
+            self.failure = self.failure ?? "checkpoint bound or missing arm"
+            return
+        }
+        self.checkpoints.append(Checkpoint(arm: arm, stage: stage))
+    }
+
+    static func record(
+        kind: String, input: Input, nanoseconds: UInt64, result: [String], parent: String? = nil)
+    {
+        guard let index = self.checkpoints.indices.last,
+              self.checkpoints[index].arm == self.arm,
+              result.count <= 24, result.reduce(0, { $0 + $1.utf8.count }) <= 2048,
+              (parent?.utf8.count ?? 0) <= 512
+        else {
+            self.failure = self.failure ?? "unattributed or oversized observation"
+            return
+        }
+        if let match = self.checkpoints[index].measurements.firstIndex(where: {
+            $0.kind == kind && $0.input == input && $0.result == result && $0.parent == parent
+        }) {
+            self.checkpoints[index].measurements[match].calls += 1
+            self.checkpoints[index].measurements[match].nanoseconds += nanoseconds
+        } else if self.checkpoints[index].measurements.count < 8 {
+            self.checkpoints[index].measurements.append(Measurement(
+                kind: kind, input: input, result: result, parent: parent, calls: 1, nanoseconds: nanoseconds))
+        } else {
+            self.failure = self.failure ?? "distinct observation bound"
+        }
+    }
+
+    static func reset() {
+        self.arm = nil
+        self.inputs = [:]
+        self.checkpoints = []
+        self.failure = nil
+    }
+}
+
 @MainActor
 struct ChatStreamingAssistantBubble: View {
     @Environment(\.openClawChatDesktopLayout) private var isDesktopLayout
@@ -1245,7 +1319,29 @@ private struct ChatStreamingAssistantTextBody: View {
         self.textColor = textColor
 
         let now = Date.timeIntervalSinceReferenceDate
+        let diagnostic = ChatStreamingEqualityDiagnostic.input(
+            source: text.sourceText, thinking: text.includesThinking)
+        let started = diagnostic.map { _ in DispatchTime.now().uptimeNanoseconds }
         let snapshot = Snapshot(text: text)
+        let ended = started.map { _ in DispatchTime.now().uptimeNanoseconds }
+        if let diagnostic, let started, let ended {
+            // Extract only scalar results, after the actual constructor's timer has stopped.
+            let result = snapshot.segments.flatMap { segment in
+                ["segment:\(segment.kind)", "images:\(segment.markdown.images.count)"] +
+                    segment.markdown.blocks.map { block in
+                        switch block {
+                        case let .prose(prose): "prose:\(prose.plainText)"
+                        case let .code(code): "code:\(code.language ?? ""):\(code.isComplete):\(code.code)"
+                        case let .math(math): "math:\(math.isComplete):\(math.latex)"
+                        default: "unsupported-block"
+                        }
+                    }
+            } + [snapshot.lastProseLocation.map {
+                "lastProse:\($0.segmentIndex):\($0.blockIndex)"
+            } ?? "lastProse:none"]
+            ChatStreamingEqualityDiagnostic.record(
+                kind: "snapshot", input: diagnostic, nanoseconds: ended - started, result: result)
+        }
         // State retains its old value across updates. Reuse this prepared input
         // when applying the delta instead of parsing the same Markdown again.
         self.inputSnapshot = snapshot

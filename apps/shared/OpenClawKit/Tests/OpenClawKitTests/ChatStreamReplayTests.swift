@@ -414,27 +414,6 @@ struct ChatStreamReplayTests {
             window.close()
         }
 
-        // Native math labels expose rendered content without global accessibility or focus state.
-        func expectRendered(_ expected: [String]) {
-            host.layoutSubtreeIfNeeded()
-            // Subview order is stacking order, not the vertical order seen by the reader.
-            let rendered = Self.mathLabels(in: host).map { label in
-                (label: label, frame: label.convert(label.bounds, to: host))
-            }.sorted { lhs, rhs in
-                host.isFlipped ? lhs.frame.minY < rhs.frame.minY : lhs.frame.maxY > rhs.frame.maxY
-            }
-            #expect(rendered.map { $0.label.latex } == expected)
-            #expect(rendered.allSatisfy {
-                $0.label.error == nil && $0.frame.width > 0 && $0.frame.height > 0 &&
-                    host.bounds.contains($0.frame)
-            })
-            #expect(zip(rendered, rendered.dropFirst()).allSatisfy { first, second in
-                host.isFlipped
-                    ? first.frame.maxY <= second.frame.minY
-                    : first.frame.minY >= second.frame.maxY
-            })
-        }
-
         host.layoutSubtreeIfNeeded()
         try await harness.converge("hosted replay bootstrap") { $0.healthOK && !$0.isLoading }
         let runId = try await harness.send("show the equations")
@@ -449,14 +428,227 @@ struct ChatStreamReplayTests {
             let (text, expected) = entry
             transport.emit(replayAssistantDeltaEvent(runId: runId, cumulativeText: text, seq: offset + 1))
             try await harness.converge("hosted stream applied") { $0.streamingAssistantText == text }
-            expectRendered(expected)
+            Self.expectRenderedMath(expected, in: host)
         }
 
         // Keep the same host and model so the streaming body's retained state must invalidate.
         host.rootView = content(options: [.reasoning])
-        expectRendered(["r = 4", "z = 3"])
+        Self.expectRenderedMath(["r = 4", "z = 3"], in: host)
         host.rootView = content(options: [])
-        expectRendered(["z = 3"])
+        Self.expectRenderedMath(["z = 3"], in: host)
+    }
+
+    @Test @MainActor func `investigate unchanged stream preparation during real tool activity`() async throws {
+        typealias Diagnostic = ChatStreamingEqualityDiagnostic
+        try #require(Diagnostic.arm == nil && Diagnostic.checkpoints.isEmpty)
+        let initialVisible = "P11 equality initial.\n\n```swift\nlet value = 1\n```\n\n$$x = 1$$"
+        let appendedVisible = initialVisible + "\n\n$$y = 2$$"
+        let replacementVisible = "P11 equality replacement.\n\n```swift\nlet value = 2\n```\n\n$$z = 3$$"
+        let initial = "<think>$$r = 0$$</think>\n\n" + initialVisible
+        let appended = "<think>$$r = 0$$</think>\n\n" + appendedVisible
+        let replacement = "<think>$$r = 4$$</think>\n\n" + replacementVisible
+        func namespaced(_ text: String, arm: String) -> String {
+            text.replacingOccurrences(
+                of: "P11 equality", with: arm == "baseline" ? "P11_A equality" : "P11_B equality")
+        }
+        defer {
+            // Emit bounded partial observations even if a later requirement throws.
+            struct Report: Encodable {
+                let checkpoints: [Diagnostic.Checkpoint]
+                let recordingFailure: String?
+                let limitation =
+                    "Candidate adds a view node; arms use distinct equal-length fixture namespaces; math geometry does not prove color or reveal opacity."
+            }
+            if let data = try? JSONEncoder().encode(Report(
+                checkpoints: Diagnostic.checkpoints, recordingFailure: Diagnostic.failure))
+            {
+                let line = "P11_EQUALITY_DIAGNOSTIC " + String(decoding: data, as: UTF8.self)
+                if line.utf8.count <= 64 * 1024 {
+                    print(line)
+                } else {
+                    Issue.record("P11 diagnostic output exceeded 64 KiB")
+                }
+            } else {
+                Issue.record("P11 diagnostic scalar encoding failed")
+            }
+            Diagnostic.reset()
+        }
+        let initialBlocks = [
+            "segment:response", "images:0", "prose:P11 equality initial.",
+            "code:swift:true:let value = 1", "math:true:x = 1",
+        ]
+        let replacementBlocks = [
+            "segment:response", "images:0", "prose:P11 equality replacement.",
+            "code:swift:true:let value = 2", "math:true:z = 3",
+        ]
+        // Literal fixture expectations, independent of either arm's observed output.
+        let expected: [String: (segments: [String], snapshot: [String])] = [
+            "initial:false": (["response:" + initialVisible], initialBlocks + ["lastProse:0:0"]),
+            "appended:false": (
+                ["response:" + appendedVisible], initialBlocks + ["math:true:y = 2", "lastProse:0:0"]),
+            "replacement:false": (["response:" + replacementVisible], replacementBlocks + ["lastProse:0:0"]),
+            "replacement:true": (
+                ["thinking:$$r = 4$$", "response:" + replacementVisible],
+                ["segment:thinking", "images:0", "math:true:r = 4"] + replacementBlocks + ["lastProse:1:0"]),
+        ]
+
+        func observe(_ arm: String) async throws {
+            let initialText = namespaced(initial, arm: arm)
+            let appendedText = namespaced(appended, arm: arm)
+            let replacementText = namespaced(replacement, arm: arm)
+            Diagnostic.arm = arm
+            Diagnostic.inputs = [initialText: "initial", appendedText: "appended", replacementText: "replacement"]
+            _ = NSApplication.shared
+            let suiteName = "ChatEqualityDiagnostic.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let transport = ScriptedChatTransport(history: replayHistory())
+            let vm = OpenClawChatViewModel(
+                sessionKey: "main", transport: transport,
+                modelPickerStore: ChatModelPickerStore(defaults: defaults))
+            let harness = StreamReplayHarness(transport: transport, vm: vm)
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 960, height: 900),
+                styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            func content(reasoning: Bool = false, darkAndReducedMotion: Bool = false) -> some View {
+                OpenClawChatView(
+                    viewModel: vm, displayOptions: reasoning ? [.toolActivity, .reasoning] : [.toolActivity],
+                    assistantAvatarTint: .blue, showsAssistantAvatars: false, showsComposer: false)
+                    .environment(\.colorScheme, darkAndReducedMotion ? .dark : .light)
+                    .environment(\.accessibilityReduceMotion, darkAndReducedMotion)
+            }
+            let host = NSHostingView(rootView: content())
+            window.contentView = host
+            defer {
+                vm.detachTransport()
+                transport.finish()
+                window.contentView = nil
+                window.close()
+                Diagnostic.arm = nil
+                Diagnostic.inputs = [:]
+            }
+            func inspect(_ math: [String], prepared: Diagnostic.Input? = nil, parent: String? = nil) throws {
+                let actual = Self.expectRenderedMath(math, in: host)
+                let index = try #require(Diagnostic.checkpoints.indices.last)
+                Diagnostic.checkpoints[index].renderedMath = actual
+                if let prepared {
+                    for kind in ["segments", "snapshot"] {
+                        #expect(Diagnostic.checkpoints[index].measurements.contains {
+                            $0.kind == kind && $0.input == prepared && $0.calls > 0
+                        })
+                    }
+                }
+                if let parent {
+                    // The actual parent must consume this tool state before zero snapshots mean anything.
+                    try #require(Diagnostic.checkpoints[index].measurements.contains {
+                        $0.kind == "segments" && $0.input == .init(name: "initial", thinking: false) &&
+                            $0.parent == parent && $0.calls > 0
+                    })
+                }
+            }
+            host.layoutSubtreeIfNeeded()
+            try await harness.converge("diagnostic bootstrap") { $0.healthOK && !$0.isLoading }
+            let runId = try await harness.send("show the diagnostic equations")
+            Diagnostic.begin("initial")
+            transport.emit(replayAssistantDeltaEvent(runId: runId, cumulativeText: initialText, seq: 1))
+            try await harness.converge("initial diagnostic stream") { $0.streamingAssistantText == initialText }
+            try inspect(["x = 1"], prepared: .init(name: "initial", thinking: false))
+
+            for (offset, phase) in ["start", "input_delta", "result"].enumerated() {
+                try #require(vm.pendingRunCount == 1)
+                Diagnostic.begin("tool-" + phase)
+                transport.emit(.agent(OpenClawAgentEventPayload(
+                    runId: runId, seq: offset + 2, stream: "tool", ts: offset + 2,
+                    data: [
+                        "phase": AnyCodable(phase), "name": AnyCodable("apply_patch"),
+                        "toolCallId": AnyCodable("p11-equality-tool"),
+                        "args": AnyCodable(["patch": "*** Begin Patch\n*** End Patch"]),
+                        "diff": AnyCodable(["added": 12, "removed": 4]),
+                    ])))
+                try await harness.converge("diagnostic tool " + phase) { model in
+                    switch phase {
+                    case "start":
+                        model.pendingToolCalls.count == 1 &&
+                            model.pendingToolCalls.first?.toolCallId == "p11-equality-tool"
+                    case "input_delta":
+                        model.pendingToolCalls.first?.diffStat == ChatToolDiffStat(added: 12, removed: 4)
+                    default:
+                        model.pendingToolCalls.isEmpty
+                    }
+                }
+                try #require(vm.pendingRunCount == 1)
+                #expect(vm.streamingAssistantText == initialText)
+                let parent = switch phase {
+                case "start": "1|p11-equality-tool:none"
+                case "input_delta": "1|p11-equality-tool:12,4"
+                default: "1|"
+                }
+                try inspect(["x = 1"], parent: parent)
+            }
+            for (offset, change) in [
+                ("appended", appendedText, ["x = 1", "y = 2"]),
+                ("replacement", replacementText, ["z = 3"]),
+            ].enumerated() {
+                let (name, text, math) = change
+                Diagnostic.begin(name)
+                transport.emit(replayAssistantDeltaEvent(runId: runId, cumulativeText: text, seq: offset + 5))
+                try await harness.converge("diagnostic " + name) { $0.streamingAssistantText == text }
+                try inspect(math, prepared: .init(name: name, thinking: false))
+            }
+            Diagnostic.begin("reasoning-on")
+            host.rootView = content(reasoning: true)
+            try inspect(["r = 4", "z = 3"], prepared: .init(name: "replacement", thinking: true))
+            Diagnostic.begin("dark-reduced-motion")
+            host.rootView = content(reasoning: true, darkAndReducedMotion: true)
+            try inspect(["r = 4", "z = 3"])
+            Diagnostic.begin("light-motion")
+            host.rootView = content(reasoning: true)
+            try inspect(["r = 4", "z = 3"])
+            Diagnostic.begin("reasoning-off")
+            host.rootView = content()
+            try inspect(["z = 3"], prepared: .init(name: "replacement", thinking: false))
+        }
+
+        try await observe("baseline")
+        try await observe("candidate")
+        try #require(Diagnostic.failure == nil)
+        #expect(Diagnostic.checkpoints.count == 20)
+        for checkpoint in Diagnostic.checkpoints {
+            #expect(checkpoint.renderedMath != nil)
+            for measurement in checkpoint.measurements {
+                let key = "\(measurement.input.name):\(measurement.input.thinking)"
+                let literal = try #require(expected[key])
+                #expect(measurement.kind == "segments" || measurement.kind == "snapshot")
+                let signature = (measurement.kind == "segments" ? literal.segments : literal.snapshot)
+                    .map { namespaced($0, arm: checkpoint.arm) }
+                #expect(measurement.result == signature)
+                #expect(measurement.calls > 0)
+            }
+        }
+    }
+
+    @discardableResult
+    @MainActor private static func expectRenderedMath(_ expected: [String], in host: NSView) -> [String] {
+        host.layoutSubtreeIfNeeded()
+        // Subview order is stacking order, not the vertical order seen by the reader.
+        let rendered = Self.mathLabels(in: host).map { label in
+            (label: label, frame: label.convert(label.bounds, to: host))
+        }.sorted { lhs, rhs in
+            host.isFlipped ? lhs.frame.minY < rhs.frame.minY : lhs.frame.maxY > rhs.frame.maxY
+        }
+        let actual = rendered.map { $0.label.latex }
+        #expect(actual == expected)
+        #expect(rendered.allSatisfy {
+            $0.label.error == nil && $0.frame.width > 0 && $0.frame.height > 0 &&
+                host.bounds.contains($0.frame)
+        })
+        #expect(zip(rendered, rendered.dropFirst()).allSatisfy { first, second in
+            host.isFlipped
+                ? first.frame.maxY <= second.frame.minY
+                : first.frame.minY >= second.frame.maxY
+        })
+        return actual
     }
 
     @MainActor private static func mathLabels(in view: NSView) -> [MTMathUILabel] {
