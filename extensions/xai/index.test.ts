@@ -244,17 +244,21 @@ describe("xai provider plugin", () => {
     expect(provider.fetchUsageSnapshot).toEqual(expect.any(Function));
   });
 
-  it("filters the xAI API-key catalog against live model ids", async () => {
+  it("admits new supported xAI models while preserving curated metadata", async () => {
     const release = vi.fn(async () => undefined);
     const fetchGuard: LiveModelCatalogFetchGuard = vi.fn(async () => ({
       response: Response.json({
         data: [
+          { id: "grok-9-fixture", object: "model" },
           { id: "grok-4.7", object: "model" },
           { id: "grok-4.6", object: "model" },
           { id: "grok-4.5", object: "model" },
           { id: "grok-4.20-0309-reasoning", object: "model" },
           { id: "grok-4.20-0309-non-reasoning", object: "model" },
           { id: "not-in-manifest", object: "model" },
+          { id: "grok-9-multi-agent", api_backend: "responses" },
+          { id: "grok-imagine-image", object: "model" },
+          { id: "grok-imagine-video-fixture", object: "model" },
         ],
       }),
       finalUrl: "https://api.x.ai/v1/models",
@@ -273,6 +277,17 @@ describe("xai provider plugin", () => {
     expect(provider.models.map((model) => model.id)).toContain("grok-4.20-0309-reasoning");
     expect(provider.models.map((model) => model.id)).toContain("grok-4.20-0309-non-reasoning");
     expect(provider.models.map((model) => model.id)).not.toContain("not-in-manifest");
+    expect(provider.models.map((model) => model.id)).not.toContain("grok-9-multi-agent");
+    expect(provider.models.map((model) => model.id)).not.toContain("grok-imagine-image");
+    expect(provider.models.map((model) => model.id)).not.toContain("grok-imagine-video-fixture");
+    expect(provider.models.at(-1)?.id).toBe("grok-9-fixture");
+    expect(provider.models.find((model) => model.id === "grok-9-fixture")).toMatchObject({
+      reasoning: true,
+      input: ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 1_000_000,
+      maxTokens: 64_000,
+    });
     const fetchParams = vi.mocked(fetchGuard).mock.calls[0]?.[0];
     expect(fetchParams?.url).toBe("https://api.x.ai/v1/models");
     const init = fetchParams?.init;
@@ -466,7 +481,8 @@ describe("xai provider plugin", () => {
         response: Response.json({
           data: [
             { id: "grok-4.6", api_backend: "responses" },
-            { id: "grok-fixture-next", api_backend: "responses" },
+            { id: "grok-fixture-next" },
+            { id: "grok-fixture-multi-agent", api_backend: "responses" },
           ],
         }),
         finalUrl: url,
@@ -481,6 +497,8 @@ describe("xai provider plugin", () => {
     expect(urls).toEqual(["https://cli-chat-proxy.grok.com/v1/models"]);
     expect(provider.models.map((model) => model.id)).toEqual(["grok-4.6", "grok-fixture-next"]);
     expect(provider.models[1]?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(provider.models[1]?.input).toEqual(["text", "image"]);
+    expect(provider.models[1]?.reasoning).toBe(true);
   });
 
   it("uses runtime OAuth profiles when xAI catalog auth resolution is empty", async () => {

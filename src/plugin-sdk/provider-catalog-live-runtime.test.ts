@@ -836,12 +836,15 @@ describe("provider-catalog-live-runtime", () => {
     const { fetchGuard, fetchGuardMock } = buildFetchGuard([
       { id: "model-b", object: "model" },
       { id: "unknown-model", object: "model" },
+      { id: "model-a", object: "model" },
+      { id: "text-embedding-fixture", object: "model" },
+      { id: "image-fixture", output_modalities: ["image"] },
     ]);
     const providerConfig = {
       api: "openai-completions" as const,
       baseUrl: "https://provider.example.test/v1",
     };
-    const models = [buildModel("model-a"), buildModel("model-b")];
+    const models = [buildModel("model-b"), buildModel("model-a"), buildModel("model-c")];
 
     const first = await buildLiveModelProviderConfig({
       providerId: "provider",
@@ -866,8 +869,14 @@ describe("provider-catalog-live-runtime", () => {
 
     expect(fetchGuardMock).toHaveBeenCalledTimes(1);
     expect(first.apiKey).toBe("PROVIDER_API_KEY");
-    expect(first.models.map((model) => model.id)).toEqual(["model-b"]);
-    expect(second.models.map((model) => model.id)).toEqual(["model-b"]);
+    expect(first.models.map((model) => model.id)).toEqual(["model-b", "model-a", "unknown-model"]);
+    expect(second.models).toEqual(first.models);
+    expect(first.models.slice(0, 2)).toEqual(models.slice(0, 2));
+    expect(first.models[2]).toMatchObject({
+      id: "unknown-model",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
 
     clearLiveCatalogCacheForTests();
     fetchGuardMock.mockRejectedValueOnce(new Error("network unavailable"));
@@ -882,7 +891,7 @@ describe("provider-catalog-live-runtime", () => {
     });
 
     expect(fallback.apiKey).toBe("PROVIDER_API_KEY");
-    expect(fallback.models.map((model) => model.id)).toEqual(["model-a", "model-b"]);
+    expect(fallback.models.map((model) => model.id)).toEqual(["model-b", "model-a", "model-c"]);
   });
 
   it("does not cache empty live provider config discoveries", async () => {

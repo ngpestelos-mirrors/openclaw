@@ -20,7 +20,6 @@ import {
 } from "./provider-catalog-live-outcome.internal.js";
 import {
   buildSingleProviderApiKeyCatalog,
-  getCachedLiveCatalogValue,
   type ManifestProviderCatalogEntry,
 } from "./provider-catalog-shared.js";
 import {
@@ -142,9 +141,9 @@ function buildProviderConfig<T extends ModelDefinitionConfig>(
 async function projectCachedLiveModelRows<T extends ModelDefinitionConfig>(
   params: BuildLiveModelProviderConfigParams<T> & {
     fallback: ModelProviderConfig;
-    projectRows: LiveModelRowProjection<T>;
   },
-): Promise<readonly T[]> {
+): Promise<readonly ModelDefinitionConfig[]> {
+  const projectRows = params.projectRows ?? buildOpenAICompatibleLiveModels;
   const load = async (requestAuth: { apiKey?: string; discoveryApiKey?: string }) => {
     const rows = await getCachedLiveProviderModelRows({
       ...params,
@@ -155,10 +154,24 @@ async function projectCachedLiveModelRows<T extends ModelDefinitionConfig>(
           ? params.cacheKeyParts
           : undefined,
       shouldCacheRows: (candidateRows) =>
-        params.projectRows(candidateRows, params.fallback).length > 0 ||
+        projectRows(candidateRows, params.fallback).length > 0 ||
         params.discoveryMode === "strict",
     });
-    return params.projectRows(rows, params.fallback);
+    const projected = projectRows(rows, params.fallback);
+    if (params.projectRows) {
+      return projected;
+    }
+    const byId = new Map(projected.map((model) => [model.id, model]));
+    const ordered: ModelDefinitionConfig[] = [];
+    for (const seed of params.models) {
+      const model = byId.get(seed.id);
+      if (model) {
+        ordered.push(model);
+        byId.delete(seed.id);
+      }
+    }
+    ordered.push(...byId.values());
+    return ordered;
   };
 
   try {
@@ -185,7 +198,7 @@ export async function buildLiveModelProviderConfig<T extends ModelDefinitionConf
     params.discoveryMode === "strict"
       ? [
           params.providerId,
-          params.projectRows ? "model-rows" : "models",
+          "model-rows",
           params.endpoint,
           liveModelCatalogAuthCacheKey(params),
           "strict",
@@ -193,33 +206,13 @@ export async function buildLiveModelProviderConfig<T extends ModelDefinitionConf
         ]
       : params.cacheKeyParts;
   try {
-    if (params.projectRows) {
-      const models = await projectCachedLiveModelRows({
-        ...params,
-        cacheKeyParts,
-        fallback,
-        projectRows: params.projectRows,
-      });
-      if (models.length > 0 || params.discoveryMode === "strict") {
-        return { ...fallback, models: [...models] };
-      }
-      return fallback;
-    }
-    const liveModelIds = await getCachedLiveCatalogValue({
-      keyParts: cacheKeyParts ?? [
-        params.providerId,
-        "models",
-        params.endpoint,
-        liveModelCatalogAuthCacheKey(params),
-      ],
-      ttlMs: params.ttlMs,
-      load: async () => await fetchLiveProviderModelIds(params),
-      shouldCache: (modelIds) => modelIds.length > 0 || params.discoveryMode === "strict",
+    const models = await projectCachedLiveModelRows({
+      ...params,
+      cacheKeyParts,
+      fallback,
     });
-    const liveModelIdSet = new Set(liveModelIds);
-    const models = params.models.filter((model) => liveModelIdSet.has(model.id));
     if (models.length > 0 || params.discoveryMode === "strict") {
-      return buildProviderConfig(params, models);
+      return { ...fallback, models: [...models] };
     }
   } catch (error) {
     if (params.discoveryMode === "strict") {

@@ -154,7 +154,7 @@ describe("strict catalog acquisition", () => {
       expect(release).toHaveBeenCalledTimes(3);
     });
 
-    it.each(["auth", "endpoint", "provider", "kind", "custom"] as const)(
+    it.each(["auth", "endpoint", "provider", "custom"] as const)(
       "preserves %s isolation with custom key parts",
       async (scope) => {
         const release = vi.fn(async () => {});
@@ -181,7 +181,6 @@ describe("strict catalog acquisition", () => {
           ...(scope === "auth" ? { discoveryApiKey: "synthetic-resolved-second" } : {}),
           ...(scope === "endpoint" ? { endpoint: "https://other.example/v1/models" } : {}),
           ...(scope === "provider" ? { providerId: "other" } : {}),
-          ...(scope === "kind" ? { projectRows: projection ? undefined : projectRows } : {}),
           ...(scope === "custom" ? { cacheKeyParts: ["other-catalog"] } : {}),
         };
         await expect(buildLiveModelProviderConfig(params)).resolves.toMatchObject({ models: [] });

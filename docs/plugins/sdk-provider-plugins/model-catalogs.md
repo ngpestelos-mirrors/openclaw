@@ -124,8 +124,14 @@ OpenAI-compatible projection, keep only that projection in the plugin. Pass
 it as `projectRows`; the shared runtime still owns guarded fetches,
 provider-auth headers, cache admission, and static fallback.
 
-Use `buildLiveModelProviderConfig` when the live API only tells you which
-provider-owned static catalog rows are currently available:
+Use `buildLiveModelProviderConfig` for a live model listing with provider-owned
+seed metadata. Without `projectRows`, it uses the same conservative chat-model
+projection as OpenAI-compatible discovery: listed IDs need not exist in the
+seed catalog. Known IDs keep their metadata and prices; unknown IDs carry zero
+cost until pricing is available. Zero means an unavailable estimate, not free
+inference. Supply `projectRows` to use the provider's own capability definitions.
+The default projection keeps listed seed models in their existing order, followed
+by live-only models. Custom projections retain their own ordering.
 
 ```typescript index.ts
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";

@@ -182,10 +182,13 @@ OpenClaw's flat catalog cost fields record the short-context rates. The current
 historical OpenClaw `grok-build-latest` compatibility alias remains pinned to
 Grok 4.5.
 
-Supported non-curated aliases retain their reasoning, input, and token-limit
-metadata without joining the published inventory. Their pricing remains unknown,
-recorded as zero until the manifest includes them. Zero is an unavailable estimate, not a claim that
-the provider charges nothing.
+Authenticated API-key and OAuth discovery add supported chat models returned by
+xAI's model listing, including new Grok IDs not yet in the bundled catalog.
+Curated models keep their catalog metadata and prices; new IDs use xAI's
+forward-compatible reasoning, input, and token-limit definitions. Without a
+catalog price, their cost is recorded as zero: an unavailable estimate, not a
+claim that the provider charges nothing. Image-generation and unsupported
+multi-agent models are not added to the chat picker.
 
 Thinking levels follow xAI's
 [documented release rule](https://docs.x.ai/developers/model-capabilities/text/reasoning)
