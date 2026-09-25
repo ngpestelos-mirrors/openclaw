@@ -141,6 +141,7 @@ export type GatewayRuntimePublication = {
 };
 
 export type GatewayReloadHandlerParams = {
+  abortSignal?: AbortSignal;
   deps: CliDeps;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
   /** Kept across cron rebuilds so a hot reload does not drop scheduler gateway context. */
@@ -195,6 +196,7 @@ export type GatewayReloadHandlerParams = {
 
 export type ManagedGatewayConfigReloaderParams = Omit<
   GatewayReloadHandlerParams,
+  | "abortSignal"
   | "assertRestartReady"
   | "logReload"
   | "pruneInactiveChannelAccountState"

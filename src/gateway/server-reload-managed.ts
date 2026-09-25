@@ -164,6 +164,7 @@ export function startManagedGatewayConfigReloader(
     stopRestartRetries,
   } = createGatewayReloadHandlers({
     ...params,
+    abortSignal: lifecycle.signal,
     releaseChannelRouteHandoffs: params.channelManager.releaseChannelRouteHandoffs,
     pruneInactiveChannelAccountState: params.channelManager.pruneInactiveChannelAccountState,
     createGmailRestartAbortController,
@@ -494,6 +495,7 @@ export function startManagedGatewayConfigReloader(
         // strict catalog read reject it -- the failure this fix exists to remove.
         const pluginMetadataSnapshot = params.getPluginMetadataSnapshot?.();
         await refreshPreparedModelRuntimeSnapshots(lastCommittedRuntimeConfig ?? nextConfig, {
+          abortSignal: lifecycle.signal,
           gatewayLifecycle: true,
           catalogMode: "static",
           allowGatewaySubagentBinding: true,

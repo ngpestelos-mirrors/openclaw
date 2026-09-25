@@ -506,6 +506,9 @@ export function refreshPreparedModelRuntimeSnapshots(
   config: OpenClawConfig | (() => OpenClawConfig | Promise<OpenClawConfig>),
   options: PreparedModelRuntimeRefreshOptions = {},
 ): Promise<void> {
+  if (options.abortSignal?.aborted) {
+    return Promise.reject(toStringifiedError(options.abortSignal.reason));
+  }
   if (options.isPublicationCurrent?.() === false) {
     return Promise.resolve();
   }
@@ -519,11 +522,15 @@ export function refreshPreparedModelRuntimeSnapshots(
     agentIds: initialAgentIds,
   });
   const requestEpoch = refreshRequestEpoch;
-  const acquisitionSignal = refreshCancellation.signal;
+  const acquisitionSignal = options.abortSignal
+    ? AbortSignal.any([refreshCancellation.signal, options.abortSignal])
+    : refreshCancellation.signal;
   const replacement = pendingModelRuntimeReplacement;
   let publicationAgentIds = initialAgentIds;
   const isPublicationCurrent = () =>
-    requestEpoch === refreshRequestEpoch && options.isPublicationCurrent?.() !== false;
+    requestEpoch === refreshRequestEpoch &&
+    !options.abortSignal?.aborted &&
+    options.isPublicationCurrent?.() !== false;
   const startup =
     options.startup === true && options.catalogMode === "static" && replacement
       ? new PreparedModelRuntimeStartup({

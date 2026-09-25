@@ -212,6 +212,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
       );
       return async () => {
         await mrReload.refreshModelRuntimeAfterHotReload({
+          abortSignal: params.abortSignal,
           config: previousConfig,
           agentIds: modelRuntimeAgentIds,
           pluginMetadataSnapshot: params.getPluginMetadataSnapshot?.(),
@@ -575,6 +576,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
 
     try {
       await mrReload.refreshModelRuntimeAfterHotReload({
+        abortSignal: params.abortSignal,
         config: nextConfig,
         agentIds: modelRuntimeAgentIds,
         pluginMetadataSnapshot: params.getPluginMetadataSnapshot?.(),

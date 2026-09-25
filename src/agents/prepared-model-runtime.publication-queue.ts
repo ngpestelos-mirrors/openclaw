@@ -1,3 +1,4 @@
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model-runtime.errors.js";
 import { capturePreparedModelRuntimeLifetime } from "./prepared-model-runtime.lifecycle.js";
 import type { PreparedModelRuntimeStartup } from "./prepared-model-runtime.startup.js";
@@ -29,14 +30,17 @@ export class PreparedModelRuntimePublicationQueue {
   complete(
     publication: Promise<void>,
     isCurrent: () => boolean,
-    options: Pick<PreparedModelRuntimeRefreshOptions, "joinSupersedingPublication">,
+    options: Pick<PreparedModelRuntimeRefreshOptions, "joinSupersedingPublication" | "abortSignal">,
     startup?: PreparedModelRuntimeStartup,
   ): Promise<void> {
     const assertLifetime = capturePreparedModelRuntimeLifetime();
     const refresh = { completion: publication, isCurrent };
     this.#latestRefresh = refresh;
     if (!options.joinSupersedingPublication) {
-      return startup ? startup.wait(publication) : publication;
+      const completion = startup ? startup.wait(publication) : publication;
+      return options.abortSignal
+        ? completion.then(() => options.abortSignal?.throwIfAborted())
+        : completion;
     }
     // Join outside the queue: the successor cannot run until this publication releases it.
     return (async () => {
@@ -44,7 +48,11 @@ export class PreparedModelRuntimePublicationQueue {
       for (;;) {
         assertLifetime();
         try {
-          await current.completion;
+          // This caller owns its original publication's unwind. Following a successor
+          // is only observation; stopping the caller must not cancel that other owner.
+          await (current === refresh
+            ? current.completion
+            : racePromiseWithAbortSignal(current.completion, options.abortSignal));
         } catch (error) {
           if (
             !(error instanceof PreparedModelRuntimePublicationSupersededError) ||
@@ -54,6 +62,7 @@ export class PreparedModelRuntimePublicationQueue {
             throw error;
           }
         }
+        options.abortSignal?.throwIfAborted();
         assertLifetime();
         if (this.#latestRefresh && this.#latestRefresh !== current) {
           current = this.#latestRefresh;
