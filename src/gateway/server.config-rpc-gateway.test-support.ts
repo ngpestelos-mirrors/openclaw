@@ -39,11 +39,8 @@ export function requireClient(): GatewayClient {
   return client;
 }
 
-// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Gateway test RPC helper lets callers ascribe response payload shape.
 export async function rpcReq<T extends Record<string, unknown>>(
-  gatewayClient: GatewayClient,
-  method: string,
-  params?: unknown,
+  request: (options: { timeoutMs: number }) => Promise<T>,
   timeoutMs = 10_000,
 ): Promise<{
   ok: boolean;
@@ -51,7 +48,7 @@ export async function rpcReq<T extends Record<string, unknown>>(
   error?: { message?: string; code?: string; details?: unknown };
 }> {
   try {
-    return { ok: true, payload: await gatewayClient.request<T>(method, params, { timeoutMs }) };
+    return { ok: true, payload: await request({ timeoutMs }) };
   } catch (error) {
     if (!(error instanceof GatewayClientRequestError)) {
       throw error;
@@ -181,7 +178,9 @@ export async function writeJsonFile(filePath: string, value: unknown) {
 }
 
 export async function getConfigHash() {
-  const current = await rpcReq(requireClient(), "config.get", {});
+  const current = await rpcReq((requestOptions) =>
+    requireClient().request("config.get", {}, requestOptions),
+  );
   expect(current.ok).toBe(true);
   expect(typeof current.payload?.hash).toBe("string");
   return String(current.payload?.hash);
@@ -191,25 +190,33 @@ export async function sendConfigApply(
   params: { raw: unknown; baseHash?: string },
   timeoutMs?: number,
 ) {
-  return await rpcReq(requireClient(), "config.apply", params, timeoutMs);
+  return await rpcReq(
+    (requestOptions) => requireClient().request("config.apply", params, requestOptions),
+    timeoutMs,
+  );
 }
 
 export async function sendConfigSet(
   params: { raw: string; baseHash?: string },
   timeoutMs?: number,
 ) {
-  return await rpcReq(requireClient(), "config.set", params, timeoutMs);
+  return await rpcReq(
+    (requestOptions) => requireClient().request("config.set", params, requestOptions),
+    timeoutMs,
+  );
 }
 
 export async function getCurrentConfigObject() {
-  const current = await rpcReq<{
-    raw?: string | null;
-    valid?: boolean;
-    hash?: string;
-    path?: string;
-    config?: Record<string, unknown>;
-    sourceConfig?: Record<string, unknown>;
-  }>(requireClient(), "config.get", {});
+  const current = await rpcReq((requestOptions) =>
+    requireClient().request<{
+      raw?: string | null;
+      valid?: boolean;
+      hash?: string;
+      path?: string;
+      config?: Record<string, unknown>;
+      sourceConfig?: Record<string, unknown>;
+    }>("config.get", {}, requestOptions),
+  );
   expect(current.ok).toBe(true);
   expect(typeof current.payload?.hash).toBe("string");
   expect(typeof current.payload?.path).toBe("string");
