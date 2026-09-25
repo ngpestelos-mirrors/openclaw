@@ -5,7 +5,6 @@ import {
   appendTranscriptMessage,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { importSessionCatalogHistory } from "../plugins/session-catalog-history-import.js";
 import type { SessionCatalogProvider, SessionUpstreamProbe } from "../plugins/session-catalog.js";
 import {
@@ -13,7 +12,10 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { listSessionStateEventsSince, registerSessionStateWatch } from "./session-state-events.js";
 import {
   deleteSessionUpstreamLink,
@@ -290,7 +292,7 @@ describe("session upstream monitor", () => {
     "joins a deferred probe without publication after %s stop",
     async (stopOwner) => {
       const clock = createGatewaySchedulerClock(1_000);
-      const scheduler = new GatewayScheduler({ clock: clock.clock });
+      const scheduler = createTestGatewayScheduler(clock.clock);
       const database = createDatabaseOptions();
       const sessionKey = "agent:main:adopted:missing-stopped";
       createLink(sessionKey, "claude", database);

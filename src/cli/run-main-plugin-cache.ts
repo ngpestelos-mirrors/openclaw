@@ -4,8 +4,8 @@ import { withCliCommandCleanup, type CliHarnessCleanup } from "./runtime-cleanup
 /** Executable commands own their inventory until Gateway publication adopts it. */
 export function withCliPluginInvocation<T>(
   gatewayRun: boolean,
-  run: (cleanup?: CliHarnessCleanup) => T,
-): T {
+  run: (cleanup?: CliHarnessCleanup) => T | Promise<T>,
+): Promise<T> {
   return withCliCommandCleanup(gatewayRun, (cleanup) => {
     if (gatewayRun) {
       return run();

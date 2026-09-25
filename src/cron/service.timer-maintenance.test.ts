@@ -1,5 +1,6 @@
 import { Cron } from "croner";
 import { describe, expect, it, vi } from "vitest";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { setupCronServiceSuite, writeCronStoreSnapshot } from "./service.test-harness.js";
 import * as scheduleMaintenance from "./service/schedule-maintenance.js";
 import { createCronServiceState } from "./service/state.js";
@@ -51,6 +52,7 @@ async function runTimer(jobs: CronJob[], nowMs: number) {
   const store = await makeStorePath();
   await writeCronStoreSnapshot({ storePath: store.storePath, jobs });
   const state = createCronServiceState({
+    scheduler: createTestGatewayScheduler(),
     storePath: store.storePath,
     cronEnabled: true,
     log: logger,
@@ -147,6 +149,7 @@ describe("cron timer maintenance admission", () => {
     expect(before.store.jobs).toHaveLength(1_000);
     const revision = getCronJobsStoreRevision(storePath);
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(),
       storePath,
       cronEnabled: true,
       log: logger,

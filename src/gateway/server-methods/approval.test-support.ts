@@ -20,7 +20,12 @@ import {
   bindGatewayRequestHandlerMutationAuthority,
   bindWebSocketRequestMutationAuthority,
 } from "./session-mutation-guards.js";
-import type { GatewayRequestHandlerOptions, GatewayRequestOptions } from "./types.js";
+import type {
+  GatewayClient,
+  GatewayRequestContext,
+  GatewayRequestHandlerOptions,
+  GatewayRequestOptions,
+} from "./types.js";
 
 export function getOperatorApproval(
   params: Parameters<typeof getOperatorApprovalDetailedInDatabase>[0],
@@ -39,6 +44,38 @@ export function deleteDurableApproval(
     database.db,
     stateDb.deleteFrom("operator_approvals").where("approval_id", "=", id),
   );
+}
+
+export function corruptDurableApprovalPresentation(
+  databaseOptions: OpenClawStateDatabaseOptions,
+  id: string,
+): void {
+  const database = openOpenClawStateDatabase(databaseOptions);
+  const stateDb = getNodeSqliteKysely<OperatorApprovalDatabase>(database.db);
+  executeSqliteQuerySync(
+    database.db,
+    stateDb
+      .updateTable("operator_approvals")
+      .set({ presentation_json: "{}" })
+      .where("approval_id", "=", id),
+  );
+}
+
+type ApprovalClientLookup = NonNullable<GatewayRequestContext["getApprovalClientConnIds"]>;
+
+export function createApprovalClientLookup(clients: GatewayClient[]): ApprovalClientLookup {
+  return (opts = {}) =>
+    new Set(
+      clients
+        .filter((client) => {
+          if (opts.excludeConnId && client.connId === opts.excludeConnId) {
+            return false;
+          }
+          return opts.filter?.(client, opts.record) ?? true;
+        })
+        .map((client) => client.connId)
+        .filter((connId): connId is string => typeof connId === "string" && connId.length > 0),
+    );
 }
 
 export function createClient(params: {

@@ -1,6 +1,6 @@
 import pLimit from "p-limit";
 import { CHAT_SEND_SESSION_KEY_MAX_LENGTH } from "../../packages/gateway-protocol/src/schema/primitives.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type {
@@ -52,7 +52,7 @@ type SubscriptionDeps = {
   ) => Promise<ControlUiSessionPrRead | undefined>;
   isConnectionActive?: (connId: string) => boolean;
   load?: LoadSessionPullRequests;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
 };
 
 type ControlUiSessionPullRequestSubscriptions = {
@@ -160,7 +160,7 @@ export function createControlUiSessionPullRequestSubscriptions(
       demands: Set<() => boolean>;
     }
   >();
-  const scheduler = deps.scheduler ?? new GatewayScheduler();
+  const scheduler = deps.scheduler;
   const limit = pLimit(CONTROL_UI_SESSION_PR_LOAD_CONCURRENCY);
   const customLoad = deps.load;
   const load = customLoad ?? loadSessionPullRequests;

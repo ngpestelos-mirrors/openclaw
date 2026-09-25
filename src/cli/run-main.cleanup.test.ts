@@ -9,6 +9,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { AgentHarness } from "../agents/harness/types.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 
 const dispatch = vi.hoisted(() => ({
   run: async () => {},
@@ -243,7 +244,7 @@ describe("CLI process harness cleanup", () => {
         instance.onModuleDispose(artifact.disposeAsync);
         cache.instances.add(instance);
         if (mode === "gateway-adopted") {
-          gateway = retainGatewayPluginMetadata();
+          gateway = retainGatewayPluginMetadata(createTestGatewayScheduler());
           adoptProcessPluginCache(cache);
           gateway.publish(undefined);
         }

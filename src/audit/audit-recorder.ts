@@ -26,7 +26,7 @@ type AuditEventRecorder = AgentEventAuditRecorder & {
 };
 
 export function createAuditEventRecorder(options: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   getConfig: () => OpenClawConfig;
   writer?: AuditEventWriter;
   stateDir?: string;

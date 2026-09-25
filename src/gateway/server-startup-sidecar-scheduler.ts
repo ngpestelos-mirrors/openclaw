@@ -1,5 +1,5 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import type { PluginRegistry } from "../plugins/registry.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../process/gateway-work-admission.js";
 import { measureStartup, type GatewayStartupTrace } from "./server-startup-trace.js";
@@ -60,14 +60,14 @@ export function schedulePostReadySidecarTask(params: {
 }
 
 export function scheduleGatewayGenerationTimer(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   delayMs: number;
   origin: string;
   run: (isStopped: () => boolean) => Awaitable<void>;
   onError: (err: unknown) => void;
   shouldRun?: () => boolean;
 }): GatewayPostReadySidecarHandle {
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const { scheduler } = params;
   const controller = new AbortController();
   const isStopped = () => controller.signal.aborted || params.shouldRun?.() === false;
   const job = scheduler.schedule({

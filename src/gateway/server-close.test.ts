@@ -42,14 +42,15 @@ import { getProcessSupervisor, type ManagedRun } from "../process/supervisor/ind
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalMap, resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { killPidIfAlive } from "../test-utils/process-tree.js";
-import type {
-  GatewayCloseParams as GatewayTeardownParams,
-  GatewayClosePrepareParams,
-} from "./server-close.js";
 import {
   createGatewayCloseTestDepsFactory,
   createTestChatRunState,
+  type GatewayCloseParams,
+  type GatewayCloseClient,
+  type MarkMainSessionsAbortedForRestart,
+  type DrainActiveSessionsForShutdown,
 } from "./server-close.test-support.js";
 import type { GatewayCloseOptions } from "./server-public.js";
 
@@ -163,14 +164,6 @@ const { prepareGatewayClose, completeGatewayClose } = await import("./server-clo
 const { createChatRunState, isChatAbortMarkerCurrent } = await import("./server-chat-state.js");
 const { finishGatewayRestartTrace, recordGatewayRestartTraceSpan, startGatewayRestartTrace } =
   await import("./restart-trace.js");
-type GatewayCloseParams = GatewayTeardownParams & GatewayClosePrepareParams;
-type GatewayCloseClient = GatewayCloseParams["clients"] extends Set<infer T> ? T : never;
-type MarkMainSessionsAbortedForRestart = NonNullable<
-  GatewayCloseParams["markMainSessionsAbortedForRestart"]
->;
-type DrainActiveSessionsForShutdown = NonNullable<
-  GatewayCloseParams["drainActiveSessionsForShutdown"]
->;
 const originalRestartTraceEnv = process.env.OPENCLAW_GATEWAY_RESTART_TRACE;
 
 function createGatewayCloseHandler(params: GatewayCloseParams) {
@@ -214,7 +207,7 @@ describe("createGatewayCloseHandler", () => {
       },
     );
     const clearSecretsRuntimeSnapshot = vi.fn();
-    const metadata = retainGatewayPluginMetadata();
+    const metadata = retainGatewayPluginMetadata(createTestGatewayScheduler());
     const closing = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
         pluginMetadata: metadata,
@@ -225,21 +218,27 @@ describe("createGatewayCloseHandler", () => {
       await Promise.race([modelEntered.promise, cleanupEntered.promise]);
       expect(cache.retirement).toBeUndefined();
       expect(useDependency()).toBe("available");
-      expect(() => retainGatewayPluginMetadata()).toThrow(/retir|shut/i);
+      expect(() => retainGatewayPluginMetadata(createTestGatewayScheduler())).toThrow(
+        /retir|shut/i,
+      );
       modelReleased.resolve();
       await cleanupEntered.promise;
       expect(mocks.closePluginStateDatabaseAsync).not.toHaveBeenCalled();
       expect(clearSecretsRuntimeSnapshot).not.toHaveBeenCalled();
-      expect(() => retainGatewayPluginMetadata()).toThrow(/retir|shut/i);
+      expect(() => retainGatewayPluginMetadata(createTestGatewayScheduler())).toThrow(
+        /retir|shut/i,
+      );
       cleanupReleased.resolve();
       await sharedEntered.promise;
       expect(getPluginCache()).toBe(cache);
       expect(clearSecretsRuntimeSnapshot).not.toHaveBeenCalled();
-      expect(() => retainGatewayPluginMetadata()).toThrow(/retir|shut/i);
+      expect(() => retainGatewayPluginMetadata(createTestGatewayScheduler())).toThrow(
+        /retir|shut/i,
+      );
       sharedReleased.resolve();
       await closing;
       expect(clearSecretsRuntimeSnapshot).toHaveBeenCalledOnce();
-      await retainGatewayPluginMetadata().close();
+      await retainGatewayPluginMetadata(createTestGatewayScheduler()).close();
     } finally {
       modelReleased.resolve();
       unregisterModel();

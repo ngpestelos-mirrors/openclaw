@@ -1,10 +1,12 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeGitHubOAuthRecord } from "../agents/github-oauth-records.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createGitHubOAuthLifecycle } from "./github-oauth-lifecycle.js";
 import {
   configForScope,
@@ -35,16 +37,14 @@ it("refreshes once after sleep while personal maintenance is pending, then stops
   const config = configForScope("system", identity(OLD_PROFILE, { oauth: true }));
   writeGitHubOAuthRecord(oauthRecord(OLD_PROFILE));
   const scheduled = createDeferredCore();
-  const scheduler = new GatewayScheduler({
-    clock: {
-      ...time.clock,
-      arm: (run, delayMs) => {
-        const cancel = time.clock.arm(run, delayMs);
-        if (delayMs > 0) {
-          scheduled.resolve();
-        }
-        return cancel;
-      },
+  const scheduler = createTestGatewayScheduler({
+    ...time.clock,
+    arm: (run, delayMs) => {
+      const cancel = time.clock.arm(run, delayMs);
+      if (delayMs > 0) {
+        scheduled.resolve();
+      }
+      return cancel;
     },
   });
   refreshToken.mockResolvedValue({ status: "error", code: "device_flow_disabled" });

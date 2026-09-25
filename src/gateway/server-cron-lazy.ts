@@ -16,7 +16,7 @@ type LazyGatewayCronParams = {
   deps: CliDeps;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
   env?: NodeJS.ProcessEnv;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   /**
    * Resolves the live Gateway request context for scheduler-triggered runs.
    * RPC-triggered runs inherit one from the caller; timer-triggered runs have

@@ -2,6 +2,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { logWarn } from "../logger.js";
+import { getBoundLegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { createSessionMcpRuntimeManager } from "./agent-bundle-mcp-manager.js";
 import { SESSION_MCP_RUNTIME_MANAGER_KEY } from "./agent-bundle-mcp-runtime-shared.js";
@@ -15,24 +16,49 @@ import type {
 } from "./agent-bundle-mcp-types.js";
 
 function getSessionMcpRuntimeManager() {
-  return resolveGlobalSingleton(SESSION_MCP_RUNTIME_MANAGER_KEY, createSessionMcpRuntimeManager);
+  const manager = peekSessionMcpRuntimeManager();
+  if (!manager) {
+    throw new Error("Session MCP runtime scheduler has not been bound by its lifecycle owner");
+  }
+  return manager;
 }
 
 export function setSessionMcpRuntimeScheduler(scheduler: GatewayScheduler): Promise<void> {
-  return getSessionMcpRuntimeManager().setScheduler(scheduler);
+  return resolveGlobalSingleton(SESSION_MCP_RUNTIME_MANAGER_KEY, () =>
+    createSessionMcpRuntimeManager({ scheduler }),
+  ).setScheduler(scheduler);
 }
 
-function peekSessionMcpRuntimeManager(): SessionMcpRuntimeManager | undefined {
+function peekSessionMcpRuntimeManager():
+  | ReturnType<typeof createSessionMcpRuntimeManager>
+  | undefined {
   const globalStore = globalThis as Record<PropertyKey, unknown>;
   return Object.hasOwn(globalStore, SESSION_MCP_RUNTIME_MANAGER_KEY)
-    ? (globalStore[SESSION_MCP_RUNTIME_MANAGER_KEY] as SessionMcpRuntimeManager)
+    ? (globalStore[SESSION_MCP_RUNTIME_MANAGER_KEY] as ReturnType<
+        typeof createSessionMcpRuntimeManager
+      >)
     : undefined;
 }
 
 export async function acquireSessionMcpRuntime(
   params: Parameters<SessionMcpRuntimeManager["acquire"]>[0],
 ): Promise<SessionMcpRuntimeLease> {
-  return await getSessionMcpRuntimeManager().acquire(params);
+  const host = getBoundLegacyPluginSdkResourceHost();
+  const scheduler = host?.scheduler;
+  if (scheduler) {
+    await setSessionMcpRuntimeScheduler(scheduler);
+    host?.assertOpen();
+    scheduler.signal.throwIfAborted();
+  }
+  const lease = await getSessionMcpRuntimeManager().acquire(params);
+  try {
+    host?.assertOpen();
+    scheduler?.signal.throwIfAborted();
+    return lease;
+  } catch (error) {
+    await releaseSessionMcpRuntime(lease);
+    throw error;
+  }
 }
 
 /**
@@ -42,7 +68,24 @@ export async function acquireSessionMcpRuntime(
 export async function acquireRequesterScopedMcpRuntime(
   params: Parameters<SessionMcpRuntimeManager["acquireRequesterScoped"]>[0],
 ): Promise<RequesterScopedMcpRuntimeHandle | undefined> {
-  return await getSessionMcpRuntimeManager().acquireRequesterScoped(params);
+  const host = getBoundLegacyPluginSdkResourceHost();
+  const scheduler = host?.scheduler;
+  if (scheduler) {
+    await setSessionMcpRuntimeScheduler(scheduler);
+    host?.assertOpen();
+    scheduler.signal.throwIfAborted();
+  }
+  const lease = await getSessionMcpRuntimeManager().acquireRequesterScoped(params);
+  try {
+    host?.assertOpen();
+    scheduler?.signal.throwIfAborted();
+    return lease;
+  } catch (error) {
+    if (lease) {
+      await releaseSessionMcpRuntime(lease);
+    }
+    throw error;
+  }
 }
 
 export function rememberAdvertisedScopedMcpCatalog(
@@ -53,7 +96,7 @@ export function rememberAdvertisedScopedMcpCatalog(
 }
 
 export function getAdvertisedScopedMcpCatalog(sessionId: string): McpToolCatalog | null {
-  return getSessionMcpRuntimeManager().getAdvertisedScopedCatalog(sessionId);
+  return peekSessionMcpRuntimeManager()?.getAdvertisedScopedCatalog(sessionId) ?? null;
 }
 
 /** Looks up an existing session MCP runtime without creating it or connecting transports. */
@@ -80,7 +123,10 @@ export async function retireSessionMcpRuntime(params: {
   if (!sessionId) {
     return false;
   }
-  const manager = getSessionMcpRuntimeManager();
+  const manager = peekSessionMcpRuntimeManager();
+  if (!manager) {
+    return true;
+  }
   try {
     if (
       params.preserveActiveLeases === true &&
@@ -123,7 +169,12 @@ export async function releaseSessionMcpRuntime(
 export async function completeDeferredSessionMcpRuntimeRetirement(
   runtime: SessionMcpRuntime,
 ): Promise<boolean> {
-  return await getSessionMcpRuntimeManager().completeDeferredRetirement(runtime.sessionId, runtime);
+  return (
+    (await peekSessionMcpRuntimeManager()?.completeDeferredRetirement(
+      runtime.sessionId,
+      runtime,
+    )) ?? false
+  );
 }
 
 export async function retireSessionMcpRuntimeForSessionKey(params: {
@@ -136,7 +187,7 @@ export async function retireSessionMcpRuntimeForSessionKey(params: {
   if (!sessionKey) {
     return false;
   }
-  const sessionId = getSessionMcpRuntimeManager().resolveSessionId(sessionKey);
+  const sessionId = peekSessionMcpRuntimeManager()?.resolveSessionId(sessionKey);
   return await retireSessionMcpRuntime({
     sessionId,
     reason: params.reason,
@@ -150,7 +201,7 @@ export async function reloadSessionMcpRuntimes(params: SessionMcpConfigReload): 
 }
 
 export async function disposeAllSessionMcpRuntimes(): Promise<void> {
-  await getSessionMcpRuntimeManager().disposeAll();
+  await peekSessionMcpRuntimeManager()?.disposeAll();
 }
 
 export function getSessionMcpRuntimeManagerForTesting(): SessionMcpRuntimeManager {

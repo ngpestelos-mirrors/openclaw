@@ -5,7 +5,7 @@ import {
   listSessionEntriesReadOnly,
   loadSessionEntryReadOnly,
 } from "../config/sessions/session-accessor.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import { sessionChanges, type SessionRowChange } from "../sessions/session-row-changes.js";
 import {
@@ -26,7 +26,7 @@ const CLEANUP_RETRY_MS = 60_000;
 export function startIncognitoSessionLifetime(params: {
   context: GatewayRequestContext;
   logWarning: (message: string) => void;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
 }): GatewayPostReadySidecarHandle {
   type Deadline = {
     sessionKey: string;
@@ -36,7 +36,7 @@ export function startIncognitoSessionLifetime(params: {
     expiresAt: number;
     job?: GatewayScheduledJob;
   };
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const { scheduler } = params;
   const runInOwner = AsyncLocalStorage.snapshot();
   const env = { ...process.env, OPENCLAW_STATE_DIR: resolveStateDir() };
   const restartSignal = getGatewayRestartDrainSignal();

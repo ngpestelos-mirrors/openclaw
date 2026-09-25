@@ -1,4 +1,23 @@
-import type { GatewaySchedulerClock } from "../infra/gateway-scheduler.js";
+import { GatewayScheduler, type GatewaySchedulerClock } from "../infra/gateway-scheduler.js";
+
+export function createTestGatewayScheduler(
+  clock: GatewaySchedulerClock | "fake-timers" = createGatewaySchedulerClock(Date.now()).clock,
+): GatewayScheduler {
+  if (clock === "fake-timers") {
+    clock = {
+      now: () => Date.now(),
+      monotonicNow: () => performance.now(),
+      arm: (run, delayMs) => {
+        const timer = setTimeout(() => {
+          void run();
+        }, delayMs);
+        timer.unref();
+        return () => clearTimeout(timer);
+      },
+    };
+  }
+  return new GatewayScheduler({ clock });
+}
 
 /** A host wake is explicit; advancing the wall clock never replays missed ticks. */
 export function createGatewaySchedulerClock(initialNowMs = 0) {

@@ -8,15 +8,16 @@ import {
   type DiagnosticEventPayload,
   type DiagnosticMessageProcessedEvent,
 } from "../infra/diagnostic-events.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import {
   getDiagnosticSessionState,
   isDiagnosticSessionStateCurrent,
   peekDiagnosticSessionState,
 } from "./diagnostic-session-state.js";
 import {
-  configureDiagnosticHeartbeatScheduler,
   diagnosticLogger,
   logMessageQueued,
   logSessionStateChange,
@@ -37,7 +38,7 @@ afterEach(() => {
 it("reports the shared next wake and coalesces diagnostic heartbeats after sleep", async () => {
   const startedAt = Date.now();
   const clock = createGatewaySchedulerClock(startedAt);
-  const scheduler = new GatewayScheduler({ clock: clock.clock });
+  const scheduler = createTestGatewayScheduler(clock.clock);
   const debug = vi.spyOn(diagnosticLogger, "debug");
   const heartbeats: DiagnosticEventPayload[] = [];
   const unsubscribe = onDiagnosticEvent((event) => {
@@ -46,9 +47,8 @@ it("reports the shared next wake and coalesces diagnostic heartbeats after sleep
     }
   });
   try {
-    configureDiagnosticHeartbeatScheduler(scheduler);
     scheduler.schedule({ id: "pending-work", atMs: startedAt + 60_000, run: () => {} });
-    startDiagnosticHeartbeat({}, { sampleLiveness: () => null });
+    startDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
     logMessageQueued({ sessionKey: "diagnostic-schedule", source: "test" });
     await clock.advanceBy(30_000);
     expect(debug).toHaveBeenCalledWith(
@@ -87,13 +87,13 @@ it("preserves independent tool-loop and poll-backoff policy when diagnostic obse
 
 it("retires interrupted diagnostic observations before re-enable without reviving their authority", async () => {
   const clock = createGatewaySchedulerClock(Date.now());
-  configureDiagnosticHeartbeatScheduler(new GatewayScheduler({ clock: clock.clock }));
+  const scheduler = createTestGatewayScheduler(clock.clock);
   setDiagnosticsEnabledForProcess(true);
   const events: DiagnosticEventPayload[] = [];
   const unsubscribe = onDiagnosticEvent((event) => events.push(event));
   const session = { sessionKey: "diagnostic-lifecycle", sessionId: "diagnostic-lifecycle" };
   try {
-    startDiagnosticHeartbeat({}, { sampleLiveness: () => null });
+    startDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
     logMessageQueued({ ...session, source: "test" });
     logSessionStateChange({ ...session, state: "processing" });
     const generation = peekDiagnosticSessionState(session)?.generation;
@@ -102,7 +102,7 @@ it("retires interrupted diagnostic observations before re-enable without revivin
     stopDiagnosticHeartbeat();
     logSessionStateChange({ ...session, state: "idle" });
     setDiagnosticsEnabledForProcess(true);
-    startDiagnosticHeartbeat({}, { sampleLiveness: () => null });
+    startDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
     logWebhookReceived({ channel: "test" });
     await clock.advanceBy(30_000);
     await waitForDiagnosticEventsDrained();

@@ -1,6 +1,6 @@
 import { formatErrorMessage } from "../infra/errors.js";
-import { gatewayUpdateCampaign } from "../infra/update-campaign.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { UpdateCheckLifecycle } from "../infra/update-check-lifecycle.js";
 import { reconcileInterruptedUpdateRuns } from "../infra/update-run-interruption.js";
 import {
   findActiveUpdateRun,
@@ -23,12 +23,12 @@ export function wakeUpdateRunWatcher(): void {
 
 /** The update-check lifecycle joins notices and their transport tails before Gateway teardown. */
 export function startUpdateRunWatcher(params: {
-  scheduler?: GatewayScheduler;
+  lifecycle: UpdateCheckLifecycle;
   broadcast: GatewayBroadcastFn;
   log: { warn: (message: string) => void };
 }): { stop: () => Promise<void> } {
   const work = new AsyncWorkScope();
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const scheduler = params.lifecycle.scheduler;
   let timer: GatewayScheduledJob | undefined;
   let publicationTimer: GatewayScheduledJob | undefined;
   let watched: { runId: string; revision?: number; phase?: UpdateRunPhase } | undefined;
@@ -80,7 +80,7 @@ export function startUpdateRunWatcher(params: {
       }
       watched ??= { runId: run.runId };
       const terminal = run.status !== "running";
-      gatewayUpdateCampaign.reconcileRun(run);
+      params.lifecycle.campaign?.reconcileRun(run);
       if (watched.revision !== run.updatedAtMs || terminal) {
         params.broadcast(GATEWAY_EVENT_UPDATE_RUN_CHANGED, {
           runId: run.runId,

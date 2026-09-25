@@ -8,14 +8,22 @@ import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.open
 import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
+import {
+  createGatewayUpdateLifecycle,
+  type UpdateCheckLifecycle,
+} from "../../infra/update-check-lifecycle.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
 
 let ledgerHome: TempHomeEnv | undefined;
+let lifecycle: UpdateCheckLifecycle;
 beforeEach(async () => {
   ledgerHome = await createTempHomeEnv("openclaw-update-rpc-");
+  lifecycle = createGatewayUpdateLifecycle(createTestGatewayScheduler());
 });
 afterEach(async () => {
+  await lifecycle.stop();
   await ledgerHome?.restore();
   ledgerHome = undefined;
 });
@@ -323,9 +331,16 @@ vi.mock("../../infra/update-startup.js", () => ({
   refreshGatewayUpdateStatus: refreshGatewayUpdateStatusMock,
 }));
 
-vi.mock("../../infra/update-campaign.js", () => ({
-  gatewayUpdateCampaign: { adopt: adoptUpdateCampaignMock },
-}));
+vi.mock("../../infra/update-check-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../infra/update-check-lifecycle.js")>();
+  return {
+    ...actual,
+    currentUpdateCheckLifecycle: () => ({
+      ...actual.currentUpdateCheckLifecycle(),
+      campaign: { adopt: adoptUpdateCampaignMock },
+    }),
+  };
+});
 
 vi.mock("../../infra/update-runner-install-surface.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/update-runner-install-surface.js")>()),

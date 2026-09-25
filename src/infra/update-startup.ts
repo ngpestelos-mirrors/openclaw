@@ -22,12 +22,13 @@ import { readConfigMachineState } from "../state/config-machine-state.js";
 import { VERSION } from "../version.js";
 import { isTruthyEnvValue } from "./env.js";
 import type { GatewayActiveWorkInspectors } from "./gateway-active-work.js";
+import type { GatewayScheduler } from "./gateway-scheduler.js";
 import {
   EXTERNAL_SUPERVISOR_UPDATE_REQUIRED_REASON,
   isGatewayExternallySupervised,
 } from "./gateway-supervision.js";
 import { checkTelemetryUpdate } from "./telemetry.js";
-import { gatewayUpdateCampaign, type UpdateCampaignController } from "./update-campaign.js";
+import { UpdateCampaignController } from "./update-campaign.js";
 import {
   channelToNpmTag,
   DEV_BRANCH,
@@ -77,9 +78,9 @@ export async function getUpdateEffectiveChannel(): Promise<UpdateChannel> {
   }).channel;
 }
 
-export function resetUpdateAvailableStateForTest(): void {
+export function resetUpdateAvailableStateForTest(scheduler: GatewayScheduler): void {
   resetUpdateStatusState();
-  createGatewayUpdateLifecycle();
+  createGatewayUpdateLifecycle(scheduler);
 }
 
 const UPDATE_CHECK_STATE_KEY = "update.checkState";
@@ -332,8 +333,9 @@ async function runGatewayUpdateCheckOwned(
   if (params.isNixMode) {
     return;
   }
-  const updateCampaign = params.updateCampaign ?? gatewayUpdateCampaign;
-  lifecycle.campaign = gatewayUpdateCampaign;
+  const updateCampaign =
+    params.updateCampaign ??
+    (lifecycle.campaign ??= new UpdateCampaignController(lifecycle.scheduler));
   // The admitted target belongs to the applying owner until it settles.
   if (updateCampaign.getState()?.state === "applying") {
     return;
@@ -835,7 +837,7 @@ async function runGatewayUpdateCheckOwned(
 }
 
 export function createGatewayUpdateCheck(params: {
-  lifecycle?: UpdateCheckLifecycle;
+  lifecycle: UpdateCheckLifecycle;
   getConfig: () => OpenClawConfig;
   log: { info: (msg: string, meta?: Record<string, unknown>) => void };
   isNixMode: boolean;
@@ -848,9 +850,7 @@ export function createGatewayUpdateCheck(params: {
   start: () => void;
   stop: () => Promise<void>;
 } {
-  const lifecycle = params.lifecycle ?? createGatewayUpdateLifecycle();
-  gatewayUpdateCampaign.attachScheduler(lifecycle.scheduler);
-  lifecycle.campaign = gatewayUpdateCampaign;
+  const { lifecycle } = params;
   let started = false;
   let observedCatalog: { sourceUrl: string; generatedAt: number } | undefined;
   return {

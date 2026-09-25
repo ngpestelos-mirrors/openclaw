@@ -16,6 +16,7 @@ import {
 } from "../infra/diagnostic-events.js";
 import { createProcessSupervisor } from "../process/supervisor/supervisor.js";
 import type { SpawnProcessAdapter } from "../process/supervisor/types.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import {
   closeDiagnosticEmbeddedRunOwner,
   createDiagnosticEmbeddedRunOwner,
@@ -90,6 +91,7 @@ describe("heartbeat recovery after exec preparation", () => {
       const dispatch = createDeferred();
       const recovered = createDeferred<StuckSessionRecoveryOutcome>();
       startDiagnosticHeartbeat(
+        createTestGatewayScheduler("fake-timers"),
         { diagnostics: { enabled: true } },
         {
           sampleLiveness: () => null,

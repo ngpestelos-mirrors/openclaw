@@ -1,7 +1,7 @@
 import { onSessionIdentityMutation } from "../../config/sessions/session-accessor.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { withTimeout } from "../../infra/fs-safe.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../../infra/gateway-scheduler.js";
 import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import type { WorkerExecutionMode } from "../../plugins/types.js";
@@ -53,7 +53,7 @@ const serviceError = (code: WorkerEnvironmentServiceErrorCode, message: string) 
   new WorkerEnvironmentServiceError(code, message);
 
 export function createWorkerEnvironmentService(options: WorkerEnvironmentServiceOptions) {
-  const { store } = options;
+  const { store, scheduler } = options;
   const warn = (message: string) => options.logger?.warn(message);
   const operations = new KeyedAsyncQueue();
   const providerOperations = new KeyedAsyncQueue();
@@ -68,7 +68,6 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
     );
   };
   const now = options.now ?? Date.now;
-  const scheduler = options.scheduler ?? new GatewayScheduler();
   const tunnelLifecycle = createWorkerEnvironmentTransportLifecycle(options);
   const inference = createWorkerInferenceManager({
     execute: options.executeInference,

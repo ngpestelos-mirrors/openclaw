@@ -19,6 +19,7 @@ import {
 } from "../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { claimOpenClawStateOwnership } from "../../state/openclaw-state-ownership-operations.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
 import { createCoreGatewayMethodDescriptors } from "../methods/core-method-policy.js";
@@ -558,7 +559,8 @@ it("reconciles an expired legacy admission on Gateway watcher startup", async ()
   const legacy = createUpdateRun({ trigger: "cli", before: { version: "2026.9.2" } });
   clock.mockReturnValue(now);
   const broadcast = vi.fn();
-  const watcher = startUpdateRunWatcher({ broadcast, log: { warn: vi.fn() } });
+  const scheduler = createTestGatewayScheduler();
+  const watcher = startUpdateRunWatcher({ scheduler, broadcast, log: { warn: vi.fn() } });
   try {
     expect(getUpdateRun(legacy.runId)).toMatchObject({
       phase: "finished",
@@ -571,5 +573,6 @@ it("reconciles an expired legacy admission on Gateway watcher startup", async ()
     );
   } finally {
     await watcher.stop();
+    await scheduler.stop();
   }
 });

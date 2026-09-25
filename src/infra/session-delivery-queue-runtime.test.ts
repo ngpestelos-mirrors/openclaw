@@ -6,8 +6,10 @@ import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worke
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
-import { GatewayScheduler } from "./gateway-scheduler.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { drainPendingSessionDelivery } from "./session-delivery-queue-recovery.js";
 import {
   schedulePendingSessionDeliveries,
@@ -29,7 +31,7 @@ const logger = {
 };
 
 type StartRuntimeForTest = (
-  params: Omit<Parameters<typeof startSessionDeliveryRuntime>[0], "queueContext">,
+  params: Omit<Parameters<typeof startSessionDeliveryRuntime>[0], "queueContext" | "scheduler">,
 ) => ReturnType<typeof startSessionDeliveryRuntime>;
 
 async function withRuntime(
@@ -66,7 +68,7 @@ async function withRuntime(
 
 function createRuntimeClock() {
   const clock = createGatewaySchedulerClock(Date.now());
-  const scheduler = new GatewayScheduler({ clock: clock.clock });
+  const scheduler = createTestGatewayScheduler(clock.clock);
   return {
     clock,
     scheduler,

@@ -115,7 +115,7 @@ export async function loadGatewayWorkerEnvironmentStartupState(): Promise<Gatewa
 }
 
 export async function createGatewayWorkerEnvironmentRuntime(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   getPluginRegistry: () => PluginRegistry;
   getPortalRuntime: () => Pick<GatewayRequestContext, "portalService" | "broadcast"> | undefined;
   resolveGatewayContext: GatewayContextResolver;

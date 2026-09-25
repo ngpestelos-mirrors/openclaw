@@ -975,7 +975,7 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
   }
 }
 
-export function startTaskRegistryMaintenance(scheduler?: GatewayScheduler) {
+export function startTaskRegistryMaintenance(scheduler: GatewayScheduler) {
   ensureTaskRegistryReady();
   maintenanceScheduler.start(scheduler);
 }

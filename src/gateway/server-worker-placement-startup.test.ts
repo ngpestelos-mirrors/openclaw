@@ -6,7 +6,6 @@ import { getWorkerPlacementStartupMocks } from "./server-worker-placement-startu
 const { runtimeFactoryMocks, moveDestinationMocks } = getWorkerPlacementStartupMocks();
 
 import { getRuntimeConfig } from "../config/config.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   beginGatewayRestartSignalAdmission,
   markGatewayRestartDraining,
@@ -18,7 +17,10 @@ import {
   startSessionWorkAdmissionInterruption,
 } from "../sessions/session-lifecycle-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
 import type { WorkerPlacementDispatchService } from "./worker-environments/placement-dispatch.js";
 import type { WorkerSessionWorkspace } from "./worker-environments/session-workspace.js";
@@ -26,7 +28,7 @@ import type { WorkerSessionWorkspace } from "./worker-environments/session-works
 describe("worker placement startup health lifetime", () => {
   it("samples disk on schedule while reconciliation is stuck and drains both on stop", async () => {
     const time = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: time.clock });
+    const scheduler = createTestGatewayScheduler(time.clock);
     const releaseReconcile = createDeferredCore();
     const releaseScheduledHealth = createDeferredCore();
     const reconcileStarted = createDeferredCore();
@@ -163,6 +165,7 @@ describe("worker placement startup health lifetime", () => {
         stop: vi.fn().mockResolvedValue(undefined),
       };
       const runtime = createGatewayWorkerPlacementRuntime({
+        scheduler: createTestGatewayScheduler(),
         getCommittedRuntimeConfig: getRuntimeConfig,
         cancelSessionWork: vi.fn(async () => {}),
         placements: {
@@ -257,6 +260,7 @@ describe("worker placement startup health lifetime", () => {
       stopNodeEnrollmentWaits: vi.fn(),
     };
     const runtime = createGatewayWorkerPlacementRuntime({
+      scheduler: createTestGatewayScheduler(),
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
@@ -330,6 +334,7 @@ describe("worker placement startup health lifetime", () => {
       stop: vi.fn().mockRejectedValueOnce(stopError).mockResolvedValueOnce(undefined),
     };
     const runtime = createGatewayWorkerPlacementRuntime({
+      scheduler: createTestGatewayScheduler(),
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
@@ -413,6 +418,7 @@ describe("worker placement startup health lifetime", () => {
       stop: vi.fn().mockResolvedValue(undefined),
     };
     const runtime = createGatewayWorkerPlacementRuntime({
+      scheduler: createTestGatewayScheduler(),
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
@@ -550,6 +556,7 @@ describe("worker placement startup health lifetime", () => {
       }),
     };
     const runtime = createGatewayWorkerPlacementRuntime({
+      scheduler: createTestGatewayScheduler(),
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
@@ -642,6 +649,7 @@ describe("worker placement startup recovery authority", () => {
       environmentId: "worker-recovery",
     };
     createGatewayWorkerPlacementRuntime({
+      scheduler: createTestGatewayScheduler(),
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {

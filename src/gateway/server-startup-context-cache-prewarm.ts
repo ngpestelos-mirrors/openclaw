@@ -11,7 +11,7 @@ type StartupTrace = {
 };
 
 export function scheduleContextCachePrewarm(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   getConfig: () => OpenClawConfig;
   startupTrace?: StartupTrace;
   log: { warn: (msg: string) => void };

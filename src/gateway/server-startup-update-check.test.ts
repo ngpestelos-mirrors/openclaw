@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -15,10 +16,12 @@ type UpdateCheckParams = Parameters<UpdateCheckStartupParams["createUpdateCheck"
 describe("deferred Gateway update-check lifecycle", () => {
   let state: OpenClawTestState;
   let defaultUpdateCheck: UpdateCheck;
+  let scheduler: ReturnType<typeof createTestGatewayScheduler>;
   const owners = new Set<ReturnType<typeof createDeferredGatewayUpdateCheck>>();
 
   beforeEach(async () => {
     resetGatewayWorkAdmission();
+    scheduler = createTestGatewayScheduler();
     state = await createOpenClawTestState({ label: "gateway-update-check" });
     defaultUpdateCheck = {
       initialize: vi.fn(async () => ({
@@ -34,6 +37,7 @@ describe("deferred Gateway update-check lifecycle", () => {
   afterEach(async () => {
     try {
       await Promise.all([...owners].map((owner) => owner.stop()));
+      await scheduler.stop();
     } finally {
       owners.clear();
       resetGatewayWorkAdmission();
@@ -45,6 +49,7 @@ describe("deferred Gateway update-check lifecycle", () => {
 
   async function startUpdateCheck(overrides: Partial<UpdateCheckStartupParams> = {}) {
     const owner = createDeferredGatewayUpdateCheck({
+      scheduler,
       createUpdateCheck: () => defaultUpdateCheck,
       getConfig: () => ({}),
       log: { info: vi.fn(), warn: vi.fn() },

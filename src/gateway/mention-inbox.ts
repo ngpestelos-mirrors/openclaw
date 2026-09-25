@@ -14,7 +14,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { updateSessionProfileInvolvement } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
@@ -72,14 +72,14 @@ type SharingTargets = Map<
 
 /** Durable sources own retention and replay; each Gateway keeps disposable projection indexes. */
 export function createMentionInbox(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   gatewayInstanceId: string;
   getRuntimeConfig: () => OpenClawConfig;
   getClients: () => Iterable<GatewayClient>;
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   onMentionCreated?: (notification: MentionNotification) => void;
 }): MentionInbox {
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const { scheduler } = params;
   const policy = createHumanMentionPolicy(params);
   const items = new Map<string, StoredMention>();
   const itemsByProfile = new Map<string, Set<StoredMention>>();

@@ -4,6 +4,7 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 
 const mocks = vi.hoisted(() => ({
   events: [] as string[],
@@ -50,6 +51,7 @@ describe("scheduleGatewayHandlerPrewarm", () => {
     } as never;
 
     const sidecar = scheduleGatewayHandlerPrewarm({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       cfgAtStart: cfg,
       log: { warn: vi.fn() },
     });
@@ -69,6 +71,7 @@ describe("scheduleGatewayHandlerPrewarm", () => {
     const load = vi.fn(async () => {});
 
     const sidecar = scheduleGatewayHandlerPrewarm({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       cfgAtStart: {} as never,
       log: { warn: vi.fn() },
       items: [{ name: "sessions", load }],
@@ -92,6 +95,7 @@ describe("scheduleGatewayHandlerPrewarm", () => {
     }
     const load = vi.fn(async () => {});
     const sidecar = scheduleGatewayHandlerPrewarm({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       cfgAtStart: {} as never,
       log: { warn: vi.fn() },
       items: [{ name: "sessions", load }],
@@ -114,6 +118,7 @@ describe("scheduleGatewayHandlerPrewarm", () => {
     const load = vi.fn(async () => {});
 
     const sidecar = scheduleGatewayHandlerPrewarm({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       cfgAtStart: {} as never,
       log: { warn: vi.fn() },
       items: [{ name: "sessions", load }],
@@ -138,6 +143,7 @@ describe("scheduleGatewayHandlerPrewarm", () => {
       .mockResolvedValue("request result");
 
     scheduleGatewayHandlerPrewarm({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       cfgAtStart: {} as never,
       log: { warn },
       items: [
@@ -170,6 +176,7 @@ describe("scheduleGatewayHandlerPrewarm", () => {
     );
     const second = vi.fn(async () => {});
     const sidecar = scheduleGatewayHandlerPrewarm({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       cfgAtStart: {} as never,
       log: { warn: vi.fn() },
       items: [

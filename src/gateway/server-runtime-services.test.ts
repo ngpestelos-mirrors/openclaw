@@ -2,7 +2,6 @@
  * Gateway runtime service lifecycle tests.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   bindGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
@@ -19,7 +18,10 @@ import {
 import { getSpawnBroker, runWithSpawnBroker } from "../process/spawn-broker/context.js";
 import { useSpawnBrokerTestFixture } from "../process/spawn-broker/host.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { registerGatewayCronStartupTests } from "./server-runtime-services.cron.test-support.js";
 import {
   createLog,
@@ -55,7 +57,7 @@ describe("server-runtime-services", () => {
 
   it("starts channel health without activating scheduled services", () => {
     startGatewayChannelHealthMonitor({
-      scheduler: new GatewayScheduler({ clock: createGatewaySchedulerClock().clock }),
+      scheduler: createTestGatewayScheduler(),
       channelManager: {
         getRuntimeSnapshot: vi.fn(),
         isHealthMonitorEnabled: vi.fn(),
@@ -74,7 +76,7 @@ describe("server-runtime-services", () => {
     "keeps channel health recovery disabled when %s suppresses startup",
     (envKey) => {
       const monitor = startGatewayChannelHealthMonitor({
-        scheduler: new GatewayScheduler({ clock: createGatewaySchedulerClock().clock }),
+        scheduler: createTestGatewayScheduler(),
         channelManager: {} as never,
         env: { [envKey]: "1" },
       });
@@ -90,6 +92,7 @@ describe("server-runtime-services", () => {
     vi.useFakeTimers();
     const warn = vi.fn();
     activateGatewayScheduledServices({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       minimalTestGateway: false,
       cfgAtStart,
       deps: {} as never,
@@ -737,7 +740,7 @@ describe("server-runtime-services", () => {
 
   it("runs a scheduled idle task in an independent admitted root", async () => {
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const activeRootCounts: number[] = [];
     const run = vi.fn(async () => {
       activeRootCounts.push(getActiveGatewayRootWorkCount());
@@ -763,7 +766,7 @@ describe("server-runtime-services", () => {
 
   it("retries a scheduled idle task while request work is active", async () => {
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const admission = tryBeginGatewayRootWorkAdmission();
     if (!admission) {
       throw new Error("Expected request work admission");
@@ -793,7 +796,7 @@ describe("server-runtime-services", () => {
 
   it("rechecks request work after joining the admitted root set", async () => {
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const run = vi.fn(async () => undefined);
     const isBusy = vi
       .fn()
@@ -824,7 +827,7 @@ describe("server-runtime-services", () => {
 
   it("cancels a scheduled idle task before its delay elapses", async () => {
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const run = vi.fn(async () => undefined);
     const handle = scheduleGatewayIdleTask({
       id: "test:idle",
@@ -846,6 +849,7 @@ describe("server-runtime-services", () => {
 
   it("keeps scheduled services disabled for minimal test gateways", () => {
     const services = activateGatewayScheduledServices({
+      scheduler: createTestGatewayScheduler(),
       minimalTestGateway: true,
       cfgAtStart: {} as never,
       deps: {} as never,
@@ -869,6 +873,7 @@ function activateScheduledServicesForTest(
   const log = overrides.log ?? createLog();
   const cfgAtStart = overrides.cfgAtStart ?? ({} as never);
   const services = activateGatewayScheduledServices({
+    scheduler: createTestGatewayScheduler(vi.isFakeTimers() ? "fake-timers" : undefined),
     minimalTestGateway: false,
     cfgAtStart,
     deps: {} as never,

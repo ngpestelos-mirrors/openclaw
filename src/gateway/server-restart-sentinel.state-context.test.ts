@@ -4,7 +4,6 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { captureDeliveryQueueStateContext } from "../infra/delivery-queue-state-context.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { findDeliveryIntentOwner } from "../infra/outbound/delivery-queue-storage.js";
 import * as restartSentinel from "../infra/restart-sentinel.js";
 import { readRestartSentinel, writeRestartSentinel } from "../infra/restart-sentinel.js";
@@ -26,7 +25,10 @@ import {
   createTestRegistry,
 } from "../test-utils/channel-plugins.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 
 const mocks = vi.hoisted(() => ({
   loadSessionEntry: vi.fn<typeof import("./session-utils.js").loadSessionEntry>(),
@@ -391,7 +393,7 @@ it.each([
       });
     const testMode = captureEnv(["VITEST", "NODE_ENV"]);
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     sidecars.push(scheduler);
     // Pending-update retries retain native timers; startup uses the injected scheduler clock.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

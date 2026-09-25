@@ -11,6 +11,7 @@ import {
   resetTaskRegistryForTests,
   setDetachedTaskLifecycleRuntime,
 } from "../../tasks/task-runtime.test-helpers.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { CRON_AGENT_SELECTION_REQUIRED_MESSAGE } from "../agent-id.js";
 import { cronStoreKey } from "../store/key.js";
@@ -123,6 +124,7 @@ describe("cron task run terminal records", () => {
           };
         });
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -180,6 +182,7 @@ describe("cron task run terminal records", () => {
           state: {},
         };
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -230,6 +233,7 @@ describe("cron task run terminal records", () => {
       state: {},
     };
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(),
       storePath: "/tmp/jobs.json",
       cronEnabled: true,
       log: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
@@ -288,6 +292,7 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           defaultAgentId: undefined,
           resolveDefaultAgentId: () => undefined,
@@ -376,6 +381,7 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -447,6 +453,7 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -541,6 +548,7 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -609,6 +617,7 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -702,6 +711,7 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -757,6 +767,7 @@ describe("cron task run terminal records", () => {
           state: { nextRunAtMs: 60_000 },
         };
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -811,6 +822,7 @@ describe("cron task run terminal records", () => {
         resetTaskRegistryForTests({ persist: false });
         const startedAt = 7_000;
         const state = createCronServiceState({
+          scheduler: createTestGatewayScheduler(),
           storePath: "/tmp/jobs.json",
           cronEnabled: true,
           log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -895,6 +907,7 @@ describe("cron task run terminal records", () => {
         };
         const createState = (storePath: string) =>
           createCronServiceState({
+            scheduler: createTestGatewayScheduler(),
             storePath,
             cronEnabled: true,
             log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },

@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import * as gatewayWork from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createTaskMaintenanceScheduler } from "./task-registry-maintenance-scheduler.js";
 
 let clock: ReturnType<typeof createGatewaySchedulerClock>;
@@ -10,7 +13,7 @@ let gatewayScheduler: GatewayScheduler;
 beforeEach(() => {
   gatewayWork.resetGatewayWorkAdmission();
   clock = createGatewaySchedulerClock();
-  gatewayScheduler = new GatewayScheduler({ clock: clock.clock });
+  gatewayScheduler = createTestGatewayScheduler(clock.clock);
 });
 
 afterEach(async () => {

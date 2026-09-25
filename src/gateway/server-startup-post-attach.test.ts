@@ -41,6 +41,7 @@ import {
 import { AsyncWorkScope, getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -48,7 +49,10 @@ import {
 import { GatewayConnectionWork } from "./server-connection-work.js";
 import { createGatewayPluginRuntimeGeneration } from "./server-plugin-runtime-generation.js";
 import "./server-startup-outcomes.test-support.js";
-import { registerGatewayStartupReadinessTests } from "./server-startup-readiness.test-support.js";
+import {
+  createStartupTraceRecorder,
+  registerGatewayStartupReadinessTests,
+} from "./server-startup-readiness.test-support.js";
 import { transcriptSidecarMocks } from "./server-startup-transcripts.test-support.js";
 
 type PluginHookGatewayStartEvent = Parameters<PluginHookHandlerMap["gateway_start"]>[0];
@@ -297,10 +301,11 @@ function composeTrackedPublisher(
 }
 
 function startGatewaySidecars(
-  params: Omit<GatewaySidecarsParams, "onPostReadySidecars"> &
-    Partial<Pick<GatewaySidecarsParams, "onPostReadySidecars">>,
+  params: Omit<GatewaySidecarsParams, "onPostReadySidecars" | "scheduler"> &
+    Partial<Pick<GatewaySidecarsParams, "onPostReadySidecars" | "scheduler">>,
 ) {
   return startGatewaySidecarsImpl({
+    scheduler: createTestGatewayScheduler(vi.isFakeTimers() ? "fake-timers" : undefined),
     ...params,
     onPostReadySidecars: composeTrackedPublisher(
       publishedPostReadySidecars,
@@ -431,32 +436,6 @@ function createPluginServicesOwner() {
       current = services;
     },
   });
-}
-
-function createStartupTraceRecorder() {
-  const details: Array<{
-    name: string;
-    metrics: ReadonlyArray<readonly [string, number | string]>;
-  }> = [];
-  const marks: string[] = [];
-  const measures: string[] = [];
-  return {
-    details,
-    marks,
-    measures,
-    startupTrace: {
-      detail: (name: string, metrics: ReadonlyArray<readonly [string, number | string]>) => {
-        details.push({ name, metrics });
-      },
-      mark: (name: string) => {
-        marks.push(name);
-      },
-      measure: async <T>(name: string, run: () => T | Promise<T>) => {
-        measures.push(name);
-        return await run();
-      },
-    },
-  };
 }
 
 function firstGatewayStartCall(
@@ -1722,6 +1701,7 @@ describe("startGatewayPostAttachRuntime", () => {
       throw new Error("Expected request work admission");
     }
     const sidecar = scheduleContextCachePrewarm({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       getConfig: () => currentConfig,
       log: { warn: vi.fn() },
     });
@@ -1753,6 +1733,7 @@ describe("startGatewayPostAttachRuntime", () => {
   it("cancels context-window cache prewarm when the gateway stops first", async () => {
     vi.useFakeTimers();
     const sidecar = scheduleContextCachePrewarm({
+      scheduler: createTestGatewayScheduler("fake-timers"),
       getConfig: () => ({}) as never,
       log: { warn: vi.fn() },
     });
@@ -3552,6 +3533,7 @@ describe("startGatewayPostAttachRuntime", () => {
           await import("./server-startup-post-attach.js");
 
         await startGatewaySidecarsWithDelayedImport({
+          scheduler: createTestGatewayScheduler(),
           cfg: {
             hooks: { enabled: true, internal: { enabled: false }, gmail: { account: "me" } },
           } as never,
@@ -4206,6 +4188,7 @@ describe("startGatewayPostAttachRuntime", () => {
           return managerModule;
         });
         await startFreshGatewaySidecars({
+          scheduler: params.scheduler,
           cfg: { ...params.cfgAtStart, acp: { enabled: true, backend: "acpx" } },
           pluginRegistry: params.pluginRegistry,
           defaultWorkspaceDir: params.defaultWorkspaceDir,
@@ -4628,6 +4611,7 @@ function createPostAttachRuntimeDeps(
 function createPostAttachParams(overrides: Partial<PostAttachParams> = {}): PostAttachParams {
   const startupSignal = new AbortController().signal;
   return {
+    scheduler: createTestGatewayScheduler(vi.isFakeTimers() ? "fake-timers" : undefined),
     minimalTestGateway: false,
     cfgAtStart: { hooks: { internal: { enabled: false } } } as never,
     getConfig: () => ({ hooks: { internal: { enabled: false } } }) as never,

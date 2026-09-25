@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 
 vi.mock("../infra/device-bootstrap.js", () => ({
@@ -25,7 +27,7 @@ describe("gateway tool-event recipient maintenance", () => {
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
     const deps = {
       ...createGatewayMaintenanceStateForTest(),
-      scheduler: new GatewayScheduler({ clock: clock.clock }),
+      scheduler: createTestGatewayScheduler(clock.clock),
       logHealth: { info: vi.fn(), error: vi.fn() },
       runWorktreeGc: async () => undefined,
       runDeliveryQueueMediaGc: async () => undefined,

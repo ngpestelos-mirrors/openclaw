@@ -19,7 +19,10 @@ import {
 } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { holdStateDatabaseCoordinator } from "../test-utils/state-database-contention.js";
 import { attachInitialGatewayLifetimeSidecars } from "./server-lifetime-sidecars.js";
 import {
@@ -94,7 +97,7 @@ describe("gateway lifetime sidecars", () => {
   test("keeps scheduled secret expiry responsive and joins its accepted sweep on shutdown", async () => {
     await withEnvAsync({ OPENCLAW_STATE_DIR: createStateDir() }, async () => {
       const clock = createGatewaySchedulerClock(Date.now());
-      const scheduler = new GatewayScheduler({ clock: clock.clock });
+      const scheduler = createTestGatewayScheduler(clock.clock);
       const owner = createGatewaySidecarStopOwner();
       const sweeps: Promise<number>[] = [];
       const purge = secretStore.purgeExpiredSecretStoreEntries;
@@ -247,7 +250,7 @@ describe("gateway lifetime sidecars", () => {
     const owner = createGatewaySidecarStopOwner();
     try {
       await attachInitialGatewayLifetimeSidecars({
-        scheduler: new GatewayScheduler(),
+        scheduler: createTestGatewayScheduler(vi.isFakeTimers() ? "fake-timers" : undefined),
         chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
         gatewayRequestContext: context,
         flushPendingSessionsChangedEvents,
@@ -296,7 +299,7 @@ describe("gateway lifetime sidecars", () => {
     const owner = createGatewaySidecarStopOwner();
 
     await attachInitialGatewayLifetimeSidecars({
-      scheduler: new GatewayScheduler(),
+      scheduler: createTestGatewayScheduler(vi.isFakeTimers() ? "fake-timers" : undefined),
       chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
       gatewayRequestContext: {} as never,
       flushPendingSessionsChangedEvents: vi.fn(),
@@ -326,7 +329,7 @@ describe("gateway lifetime sidecars", () => {
     const warn = vi.fn();
 
     await attachInitialGatewayLifetimeSidecars({
-      scheduler: new GatewayScheduler(),
+      scheduler: createTestGatewayScheduler(vi.isFakeTimers() ? "fake-timers" : undefined),
       chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
       gatewayRequestContext: context as never,
       flushPendingSessionsChangedEvents: vi.fn(),
@@ -380,7 +383,7 @@ describe("gateway lifetime sidecars", () => {
         });
 
         await attachInitialGatewayLifetimeSidecars({
-          scheduler: new GatewayScheduler(),
+          scheduler: createTestGatewayScheduler(vi.isFakeTimers() ? "fake-timers" : undefined),
           chatMetadataLifecycle: { attachContext: vi.fn(async () => {}) } as never,
           gatewayRequestContext: {} as never,
           flushPendingSessionsChangedEvents: vi.fn(),

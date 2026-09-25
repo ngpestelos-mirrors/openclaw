@@ -19,6 +19,7 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createNodeDesktopStreamBroker } from "./desktop/node-stream-broker.js";
 import { createDesktopSessionRegistry } from "./desktop/session-registry.js";
 import type {
@@ -131,6 +132,7 @@ describe("gateway worker environment startup", () => {
       const startup = await loadGatewayWorkerEnvironmentStartupState();
       const registry = createEmptyPluginRegistry();
       const runtime = await createGatewayWorkerEnvironmentRuntime({
+        scheduler: createTestGatewayScheduler(),
         getPluginRegistry: () => registry,
         getPortalRuntime: () => undefined,
         resolveGatewayContext: () => undefined,
@@ -198,6 +200,7 @@ describe("gateway worker environment startup", () => {
       });
       const startup = await loadGatewayWorkerEnvironmentStartupState();
       const runtime = await createGatewayWorkerEnvironmentRuntime({
+        scheduler: createTestGatewayScheduler(),
         getPluginRegistry: () => registry,
         getPortalRuntime: () => undefined,
         resolveGatewayContext: () => undefined,
@@ -274,6 +277,7 @@ describe("gateway worker environment startup", () => {
 
       const registry = createEmptyPluginRegistry();
       const runtime = await createGatewayWorkerEnvironmentRuntime({
+        scheduler: createTestGatewayScheduler(),
         getPluginRegistry: () => registry,
         getPortalRuntime: () => undefined,
         resolveGatewayContext: () => undefined,
@@ -372,6 +376,7 @@ describe("gateway worker environment startup", () => {
       };
       const registry = createEmptyPluginRegistry();
       const runtime = await createGatewayWorkerEnvironmentRuntime({
+        scheduler: createTestGatewayScheduler(),
         getPluginRegistry: () => registry,
         getPortalRuntime: () => undefined,
         resolveGatewayContext: () => undefined,

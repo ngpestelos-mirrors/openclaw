@@ -4,7 +4,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createTranscriptsTool } from "../agents/tools/transcripts-tool.js";
 import { clearRuntimeConfigSnapshot } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { CronService } from "../cron/service.js";
 import type { PluginHookGatewayContext } from "../plugins/hook-gateway.types.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
@@ -61,6 +60,7 @@ import {
 import { verifyGatewayMemoryReplacement } from "./server-plugin-reload.memory.test-support.js";
 import {
   createRecoveryChannelManager,
+  createReloadCronServices,
   createPluginReloadRecoveryFixture,
   verifyChannelReplacementContracts,
   verifyColdAccountReplacement,
@@ -171,19 +171,7 @@ it.each(["commit", "rollback"] as const)(
     let serviceGetter: OpenClawPluginServiceContext["getCron"];
     let hookGetter: PluginHookGatewayContext["getCron"];
     let hookSignal: PluginHookGatewayContext["abortSignal"];
-    const schedulers = ["first", "next"].map((name) => {
-      const cron = new CronService({
-        storePath: path.join(makeTrackedTempDir(`reload-cron-${name}`, tempDirs), "jobs.sqlite"),
-        cronEnabled: false,
-        log: mocks.log,
-        enqueueSystemEvent: () => {},
-        requestHeartbeat: () => {},
-        runIsolatedAgentJob: async () => ({ status: "ok" as const }),
-      });
-      const list = vi.spyOn(cron, "list").mockResolvedValue([]);
-      cleanups.push(async () => cron.stop());
-      return { cron, list };
-    });
+    const schedulers = createReloadCronServices({ tempDirs, cleanups, log: mocks.log });
     const [first, next] = schedulers;
     assert(first && next);
     const fixture = await createRecoveryFixture({

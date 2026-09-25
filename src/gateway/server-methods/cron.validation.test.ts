@@ -39,6 +39,7 @@ import {
   createChannelTestPluginBase,
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import {
   createCronCreatorAuthorityRunScope,
   mintCronCreatorAuthorityGrant,
@@ -360,19 +361,15 @@ function telegramConfig(): OpenClawConfig {
 }
 
 function telegramSlackConfig(params: { includeMainSession?: boolean } = {}): OpenClawConfig {
+  const slack = slackConfig(params);
   return {
-    ...(params.includeMainSession ? { session: { mainKey: "main" } } : {}),
+    ...slack,
     channels: {
-      telegram: {
-        botToken: "telegram-token",
-      },
-      slack: {
-        botToken: "xoxb-slack-token",
-        appToken: "xapp-slack-token",
-      },
+      ...telegramConfig().channels,
+      ...slack.channels,
     },
     plugins: pluginEntries("telegram", "slack"),
-  } as OpenClawConfig;
+  };
 }
 
 function telegramDisabledAccountConfig(): OpenClawConfig {
@@ -403,10 +400,7 @@ function msteamsConfig(): OpenClawConfig {
 function slackSynologyConfig(): OpenClawConfig {
   return {
     channels: {
-      slack: {
-        botToken: "xoxb-slack-token",
-        appToken: "xapp-slack-token",
-      },
+      ...slackConfig().channels,
       "synology-chat": {
         token: "synology-token",
       },
@@ -1928,6 +1922,8 @@ describe("cron method validation", () => {
     const { storePath } = await makeStorePath();
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const cron = new CronService({
+      scheduler: createTestGatewayScheduler(),
+      nowMs: () => Date.now(),
       storePath,
       cronEnabled: true,
       defaultAgentId: "main",
@@ -2857,6 +2853,8 @@ describe("cron method validation", () => {
     );
     const repair = await applyLegacyCronStoreRepair({ cfg, state });
     const cron = new CronService({
+      scheduler: createTestGatewayScheduler(),
+      nowMs: () => Date.now(),
       storePath,
       cronEnabled: false,
       defaultAgentId: "ops",

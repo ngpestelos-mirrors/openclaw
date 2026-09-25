@@ -71,7 +71,7 @@ import type {
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resolveMainScopedEventSessionKey } from "../infra/event-session-routing.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import {
   resolveHeartbeatForWake,
   resolveHeartbeatTimeoutOverrideSeconds,
@@ -399,12 +399,12 @@ export function buildGatewayCronService(params: {
   deps: CliDeps;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
   env?: NodeJS.ProcessEnv;
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   resolveGatewayContext?: () => GatewayRequestContext | undefined;
 }): GatewayCronState {
   const cronLogger = getChildLogger({ module: "cron" });
   const cronServiceLogger = toPinoLikeLogger(cronLogger, getResolvedLoggerSettings().level);
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const { scheduler } = params;
   // Fence the raw context reference behind its Gateway instance lifecycle so a
   // long-running scheduled turn cannot resolve a retired context after shutdown.
   const scheduledGatewayContextResolver = fenceScheduledGatewayContextResolver(

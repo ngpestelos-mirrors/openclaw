@@ -22,7 +22,7 @@ import {
   resolveTimerTimeoutMs,
 } from "@openclaw/normalization-core/number-coercion";
 import type { GatewayAuthRateLimitConfig } from "../config/types.gateway.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { isLoopbackAddress, resolveClientIp } from "./net.js";
 
@@ -182,11 +182,8 @@ function resolveAuthRateLimitPolicy(config?: GatewayAuthRateLimitConfig) {
 }
 
 export function createGatewayAuthRateLimiter(
-  config?: RateLimitConfig,
-  {
-    scheduler = new GatewayScheduler(),
-    id = "auth-rate-limit",
-  }: { scheduler?: GatewayScheduler; id?: string } = {},
+  config: RateLimitConfig | undefined,
+  { scheduler, id = "auth-rate-limit" }: { scheduler: GatewayScheduler; id?: string },
 ): AuthRateLimiter & {
   updateConfig: (config?: GatewayAuthRateLimitConfig) => void;
 } {

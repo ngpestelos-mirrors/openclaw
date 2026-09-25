@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { scheduleRestartSentinelWakeAfterReady } from "./server-startup-restart-sentinel.js";
 
 const { scheduleRestartSentinelWake } = vi.hoisted(() => ({
@@ -24,7 +26,7 @@ afterEach(resetGatewayWorkAdmission);
 
 it("keeps delayed restart sentinel recovery admitted until wake work completes", async () => {
   const clock = createGatewaySchedulerClock();
-  const scheduler = new GatewayScheduler({ clock: clock.clock });
+  const scheduler = createTestGatewayScheduler(clock.clock);
   const { promise: wake, resolve: finishWake } = createDeferred();
   const started = createDeferred();
   scheduleRestartSentinelWake.mockImplementationOnce(() => {
@@ -53,7 +55,7 @@ it.each([false, true])(
   "cancels delayed restart sentinel recovery when the gateway closes (awaiting admission=%s)",
   async (awaitingAdmission) => {
     const clock = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: clock.clock });
+    const scheduler = createTestGatewayScheduler(clock.clock);
     const suspension = awaitingAdmission ? tryBeginGatewaySuspendAdmission(() => {}) : null;
     if (awaitingAdmission) {
       expect(suspension?.commit()).toBe(true);

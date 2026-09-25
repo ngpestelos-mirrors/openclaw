@@ -2,8 +2,11 @@ import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coerci
 // Auth rate-limit tests cover sliding-window, lockout, scope, loopback, and
 // cleanup behavior shared by gateway secret and device-token authentication.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import {
   AUTH_RATE_LIMIT_SCOPE_DEVICE_TOKEN,
   AUTH_RATE_LIMIT_SCOPE_HOOK_AUTH,
@@ -19,7 +22,7 @@ describe("auth rate limiter", () => {
   let scheduler: GatewayScheduler;
   beforeEach(() => {
     clock = createGatewaySchedulerClock(1_000);
-    scheduler = new GatewayScheduler({ clock: clock.clock });
+    scheduler = createTestGatewayScheduler(clock.clock);
   });
   function createClockedAuthRateLimiter(
     config?: Parameters<typeof createGatewayAuthRateLimiter>[0],

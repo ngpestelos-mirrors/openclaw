@@ -25,6 +25,7 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { startUpdateRunWatcher } from "./update-run-watcher.js";
 
 const observation = vi.hoisted(() => ({
@@ -105,10 +106,12 @@ await import("../infra/update-run-interruption-health.js");
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 let watcher: ReturnType<typeof startUpdateRunWatcher> | undefined;
+let scheduler: ReturnType<typeof createTestGatewayScheduler>;
 const now = Date.parse("2026-09-18T22:00:00Z");
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(now);
+  scheduler = createTestGatewayScheduler();
   vi.stubEnv("OPENCLAW_STATE_DIR", dirs.make("update-interruption-"));
   observation.installedBuild = "candidate-build";
   observation.servingBuild = "candidate-build";
@@ -134,6 +137,7 @@ function health() {
 afterEach(async () => {
   await watcher?.stop();
   watcher = undefined;
+  await scheduler.stop();
   closeOpenClawStateDatabaseForTest();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -172,7 +176,7 @@ it.each([false, true])(
       reconcileAbandonedUpdateRuns();
     }
     const broadcast = vi.fn();
-    watcher = startUpdateRunWatcher({ broadcast, log: { warn: vi.fn() } });
+    watcher = startUpdateRunWatcher({ scheduler, broadcast, log: { warn: vi.fn() } });
     await vi.waitFor(() => expect(getUpdateRun(runId)?.status).toBe("succeeded"));
     expect(getUpdateRun(runId)).toMatchObject({
       reason: null,
@@ -253,7 +257,7 @@ it.each([
   if (boundary === "unsettled") {
     observation.settle.mockResolvedValue({ ...health(), healthy: false });
   }
-  watcher = startUpdateRunWatcher({ broadcast: vi.fn(), log: { warn: vi.fn() } });
+  watcher = startUpdateRunWatcher({ scheduler, broadcast: vi.fn(), log: { warn: vi.fn() } });
   await vi.advanceTimersByTimeAsync(0);
   await watcher.stop();
   expect(getUpdateRun(runId)?.status).not.toBe("succeeded");
@@ -288,7 +292,7 @@ it("cancels pending verification at watcher shutdown without publishing a late s
     return probe.promise;
   });
   const broadcast = vi.fn();
-  watcher = startUpdateRunWatcher({ broadcast, log: { warn: vi.fn() } });
+  watcher = startUpdateRunWatcher({ scheduler, broadcast, log: { warn: vi.fn() } });
   await started.promise;
   let stopped = false;
   const stop = watcher.stop().then(() => {

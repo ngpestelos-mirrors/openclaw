@@ -12,7 +12,6 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   captureStateDatabaseCoordinatorRuntime,
   withStateDatabaseCoordinatorRuntimeDirectory,
@@ -23,7 +22,10 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -81,7 +83,7 @@ async function createFixture(
   initialSessionPatch: Partial<SessionEntry> = {},
 ) {
   const clock = createGatewaySchedulerClock(Date.now());
-  const scheduler = new GatewayScheduler({ clock: clock.clock });
+  const scheduler = createTestGatewayScheduler(clock.clock);
   const fixtureId = ++fixtureSequence;
   const readerEmail = `guest-publication-reader-${fixtureId}@example.test`;
   const profile = ensureProfileForEmail(readerEmail);

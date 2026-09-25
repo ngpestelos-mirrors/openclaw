@@ -1,7 +1,7 @@
 /** Non-blocking process-owned queue for audit metadata persistence. */
 import type { DecisionReceiptV1 } from "../../packages/gateway-protocol/src/index.js";
 import { resolveStateDir } from "../config/paths.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
@@ -41,16 +41,14 @@ export type AuditEventWriter = {
 };
 
 /** Start one bounded queue; retain the owner environment or claimed state rejects its writes. */
-export function createAuditEventWriter(
-  options: {
-    scheduler?: GatewayScheduler;
-    stateDir?: string;
-    maxPending?: number;
-    onContention?: (message: string) => void;
-    onError?: (error: string) => void;
-  } = {},
-): AuditEventWriter {
-  const scheduler = options.scheduler ?? new GatewayScheduler();
+export function createAuditEventWriter(options: {
+  scheduler: GatewayScheduler;
+  stateDir?: string;
+  maxPending?: number;
+  onContention?: (message: string) => void;
+  onError?: (error: string) => void;
+}): AuditEventWriter {
+  const { scheduler } = options;
   const database = {
     env: { ...process.env, OPENCLAW_STATE_DIR: options.stateDir ?? resolveStateDir(process.env) },
   };

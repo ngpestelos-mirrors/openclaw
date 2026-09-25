@@ -8,7 +8,7 @@ import { registerSessionMaintenancePreserveKeysProvider } from "../config/sessio
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import {
   interruptSessionWorkAdmissions,
@@ -78,7 +78,7 @@ const loadWorkerWorkspacePreflight = createLazyRuntimeModule(async () => {
 type WorkerPlacementSidecar = { stop: () => Promise<void> };
 
 export type GatewayWorkerPlacementRuntimeParams = {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   placements: WorkerSessionPlacementStore;
   getCommittedRuntimeConfig: () => OpenClawConfig;
   environments: WorkerEnvironmentService;
@@ -117,7 +117,7 @@ export function createGatewayWorkerPlacementRuntime(
     githubPublicationRuntime?: ReturnType<typeof createGitHubPublicationRuntime>;
   },
 ) {
-  const scheduler = params.scheduler ?? new GatewayScheduler();
+  const { scheduler } = params;
   let nodeWorkerSupervisorTransport: NodeWorkerSupervisorTransport | undefined;
   let stopped = false;
   const runtimeRefresh = createWorkerRuntimeRefreshWaiter({

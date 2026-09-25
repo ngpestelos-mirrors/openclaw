@@ -27,7 +27,7 @@ function dashboardDataPrewarmItems(cfg: OpenClawConfig): GatewayHandlerPrewarmIt
 }
 
 export function scheduleGatewayHandlerPrewarm(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   cfgAtStart: OpenClawConfig;
   startupTrace?: StartupTrace;
   log: { info?: (msg: string) => void; warn: (msg: string) => void };

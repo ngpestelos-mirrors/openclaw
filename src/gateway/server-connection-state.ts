@@ -25,7 +25,7 @@ import { canReceiveSessionEvent, prepareProjectedSessionSharing } from "./sessio
 
 /** Creates transport-independent connection, subscription, and run state. */
 export function createGatewayConnectionState(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   bootId: string;
   cfg: import("../config/config.js").OpenClawConfig;
   getRuntimeConfig?: () => import("../config/config.js").OpenClawConfig;

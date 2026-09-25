@@ -12,6 +12,7 @@ import { DEFAULT_CRON_MAX_CONCURRENT_RUNS } from "../../config/cron-limits.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { listTaskRecords } from "../../tasks/task-registry.js";
 import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { isCronJobActive, markCronJobActive } from "../active-jobs.js";
 import { createCronExecutionId } from "../run-id.js";
 import { loadCronStore, saveCronStore } from "../store.js";
@@ -411,6 +412,7 @@ describe("cron batch outcome finalization", () => {
     const deliveryContext = { channel: "discord", to: "channel-1", accountId: "default" };
     const resolveOriginDeliveryContext = vi.fn(() => deliveryContext);
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,
@@ -500,6 +502,7 @@ describe("cron batch outcome finalization", () => {
       order.push("heartbeat");
     });
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(),
       cronEnabled: true,
       storePath: store.storePath,
       log: noopLogger,

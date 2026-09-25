@@ -1,6 +1,6 @@
 /** Session MCP runtime manager lifecycle: maps, idle sweep, dispose, advertised catalog. */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { logWarn } from "../logger.js";
 import { sessionMcpRuntimeOwners } from "./agent-bundle-mcp-runtime-owner.js";
 import {
@@ -54,7 +54,7 @@ type SessionMcpRuntimeManagerStore = {
 };
 
 export type SessionMcpRuntimeManagerOpts = {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   createRuntime?: CreateSessionMcpRuntime;
   now?: () => number;
   enableIdleSweepTimer?: boolean;
@@ -104,7 +104,7 @@ export function createSessionMcpRuntimeManagerStore(
     runtimeSlots: new WeakMap(),
     liveRuntimeSlots: new Set(),
     enableIdleSweepTimer: opts.enableIdleSweepTimer !== false,
-    scheduler: opts.scheduler ?? new GatewayScheduler(),
+    scheduler: opts.scheduler,
     idleSweepJob: undefined,
   };
   return store;
@@ -131,7 +131,6 @@ function scopedCatalogToolsSignature(tools: readonly McpCatalogTool[]): string {
 }
 
 export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntimeManagerStore) {
-  const standaloneScheduler = store.scheduler;
   const schedulers = new Set<GatewayScheduler>();
   const reserveRuntimeSlot = (
     existing: SessionMcpRuntime | undefined,
@@ -383,7 +382,8 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
   };
 
   const setScheduler = (scheduler: GatewayScheduler): Promise<void> => {
-    if (scheduler.signal.aborted || schedulers.has(scheduler)) {
+    scheduler.signal.throwIfAborted();
+    if (schedulers.has(scheduler)) {
       return Promise.resolve();
     }
     schedulers.add(scheduler);
@@ -409,7 +409,7 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
 
   const disposeManagedRuntimes = (
     sessionId?: string,
-    opts?: { preserveRequiredRetirement?: boolean },
+    opts?: { preserveRequiredRetirement?: boolean; requireStoppedScheduler?: boolean },
   ): Promise<void> => {
     const runtimeKeys = [
       ...new Set(
@@ -430,6 +430,13 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
     const priorDisposal = store.disposalInFlight;
     const queued = runExclusiveOnRuntimeKeys(runtimeKeys, async () => {
       await priorDisposal;
+      if (
+        opts?.requireStoppedScheduler &&
+        (!store.scheduler.signal.aborted ||
+          (sessionId !== undefined && totalActiveLeasesForSessionId(sessionId) > 0))
+      ) {
+        return;
+      }
       // Clear bookkeeping after admitted acquisitions finish, before successors run.
       if (sessionId === undefined) {
         clearIdleSweepTimer();
@@ -464,12 +471,6 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
     return disposal.finally(() => {
       if (store.disposalInFlight === disposal) {
         store.disposalInFlight = undefined;
-        if (store.scheduler.signal.aborted) {
-          // A later CLI acquisition can resume standalone work after Gateway teardown drains.
-          store.scheduler = standaloneScheduler.signal.aborted
-            ? new GatewayScheduler()
-            : standaloneScheduler;
-        }
       }
     });
   };
@@ -553,6 +554,7 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
     });
   };
 
+  void setScheduler(store.scheduler);
   return {
     store,
     runtimeKeysForSessionId,

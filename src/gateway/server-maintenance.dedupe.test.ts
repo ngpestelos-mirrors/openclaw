@@ -3,8 +3,10 @@
 // sits at the max-lines cap; mocks are hoisted per file, so the module-mock
 // preamble is repeated while pure fixtures stay local to each block.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
@@ -64,7 +66,7 @@ function createMaintenanceTimerDeps() {
   const clock = createGatewaySchedulerClock(Date.parse("2026-03-22T00:00:00Z"));
   return {
     ...createGatewayMaintenanceStateForTest(),
-    scheduler: new GatewayScheduler({ clock: clock.clock }),
+    scheduler: createTestGatewayScheduler(clock.clock),
     clock,
     logHealth: { info: vi.fn(), error: vi.fn() },
     runWorktreeGc: vi.fn(async () => undefined),

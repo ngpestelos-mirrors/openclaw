@@ -4,7 +4,9 @@ import type { IncomingMessage } from "node:http";
 import os from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeNetworkInterfacesSnapshot } from "../test-helpers/network-interfaces.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createGatewayAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
+import { createLimiterSpy } from "./auth-rate-limit.test-support.js";
 import {
   assertGatewayAuthConfigured,
   authorizeHttpGatewayConnect,
@@ -14,32 +16,6 @@ import {
 } from "./auth.js";
 import { markGatewayIngressTransport } from "./ingress-attribution.js";
 import { hasForwardedRequestHeaders, isLocalDirectRequest } from "./net.js";
-
-function createLimiterSpy(): AuthRateLimiter & {
-  check: ReturnType<typeof vi.fn>;
-  recordFailure: ReturnType<typeof vi.fn>;
-  reset: ReturnType<typeof vi.fn>;
-} {
-  const check = vi.fn<AuthRateLimiter["check"]>(
-    (_ip, _scope) => ({ allowed: true, remaining: 10, retryAfterMs: 0 }) as const,
-  );
-  const recordFailure = vi.fn<AuthRateLimiter["recordFailure"]>((_ip, _scope) => {});
-  const recordFailureAndDelay = vi.fn<AuthRateLimiter["recordFailureAndDelay"]>(
-    async (ip, scope) => {
-      recordFailure(ip, scope);
-    },
-  );
-  const reset = vi.fn<AuthRateLimiter["reset"]>((_ip, _scope) => {});
-  return {
-    check,
-    recordFailure,
-    recordFailureAndDelay,
-    reset,
-    size: () => 0,
-    prune: () => {},
-    dispose: () => {},
-  };
-}
 
 type TailscaleForwardedRequest = IncomingMessage & {
   socket: IncomingMessage["socket"] & { remoteAddress?: string };
@@ -572,12 +548,15 @@ describe("gateway auth", () => {
   });
 
   it("keeps managed Serve shared-secret auth independent of WhoIs availability", async () => {
-    const limiter = createGatewayAuthRateLimiter({
-      maxAttempts: 1,
-      windowMs: 60_000,
-      lockoutMs: 60_000,
-      pruneIntervalMs: 0,
-    });
+    const limiter = createGatewayAuthRateLimiter(
+      {
+        maxAttempts: 1,
+        windowMs: 60_000,
+        lockoutMs: 60_000,
+        pruneIntervalMs: 0,
+      },
+      { scheduler: createTestGatewayScheduler() },
+    );
     const tailscaleWhois = vi.fn(async () => null);
     const params = {
       auth: { mode: "token" as const, token: "secret", allowTailscale: true },
@@ -613,12 +592,15 @@ describe("gateway auth", () => {
   });
 
   it("keeps managed Serve failures isolated to each validated source", async () => {
-    const limiter = createGatewayAuthRateLimiter({
-      maxAttempts: 1,
-      windowMs: 60_000,
-      lockoutMs: 60_000,
-      pruneIntervalMs: 0,
-    });
+    const limiter = createGatewayAuthRateLimiter(
+      {
+        maxAttempts: 1,
+        windowMs: 60_000,
+        lockoutMs: 60_000,
+        pruneIntervalMs: 0,
+      },
+      { scheduler: createTestGatewayScheduler() },
+    );
     const first = createTailscaleForwardedReq();
     const second = createTailscaleForwardedReq();
     second.headers["x-forwarded-for"] = "100.64.0.2";
@@ -654,12 +636,15 @@ describe("gateway auth", () => {
   });
 
   it("verifies managed Serve identity before a same-source shared-secret lockout", async () => {
-    const limiter = createGatewayAuthRateLimiter({
-      maxAttempts: 1,
-      windowMs: 60_000,
-      lockoutMs: 60_000,
-      pruneIntervalMs: 0,
-    });
+    const limiter = createGatewayAuthRateLimiter(
+      {
+        maxAttempts: 1,
+        windowMs: 60_000,
+        lockoutMs: 60_000,
+        pruneIntervalMs: 0,
+      },
+      { scheduler: createTestGatewayScheduler() },
+    );
     const auth = { mode: "token" as const, token: "secret", allowTailscale: true };
 
     try {
@@ -689,12 +674,15 @@ describe("gateway auth", () => {
   });
 
   it("keeps verified managed Serve usable after an unrelated proxy failure", async () => {
-    const limiter = createGatewayAuthRateLimiter({
-      maxAttempts: 1,
-      windowMs: 60_000,
-      lockoutMs: 60_000,
-      pruneIntervalMs: 0,
-    });
+    const limiter = createGatewayAuthRateLimiter(
+      {
+        maxAttempts: 1,
+        windowMs: 60_000,
+        lockoutMs: 60_000,
+        pruneIntervalMs: 0,
+      },
+      { scheduler: createTestGatewayScheduler() },
+    );
 
     try {
       await expect(
@@ -1057,12 +1045,15 @@ describe("gateway auth", () => {
   });
 
   it("keeps trusted-proxy client lockout and reset state isolated by source", async () => {
-    const limiter = createGatewayAuthRateLimiter({
-      maxAttempts: 1,
-      windowMs: 60_000,
-      lockoutMs: 60_000,
-      pruneIntervalMs: 0,
-    });
+    const limiter = createGatewayAuthRateLimiter(
+      {
+        maxAttempts: 1,
+        windowMs: 60_000,
+        lockoutMs: 60_000,
+        pruneIntervalMs: 0,
+      },
+      { scheduler: createTestGatewayScheduler() },
+    );
     const authorize = async (clientIp: string, password: string) =>
       await authorizeHttpGatewayConnect({
         auth: { mode: "password", password: "secret", allowTailscale: false },
@@ -1094,11 +1085,14 @@ describe("gateway auth", () => {
   });
 
   it("keeps genuinely direct loopback requests exempt from lockout", async () => {
-    const limiter = createGatewayAuthRateLimiter({
-      maxAttempts: 1,
-      windowMs: 60_000,
-      lockoutMs: 60_000,
-    });
+    const limiter = createGatewayAuthRateLimiter(
+      {
+        maxAttempts: 1,
+        windowMs: 60_000,
+        lockoutMs: 60_000,
+      },
+      { scheduler: createTestGatewayScheduler() },
+    );
     const params = {
       auth: { mode: "password" as const, password: "secret", allowTailscale: false },
       connectAuth: { password: "wrong" },

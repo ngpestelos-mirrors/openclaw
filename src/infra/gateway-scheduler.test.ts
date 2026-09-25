@@ -2,12 +2,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it, vi } from "vitest";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
-import { GatewayScheduler } from "./gateway-scheduler.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 
 function fixture() {
   const time = createGatewaySchedulerClock(1_000);
-  const scheduler = new GatewayScheduler({ clock: time.clock });
+  const scheduler = createTestGatewayScheduler(time.clock);
   return { time, scheduler };
 }
 

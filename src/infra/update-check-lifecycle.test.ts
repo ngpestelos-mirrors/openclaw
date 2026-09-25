@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
-import { GatewayScheduler } from "./gateway-scheduler.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
+import type { GatewayScheduler } from "./gateway-scheduler.js";
 import {
   createGatewayUpdateLifecycle,
   type UpdateCheckLifecycle,
@@ -14,7 +17,7 @@ let lifecycle: UpdateCheckLifecycle;
 
 beforeEach(() => {
   clock = createGatewaySchedulerClock(1_000);
-  scheduler = new GatewayScheduler({ clock: clock.clock });
+  scheduler = createTestGatewayScheduler(clock.clock);
   lifecycle = createGatewayUpdateLifecycle(scheduler);
 });
 

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { GatewayScheduler } from "../../infra/gateway-scheduler.js";
-import { createGatewaySchedulerClock } from "../../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../../test-utils/gateway-scheduler-clock.js";
 import * as support from "./service.test-support.js";
 import type { WorkerTunnelManager } from "./tunnel.js";
 
@@ -172,7 +174,7 @@ describe("worker environment service", () => {
 
   it("maintains configured providers on schedule without environments and stops after shutdown", async () => {
     const time = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: time.clock });
+    const scheduler = createTestGatewayScheduler(time.clock);
     const scheduledMaintenance = createDeferred();
     let maintenanceCount = 0;
     const maintain = vi.fn(async () => {
@@ -481,7 +483,7 @@ describe("worker environment service", () => {
     const environmentId = "worker-guarded-reconcile";
     await support.seedReady(environmentId);
     const time = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: time.clock });
+    const scheduler = createTestGatewayScheduler(time.clock);
     const periodicInspection = createDeferred();
     let inspectionCount = 0;
     const inspect = vi.fn(async () => {

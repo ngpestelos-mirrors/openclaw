@@ -20,6 +20,7 @@ import { resolveCronAgentSessionKey } from "../../cron/isolated-agent/session-ke
 import type { CronExecutionIdentityAdmission } from "../../cron/service/state.js";
 import type { CronJob } from "../../cron/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { resolveOutboundChannelPlugin } from "../../infra/outbound/channel-resolution.js";
@@ -738,6 +739,7 @@ export type GatewayHookDispatcher = ReturnType<typeof createGatewayHookDispatche
 
 /** Creates the HTTP handler used by gateway hook endpoints. */
 export function createGatewayHooksRequestHandler(params: {
+  scheduler: GatewayScheduler;
   deps: CliDeps;
   getHooksConfig: () => HooksConfigResolved | null;
   getClientIpConfig: () => HookClientIpConfig;
@@ -752,6 +754,7 @@ export function createGatewayHooksRequestHandler(params: {
   const { dispatchAgentHook, dispatchWakeHook } =
     params.dispatcher ?? createGatewayHookDispatcher(params);
   return createHooksRequestHandler({
+    scheduler: params.scheduler,
     getHooksConfig,
     bindHost,
     port,

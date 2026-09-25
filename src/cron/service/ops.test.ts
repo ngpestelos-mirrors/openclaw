@@ -15,6 +15,10 @@ import { findTaskByRunId, listTaskRecords } from "../../tasks/task-registry.js";
 import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
 import { formatTaskStatusDetail } from "../../tasks/task-status.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../../test-utils/gateway-scheduler-clock.js";
 import { createCronExecutionId } from "../run-id.js";
 import * as cronSchedule from "../schedule.js";
 import { readCronJobScratchState, writeCronJobScratch } from "../scratch-store.js";
@@ -884,7 +888,7 @@ describe("cron service ops seam coverage", () => {
     const now = Date.parse("2026-03-23T12:00:00.000Z");
     const enqueueSystemEvent = vi.fn();
     const requestHeartbeat = vi.fn();
-    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clock = createGatewaySchedulerClock(now);
 
     await writeCronStoreSnapshot({
       storePath,
@@ -892,6 +896,7 @@ describe("cron service ops seam coverage", () => {
     });
 
     const state = createCronServiceState({
+      scheduler: createTestGatewayScheduler(clock.clock),
       storePath,
       nowMs: () => now,
       enqueueSystemEvent,
@@ -908,9 +913,6 @@ describe("cron service ops seam coverage", () => {
     });
     expect(enqueueSystemEvent).not.toHaveBeenCalled();
     expect(requestHeartbeat).not.toHaveBeenCalled();
-    if (state.timer === undefined) {
-      throw new Error("Expected cron service timer");
-    }
 
     const persisted = (await loadCronStore(storePath)) as {
       jobs: CronJob[];
@@ -929,13 +931,7 @@ describe("cron service ops seam coverage", () => {
     expect(job.state.lastFailureNotificationDeliveryError).toBeUndefined();
     expect((job.state.nextRunAtMs ?? 0) > now).toBe(true);
 
-    const delays = timeoutSpy.mock.calls
-      .map(([, delay]) => delay)
-      .filter((delay): delay is number => typeof delay === "number");
-    const positiveDelays = delays.filter((delay) => delay > 0);
-    expect(positiveDelays.length).toBeGreaterThan(0);
-
-    timeoutSpy.mockRestore();
+    expect(clock.armedAtMs).toBeGreaterThan(now);
     stop(state);
   });
 

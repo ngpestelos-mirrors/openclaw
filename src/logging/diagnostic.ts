@@ -9,7 +9,7 @@ import {
   type DiagnosticEventPayload,
   type DiagnosticPhaseSnapshot,
 } from "../infra/diagnostic-events.js";
-import { GatewayScheduler, type GatewayScheduledJob } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { emitChildProcessSpawnSample } from "../process/spawn-diagnostics.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { reconcileDiagnosticGcObserver, stopDiagnosticGcObserver } from "./diagnostic-gc.js";
@@ -842,14 +842,10 @@ function logSessionAttention(
 }
 
 let heartbeatJob: GatewayScheduledJob | undefined;
-let heartbeatScheduler: GatewayScheduler | undefined;
 let lastDiagnosticHeartbeatTickAt: number | undefined;
 
-export function configureDiagnosticHeartbeatScheduler(scheduler: GatewayScheduler): void {
-  heartbeatScheduler = scheduler;
-}
-
 export function startDiagnosticHeartbeat(
+  scheduler: GatewayScheduler,
   config?: OpenClawConfig,
   opts?: StartDiagnosticHeartbeatOptions,
 ) {
@@ -865,7 +861,6 @@ export function startDiagnosticHeartbeat(
   if (heartbeatJob) {
     return;
   }
-  const scheduler = (heartbeatScheduler ??= new GatewayScheduler());
   // Gateway supplies its lifecycle-owned monitor; other runtimes retain the
   // built-in sampler. Never allocate two perf monitors for one heartbeat.
   if (!opts?.sampleLiveness) {
@@ -1050,7 +1045,6 @@ export function stopDiagnosticHeartbeat() {
 
 function resetDiagnosticStateForTest(): void {
   stopDiagnosticHeartbeat();
-  heartbeatScheduler = undefined;
   resetDiagnosticSessionRecoveryCoordinatorForTest();
   resetDiagnosticSessionStateForTest();
   resetDiagnosticActivityForTest();

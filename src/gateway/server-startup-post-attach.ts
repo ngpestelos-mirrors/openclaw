@@ -130,7 +130,7 @@ async function waitForAcpRuntimeBackendReady(params: {
 
 /** Start post-ready sidecars such as channels, hooks, plugin services, and cleanup tasks. */
 export async function startGatewaySidecars(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   restartSentinelContext?: DeliveryQueueStateContext;
   cfg: OpenClawConfig;
   getModelRuntimeConfig?: () => OpenClawConfig;
@@ -613,7 +613,7 @@ const defaultGatewayPostAttachRuntimeDeps: GatewayPostAttachRuntimeDeps = {
 /** Start work that depends on the HTTP server being attached and visible. */
 export async function startGatewayPostAttachRuntime(
   params: {
-    scheduler?: GatewayScheduler;
+    scheduler: GatewayScheduler;
     minimalTestGateway: boolean;
     updateCanary?: boolean;
     cfgAtStart: OpenClawConfig;

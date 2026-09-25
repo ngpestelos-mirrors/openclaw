@@ -10,6 +10,7 @@ import {
   type RateLimitConfig,
 } from "../gateway/auth-rate-limit.js";
 import { resolveRequestClientIpFromHeaders } from "../gateway/net.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { getBoundLegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 
@@ -72,11 +73,22 @@ export function createAuthRateLimiter(config?: RateLimitConfig): AuthRateLimiter
   updateConfig: (config?: GatewayAuthRateLimitConfig) => void;
 } {
   const host = getBoundLegacyPluginSdkResourceHost();
-  host?.assertOpen();
-  return createGatewayAuthRateLimiter(config, {
-    scheduler: host?.scheduler,
-    id: `auth/sdk:${randomUUID()}`,
-  });
+  if (host) {
+    return createGatewayAuthRateLimiter(config, {
+      scheduler: host.scheduler,
+      id: `auth/sdk:${randomUUID()}`,
+    });
+  }
+  const scheduler = new GatewayScheduler();
+  const limiter = createGatewayAuthRateLimiter(config, { scheduler, id: "auth:standalone" });
+  const dispose = limiter.dispose;
+  limiter.dispose = () => {
+    // Only synchronous pruning uses this standalone owner. Dispose settles the
+    // request-owned penalty waits before closing it; no asynchronous jobs remain.
+    dispose();
+    scheduler.beginClose();
+  };
+  return limiter;
 }
 export type { AuthRateLimiter, RateLimitConfig } from "../gateway/auth-rate-limit.js";
 export { rawDataToString } from "../infra/ws.js";

@@ -4,16 +4,18 @@ import { getWorkerPlacementStartupMocks } from "./server-worker-placement-startu
 const { runtimeFactoryMocks } = getWorkerPlacementStartupMocks();
 
 import { getRuntimeConfig } from "../config/config.js";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { emitSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
 
 describe("worker placement session events", () => {
   it("reports a failed reconciliation queued by a session change without leaking rejection", async () => {
     const time = createGatewaySchedulerClock();
-    const scheduler = new GatewayScheduler({ clock: time.clock });
+    const scheduler = createTestGatewayScheduler(time.clock);
     const releaseReconcile = createDeferredCore();
     const reconcileStarted = createDeferredCore();
     const failureReported = createDeferredCore();

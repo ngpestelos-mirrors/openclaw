@@ -5,6 +5,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import { waitForActiveCronTaskRuns } from "./service/active-run-cancellation.js";
@@ -71,6 +72,8 @@ describe("cron recovery run identity", () => {
       return pending.completion.promise;
     });
     const deps: CronServiceDeps = {
+      scheduler: createTestGatewayScheduler(),
+      nowMs: () => Date.now(),
       storePath,
       cronEnabled: true,
       cronConfig: { triggers: { enabled: true } },

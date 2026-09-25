@@ -6,7 +6,7 @@ import type {
   GatewayClosePrepareParams,
 } from "./server-close.js";
 
-type GatewayCloseParams = GatewayTeardownParams & GatewayClosePrepareParams;
+export type GatewayCloseParams = GatewayTeardownParams & GatewayClosePrepareParams;
 type GatewayCloseFixtureMocks = Pick<
   GatewayCloseParams,
   | "disposeAllBundleLspRuntimes"
@@ -16,7 +16,14 @@ type GatewayCloseFixtureMocks = Pick<
 > & {
   drainRetainedEmbeddingProviders: GatewayCloseParams["drainRetainedOpenAiEmbeddingProviders"];
 };
-type GatewayCloseClient = GatewayCloseParams["clients"] extends Set<infer T> ? T : never;
+export type GatewayCloseClient = GatewayCloseParams["clients"] extends Set<infer T> ? T : never;
+
+export type MarkMainSessionsAbortedForRestart = NonNullable<
+  GatewayCloseParams["markMainSessionsAbortedForRestart"]
+>;
+export type DrainActiveSessionsForShutdown = NonNullable<
+  GatewayCloseParams["drainActiveSessionsForShutdown"]
+>;
 
 export function createTestChatRunState() {
   const state = createChatRunState();

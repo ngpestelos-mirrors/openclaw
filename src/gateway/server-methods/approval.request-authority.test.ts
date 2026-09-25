@@ -11,6 +11,7 @@ import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { StateDatabaseReadAdmissionInvalidatedError } from "../../state/openclaw-state-db-async-lifecycle.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import {
   createOpenClawTestState,
   withOpenClawTestState,
@@ -78,10 +79,12 @@ it.each([
     openOpenClawStateDatabase(databaseOptions);
     const persistence = { runtimeEpoch: "request-custody-test", databaseOptions };
     const exec = new ExecApprovalManager<ExecApprovalRequestPayload>({
+      scheduler: createTestGatewayScheduler(),
       persistence,
       resolveAllowedDecisions: resolveExecApprovalRequestAllowedDecisions,
     });
     const plugin = new ExecApprovalManager<PluginApprovalRequestPayload>({
+      scheduler: createTestGatewayScheduler(),
       approvalKind: "plugin",
       persistence,
     });
@@ -303,10 +306,12 @@ it("rechecks retained request authority after the real history read settles", as
     openOpenClawStateDatabase(databaseOptions);
     const persistence = { runtimeEpoch: "history-custody-test", databaseOptions };
     const exec = new ExecApprovalManager<ExecApprovalRequestPayload>({
+      scheduler: createTestGatewayScheduler(),
       persistence,
       resolveAllowedDecisions: resolveExecApprovalRequestAllowedDecisions,
     });
     const plugin = new ExecApprovalManager<PluginApprovalRequestPayload>({
+      scheduler: createTestGatewayScheduler(),
       approvalKind: "plugin",
       persistence,
     });
@@ -362,11 +367,13 @@ it("rejects a revoked lookup waiting for a committed decision without losing the
     const persistence = { runtimeEpoch: "reconciliation-custody-test", databaseOptions };
     const onLifecycle = vi.fn();
     const exec = new ExecApprovalManager<ExecApprovalRequestPayload>({
+      scheduler: createTestGatewayScheduler(),
       persistence,
       resolveAllowedDecisions: resolveExecApprovalRequestAllowedDecisions,
       onLifecycle,
     });
     const plugin = new ExecApprovalManager<PluginApprovalRequestPayload>({
+      scheduler: createTestGatewayScheduler(),
       approvalKind: "plugin",
       persistence,
     });
@@ -444,10 +451,12 @@ it.each(
   const databaseOptions = { env: state.env };
   const persistence = { runtimeEpoch: "worker-refusal-test", databaseOptions };
   const exec = new ExecApprovalManager<ExecApprovalRequestPayload>({
+    scheduler: createTestGatewayScheduler(),
     persistence,
     resolveAllowedDecisions: resolveExecApprovalRequestAllowedDecisions,
   });
   const plugin = new ExecApprovalManager<PluginApprovalRequestPayload>({
+    scheduler: createTestGatewayScheduler(),
     approvalKind: "plugin",
     persistence,
   });

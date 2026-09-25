@@ -17,7 +17,7 @@ const loadGatewayRestartSentinelModule = createLazyRuntimeModule(
 );
 
 export function scheduleRestartSentinelWakeAfterReady(params: {
-  scheduler?: GatewayScheduler;
+  scheduler: GatewayScheduler;
   deps: CliDeps;
   context?: DeliveryQueueStateContext;
   log: { warn: (msg: string) => void };

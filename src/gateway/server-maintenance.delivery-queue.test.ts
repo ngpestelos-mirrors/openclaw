@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { waitForMediaCleanupDrainsToSettle } from "./server-media-cleanup-lifecycle.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 
@@ -50,7 +53,7 @@ async function stopMaintenanceTimers(
 describe("delivery queue maintenance", () => {
   beforeEach(() => {
     clock = createGatewaySchedulerClock();
-    scheduler = new GatewayScheduler({ clock: clock.clock });
+    scheduler = createTestGatewayScheduler(clock.clock);
   });
 
   afterEach(async () => {

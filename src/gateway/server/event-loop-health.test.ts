@@ -15,13 +15,15 @@ import {
   getActiveDiagnosticTraceContext,
   runWithDiagnosticTraceContext,
 } from "../../infra/diagnostic-trace-context.js";
-import { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import {
   startDiagnosticStabilityRecorder,
   stopDiagnosticStabilityRecorder,
 } from "../../logging/diagnostic-stability.js";
 import { registerSkillUsageTracking } from "../../skills/workshop/curator.js";
-import { createGatewaySchedulerClock } from "../../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../../test-utils/gateway-scheduler-clock.js";
 import { createGatewayEventLoopHealthMonitor } from "./event-loop-health.js";
 
 type CpuUsage = ReturnType<typeof process.cpuUsage>;
@@ -37,7 +39,7 @@ afterEach(() => {
 function createMonitorHarness(params?: { cpuMsPerWallMs?: number; utilization?: number }) {
   let nowMs = 10_000;
   const clock = createGatewaySchedulerClock(nowMs);
-  const scheduler = new GatewayScheduler({ clock: clock.clock });
+  const scheduler = createTestGatewayScheduler(clock.clock);
   const cpuMsPerWallMs = params?.cpuMsPerWallMs ?? 0.1;
   const utilization = params?.utilization ?? 0.2;
   const cpuUsage = vi.fn((previous?: CpuUsage) => {
