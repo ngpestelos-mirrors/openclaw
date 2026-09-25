@@ -3,7 +3,11 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { build as esbuild } from "esbuild";
 import { beforeAll, describe, expect, it } from "vitest";
-import { createBoundedChildOutput } from "../../../test/helpers/bounded-child-output.js";
+import {
+  appendQaChildOutputTail,
+  createQaChildOutputTail,
+  readQaChildOutputTail,
+} from "./child-output.js";
 
 const CHILD_TIMEOUT_MS = 3_000;
 let fixtureCode: string;
@@ -78,10 +82,10 @@ function startFixture() {
   const child = spawn(process.execPath, ["--input-type=module", "--eval", fixtureCode], {
     stdio: ["pipe", "pipe", "pipe"],
   });
-  const stdout = createBoundedChildOutput();
-  const stderr = createBoundedChildOutput();
-  child.stdout.on("data", stdout.append);
-  child.stderr.on("data", stderr.append);
+  const stdout = createQaChildOutputTail(128 * 1024);
+  const stderr = createQaChildOutputTail(128 * 1024);
+  child.stdout.on("data", (chunk) => appendQaChildOutputTail(stdout, chunk));
+  child.stderr.on("data", (chunk) => appendQaChildOutputTail(stderr, chunk));
   const reader = createInterface({ input: child.stdout });
   const lines = reader[Symbol.asyncIterator]();
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
@@ -101,7 +105,9 @@ function startFixture() {
       while (true) {
         const line = await lines.next();
         if (line.done) {
-          throw new Error(`signal child closed before its marker: ${stderr.text()}`);
+          throw new Error(
+            `signal child closed before its marker: ${readQaChildOutputTail(stderr)}`,
+          );
         }
         if (line.value.startsWith("qa-child:")) {
           return JSON.parse(line.value.slice("qa-child:".length)) as unknown;
@@ -166,9 +172,11 @@ describe("QA server signal owner", () => {
       expect(await fixture.next()).toEqual({ phase: "stopping", calls: 1, sigint: 0, sigterm: 0 });
       expect(fixture.child.kill(second)).toBe(true);
       expect(await fixture.closed).toEqual({ code: null, signal: second });
-      expect(fixture.stdout.text()).not.toContain('"phase":"complete"');
-      expect(fixture.stdout.text()).not.toContain('"phase":"failed"');
-      expect(fixture.stderr.text()).toContain("cleanup and report completion will be unconfirmed.");
+      expect(readQaChildOutputTail(fixture.stdout)).not.toContain('"phase":"complete"');
+      expect(readQaChildOutputTail(fixture.stdout)).not.toContain('"phase":"failed"');
+      expect(readQaChildOutputTail(fixture.stderr)).toContain(
+        "cleanup and report completion will be unconfirmed.",
+      );
     } finally {
       await fixture.cleanup();
     }
