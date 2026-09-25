@@ -7,11 +7,11 @@ import type { AnyAgentTool } from "../../agents/agent-tools.types.js";
 import type { ExecElevatedDefaults } from "../../agents/bash-tools.exec-types.js";
 import { prepareDelegatedToolParameterTarget } from "../../agents/delegated-tool-parameter-target.js";
 import type { ExecPolicyOverrides } from "../../agents/exec-defaults.js";
+import { captureDelegatedToolParameters } from "../../agents/inherited-tool-parameters.js";
 import {
-  captureDelegatedToolParameters,
   captureDelegatedSourceToolPolicy,
-} from "../../agents/inherited-tool-parameters.js";
-import { captureInheritedToolPolicy } from "../../agents/inherited-tool-policy.js";
+  captureInheritedToolPolicy,
+} from "../../agents/inherited-tool-policy.js";
 import type { createOpenClawTools } from "../../agents/openclaw-tools.js";
 import { filterRequesterYieldTools } from "../../agents/openclaw-tools.requester-yield.js";
 import { resolveRequesterToolPolicies } from "../../agents/requester-tool-policy.js";

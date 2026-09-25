@@ -1,10 +1,10 @@
 import path from "node:path";
 import { prepareDelegatedToolParameterTarget } from "../agents/delegated-tool-parameter-target.js";
+import { captureDelegatedToolParameters } from "../agents/inherited-tool-parameters.js";
 import {
-  captureDelegatedToolParameters,
   captureDelegatedSourceToolPolicy,
-} from "../agents/inherited-tool-parameters.js";
-import { captureInheritedToolPolicy } from "../agents/inherited-tool-policy.js";
+  captureInheritedToolPolicy,
+} from "../agents/inherited-tool-policy.js";
 import type { InheritedToolPolicySourceCapture } from "../agents/inherited-tool-policy.schema.js";
 import type { PreparedRootedExecutionCapability } from "../agents/rooted-run-params.js";
 import type { resolveSandboxRuntimeStatus } from "../agents/sandbox/runtime-status.js";

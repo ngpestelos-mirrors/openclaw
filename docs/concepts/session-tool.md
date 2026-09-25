@@ -175,9 +175,13 @@ Accepted requirements remain with that work across retries; later unrelated
 turns keep their own policy. Normal sender completion does not revoke accepted
 work. Source execution approval restrictions are captured at delegation,
 including the source's approval timeout fallback. Receiver grants or timeout
-fallbacks cannot widen those captured restrictions. Native delegated work uses
-`sessions_spawn`'s subagent backend; ACP is unavailable when it cannot enforce
-the saved policy.
+fallbacks cannot widen those captured restrictions. ACP delegation is available
+when its host execution can satisfy the captured policy. Native tool-name,
+workspace, approval, or sandbox restrictions that ACP cannot enforce produce
+an explicit refusal; use `sessions_spawn`'s native subagent backend for that
+work. An available ACP backend remains discoverable even when a particular
+request is incompatible. Accepted ACP children retain their policy after the
+sender finishes.
 
 Restricted notifications remain in the process-local queue until a compatible
 turn can consume them. Their queued receipt does not prove consumption or start

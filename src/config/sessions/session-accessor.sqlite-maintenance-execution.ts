@@ -14,7 +14,7 @@ import {
 } from "./session-accessor.sqlite-entry-cache.js";
 import { publishCommittedSessionIdentity } from "./session-accessor.sqlite-identity.js";
 import type {
-  SqliteSessionReclamationPlan,
+  SessionMaintenanceExecutionPlan,
   SqliteSessionReclamationResult,
 } from "./session-accessor.sqlite-lifecycle-types.js";
 import {
@@ -27,11 +27,6 @@ import {
   type ResolvedSqliteReadScope,
 } from "./session-accessor.sqlite-scope.js";
 import { withSqliteMutationWorkerLifetime } from "./session-accessor.sqlite-worker-request.js";
-
-export type SessionMaintenanceExecutionPlan = Extract<
-  SqliteSessionReclamationPlan,
-  { kind: "maintenance-plan" | "maintenance-finalize" | "maintenance-statistics" }
->;
 
 type SessionMaintenanceWorkerParams = {
   databaseIdentity: string;

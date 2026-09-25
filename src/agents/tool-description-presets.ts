@@ -159,7 +159,9 @@ export function describeSessionsSpawnTool(options?: {
     "Inherits parent workspace. Native task arrives in the child's initial `[Subagent Task]` message.",
     ...(options?.acpAvailable === false
       ? []
-      : ['`runtime="acp"` ids: codex, claude, gemini, opencode, or configured ACP.']),
+      : [
+          '`runtime="acp"` ids: codex, claude, gemini, opencode, or configured ACP. ACP must satisfy the source action restrictions; use a native subagent when unsupported.',
+        ]),
     describeSubagentSpawnContext(options?.subagentThreadAvailable === true),
     "A PR/report, long runtime, or isolated worktree alone does not justify a sidebar session. A request for a subagent does not request a separate session. Use an isolated native child for independent assessment by another agent, even one status read, while its active work continues. Return the answer here; ask no session or permission-routing questions.",
     "After spawn, do non-overlap work; follow the receipt's completion mode.",

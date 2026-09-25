@@ -10,9 +10,9 @@ import { resolveExecDefaults } from "../../agents/exec-defaults.js";
 import {
   applyDelegatedToolParameters,
   captureDelegatedToolParameters,
-  captureDelegatedSourceToolPolicy,
 } from "../../agents/inherited-tool-parameters.js";
 import {
+  captureDelegatedSourceToolPolicy,
   captureInheritedToolPolicy,
   createInheritedToolPolicyMatcher,
 } from "../../agents/inherited-tool-policy.js";

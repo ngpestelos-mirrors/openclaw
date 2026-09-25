@@ -21,7 +21,9 @@ import {
   findAcpUnsupportedInheritedToolDeny,
   formatAcpInheritedToolAllowError,
   formatAcpInheritedToolDenyError,
+  resolveAcpInheritedToolPolicyError,
 } from "../inherited-tool-deny.js";
+import type { InheritedToolPolicySource } from "../inherited-tool-policy.schema.js";
 import type { SpawnedToolContext } from "../spawned-context.js";
 import { withParentExecutionIdentity } from "../subagents/spawn/execution-identity-spawn-context.js";
 import { resolveAcpSessionsSpawnImageAttachments } from "../subagents/spawn/subagent-attachments.js";
@@ -177,12 +179,10 @@ export function createSessionsSpawnTool(
     SpawnedToolContext,
 ): AnyAgentTool {
   const effectiveConfig = opts?.config ?? getRuntimeConfig();
-  const acpAvailable =
-    !opts?.captureInheritedToolPolicyForDelegation &&
-    isAcpRuntimeSpawnAvailable({
-      config: effectiveConfig,
-      sandboxed: opts?.sandboxed,
-    });
+  const acpAvailable = isAcpRuntimeSpawnAvailable({
+    config: effectiveConfig,
+    sandboxed: opts?.sandboxed,
+  });
   const threadAvailability = resolveSessionsSpawnThreadAvailability({
     ...opts,
     config: effectiveConfig,
@@ -245,9 +245,14 @@ export function createSessionsSpawnTool(
         }
         const hasCollectParam = Object.hasOwn(params, "collect");
         const collect = params.collect === true;
-        const assertActive = collect
+        const assertInvocationActive = collect
           ? captureCollectorSpawnGuard(tool, _toolCallId, assertSourceActive)
           : assertSourceActive;
+        let acpSource: InheritedToolPolicySource | undefined;
+        const assertActive = () => {
+          assertInvocationActive();
+          acpSource?.assertCurrent();
+        };
         assertActive();
         if (
           getGatewayToolCallerIdentity()?.operationalRunInstance &&
@@ -366,13 +371,12 @@ export function createSessionsSpawnTool(
         }
         if (runtime === "acp" && opts?.captureInheritedToolPolicyForDelegation) {
           assertActive();
-          (await opts.captureInheritedToolPolicyForDelegation()).assertCurrent();
-          return jsonResult({
-            status: "forbidden",
-            error:
-              'ACP cannot enforce the delegated native tool policy. Use runtime="subagent" for this task.',
-            ...roleContext,
-          });
+          acpSource = await opts.captureInheritedToolPolicyForDelegation();
+          assertActive();
+          const error = resolveAcpInheritedToolPolicyError(acpSource.policy);
+          if (error) {
+            return jsonResult({ status: "forbidden", error, ...roleContext });
+          }
         }
         if (runtime === "acp" && !acpAvailable) {
           return jsonResult({
@@ -385,7 +389,7 @@ export function createSessionsSpawnTool(
           });
         }
         const acpUnsupportedInheritedTool =
-          runtime === "acp"
+          runtime === "acp" && !acpSource
             ? findAcpUnsupportedInheritedToolDeny(opts?.inheritedToolDenylist)
             : undefined;
         if (acpUnsupportedInheritedTool) {
@@ -396,7 +400,7 @@ export function createSessionsSpawnTool(
           });
         }
         const acpUnsupportedInheritedAllow =
-          runtime === "acp"
+          runtime === "acp" && !acpSource
             ? findAcpUnsupportedInheritedToolAllow(opts?.inheritedToolAllowlist)
             : undefined;
         if (acpUnsupportedInheritedAllow) {
@@ -474,6 +478,7 @@ export function createSessionsSpawnTool(
                 agentGroupSpace: opts?.agentGroupSpace,
                 agentMemberRoleIds: opts?.agentMemberRoleIds,
                 sandboxed: opts?.sandboxed,
+                inheritedToolPolicy: acpSource?.policy,
                 inheritedToolAllowlist: opts?.inheritedToolAllowlist,
                 inheritedToolDenylist: opts?.inheritedToolDenylist,
               },

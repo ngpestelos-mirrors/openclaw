@@ -41,8 +41,8 @@ import {
   createEmbeddedRunHandle,
   testing as embeddedRunsTesting,
 } from "../embedded-agent-runner/runs.test-support.js";
-import * as inheritedToolParameters from "../inherited-tool-parameters.js";
 import { emptyDelegatedToolParameterPolicy } from "../inherited-tool-parameters.js";
+import * as inheritedToolPolicy from "../inherited-tool-policy.js";
 import { captureInheritedToolPolicy } from "../inherited-tool-policy.js";
 import type {
   InheritedToolPolicyRef,
@@ -366,9 +366,9 @@ describe("sessions_send dispatch admission", () => {
       const entered = createDeferredCore();
       const release = createDeferredCore();
       const captureSettled = createDeferredCore();
-      const capture = inheritedToolParameters.captureDelegatedSourceToolPolicy;
+      const capture = inheritedToolPolicy.captureDelegatedSourceToolPolicy;
       const captureOwner = vi
-        .spyOn(inheritedToolParameters, "captureDelegatedSourceToolPolicy")
+        .spyOn(inheritedToolPolicy, "captureDelegatedSourceToolPolicy")
         .mockImplementationOnce(async (params) => {
           try {
             return await capture(params);

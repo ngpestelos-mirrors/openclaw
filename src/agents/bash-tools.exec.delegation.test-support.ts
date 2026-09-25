@@ -20,7 +20,7 @@ import {
   applyDelegatedExecRestrictions,
   captureDelegatedExecRestriction,
 } from "./delegated-exec-policy.js";
-import { captureDelegatedSourceToolPolicy } from "./inherited-tool-parameters.js";
+import { captureDelegatedSourceToolPolicy } from "./inherited-tool-policy.js";
 import { callGatewayTool } from "./tools/gateway.js";
 
 export function registerDelegatedExecPolicyTests({

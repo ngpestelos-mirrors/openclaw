@@ -4,6 +4,7 @@ import { readAcpSessionMetaForEntries } from "../../acp/runtime/session-meta-rea
 import { resolveConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
 import { resolveConversationToolPolicies } from "../../agents/conversation-tool-policy-pipeline.js";
 import { prepareDelegatedToolParameterTarget } from "../../agents/delegated-tool-parameter-target.js";
+import { resolveAcpInheritedToolPolicyError } from "../../agents/inherited-tool-deny.js";
 import { captureDelegatedToolParameters } from "../../agents/inherited-tool-parameters.js";
 import {
   assertInheritedToolPolicyCompatible,
@@ -11,6 +12,7 @@ import {
 } from "../../agents/inherited-tool-policy.js";
 import type { InheritedToolPolicyV2 } from "../../agents/inherited-tool-policy.schema.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
+import { resolvePersistedSubagentToolPolicyEnvelope } from "../../agents/subagents/spawn/subagent-capabilities.js";
 import { withPreparedSubagentCapabilityStore } from "../../agents/subagents/spawn/subagent-capability-preparation.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -51,7 +53,7 @@ function policyFacts(entry: SessionEntry | undefined) {
   return entry ? Object.fromEntries(policyFields.map((key) => [key, entry[key]])) : undefined;
 }
 
-/** Prospective native agent admission; actual tool preparation revalidates consumption. */
+/** Prospective runtime admission; actual execution revalidates consumption. */
 export async function withCompatibleSessionSendTarget<T>(params: {
   config: OpenClawConfig;
   context: AgentTurnContext;
@@ -154,7 +156,21 @@ export async function withCompatibleSessionSendTarget<T>(params: {
           : [];
         assertCurrent();
         if (acp) {
-          throw new Error("This ACP target cannot enforce the delegated native tool policy.");
+          const inherited = resolvePersistedSubagentToolPolicyEnvelope(params.sessionKey, {
+            cfg: params.config,
+            store,
+          });
+          for (const policy of [
+            params.source,
+            inherited?.version === 2 ? inherited.policy : undefined,
+          ]) {
+            const error = policy ? resolveAcpInheritedToolPolicyError(policy) : undefined;
+            if (error) {
+              throw new Error(error);
+            }
+          }
+          assertTargetCurrent();
+          return await params.consume(assertTargetCurrent);
         }
         const sandbox = resolveSandboxRuntimeStatus({
           cfg: params.config,

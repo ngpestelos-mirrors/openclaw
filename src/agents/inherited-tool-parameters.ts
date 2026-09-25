@@ -1,6 +1,3 @@
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveExecModePolicy } from "../infra/exec-approvals-core.js";
-import { maxAsk, minSecurity } from "../infra/exec-approvals-policy.js";
 import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import {
   applyDelegatedExecRestrictions,
@@ -12,10 +9,6 @@ import type {
   DelegatedParameterApplicability,
   DelegatedToolParameterPolicy,
 } from "./inherited-tool-parameters.types.js";
-import {
-  parseInheritedToolPolicyV2,
-  type InheritedToolPolicyV2,
-} from "./inherited-tool-policy.schema.js";
 import {
   assertDelegatedSandboxRestrictions,
   captureDelegatedSandboxRestriction,
@@ -84,74 +77,6 @@ export function captureDelegatedToolParameters(
     }
   }
   return result;
-}
-
-/** Freeze approval floors for this delegation; local grants remain with the exec owner. */
-export async function captureDelegatedSourceToolPolicy(params: {
-  policy: InheritedToolPolicyV2;
-  exec: ExecToolDefaults;
-  sandboxed: boolean;
-  config?: OpenClawConfig;
-  agentId?: string;
-  assertCurrent: () => void;
-}): Promise<InheritedToolPolicyV2> {
-  params.assertCurrent();
-  const policy = parseInheritedToolPolicyV2(params.policy);
-  const { createInheritedToolPolicyMatcher } = await import("./inherited-tool-policy.js");
-  params.assertCurrent();
-  if (!createInheritedToolPolicyMatcher({ policy })({ name: "exec" })) {
-    return policy;
-  }
-  const mode = resolveExecModePolicy({
-    mode: params.exec.mode,
-    security: params.exec.security ?? "full",
-    ask: params.exec.ask ?? "off",
-  });
-  const sandboxHost =
-    params.exec.host === "sandbox" ||
-    ((!params.exec.host || params.exec.host === "auto") && params.sandboxed);
-  if (sandboxHost || params.exec.bypassHostApprovalFloors === true) {
-    return policy;
-  }
-  const [{ withPreparedToolConstruction }, { resolveExecApprovalsFromFile }] = await Promise.all([
-    import("./tool-construction-preparation.js"),
-    import("../infra/exec-approvals.js"),
-  ]);
-  params.assertCurrent();
-  return await withPreparedToolConstruction(
-    params.config,
-    { assertCurrent: params.assertCurrent },
-    async (prepared) => {
-      const file = await prepared.loadExecApprovals();
-      prepared.assertCurrent();
-      const floor = resolveExecApprovalsFromFile({
-        file,
-        agentId: params.agentId,
-        overrides: { security: "full", ask: "off" },
-      }).agent;
-      const security = minSecurity(mode.security, floor.security);
-      const ask = maxAsk(mode.ask, floor.ask);
-      const captured = captureDelegatedExecRestriction(
-        {
-          ...params.exec,
-          mode: security === mode.security && ask === mode.ask ? params.exec.mode : undefined,
-          security,
-          ask,
-        },
-        params.sandboxed,
-        minSecurity(security, floor.askFallback),
-      );
-      prepared.assertCurrent();
-      return parseInheritedToolPolicyV2({
-        ...policy,
-        parameters: {
-          ...policy.parameters,
-          exec: [...policy.parameters.exec, captured.restriction],
-          unsupported: [...policy.parameters.unsupported, ...captured.unsupported],
-        },
-      });
-    },
-  );
 }
 
 class DelegatedToolParameterUnsupportedError extends Error {

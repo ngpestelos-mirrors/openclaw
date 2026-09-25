@@ -94,9 +94,9 @@ describe("session transcript reader marker projection", () => {
     envSnapshot.restore();
   });
 
-  async function writeTranscript<TEvents extends readonly { id: string }[]>(
+  async function writeTranscript(
     sessionId: string,
-    events: TEvents,
+    events: readonly { id: string }[],
   ): Promise<SessionTranscriptReadScope> {
     const scope = {
       agentId: "main",
@@ -120,7 +120,7 @@ describe("session transcript reader marker projection", () => {
       delegatedInputPolicyVersion: 2,
       delegatedInputPolicy: policy(allow),
     });
-    const scope = await writeTranscript("input-policy-recovery", [
+    const events = [
       {
         ...message("source", "accepted source"),
         message: {
@@ -156,7 +156,8 @@ describe("session transcript reader marker projection", () => {
       },
       compaction("boundary", "unrelated"),
       message("later-reply", "ordinary answer", "assistant"),
-    ]);
+    ];
+    const scope = await writeTranscript("input-policy-recovery", events);
     const recovered = await readSessionRunInputPolicyAsync(scope, {
       sourceTurnId: "source-run",
       runIds: ["physical-run"],

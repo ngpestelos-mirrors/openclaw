@@ -30,14 +30,19 @@ export function buildSubagentExecutionSessionSpawnContext(
     sandbox: "inherit" | "require";
   } & (
     | { backend: "subagent"; inheritedToolPolicy: InheritedToolPolicyV2 }
-    | { backend: "acp"; inheritedToolAllowlist?: string[]; inheritedToolDenylist?: string[] }
+    | {
+        backend: "acp";
+        inheritedToolPolicy?: InheritedToolPolicyV2;
+        inheritedToolAllowlist?: string[];
+        inheritedToolDenylist?: string[];
+      }
   ),
 ): AgentRuntimeSessionSpawnContext | undefined {
   if (!params.enabled) {
     return undefined;
   }
   const inheritedToolPolicy =
-    params.backend === "subagent"
+    params.backend === "subagent" || params.inheritedToolPolicy
       ? { version: 2 as const, policy: parseInheritedToolPolicyV2(params.inheritedToolPolicy) }
       : {
           version: 1 as const,

@@ -5,7 +5,7 @@ import {
   type SessionEntryReplacementPublication,
 } from "./session-accessor.sqlite-entry-cache.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
-import type { SessionMaintenanceExecutionPlan } from "./session-accessor.sqlite-maintenance-execution.js";
+import type { SessionMaintenanceExecutionPlan } from "./session-accessor.sqlite-lifecycle-types.js";
 import { reclaimSessionMaintenanceInTransaction } from "./session-accessor.sqlite-maintenance-transaction.js";
 
 /** The outer transaction binds the existing maintenance kernel to one broker commit. */

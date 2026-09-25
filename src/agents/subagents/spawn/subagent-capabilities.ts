@@ -206,6 +206,50 @@ export function resolveSubagentCapabilities(params: { depth: number; maxSpawnDep
   };
 }
 
+function resolvePersistedV2SubagentEnvelope(
+  sessionKey: string,
+  entry: SessionCapabilityEntry | undefined,
+): Extract<PersistedSubagentToolPolicyEnvelope, { version: 2 }> | undefined {
+  const version = entry?.inheritedToolPolicyVersion;
+  if (version !== undefined && version !== 1 && version !== 2) {
+    throw new Error("Unsupported inherited tool policy version.");
+  }
+  if (entry?.inheritedToolPolicy !== undefined && version !== 2) {
+    throw new Error("Inherited tool policy v2 is missing its version marker.");
+  }
+  if (version !== 2 || !entry) {
+    return undefined;
+  }
+  const spawnedBy = normalizeOptionalString(entry.spawnedBy);
+  const hasSpawnDepth =
+    typeof entry.spawnDepth === "number" &&
+    Number.isInteger(entry.spawnDepth) &&
+    entry.spawnDepth >= 1;
+  if (
+    !spawnedBy ||
+    (!hasSpawnDepth &&
+      (isDashboardSessionKey(sessionKey) ||
+        (!normalizeSubagentRole(entry.subagentRole) &&
+          !normalizeSubagentControlScope(entry.subagentControlScope))))
+  ) {
+    throw new Error("Inherited tool policy v2 has incomplete child lineage.");
+  }
+  const completionOwnerSessionKey = normalizeOptionalString(entry.completionOwnerSessionKey);
+  if (!completionOwnerSessionKey) {
+    throw new Error("Inherited tool policy v2 has no completion owner.");
+  }
+  if (entry.inheritedToolAllow !== undefined || entry.inheritedToolDeny !== undefined) {
+    throw new Error("Inherited tool policy v2 cannot contain legacy policy fields.");
+  }
+  return {
+    version,
+    sessionKey,
+    spawnedBy,
+    completionOwnerSessionKey,
+    policy: parseInheritedToolPolicyV2(entry.inheritedToolPolicy),
+  };
+}
+
 function isStoredSubagentEnvelopeSession(
   params: {
     sessionKey: string;
@@ -243,6 +287,10 @@ function isStoredSubagentEnvelopeSession(
       entry.spawnDepth >= 1 &&
       Boolean(normalizeOptionalString(entry.spawnedBy))
     );
+  }
+  // A complete v2 ACP envelope retains child identity without its sender's row.
+  if (resolvePersistedV2SubagentEnvelope(normalizedSessionKey, entry)) {
+    return true;
   }
   if (
     normalizeSubagentRole(entry?.subagentRole) ||
@@ -328,15 +376,12 @@ export function resolvePersistedSubagentToolPolicyEnvelope(
     return undefined;
   }
   const { sessionKey: normalizedSessionKey, store, entry } = stored;
-  const version = entry?.inheritedToolPolicyVersion;
-  if (version !== undefined && version !== 1 && version !== 2) {
-    throw new Error("Unsupported inherited tool policy version.");
-  }
-  if (opts?.requiredVersion === 2 && version !== 2) {
+  const v2 = resolvePersistedV2SubagentEnvelope(normalizedSessionKey, entry);
+  if (opts?.requiredVersion === 2 && !v2) {
     throw new Error("Expected inherited tool policy v2 is unavailable.");
   }
-  if (entry?.inheritedToolPolicy !== undefined && version !== 2) {
-    throw new Error("Inherited tool policy v2 is missing its version marker.");
+  if (v2) {
+    return v2;
   }
   const spawnedBy = normalizeOptionalString(entry?.spawnedBy);
   const hasSpawnDepth =
@@ -348,33 +393,15 @@ export function resolvePersistedSubagentToolPolicyEnvelope(
   if (
     !entry ||
     !spawnedBy ||
-    (version !== 1 && version !== 2) ||
+    entry.inheritedToolPolicyVersion !== 1 ||
     !isSubagentEnvelopeSession(normalizedSessionKey, { ...opts, store, entry }) ||
     (!hasSpawnDepth && role === undefined && controlScope === undefined)
   ) {
-    if (version === 2) {
-      throw new Error("Inherited tool policy v2 has incomplete child lineage.");
-    }
     return undefined;
   }
   const completionOwnerSessionKey = normalizeOptionalString(entry.completionOwnerSessionKey);
   if (isSessionCapabilityLookup(store)) {
     store.assertAvailable?.();
-  }
-  if (version === 2) {
-    if (!completionOwnerSessionKey) {
-      throw new Error("Inherited tool policy v2 has no completion owner.");
-    }
-    if (entry.inheritedToolAllow !== undefined || entry.inheritedToolDeny !== undefined) {
-      throw new Error("Inherited tool policy v2 cannot contain legacy policy fields.");
-    }
-    return {
-      version,
-      sessionKey: normalizedSessionKey,
-      spawnedBy,
-      completionOwnerSessionKey,
-      policy: parseInheritedToolPolicyV2(entry.inheritedToolPolicy),
-    };
   }
   return {
     version: 1,

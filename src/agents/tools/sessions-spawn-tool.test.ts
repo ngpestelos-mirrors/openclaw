@@ -21,6 +21,7 @@ import {
 } from "../subagents/swarm/swarm-code-mode.js";
 import { createAgentsWaitTool } from "./agents-wait-tool.js";
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
+import { registerSessionsSpawnAcpPolicyTests } from "./sessions-spawn-tool.acp-policy.test-support.js";
 import {
   registerSessionsSpawnCompletionTests,
   registerSessionsSpawnPrivateRouteTests,
@@ -218,64 +219,7 @@ describe("sessions_spawn tool", () => {
     expect(schema.properties?.streamTo).toBeUndefined();
   });
 
-  it.each([false, true])(
-    "advertises an available ACP backend only without a native policy binding (bound=%s)",
-    async (bound) => {
-      registerAcpBackendForTest();
-
-      const tool = createSessionsSpawnTool({
-        ...(bound ? { captureInheritedToolPolicyForDelegation: captureTestSpawnToolPolicy } : {}),
-        agentChannel: "discord",
-        agentAccountId: "default",
-        config: {
-          session: {
-            threadBindings: {
-              spawnSessions: true,
-            },
-          },
-        },
-      });
-      const schema = tool.parameters as {
-        properties?: {
-          runtime?: { enum?: string[] };
-          resumeSessionId?: { description?: string };
-          streamTo?: { description?: string };
-        };
-      };
-
-      if (bound) {
-        expect(schema.properties?.runtime?.enum).toEqual(["subagent"]);
-        expect(schema.properties?.resumeSessionId).toBeUndefined();
-        expect(schema.properties?.streamTo).toBeUndefined();
-        expect(tool.description).not.toContain('runtime="acp"');
-        const result = await tool.execute("bound-acp", { task: "inspect", runtime: "acp" });
-        expect(result.details).toMatchObject({
-          status: "forbidden",
-          error:
-            'ACP cannot enforce the delegated native tool policy. Use runtime="subagent" for this task.',
-        });
-        expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();
-        expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
-        return;
-      }
-
-      expect(tool.displaySummary).toBe(
-        "Spawn hidden subagent (ephemeral) or visible work session (durable).",
-      );
-      expect(tool.description).toContain('runtime="acp"');
-      expect(tool.description).toContain("follow the receipt's completion mode");
-      expect(schema.properties?.runtime?.enum).toEqual(["subagent", "acp"]);
-      const resumeSessionId = requireSchemaProperty(schema.properties, "resumeSessionId");
-      const streamTo = requireSchemaProperty(schema.properties, "streamTo");
-      expect(resumeSessionId.description).toContain("ACP resume id");
-      expect(resumeSessionId.description).toContain("ignored by subagent");
-      expect(resumeSessionId.description).toContain("already recorded for requester");
-      expect(streamTo.enum).toEqual(["parent"]);
-      expect(streamTo.description).toContain("ACP only");
-      expect(streamTo.description).toContain('"parent" streams turn to requester');
-      expect(streamTo.description).toContain("Ignored by subagent");
-    },
-  );
+  registerSessionsSpawnAcpPolicyTests(completionFixture);
 
   it("hides ACP runtime affordances when the ACP backend is unhealthy", () => {
     acpRuntimeRegistry.registerAcpRuntimeBackend({

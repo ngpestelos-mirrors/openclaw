@@ -4,12 +4,16 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import type { SkillBinTrustEntry } from "./exec-approvals-allowlist.js";
 import {
   resolveExecutionTargetResolution,
   resolveExecutionTargetTrustPath,
   type ExecCommandSegment,
 } from "./exec-approvals-analysis.js";
+
+export type SkillBinTrustEntry = {
+  name: string;
+  resolvedPath: string;
+};
 
 function isPathScopedExecutableToken(token: string): boolean {
   return token.includes("/") || token.includes("\\");

@@ -6,11 +6,11 @@ import type { ResolvedConversationCapabilityProfile } from "./conversation-capab
 import { resolveConversationToolPolicies } from "./conversation-tool-policy-pipeline.js";
 import {
   applyDelegatedToolParameters,
-  captureDelegatedSourceToolPolicy,
   captureDelegatedToolParameters,
   type DelegatedToolParameterFacts,
 } from "./inherited-tool-parameters.js";
 import {
+  captureDelegatedSourceToolPolicy,
   captureInheritedToolPolicy,
   createInheritedToolPolicyMatcher,
 } from "./inherited-tool-policy.js";

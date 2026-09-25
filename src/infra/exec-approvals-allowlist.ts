@@ -45,7 +45,11 @@ import {
 } from "./exec-safe-bin-policy.js";
 import { isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
 import { isSafeBuiltinSegment } from "./exec-safe-builtins.js";
-import { buildSkillBinTrustIndex, isSkillAutoAllowedSegment } from "./exec-skill-bin-trust.js";
+import {
+  buildSkillBinTrustIndex,
+  isSkillAutoAllowedSegment,
+  type SkillBinTrustEntry,
+} from "./exec-skill-bin-trust.js";
 import {
   extractBindableShellWrapperInlineCommand,
   isShellWrapperExecutable,
@@ -69,6 +73,8 @@ import {
   resolvePowerShellInlineCommandMatch,
 } from "./shell-inline-command.js";
 import { analyzeWindowsShellCommand } from "./windows-shell-command.js";
+
+export type { SkillBinTrustEntry } from "./exec-skill-bin-trust.js";
 
 function hasShellLineContinuation(command: string): boolean {
   return /\\(?:\r\n|\n|\r)/.test(command);
@@ -188,10 +194,6 @@ export type ExecSegmentSatisfiedBy =
   | "safeBuiltins"
   | "skills"
   | null;
-export type SkillBinTrustEntry = {
-  name: string;
-  resolvedPath: string;
-};
 type ExecAllowlistContext = {
   allowlist: ExecAllowlistEntry[];
   safeBins: Set<string>;

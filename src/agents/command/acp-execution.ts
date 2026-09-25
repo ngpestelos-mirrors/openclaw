@@ -24,9 +24,11 @@ import {
   buildAgentRunTerminalOutcomeFromLifecycleEvent,
   classifyAgentRunTerminalOutcome,
 } from "../agent-run-terminal-outcome.js";
+import { resolveAcpInheritedToolPolicyError } from "../inherited-tool-deny.js";
 import { prepareInternalSessionEffectsSession } from "../internal-session-effects.js";
 import type { AgentRunSessionTarget } from "../run-session-target.types.js";
 import { isAgentRunRestartAbortReason } from "../run-termination.js";
+import { resolvePersistedSubagentToolPolicyEnvelope } from "../subagents/spawn/subagent-capabilities.js";
 import { applyAgentRunAbortMetadata } from "./lifecycle.js";
 import type { PreparedAgentCommandExecution } from "./prepare.js";
 import {
@@ -70,16 +72,33 @@ export async function runAcpAgentCommand(params: {
   acpResolution: AcpReadyResolution;
   trackInternalModelRunTarget: (target: AgentRunSessionTarget | undefined) => void;
 }) {
-  if (
-    params.sessionEntry?.inheritedToolPolicyVersion === 2 ||
-    params.sessionEntry?.inheritedToolPolicy !== undefined ||
-    params.opts.delegatedInputPolicy ||
-    readUserTurnDelegatedInputPolicy(
-      params.opts.userTurnTranscriptRecorder?.getPendingInputMessage?.(),
-    )
-  ) {
-    throw new Error("This ACP target cannot enforce the delegated native tool policy.");
-  }
+  const assertDelegatedPolicySupported = () => {
+    const entry = params.sessionEntry;
+    const inherited =
+      entry &&
+      (entry.inheritedToolPolicy !== undefined ||
+        (entry.inheritedToolPolicyVersion !== undefined && entry.inheritedToolPolicyVersion !== 1))
+        ? resolvePersistedSubagentToolPolicyEnvelope(params.sessionKey, {
+            store: { [params.sessionKey]: entry },
+            requiredVersion: 2,
+          })
+        : undefined;
+    const policies = [
+      inherited?.version === 2 ? inherited.policy : undefined,
+      params.opts.delegatedInputPolicy,
+      readUserTurnDelegatedInputPolicy(
+        params.opts.userTurnTranscriptRecorder?.getPendingInputMessage?.() ??
+          params.opts.userTurnTranscriptRecorder?.message,
+      ),
+    ];
+    for (const policy of policies) {
+      const error = policy ? resolveAcpInheritedToolPolicyError(policy) : undefined;
+      if (error) {
+        throw new Error(error);
+      }
+    }
+  };
+  assertDelegatedPolicySupported();
   if (getInstallationTarget()) {
     throw new Error(LOCAL_INSTALLATION_TARGET_UNSUPPORTED);
   }
@@ -186,11 +205,13 @@ export async function runAcpAgentCommand(params: {
       signal: params.opts.abortSignal,
       onElicitation,
       onBeforePrompt: async () => {
+        assertDelegatedPolicySupported();
         const recorder = params.opts.userTurnTranscriptRecorder;
         if (recorder && !recorder.hasPersisted() && !(await recorder.persistApproved())) {
           throw new Error("ACP input could not enter the session transcript");
         }
         await params.opts.onExecutionStarted?.();
+        assertDelegatedPolicySupported();
         assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
         params.opts.abortSignal?.throwIfAborted();
         if (!getAdmittedRunDelegatedAuthority(admittedRunContext)) {

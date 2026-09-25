@@ -274,7 +274,9 @@ it.each(["main", "other"])(
         expect(child?.usageFamilySessionIds).toContain("previous-child");
       }
       expect(child?.sessionId).toBeDefined();
-      if (!child) throw new Error("missing persisted child");
+      if (!child) {
+        throw new Error("missing persisted child");
+      }
       expect(
         readSessionTranscriptHotWatermark(
           openOpenClawAgentDatabase({ agentId: targetAgentId }),
@@ -314,7 +316,9 @@ it.each([
         { agentId: "main", sessionKey: parentKey },
         parent,
       );
-      if (!savedParent) throw new Error("missing parent fixture");
+      if (!savedParent) {
+        throw new Error("missing parent fixture");
+      }
       await upsertSessionEntryCore(
         { agentId: targetAgentId, sessionKey: `agent:${targetAgentId}:neighbor` },
         { sessionId: "neighbor", updatedAt: 1 },

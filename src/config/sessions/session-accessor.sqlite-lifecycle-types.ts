@@ -94,6 +94,11 @@ export type SqliteSessionReclamationPlan =
       sessionId: string;
     });
 
+export type SessionMaintenanceExecutionPlan = Extract<
+  SqliteSessionReclamationPlan,
+  { kind: "maintenance-plan" | "maintenance-finalize" | "maintenance-statistics" }
+>;
+
 export type SqliteSessionReclamationResult =
   | { kind: "maintenance-pages"; value: SqliteWalReclamationResult }
   | { kind: "maintenance-statistics"; value: true }
