@@ -3,7 +3,7 @@ import type { z } from "zod";
 import { LEGACY_UPDATE_RUN_EXPIRED_REASON } from "./update-run-legacy-expiry.js";
 import type { UpdateRunRecoveryState } from "./update-run-recovery-state.js";
 import type { UpdateRunRecordSchema } from "./update-run-schema.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
+import type { UpdateStepResult } from "./update-step-result.js";
 
 export function updateStepDiagnostics(
   step: Pick<UpdateStepResult, "failureFacts" | "stdoutTail" | "stderrTail">,

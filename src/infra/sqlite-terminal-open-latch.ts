@@ -30,6 +30,8 @@ export function createSqliteTerminalOpenLatch(options: {
   const failures = new Map<string, TerminalOpenFailure>();
 
   return {
+    /** Repair cleanup must retain recorded failures after its own writes change the generation. */
+    peek: (pathname: string): Error | undefined => failures.get(path.resolve(pathname))?.error,
     get: (pathname: string): Error | undefined => {
       const resolvedPath = path.resolve(pathname);
       const failure = failures.get(resolvedPath);

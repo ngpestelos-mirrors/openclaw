@@ -199,7 +199,7 @@ describe("repairCanonicalSqliteIndexes", () => {
     }
   });
 
-  it("repairs a physically drifted index hidden behind canonical schema text", () => {
+  it("refuses physical unique-index damage until explicit Doctor repair", () => {
     const db = createDatabase();
     try {
       db.exec(`
@@ -244,23 +244,10 @@ describe("repairCanonicalSqliteIndexes", () => {
           .all(),
       ).toEqual([]);
 
-      verifyAndRepairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA);
-
-      expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
-      expect(
-        db
-          .prepare(
-            `SELECT id
-               FROM records INDEXED BY idx_records_identity
-              WHERE tenant_id = 'Tenant'
-                AND IFNULL(external_id, '') = ''
-                AND active = 1`,
-          )
-          .all(),
-      ).toEqual([{ id: 1 }]);
-      expect(() => db.exec("INSERT INTO records VALUES (3, 'tenant', NULL, 1);")).toThrow(
-        /UNIQUE constraint failed/iu,
-      );
+      expect(() =>
+        verifyAndRepairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA),
+      ).toThrow(/integrity_check failed.*openclaw doctor --fix/iu);
+      expect(db.prepare("PRAGMA integrity_check").get()?.integrity_check).not.toBe("ok");
     } finally {
       db.close();
     }
@@ -315,7 +302,7 @@ describe("repairCanonicalSqliteIndexes", () => {
     }
   });
 
-  it("repairs physical ordinary-index drift hidden behind canonical schema text", () => {
+  it("refuses physical ordinary-index damage until explicit Doctor repair", () => {
     const db = createDatabase();
     try {
       db.exec(`
@@ -353,18 +340,10 @@ describe("repairCanonicalSqliteIndexes", () => {
           .all(),
       ).toEqual([]);
 
-      repairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA);
-
-      expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
-      expect(
-        db
-          .prepare(
-            `SELECT id
-               FROM records INDEXED BY idx_records_active_lookup
-              WHERE active = 1 AND tenant_id = 'Tenant'`,
-          )
-          .all(),
-      ).toEqual([{ id: 1 }]);
+      expect(() => repairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA)).toThrow(
+        /integrity_check failed.*openclaw doctor --fix/iu,
+      );
+      expect(db.prepare("PRAGMA integrity_check").get()?.integrity_check).not.toBe("ok");
     } finally {
       db.close();
     }

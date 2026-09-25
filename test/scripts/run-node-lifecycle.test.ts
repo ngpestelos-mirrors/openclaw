@@ -26,6 +26,7 @@ it.runIf(process.platform !== "win32")(
     const nodeArgs = resolveVitestNodeArgs();
     await withShimFixture("scripts/run-node.mjs", async (fixture) => {
       const { checkoutRoot, fixtureRoot, implementationPath } = fixture;
+      mkdirSync(path.join(checkoutRoot, ".git"));
       const childPidPath = path.join(fixtureRoot, "child.pid");
       const childArgsPath = path.join(fixtureRoot, "child-args.json");
       const launcherPidPath = path.join(fixtureRoot, "launcher.pid");
@@ -65,7 +66,9 @@ setInterval(() => {
         implementationPath,
         `import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { runNodeMain } from ${JSON.stringify(runnerUrl)};
+const { registerSourceRunnerServiceFixture } = await import(${JSON.stringify(pathToFileURL(path.resolve("test/scripts/fixtures/source-runner-service.mjs")).href)});
+registerSourceRunnerServiceFixture(${JSON.stringify(process.cwd())});
+const { runNodeMain } = await import(${JSON.stringify(runnerUrl)});
 fs.appendFileSync(${JSON.stringify(invocationsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 // Let a regressed watcher finish after recording its doctor or restart invocation.
 if (fs.existsSync(${JSON.stringify(childPidPath)})) process.exit(0);
@@ -169,6 +172,7 @@ it.runIf(process.platform !== "win32").each(["runner", "watch"] as const)(
     const sourceRoot = process.cwd();
     const hook = fileURLToPath(new URL("./fixtures/native-runner-signals.mjs", import.meta.url));
     mkdirSync(path.join(checkout, "src"), { recursive: true });
+    mkdirSync(path.join(checkout, ".git"));
     mkdirSync(path.join(root, "home"));
     writeFileSync(path.join(checkout, "package.json"), '{"name":"openclaw-signal-fixture"}');
     writeFileSync(path.join(checkout, "src/index.ts"), "export {};\n");
@@ -206,7 +210,14 @@ it.runIf(process.platform !== "win32").each(["runner", "watch"] as const)(
     );
     await runQaGatewayFixture(
       async () => {
-        const worker = await waitForPidFile(path.join(root, "worker.pid"), 5_000);
+        const worker = await Promise.race([
+          waitForPidFile(path.join(root, "worker.pid"), 5_000),
+          command.then((result) => {
+            throw new Error(
+              `Native ${mode} exited before its worker started: ${formatShimResult(result)}`,
+            );
+          }),
+        ]);
         expect(isProcessAlive(worker)).toBe(true);
         writeFileSync(path.join(root, "terminate"), "terminate");
         const result = await command;
@@ -252,6 +263,7 @@ it.runIf(process.platform !== "win32").each(["SIGTERM", "SIGHUP"] as const)(
   async (signal) => {
     await withShimFixture("scripts/run-node.mjs", async (fixture) => {
       const { checkoutRoot, fixtureRoot, implementationPath, wrapperPath, runNode } = fixture;
+      mkdirSync(path.join(checkoutRoot, ".git"));
       const childPidPath = path.join(fixtureRoot, "child.pid");
       const wrapperPidPath = path.join(fixtureRoot, "wrapper.pid");
       const childPath = path.join(fixtureRoot, "resistant-child.mjs");
@@ -269,7 +281,9 @@ setInterval(() => {}, 1000);
         implementationPath,
         `import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { runNodeMain } from ${JSON.stringify(implementationUrl)};
+const { registerSourceRunnerServiceFixture } = await import(${JSON.stringify(pathToFileURL(path.resolve("test/scripts/fixtures/source-runner-service.mjs")).href)});
+registerSourceRunnerServiceFixture(${JSON.stringify(process.cwd())});
+const { runNodeMain } = await import(${JSON.stringify(implementationUrl)});
 fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, String(process.ppid));
 const outcome = await runNodeMain({
   cwd: ${JSON.stringify(checkoutRoot)},

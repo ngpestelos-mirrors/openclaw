@@ -18,6 +18,11 @@ const coordinatedStateTransactions = resolveGlobalSingleton(
   () => new WeakSet<DatabaseSync>(),
 );
 
+/** Only the transaction owner may lend uncommitted current-authority rows. */
+export function isCoordinatedStateTransaction(database: DatabaseSync): boolean {
+  return database.isTransaction && coordinatedStateTransactions.has(database);
+}
+
 export function withSharedStateWriteCoordinator<T>(
   params: {
     databasePath: string;

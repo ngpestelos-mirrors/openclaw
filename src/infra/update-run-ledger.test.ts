@@ -21,7 +21,7 @@ import type { UpdateRunRecord } from "./update-run-record.js";
 import { renderUpdateRunReport } from "./update-run-report.js";
 import { UpdateRunRecordSchema } from "./update-run-schema.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
+import type { UpdateStepResult } from "./update-step-result.js";
 
 const tempDirs = createTempDirTracker();
 
@@ -438,6 +438,7 @@ describe("update run ledger", () => {
         "previous generation restoration",
         "finalize:doctor",
         "finalize:future-phase",
+        "finalize:predecessor-stop:1758600000000:1000:631:0123456789abcdef",
         "post-update verification",
       ];
       for (const step of [...UPDATE_RUN_PHASES, ...notices]) {

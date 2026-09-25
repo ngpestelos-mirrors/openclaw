@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -11,11 +11,15 @@ import {
   diagnosticEnvReportScript,
   withSyntheticDiagnosticEnv,
 } from "./diagnostic-env.test-support.js";
-import { readActiveGatewayLockIdentity } from "./gateway-lock.js";
 import { cleanStaleGatewayProcessesSync, findGatewayPidsOnPortSync } from "./restart-stale-pids.js";
 import { spawnPsSync } from "./spawn-ps.js";
 
-const mocks = vi.hoisted(() => ({ exec: vi.fn(), spawn: vi.fn(), probe: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  exec: vi.fn(),
+  spawn: vi.fn(),
+  probe: vi.fn(),
+  darwinCommand: vi.fn(),
+}));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   execFileSync: mocks.exec,
@@ -23,6 +27,9 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 vi.mock("./ports-lsof.js", () => ({ resolveLsofCommandSync: () => "lsof" }));
 vi.mock("./ports-probe.js", () => ({ probePortUsage: mocks.probe }));
+vi.mock("../process/supervisor/darwin-process-command.js", () => ({
+  readDarwinProcessCommand: mocks.darwinCommand,
+}));
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -33,7 +40,6 @@ it.each([
   "shared ps",
   "restart scan",
   "restart poll",
-  "lock argv",
   "CLI lsof",
   "CLI netstat",
   "CLI fuser",
@@ -51,6 +57,9 @@ it.each([
   });
   vi.spyOn(process, "platform", "get").mockReturnValue(
     surface === "CLI netstat" ? "win32" : surface.startsWith("CLI fuser") ? "linux" : "darwin",
+  );
+  mocks.darwinCommand.mockImplementation((pid: number) =>
+    pid === 424242 ? { argv: ["openclaw-gateway"] } : undefined,
   );
   const killMock = vi.spyOn(process, "kill").mockImplementation(() => {
     if (surface === "restart poll") {
@@ -121,19 +130,6 @@ it.each([
       } else if (surface === "restart poll") {
         expect(cleanStaleGatewayProcessesSync(43123)).toEqual([]);
         expect(lsofCalls).toBe(2);
-      } else if (surface === "lock argv") {
-        await writeFile(
-          path.join(root, "gateway.state.lock"),
-          JSON.stringify({
-            pid: 424242,
-            port: 43123,
-            createdAt: "2026-09-03T00:00:00Z",
-            configPath: path.join(root, "openclaw.json"),
-          }),
-        );
-        expect(
-          await readActiveGatewayLockIdentity({ lockDir: root, env: { OPENCLAW_STATE_DIR: root } }),
-        ).toMatchObject({ pid: 424242, port: 43123 });
       } else if (surface.startsWith("CLI fuser")) {
         mocks.probe.mockResolvedValue("busy");
         const beforeSignal = vi.fn();

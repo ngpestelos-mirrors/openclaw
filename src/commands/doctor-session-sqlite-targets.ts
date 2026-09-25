@@ -12,6 +12,7 @@ import {
   type SessionStoreTarget as ResolvedSessionStoreTarget,
 } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { hasOrphanedSqliteSidecars } from "../infra/sqlite-files.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { createRetainedAgentDatabaseMatcher } from "../state/agent-deletion-discovery.js";
 import type { HistoricalArchiveSources } from "./doctor-session-sqlite-discovery.js";
@@ -80,10 +81,14 @@ export function resolveDoctorSessionSqliteTargets(params: {
       },
     );
     return targets
-      .filter(
-        ({ target, sqlitePath }) =>
-          !isRetained(target.storePath, target.agentId) && !isRetained(sqlitePath, target.agentId),
-      )
+      .filter(({ target, sqlitePath }) => {
+        const orphanedSidecars = hasOrphanedSqliteSidecars(sqlitePath);
+        return [target.storePath, sqlitePath].every((pathname) => {
+          const disposition = isRetained(pathname, target.agentId);
+          // Unknown history is not a deletion; an incomplete SQLite family still needs recovery.
+          return !disposition || (disposition === "unavailable" && !orphanedSidecars);
+        });
+      })
       .map(({ target }) => target);
   }
   return resolveSessionStoreTargets(params.cfg, {}, { env: params.env });

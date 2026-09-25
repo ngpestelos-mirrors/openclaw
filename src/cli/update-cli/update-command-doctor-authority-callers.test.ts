@@ -262,6 +262,7 @@ describe("unproved Doctor authority callers", () => {
       vi.spyOn(os, "tmpdir").mockReturnValue(state.path("phase-artifacts"));
       let restored = false;
       const maintenance = vi.spyOn(doctorMaintenance, "beginDoctorMaintenance").mockResolvedValue({
+        signal: new AbortController().signal,
         run: (operation) => operation(),
         releaseState: async () => {},
         release: async () => {},

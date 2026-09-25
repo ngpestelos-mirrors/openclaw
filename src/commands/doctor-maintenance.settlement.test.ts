@@ -11,6 +11,7 @@ import type { GatewayService, readGatewayServiceState } from "../daemon/service.
 import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
 import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
 import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
+import { DoctorStateMigrationRefusalError } from "../infra/state-migrations.messages.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
 import {
   collectUpdateDoctorFailureFacts,
@@ -23,13 +24,12 @@ import { projectPublicUpdateFailureIdentifiers } from "../infra/update-failure-p
 import type { recordUpdateRunStep, finishUpdateRun } from "../infra/update-run-ledger.js";
 import { redactPublicSupportDiagnosticLine } from "../logging/diagnostic-support-redaction.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
-import { resolveCommandProcessSignal, retainCommandProcessCleanup } from "../process/exec-spawn.js";
 import { defaultRuntime } from "../runtime.js";
-import { createDeferredCore } from "../shared/deferred.js";
 import {
   OpenClawAgentDatabaseLeaseActiveError,
   type readActiveOpenClawAgentDatabaseLeasesReadOnly,
 } from "../state/openclaw-agent-db-lease.js";
+import { cleanupBarrier } from "./doctor-maintenance-cleanup.test-support.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 
 const boundary = vi.hoisted(() => ({
@@ -134,6 +134,7 @@ vi.mock("../state/openclaw-agent-db-lease.js", async (importOriginal) => ({
 }));
 vi.mock("../state/openclaw-database-preflight.js", () => ({
   preflightOpenClawDatabaseSchemas: boundary.schemas,
+  assertOpenClawDatabasesReady: async () => {},
 }));
 vi.mock("../cli/update-cli/update-command-service-maintenance.js", () => ({
   maybeStopManagedServiceBeforeMutableUpdate: boundary.stop,
@@ -267,6 +268,25 @@ function begin() {
 }
 
 it.each([false, true])(
+  "settles failed repair before restoration (data at risk=%s)",
+  async (unsafe) => {
+    const maintenance = await begin();
+    const failure = unsafe
+      ? new DoctorStateMigrationRefusalError([])
+      : new Error("diagnostic failed");
+    try {
+      await maintenance!.finish(undefined, undefined, failure);
+      expect(boundary.restart).toHaveBeenCalledTimes(unsafe ? 0 : 1);
+      expect(boundary.health).toHaveBeenCalledTimes(unsafe ? 0 : 1);
+      expect(boundary.close).toHaveBeenCalledOnce();
+      expect(boundary.resume).toHaveBeenCalledTimes(unsafe ? 0 : 1);
+    } finally {
+      await maintenance?.release();
+    }
+  },
+);
+
+it.each([false, true])(
   "checks same-installation policy before restoring Doctor's Gateway (repair activated=%s)",
   async (activated) => {
     const events: string[] = [];
@@ -331,21 +351,6 @@ it("leaves a progressing Gateway running and warns after the readiness cap", asy
   );
   expect(boundary.restart).toHaveBeenCalledOnce();
 });
-
-function cleanupBarrier() {
-  const cleanup = createDeferredCore<"forced" | "uncertain">();
-  const joining = createDeferredCore();
-  return {
-    cleanup,
-    joining: joining.promise,
-    retain() {
-      retainCommandProcessCleanup(cleanup.promise);
-      resolveCommandProcessSignal()?.addEventListener("abort", () => joining.resolve(), {
-        once: true,
-      });
-    },
-  };
-}
 
 it.each(["forced", "uncertain"] as const)(
   "joins failed maintenance admission before compensating (%s)",
@@ -1011,3 +1016,14 @@ it.each([false, true])(
     );
   },
 );
+
+it("reports an already stopped Gateway without starting it after repair", async () => {
+  boundary.stop.mockImplementation(async () => ({ ...stopped, stopped: false }));
+  const maintenance = await begin();
+  await maintenance!.finish({});
+  expect(boundary.restart).not.toHaveBeenCalled();
+  expect(boundary.health).not.toHaveBeenCalled();
+  const warning = expect.stringMatching(/already stopped before repair.*openclaw gateway start/);
+  expect(maintenance!.warnings).toContainEqual(warning);
+  expect(boundary.log).toHaveBeenCalledWith(warning);
+});

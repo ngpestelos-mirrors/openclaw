@@ -1,5 +1,4 @@
 import { lstatSync } from "node:fs";
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { listAgentIds } from "../agents/agent-scope-config.js";
@@ -7,8 +6,6 @@ import { resolveSharedMainAuthAgentDir } from "../agents/auth-profiles/shared-ma
 import { resolveInstallAgentDir } from "../agents/install-agent-dir.js";
 import {
   discardLegacyRegistryWorktrees,
-  listLegacyRegistryWorktreesForMigration,
-  listRegistryWorktreesForMigration,
   rewriteRegistryWorktreePathsForMigration,
 } from "../agents/worktrees/registry.js";
 import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
@@ -82,6 +79,10 @@ import {
   migrateLegacyDeviceIdentity,
 } from "./state-migrations.device-identity.js";
 import {
+  detectManagedWorktreeStateMigration,
+  prepareDoctorAgentDatabaseDiscovery,
+} from "./state-migrations.doctor-discovery.js";
+import {
   detectLegacyExecApprovals,
   migrateLegacyExecApprovals,
 } from "./state-migrations.exec-approvals.js";
@@ -135,6 +136,10 @@ import {
   collectPluginDoctorStateMigrationPlans,
   runPluginDoctorStateMigrationPlans,
 } from "./state-migrations.plugin-doctor.js";
+import {
+  buildPlannedPluginStateMigrationDescriptor,
+  preparePostSessionPluginMigration,
+} from "./state-migrations.plugin-plan.js";
 import {
   migrateLegacyInstalledPluginIndex,
   migrateLegacyPluginStateSidecar,
@@ -242,60 +247,6 @@ function resolveConcreteBindingAccountId(value: unknown): string | undefined {
   }
   const accountId = value.trim();
   return accountId && accountId !== "*" ? accountId : undefined;
-}
-
-async function detectManagedWorktreeStateMigration(params: {
-  env: NodeJS.ProcessEnv;
-  stateDir: string;
-  doctorOnlyStateMigrations?: boolean;
-  artifactPreservingReadOnly?: boolean;
-}): Promise<LegacyStateDetection["worktrees"]> {
-  const rawRoot = path.join(params.stateDir, "worktrees");
-  const stateEnv = { ...params.env, OPENCLAW_STATE_DIR: params.stateDir };
-  const databaseExists = migrationFileExists(resolveOpenClawStateSqlitePath(stateEnv));
-  const legacyIds =
-    params.doctorOnlyStateMigrations === true && databaseExists
-      ? listLegacyRegistryWorktreesForMigration(stateEnv, {
-          artifactPreservingReadOnly: params.artifactPreservingReadOnly,
-        }).map((worktree) => worktree.id)
-      : [];
-  const hasLegacy = legacyIds.length > 0;
-  // Detection is read-only for the doctor --lint contract. ManagedWorktreeService.worktreesRoot()
-  // owns directory creation; absent roots are canonicalized through their existing state parent.
-  let canonicalRoot: string;
-  try {
-    canonicalRoot = await fs.realpath(rawRoot);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-    try {
-      canonicalRoot = path.join(await fs.realpath(params.stateDir), "worktrees");
-    } catch (stateDirError) {
-      if ((stateDirError as NodeJS.ErrnoException).code === "ENOENT") {
-        return { hasLegacy, legacyIds, pathRewrites: [] };
-      }
-      throw stateDirError;
-    }
-  }
-  if (rawRoot === canonicalRoot || !databaseExists) {
-    return { hasLegacy, legacyIds, pathRewrites: [] };
-  }
-  const pathRewrites = listRegistryWorktreesForMigration(stateEnv, {
-    artifactPreservingReadOnly: params.artifactPreservingReadOnly,
-  }).flatMap((row) => {
-    const fromPath = path.join(rawRoot, row.repoFingerprint, row.name);
-    return row.path === fromPath
-      ? [
-          {
-            id: row.id,
-            fromPath,
-            toPath: path.join(canonicalRoot, row.repoFingerprint, row.name),
-          },
-        ]
-      : [];
-  });
-  return { hasLegacy, legacyIds, pathRewrites };
 }
 
 export async function detectLegacyStateMigrations(params: {
@@ -763,7 +714,9 @@ export async function detectLegacyStateMigrations(params: {
   const stateMigrationPreviews: Array<readonly [hasLegacy: boolean, message: string]> = [
     [
       sharedAuthStore.hasLegacy,
-      "- Shared auth store: legacy main-agent rows → shared SQLite state",
+      sharedAuthStore.held
+        ? `- Shared auth store skipped: store held: ${sharedAuthStore.sourcePath}`
+        : "- Shared auth store: legacy main-agent rows → shared SQLite state",
     ],
     [deliveryQueues.hasLegacy, "- Delivery queues: legacy JSON queue files → shared SQLite state"],
     [hasVoiceWake, "- Voice Wake settings: legacy JSON files → shared SQLite state"],
@@ -976,60 +929,6 @@ const unresolvedMigrationStepLayout = [
     scope: "all" | "doctor" | "automatic" | "doctor-agent" | "agent",
   ]
 >;
-
-type PlannedPluginStateMigrationDescriptor = {
-  actions: PluginDoctorStateMigrationInventory["descriptors"];
-  source: LegacyStateMigrationEndpoint[];
-  target: LegacyStateMigrationEndpoint[];
-  requiredness: PreparedLegacyStateMigrationStep["requiredness"];
-  refusal?: PreparedLegacyStateMigrationStep["refusal"];
-};
-
-function buildPlannedPluginStateMigrationDescriptor(params: {
-  inventory: PluginDoctorStateMigrationInventory;
-  mode: LegacyStateMigrationMode;
-  phase?: "after-session-repair";
-}): PlannedPluginStateMigrationDescriptor {
-  const actions = params.inventory.descriptors.filter(
-    (descriptor) =>
-      descriptor.phase === params.phase &&
-      (params.mode === "doctor" || descriptor.doctorOnly !== true),
-  );
-  const unresolvedPluginIds = params.inventory.unresolvedPluginIds;
-  const source = [
-    ...actions.map((descriptor) => ({
-      kind: "owner" as const,
-      id: `plugin:${descriptor.pluginId}:${descriptor.id}`,
-    })),
-    ...unresolvedPluginIds.map((pluginId) => ({
-      kind: "owner" as const,
-      id: `plugin:${pluginId}:state-migrations`,
-    })),
-  ];
-  const target = [
-    ...new Set([...actions.map((descriptor) => descriptor.pluginId), ...unresolvedPluginIds]),
-  ].map((pluginId) => ({
-    kind: "owner" as const,
-    id: `plugin:${pluginId}:doctor-state`,
-  }));
-  return {
-    actions,
-    source,
-    target,
-    requiredness:
-      source.length > 0 || params.inventory.resolutionFailure ? "conditional" : "not-required",
-    ...(params.inventory.resolutionFailure
-      ? { refusal: params.inventory.resolutionFailure }
-      : unresolvedPluginIds.length > 0
-        ? {
-            refusal: {
-              code: "plugin-planning-deferred",
-              message: `Plugin migration identities are not declared for: ${unresolvedPluginIds.join(", ")}.`,
-            },
-          }
-        : {}),
-  };
-}
 
 function buildUnresolvedBlockedMigrationSteps(params: {
   mode: LegacyStateMigrationMode;
@@ -1386,11 +1285,10 @@ function buildLegacyStateMigrationSteps(
         mode: pluginMigrationMode,
       })
     : undefined;
-  const plannedPostSessionPluginDescriptor = params.pluginStateMigrationInventory
-    ? buildPlannedPluginStateMigrationDescriptor({
+  const plannedPostSessionPluginMigration = params.pluginStateMigrationInventory
+    ? preparePostSessionPluginMigration({
         inventory: params.pluginStateMigrationInventory,
         mode: pluginMigrationMode,
-        phase: "after-session-repair",
       })
     : undefined;
   const pluginMigrationSources = plannedPluginDescriptor
@@ -1569,11 +1467,6 @@ function buildLegacyStateMigrationSteps(
       pluginMigrationSources,
       plannedPluginDescriptor?.requiredness ?? detected.pluginPlans?.hasLegacy === true,
       pluginMigrationTargets,
-    ],
-    "plugin-doctor-post-session-state": [
-      plannedPostSessionPluginDescriptor?.source ?? [],
-      plannedPostSessionPluginDescriptor?.requiredness ?? false,
-      plannedPostSessionPluginDescriptor?.target ?? [],
     ],
     sessions: [
       pathEndpoints(detected.sessions.legacyDir, detected.sessions.legacyStorePath),
@@ -1835,6 +1728,7 @@ function buildLegacyStateMigrationSteps(
               detected,
               config: params.config,
               env,
+              inventory: params.pluginStateMigrationInventory,
               ...(plannedPluginDescriptor
                 ? {
                     plannedActions: plannedPluginDescriptor.actions.map((action) => ({
@@ -1902,28 +1796,18 @@ function buildLegacyStateMigrationSteps(
   }
   if (
     isDoctor &&
-    plannedPostSessionPluginDescriptor &&
+    plannedPostSessionPluginMigration &&
     params.deferPostSessionPluginMigrations !== false
   ) {
-    finalSteps.push(
-      finalStep(
-        "plugin-doctor-post-session-state",
-        () => ({ changes: [], warnings: [] }),
-        true,
-        plannedPostSessionPluginDescriptor.refusal,
-      ),
-    );
-    const step = finalSteps.at(-1);
-    if (!step || step.id !== "plugin-doctor-post-session-state") {
-      throw new Error("legacy state migration plan is missing its post-session plugin step");
-    }
-    step.deferredExecution = {
-      kind: "post-session-plugin",
-      plannedActions: plannedPostSessionPluginDescriptor.actions.map(({ pluginId, id }) => ({
-        pluginId,
-        id,
-      })),
-    };
+    finalSteps.push({
+      ...plannedPostSessionPluginMigration.step,
+      run: () => ({ changes: [], warnings: [] }),
+      collectNotices: true,
+      deferredExecution: {
+        kind: "post-session-plugin",
+        migration: plannedPostSessionPluginMigration,
+      },
+    });
   }
 
   return [
@@ -2946,6 +2830,7 @@ async function executeLegacyStateMigrations(
     autoMigrateChecked.add(`${path.resolve(stateDir)}\0${mode}`);
   }
   const stateEnv = { ...env, OPENCLAW_STATE_DIR: stateDir };
+  let agentDatabaseMigrationDiscovery = params.agentDatabaseMigrationDiscovery;
   const stateSchemaOptions = { env: stateEnv };
   const configPath = resolveConfigPath(env, stateDir, homedir);
   let agentDatabaseTargets: Array<{ agentId: string; path: string }> = [];
@@ -3011,7 +2896,7 @@ async function executeLegacyStateMigrations(
       env,
       homedir,
       agentDatabaseTargets,
-      agentDatabaseMigrationDiscovery: params.agentDatabaseMigrationDiscovery,
+      agentDatabaseMigrationDiscovery,
       orphanSessionStores: overrides?.orphanSessionStores,
       pluginSessionStoreAgentIds:
         overrides?.pluginSessionStoreAgentIds ?? pluginSessionStoreAgentIds,
@@ -3138,11 +3023,15 @@ async function executeLegacyStateMigrations(
     configIncludedPaths,
     stateDir,
     env,
-    run: () => {
+    run: async () => {
       try {
+        agentDatabaseMigrationDiscovery ??= await prepareDoctorAgentDatabaseDiscovery(
+          params.cfg,
+          stateEnv,
+        );
         agentDatabaseTargets = hasCustomAgentDirOverride(env)
           ? []
-          : resolveConfiguredAgentDatabaseTargets(params.cfg, { env: stateEnv });
+          : [...(agentDatabaseMigrationDiscovery?.configuredAgentDatabaseTargets ?? [])];
         return { changes: [], warnings: [] };
       } catch (error) {
         if (mode === "automatic") {
@@ -3727,10 +3616,7 @@ async function executeLegacyStateMigrations(
     ],
     ...(deferredPostSessionStep?.deferredExecution
       ? {
-          postSessionPluginMigration: {
-            step: migrationStepPlan(deferredPostSessionStep),
-            plannedActions: deferredPostSessionStep.deferredExecution.plannedActions,
-          },
+          postSessionPluginMigration: deferredPostSessionStep.deferredExecution.migration,
         }
       : {}),
     ...(notices.length > 0 ? { notices } : {}),

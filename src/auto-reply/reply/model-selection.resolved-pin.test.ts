@@ -326,8 +326,14 @@ test.each<SelectionCase>([
           parentSessionKey: fixture.inherited ? parentSessionKey : undefined,
           defaultProvider: "custom",
           defaultModel: "default",
-          provider: "custom",
-          model: fixture.oneTurn ? "once" : fixture.heartbeat ? "heartbeat" : "default",
+          provider: fixture.inherited ? provider : "custom",
+          model: fixture.oneTurn
+            ? "once"
+            : fixture.heartbeat
+              ? "heartbeat"
+              : fixture.inherited
+                ? fixture.pin
+                : "default",
           hasModelDirective: false,
           hasOneTurnModelOverride: fixture.oneTurn,
           isHeartbeat: fixture.heartbeat,
@@ -339,8 +345,10 @@ test.each<SelectionCase>([
           model: fixture.expected,
           resetModelOverride: fixture.disallowed === true && !fixture.inherited,
         });
-        if (fixture.disallowed && !fixture.inherited) {
+        if (fixture.disallowed) {
           expect(selection.resetModelOverrideReason).toBe("disallowed");
+        }
+        if (fixture.disallowed && !fixture.inherited) {
           expect(entry.modelOverride).toBeUndefined();
         } else {
           expect(pinnedEntry.modelOverride).toBe(fixture.pin);

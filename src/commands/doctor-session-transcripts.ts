@@ -371,7 +371,10 @@ async function noteSessionSqliteMigrationHealth(params: {
             }
           : {}),
         ...(params.postSessionPluginMigration
-          ? { plannedActions: params.postSessionPluginMigration.plannedActions }
+          ? {
+              plannedActions: params.postSessionPluginMigration.plannedActions,
+              inventory: params.postSessionPluginMigration.inventory,
+            }
           : {}),
       });
     } catch (error) {

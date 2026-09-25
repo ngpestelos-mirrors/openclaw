@@ -86,6 +86,7 @@ import {
   createCurrentProcessFreshDoctorFixture,
   writeJsonFixture,
   writeOpenClawPackageFixture,
+  writeGitUpdateResultFixture,
   writeNpmPackageInstall,
   packageTargetStatus,
 } from "./update-cli/update-cli-package.test-support.js";
@@ -1397,11 +1398,9 @@ describe("update-cli", () => {
   const setupManagedGitRootRefresh = async (reinspect = false) => {
     const { root, entrypoints } = setupUpdatedRootRefresh();
     const updatedEntrypoint = requireValue(entrypoints[0], "updated entrypoint");
-    await writeOpenClawPackageFixture(root, VERSION, { entryPath: updatedEntrypoint });
     mockOwnedGitService();
     mockGitUpdateAfterMutation(
-      makeOkUpdateResult({
-        mode: "git",
+      await writeGitUpdateResultFixture({
         root,
         before: { sha: "old-managed-sha", version: "2026.4.26" },
         after: { sha: "new-managed-sha", version: VERSION },
@@ -2139,7 +2138,6 @@ describe("update-cli", () => {
   );
 
   it.each([
-    { kind: "git", restart: false, capability: "sealed" },
     { kind: "git", restart: true, capability: "sealed" },
     { kind: "package", restart: false, capability: "sealed" },
     { kind: "package", restart: true, capability: "sealed" },
@@ -2581,8 +2579,7 @@ describe("update-cli", () => {
       entrySource: "export {};\n",
     });
     mockGitUpdateAfterMutation(
-      makeOkUpdateResult({
-        mode: "git",
+      await writeGitUpdateResultFixture({
         root,
         before: { sha: "old-caller-sha", version: "2026.4.26" },
         after: { sha: "new-caller-sha", version: VERSION },
@@ -3396,9 +3393,8 @@ describe("update-cli", () => {
 
   it("respawns into the updated git root before requested channel persistence", async () => {
     const { entrypoints } = setupUpdatedRootRefresh({
-      gatewayUpdateImpl: async (root) =>
-        makeOkUpdateResult({
-          mode: "git",
+      gatewayUpdateImpl: (root) =>
+        writeGitUpdateResultFixture({
           root,
           before: { sha: "old-sha", version: "2026.4.26" },
           after: { sha: "new-sha", version: VERSION },
@@ -3426,9 +3422,8 @@ describe("update-cli", () => {
 
   it("carries explicit capability consent into post-core plugin convergence", async () => {
     const { entrypoints } = setupUpdatedRootRefresh({
-      gatewayUpdateImpl: async (root) =>
-        makeOkUpdateResult({
-          mode: "git",
+      gatewayUpdateImpl: (root) =>
+        writeGitUpdateResultFixture({
           root,
           before: { sha: "old-sha", version: "2026.4.26" },
           after: { sha: "new-sha", version: VERSION },
@@ -3731,7 +3726,10 @@ describe("update-cli", () => {
   it("runs updated plugin migrations for a plugin-only current-process update", async () => {
     // This path exercises delegated Doctor ownership, independent of repository build artifacts.
     vi.spyOn(doctorChild, "inspectUpdateDoctorChildSupport").mockResolvedValue(true);
-    mockGitUpdateAfterMutation(makeOkUpdateResult({ after: { version: VERSION } }));
+    readPackageVersion.mockResolvedValue(VERSION);
+    vi.mocked(updateGitCheckout).mockResolvedValue(
+      runtimeRecovery.currentGitCoreFixture(process.cwd(), VERSION).outcome,
+    );
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
       "/tmp/openclaw-updated-entry.mjs",
     );
@@ -12652,21 +12650,21 @@ describe("update-cli", () => {
       },
     },
     {
-      name: "skips service env refresh when --no-restart is set",
+      name: "refuses a running Git installation with --no-restart",
       run: async () => {
         mockGitUpdateAfterMutation();
         serviceLoaded.mockResolvedValue(true);
         mockOwnedGitService();
 
-        await updateCommand({ restart: false });
+        await expect(updateCommand({ restart: false })).rejects.toEqual(new ExitError(1));
       },
       assert: () => {
-        expectNoSideEffects(runDaemonInstall, runRestartScript, runDaemonRestart);
+        expectNoSideEffects(runDaemonInstall, runRestartScript, runDaemonRestart, serviceStop);
         expect(freshRestartCalls()).toEqual([]);
         expect(
           gatewayCommandCall(path.join(process.cwd(), "dist", "index.js"), "install"),
         ).toBeUndefined();
-        expect(getLogOutput()).toContain("Gateway: restart skipped (--no-restart).");
+        expect(getErrorOutput()).toContain("still running");
       },
     },
     {

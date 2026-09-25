@@ -1,8 +1,10 @@
 // Install service observations before loading the real native stop owner.
 import "./update-command-service-maintenance.test-support.js";
+import "./update-command-service-maintenance-native.test-support.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { PassThrough } from "node:stream";
 import { expect, it, vi } from "vitest";
 import * as launchdExec from "../../daemon/launchd-exec.js";
@@ -12,13 +14,17 @@ import { createMockGatewayService } from "../../daemon/service.test-helpers.js";
 import * as ports from "../../infra/ports-inspect.js";
 import * as ancestry from "../../infra/restart-stale-pids.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
-import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
+import {
+  createManagedHandoffLeaseStore,
+  resolveManagedUpdateLeaseDatabasePath,
+} from "../../infra/update-managed-service-handoff-lease.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
 import * as pidAlive from "../../shared/pid-alive.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
-import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
 
+const { runNativeMaintenanceUpdate } =
+  await import("./update-command-service-maintenance-native.test-support.js");
 const { mocks, withServiceHome } =
   await import("./update-command-service-maintenance.test-support.js");
 
@@ -55,6 +61,27 @@ it
       expect(store.release(claim.lease)).toBe(true);
     }
     mockProcessPlatform("darwin");
+    if (scenario === "activation helper" || scenario === "revoked at native stop") {
+      // The real updater adopts an executor transferred by a distinct live helper.
+      const helperStart = pidAlive.getFileLockProcessStartTime(process.ppid);
+      expect(helperStart).not.toBeNull();
+      const leaseDb = new DatabaseSync(resolveManagedUpdateLeaseDatabasePath());
+      try {
+        leaseDb
+          .prepare("UPDATE managed_update_handoffs SET payload_json=? WHERE install_root=?")
+          .run(
+            JSON.stringify({
+              version: 2,
+              helper: { pid: process.ppid, startIdentity: String(helperStart) },
+              executor: claim.lease.executor,
+              action: { kind: "update" },
+            }),
+            root,
+          );
+      } finally {
+        leaseDb.close();
+      }
+    }
     vi.spyOn(ancestry, "getSelfAndAncestorPidsSync").mockReturnValue(
       new Set([process.pid, process.ppid, gatewayPid]),
     );
@@ -92,7 +119,18 @@ it
             (scenario === "revoked after inspection" ||
               scenario === "revoked after inspection with disable"))
         ) {
-          expect(store.release(claim.lease)).toBe(true);
+          if (scenario === "revoked at native stop") {
+            const leaseDb = new DatabaseSync(resolveManagedUpdateLeaseDatabasePath());
+            try {
+              leaseDb
+                .prepare("UPDATE managed_update_handoffs SET owner=? WHERE install_root=?")
+                .run("revoked-native-owner", root);
+            } finally {
+              leaseDb.close();
+            }
+          } else {
+            expect(store.release(claim.lease)).toBe(true);
+          }
         }
         return loaded
           ? {
@@ -147,21 +185,16 @@ it
         };
         const stop = () =>
           scenario === "activation helper" || scenario === "revoked at native stop"
-            ? maybeStopManagedServiceBeforeMutableUpdate({
-                root,
-                updateInstallKind: "package",
-                shouldRestart: true,
-                jsonMode: true,
-                phase: "prepare",
-                updateRun: { runId, env: process.env },
-              }).then((result) => expect(result.stopped).toBe(true))
+            ? runNativeMaintenanceUpdate(root, runId, claim.lease.owner)
             : stopLaunchAgent(nativeArgs);
         const authorized = scenario === "direct helper" || scenario === "activation helper";
         if (authorized) {
           await stop();
         } else {
           await expect(stop()).rejects.toThrow(
-            `Refusing to stop LaunchAgent ${label} from inside the same launchd service`,
+            scenario === "revoked at native stop"
+              ? /Update executor ownership is no longer current/
+              : `Refusing to stop LaunchAgent ${label} from inside the same launchd service`,
           );
         }
         const target = `${launchdRuntime.resolveLaunchAgentGuiDomain()}/${label}`;

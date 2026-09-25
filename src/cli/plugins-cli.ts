@@ -4,6 +4,7 @@ import { formatDocsLink } from "../../packages/terminal-core/src/links.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import type { PluginInspectOptions } from "./plugins-inspect-command.js";
 import type { PluginsListOptions } from "./plugins-list-command.js";
+import type { PluginsReloadOptions } from "./plugins-reload-command.js";
 import { parseStrictPositiveIntOption } from "./program/helpers.js";
 import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
 
@@ -158,8 +159,8 @@ export function registerPluginsCli(program: Command) {
     .argument("<ids...>", "Plugin ids")
     .option("--accept-capabilities", "Accept changed declared capabilities", false)
     .option("--json", "Print the applied runtime generation", false)
-    .action(async (ids: string[], opts: { json?: boolean; acceptCapabilities?: boolean }) => {
-      const { runPluginsReloadCommand } = await loadPluginsRuntime();
+    .action(async (ids: string[], opts: PluginsReloadOptions) => {
+      const { runPluginsReloadCommand } = await import("./plugins-reload-command.js");
       await runPluginsReloadCommand(ids, opts);
     });
 

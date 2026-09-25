@@ -322,6 +322,9 @@ async function updateFinalizeCommandInternal(
     const owned = maintenance;
     maintenance = undefined;
     await owned?.finish(cfg);
+    if (owned?.warnings?.length) {
+      onDoctorWarnings(owned.warnings);
+    }
   };
   let outcome: { complete: () => Promise<void> } | { error: unknown };
   try {

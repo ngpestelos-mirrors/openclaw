@@ -33,6 +33,13 @@ import { TSDOWN_UNIFIED_CONFIG_GROUP } from "../../scripts/lib/tsdown-config-gro
 import { runNodeMain } from "../../scripts/run-node.mts";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 
+vi.mock("../../src/cli/update-cli/update-command-service-publication.js", () => ({
+  withGatewayRuntimeArtifactPublication: async (
+    _params: unknown,
+    publish: () => Promise<unknown>,
+  ) => publish(),
+}));
+
 const testNodeExecPath = resolveTestNodeExecPath();
 
 function getBuildAllStep(label: string) {
@@ -852,6 +859,7 @@ describe("resolveBuildAllSteps", () => {
       const cwd = fs.realpathSync(
         fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-source-rebuild-")),
       );
+      fs.mkdirSync(path.join(cwd, ".git"));
       const childEnv = {
         OPENCLAW_BUILD_PRIVATE_QA: "1",
         OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: skipDts,
@@ -875,7 +883,13 @@ describe("resolveBuildAllSteps", () => {
           }),
         ).toBe(0);
         expect(spawn.mock.calls.map(([, args]) => args)).toEqual([
-          ["--import", "tsx", "scripts/build-all.mts", "qaRuntime"],
+          [
+            "--import",
+            expect.stringMatching(/\/scripts\/tsx\.mjs$/),
+            expect.stringMatching(/[\\/]scripts[\\/]lib[\\/]dist-artifact-ownership\.mts$/),
+            expect.stringMatching(/\/scripts\/build-all\.mts$/),
+            "qaRuntime",
+          ],
           ["openclaw.mjs", "status"],
         ]);
         const env = spawn.mock.calls[0]![2].env!;

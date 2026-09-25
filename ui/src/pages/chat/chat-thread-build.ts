@@ -70,6 +70,7 @@ import {
   optionalBoundaryIdentity,
   optionalRunIdentity,
   resolveRunInsertionBounds,
+  transcriptRunId,
 } from "./chat-thread-run-identity.ts";
 import { coalesceToolActivityMessages } from "./chat-tool-activity-coalesce.ts";
 import { safeNormalizeMessage } from "./chat-turn-boundary.ts";
@@ -138,11 +139,31 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
       preview: extractChatMessagePreview(item.message),
     };
   });
+  const queuedSends = props.queue ?? [];
+  const segments = props.streamSegments;
+  let progress: ReturnType<typeof resolveWorkingProgress> | null = null;
+  const resolveProgress = () =>
+    (progress ??= resolveWorkingProgress(
+      props.sessionKey,
+      props.runId ?? null,
+      props.streamStartedAt,
+      queuedSends,
+      segments,
+      tools,
+    ));
+  // Retention and live status share the same explicit or inferred run ownership.
+  const activeCommentaryRunId =
+    props.persistCommentary === false && (props.runWorking || props.runActive)
+      ? normalizeOptionalString(resolveProgress().runId)
+      : undefined;
   const history = composeTranscriptDisplay(
     props.messages.filter(
       (message) =>
         !isAssistantHeartbeatAckForDisplay(message) &&
-        (props.persistCommentary !== false || !isKeyedAssistantStreamFallbackMessage(message)),
+        (props.persistCommentary !== false ||
+          !isKeyedAssistantStreamFallbackMessage(message) ||
+          (activeCommentaryRunId !== undefined &&
+            transcriptRunId(message) === activeCommentaryRunId)),
     ),
   );
   const searchFiltering = props.searchOpen === true && Boolean(props.searchQuery?.trim());
@@ -304,7 +325,6 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
 
     items.push(item);
   }
-  const queuedSends = props.queue ?? [];
   const { queue: threadQueuedSends, pendingInputs } = selectChatInputDisplay(
     history,
     queuedSends,
@@ -465,7 +485,6 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
   items = items.filter(
     (item) => item.kind !== "message" || hasRenderableNormalizedMessage(item.message),
   );
-  const segments = props.streamSegments;
   const afterBoundaryBySegment = new Map<ChatStreamSegment, string>();
   let latestBoundaryRunId: string | undefined;
   for (const segment of segments) {
@@ -674,16 +693,6 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
   if (props.runWorking !== true && props.stream === null && !showWorkingIndicator) {
     clearWorkingProgress(props.sessionKey);
   }
-  let progress: ReturnType<typeof resolveWorkingProgress> | null = null;
-  const resolveProgress = () =>
-    (progress ??= resolveWorkingProgress(
-      props.sessionKey,
-      props.runId ?? null,
-      props.streamStartedAt,
-      queuedSends,
-      segments,
-      tools,
-    ));
   const activeTurnRunId = latestBoundaryRunId ?? normalizeOptionalString(props.runId);
   const activeTurnBounds = activeTurnRunId ? createRunTurnLookup(items)(activeTurnRunId) : null;
   const appendActiveRunItem = (item: ChatItem) => {

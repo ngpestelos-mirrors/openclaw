@@ -582,6 +582,7 @@ export async function updateGitInstall(params: {
               },
             }
           : {
+              onTransaction: params.onTransaction,
               runGitDoctor: (root, results) =>
                 runPackageUpdateDoctor({
                   ...params,
