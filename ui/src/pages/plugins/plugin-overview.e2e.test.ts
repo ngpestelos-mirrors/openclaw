@@ -263,6 +263,20 @@ describeControlUiE2e("Plugin overview", () => {
                   label: "Calendar search",
                   description: "Search previous entries.",
                   fullDescription: description,
+                  parameters: [
+                    {
+                      name: "query",
+                      required: true,
+                      type: "string",
+                      description: "Calendar search text.",
+                    },
+                    {
+                      name: "limit",
+                      required: false,
+                      type: "integer",
+                      description: "Maximum number of results.",
+                    },
+                  ],
                   source: "plugin",
                   pluginId: calendarPlugin.id,
                   defaultProfiles: [],
@@ -296,6 +310,18 @@ describeControlUiE2e("Plugin overview", () => {
       await page.getByRole("button", { name: /calendar_search/ }).click();
       await page.getByRole("dialog", { name: "calendar_search" }).waitFor();
       expect(await page.locator(".plugin-tool-preview p").textContent()).toBe(description);
+      const inputs = page.locator(".plugin-tool-preview__parameters");
+      expect(await inputs.locator("dt code").allTextContents()).toEqual(["query", "limit"]);
+      expect(await inputs.locator("dt span").allTextContents()).toEqual([
+        "Required",
+        "string",
+        "Optional",
+        "integer",
+      ]);
+      expect(await inputs.locator("dd").allTextContents()).toEqual([
+        "Calendar search text.",
+        "Maximum number of results.",
+      ]);
       await captureScreenshot(page, "overview-tool.png", "viewport");
       await page.setViewportSize({ width: 393, height: 852 });
       const modalBounds = await page.locator(".plugin-tool-preview").boundingBox();

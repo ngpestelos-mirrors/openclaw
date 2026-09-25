@@ -1,4 +1,5 @@
 // Gateway RPC handler for the tool catalog shown by clients and Control UI.
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   type ToolsCatalogResult,
@@ -30,6 +31,7 @@ type ToolCatalogEntry = {
   label: string;
   description: string;
   fullDescription?: string;
+  parameters?: Array<{ name: string; required: boolean; type?: string; description?: string }>;
   source: "core" | "plugin";
   pluginId?: string;
   optional?: boolean;
@@ -37,6 +39,28 @@ type ToolCatalogEntry = {
   tags?: string[];
   defaultProfiles: Array<"minimal" | "coding" | "messaging" | "full">;
 };
+
+function summarizeToolParameters(schema: unknown): ToolCatalogEntry["parameters"] {
+  if (!isRecord(schema) || schema.type !== "object" || !isRecord(schema.properties)) {
+    return undefined;
+  }
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  return Object.entries(schema.properties)
+    .filter(([name]) => name.length > 0)
+    .map(([name, property]) => {
+      const parameter: NonNullable<ToolCatalogEntry["parameters"]>[number] = {
+        name,
+        required: required.has(name),
+      };
+      if (isRecord(property)) {
+        parameter.type = normalizeOptionalString(property.type);
+        if (typeof property.description === "string") {
+          parameter.description = property.description;
+        }
+      }
+      return parameter;
+    });
+}
 
 type ToolCatalogGroup = {
   id: string;
@@ -125,6 +149,7 @@ function buildPluginGroups(params: {
     const ownedMetadata = meta?.pluginId
       ? pluginToolMetadata.get(buildPluginToolMetadataKey(meta.pluginId, tool.name))
       : undefined;
+    const parameters = summarizeToolParameters(tool.parameters);
     existing.tools.push({
       id: tool.name,
       label:
@@ -140,6 +165,7 @@ function buildPluginGroups(params: {
       fullDescription:
         ownedMetadata?.description ??
         (typeof tool.description === "string" ? tool.description : undefined),
+      ...(parameters?.length ? { parameters } : {}),
       source: "plugin",
       pluginId,
       optional: meta?.optional,
