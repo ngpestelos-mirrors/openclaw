@@ -15,7 +15,6 @@ export type NormalizedPluginsConfig = {
   slots: {
     memory?: string | null;
     contextEngine?: string | null;
-    supervisorGuidance?: string | null;
   };
   entries: Record<
     string,
@@ -225,7 +224,6 @@ export function normalizePluginsConfigWithResolverCore(
     slots: {
       memory: memorySlot.kind === "off" ? null : memorySlot.pluginId,
       contextEngine: normalizeSlotValue(config?.slots?.contextEngine),
-      supervisorGuidance: normalizeSlotValue(config?.slots?.supervisorGuidance),
     },
     entries: normalizePluginEntries(config?.entries, normalizePluginId),
   };
