@@ -442,7 +442,7 @@ exec ${shellQuote(realGit)} "$@"
         `process.on("message", (message) => {
   if (message === "still-held") process.send({ pid: process.pid, cwd: process.cwd() });
 });
-console.log("held"); setInterval(() => {}, 1000)`,
+console.log("held");`,
       ],
       {
         cwd: f.legacy,
