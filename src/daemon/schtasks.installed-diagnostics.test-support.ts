@@ -72,7 +72,7 @@ export async function inspectDisabledDiscoveryTasks(params: {
   const { buildTaskScript } = await import("./schtasks-layout.js");
   const { encodeWindowsLauncherScript } = await import("../infra/windows-launcher-encoding.js");
   const { probeScheduledTaskExists } = await import("./schtasks-state-probe.js");
-  const { readTaskXml, readTaskPrincipal } =
+  const { disableScheduledTaskXmlForFixture, readTaskXml, readTaskPrincipal } =
     await import("./schtasks.integration-observation.test-support.js");
   const { readGatewayServiceState, resolveGatewayService } = await import("./service.js");
   const selectedXml = await readTaskXml(selected.taskName);
@@ -197,17 +197,12 @@ export async function inspectDisabledDiscoveryTasks(params: {
         role === "direct" && argv
           ? `<Command>${escapeXml(process.execPath)}</Command><Arguments>${escapeXml(argumentsText ?? "")}</Arguments><WorkingDirectory>${escapeXml(fixtureRoot)}</WorkingDirectory>`
           : `<Command>${escapeXml(scriptPath)}</Command>`;
-      const definition: string = selectedXml
+      const definition: string = disableScheduledTaskXmlForFixture(selectedXml)
         .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")
         .replace(/<WorkingDirectory>[\s\S]*?<\/WorkingDirectory>/u, argv ? "" : "$&")
         .replace(command[0], action)
         .replace(/<Triggers>[\s\S]*?<\/Triggers>/u, "<Triggers />")
-        .replace(/<URI>[^<]*<\/URI>/u, `<URI>\\${taskName}</URI>`)
-        .replaceAll("<Enabled>true</Enabled>", "<Enabled>false</Enabled>")
-        .replace(
-          "<AllowStartOnDemand>true</AllowStartOnDemand>",
-          "<AllowStartOnDemand>false</AllowStartOnDemand>",
-        );
+        .replace(/<URI>[^<]*<\/URI>/u, `<URI>\\${taskName}</URI>`);
       assert.ok(definition.includes("<Triggers />"));
       assert.ok(definition.includes("<AllowStartOnDemand>false</AllowStartOnDemand>"));
       const definitionPath = path.join(fixtureRoot, "task.xml");

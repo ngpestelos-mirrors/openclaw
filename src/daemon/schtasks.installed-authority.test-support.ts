@@ -11,7 +11,6 @@ import {
 import { GatewayServiceUpdateOwnershipError } from "../cli/update-cli/update-command-service-plan.js";
 import {
   resumeScheduledTaskAutoStartAfterUpdate,
-  setScheduledTaskXmlEnabled,
   suspendScheduledTaskAutoStartForUpdate,
 } from "./schtasks-control.js";
 import { execSchtasks } from "./schtasks-exec.js";
@@ -24,6 +23,8 @@ import { readScheduledTaskRuntime } from "./schtasks-runtime.js";
 import type { InstalledTask } from "./schtasks.installed-diagnostics.test-support.js";
 import { entry, packageRoot } from "./schtasks.installed-package.test-support.js";
 import {
+  disableScheduledTaskXmlForFixture,
+  normalizeScheduledTaskXmlEnabledForFixture,
   readRelatedProcessDiagnostics,
   readTaskPrincipal,
   readTaskXml,
@@ -117,15 +118,11 @@ export async function inspectInstalledTaskAuthority(params: {
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
-    const xml = setScheduledTaskXmlEnabled(originalXml, false)
+    const xml = disableScheduledTaskXmlForFixture(originalXml)
       .replace(/<Arguments>[\s\S]*?<\/Arguments>/u, "")
       .replace(/<WorkingDirectory>[\s\S]*?<\/WorkingDirectory>/u, "")
       .replace(command[0], `<Command>${escaped}</Command>`)
-      .replace(/<Triggers>[\s\S]*?<\/Triggers>/u, "<Triggers />")
-      .replace(
-        "<AllowStartOnDemand>true</AllowStartOnDemand>",
-        "<AllowStartOnDemand>false</AllowStartOnDemand>",
-      );
+      .replace(/<Triggers>[\s\S]*?<\/Triggers>/u, "<Triggers />");
     assert.ok(xml.includes("<Triggers />"));
     assert.ok(xml.includes("<AllowStartOnDemand>false</AllowStartOnDemand>"));
     await fs.writeFile(definitionPath, `\uFEFF${xml}`, "utf16le");
@@ -193,7 +190,10 @@ export async function inspectInstalledTaskAuthority(params: {
       assert.equal(enabled.taskState, 3);
       assert.equal(enabled.lastRunTime, disabled.lastRunTime);
       assert.equal(enabled.lastTaskResult, disabled.lastTaskResult);
-      assert.equal(enabled.xml, setScheduledTaskXmlEnabled(disabled.xml, true));
+      assert.equal(
+        normalizeScheduledTaskXmlEnabledForFixture(enabled.xml),
+        normalizeScheduledTaskXmlEnabledForFixture(disabled.xml),
+      );
       assert.equal(
         await suspendScheduledTaskAutoStartForUpdate(task.env, controlOptions(admitted)),
         true,
