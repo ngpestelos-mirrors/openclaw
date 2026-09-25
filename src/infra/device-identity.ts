@@ -66,14 +66,11 @@ export function loadOrCreateProcessDeviceIdentity(
   const { databasePath, identityKey } = resolveDeviceIdentityStore(options);
   const cacheKey = `${databasePath}\0${identityKey}`;
   const cached = readProcessDeviceIdentity(cacheKey);
+  // A process-stable identity needs no database admission on a warm read.
   if (cached) {
     return cached;
   }
-  const identity = loadOrCreateDeviceIdentity({
-    ...options,
-    path: databasePath,
-    identityKey,
-  });
+  const identity = loadOrCreateDeviceIdentity({ ...options, path: databasePath, identityKey });
   return cacheProcessDeviceIdentity(cacheKey, identity);
 }
 
