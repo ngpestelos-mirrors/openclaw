@@ -23,6 +23,11 @@ import {
   prepareDoctorConfigRecoverySnapshot,
   recoverDoctorConfigFromLastKnownGood,
 } from "./doctor/shared/config-recovery.js";
+import {
+  isRecord,
+  visitAgentConfigScopes,
+  visitChannelEntries,
+} from "./doctor/shared/legacy-config-record-shared.js";
 
 export function createDoctorConfigRepairPlanner(params: {
   options: DoctorConfigPreflightOptions;
@@ -71,6 +76,58 @@ export async function migrateLegacyDoctorConfig(params: {
   }
 }
 
+function assertPreJuneConfigMigrated(config: unknown): void {
+  if (!isRecord(config)) {
+    return;
+  }
+  const retired: string[] = [];
+  const checkKeys = (scope: unknown, configPath: string, keys: string[]) => {
+    if (!isRecord(scope)) {
+      return;
+    }
+    for (const key of keys) {
+      if (Object.hasOwn(scope, key)) {
+        retired.push(configPath ? `${configPath}.${key}` : key);
+      }
+    }
+  };
+  checkKeys(config, "", ["heartbeat"]);
+  checkKeys(config.routing, "routing", ["allowFrom", "groupChat"]);
+  checkKeys(config.gateway, "gateway", ["webchat"]);
+  const channels = isRecord(config.channels) ? config.channels : {};
+  checkKeys(channels, "channels", ["webchat"]);
+  checkKeys(channels.telegram, "channels.telegram", ["requireMention"]);
+  for (const channelId of ["discord", "line", "matrix", "telegram"]) {
+    visitChannelEntries(config, channelId, (scope, configPath) => {
+      checkKeys(scope.threadBindings, `${configPath}.threadBindings`, ["ttlHours"]);
+    });
+  }
+  visitChannelEntries(config, "feishu", (scope, configPath) => {
+    if (configPath !== "channels.feishu") {
+      checkKeys(scope, configPath, ["botName"]);
+    }
+  });
+  const session = isRecord(config.session) ? config.session : {};
+  checkKeys(session.threadBindings, "session.threadBindings", ["ttlHours"]);
+  visitAgentConfigScopes(config, (scope, configPath) => {
+    checkKeys(
+      scope,
+      configPath,
+      configPath === "agents.defaults"
+        ? ["llm", "embeddedPi", "embeddedHarness"]
+        : ["embeddedPi", "embeddedHarness"],
+    );
+    checkKeys(scope.sandbox, `${configPath}.sandbox`, ["perSession"]);
+  });
+  if (retired.length > 0) {
+    throw new Error(
+      `Config contains retired pre-June keys: ${retired.join(", ")}. Doctor cannot remove these settings safely. ` +
+        `Install OpenClaw 2026.9.5, run "${formatCliCommand("openclaw doctor --fix")}", then upgrade to latest. ` +
+        "See https://docs.openclaw.ai/install/updating#upgrading-very-old-versions.",
+    );
+  }
+}
+
 /** Repair active legacy bytes before considering an older backup. */
 export async function prepareDoctorConfigRecovery(params: {
   enabled: boolean;
@@ -80,6 +137,8 @@ export async function prepareDoctorConfigRecovery(params: {
 }) {
   let snapshotRead = params.snapshotRead;
   let snapshot = snapshotRead.snapshot;
+  // Refuse before backup recovery or unknown-key cleanup can discard authored settings.
+  assertPreJuneConfigMigrated(snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig);
   let activeConfigRepair: ReturnType<typeof planAutomaticConfigRepair> = null;
   const recoveryEnabled =
     params.enabled && !resolveFutureConfigActionBlock({ action: "recover config", snapshot });

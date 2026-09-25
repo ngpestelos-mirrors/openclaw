@@ -12,7 +12,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import type { GatewayRequestHandlers } from "./server-methods/types.js";
-import { SessionCompanionAskError } from "./session-companion-ask.js";
+import { SessionCompanionAskError } from "./session-companion-errors.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import { hiddenSessionNotFound } from "./session-sharing-policy.js";
 import { prepareSessionSharing, resolveSessionSharingTarget } from "./session-sharing.js";
@@ -113,25 +113,36 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
       respond(false, undefined, hiddenSessionNotFound(target.sessionKey));
       return;
     }
+    const companion = context.sessionCompanion;
+    const connId = client.connId;
+    const originalAttachments = attachments?.length ? structuredClone(attachments) : undefined;
     const assertSourceCurrent = () => {
-      if (!companionTargetIsVisible(target, client, context)) {
+      signal?.throwIfAborted();
+      if (
+        context.sessionCompanion !== companion ||
+        client.connId !== connId ||
+        client.invalidated ||
+        hasCurrentClientAuthority?.() === false ||
+        !companionTargetIsVisible(target, client, context)
+      ) {
         throw new SessionCompanionAskError("session-missing", "Side chat is unavailable.");
       }
     };
-    let capturedOperator: ReturnType<typeof captureGatewayOperatorRunAuthority>;
+    let capturedOperator: Awaited<ReturnType<typeof captureGatewayOperatorRunAuthority>>;
     try {
-      capturedOperator = captureGatewayOperatorRunAuthority({
+      capturedOperator = await captureGatewayOperatorRunAuthority({
         client,
         context,
         hasCurrentClientAuthority,
         invocationAuthority: { assertCurrent: assertSourceCurrent, signal },
       });
-      const result = await context.sessionCompanion.ask({
+      assertSourceCurrent();
+      const result = await companion.ask({
         sessionKey: target.sessionKey,
         agentId: target.agentId,
         question,
-        ...(attachments?.length ? { attachments } : {}),
-        connId: client.connId,
+        ...(originalAttachments ? { attachments: originalAttachments } : {}),
+        connId,
         assertSourceCurrent,
         ...(capturedOperator ? { operatorAuthority: capturedOperator.authority } : {}),
         ...(signal ? { signal } : {}),

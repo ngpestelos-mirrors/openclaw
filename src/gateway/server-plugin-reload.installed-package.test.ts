@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { retainRuntimePluginWork } from "../agents/runtime-plugin-work.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
 import { resolveConfigWidePluginMetadataSnapshotAsync } from "../config/io.plugin-metadata.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -13,6 +14,7 @@ import { loadInstalledPluginIndex } from "../plugins/installed-plugin-index.js";
 import type { PluginLifecycleReason } from "../plugins/lifecycle.js";
 import { activatePluginRegistry } from "../plugins/loader-shared.js";
 import { refreshManagedPlugins } from "../plugins/management-mutations.js";
+import { listManagedPlugins } from "../plugins/management-service.js";
 import { resolvePluginManifestInstallOwner } from "../plugins/manifest-install-owner.js";
 import { PluginInstanceDrainTimeoutError } from "../plugins/plugin-instance-error.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
@@ -110,8 +112,13 @@ async function verifyInstalledPackageRetention(
     fs.mkdirSync(path.join(packageDir, "dist"), { recursive: true });
     fs.writeFileSync(
       path.join(packageDir, "package.json"),
-      JSON.stringify({ name: id, version: "1.0.0", openclaw: { extensions: ["./dist/index.js"] } }),
+      JSON.stringify({
+        name: id,
+        version: "1.0.0",
+        openclaw: { extensions: ["./index.ts"], runtimeExtensions: ["./dist/index.js"] },
+      }),
     );
+    fs.writeFileSync(path.join(packageDir, "index.ts"), "throw new Error('unselected source');");
     fs.writeFileSync(
       path.join(packageDir, "openclaw.plugin.json"),
       JSON.stringify({
@@ -333,7 +340,7 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
       },
     };
     // Managed npm roots live outside discovery directories and are owned by the persisted ledger.
-    const writeInstall = (installedAt?: string) =>
+    const writeInstall = (installedAt?: string, version = "1.0.0") =>
       writePersistedInstalledPluginIndexSync(
         loadInstalledPluginIndex({
           config,
@@ -342,8 +349,8 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
           installRecords: {
             "installed-probe": {
               source: "npm",
-              spec: "installed-probe@1.0.0",
-              version: "1.0.0",
+              spec: `installed-probe@${version}`,
+              version,
               installPath: packageDir,
               ...(installedAt ? { installedAt } : {}),
             },
@@ -433,6 +440,17 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     expect(await probe("sibling")).toEqual(sibling);
     if (workspacePlugin) {
       expect(await probe("workspace-probe")).toEqual(workspacePlugin);
+    }
+    if (settings === "empty" && !cleanupRetry) {
+      fs.appendFileSync(path.join(packageDir, "index.ts"), "\n// edited without rebuilding dist\n");
+      const unbuilt = await reload();
+      expect((await probe("installed-probe")).helper).toBe("A");
+      expect(unbuilt.runtime.restartRequired ?? false).toBe(false);
+      expect(unbuilt.runtime.generation).toBeGreaterThan(firstReceipt.runtime.generation);
+      expect(unbuilt.runtime.sourceDigests).not.toEqual(firstReceipt.runtime.sourceDigests);
+      expect(unbuilt.runtime.selectedEntries).toEqual({
+        "installed-probe": path.join(packageDir, "dist", "index.js"),
+      });
     }
     const first = await probe("installed-probe");
     expect(first.helper).toBe("A");
@@ -836,6 +854,82 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     expect(configured.instance).not.toBe(current.instance);
     expect(configured.settings).toEqual({ label: "changed" });
     expect(await probe("sibling")).toEqual(sibling);
+    if (settings === "empty") {
+      const listedVersion = async () =>
+        (
+          await listManagedPlugins({
+            config: changedSettings,
+            env,
+            officialCatalog: { entries: [] },
+          })
+        ).plugins.find((plugin) => plugin.id === "installed-probe")?.version;
+      expect(await listedVersion()).toBe("1.0.0");
+      const previousRegistry = runtime.pluginRuntime.registry;
+      const previousRecord = previousRegistry.plugins.find(
+        (record) => record.id === "installed-probe",
+      );
+      assert.ok(previousRecord);
+      const previousInstance = getPluginInstance(previousRecord);
+      assert.ok(previousInstance);
+      const finishFirstRun = retainRuntimePluginWork([previousRegistry]);
+      expect(await probe("installed-probe")).toEqual(configured);
+      const finishSecondRun = retainRuntimePluginWork([previousRegistry]);
+      const packageManifestPath = path.join(packageDir, "package.json");
+      const packageManifest = JSON.parse(fs.readFileSync(packageManifestPath, "utf8"));
+      fs.writeFileSync(
+        packageManifestPath,
+        JSON.stringify({ ...packageManifest, version: "1.1.0" }),
+      );
+      writeInstall("2026-09-08T00:00:00.000Z", "1.1.0");
+      const drainEntered = createDeferredCore();
+      const wait = previousInstance.waitForRetainedWork.bind(previousInstance);
+      const observation = vi
+        .spyOn(previousInstance, "waitForRetainedWork")
+        .mockImplementation((...args) => {
+          const draining = wait(...args);
+          drainEntered.resolve();
+          return draining;
+        });
+      const replacing = reload(changedSettings);
+      void replacing.catch(drainEntered.reject);
+      try {
+        await drainEntered.promise;
+        expect(owner.getReloadStatus()).toMatchObject({
+          phase: "reloading",
+          reason: expect.stringContaining("queued behind 2 retained work"),
+        });
+        expect(await listedVersion()).toBe("1.0.0");
+        expect(await probe("installed-probe")).toEqual(configured);
+        finishFirstRun();
+        expect(await probe("installed-probe")).toEqual(configured);
+        expect(runtime.pluginRuntime.registry).toBe(previousRegistry);
+        expect(previousInstance.disposing).toBe(false);
+        expect(() => retainRuntimePluginWork([previousRegistry])).toThrow(
+          "replacement is in progress",
+        );
+        finishSecondRun();
+        await expect(replacing).resolves.toMatchObject({
+          runtime: { pluginIds: ["installed-probe"] },
+        });
+        const finishNewRun = retainRuntimePluginWork([runtime.pluginRuntime.registry]);
+        try {
+          const upgraded = await probe("installed-probe");
+          expect(upgraded).toEqual({ ...configured, instance: expect.any(String) });
+          expect(upgraded.instance).not.toBe(configured.instance);
+          expect(await listedVersion()).toBe("1.1.0");
+          expect(previousInstance.disposing).toBe(true);
+          expect(owner.getReloadStatus()).toBeUndefined();
+          expect(await probe("sibling")).toEqual(sibling);
+        } finally {
+          finishNewRun();
+        }
+      } finally {
+        finishFirstRun();
+        finishSecondRun();
+        observation.mockRestore();
+        await replacing.catch(() => {});
+      }
+    }
     if (workspacePlugin) {
       expect(await probe("workspace-probe")).toEqual(workspacePlugin);
     }

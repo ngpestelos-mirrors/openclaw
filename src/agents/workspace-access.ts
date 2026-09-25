@@ -31,10 +31,10 @@ export type AgentWorkspaceAccess = {
   installSkillDependencies?: WorkspaceSkillLifecycle["installSkillDependencies"];
   /** Read native source tiers and execution-host facts without applying Gateway policy. */
   loadSkills?: (request: WorkspaceSkillSourceRequest) => Promise<WorkspaceSkillSources>;
-  /** Keep a host subscription alive until aborted; notify without transferring file contents. */
+  /** Keep the subscription alive until aborted; available certifies verified coverage after loss. */
   watchSkills?: (
     request: Pick<WorkspaceSkillSourceRequest, "sourcePlan" | "executionWorkspaceDir">,
-    onChange: (event: "change" | "unavailable") => void,
+    onChange: (event: "change" | "unavailable" | "available") => void,
     signal: AbortSignal,
   ) => Promise<void>;
   skillResources?: SkillResourceSourceReader;
@@ -47,7 +47,12 @@ export type AgentWorkspaceAccess = {
   >;
   bridge: Pick<
     SandboxFsBridge,
-    "readFile" | "readFileWithSource" | "readDirectory" | "writeFile" | "stat"
+    | "readFile"
+    | "readFileWithSource"
+    | "readDirectory"
+    | "writeFile"
+    | "createFileExclusive"
+    | "stat"
   >;
   /** Purpose-scoped output reads; the document bridge need not allow attachment paths. */
   outboundMedia?: {
@@ -132,6 +137,15 @@ export function registerAgentWorkspaceAccess(
       return result;
     },
   };
+  const createFileExclusive = access.bridge.createFileExclusive?.bind(access.bridge);
+  if (createFileExclusive) {
+    bridge.createFileExclusive = async (params) => {
+      assertCurrent();
+      const result = await createFileExclusive(params);
+      assertCurrent();
+      return result;
+    };
+  }
   const readFileWithSource = access.bridge.readFileWithSource?.bind(access.bridge);
   if (readFileWithSource) {
     bridge.readFileWithSource = async (params) => {

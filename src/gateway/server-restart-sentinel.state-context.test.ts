@@ -10,6 +10,8 @@ import { acquireGatewayLock } from "../infra/gateway-lock.js";
 import { findDeliveryIntentOwner } from "../infra/outbound/delivery-queue-storage.js";
 import * as restartSentinel from "../infra/restart-sentinel.js";
 import { readRestartSentinel, writeRestartSentinel } from "../infra/restart-sentinel.js";
+import * as stateCoordinator from "../infra/state-database-coordinator.js";
+import { importLegacyUpdateRestartSentinel } from "../infra/state-migrations.restart-sentinel-runtime.js";
 import * as legacySource from "../infra/state-migrations.source-snapshot.js";
 import { resetSystemEventsForTest } from "../infra/system-events.js";
 import {
@@ -22,6 +24,10 @@ import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plug
 import * as gatewayWorkAdmission from "../process/gateway-work-admission.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import {
+  getOpenClawDatabaseMaintenanceScope,
+  type OpenClawDatabaseMaintenanceScope,
+} from "../state/openclaw-state-db-async-lifecycle.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import {
   createDirectOutboundTestAdapter,
@@ -165,6 +171,64 @@ beforeEach(() => {
       },
     ]),
   );
+});
+
+it("retains failed import cleanup until canonical database close retries its owner", async () => {
+  const stateDir = tempDirs.make("openclaw-restart-import-cleanup-");
+  const env = { OPENCLAW_STATE_DIR: stateDir };
+  setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+  const lock = await acquireGatewayLock({ env, allowInTests: true });
+  if (!lock) {
+    throw new Error("Expected Gateway lifecycle ownership");
+  }
+  gatewayLocks.push(lock);
+  const context = captureDeliveryQueueStateContext();
+  await fs.writeFile(
+    path.join(stateDir, "restart-sentinel.json"),
+    JSON.stringify({
+      version: 1,
+      payload: { kind: "update", status: "ok", ts: 124, stats: { mode: "npm" } },
+    }),
+  );
+  const failure = new Error("import resource cleanup failed once");
+  const closeResource = vi
+    .fn<() => Promise<void>>()
+    .mockRejectedValueOnce(failure)
+    .mockResolvedValue(undefined);
+  let scope: OpenClawDatabaseMaintenanceScope | undefined;
+  let custody: ReturnType<typeof stateCoordinator.acquireGatewayMaintenanceCoordinator> | undefined;
+  const acquire = stateCoordinator.acquireGatewayMaintenanceCoordinator;
+  vi.spyOn(stateCoordinator, "acquireGatewayMaintenanceCoordinator").mockImplementation(
+    (params) => {
+      custody = acquire(params);
+      return custody;
+    },
+  );
+  const readSource = legacySource.readLegacyMigrationSourceSnapshot;
+  vi.spyOn(legacySource, "readLegacyMigrationSourceSnapshot").mockImplementationOnce(
+    async (params) => {
+      const snapshot = await readSource(params);
+      scope = getOpenClawDatabaseMaintenanceScope();
+      if (!scope) {
+        throw new Error("Expected importer maintenance scope");
+      }
+      scope.own({}, "shared-resources", closeResource);
+      return snapshot;
+    },
+  );
+  try {
+    await expect(
+      importLegacyUpdateRestartSentinel({ context: context.workerContext, shouldRun: () => true }),
+    ).rejects.toBe(failure);
+    expect(closeResource).toHaveBeenCalledOnce();
+    expect(custody?.closed).toBe(false);
+    await closeOpenClawStateDatabaseAsync();
+    expect(closeResource).toHaveBeenCalledTimes(2);
+    expect(custody?.closed).toBe(true);
+  } finally {
+    await scope?.close();
+    custody?.release();
+  }
 });
 
 it.each([false, true])(
