@@ -628,6 +628,8 @@ export function projectChatTranscript(
     props.sessionKey,
     props.presented,
     props.transcriptVisible,
+    // Row callbacks belong to the current pane lifecycle even when content is unchanged.
+    props.onRequestUpdate,
     // Invalidate settled rows when spawn metadata arrives, not on activity/title patches.
     avatarPlacement,
     props.boardProvider,

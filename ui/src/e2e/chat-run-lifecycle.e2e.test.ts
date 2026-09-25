@@ -5,6 +5,7 @@ import type { Page } from "playwright";
 import { afterEach, expect, it } from "vitest";
 import type { ApplicationContext } from "../app/context.ts";
 import { prepareChatHistoryFixture } from "../test-helpers/chat-activity-fixtures.ts";
+import { createSessionsListResult } from "../test-helpers/chat-model.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
   controlUiSessionUrl,
@@ -69,6 +70,8 @@ suite.define(() => {
     const context = await suite.newBrowserContext({ viewport: { height: 800, width: 1200 } });
     const currentPage = await context.newPage();
     page = currentPage;
+    const pageErrors: string[] = [];
+    currentPage.on("pageerror", (error) => pageErrors.push(error.message));
     const sessionKey = "agent:main:dashboard:failed-turn-elapsed";
     const gateway = await installMockGateway(currentPage, { sessionKey });
     await currentPage.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
@@ -177,7 +180,10 @@ suite.define(() => {
       updatedAt: firstStartedAt + 994_000,
     };
     // A terminal event also refreshes the roster; every read must retain its timing.
-    await gateway.setSessionsListResponse({ sessions: [completedSession] });
+    await gateway.setSessionsListResponse({
+      ...createSessionsListResult(),
+      sessions: [completedSession],
+    });
     await gateway.setMethodResponse("chat.history", {
       ...prepareChatHistoryFixture(messages),
       sessionId: `session:${sessionKey}`,
@@ -216,12 +222,14 @@ suite.define(() => {
     await operationLabel.waitFor();
     expect(await operationLabel.textContent()).toBe("Worked for 13s");
     expect(await currentPage.locator(".chat-group.user").count()).toBe(2);
+    expect(pageErrors).toEqual([]);
     await operationLabel.click();
     await expect
       .poll(() => currentPage.locator(".chat-work-group > button").getAttribute("aria-expanded"))
       .toBe("true");
     await currentPage.locator(".chat-thread").getByText("bash", { exact: true }).waitFor();
     expect(await replyBody.isVisible()).toBe(true);
+    expect(pageErrors).toEqual([]);
   });
 
   it("keeps a continuing run inside its latest assistant reply", async () => {
