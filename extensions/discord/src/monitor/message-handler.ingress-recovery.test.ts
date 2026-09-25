@@ -116,6 +116,19 @@ async function retryFacts(queue: DiscordQueue, id: string) {
   };
 }
 
+function observeCompletion(queue: DiscordQueue, id: string): Promise<boolean> {
+  const completed = createDeferred<boolean>();
+  const complete = queue.complete.bind(queue);
+  queue.complete = (ref, options) => {
+    const committed = complete(ref, options);
+    if ((typeof ref === "string" ? ref : ref.id) === id) {
+      void committed.then(completed.resolve, completed.reject);
+    }
+    return committed;
+  };
+  return completed.promise;
+}
+
 function createHandler(params: {
   queue: DiscordQueue;
   preflight: (input: { data: { message?: { id?: string } } }) => Promise<null>;
@@ -158,6 +171,7 @@ describe("Discord durable ingress replacement recovery", () => {
         { laneKey: "channel:lane-a", receivedAt: 2 },
       );
       const dispatched: string[] = [];
+      const followerCompleted = observeCompletion(queue, "follower");
       const handler = createHandler({
         queue,
         preflight: vi.fn(async ({ data }) => {
@@ -170,14 +184,16 @@ describe("Discord durable ingress replacement recovery", () => {
         }),
       });
       try {
-        await vi.waitFor(async () => {
-          await expect(queue.enqueue("poison", {} as DiscordIngressPayload)).resolves.toMatchObject(
-            { kind: "failed", record: { reason: "retry-limit-exceeded" } },
-          );
-          await expect(
-            queue.enqueue("follower", {} as DiscordIngressPayload),
-          ).resolves.toMatchObject({ kind: "completed" });
+        await expect(followerCompleted).resolves.toBe(true);
+        await expect(queue.enqueue("poison", {} as DiscordIngressPayload)).resolves.toMatchObject({
+          kind: "failed",
+          record: { reason: "retry-limit-exceeded" },
         });
+        await expect(queue.enqueue("follower", {} as DiscordIngressPayload)).resolves.toMatchObject(
+          {
+            kind: "completed",
+          },
+        );
         expect(dispatched).toEqual(["poison", "follower"]);
         expect(await queue.listPending({ limit: "all" })).toEqual([]);
         expect(await queue.listClaims()).toEqual([]);
@@ -249,6 +265,7 @@ describe("Discord durable ingress replacement recovery", () => {
       expect(await retryFacts(queue, "poison")).toEqual(expectedFacts);
 
       const finalDispatches: string[] = [];
+      const followerCompleted = observeCompletion(queue, "follower");
       const replacement = createHandler({
         queue,
         preflight: vi.fn(async ({ data }) => {
@@ -261,14 +278,16 @@ describe("Discord durable ingress replacement recovery", () => {
         }),
       });
       try {
-        await vi.waitFor(async () => {
-          await expect(queue.enqueue("poison", {} as DiscordIngressPayload)).resolves.toMatchObject(
-            { kind: "failed", record: { reason: "retry-limit-exceeded" } },
-          );
-          await expect(
-            queue.enqueue("follower", {} as DiscordIngressPayload),
-          ).resolves.toMatchObject({ kind: "completed" });
+        await expect(followerCompleted).resolves.toBe(true);
+        await expect(queue.enqueue("poison", {} as DiscordIngressPayload)).resolves.toMatchObject({
+          kind: "failed",
+          record: { reason: "retry-limit-exceeded" },
         });
+        await expect(queue.enqueue("follower", {} as DiscordIngressPayload)).resolves.toMatchObject(
+          {
+            kind: "completed",
+          },
+        );
         expect(finalDispatches).toEqual(["poison", "follower"]);
       } finally {
         await replacement.deactivate();
@@ -321,8 +340,9 @@ describe("Discord durable ingress settlement", () => {
         const dispositions = Array.from({ length: DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS }, () =>
           createDeferred<boolean>(),
         );
-        const followerCompleted = createDeferred<boolean>();
-        for (const disposition of [...dispositions, followerCompleted]) {
+        const followerCompleted = observeCompletion(queue, "follower");
+        void followerCompleted.catch(() => {});
+        for (const disposition of dispositions) {
           void disposition.promise.catch(() => {});
         }
         let dispositionCount = 0;
@@ -342,13 +362,6 @@ describe("Discord durable ingress settlement", () => {
           ...queue,
           release: (ref, options) => observePoisonDisposition(ref, queue.release(ref, options)),
           fail: (ref, options) => observePoisonDisposition(ref, queue.fail(ref, options)),
-          complete: (ref, options) => {
-            const committed = queue.complete(ref, options);
-            if ((typeof ref === "string" ? ref : ref.id) === "follower") {
-              void committed.then(followerCompleted.resolve, followerCompleted.reject);
-            }
-            return committed;
-          },
         };
         const preflight = vi.fn(async (params: { data: { message?: { id?: string } } }) => {
           const id = params.data.message?.id ?? "unknown";
@@ -389,7 +402,7 @@ describe("Discord durable ingress settlement", () => {
             }
           }
 
-          await expect(followerCompleted.promise).resolves.toBe(true);
+          await expect(followerCompleted).resolves.toBe(true);
           expect(attempted).toContain("follower");
           expect(attempted.indexOf("independent")).toBeGreaterThanOrEqual(0);
           expect(attempted.indexOf("independent")).toBeLessThan(attempted.indexOf("follower"));
@@ -758,9 +771,8 @@ describe("Discord durable ingress settlement", () => {
         { laneKey: "channel:lane-a", receivedAt: 10 },
       );
       const failedClaim = await queue.claim("cancelled", { ownerId: "failed-owner" });
-      expect(failedClaim).not.toBeNull();
       if (!failedClaim) {
-        return;
+        throw new Error("Expected the cancellation fixture claim");
       }
       await queue.release(failedClaim, {
         lastError: "previous genuine failure",
@@ -827,9 +839,8 @@ describe("Discord durable ingress settlement", () => {
           { laneKey: "channel:lane-a", receivedAt: 10 },
         );
         const failedClaim = await queue.claim(id, { ownerId: "failed-owner" });
-        expect(failedClaim).not.toBeNull();
         if (!failedClaim) {
-          return;
+          throw new Error("Expected the started-job fixture claim");
         }
         await queue.release(failedClaim, {
           lastError: "previous genuine failure",
@@ -914,9 +925,8 @@ describe("Discord durable ingress settlement", () => {
         { laneKey: "channel:lane-a", receivedAt: 10 },
       );
       const failedClaim = await queue.claim("queued-cancelled", { ownerId: "failed-owner" });
-      expect(failedClaim).not.toBeNull();
       if (!failedClaim) {
-        return;
+        throw new Error("Expected the queued-job fixture claim");
       }
       await queue.release(failedClaim, {
         lastError: "previous genuine failure",
