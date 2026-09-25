@@ -181,14 +181,27 @@ export function renderWorkGroupSummary(
   },
 ) {
   const duration = formatDurationCompact(item.durationMs);
-  const cards = item.groups.flatMap((group) =>
-    group.messages.flatMap(({ message }) => extractToolCardsCached(message)),
-  );
+  const cards = [
+    ...new Map(
+      item.groups
+        .flatMap((group) =>
+          group.messages.flatMap(({ message }) => extractToolCardsCached(message)),
+        )
+        .map((card) => [card.callId ?? card.id, card]),
+    ).values(),
+  ];
   const activity = item.groups.flatMap((group) =>
     group.messages.flatMap(({ message }) => readPreparedActivity(message)),
   );
   const label = duration ? t("chat.workRun.workedFor", { duration }) : t("chat.workRun.worked");
-  const outcomes = describeToolGroup(activity).outcomes.filter(({ kind }) => kind !== "failed");
+  const summary = describeToolGroup(activity);
+  const total = activity.length ? summary.total : cards.length;
+  const outcomes = summary.outcomes.filter(({ kind }) => kind !== "failed");
+  const toolOutcomes = renderToolOutcomeSummary(
+    cards,
+    true,
+    activity.length ? activity : undefined,
+  );
   const content = html`
     <div class="chat-activity-group chat-work-group ${opts.expanded ? "is-open" : ""}">
       <button
@@ -206,8 +219,20 @@ export function renderWorkGroupSummary(
         <span class="chat-tool-disclosure__content">
           <span class="chat-activity-group__label">${label}</span>
         </span>
-        ${outcomes.map((outcome) => html`<span class="muted">${outcome.label}</span>`)}
-        ${renderToolOutcomeSummary(cards, true, activity.length ? activity : undefined)}
+        ${
+          total > 0
+            ? html`<span class="chat-work-group__total"
+                >·
+                ${t(`chat.workRun.toolCalls${total === 1 ? "One" : "Many"}`, { count: String(total) })}</span
+              >`
+            : nothing
+        }
+        ${outcomes.map((outcome) => html`<span class="muted">· ${outcome.label}</span>`)}
+        ${
+          toolOutcomes === nothing
+            ? nothing
+            : html`<span class="chat-work-group__outcomes">· ${toolOutcomes}</span>`
+        }
         <span class="chat-tool-row__chevron" aria-hidden="true">${icons.chevronRight}</span>
       </button>
       <div class="chat-work-group__separator" aria-hidden="true"></div>

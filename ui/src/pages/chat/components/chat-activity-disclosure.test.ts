@@ -8,6 +8,7 @@ import {
   createToolCall,
   createToolGroup,
   createToolResultBlock,
+  createToolResultMessage,
   prepareHistoryGroups,
 } from "./chat-message.test-support.ts";
 import { renderActivityGroup, renderMessageGroup, renderWorkGroupSummary } from "./chat-message.ts";
@@ -52,6 +53,10 @@ it.each(["activity", "work"] as const)(
 
     const activity = container.querySelector<HTMLButtonElement>(".chat-activity-group__summary");
     expect(activity?.textContent).toContain(kind === "work" ? "Worked for 1s" : "2 reads");
+    if (kind === "work") {
+      expect(activity?.textContent).toContain("2 tool calls");
+      expect(activity?.textContent).not.toContain("failed");
+    }
     expect(activity?.querySelector("[title], [data-tooltip], openclaw-tooltip")).toBeNull();
     expect(activity?.getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelectorAll(".chat-activity-group")).toHaveLength(1);
@@ -110,7 +115,7 @@ it.each([
     expect(summary?.textContent).toContain(kind === "work" ? "Worked for 1s" : "1 read");
     expect(summary?.textContent?.match(/1 failed/gu)).toHaveLength(1);
     if (kind === "work") {
-      expect(summary?.textContent).toContain("1s");
+      expect(summary?.textContent).toContain("1 tool call");
     }
   }
 });
@@ -159,6 +164,10 @@ it.each(["activity", "work"] as const)("uses current prepared outcomes in %s sum
   const summary = container.querySelector(".chat-activity-group__summary");
   expect(summary?.textContent).toContain(kind === "work" ? "Worked for 1s" : "1 read");
   expect(summary?.textContent).not.toContain("failed");
+  if (kind === "work") {
+    expect(summary?.textContent).toContain("1 tool call");
+    expect(summary?.textContent).not.toContain("2 tool calls");
+  }
   expect(summary?.querySelector(".chat-tool-failure")).toBeNull();
 });
 
@@ -191,7 +200,61 @@ it.each(["blocked", undefined] as const)(
       );
       const summary = container.querySelector(".chat-activity-group__summary");
       expect(summary?.textContent).toContain("Worked for 1s");
+      expect(summary?.textContent).toContain("1 tool call");
       expect(summary?.textContent).toContain(status ? "1 blocked" : "1 unknown");
     }
   },
 );
+
+it.each([0, 10])("shows the total alongside failures without a duration (%i calls)", (total) => {
+  const groups = prepareHistoryGroups([
+    createToolGroup("mixed", [
+      createMessageEntry(
+        "mixed-message",
+        createAssistantMessage(
+          Array.from({ length: total }, (_, index) => [
+            createToolCall(`call-${index}`, "read", { path: `/repo/${index}.ts` }),
+            createToolResultBlock(`call-${index}`, "read", index < 2 ? "Unavailable" : "Loaded", {
+              isError: index < 2,
+            }),
+          ]).flat(),
+        ),
+      ),
+    ]),
+  ]);
+  const container = document.createElement("div");
+  render(
+    renderWorkGroupSummary(
+      { key: "mixed-work", durationMs: null, groups },
+      { expanded: false, onToggle: () => {} },
+    ),
+    container,
+  );
+  const summary = container.querySelector(".chat-activity-group__summary");
+  const text = summary?.textContent?.replace(/\s+/gu, " ").trim();
+  expect(text).toBe(total ? "Worked · 10 tool calls · 2 failed" : "Worked");
+});
+
+it("counts a raw call and its separate result once", () => {
+  const groups = [
+    createToolGroup("raw", [
+      createMessageEntry("call", createAssistantMessage([createToolCall("one", "read", {})])),
+      createMessageEntry(
+        "result",
+        createToolResultMessage("one", "read", "Unavailable", { isError: true }),
+      ),
+    ]),
+  ];
+  const container = document.createElement("div");
+  render(
+    renderWorkGroupSummary(
+      { key: "raw-work", durationMs: 1000, groups },
+      { expanded: false, onToggle: () => {} },
+    ),
+    container,
+  );
+  const text = container.querySelector(".chat-activity-group__summary")?.textContent;
+  expect(text).toContain("1 tool call");
+  expect(text).toContain("1 failed");
+  expect(text).not.toContain("2 tool calls");
+});
