@@ -120,6 +120,21 @@ If you allow session tools, treat delegated sub-agent runs as another boundary d
 - Keep `agents.defaults.subagents.allowAgents` and any per-agent `agents.entries.*.subagents.allowAgents` overrides restricted to known-safe target agents.
 - For workflows that must remain sandboxed, call `sessions_spawn` with `sandbox: "require"` (default is `"inherit"`); `"require"` fails fast when the target child runtime is not sandboxed.
 
+<Warning>
+Capability restrictions do not compose across an open communication path. If a restricted agent
+can message or delegate to a more privileged agent, it can ask that agent to use the missing tool.
+If a restricted child returns output into a more privileged parent's model context, that output can
+influence the parent's tools. In both cases, treat the connected agents as one effective capability
+domain.
+
+Tool removal for one run, prompt instructions, per-requester owner filtering, confirmation wording,
+and retry friction are not isolation boundaries against an adaptive model when another reachable
+path can produce the same effect. Tool policy still blocks the direct call where it is enforced. For
+hard separation, disable every messaging, delegation, reply, announce, and shared-context path
+between the trust domains. Use separate Gateways, OS users/hosts, and credentials for mutually
+untrusted workloads.
+</Warning>
+
 ### Read-only mode
 
 Build a read-only profile by combining `agents.defaults.sandbox.workspaceAccess: "ro"` (or `"none"` for no workspace access) with tool allow/deny lists that block `write`, `edit`, `apply_patch`, `exec`, `process`, etc.

@@ -244,6 +244,29 @@ Hardening roadmap may add explicit visibility modes (for example `all`, `allowli
 - Hook/webhook-driven payloads should be treated as untrusted content; keep unsafe bypass flags disabled unless doing tightly scoped debugging (`hooks.gmail.allowUnsafeExternalContent`, `hooks.mappings[].allowUnsafeExternalContent`).
 - Weak model tiers are generally easier to prompt-inject. For tool-enabled or hook-driven agents, prefer strong modern model tiers and strict tool policy (for example `tools.profile: "messaging"` or stricter), plus sandboxing where possible.
 
+### Capability Composition Across Agents and Sessions
+
+An agent's effective authority includes both its direct tools and the authority of any agent or
+session it can influence through messaging, delegation, shared context, or returned output.
+
+- If agent A can ask agent B to perform an action, and B is allowed to perform it, A effectively
+  has that capability. Different direct tool inventories do not create an isolation boundary while
+  that communication path remains open.
+- A restricted child or side session is not isolated from a more privileged parent when its output
+  re-enters the parent's model context and can induce the parent to act. The same applies in the
+  other direction when the parent can delegate work to the child.
+- Removing a tool for one turn, hiding it from one prompt, requiring the model to retry later, or
+  applying owner-only filtering to one requester is UX/policy friction, not an isolation boundary
+  against an adaptive model, when another permitted path can reach the same effect. Tool policy
+  still blocks the direct call where it is enforced.
+- Reports that only demonstrate this expected transitive capability composition are not boundary
+  bypasses. A valid bypass must cross a configured auth, tool-policy, sandbox, approval, allowlist,
+  or process/credential boundary that remains closed across all reachable paths.
+
+For hard isolation, remove every messaging, delegation, reply, announce, and shared-context path
+between the differently trusted agents. For mutually untrusted users or workloads, use separate
+Gateways and OS users/hosts with separate credentials.
+
 ### Gateway and Node Trust Concept
 
 OpenClaw separates routing from execution, but both remain inside the same operator trust boundary:
