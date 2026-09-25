@@ -337,6 +337,7 @@ export async function tryReuseCodexLiveThread(
         hostSystemAgentActive,
         restrictedToolSurfaceInheritedMcpServerNames,
         shellEnvironment: params.shellEnvironment,
+        shellPathPrepend: params.shellPathPrepend,
         disableLoginShell: params.disableLoginShell,
       }),
     );
