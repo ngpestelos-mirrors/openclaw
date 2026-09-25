@@ -26,6 +26,7 @@ import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.j
 import type { AgentMessage } from "../../runtime/index.js";
 import type { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import type { AgentSession } from "../../sessions/index.js";
+import { convertToLlm } from "../../sessions/messages.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAssistantMessageFixture } from "../../test-helpers/assistant-message-fixtures.js";
 import { prepareEmbeddedAttemptSessionBoundary } from "./attempt-session-prepare.js";
@@ -33,15 +34,15 @@ import { buildRuntimeContextCustomMessage } from "./runtime-context-prompt.js";
 
 function createActiveSession(messages: AgentMessage[] = []) {
   const reset = vi.fn();
-  const convertToLlm = vi.fn((input: AgentMessage[]) => input as never);
+  const convertMessages = vi.fn((input: AgentMessage[]) => input as never);
   const activeSession = {
     agent: {
       reset,
       state: { messages },
-      convertToLlm,
+      convertToLlm: convertMessages,
     },
   } as unknown as Pick<AgentSession, "agent">;
-  return { activeSession, convertToLlm, reset };
+  return { activeSession, convertToLlm: convertMessages, reset };
 }
 
 function createSessionManager(
@@ -104,6 +105,34 @@ async function withPersistedOrphanBoundary(
 }
 
 describe("prepareEmbeddedAttemptSessionBoundary", () => {
+  it("strips persisted carriers when a session switches to transient replay", async () => {
+    const previousUser: AgentMessage = { role: "user", content: "first question", timestamp: 1 };
+    const previousCarrier = buildRuntimeContextCustomMessage("persisted context")!;
+    const reply = makeAssistantMessageFixture({
+      content: [{ type: "text", text: "first answer" }],
+    });
+    const currentCarrier = buildRuntimeContextCustomMessage("current context")!;
+    const currentUser: AgentMessage = { role: "user", content: "next question", timestamp: 2 };
+    const messages = [previousUser, previousCarrier, reply, currentCarrier, currentUser];
+    const { activeSession } = createActiveSession();
+    await prepareEmbeddedAttemptSessionBoundary({
+      activeSession,
+      appendOnlyRuntimeContext: false,
+      attempt: { prompt: "next question", trigger: "user" },
+      getUserTranscriptContexts: () => undefined,
+      isRawModelRun: false,
+      preparedUserTurnMessage: undefined,
+      sessionManager: createSessionManager(),
+      setActiveSessionSystemPrompt: vi.fn(),
+    });
+    const converted = await activeSession.agent.convertToLlm(messages);
+    expect(converted).toHaveLength(4);
+    expect(converted).not.toContain(previousCarrier);
+    expect(converted.at(-1)).toBe(currentCarrier);
+    expect(converted.slice(0, -1)).not.toContain(currentCarrier);
+    expect(await activeSession.agent.convertToLlm(messages)).toEqual(converted);
+  });
+
   it.each([false, true])(
     "replays turn and tool-loop prefixes with append-only runtime context %s",
     async (appendOnlyRuntimeContext) => {
@@ -178,6 +207,35 @@ describe("prepareEmbeddedAttemptSessionBoundary", () => {
         expect(next.at(-1)).toBe(nextCarrier);
         expect(next[0]!.content).not.toContain("Conversation info:");
       }
+    },
+  );
+
+  it.each([false, true])(
+    "records runtime-context cache retention at the LLM boundary (%s)",
+    async (appendOnlyRuntimeContext) => {
+      const { activeSession } = createActiveSession();
+      activeSession.agent.convertToLlm = convertToLlm;
+      await prepareEmbeddedAttemptSessionBoundary({
+        activeSession,
+        appendOnlyRuntimeContext,
+        attempt: { prompt: "question", trigger: "user" },
+        getUserTranscriptContexts: () => undefined,
+        isRawModelRun: false,
+        preparedUserTurnMessage: undefined,
+        sessionManager: createSessionManager(),
+        setActiveSessionSystemPrompt: vi.fn(),
+      });
+
+      const user = { role: "user" as const, content: "question", timestamp: 1 };
+      const carrier = buildRuntimeContextCustomMessage("context")!;
+      const converted = await activeSession.agent.convertToLlm(
+        appendOnlyRuntimeContext ? [user, carrier] : [carrier, user],
+      );
+      const message = converted.at(-1);
+      expect(message).toMatchObject({ role: "user", runtimeContextCarrier: true });
+      expect(
+        (message as { runtimeContextCarrierRetained?: boolean }).runtimeContextCarrierRetained,
+      ).toBe(appendOnlyRuntimeContext ? true : undefined);
     },
   );
 

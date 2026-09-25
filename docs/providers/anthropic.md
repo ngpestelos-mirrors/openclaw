@@ -255,12 +255,21 @@ OpenClaw's Anthropic adapter converts a forced tool choice to `auto`
 when thinking is enabled. State in the prompt when a particular tool must run;
 see Anthropic's [migration guide](https://platform.claude.com/docs/en/models/fable-5-1/migration-guide).
 
-Fable 5.1 binds retained thinking to the preceding system prompt, tools, and
-conversation history. Changing that prefix can invalidate later thinking
-blocks. Claude Code manages this history for the CLI runtime. OpenClaw's
-embedded runtime persists hidden runtime-context carriers after their user turn
-and keeps earlier carriers and inline inbound metadata in place. Direct
-Anthropic API-key requests with adaptive thinking send the
+Fable 5.1 and Opus 5.5 bind retained thinking to the preceding system prompt,
+tools, and conversation history. Changing that prefix can invalidate later
+thinking blocks. Claude Code manages this history for the CLI runtime. OpenClaw's
+embedded runtime uses append-only context only for prefix-binding models such as
+Fable 5.1 and Opus 5.5: it persists hidden runtime-context carriers after their user turn,
+keeps earlier carriers and inline inbound metadata in place, and preserves
+consecutive user turns on the Messages API. This also applies to matching Claude
+models on Bedrock, Vertex, and Foundry, although Bedrock Converse still merges
+consecutive user turns. Carriers contain only the delimited context body; the
+instruction to use it privately lives once in the stable system prompt.
+Other Claude models keep transient carriers and normal user-turn merging.
+Transient carriers are the cheaper cache shape when thinking does not bind the
+prefix: old carriers consume no later context or repeated cache-read charges.
+
+Direct Anthropic API-key requests with adaptive thinking send the
 `thinking-binding-controls-2026-08-01` beta and
 `thinking.block_binding.prefix_mismatch_behavior: "drop_block"`. Anthropic drops
 invalidated replayed thinking server-side, and OpenClaw logs a warning with the
