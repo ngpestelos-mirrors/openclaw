@@ -48,32 +48,57 @@ describe("execSchtasks", () => {
     );
   });
 
-  it.each([undefined, 200, 10_000])(
-    "passes the installed-task query deadline %s to the process runner",
-    async (timeoutMs) => {
-      runCommandWithTimeout.mockResolvedValue({
-        stdout: "registered",
-        stderr: "",
-        code: 0,
-        termination: "exit",
+  it.each([
+    { timeoutMs: undefined, responseAfterMs: 45_000, expected: { status: "loaded" } },
+    { timeoutMs: 200, responseAfterMs: 100, expected: { status: "loaded" } },
+    { timeoutMs: 10_000, responseAfterMs: 100, expected: { status: "loaded" } },
+    {
+      timeoutMs: 20_000,
+      responseAfterMs: 45_000,
+      expected: { status: "unknown", detail: "Error: schtasks timed out after 20000ms" },
+    },
+    { timeoutMs: 90_000, responseAfterMs: 45_000, expected: { status: "loaded" } },
+  ])(
+    "bounds a silent cold registration query with caller budget $timeoutMs",
+    async ({ timeoutMs, responseAfterMs, expected }) => {
+      const env = {
+        APPDATA: tempDirs.make("schtasks-cold-registration-"),
+        OPENCLAW_WINDOWS_TASK_NAME: "Deadline Fixture",
+      };
+      runCommandWithTimeout.mockImplementation(async (_argv, options) => {
+        const interrupted =
+          responseAfterMs > Math.min(options.timeoutMs, options.noOutputTimeoutMs);
+        const termination = interrupted
+          ? options.timeoutMs <= options.noOutputTimeoutMs
+            ? "timeout"
+            : "no-output-timeout"
+          : "exit";
+        return {
+          stdout: interrupted ? "" : "registered",
+          stderr: "",
+          code: interrupted ? null : 0,
+          signal: interrupted ? "SIGTERM" : null,
+          killed: interrupted,
+          termination,
+        };
       });
 
       await expect(
-        isScheduledTaskInstalled({
-          env: { OPENCLAW_WINDOWS_TASK_NAME: "Deadline Fixture" },
-          timeoutMs,
-        }),
-      ).resolves.toBe(true);
+        readGatewayServiceLoadState({ isLoaded: isScheduledTaskInstalled }, { env, timeoutMs }),
+      ).resolves.toEqual(expected);
       expect(runCommandWithTimeout).toHaveBeenCalledExactlyOnceWith(
         ["schtasks", "/Query", "/TN", "Deadline Fixture"],
-        expect.objectContaining({ timeoutMs: timeoutMs ?? 15_000, noOutputTimeoutMs: 30_000 }),
+        expect.objectContaining({
+          timeoutMs: timeoutMs ?? 60_000,
+          noOutputTimeoutMs: timeoutMs ?? 60_000,
+        }),
       );
     },
   );
 
   it.each([
     { termination: "timeout", detail: "schtasks timed out after 200ms" },
-    { termination: "no-output-timeout", detail: "schtasks produced no output for 30000ms" },
+    { termination: "no-output-timeout", detail: "schtasks produced no output for 200ms" },
     { termination: "signal", detail: "schtasks command terminated before confirmed completion" },
   ] as const)(
     "reports interrupted registration as unknown ($termination)",
@@ -165,7 +190,7 @@ describe("execSchtasks", () => {
         termination: "timeout",
       });
 
-      await expect(execSchtasks(["/Create"], timeoutMs)).resolves.toEqual({
+      await expect(execSchtasks(["/Create"], { timeoutMs })).resolves.toEqual({
         stdout: "",
         stderr: `schtasks timed out after ${timeoutMs ?? 15_000}ms`,
         code: 124,

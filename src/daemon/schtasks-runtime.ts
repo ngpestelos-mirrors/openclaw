@@ -8,6 +8,7 @@ import {
   getWindowsCmdExePath,
   getWindowsPowerShellExePath,
 } from "../infra/windows-install-roots.js";
+import { WINDOWS_POWERSHELL_COLD_SPAWN_TIMEOUT_MS } from "../infra/windows-powershell-spawn.js";
 import { spawnWithFallback } from "../process/spawn-utils.js";
 import { sleep } from "../utils.js";
 import { resolveGatewayServiceProbeHosts } from "./gateway-service-probe-hosts.js";
@@ -141,7 +142,10 @@ async function readScheduledTaskRegistration(
   env: GatewayServiceEnv,
   timeoutMs?: number,
 ): Promise<boolean> {
-  const res = await execSchtasks(["/Query", "/TN", resolveTaskName(env)], timeoutMs);
+  const res = await execSchtasks(
+    ["/Query", "/TN", resolveTaskName(env)],
+    timeoutMs === undefined ? undefined : { timeoutMs, noOutputTimeoutMs: timeoutMs },
+  );
   if (res.interruption) {
     throw new Error(res.interruption.detail);
   }
@@ -496,8 +500,9 @@ export async function startStartupEntry(
 
 export async function isScheduledTaskInstalled(args: GatewayServiceEnvArgs): Promise<boolean> {
   const effectiveEnv = args.env ?? (process.env as GatewayServiceEnv);
+  const timeoutMs = args.timeoutMs ?? WINDOWS_POWERSHELL_COLD_SPAWN_TIMEOUT_MS;
   return (
-    (await readScheduledTaskRegistration(effectiveEnv, args.timeoutMs)) ||
+    (await readScheduledTaskRegistration(effectiveEnv, timeoutMs)) ||
     (await isStartupEntryInstalled(effectiveEnv))
   );
 }

@@ -10,7 +10,10 @@ const SCHTASKS_NO_OUTPUT_TIMEOUT_MS = 30_000;
 /** Runs Windows schtasks with bounded timeouts and normalized process results. */
 export async function execSchtasks(
   args: string[],
-  timeoutMs = SCHTASKS_TIMEOUT_MS,
+  {
+    timeoutMs = SCHTASKS_TIMEOUT_MS,
+    noOutputTimeoutMs = SCHTASKS_NO_OUTPUT_TIMEOUT_MS,
+  }: { timeoutMs?: number; noOutputTimeoutMs?: number } = {},
 ): Promise<{
   stdout: string;
   stderr: string;
@@ -24,13 +27,13 @@ export async function execSchtasks(
   const result = await runCommandWithTimeout(["schtasks", ...args], {
     baseEnv: resolveServiceManagerEnv(),
     timeoutMs,
-    noOutputTimeoutMs: SCHTASKS_NO_OUTPUT_TIMEOUT_MS,
+    noOutputTimeoutMs,
   });
   const timeoutDetail =
     result.termination === "timeout"
       ? `schtasks timed out after ${timeoutMs}ms`
       : result.termination === "no-output-timeout"
-        ? `schtasks produced no output for ${SCHTASKS_NO_OUTPUT_TIMEOUT_MS}ms`
+        ? `schtasks produced no output for ${noOutputTimeoutMs}ms`
         : result.termination !== "exit"
           ? "schtasks command terminated before confirmed completion"
           : "";
