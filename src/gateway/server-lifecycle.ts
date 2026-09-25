@@ -427,6 +427,8 @@ export async function prepareGatewayLifecycle(params: {
     // Keep late general sidecars owned until received work drains. Fence background
     // producers now, before their plugin/channel and shared-state dependencies can close.
     void stopDeliveryRecoveryForClose();
+    // Main-session cron handoffs wait for this owner's queued heartbeat settlement.
+    runtimeState.heartbeatRunner.stop();
     // Cron owns cancellation; its callbacks must settle before the scheduler joins them.
     void stopCronForClose().catch(() => {});
     void stopMediaCleanupForClose();

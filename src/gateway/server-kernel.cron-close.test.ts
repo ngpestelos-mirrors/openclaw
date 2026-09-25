@@ -1,8 +1,12 @@
 import { expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { abortActiveCronTaskRuns } from "../cron/service/active-run-cancellation.js";
+import { createCronServiceState } from "../cron/service/state.js";
+import { executeJobCoreWithTimeout } from "../cron/service/timer-job-runner.js";
 import { waitForAbortSignal } from "../infra/abort-signal.js";
 import type { GatewaySchedulerClock } from "../infra/gateway-scheduler.js";
+import { startHeartbeatRunner, type HeartbeatRunner } from "../infra/heartbeat-runner-scheduler.js";
+import { requestHeartbeatAndWait } from "../infra/heartbeat-wake.js";
 import { createGatewaySchedulerClock } from "../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getFreePort } from "../test-utils/ports.js";
@@ -28,7 +32,7 @@ vi.mock("../infra/gateway-scheduler.js", async (importOriginal) => {
   };
 });
 
-it("cancels scheduled cron before public close joins it and retries a retained cron drain", async ({
+it("settles heartbeat wakes and cancels scheduled cron before public close joins and retries its drain", async ({
   signal,
 }) => {
   const port = await getFreePort();
@@ -62,8 +66,11 @@ it("cancels scheduled cron before public close joins it and retries a retained c
     return { status: "error", error: "Cancelled by Gateway shutdown" };
   });
   let emergencyUsed = false;
+  let heartbeatRunner: HeartbeatRunner | undefined;
+  let heartbeatRun: ReturnType<typeof executeJobCoreWithTimeout> | undefined;
   const emergencyAbort = () => {
     emergencyUsed = true;
+    heartbeatRunner?.stop();
     abortActiveCronTaskRuns("Fixture cleanup after failed shutdown proof");
   };
   signal.addEventListener("abort", emergencyAbort, { once: true });
@@ -71,8 +78,10 @@ it("cancels scheduled cron before public close joins it and retries a retained c
   let server: GatewayServer | undefined;
   let pendingWake: void | Promise<void> = undefined;
   onTestFinished(async () => {
+    heartbeatRunner?.stop();
     abortActiveCronTaskRuns("Fixture cleanup");
     try {
+      await heartbeatRun;
       await pendingWake;
       try {
         await (server?.close() ?? captured.kernel?.closeOnStartupFailure());
@@ -132,6 +141,41 @@ it("cancels scheduled cron before public close joins it and retries a retained c
   });
   pendingWake = clock.advanceBy(1_000);
   await started.promise;
+  heartbeatRunner = startHeartbeatRunner({
+    cfg: { agents: { defaults: { heartbeat: { every: "30m" } } } },
+    runOnce: async () => ({ status: "skipped", reason: "requests-in-flight" }),
+  });
+  kernel.kernel.swapHeartbeatRunner(heartbeatRunner).stop();
+  const heartbeatStop = vi.spyOn(heartbeatRunner, "stop");
+  const heartbeatQueued = createDeferred();
+  const heartbeatState = createCronServiceState({
+    scheduler: kernel.scheduler,
+    storePath: "unused-heartbeat-monitor",
+    cronEnabled: false,
+    log: { debug() {}, info() {}, warn() {}, error() {} },
+    enqueueSystemEvent() {},
+    requestHeartbeat() {},
+    requestHeartbeatAndWait: (...args) => {
+      const pending = requestHeartbeatAndWait(...args);
+      heartbeatQueued.resolve();
+      return pending;
+    },
+    runIsolatedAgentJob: async () => ({ status: "ok" }),
+  });
+  heartbeatRun = executeJobCoreWithTimeout(heartbeatState, {
+    id: "shutdown-heartbeat-monitor",
+    agentId: "main",
+    name: "heartbeat-main",
+    enabled: true,
+    createdAtMs: clock.clock.now(),
+    updatedAtMs: clock.clock.now(),
+    schedule: { kind: "every", everyMs: 1_800_000 },
+    payload: { kind: "heartbeat" },
+    sessionTarget: "main",
+    wakeMode: "next-heartbeat",
+    state: {},
+  });
+  await heartbeatQueued.promise;
   const stopAndDrain = cron.stopAndDrain?.bind(cron);
   if (!stopAndDrain) {
     throw new Error("Expected the Gateway cron drain owner");
@@ -144,12 +188,19 @@ it("cancels scheduled cron before public close joins it and retries a retained c
   });
   const completeClose = vi.spyOn(kernel.shutdownRuntime, "completeGatewayClose");
 
-  await expect(server.close()).rejects.toMatchObject({
+  const firstClose = server.close();
+  void firstClose.catch(() => {});
+  expect(heartbeatStop).toHaveBeenCalledOnce();
+  await expect(firstClose).rejects.toMatchObject({
     name: "PluginRuntimeCloseRetainedError",
     cause: drainFailure,
   });
   await cancelled.promise;
   await pendingWake;
+  await expect(heartbeatRun).resolves.toMatchObject({
+    status: "skipped",
+    error: "heartbeat skipped: handler-unavailable",
+  });
   expect(completeClose).not.toHaveBeenCalled();
   expect(drain).toHaveBeenCalledOnce();
 
