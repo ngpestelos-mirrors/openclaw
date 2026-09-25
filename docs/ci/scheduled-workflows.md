@@ -8,8 +8,8 @@ read_when:
 
 ## Hourly main CI
 
-Full `main` CI runs hourly instead of on every push. `Main CI Hourly`
-(`ci-hourly.yml`) requests a full `CI` run at minute 23 of each hour. GitHub pins
+The complete `main` validation tier runs hourly instead of on every push. `Main CI Hourly`
+(`ci-hourly.yml`) requests a main-tier `CI` run at minute 23 of each hour. GitHub pins
 the child workflow and its checkout to the same main SHA at dispatch, even if
 main advanced after the scheduler event. It requests `validation_tier=main`,
 `release_gate=false`, `release_scope=full`, and `include_android=true`. It does
@@ -27,6 +27,9 @@ SDK declarations, and tarball integrity checks without the release-only
 declaration build. Runner routing, timeouts, and concurrency limits are unchanged.
 
 The dispatcher summary names the child `CI hourly-main-<run>-<attempt>` run.
+A main-tier run does not emit the full-validation revision confirmation.
+Docs Agent's automatic write gate requires that full-tier receipt; its explicit
+manual dispatch remains available.
 **A successful dispatcher is not a passing CI result**; inspect the child CI
 run and its `openclaw/ci-gate` job. Hourly CI children share one non-canceling
 concurrency slot with a coalesced pending tip. Ordinary manual/release CI stays

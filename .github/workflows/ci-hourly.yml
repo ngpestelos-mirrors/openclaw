@@ -28,7 +28,7 @@ jobs:
       # as an hourly diff: that would miss changes coalesced between hourly runs.
       # Leave target_ref unset: GitHub pins the child workflow and its checkout
       # to the same main SHA at dispatch, even if main moved since this event.
-      - name: Dispatch full CI for main
+      - name: Dispatch main-tier CI
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
@@ -46,7 +46,7 @@ jobs:
               },
             });
             await core.summary
-              .addHeading("Full main CI dispatched")
+              .addHeading("Main-tier CI dispatched")
               .addRaw(`Follow the **CI ${dispatchId}** run in the CI workflow. ` +
                 "This dispatcher succeeding is not a passing CI result.")
               .write();
