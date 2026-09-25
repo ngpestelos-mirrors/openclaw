@@ -56,6 +56,11 @@ export async function maintainOpenClawCompileCache(directory) {
   const task = new Promise((resolve) => {
     const worker = new Worker(new URL(import.meta.url), {
       workerData: { openclawCompileCacheDirectory: directory },
+      // Maintenance must not replay CLI entry preloads or application loaders.
+      execArgv: [],
+      env: Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !/^(NODE_OPTIONS|BUN_OPTIONS)$/i.test(name)),
+      ),
     });
     worker.on("error", () => {});
     worker.once("exit", () => resolve());
@@ -91,11 +96,11 @@ async function maintain(directory) {
   }
   await fs.mkdir(directory, { recursive: true });
   let retired = false;
-  for (const version of await fs.readdir(root, { withFileTypes: true })) {
-    if (!version.isDirectory()) {
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
       continue;
     }
-    const versionRoot = path.join(root, version.name);
+    const versionRoot = path.join(root, entry.name);
     for (const build of await fs.readdir(versionRoot, { withFileTypes: true })) {
       const candidate = path.join(versionRoot, build.name);
       if (build.isDirectory() && candidate !== directory) {

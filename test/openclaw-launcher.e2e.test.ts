@@ -1782,26 +1782,112 @@ describe("openclaw launcher", () => {
     },
   );
 
+  it.each(["execArgv", "NODE_OPTIONS"] as const)(
+    "does not replay a packaged CLI preload in maintenance workers via %s",
+    async (source) => {
+      const fixtureRoot = await makeLauncherFixture(fixtures);
+      await fs.writeFile(
+        path.join(fixtureRoot, "package.json"),
+        JSON.stringify({
+          name: "openclaw",
+          type: "module",
+          version: "2026.9.1",
+          exports: { "./cli-entry": "./openclaw.mjs" },
+        }),
+      );
+      const log = path.join(fixtureRoot, "preload-events.jsonl");
+      const preload = path.join(fixtureRoot, "observe-preload.mjs");
+      await fs.writeFile(
+        preload,
+        [
+          'import fs from "node:fs";',
+          'import threads from "node:worker_threads";',
+          'import { syncBuiltinESMExports } from "node:module";',
+          `const record = (event) => fs.appendFileSync(${JSON.stringify(log)}, event + "\\n");`,
+          "record(`preload:${threads.isMainThread}`);",
+          "const OriginalWorker = threads.Worker;",
+          "threads.Worker = class extends OriginalWorker {",
+          "  constructor(url, options) {",
+          "    const maintenance = Boolean(options?.workerData?.openclawCompileCacheDirectory);",
+          "    if (maintenance) {",
+          "      record(`maintenance:${threads.isMainThread}`);",
+          '      if (!threads.isMainThread) throw new Error("Bounded recursive maintenance attempt");',
+          "    }",
+          "    super(url, options);",
+          "    if (maintenance) {",
+          "      const { port1, port2 } = new threads.MessageChannel();",
+          '      port1.on("message", () => {});',
+          "      globalThis.maintenanceCompleted = new Promise((resolve) => {",
+          '        this.once("exit", () => { port1.close(); port2.close(); resolve(); });',
+          "      });",
+          "    }",
+          "  }",
+          "};",
+          "syncBuiltinESMExports();",
+        ].join("\n"),
+      );
+      await fs.writeFile(
+        path.join(fixtureRoot, "dist", "entry.js"),
+        [
+          'import fs from "node:fs";',
+          'import { isMainThread } from "node:worker_threads";',
+          "if (isMainThread) await globalThis.maintenanceCompleted;",
+          `fs.appendFileSync(${JSON.stringify(log)}, "entry:" + isMainThread + "\\n");`,
+        ].join("\n"),
+      );
+      const host = path.join(fixtureRoot, "host.mjs");
+      await fs.writeFile(host, "");
+      const cache = path.join(fixtureRoot, "cache");
+      const retired = path.join(cache, "openclaw", "old", "build-retired");
+      await fs.mkdir(retired, { recursive: true });
+      const preloads = ["--import", pathToFileURL(preload).href, "--import", "openclaw/cli-entry"];
+      const result = spawnSync(
+        testNodeExecPath,
+        [...(source === "execArgv" ? preloads : []), host],
+        {
+          cwd: fixtureRoot,
+          env: launcherEnv({
+            NODE_OPTIONS: source === "NODE_OPTIONS" ? preloads.join(" ") : undefined,
+            NODE_COMPILE_CACHE: cache,
+            OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
+          }),
+          encoding: "utf8",
+          timeout: 5000,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect((await fs.readFile(log, "utf8")).trim().split("\n")).toEqual([
+        "preload:true",
+        "maintenance:true",
+        "entry:true",
+      ]);
+      await expect(fs.stat(retired)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
   it("finishes a packaged command while compile-cache maintenance is stalled", async () => {
     const fixtureRoot = await makeLauncherFixture(fixtures);
     const channelName = JSON.stringify(`cache-maintenance:${fixtureRoot}`);
-    const preload = path.join(fixtureRoot, "stall-cache.mjs");
+    const cacheModule = path.join(fixtureRoot, "node-compile-cache.mjs");
+    const originalCacheModule = await fs.readFile(cacheModule, "utf8");
     await fs.writeFile(
-      preload,
+      cacheModule,
       [
-        'import fs from "node:fs/promises";',
-        'import path from "node:path";',
-        'import { BroadcastChannel } from "node:worker_threads";',
-        "const lstat = fs.lstat;",
-        "fs.lstat = function (target, ...args) {",
-        '  if (path.basename(String(target)) === "openclaw") {',
-        `    const channel = new BroadcastChannel(${channelName});`,
+        'import fixtureFs from "node:fs/promises";',
+        'import fixturePath from "node:path";',
+        'import { BroadcastChannel as FixtureChannel } from "node:worker_threads";',
+        "const fixtureLstat = fixtureFs.lstat;",
+        "fixtureFs.lstat = function (target, ...args) {",
+        '  if (fixturePath.basename(String(target)) === "openclaw") {',
+        `    const channel = new FixtureChannel(${channelName});`,
         '    channel.onmessage = () => channel.postMessage("started");',
         '    channel.postMessage("started");',
         "    return new Promise(() => {});",
         "  }",
-        "  return lstat.call(this, target, ...args);",
+        "  return fixtureLstat.call(this, target, ...args);",
         "};",
+        originalCacheModule,
       ].join("\n"),
     );
     await fs.writeFile(
@@ -1822,7 +1908,7 @@ describe("openclaw launcher", () => {
     const result = spawnSync(testNodeExecPath, [path.join(fixtureRoot, "openclaw.mjs")], {
       cwd: fixtureRoot,
       env: launcherEnv({
-        NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+        NODE_OPTIONS: undefined,
         NODE_COMPILE_CACHE: path.join(fixtureRoot, ".node-compile-cache"),
       }),
       encoding: "utf8",
