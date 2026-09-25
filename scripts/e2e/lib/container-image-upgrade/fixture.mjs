@@ -40,7 +40,9 @@ function logicalSnapshot(file) {
         .prepare(
           "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name, tbl_name, sql",
         )
-        .all(),
+        .all()
+        // Match the plain objects read back from the persisted JSON preimage.
+        .map((row) => Object.assign({}, row)),
       tables: Object.fromEntries(
         tables.map(({ name }) => [
           name,
