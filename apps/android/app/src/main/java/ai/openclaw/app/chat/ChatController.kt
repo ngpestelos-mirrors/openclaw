@@ -513,6 +513,9 @@ class ChatController internal constructor(
   private val _selectedModelRef = MutableStateFlow<String?>(null)
   val selectedModelRef: StateFlow<String?> = _selectedModelRef.asStateFlow()
 
+  private val _defaultModelRef = MutableStateFlow<String?>(null)
+  val defaultModelRef: StateFlow<String?> = _defaultModelRef.asStateFlow()
+
   private val _modelCatalog = MutableStateFlow<List<GatewayModelSummary>>(emptyList())
   val modelCatalog: StateFlow<List<GatewayModelSummary>> = _modelCatalog.asStateFlow()
 
@@ -952,6 +955,7 @@ class ChatController internal constructor(
       restoreRunStateOnReconnect = true
       pendingHealthRefresh = null
       _healthOk.value = false
+      _defaultModelRef.value = null
     }
     updateErrorText(null)
     clearChatMetadata()
@@ -2972,6 +2976,7 @@ class ChatController internal constructor(
             val current = _sessions.value.firstOrNull { it.key == settingsKey.sessionKey } ?: lane.confirmed
             val settings = mergeChatSessionSettings(current, entry, authoritativeSessionSettings = true)
             upsertSessionEntry(settings.copy(ownerAgentId = ownerAgentId), replace = true, authoritativeSessionSettings = true)
+            if (settingsKey.sessionKey == _sessionKey.value) _defaultModelRef.value = parseDefaultModelRef(root)
             lane.needsRefresh = false
             lane.reconciliation = null
             removeCompletedSessionSettingsLane(settingsKey, lane, completion.pending)
@@ -3242,6 +3247,7 @@ class ChatController internal constructor(
         )
         applyThinkingMetadata(_sessions.value.firstOrNull { it.key == key })
         _selectedModelRef.value = null
+        _defaultModelRef.value = null
         lastHandledTerminalRunId = null
         val nextMetadataScope = currentChatMetadataScope()
         if (chatMetadataScope != nextMetadataScope) {
@@ -7723,7 +7729,13 @@ class ChatController internal constructor(
       messages = reconcileMessageIds(previous = previousMessages, incoming = messages),
       sessionInfo = sessionInfo,
       inFlightRun = parseInFlightRun(root),
+      defaultModelRef = parseDefaultModelRef(root),
     )
+  }
+
+  private fun parseDefaultModelRef(root: JsonObject): String? {
+    val defaults = root["defaults"].asObjectOrNull() ?: return null
+    return providerQualifiedModelRef(defaults["model"].asStringOrNull(), defaults["modelProvider"].asStringOrNull())
   }
 
   private fun parseMessage(
@@ -8114,7 +8126,7 @@ class ChatController internal constructor(
 
   private fun publishSelectedSessionSettings(entry: ChatSessionEntry?) {
     val lane = pendingSettingsMutations[sessionSettingsKey(_sessionKey.value)]
-    _selectedModelRef.value = entry?.providerQualifiedModelRef()
+    _selectedModelRef.value = providerQualifiedModelRef(entry?.model, entry?.modelProvider)
     applyThinkingMetadata(entry, lane?.confirmedThinkingLevel ?: _thinkingLevel.value)
     lane?.confirmedThinkingLevel = _thinkingLevel.value
     // An unsent successor is still the latest local choice. Once dispatched,
@@ -8132,8 +8144,8 @@ class ChatController internal constructor(
     val model =
       _modelCatalog.value.firstOrNull {
         val runtimeId = it.agentRuntime?.get("id").asStringOrNull()
-        it.providerQualifiedRef() == entry?.providerQualifiedModelRef() &&
-          (entry.agentRuntimeId == null || runtimeId == null || entry.agentRuntimeId == runtimeId)
+        it.providerQualifiedRef() == providerQualifiedModelRef(entry?.model, entry?.modelProvider) &&
+          (entry?.agentRuntimeId == null || runtimeId == null || entry.agentRuntimeId == runtimeId)
       }
     val sessionProfile = entry?.thinkingLevels != null || entry?.thinkingDefault != null
     val advertised = if (sessionProfile) entry.thinkingLevels else model?.thinkingLevels
@@ -8186,6 +8198,7 @@ class ChatController internal constructor(
     includeSessionInfo: Boolean = true,
     preserveSessionSettings: Boolean = false,
   ): ChatSessionEntry? {
+    if (includeSessionInfo && !preserveSessionSettings) _defaultModelRef.value = history.defaultModelRef
     val thinkingLevel = history.thinkingLevel?.trim()?.takeIf(String::isNotEmpty)
     // Full sessionInfo is authoritative even when usage is absent after compaction.
     // Thinking-only refreshes and partial events must retain their existing usage.
@@ -9453,8 +9466,11 @@ private fun sameSessionSettings(
     previous.fastMode == next.fastMode &&
     previous.effectiveFastMode == next.effectiveFastMode
 
-private fun ChatSessionEntry.providerQualifiedModelRef(): String? {
-  val model = model?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-  val provider = modelProvider?.trim()?.takeIf { it.isNotEmpty() } ?: return model
-  return if (model.startsWith("$provider/")) model else "$provider/$model"
+private fun providerQualifiedModelRef(
+  model: String?,
+  modelProvider: String?,
+): String? {
+  val normalizedModel = model?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+  val provider = modelProvider?.trim()?.takeIf { it.isNotEmpty() } ?: return normalizedModel
+  return if (normalizedModel.startsWith("$provider/")) normalizedModel else "$provider/$normalizedModel"
 }

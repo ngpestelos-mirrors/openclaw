@@ -5,7 +5,7 @@ OpenClaw Android is the officially released Google Play app. It connects to an O
 ### App features
 
 - Pair with a Gateway using a QR code, setup code, or manual connection. Gateway credentials are stored encrypted.
-- Stream chat replies, choose models and reasoning effort, manage session permissions, and expand task progress. The draft has its own full-width row above the controls, which wrap when space is limited. Tap the shield for permissions, the context ring for usage, or the model name to search models and expand provider groups. Tap the microphone for dictation. While listening, a Stop icon replaces the microphone; tap it to finish listening. While starting or transcribing, a Close icon cancels that attempt. Long-press for voice messages or Talk, or use the Talk button beside the microphone when the draft is empty. The effort dial opens the live-preview slider and Fast mode.
+- Stream chat replies, choose models and reasoning effort, manage session permissions, and expand task progress. The draft has its own full-width row above one control row: **+**, model, and reasoning on the left; context, microphone, and Talk/send on the right. Session permissions are inside the **+** menu, with the current access mode shown. The model name opens a compact searchable provider menu above the composer; provider gears open setup, and the configured default is marked on its model row. The context ring stays directly available, including on narrow screens, and opens context usage, latest tokens, and the cost breakdown. Tap the microphone for dictation. While listening, a Stop icon replaces the microphone; tap it to finish listening. While starting or transcribing, a Close icon cancels that attempt. Long-press for voice messages or Talk, or use the Talk button beside the microphone when the draft is empty. The effort dial opens the live-preview slider and Fast mode.
 - Select agents, pin sessions, and browse available native session catalogs from the sidebar. Connecting creates or adopts a dedicated Android session without resetting its history. Native sessions keep their runtime-owned model: Android shows that ownership instead of offering a model change. New session starts independently of the current native thread. Generic child-session forks and new worktrees are unavailable for those sessions; supported message-level forks remain available.
 - Search from Overview or Settings to find settings by their displayed name or category, alongside quick actions and recent threads. Local destinations such as Appearance, Profile, and Licenses work without connecting a Gateway. Back from a settings detail returns to the screen that opened search; Desktop appears only when the connected Gateway supports it.
 - Choose a theme family, color mode, accent, and app language in **Settings → Appearance**. Theme and accent edits sync with a connected writable profile. Read-only or unknown-profile edits, including new edits after restarting offline, stay on the device; choose them again after connecting to sync. Already profile-bound edits wait for that profile to reconnect, without discarding or replacing newer device-local choices.
@@ -130,21 +130,31 @@ menu, it closes without choosing an action. Reopen it explicitly when space
 permits; it does not reopen automatically when the layout recovers. Dismissing
 the menu does not reset Chat's draft, editor, or reader state.
 
-Chat's attachment picker opens on Gallery, with File and Location tabs below.
-Gallery opens Android's system photo picker without whole-library permission.
+Chat's **+** menu opens above the composer as a compact icon list: Camera, Gallery, Files,
+Location, and Permissions. Permissions shows the current access mode.
+Camera offers photo and video capture through the system camera after Android
+permission is granted. Confirmed captures are added to the original draft for review,
+without sending; cancellation keeps the
+draft unchanged. Temporary captures are removed after import or cancellation.
+Gallery selects both photos and videos through Android's system picker without
+whole-library permission.
 The embedded preview is not used: its Done callback can precede pending URI grants
-and revocations, so it cannot supply a reliable final selection. File also provides
-video selection. Location requests foreground permission and adds a map link to
+and revocations, so it cannot supply a reliable final selection. Location opens
+a confirmation view, requests foreground permission, and adds a map link to
 the draft for review before sending. It respects the app's Precise Location toggle,
 including changes made while capture is pending, using the same approximate grid
 as node location responses. Closing a picker preserves the draft; switching
 conversations retires the opening.
 
-Chat's attachment picker, Model picker, Permissions, Context, Thinking effort, Background tasks, and Switch branch sheets initially
+Background tasks and Switch branch sheets initially
 use the largest safe region with usable sheet space, not the trigger's region.
 They keep that region while it remains usable. Valid geometry changes retain
 the same sheet and local state. An invalid opening closes without selecting an
 option and stays closed until explicitly reopened.
+
+The attachment, model, permissions, context, and effort menus use the same opening and
+safe-region checks, anchored above the composer when space permits. Search and provider expansion stay inside its bounded
+viewport; keyboard and fold changes keep it in usable window space.
 
 Background tasks remains an agent-wide, read-only list and detail view. Safe
 layout changes retain the opening and its reading state. Switching Gateway,

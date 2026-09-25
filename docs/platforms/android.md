@@ -415,14 +415,23 @@ openclaw gateway call node.list --params "{}"
 The draft has its own full-width row above the attachment and voice/send controls,
 so larger text and narrow screens do not squeeze it between buttons. The empty
 hint stays on one line; drafts show up to six lines and scroll when space is limited.
-The composer has narrower side gutters than the transcript and keeps 48dp touch
-targets. Controls wrap when space is limited. In very short views, **Details**
-provides access to permissions and context so the draft retains a complete line.
+The composer has narrower side gutters than the transcript. **+**, model, and
+reasoning stay together on the left; the context ring, microphone, and Talk/send
+stay on the right in one row. Controls remain 48dp tall; very short views use
+narrower icon buttons to make room for **Details** while retaining an editable line.
 The placeholder and typed text share the same alignment.
 
-Tap the shield to change session permissions and the context ring to inspect
-usage. Tap the model name to search by model or provider and expand provider
-groups; pinned and recent models remain available. Long model names use a middle
+Open **+** for a compact icon list with Camera, Gallery, Files, Location, and
+Permissions. The Permissions row shows the current access mode. The
+context ring remains directly accessible on narrow screens and opens context
+usage, latest-run tokens, and the cost breakdown. Viewing usage does not require
+permission to change session settings. A reported model-call total remains visible
+when no cost breakdown is available. Missing usage is shown as unknown.
+Tap the model name to open a compact menu above the composer, search by model or
+provider, and expand provider groups. Provider gears open model setup. The Gateway's
+configured default is labeled on its model row; selecting it clears the session's
+model override. If that model is not known, **Default model** still resets the override.
+Pinned and recent models remain available. Long model names use a middle
 ellipsis, with the full name available in the picker. The effort dial opens its
 slider and Fast mode without expanding the composer. Dragging the slider previews
 the effort on the dial; releasing it applies the selection.
