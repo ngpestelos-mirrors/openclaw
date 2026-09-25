@@ -3,6 +3,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Result } from "@openclaw/normalization-core/result";
 import type { SessionTranscriptInitializationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
@@ -282,7 +283,11 @@ function openAgentDatabaseBackend(
     });
     return database;
   };
-  const admit = (stage: "transaction" | "commit", publication?: unknown) => {
+  const admit = (
+    stage: "transaction" | "commit",
+    publication?: unknown,
+    patchEntry?: SessionEntry,
+  ) => {
     assertFileIdentity();
     requestSqliteWorkerOperationAdmission({
       stage,
@@ -290,6 +295,7 @@ function openAgentDatabaseBackend(
         identity,
         ...(startupJournalRequested ? { agentDeletionJournalPresent: readDeletionJournal() } : {}),
         ...(publication ? { publication } : {}),
+        ...(patchEntry ? { patchEntry } : {}),
       },
     });
     if (stage === "commit") {
@@ -316,6 +322,9 @@ function openAgentDatabaseBackend(
     | undefined;
   let replacements:
     | typeof import("../config/sessions/session-accessor.sqlite-replacement-state.js")
+    | undefined;
+  let entryPatch:
+    | typeof import("../config/sessions/session-accessor.sqlite-entry-mutation.js")
     | undefined;
   let trajectory: typeof import("../trajectory/runtime-store.sqlite.js") | undefined;
   const domain = createAgentDatabaseDomainOwner({
@@ -349,6 +358,37 @@ function openAgentDatabaseBackend(
     }
     if (command.type === "session.entry.read" && entryReader) {
       return entryReader.readSessionEntryRow(openWriter(), command.input.sessionKey)?.entry;
+    }
+    if (command.type === "session.entry.patchSnapshot" && entryPatch) {
+      return entryPatch.readSessionEntryPatchSnapshot(openWriter(), command.input);
+    }
+    if (command.type === "session.entry.patch" && entryPatch && replacements) {
+      const opened = openWriter();
+      const patch = entryPatch.applySessionEntryPatchInDatabase;
+      const preparePublication = replacements.prepareSessionEntryReplacementPublication;
+      return runOpenClawAgentWriteTransaction(
+        (current) => {
+          if (current.db !== opened.db) {
+            throw new Error("Session patch lost its canonical database owner");
+          }
+          admit("transaction");
+          const result = patch(current, command.input, () => admit("transaction"));
+          const publication = result.identity
+            ? preparePublication({
+                ...result.identity,
+                maintenancePlans: [],
+                membershipInvalidatedKeys: [],
+              })
+            : undefined;
+          if (publication) {
+            deferSqliteWorkerCommitReceipt(current.db, publication);
+          }
+          admit("commit", publication, result.entry);
+          return { entry: result.entry, publication };
+        },
+        options,
+        { operationLabel: command.input.operationLabel },
+      );
     }
     if (command.type === "trajectory.events.append" && trajectory) {
       const opened = openWriter();
@@ -484,6 +524,18 @@ function openAgentDatabaseBackend(
   };
   return {
     prepare(command) {
+      if (
+        command.type === "session.entry.patchSnapshot" ||
+        command.type === "session.entry.patch"
+      ) {
+        return Promise.all([
+          import("../config/sessions/session-accessor.sqlite-entry-mutation.js"),
+          import("../config/sessions/session-accessor.sqlite-replacement-state.js"),
+        ]).then(([patch, replacement]) => {
+          entryPatch = patch;
+          replacements = replacement;
+        });
+      }
       if (command.type === "session.entry.read") {
         return import("../config/sessions/session-accessor.sqlite-entry-read.js").then((module) => {
           entryReader = module;

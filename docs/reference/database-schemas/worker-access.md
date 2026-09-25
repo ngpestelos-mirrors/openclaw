@@ -53,6 +53,16 @@ behavior.
 
 ## Carry facts, publish after commit
 
+Durable session-entry patches use the agent database executor for snapshot reads
+and synchronous commit transactions. Writer claims, usage accounting, and pending
+delivery updates share that owner. The host prepares each patch outside the
+transaction while retaining FIFO admission; the worker rereads authoritative rows
+and rechecks live authority before writing and committing. Committed bookkeeping
+runs before identity observers, including when the native commit receipt survives
+a lost result. Uncertain mutations are never replayed. Incognito and maintenance
+scopes retain their native connection and use the same mutation kernel. Stored
+data, schemas, configuration, and update behavior are unchanged.
+
 Memory session preparation retains only export text, provenance, timestamps, and
 classification/reset facts from each decoded SQLite event. Full-message observers
 retain their original snapshot, and callbacks run after its read transaction closes.
