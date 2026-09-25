@@ -10,11 +10,17 @@ import type { GatewayService } from "../daemon/service.js";
 import { createMockGatewayService, mockSystemAccountHome } from "../daemon/service.test-helpers.js";
 import { readLoadedSystemdServiceRuntime } from "../daemon/systemd-loaded-runtime.js";
 import { writeDoctorGatewayConfig } from "../flows/doctor-health-contribution-runners.gateway.js";
+import { callGatewayCli } from "../gateway/call.js";
+import { storeDeviceAuthToken } from "../infra/device-auth-store.js";
+import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
+import { tryAcquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import * as sqliteSnapshotSource from "../infra/sqlite-snapshot-source.js";
+import * as sqliteWorkerStores from "../infra/sqlite-worker-store.js";
 import { readUpdateRunDriver } from "../infra/update-run-driver.js";
 import { createUpdateRun } from "../infra/update-run-ledger.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -46,7 +52,7 @@ vi.mock("../gateway/call.js", async (original) => {
   const { gatewayMaintenanceResponse } = await import("../gateway/health-response.test-support.js");
   return {
     ...(await original<typeof import("../gateway/call.js")>()),
-    callGatewayCli: gatewayMaintenanceResponse(() => mocks.resident()),
+    callGatewayCli: vi.fn(gatewayMaintenanceResponse(() => mocks.resident())),
   };
 });
 
@@ -148,6 +154,7 @@ async function runInstallationCase(params: {
   platform: "linux" | "darwin" | "win32";
   mode: "maintenance" | "direct";
   installFails?: boolean;
+  stopFailsWithPairedDevice?: boolean;
   tokenRecovery?: "success" | "refused" | "service-failure" | "writer-unavailable";
   revoked?: "unchanged" | "restored" | "recovery-pending" | "unclassified";
   initiallyStopped?: boolean;
@@ -226,6 +233,8 @@ async function runInstallationCase(params: {
       OPENCLAW_SERVICE_KIND: undefined,
       OPENCLAW_SYSTEMD_UNIT: undefined,
       OPENCLAW_GATEWAY_PORT: params.invocationPort,
+      OPENCLAW_GATEWAY_TOKEN: undefined,
+      OPENCLAW_GATEWAY_PASSWORD: undefined,
       OPENCLAW_UPDATE_RUN_ID: undefined,
       OPENCLAW_UPDATE_IN_PROGRESS: params.updateInProgress ? "1" : undefined,
       OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: undefined,
@@ -327,6 +336,9 @@ async function runInstallationCase(params: {
         },
         stop: async () => {
           events.push("stop");
+          if (params.stopFailsWithPairedDevice) {
+            throw new Error("Synthetic native stop failure");
+          }
           running = false;
         },
         start: async () => {
@@ -427,11 +439,62 @@ async function runInstallationCase(params: {
         originalConfig = await fs.readFile(configPath, "utf8");
         writerContext = await prepareWriterContext(configPath);
       }
-      const maintenance = await beginDoctorMaintenance({
+      let pairedDeviceDatabasePath: string | undefined;
+      if (params.stopFailsWithPairedDevice) {
+        const identity = loadOrCreateDeviceIdentity();
+        pairedDeviceDatabasePath = openOpenClawStateDatabase().path;
+        await storeDeviceAuthToken({
+          deviceId: identity.deviceId,
+          role: "operator",
+          token: "synthetic-maintenance-device-token",
+          scopes: ["operator.admin"],
+        });
+        await closeOpenClawStateDatabaseAsync();
+      }
+      const authWorkerOpen = pairedDeviceDatabasePath
+        ? vi.spyOn(sqliteWorkerStores, "openSharedStateSqliteWorkerStore")
+        : undefined;
+      const admission = beginDoctorMaintenance({
         root: mocks.activeRoot,
         options: { repair: true, nonInteractive: true },
         runtime,
       });
+      if (pairedDeviceDatabasePath && authWorkerOpen) {
+        const openedAuthWorkers = () =>
+          authWorkerOpen.mock.settledResults.flatMap((result) =>
+            result.type === "fulfilled" && result.value ? [result.value] : [],
+          );
+        try {
+          await expect(admission).rejects.toThrow("Synthetic native stop failure");
+          expect(events).toEqual(["stop"]);
+          expect(running).toBe(true);
+          expect(
+            vi
+              .mocked(callGatewayCli)
+              .mock.calls.some(
+                ([request]) =>
+                  request.method === "status" &&
+                  request.preparedDeviceAuth?.token === "synthetic-maintenance-device-token",
+              ),
+          ).toBe(true);
+          const authWorkers = openedAuthWorkers();
+          expect(authWorkers.length).toBeGreaterThan(0);
+          expect(
+            authWorkers.every((worker) => !sqliteWorkerStores.isSqliteWorkerStoreAvailable(worker)),
+          ).toBe(true);
+          const nextOwner = tryAcquireGatewayStateOwner(pairedDeviceDatabasePath);
+          expect(nextOwner).not.toBeNull();
+          nextOwner?.release();
+        } finally {
+          try {
+            await Promise.all(openedAuthWorkers().map((worker) => worker.close()));
+          } finally {
+            await closeOpenClawStateDatabaseAsync();
+          }
+        }
+        return;
+      }
+      const maintenance = await admission;
       if (params.inspectionScenario) {
         vi.spyOn(performance, "now").mockImplementation(() => inspectionClock);
         const prepareSnapshot = sqliteSnapshotSource.prepareSqliteReadOnlyLocationSync;
@@ -640,6 +703,13 @@ it("reconciles installation drift within the native budget with slow admission s
     platform: "linux",
     mode: "maintenance",
     inspectionScenario: "slow-admission",
+  }));
+
+it("releases paired-device auth workers when the native stop fails before repair", async () =>
+  runInstallationCase({
+    platform: "linux",
+    mode: "maintenance",
+    stopFailsWithPairedDevice: true,
   }));
 
 it("refuses installation repair when an update starts during passive native inspection", async () =>

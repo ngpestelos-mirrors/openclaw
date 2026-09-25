@@ -186,10 +186,8 @@ export async function beginDoctorMaintenance(params: {
     if (cleanupFailure) {
       throw cleanupFailure.error;
     }
-    if (repairStoresMayBeOpen) {
-      await resources?.close();
-      repairStoresMayBeOpen = false;
-    }
+    await resources?.close();
+    repairStoresMayBeOpen = false;
     await gatewayOwner?.release();
     gatewayOwner = undefined;
   };
@@ -209,9 +207,7 @@ export async function beginDoctorMaintenance(params: {
         }
       } finally {
         if (!cleanupFailure) {
-          await settle(async () => {
-            await recovery?.complete(!retainStoppedInstallation);
-          });
+          await settle(async () => recovery?.complete(!retainStoppedInstallation));
         }
       }
     });
@@ -560,22 +556,25 @@ export async function beginDoctorMaintenance(params: {
                   await settle(async () => {
                     try {
                       stopDeadline = performance.now() + GATEWAY_SERVICE_STOP_TIMEOUT_MS;
-                      stopped = await maybeStopManagedServiceBeforeMutableUpdate({
-                        updateInstallKind: "package",
-                        root,
-                        shouldRestart: true,
-                        jsonMode: true,
-                        expectedService: inspection,
-                        retainNativeIdentity: true,
-                        assertCurrent: () => assertServiceCurrent?.(),
-                        warn: (message) => {
-                          warnings.push(message);
-                          params.runtime.log(message);
-                        },
-                        onStopped: (before) => {
-                          stopped = before;
-                        },
-                      });
+                      const stopService = () =>
+                        maybeStopManagedServiceBeforeMutableUpdate({
+                          updateInstallKind: "package",
+                          root,
+                          shouldRestart: true,
+                          jsonMode: true,
+                          expectedService: inspection,
+                          retainNativeIdentity: true,
+                          assertCurrent: () => assertServiceCurrent?.(),
+                          warn: (message) => {
+                            warnings.push(message);
+                            params.runtime.log(message);
+                          },
+                          onStopped: (before) => {
+                            stopped = before;
+                          },
+                        });
+                      // The drain's auth probe borrows state custody acquired before stopping.
+                      stopped = await (resources ? resources.run(stopService) : stopService());
                       assertDoctorMaintenanceInspection(stopped, env);
                       if (stopped.serviceUpdateVerdict?.kind === "unavailable") {
                         warnings.push(stopped.serviceUpdateVerdict.message);
