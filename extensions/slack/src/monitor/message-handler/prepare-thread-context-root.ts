@@ -29,13 +29,10 @@ export function isSlackThreadAuthorCurrentBot(params: {
   author: SlackThreadAuthorTuple;
 }): boolean {
   const { identity, author } = params;
-  if (identity.botUserId && author.userId && author.userId === identity.botUserId) {
-    return true;
-  }
-  if (identity.botId && author.botId && author.botId === identity.botId) {
-    return true;
-  }
-  return false;
+  return Boolean(
+    (identity.botUserId && author.userId === identity.botUserId) ||
+    (identity.botId && author.botId === identity.botId),
+  );
 }
 
 export function resolveSlackThreadHistoryFilterPolicy(params: {
@@ -67,11 +64,8 @@ export function applySlackThreadHistoryFilterPolicy<T extends SlackThreadRootCan
       identity: params.identity,
       author: entry,
     });
-    if (!isCurrentBot) {
-      kept.push(entry);
-      continue;
-    }
     if (
+      !isCurrentBot ||
       params.policy.currentBot === "all" ||
       (params.policy.currentBot === "root-only" && entry.ts === params.policy.rootTs)
     ) {
@@ -88,10 +82,7 @@ export function shouldIncludeBotThreadStarterContext(params: {
   isNewThreadSession: boolean;
   hasStarterText: boolean;
 }): boolean {
-  if (!params.hasStarterText) {
-    return false;
-  }
-  return params.starterIsCurrentBot && params.isNewThreadSession;
+  return params.hasStarterText && params.starterIsCurrentBot && params.isNewThreadSession;
 }
 
 export function ensureSlackThreadHistoryHasBotRoot<T extends SlackThreadRootCandidate>(params: {
