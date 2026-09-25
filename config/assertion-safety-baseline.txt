@@ -237,11 +237,9 @@ extensions/copilot/src/hooks-bridge.ts	7
 extensions/copilot/src/isolated-completion.ts	1
 extensions/copilot/src/provider-bridge.ts	1
 extensions/copilot/src/replay-shim.ts	3
-extensions/copilot/src/runtime.ts	1
 extensions/copilot/src/sdk-loader.ts	2
 extensions/copilot/src/tool-bridge.ts	4
 extensions/copilot/src/workspace-bootstrap.ts	1
-extensions/crabbox/src/crabbox-worker-inspect.ts	3
 extensions/cua-computer/src/commands.ts	2
 extensions/cua-computer/src/driver-artifact-verification.ts	2
 extensions/cua-computer/src/driver-artifacts.ts	1
@@ -443,13 +441,12 @@ extensions/file-transfer/src/node-host/dir-fetch.ts	1
 extensions/file-transfer/src/node-host/dir-list.ts	1
 extensions/file-transfer/src/node-host/file-fetch.ts	1
 extensions/file-transfer/src/node-host/file-write.ts	2
-extensions/file-transfer/src/shared/node-invoke-policy.ts	3
+extensions/file-transfer/src/shared/node-invoke-policy.ts	2
 extensions/file-transfer/src/shared/policy.ts	7
 extensions/file-transfer/src/tools/dir-fetch-tool.ts	1
 extensions/file-transfer/src/tools/dir-list-tool.ts	2
 extensions/file-transfer/src/tools/file-fetch-tool.ts	2
 extensions/file-transfer/src/tools/file-write-tool.ts	1
-extensions/file-transfer/src/tools/node-tool-invoke.ts	1
 extensions/firecrawl/index.ts	2
 extensions/firecrawl/src/config.ts	3
 extensions/firecrawl/src/firecrawl-client.ts	4
@@ -853,7 +850,7 @@ extensions/perplexity/src/perplexity-web-search-provider.shared.ts	1
 extensions/pixverse/video-generation-provider.ts	2
 extensions/policy/src/cli.ts	1
 extensions/policy/src/doctor/automatic-repairs.ts	7
-extensions/policy/src/doctor/evaluation.ts	4
+extensions/policy/src/doctor/evaluation.ts	3
 extensions/policy/src/doctor/exec-approval-findings.ts	1
 extensions/policy/src/doctor/policy-runtime.ts	2
 extensions/policy/src/doctor/routing-shapes.ts	2
@@ -1294,7 +1291,7 @@ extensions/xai/src/x-search-config.ts	3
 extensions/xai/src/x-search-shared.ts	1
 extensions/xai/stream.ts	3
 extensions/xai/tts.ts	1
-extensions/xai/x-search.ts	7
+extensions/xai/x-search.ts	5
 extensions/xiaomi/onboard.ts	1
 extensions/zai/index.ts	2
 extensions/zai/model-definitions.ts	1
