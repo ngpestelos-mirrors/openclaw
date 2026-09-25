@@ -1061,19 +1061,24 @@ jobs:
         if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' }}
         shell: bash
         env:
+          OPENCLAW_VITEST_WORKER_CACHE: "1"
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "fresh"
           CI_WINDOWS_SCHTASKS_TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           export PATH="$NODE_BIN:$PATH"
           node --import ./scripts/tsx.mjs src/daemon/schtasks.installed-package.test-support.ts prepare .artifacts/windows-schtasks/installed-input.json
+          # Compile native test workers before the cell's action deadline starts.
+          CI_WINDOWS_SCHTASKS_INTEGRATION=1 node scripts/prepare-vitest-worker-cache.mts
 
       - name: Run installed Scheduled Task cell fresh
         id: native_schtasks_fresh
         if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_prepare_fresh.outcome == 'success' }}
-        timeout-minutes: 5
+        # Four-minute native test, three-minute teardown hook, one-minute runner margin.
+        timeout-minutes: 8
         shell: bash
         env:
+          OPENCLAW_VITEST_WORKER_CACHE: "1"
           CI_WINDOWS_SCHTASKS_PROOF_PATH: ${{ github.workspace }}\.artifacts\windows-schtasks\cells\fresh\proof.json
           CI_WINDOWS_SCHTASKS_INSTALLED_INPUT: ${{ github.workspace }}/.artifacts/windows-schtasks/installed-input.json
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "fresh"
@@ -1306,9 +1311,11 @@ jobs:
       - name: Run installed Scheduled Task cell 2026.9.3
         id: native_schtasks_9_3
         if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_prepare_9_3.outcome == 'success' }}
-        timeout-minutes: 5
+        # Four-minute native test, three-minute teardown hook, one-minute runner margin.
+        timeout-minutes: 8
         shell: bash
         env:
+          OPENCLAW_VITEST_WORKER_CACHE: "1"
           CI_WINDOWS_SCHTASKS_PROOF_PATH: ${{ github.workspace }}\.artifacts\windows-schtasks\cells\2026.9.3\proof.json
           CI_WINDOWS_SCHTASKS_INSTALLED_INPUT: ${{ github.workspace }}/.artifacts/windows-schtasks/installed-input.json
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.3"
@@ -1373,9 +1380,11 @@ jobs:
       - name: Run installed Scheduled Task cell 2026.9.4
         id: native_schtasks_9_4
         if: ${{ inputs.run_windows_ci && inputs.installed_startup_package != '' && steps.native_prepare_9_4.outcome == 'success' }}
-        timeout-minutes: 5
+        # Four-minute native test, three-minute teardown hook, one-minute runner margin.
+        timeout-minutes: 8
         shell: bash
         env:
+          OPENCLAW_VITEST_WORKER_CACHE: "1"
           CI_WINDOWS_SCHTASKS_PROOF_PATH: ${{ github.workspace }}\.artifacts\windows-schtasks\cells\2026.9.4\proof.json
           CI_WINDOWS_SCHTASKS_INSTALLED_INPUT: ${{ github.workspace }}/.artifacts/windows-schtasks/installed-input.json
           CI_WINDOWS_SCHTASKS_INSTALLED_CELL: "2026.9.4"

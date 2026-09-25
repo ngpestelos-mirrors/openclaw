@@ -104,21 +104,74 @@ export async function runInstalledLifecycle(
   let authorityPeerRoot: string | undefined;
   const observations: Record<string, unknown> = {};
   let cellFailure: Error | undefined;
-  const cli = (task: Task, args: string[], expectedExit = 0) =>
-    run(
-      [task.entry, "--profile", task.profile, ...args],
-      task.env,
-      rootDir,
-      commands,
-      expectedExit,
-      signal,
-      {
-        observeService:
-          args[0] === "gateway" && (args[1] === "install" || args[1] === "status")
-            ? args[1]
-            : undefined,
-      },
+  const progressStarted = performance.now();
+  let progressFailure: Error | undefined;
+  const recordProgress = async (phase: string, error?: Error) => {
+    progressFailure = error ?? progressFailure;
+    // Persist settled commands and the original error before native cleanup can be interrupted.
+    await fs.writeFile(path.join(rootDir, "commands.json"), JSON.stringify(commands, null, 2));
+    await fs.writeFile(
+      proofPath,
+      JSON.stringify(
+        {
+          result: progressFailure ? "failed" : "in-progress",
+          head: input.toolingSha,
+          candidate: input.candidate,
+          published: input.published,
+          cell: key,
+          cells: [
+            {
+              key,
+              phase,
+              commands,
+              observations,
+              failure: progressFailure && describeFailure(progressFailure),
+            },
+          ],
+          cleanupComplete: false,
+          elapsedMs: performance.now() - progressStarted,
+          recordedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
     );
+  };
+  const cli = async (task: Task, args: string[], expectedExit = 0) => {
+    let commandFailure: Error | undefined;
+    let output = "";
+    try {
+      output = await run(
+        [task.entry, "--profile", task.profile, ...args],
+        task.env,
+        rootDir,
+        commands,
+        expectedExit,
+        signal,
+        {
+          observeService:
+            args[0] === "gateway" && (args[1] === "install" || args[1] === "status")
+              ? args[1]
+              : undefined,
+        },
+      );
+    } catch (error) {
+      commandFailure = toErrorObject(error, "Installed Scheduled Task command failed");
+    }
+    try {
+      await recordProgress(`command:${args.slice(0, 2).join(" ")}`, commandFailure);
+    } catch (recordError) {
+      throw new AggregateError(
+        commandFailure ? [commandFailure, recordError] : [recordError],
+        "Installed command recording failed",
+        { cause: recordError },
+      );
+    }
+    if (commandFailure) {
+      throw commandFailure;
+    }
+    return output;
+  };
   const doctor = async (task: Task, expectedExit = 1) =>
     doctorReportSchema.parse(
       JSON.parse(
@@ -269,6 +322,7 @@ export async function runInstalledLifecycle(
     );
     const before = await status(selected, beforeIdentity);
     observations.before = before;
+    await recordProgress("selected-status-verified");
     let candidateStatus = before;
     const configBefore = await fs.readFile(selected.configPath);
     if (key !== "fresh") {
@@ -410,6 +464,7 @@ export async function runInstalledLifecycle(
         installRoot,
         admissions,
         admissionPath,
+        recordProgress,
       });
       observations.startupSiblings = await inspectInstalledStartupSiblings({
         selected,
@@ -538,6 +593,14 @@ export async function runInstalledLifecycle(
     }
   } catch (error) {
     cellFailure = toErrorObject(error, "Installed Scheduled Task fixture failed");
+    try {
+      await recordProgress("before-native-cleanup", cellFailure);
+    } catch (recordError) {
+      cellFailure = new AggregateError(
+        [cellFailure, recordError],
+        "Installed proof recording failed",
+      );
+    }
   }
   for (const task of tasks.toReversed()) {
     try {

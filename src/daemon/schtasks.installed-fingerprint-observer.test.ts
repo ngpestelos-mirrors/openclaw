@@ -61,6 +61,7 @@ describe("installed fingerprint source qualification", () => {
       "src/daemon/schtasks.installed-fingerprint-observer.test-support.mts",
       "src/daemon/schtasks.installed-fingerprint-observer.test.ts",
       "src/config/sessions/session-sharing-store.test.ts",
+      ".github/workflows/windows-testbox-probe.yml",
     ];
     for (const filename of changed) {
       repo.write(filename);
