@@ -32,7 +32,8 @@ it("streams settled file notifications and closes the watcher when its input clo
     await started.mock.results[0]?.value;
     // Consume initial reconciliation before proving a later filesystem edit.
     await vi.waitFor(() => expect(events).toContain('"change"\n'), { timeout: 10_000 });
-    events = "";
+    // Preserve unavailable diagnostics from the initial reconciliation.
+    events = events.replaceAll('"change"\n', "");
     await fs.writeFile(path.join(workspace, "memory", "notes.md"), "after\n");
     await vi.waitFor(() => expect(events).toContain('"change"\n'), { timeout: 10_000 });
     input.end();

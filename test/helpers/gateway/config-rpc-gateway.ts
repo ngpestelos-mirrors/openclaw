@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, vi, type TestContext } from "vitest";
 import { resolveDefaultAgentDir } from "../../../src/agents/agent-scope.js";
 import { prepareHostConfigSnapshot } from "../../../src/config/io.snapshot-preparation.js";
 import * as configFileSource from "../../../src/config/source-file.js";
@@ -69,10 +69,11 @@ export function requireConfigObject(value: unknown, label: string): Record<strin
   return value as Record<string, unknown>;
 }
 
-async function startConfigRpcGateway({
-  configRelativePath,
-  watchConfigFiles = true,
-}: ConfigRpcGatewayOptions = {}) {
+async function startConfigRpcGateway(
+  { configRelativePath, watchConfigFiles = true }: ConfigRpcGatewayOptions = {},
+  recordPhase?: (phase: string) => void,
+) {
+  recordPhase?.("state.create");
   state = await createOpenClawTestState({
     label: "config-rpc",
     env: {
@@ -94,6 +95,7 @@ async function startConfigRpcGateway({
   setLoggerOverride({ level: "silent", consoleLevel: "silent" });
   const config = { agents: { entries: { main: {} } } };
   const configPath = configRelativePath ? state.statePath(configRelativePath) : state.configPath;
+  recordPhase?.("config.write");
   if (configRelativePath) {
     await writeJsonFile(configPath, config);
     process.env.OPENCLAW_CONFIG_PATH = configPath;
@@ -117,13 +119,16 @@ async function startConfigRpcGateway({
     });
   }
   hotReloadRecovery.mockClear();
+  recordPhase?.("port.allocate");
   const port = await getFreePort();
+  recordPhase?.("server.start");
   server = await startGatewayServer(port, {
     auth: { mode: "token", token: GATEWAY_TOKEN },
     prepareConfigSnapshot: prepareHostConfigSnapshot,
     controlUiEnabled: false,
     hotReloadRecovery,
   });
+  recordPhase?.("client.create");
   const connected = createDeferredCore();
   client = new GatewayClient({
     url: `ws://127.0.0.1:${port}`,
@@ -144,30 +149,57 @@ async function startConfigRpcGateway({
     onClose: (code, reason) => connected.reject(new Error(`closed ${code}: ${reason}`)),
   });
   client.start();
+  recordPhase?.("client.connect");
   await withTestTimeout(connected.promise, 10_000, "gateway connect timeout");
+  recordPhase?.("server.startupSettled");
   await server.startupSettled;
+  recordPhase?.("complete");
 }
 
-async function stopConfigRpcGateway() {
+async function stopConfigRpcGateway(recordPhase?: (phase: string) => void) {
   // This fixture has no run loop. Retire direct RPC restart timers before
   // teardown and after its owners drain so they cannot reach the next case.
   await runQaGatewayFixture(
-    async () => resetGatewayRestartStateForInProcessRestart(),
     async () => {
+      recordPhase?.("restart.before");
+      return resetGatewayRestartStateForInProcessRestart();
+    },
+    async () => {
+      recordPhase?.("client.stopAndWait");
       await client?.stopAndWait();
       client = undefined;
     },
     async () => {
+      recordPhase?.("server.close");
       await server?.close();
       server = undefined;
     },
-    () => resetGatewayRestartStateForInProcessRestart(),
-    () => state?.cleanup(),
-    () => resetLogger(),
-    () => clearPluginMetadataLifecycleCaches(),
-    () => vi.restoreAllMocks(),
-    () => expect(hotReloadRecovery).not.toHaveBeenCalled(),
+    () => {
+      recordPhase?.("restart.after");
+      return resetGatewayRestartStateForInProcessRestart();
+    },
+    () => {
+      recordPhase?.("state.cleanup");
+      return state?.cleanup();
+    },
+    () => {
+      recordPhase?.("logger.reset");
+      return resetLogger();
+    },
+    () => {
+      recordPhase?.("metadata.clearCaches");
+      return clearPluginMetadataLifecycleCaches();
+    },
+    () => {
+      recordPhase?.("mocks.restore");
+      return vi.restoreAllMocks();
+    },
+    () => {
+      recordPhase?.("recovery.assert");
+      return expect(hotReloadRecovery).not.toHaveBeenCalled();
+    },
   );
+  recordPhase?.("complete");
 }
 
 export async function resetTempDir(name: string): Promise<string> {
@@ -256,11 +288,31 @@ export async function writeUnresolvedAuthProfileTokenRef(missingEnvVar: string) 
 }
 
 export function installConfigWriteGatewayHooks(options: ConfigRpcGatewayOptions = {}) {
-  beforeEach(() => startConfigRpcGateway(options));
+  const phasesByTask = new WeakMap<TestContext["task"], { setup: string; teardown: string }>();
+  beforeEach((context) => {
+    const phases = { setup: "not-started", teardown: "not-started" };
+    phasesByTask.set(context.task, phases);
+    context.onTestFailed(() => {
+      console.error(
+        "[config-rpc-hook-phase]",
+        JSON.stringify({ test: context.task.name, ...phases }),
+      );
+    });
+    return startConfigRpcGateway(options, (phase) => {
+      phases.setup = phase;
+    });
+  });
   beforeEach(() => {
     pruneStaleControlPlaneBuckets(Number.MAX_SAFE_INTEGER);
   });
-  afterEach(stopConfigRpcGateway);
+  afterEach((context) => {
+    const phases = phasesByTask.get(context.task);
+    return stopConfigRpcGateway((phase) => {
+      if (phases) {
+        phases.teardown = phase;
+      }
+    });
+  });
 }
 
 export function installSharedConfigWriteGatewayHooks({
@@ -303,7 +355,7 @@ export function installSharedConfigWriteGatewayHooks({
       () => expect(hotReloadRecovery).not.toHaveBeenCalled(),
     ),
   );
-  afterAll(stopConfigRpcGateway);
+  afterAll(() => stopConfigRpcGateway());
 }
 
 export function installReadOnlyConfigGatewayHooks() {
@@ -321,7 +373,7 @@ export function installReadOnlyConfigGatewayHooks() {
       () => expect(hotReloadRecovery).not.toHaveBeenCalled(),
     ),
   );
-  afterAll(stopConfigRpcGateway);
+  afterAll(() => stopConfigRpcGateway());
 }
 
 export function configRpcWorkspacePath(name: string) {
