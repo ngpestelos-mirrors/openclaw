@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createGatewayUpdateLifecycle } from "../infra/update-check-lifecycle.js";
 import { createUpdateRun, finishUpdateRun } from "../infra/update-run-ledger.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import {
@@ -30,15 +31,18 @@ const graceMs = 5 * 60_000;
 let watcher: ReturnType<typeof startUpdateRunWatcher> | undefined;
 let clock: ReturnType<typeof createGatewaySchedulerClock>;
 let scheduler: ReturnType<typeof createTestGatewayScheduler>;
+let lifecycle: ReturnType<typeof createGatewayUpdateLifecycle>;
 
 beforeEach(() => {
   clock = createGatewaySchedulerClock(now);
   scheduler = createTestGatewayScheduler(clock.clock);
+  lifecycle = createGatewayUpdateLifecycle(scheduler);
   vi.spyOn(Date, "now").mockImplementation(clock.clock.now);
   vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-watcher-publication-"));
 });
 afterEach(async () => {
   await watcher?.stop();
+  await lifecycle.stop();
   watcher = undefined;
   closeOpenClawStateDatabaseForTest();
   vi.unstubAllEnvs();
@@ -68,7 +72,7 @@ function expectVersion(db: DatabaseSync, version: number) {
 
 function startWatcher() {
   const log = { warn: vi.fn() };
-  watcher = startUpdateRunWatcher({ scheduler, broadcast: vi.fn(), log });
+  watcher = startUpdateRunWatcher({ lifecycle, broadcast: vi.fn(), log });
   return log;
 }
 

@@ -354,7 +354,7 @@ export const updateHandlers: GatewayRequestHandlers = {
         },
       });
       if (adoptedCampaign) {
-        gatewayUpdateCampaign.bindRun(adoptedCampaign.campaignId, runId);
+        updateLifecycle.campaign?.bindRun(adoptedCampaign.campaignId, runId);
         context?.logGateway?.info(
           `update.run adopted campaign ${adoptedCampaign.campaignId} ${formatControlPlaneActor(actor)}`,
           { target: adoptedCampaign.target },

@@ -44,6 +44,7 @@ export const updateStatusHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateUpdateStatusParams, "update.status", respond)) {
       return;
     }
+    const lifecycle = currentUpdateCheckLifecycle();
     const startedAt = areDiagnosticsEnabledForProcess() ? performance.now() : undefined;
     const timing =
       startedAt === undefined ? undefined : createStageTimingTracker(() => performance.now());
@@ -95,7 +96,8 @@ export const updateStatusHandlers: GatewayRequestHandlers = {
       }
       mark("history");
       const { activeRun, lastRun } = await getUpdateRunStatusAsync();
-      const campaignRunId = gatewayUpdateCampaign.getRunId();
+      const campaign = lifecycle.campaign;
+      const campaignRunId = campaign?.getRunId();
       const campaignRun =
         !campaignRunId || lastRun?.runId === campaignRunId
           ? lastRun
@@ -107,7 +109,9 @@ export const updateStatusHandlers: GatewayRequestHandlers = {
                 );
                 return undefined;
               });
-      gatewayUpdateCampaign.reconcileRun(campaignRun);
+      if (lifecycle.isCurrent() && !lifecycle.signal.aborted) {
+        campaign?.reconcileRun(campaignRun);
+      }
       const schedule = getUpdateSchedule();
       mark("response");
       const result = {

@@ -36,8 +36,7 @@ export function createDeferredGatewayUpdateCheck(params: {
   activeWorkInspectors?: Partial<GatewayActiveWorkInspectors>;
 }): { start: () => void; stop: () => Promise<void> } {
   // Reserve cancellation before an early RPC can start install discovery.
-  const scheduler = params.scheduler;
-  const lifecycle = createGatewayUpdateLifecycle(scheduler);
+  const lifecycle = createGatewayUpdateLifecycle(params.scheduler);
   let stopped = false;
   let started = false;
   let runWatcher: ReturnType<typeof startUpdateRunWatcher> | undefined;
@@ -88,7 +87,7 @@ export function createDeferredGatewayUpdateCheck(params: {
     }
     started = true;
     runWatcher = startUpdateRunWatcher({
-      scheduler,
+      lifecycle,
       broadcast: (event, payload) =>
         params.broadcastToConnIds(event, payload, params.getClientConnIds()),
       log: params.log,

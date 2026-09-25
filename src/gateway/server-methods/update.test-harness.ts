@@ -337,7 +337,7 @@ vi.mock("../../infra/update-check-lifecycle.js", async (importOriginal) => {
     ...actual,
     currentUpdateCheckLifecycle: () => ({
       ...actual.currentUpdateCheckLifecycle(),
-      campaign: { adopt: adoptUpdateCampaignMock },
+      campaign: { adopt: adoptUpdateCampaignMock, bindRun: vi.fn() },
     }),
   };
 });

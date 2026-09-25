@@ -14,6 +14,7 @@ import {
   findDeliveryIntentOwner,
   loadPendingDelivery,
 } from "../infra/outbound/delivery-queue-storage.js";
+import { createGatewayUpdateLifecycle } from "../infra/update-check-lifecycle.js";
 import {
   createUpdateRun,
   finishUpdateRun,
@@ -56,15 +57,18 @@ vi.mock("./server-restart-sentinel.js", () => ({
 let services: ReturnType<typeof activateGatewayScheduledServices> | undefined;
 let watcher: ReturnType<typeof startUpdateRunWatcher> | undefined;
 let scheduler: ReturnType<typeof createTestGatewayScheduler> | undefined;
+let lifecycle: ReturnType<typeof createGatewayUpdateLifecycle> | undefined;
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
     await watcher?.stop();
+    await lifecycle?.stop();
     await services?.stopDeliveryRecovery();
     services?.heartbeatRunner.stop();
     await scheduler?.stop();
     watcher = undefined;
     services = undefined;
     scheduler = undefined;
+    lifecycle = undefined;
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     closeOpenClawAgentDatabasesForTest();
@@ -84,6 +88,7 @@ it("recovers a watcher-owned update notice on its runtime state after ambient ro
   });
   const clock = createGatewaySchedulerClock(Date.now());
   scheduler = createTestGatewayScheduler(clock.clock);
+  lifecycle = createGatewayUpdateLifecycle(scheduler);
   vi.spyOn(Date, "now").mockImplementation(clock.clock.now);
   resetGatewayWorkAdmission();
   const rootA = tempDirs.make("openclaw-runtime-recovery-a-");
@@ -153,7 +158,7 @@ it("recovers a watcher-owned update notice on its runtime state after ambient ro
   });
   recordUpdateRunStep(run.runId, { step: "notice:ack", status: "completed" });
   const broadcast = vi.fn();
-  watcher = startUpdateRunWatcher({ scheduler, broadcast, log });
+  watcher = startUpdateRunWatcher({ lifecycle, broadcast, log });
   expect(broadcast).toHaveBeenCalledWith(
     "update.run.changed",
     expect.objectContaining({ runId: run.runId, status: "running" }),
