@@ -28,6 +28,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { SQLITE_SESSION_WRITER_QUEUES } from "../state/openclaw-agent-write-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import { testState, writeSessionStore } from "./test-helpers.js";
@@ -371,7 +372,7 @@ test("sessions.delete keeps same-key successor worktree creation behind exact cl
   testState.agentConfig = { workspace };
   const { storePath } = await createSessionStoreDir();
   const key = "agent:main:dashboard:delete-worktree-successor";
-  const creatorProfileId = "delete-worktree-successor-creator";
+  const creatorProfileId = ensureProfileForEmail("delete-worktree-successor@example.test").id;
   const adminClient = {
     connect: { scopes: ["operator.admin"] },
     authenticatedUserProfile: {
@@ -391,7 +392,7 @@ test("sessions.delete keeps same-key successor worktree creation behind exact cl
       sessionId: string;
       worktree: { id: string; path: string; branch: string };
     }>("sessions.create", { key, agentId: "main", worktree: true }, { client: adminClient });
-    expect(predecessor.ok).toBe(true);
+    expect(predecessor.ok, JSON.stringify(predecessor.error)).toBe(true);
     const predecessorSessionId = predecessor.payload!.sessionId;
     const predecessorWorktree = predecessor.payload!.worktree;
 
