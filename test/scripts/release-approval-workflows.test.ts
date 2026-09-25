@@ -68,18 +68,6 @@ describe("release approval workflow contracts", () => {
     });
   });
 
-  it.each(["Start core npm publication", "Complete publish workflows"])(
-    "%s receives delegated child approval authority",
-    (name) => {
-      const step = requireJob("openclaw-release-publish", "publish").steps.find(
-        (candidate) => candidate.name === name,
-      );
-      expect(step?.env?.RELEASE_CHILD_APPROVER_TOKEN).toBe(
-        "${{ secrets.RELEASE_CHILD_APPROVER_TOKEN }}",
-      );
-    },
-  );
-
   it.each([
     ["plugin-npm-release", "validate_release_publish_approval"],
     ["openclaw-npm-release", "validate_publish_request"],

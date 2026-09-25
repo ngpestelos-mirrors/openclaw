@@ -526,12 +526,10 @@ and must be cleared after the release.
   their gates. The ClawHub OIDC child skips its `clawhub-plugin-release` gate
   on a verified receipt. npm children (`Plugin NPM Release`,
   `openclaw-npm-release.yml`) keep `npm-release` (npm trusted publishers are
-  bound to it, `npm trust list openclaw`); the parent approves their gates
-  with the `npm-release` environment secret `RELEASE_CHILD_APPROVER_TOKEN`
-  (release-manager fine-grained token, `Deployments: write`, `Actions: read`).
-  The workflow token itself cannot approve (`canApprove=false`), so without
-  that secret an unapproved npm child sits `waiting` silently. Watch every
-  child and approve npm children only (environment id `13010111854`):
+  bound to it, `npm trust list openclaw`) and the workflow token cannot
+  approve it (`canApprove=false`), so an unapproved npm child sits `waiting`
+  silently. Watch every child and approve npm children only (environment id
+  `13010111854`):
   ```bash
   gh api repos/openclaw/openclaw/actions/runs/<child>/pending_deployments
   gh api -X POST repos/openclaw/openclaw/actions/runs/<child>/pending_deployments \

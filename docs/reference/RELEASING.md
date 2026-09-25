@@ -512,15 +512,12 @@ The full checklist below explains each step; this section decides the default.
    bot-dispatched child verifies it in its trusted-tooling validation job. The
    ClawHub child then runs without its `clawhub-plugin-release` gate. npm
    children keep the `npm-release` gate because their npm trusted publishers
-   are bound to that environment; the parent approves those gates with the
-   `npm-release` environment secret `RELEASE_CHILD_APPROVER_TOKEN` (a
-   fine-grained token of a `release-managers-openclaw` member with
-   `Deployments: write` and `Actions: read` on `openclaw/openclaw`). Without
-   that secret the workflow token cannot approve (`canApprove=false`); watch
+   are bound to that environment (`npm trust list openclaw`), and the workflow
+   token cannot approve it (`canApprove=false`): watch
    `gh api repos/openclaw/openclaw/actions/runs/<child>/pending_deployments`
-   and approve npm children by hand. Direct human dispatch of a child keeps
-   its own gate and does not use the receipt. Never approve a ClawHub child by
-   hand; cancel it and re-dispatch the
+   and approve the plugin npm and core npm children by hand. Direct human
+   dispatch of a child keeps its own gate and does not use the receipt. Never
+   approve a ClawHub child by hand; cancel it and re-dispatch the
    parent. Before any re-dispatch, reject and cancel the failed parent's stale
    `waiting`/`queued` children or the new parent fails
    `ClawHub dispatch blocked by waiting run`. If the parent failed only at its

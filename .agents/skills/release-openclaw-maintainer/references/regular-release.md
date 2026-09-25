@@ -171,9 +171,8 @@ Wait for `npm-release` environment approval, plugin npm then core npm, parallel
 ClawHub, npm postpublish verification, Docker publication, dependency/release
 evidence, and GitHub finalization. Reuse successful immutable child artifacts
 on recovery; never rebuild or republish successful versions. The parent's
-approval receipt lets the ClawHub child skip its gate; npm children keep
-`npm-release` and are approved by the parent through the
-`RELEASE_CHILD_APPROVER_TOKEN` environment secret (by hand when it is unset).
+approval receipt lets the ClawHub child skip its gate; each npm child still
+needs its own `npm-release` approval (the workflow token cannot approve it).
 ClawHub children must never be approved by hand; watch `pending_deployments`
 on every child per `$release-openclaw-ci` (Publish children). Children run on hosted
 `ubuntu-latest`; if that pool is saturated, let jobs queue normally without
