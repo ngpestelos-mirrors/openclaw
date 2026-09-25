@@ -1,5 +1,5 @@
 import { createDeferredCore } from "../../shared/deferred.js";
-import type { ChannelIngressQueueClaim, ChannelIngressQueueRecord } from "./ingress-queue.js";
+import type { ChannelIngressQueueClaim, ChannelIngressQueueRecord } from "./ingress-queue.types.js";
 
 export class IngressAdoptionLostError extends Error {
   readonly code: "guillotined" | "superseded" | "reclaimed";

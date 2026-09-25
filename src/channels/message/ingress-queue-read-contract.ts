@@ -1,14 +1,27 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
-  ChannelIngressFailedHealth,
-  ChannelIngressPressureHealth,
-} from "./ingress-queue-health.kernel.js";
-import type {
   ChannelIngressClaimRequest,
   ChannelIngressClaimSnapshot,
   ChannelIngressListInput,
   ChannelIngressRow,
 } from "./ingress-queue.types.js";
+
+export type ChannelIngressFailedHealth = {
+  channelId: string;
+  accountId: string;
+  count: number;
+  oldestFailedAt?: number;
+};
+
+export type ChannelIngressPressureHealth = {
+  channelId: string;
+  accountId: string;
+  laneCount: number;
+  pendingCount: number;
+  claimedCount: number;
+  blockedCount: number;
+  oldestReceivedAt: number;
+};
 
 type ChannelIngressReadOperations = {
   "channelIngress.list": { input: ChannelIngressListInput; output: ChannelIngressRow[] };

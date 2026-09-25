@@ -4,7 +4,7 @@ import { resolveChannelIngressStateEnv } from "./ingress-queue-client.js";
 import type {
   ChannelIngressFailedHealth,
   ChannelIngressPressureHealth,
-} from "./ingress-queue-health.kernel.js";
+} from "./ingress-queue-read-contract.js";
 
 export async function countFailedChannelIngressQueueEntries(
   stateDir?: string,

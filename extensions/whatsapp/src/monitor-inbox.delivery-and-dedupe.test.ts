@@ -103,6 +103,7 @@ describe("web monitor inbox delivery and dedupe", () => {
       const onMessage = vi.fn();
       const queue = createWhatsAppDurableInboundQueue(DEFAULT_ACCOUNT_ID);
       const release = observeRetryRelease(queue);
+      let restoreCompletion: (() => void) | undefined;
       let listener: Awaited<ReturnType<typeof startInboxMonitor>>["listener"] | undefined;
       try {
         const started = await startInboxMonitor(onMessage as InboxOnMessage, {
@@ -144,7 +145,18 @@ describe("web monitor inbox delivery and dedupe", () => {
         if (!claim) {
           throw new Error("expected the replayed approval claim");
         }
+        const completed = createDeferred<boolean>();
+        const complete = queue.complete.bind(queue);
+        const completion = vi.spyOn(queue, "complete").mockImplementation((idOrClaim, options) => {
+          const writing = complete(idOrClaim, options);
+          if ((typeof idOrClaim === "string" ? idOrClaim : idOrClaim.id) === claim.id) {
+            completed.resolve(writing);
+          }
+          return writing;
+        });
+        restoreCompletion = () => completion.mockRestore();
         finishReplay.resolve();
+        expect(await completed.promise).toBe(true);
         await waitForInboundWorkDrained();
         expect(approvalResolver).toHaveBeenCalledTimes(3);
         expect(approvalResolver.mock.calls[1]).toEqual(approvalResolver.mock.calls[0]);
@@ -161,6 +173,7 @@ describe("web monitor inbox delivery and dedupe", () => {
         try {
           await listener?.close();
         } finally {
+          restoreCompletion?.();
           release.restore();
         }
       }
@@ -174,6 +187,10 @@ describe("web monitor inbox delivery and dedupe", () => {
     });
 
     const { listener, sock } = await startInboxMonitor(onMessage as InboxOnMessage);
+    const readReceiptSent = createDeferred<void>();
+    sock.readMessages.mockImplementationOnce(async () => {
+      readReceiptSent.resolve();
+    });
     expect(sock.sendPresenceUpdate).toHaveBeenNthCalledWith(1, "available");
     const messageId = nextMessageId("stream");
     const upsert = buildNotifyMessageUpsert({
@@ -186,6 +203,7 @@ describe("web monitor inbox delivery and dedupe", () => {
 
     sock.ev.emit("messages.upsert", upsert);
     await waitForMessageCalls(onMessage, 1);
+    await readReceiptSent.promise;
 
     const inbound = inboundMessage(onMessage);
     expect(inbound.payload.body).toBe("ping");

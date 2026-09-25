@@ -39,7 +39,7 @@ import type {
   ChannelIngressQueue,
   ChannelIngressQueueClaim,
   ChannelIngressQueueRecord,
-} from "./ingress-queue.js";
+} from "./ingress-queue.types.js";
 import {
   resolveIngressFailureDisposition,
   resolveIngressRetryDelayMs,

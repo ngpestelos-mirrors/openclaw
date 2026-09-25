@@ -318,6 +318,38 @@ describe("Discord durable ingress settlement", () => {
     try {
       await withQueue(async (queue) => {
         const attempted: string[] = [];
+        const dispositions = Array.from({ length: DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS }, () =>
+          createDeferred<boolean>(),
+        );
+        const followerCompleted = createDeferred<boolean>();
+        for (const disposition of [...dispositions, followerCompleted]) {
+          void disposition.promise.catch(() => {});
+        }
+        let dispositionCount = 0;
+        const observePoisonDisposition = (
+          ref: Parameters<DiscordQueue["release"]>[0],
+          promise: Promise<boolean>,
+        ) => {
+          if ((typeof ref === "string" ? ref : ref.id) === "poison") {
+            const disposition = dispositions[dispositionCount++];
+            if (disposition) {
+              void promise.then(disposition.resolve, disposition.reject);
+            }
+          }
+          return promise;
+        };
+        const observedQueue: DiscordQueue = {
+          ...queue,
+          release: (ref, options) => observePoisonDisposition(ref, queue.release(ref, options)),
+          fail: (ref, options) => observePoisonDisposition(ref, queue.fail(ref, options)),
+          complete: (ref, options) => {
+            const committed = queue.complete(ref, options);
+            if ((typeof ref === "string" ? ref : ref.id) === "follower") {
+              void committed.then(followerCompleted.resolve, followerCompleted.reject);
+            }
+            return committed;
+          },
+        };
         const preflight = vi.fn(async (params: { data: { message?: { id?: string } } }) => {
           const id = params.data.message?.id ?? "unknown";
           attempted.push(id);
@@ -333,7 +365,7 @@ describe("Discord durable ingress settlement", () => {
           testing: {
             preflightDiscordMessage: preflight as never,
             createIngressMonitor: (monitorParams) =>
-              createDiscordIngressMonitor({ ...monitorParams, queue }),
+              createDiscordIngressMonitor({ ...monitorParams, queue: observedQueue }),
           },
         });
         try {
@@ -346,10 +378,19 @@ describe("Discord durable ingress settlement", () => {
           await handler(rawMessage("independent", "lane-b", Date.now()) as never, {} as never);
 
           for (let attempt = 0; attempt < DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS; attempt += 1) {
-            await vi.advanceTimersByTimeAsync(3 * 60_000);
+            await expect(dispositions[attempt]!.promise).resolves.toBe(true);
+            if (attempt < DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS - 1) {
+              const pending = (await queue.listPending()).find((event) => event.id === "poison");
+              expect(pending).toMatchObject({ attempts: attempt + 1 });
+              const retryDelay = resolveIngressRetryDelayMs(pending!, undefined, Date.now());
+              expect(retryDelay).toBeGreaterThan(0);
+              vi.setSystemTime(Date.now() + retryDelay);
+              await vi.advanceTimersByTimeAsync(1_000);
+            }
           }
 
-          await vi.waitFor(() => expect(attempted).toContain("follower"));
+          await expect(followerCompleted.promise).resolves.toBe(true);
+          expect(attempted).toContain("follower");
           expect(attempted.indexOf("independent")).toBeGreaterThanOrEqual(0);
           expect(attempted.indexOf("independent")).toBeLessThan(attempted.indexOf("follower"));
           expect(attempted.filter((id) => id === "poison")).toHaveLength(

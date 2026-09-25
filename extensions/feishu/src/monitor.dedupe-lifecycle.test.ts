@@ -93,6 +93,7 @@ describe("Feishu account replay work ownership", () => {
         const deferred = createDeferred<FeishuIngressLifecycle>();
         const commitStarted = createDeferred<void>();
         const commitGate = createDeferred<void>();
+        const evicted = createDeferred<boolean>();
         const transportClosed = createDeferred<void>();
         const claim: FeishuMessageProcessingClaim = {
           keys: ["deferred-message"],
@@ -163,12 +164,24 @@ describe("Feishu account replay work ownership", () => {
         mocks.runtime.mockReturnValue(
           createPluginRuntimeMock({
             state: {
-              openChannelIngressQueue: <T, TMetadata = unknown, TCompletedMetadata = unknown>() =>
-                createChannelIngressQueueForTests<T, TMetadata, TCompletedMetadata>({
+              openChannelIngressQueue: <T, TMetadata = unknown, TCompletedMetadata = unknown>() => {
+                const ingressQueue = createChannelIngressQueueForTests<
+                  T,
+                  TMetadata,
+                  TCompletedMetadata
+                >({
                   channelId: "feishu",
                   accountId: "test",
                   stateDir: state.stateDir,
-                }),
+                });
+                const release = ingressQueue.release;
+                vi.spyOn(ingressQueue, "release").mockImplementation((...args) => {
+                  const committed = release(...args);
+                  evicted.resolve(committed);
+                  return committed;
+                });
+                return ingressQueue;
+              },
             },
           }),
         );
@@ -205,6 +218,7 @@ describe("Feishu account replay work ownership", () => {
             await commitStarted.promise;
             await vi.advanceTimersByTimeAsync(5 * 60_000);
             vi.useRealTimers();
+            await expect(evicted.promise).resolves.toBe(true);
           } else {
             const lifecycle = await deferred.promise;
             adoption = Promise.resolve(lifecycle.onAdopted());

@@ -55,6 +55,7 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { listVitestConfigTestFiles } from "../vitest-projects-config.test-support.js";
 import { databaseWorkerExtensionTestFiles } from "../vitest/vitest.extension-database-workers-paths.mjs";
 import { extensionCatchAllExcludedTestRoots } from "../vitest/vitest.extensions.config.ts";
+import { isSharedVitestExcludedPath } from "../vitest/vitest.pattern-file.ts";
 
 vi.mock("../../scripts/lib/vitest-build-prerequisites.mts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../scripts/lib/vitest-build-prerequisites.mts")>()),
@@ -204,41 +205,40 @@ describe("scripts/test-extension.mts", () => {
   it.each([
     {
       extensionId: "imessage",
-      workerFiles: databaseWorkerExtensionTestFiles.filter((file) =>
-        file.startsWith("extensions/imessage/"),
-      ),
+      ingressFile: "extensions/imessage/src/monitor/ingress.test.ts",
     },
     {
       extensionId: "feishu",
-      workerFiles: [
-        "bot.broadcast.test.ts",
-        "bot.test.ts",
-        "dedup.test.ts",
-        "feishu-ingress.test.ts",
-        "monitor.bot-menu.test.ts",
-        "monitor.dedupe-lifecycle.test.ts",
-        "monitor.helpers.test.ts",
-        "monitor.lifecycle.test.ts",
-        "monitor.reaction.test.ts",
-        "monitor.startup.test.ts",
-        "monitor.webhook-e2e.test.ts",
-        "monitor.webhook-security.test.ts",
-        "outbound-delivery.test.ts",
-        "outbound.send-authority.test.ts",
-      ].map((file) => `extensions/feishu/src/${file}`),
+      ingressFile: "extensions/feishu/src/monitor.message-handler.ingress.test.ts",
+    },
+    {
+      extensionId: "irc",
+      ingressFile: "extensions/irc/src/irc-ingress.test.ts",
+    },
+    {
+      extensionId: "line",
+      ingressFile: "extensions/line/src/webhook-spool.test.ts",
     },
   ])(
     "splits the $extensionId batch between persistence and channel owners without double counting",
-    ({ extensionId, workerFiles }) => {
+    async ({ extensionId, ingressFile }) => {
       const root = `extensions/${extensionId}`;
       const batch = resolveExtensionBatchPlan({ extensionIds: [extensionId] });
       const files = listExtensionTestFilesForRoots([root]);
+      const workerFiles = (
+        await listVitestConfigTestFiles("test/vitest/vitest.extension-database-workers.config.ts")
+      ).filter((file) => file.startsWith(`${root}/`));
+      const channelFiles = await listVitestConfigTestFiles(
+        `test/vitest/vitest.extension-${extensionId}.config.ts`,
+      );
+      expect(workerFiles).toContain(ingressFile);
+      expect(channelFiles).not.toContain(ingressFile);
+      expect([...workerFiles, ...channelFiles].toSorted()).toEqual(files.toSorted());
       expect(batch.extensionIds).toEqual([extensionId]);
       expect(batch.testFileCount).toBe(files.length);
       expect(batch.planGroups).toEqual([
         expect.objectContaining({
           config: "test/vitest/vitest.extension-database-workers.config.ts",
-          roots: workerFiles,
           extensionIds: [extensionId],
           testFileCount: workerFiles.length,
         }),
@@ -246,7 +246,7 @@ describe("scripts/test-extension.mts", () => {
           config: `test/vitest/vitest.extension-${extensionId}.config.ts`,
           roots: [root],
           extensionIds: [extensionId],
-          testFileCount: files.length - workerFiles.length,
+          testFileCount: channelFiles.length,
         }),
       ]);
       expect(listExtensionTestFilesForRoots(batch.planGroups[0]!.roots)).toEqual(
@@ -438,7 +438,7 @@ describe("scripts/test-extension.mts", () => {
     }
   });
 
-  it("batches extensions into config-specific vitest invocations", () => {
+  it("batches extensions into config-specific vitest invocations", async () => {
     const batch = resolveExtensionBatchPlan({
       cwd: process.cwd(),
       extensionIds: [
@@ -488,34 +488,39 @@ describe("scripts/test-extension.mts", () => {
       "zalouser",
     ]);
     const allFiles = listExtensionTestFilesForRoots(batch.extensionIds.map(bundledPluginRoot));
-    const groupedFiles = batch.planGroups.flatMap((group) => {
-      const files = listExtensionTestFilesForRoots(group.roots).filter(
-        (file) =>
-          group.config === "test/vitest/vitest.extension-database-workers.config.ts" ||
-          !databaseWorkerExtensionTestFiles.includes(file),
+    const executableFiles = allFiles.filter(
+      (file) => !isSharedVitestExcludedPath(file, "extensions"),
+    );
+    const groupedFiles: string[] = [];
+    for (const group of batch.planGroups) {
+      const configFiles = new Set(await listVitestConfigTestFiles(group.config));
+      const inventory = listExtensionTestFilesForRoots(group.roots);
+      const files = inventory.filter((file) => configFiles.has(file));
+      const excludedFiles = inventory.filter((file) =>
+        isSharedVitestExcludedPath(file, "extensions"),
       );
-      expect(group.testFileCount).toBe(files.length);
-      return files;
-    });
+      expect(group.testFileCount, group.config).toBe(files.length + excludedFiles.length);
+      groupedFiles.push(...files);
+    }
     expect(batch.testFileCount).toBe(allFiles.length);
-    expect(groupedFiles.toSorted()).toEqual(allFiles.toSorted());
-    expect(new Set(groupedFiles).size).toBe(allFiles.length);
-    const stablePlanGroups = batch.planGroups.map(({ estimatedCost, testFileCount, ...group }) => {
-      expectPositiveIntegerMetric(estimatedCost);
-      expectPositiveIntegerMetric(testFileCount);
-      return group;
-    });
+    expect(groupedFiles.toSorted()).toEqual(executableFiles.toSorted());
+    expect(new Set(groupedFiles).size).toBe(executableFiles.length);
+    const stablePlanGroups = batch.planGroups.map(
+      ({ estimatedCost, testFileCount, config, extensionIds }) => {
+        expectPositiveIntegerMetric(estimatedCost);
+        expectPositiveIntegerMetric(testFileCount);
+        return { config, extensionIds };
+      },
+    );
 
     expect(stablePlanGroups).toEqual([
       {
         config: "test/vitest/vitest.extension-acpx.config.ts",
         extensionIds: ["acpx"],
-        roots: [bundledPluginRoot("acpx")],
       },
       {
         config: "test/vitest/vitest.extension-browser.config.ts",
         extensionIds: ["browser"],
-        roots: [bundledPluginRoot("browser")],
       },
       {
         config: "test/vitest/vitest.extension-database-workers.config.ts",
@@ -524,6 +529,8 @@ describe("scripts/test-extension.mts", () => {
           "browser",
           "diffs",
           "feishu",
+          "irc",
+          "line",
           "matrix",
           "mattermost",
           "memory-core",
@@ -535,107 +542,70 @@ describe("scripts/test-extension.mts", () => {
           "zalo",
           "zalouser",
         ],
-        roots: [
-          ...[
-            "matrix",
-            "telegram",
-            "mattermost",
-            "voice-call",
-            "whatsapp",
-            "zalo",
-            "zalouser",
-          ].flatMap((extensionId) =>
-            databaseWorkerExtensionTestFiles.filter((file) =>
-              file.startsWith(`extensions/${extensionId}/`),
-            ),
-          ),
-          bundledPluginRoot("memory-core"),
-          ...["msteams", "feishu", "acpx", "diffs", "browser", "qa-lab"].flatMap((extensionId) =>
-            databaseWorkerExtensionTestFiles.filter((file) =>
-              file.startsWith(`extensions/${extensionId}/`),
-            ),
-          ),
-        ],
       },
       {
         config: "test/vitest/vitest.extension-diffs.config.ts",
         extensionIds: ["diffs"],
-        roots: [bundledPluginRoot("diffs")],
       },
       {
         config: "test/vitest/vitest.extension-feishu.config.ts",
         extensionIds: ["feishu"],
-        roots: [bundledPluginRoot("feishu")],
       },
       {
         config: "test/vitest/vitest.extension-irc.config.ts",
         extensionIds: ["irc"],
-        roots: [bundledPluginRoot("irc")],
       },
       {
         config: "test/vitest/vitest.extension-line.config.ts",
         extensionIds: ["line"],
-        roots: [bundledPluginRoot("line")],
       },
       {
         config: "test/vitest/vitest.extension-matrix.config.ts",
         extensionIds: ["matrix"],
-        roots: [bundledPluginRoot("matrix")],
       },
       {
         config: "test/vitest/vitest.extension-mattermost.config.ts",
         extensionIds: ["mattermost"],
-        roots: [bundledPluginRoot("mattermost")],
       },
       {
         config: "test/vitest/vitest.extension-media.config.ts",
         extensionIds: ["vydra"],
-        roots: [bundledPluginRoot("vydra")],
       },
       {
         config: "test/vitest/vitest.extension-misc.config.ts",
         extensionIds: ["firecrawl"],
-        roots: [bundledPluginRoot("firecrawl")],
       },
       {
         config: "test/vitest/vitest.extension-msteams.config.ts",
         extensionIds: ["msteams"],
-        roots: [bundledPluginRoot("msteams")],
       },
       {
         config: "test/vitest/vitest.extension-provider-openai.config.ts",
         extensionIds: ["openai"],
-        roots: [bundledPluginRoot("openai")],
       },
       {
         config: "test/vitest/vitest.extension-qa.config.ts",
         extensionIds: ["qa-lab"],
-        roots: [bundledPluginRoot("qa-lab")],
       },
       {
         config: "test/vitest/vitest.extension-slack.config.ts",
         extensionIds: ["slack"],
-        roots: [bundledPluginRoot("slack")],
       },
       {
         config: "test/vitest/vitest.extension-telegram.config.ts",
         extensionIds: ["telegram"],
-        roots: [bundledPluginRoot("telegram")],
       },
       {
         config: "test/vitest/vitest.extension-voice-call.config.ts",
         extensionIds: ["voice-call"],
-        roots: [bundledPluginRoot("voice-call")],
       },
       {
         config: "test/vitest/vitest.extension-whatsapp.config.ts",
         extensionIds: ["whatsapp"],
-        roots: [bundledPluginRoot("whatsapp")],
       },
       {
         config: "test/vitest/vitest.extension-zalo.config.ts",
         extensionIds: ["zalo", "zalouser"],
-        roots: [bundledPluginRoot("zalo"), bundledPluginRoot("zalouser")],
       },
     ]);
   });
