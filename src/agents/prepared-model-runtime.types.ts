@@ -34,8 +34,6 @@ export type PreparedModelRuntimeCatalogMode = "live" | "static";
 export type PreparedModelCatalogRefreshOptions = {
   refresh?: boolean;
   providerIds?: readonly string[];
-  /** The publication owner awaits completion while existing readers retain their generation. */
-  waitForCompletion?: boolean;
   changedOnly?: boolean;
 };
 

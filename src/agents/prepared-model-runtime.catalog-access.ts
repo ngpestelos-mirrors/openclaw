@@ -660,10 +660,7 @@ export function createFullModelCatalogAccess(
       await acquireNativeCatalog([normalizeProvider(selection.provider)], selection),
     loadFullModelCatalog: async (options) => {
       // Standalone commands cannot publish background discovery after their process exits.
-      if (
-        options?.waitForCompletion ||
-        (options?.refresh && params.inventoryOwner.provenance === "standalone")
-      ) {
+      if (options?.refresh && params.inventoryOwner.provenance === "standalone") {
         return await acquireCatalog(options);
       }
       let timer: ReturnType<typeof setTimeout> | undefined;

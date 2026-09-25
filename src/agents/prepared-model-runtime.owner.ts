@@ -2,6 +2,7 @@ import path from "node:path";
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { hashRuntimeConfigValue } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { captureRemoteModelCatalogStartupSnapshot } from "../model-catalog/remote-overlay.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { isReservedSystemAgentId } from "../system-agent/agent-id.js";
 import {
@@ -446,6 +447,7 @@ export async function publishPreparedModelRuntimeOwnerBatch(
     failed: (error: Error, isCurrent: () => boolean) => void;
   },
 ): Promise<void> {
+  const catalogGeneration = captureRemoteModelCatalogStartupSnapshot();
   const candidates = params.ownersToPublish.map((owner) => {
     const input = owner.input;
     owner.environmentFingerprint = effectiveEnvironmentFingerprint(input);
@@ -515,6 +517,11 @@ export async function publishPreparedModelRuntimeOwnerBatch(
     const result = results.get(candidate.owner);
     if (!result || candidate.owner.snapshot === result.snapshot) {
       return;
+    }
+    if (captureRemoteModelCatalogStartupSnapshot() !== catalogGeneration) {
+      throw new PreparedModelRuntimePublicationSupersededError(
+        "Accepted model catalog changed during runtime preparation",
+      );
     }
     publishPreparedPluginGeneration(candidate.owner, result.pluginGeneration);
     const snapshot = publishPreparedModelRuntimeOwnerSnapshot(candidate.owner, result.snapshot);

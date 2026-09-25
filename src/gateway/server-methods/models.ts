@@ -85,16 +85,13 @@ export const modelsHandlers: GatewayRequestHandlers = {
       if (!publicationScope) {
         return;
       }
-      const remotePublished =
-        params.refresh === true &&
-        (await applyRemoteModelCatalogUpdate(context.getRuntimeConfig)) === "published";
       if (params.refresh !== true) {
         refreshExpiredPreparedModelCatalog({ agentId: resolved.agentId, config: cfg });
       }
       const result = await buildModelsListResult({
         source: { kind: "gateway", context },
         agentId: resolved.agentId,
-        params: remotePublished ? { ...params, refresh: false } : params,
+        params,
         includeManualSelection: hasGatewayClientCap(
           client?.connect.caps,
           GATEWAY_CLIENT_CAPS.MODEL_SELECTION_POLICY,
@@ -118,6 +115,13 @@ export const modelsHandlers: GatewayRequestHandlers = {
         client,
       })?.forAgent(resolved.agentId, projected.models);
       respond(true, policy ? policy.catalog(projected) : projected, undefined);
+      if (params.refresh === true) {
+        void Promise.resolve()
+          .then(() => applyRemoteModelCatalogUpdate(context.getRuntimeConfig))
+          .catch((error: unknown) => {
+            context.logGateway.warn("remote model catalog adoption failed", { error: String(error) });
+          });
+      }
     } catch (error) {
       if (error instanceof SessionMutationAuthorizationChangedError) {
         respond(false, undefined, error.error);

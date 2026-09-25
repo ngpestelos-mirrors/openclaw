@@ -359,16 +359,6 @@ async function publishPreparedModelRuntimeCatalogReplacement(params: {
       isOwnerRegistered: (key, owner) => (committed ? params.owners : staged).get(key) === owner,
       isOwnerPublished: (key, owner) => committed && params.owners.get(key) === owner,
     });
-    for (const owner of candidates) {
-      assertCurrent();
-      const catalog = await owner.snapshot?.loadFullModelCatalog?.({
-        refresh: true,
-        waitForCompletion: true,
-      });
-      if (!catalog || catalog.authoritative === false || catalog.refreshFailed) {
-        throw new Error("Remote catalog preparation could not acquire a complete model inventory");
-      }
-    }
     for (const config of new Set(candidates.map((owner) => owner.input.config))) {
       await prepareModelPricingContext(config);
     }
@@ -397,6 +387,9 @@ async function publishPreparedModelRuntimeCatalogReplacement(params: {
       claims.length = 0;
       staged.clear();
     });
+    for (const owner of candidates) {
+      void owner.snapshot?.loadFullModelCatalog?.({ refresh: true }).catch(() => undefined);
+    }
     return true;
   } catch (error) {
     if (

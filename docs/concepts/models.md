@@ -444,7 +444,9 @@ metadata does not override a provider's account-discovery or model-admission
 rules.
 
 The background check also notices bundles downloaded by another process.
-An explicit Gateway catalog refresh can apply a pending bundle sooner.
+An explicit Gateway model-list refresh triggers adoption after returning the
+current rows; it does not wait for adoption or another agent's discovery.
+A corrupt saved bundle leaves the accepted generation serving.
 `openclaw models refresh` reports the download result, not whether a running
 Gateway has finished publishing it.
 
