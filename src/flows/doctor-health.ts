@@ -423,6 +423,9 @@ async function runDoctorHealthFlowWithResult(
         recordUpdateDoctorRefusal(error.message);
       }
     }
+    const { classifyDoctorMaintenanceRestorationRefusal } =
+      await import("../commands/doctor-maintenance-inspection.js");
+    const maintenanceRefusal = classifyDoctorMaintenanceRestorationRefusal(error);
     const causes = collectNestedErrorCandidates(error);
     const unsafeConfigWrite = causes.find(
       (cause): cause is ConfigWritePostCommitError =>
@@ -438,6 +441,7 @@ async function runDoctorHealthFlowWithResult(
     );
     doctorResult = {
       status: "error",
+      ...(maintenanceRefusal ? { maintenanceRefusal } : {}),
       ...(!healthContext && refusalWarnings.length > 0 ? { warnings: refusalWarnings } : {}),
       failureFacts:
         !unsafeConfigWrite && !schemaRefusal && refusalFacts.length > 0

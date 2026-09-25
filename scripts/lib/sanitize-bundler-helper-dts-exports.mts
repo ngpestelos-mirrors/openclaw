@@ -8,7 +8,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import ts from "typescript";
+import type ts from "typescript";
+import { getTypeScript } from "./ts-guard-utils.mts";
 
 /** Runtime helpers that must never appear as undeclared declaration exports. */
 const BUNDLER_RUNTIME_HELPER_EXPORT_NAMES = ["__exportAll"] as const;
@@ -34,6 +35,7 @@ function isBundlerHelperName(name: string | undefined): name is BundlerRuntimeHe
 }
 
 function hasLocalHelperBinding(sourceFile: ts.SourceFile, name: string): boolean {
+  const ts = getTypeScript();
   return sourceFile.statements.some((statement) => {
     if (ts.isImportDeclaration(statement) && statement.importClause) {
       const { importClause } = statement;
@@ -95,6 +97,7 @@ function removeListElement(
 }
 
 function scanDts(sourceText: string, fileName: string): DtsSanitization {
+  const ts = getTypeScript();
   const sourceFile = ts.createSourceFile(
     fileName,
     sourceText,

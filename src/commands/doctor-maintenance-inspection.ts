@@ -10,25 +10,43 @@ import { GatewayLockError } from "../infra/gateway-lock.js";
 import { StartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { DoctorStateMigrationRefusalError } from "../infra/state-migrations.messages.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
+import type { DoctorMaintenanceRefusal } from "../infra/update-doctor-result.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import type { OpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { UpdateSchemaRefusalError } from "../state/openclaw-update-schema-refusal.js";
 
 /** Repair failures that cannot safely authorize restoring the stopped service. */
-export function isDoctorMaintenanceRestorationUnsafe(error: unknown): boolean {
+export function classifyDoctorMaintenanceRestorationRefusal(
+  error: unknown,
+): DoctorMaintenanceRefusal | undefined {
   if (hasGatewayServiceStopUnsafeError(error) || hasCommandProcessCleanupError(error)) {
-    return true;
+    return { kind: "data-at-risk", reason: "active-mutation" };
   }
-  return collectNestedErrorCandidates(error).some(
-    (cause) =>
-      cause instanceof DoctorUnreadableStateDatabaseError ||
-      cause instanceof DoctorStateMigrationRefusalError ||
-      cause instanceof StartupMaintenanceRequiredError ||
-      cause instanceof ExecApprovalsMigrationRequiredError ||
-      cause instanceof UpdateSchemaRefusalError ||
-      cause instanceof GatewayLockError ||
-      (cause instanceof ConfigWritePostCommitError && cause.rollbackStatus !== "restored"),
-  );
+  const causes = collectNestedErrorCandidates(error);
+  if (causes.some((cause) => cause instanceof DoctorUnreadableStateDatabaseError)) {
+    return { kind: "data-at-risk", reason: "unreadable-state" };
+  }
+  if (
+    causes.some(
+      (cause) =>
+        cause instanceof DoctorStateMigrationRefusalError ||
+        cause instanceof StartupMaintenanceRequiredError ||
+        cause instanceof ExecApprovalsMigrationRequiredError ||
+        cause instanceof UpdateSchemaRefusalError,
+    )
+  ) {
+    return { kind: "data-at-risk", reason: "incomplete-migration" };
+  }
+  if (
+    causes.some(
+      (cause) =>
+        cause instanceof GatewayLockError ||
+        (cause instanceof ConfigWritePostCommitError && cause.rollbackStatus !== "restored"),
+    )
+  ) {
+    return { kind: "data-at-risk", reason: "gateway-state-unverified" };
+  }
+  return undefined;
 }
 
 /** The same persisted-state admission protects completion and exceptional restoration. */

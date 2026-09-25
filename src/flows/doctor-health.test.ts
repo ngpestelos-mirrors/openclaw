@@ -574,7 +574,16 @@ describe("runDoctorHealthFlow", () => {
             expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
             return;
           }
-          if (outcome === "repair-failed") {
+          if (outcome === "config-refused") {
+            // Refusal left both historical databases untouched; restoration must prove readiness.
+            await expect(run).rejects.toThrow(
+              "Doctor left the Gateway stopped because persisted repair state is not ready",
+            );
+            expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
+            expectCoordinatorReleased();
+            expect(fs.readFileSync(state.configPath)).toEqual(configBefore);
+            expect(fs.readFileSync(initial.path)).toEqual(agentBefore);
+          } else if (outcome === "repair-failed") {
             await expect(run).rejects.toThrow("synthetic migration failure");
           } else if (outcome === "store-close-failed") {
             await expect(run).rejects.toThrow("synthetic database close failure");

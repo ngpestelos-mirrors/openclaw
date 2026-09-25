@@ -41,7 +41,7 @@ import { holdDoctorMaintenanceExit } from "./doctor-maintenance-exit.js";
 import { acquireDoctorGatewayMaintenanceCoordinator } from "./doctor-maintenance-foreground.js";
 import {
   assertDoctorMaintenanceInspection,
-  isDoctorMaintenanceRestorationUnsafe,
+  classifyDoctorMaintenanceRestorationRefusal,
   readDoctorMaintenanceRecoveryConfig,
 } from "./doctor-maintenance-inspection.js";
 import {
@@ -659,7 +659,7 @@ export async function beginDoctorMaintenance(params: {
           await release(assertCustody);
           return;
         }
-        if (isDoctorMaintenanceRestorationUnsafe(failure)) {
+        if (classifyDoctorMaintenanceRestorationRefusal(failure)) {
           retainStoppedInstallation = true;
           await release(assertCustody);
           return;

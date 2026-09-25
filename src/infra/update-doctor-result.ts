@@ -42,10 +42,22 @@ export const PACKAGE_POST_INSTALL_DOCTOR_ADVISORY: PackageUpdateStepAdvisory = {
 };
 
 const configHashSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+const DoctorMaintenanceRefusalSchema = z.object({
+  kind: z.literal("data-at-risk"),
+  reason: z.enum([
+    "active-mutation",
+    "unreadable-state",
+    "incomplete-migration",
+    "gateway-state-unverified",
+  ]),
+});
+export type DoctorMaintenanceRefusal = z.infer<typeof DoctorMaintenanceRefusalSchema>;
+
 const doctorResultEvidence = {
   configHash: z.union([z.literal("unchanged"), configHashSchema]).optional(),
   configInputHash: configHashSchema.optional(),
   warnings: z.array(z.string()).optional(),
+  maintenanceRefusal: DoctorMaintenanceRefusalSchema.optional(),
   // Invalid optional diagnostics cannot change the child's classified outcome.
   failureFacts: z.array(UpdateFailureFactSchema).catch([]).optional(),
   configChanges: z.array(UpdateDoctorConfigChangeSchema).optional(),

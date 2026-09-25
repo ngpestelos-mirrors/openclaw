@@ -27,6 +27,17 @@ describe("post-install doctor result IPC", () => {
     { status: "ok" as const, configHash: "unchanged" },
     { status: "ok" as const, warnings: ["plugin/example: version probe timed out"] },
     { status: "error" as const, configHash: "a".repeat(64), configInputHash: "b".repeat(64) },
+    ...(
+      [
+        "active-mutation",
+        "unreadable-state",
+        "incomplete-migration",
+        "gateway-state-unverified",
+      ] as const
+    ).map((reason) => ({
+      status: "error" as const,
+      maintenanceRefusal: { kind: "data-at-risk" as const, reason },
+    })),
     {
       status: "error" as const,
       failureFacts: [
