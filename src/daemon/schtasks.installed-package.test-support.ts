@@ -13,7 +13,9 @@ import {
 } from "../../scripts/lib/gateway-bench-installed-package.ts";
 import { hasErrnoCode } from "../infra/errno.js";
 import { isMainModule } from "../infra/is-main.js";
+import { mergeProcessEnv, resolveEnvironmentValue } from "../infra/process-env.js";
 import { run, type CommandRecord } from "./schtasks.installed-command.test-support.js";
+import { resolveServiceManagerEnv } from "./service-process-env.js";
 
 export const installedStatusSchema = z.object({
   service: z.object({
@@ -298,34 +300,32 @@ export function samePath(actual: string, expected: string) {
   assert.equal(path.resolve(actual).toLowerCase(), path.resolve(expected).toLowerCase());
 }
 export function boundedEnv(root: string, installRoot: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const key of ["SystemRoot", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "PROGRAMDATA"]) {
-    const source = Object.keys(process.env).find(
-      (name) => name.toUpperCase() === key.toUpperCase(),
-    );
-    if (source) {
-      env[key] = process.env[source];
-    }
-  }
-  return {
-    ...env,
-    PATH: [path.dirname(process.execPath), installRoot, env.PATH].join(path.delimiter),
-    HOME: os.userInfo().homedir,
-    USERPROFILE: os.userInfo().homedir,
-    OPENCLAW_STATE_DIR: path.join(root, "state"),
-    OPENCLAW_CONFIG_PATH: path.join(root, "openclaw.json"),
-    APPDATA: path.join(root, "appdata"),
-    LOCALAPPDATA: path.join(root, "local-appdata"),
-    TEMP: path.join(root, "tmp"),
-    TMP: path.join(root, "tmp"),
-    TMPDIR: path.join(root, "tmp"),
-    npm_config_prefix: installRoot,
-    npm_config_cache: path.join(root, "npm-cache"),
-    NPM_CONFIG_USERCONFIG: path.join(root, "npmrc"),
-    NPM_CONFIG_GLOBALCONFIG: path.join(root, "global-npmrc"),
-    CI: "true",
-    NO_COLOR: "1",
-  };
+  const native = resolveServiceManagerEnv();
+  return mergeProcessEnv([
+    native,
+    {
+      PATH: [
+        path.dirname(process.execPath),
+        installRoot,
+        resolveEnvironmentValue(native, "PATH"),
+      ].join(path.delimiter),
+      HOME: os.userInfo().homedir,
+      USERPROFILE: os.userInfo().homedir,
+      OPENCLAW_STATE_DIR: path.join(root, "state"),
+      OPENCLAW_CONFIG_PATH: path.join(root, "openclaw.json"),
+      APPDATA: path.join(root, "appdata"),
+      LOCALAPPDATA: path.join(root, "local-appdata"),
+      TEMP: path.join(root, "tmp"),
+      TMP: path.join(root, "tmp"),
+      TMPDIR: path.join(root, "tmp"),
+      npm_config_prefix: installRoot,
+      npm_config_cache: path.join(root, "npm-cache"),
+      NPM_CONFIG_USERCONFIG: path.join(root, "npmrc"),
+      NPM_CONFIG_GLOBALCONFIG: path.join(root, "global-npmrc"),
+      CI: "true",
+      NO_COLOR: "1",
+    },
+  ]);
 }
 export async function readInput(inputPath: string) {
   const input = inputSchema.parse(JSON.parse(await fs.readFile(inputPath, "utf8")));

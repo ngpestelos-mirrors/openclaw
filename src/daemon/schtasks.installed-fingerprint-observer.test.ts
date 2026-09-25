@@ -64,6 +64,8 @@ describe("installed fingerprint source qualification", () => {
       ".github/workflows/windows-testbox-probe.yml",
       "test/helpers/gateway/config-rpc-gateway.ts",
       "src/daemon/schtasks.installed-powershell-context.test-support.mts",
+      "src/daemon/schtasks.installed-package.test-support.ts",
+      "src/daemon/schtasks.installed-package.test.ts",
     ];
     for (const filename of changed) {
       repo.write(filename);
