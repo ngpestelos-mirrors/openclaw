@@ -190,6 +190,7 @@ async function runDoctorConfigPreflightOperation(
       throw new Error("Config changed after plugin install migration; rerun Doctor.");
     }
   }
+  let postConvergenceStateConfig: OpenClawConfig | undefined;
   if (stateDirMigrations) {
     const refreshed = await prepareDoctorMigrationPlugins({
       cfg: automaticConfigRepair?.config ?? baseConfig,
@@ -210,8 +211,14 @@ async function runDoctorConfigPreflightOperation(
     snapshot = refreshed.snapshot;
     baseConfig = snapshot.sourceConfig ?? snapshot.config ?? {};
     automaticConfigRepair = planAdmittedConfigRepair(snapshot);
+    // Core migrations use the validated runtime projection; plugins retain source locators.
+    postConvergenceStateConfig = automaticConfigRepair?.snapshot.config;
   }
-  const stateMigrationInput = resolveStateMigrationConfigInput({ snapshot, baseConfig });
+  const stateMigrationInput = resolveStateMigrationConfigInput({
+    snapshot,
+    baseConfig,
+    postConvergenceConfig: postConvergenceStateConfig,
+  });
   if (stateDirMigrations) {
     if (options.doctorOnlyStateMigrations === true && !stateMigrationInput?.cfg) {
       const { detectLegacyExecApprovals, migrateLegacyExecApprovals } =

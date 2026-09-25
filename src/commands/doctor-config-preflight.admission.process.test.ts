@@ -18,6 +18,7 @@ import {
 import {
   createBuiltRuntime,
   createSourceRuntime,
+  runBuiltRuntime,
   runSourceRuntime,
 } from "./doctor-config-preflight.process.test-support.js";
 import { doctorConfigRuntimeEntrypoints } from "./doctor-config-runtime.test-support.js";
@@ -87,6 +88,7 @@ describe("startup admission before persistent writes", () => {
     invalidPlugin?: boolean;
     unavailablePlugin?: boolean;
     selectedSession?: boolean;
+    retainedPluginRecords?: boolean;
     restored?: boolean;
     identityFile?: string;
     canonicalIdentity?: boolean;
@@ -117,6 +119,14 @@ describe("startup admission before persistent writes", () => {
       name: "legacy workspace with repairable config",
       workspace: true,
       repairable: true,
+      config: "local",
+      reason: "Legacy workspace setup state requires migration",
+    },
+    {
+      name: "legacy workspace with retained plugin install records",
+      workspace: true,
+      repairable: false,
+      retainedPluginRecords: true,
       config: "local",
       reason: "Legacy workspace setup state requires migration",
     },
@@ -215,6 +225,7 @@ describe("startup admission before persistent writes", () => {
       invalidPlugin,
       unavailablePlugin,
       selectedSession,
+      retainedPluginRecords,
       restored,
       identityFile,
       canonicalIdentity,
@@ -309,7 +320,17 @@ describe("startup admission before persistent writes", () => {
                 ? { load: { paths: [path.join(root, "missing-plugin")] } }
                 : invalidPlugin
                   ? { entries: { broken: { enabled: "not-a-boolean" } } }
-                  : { enabled: false },
+                  : retainedPluginRecords
+                    ? {
+                        enabled: false,
+                        installs: {
+                          retained: {
+                            source: "path",
+                            installPath: path.join(root, "retained-plugin"),
+                          },
+                        },
+                      }
+                    : { enabled: false },
               agents: selectedSession
                 ? { entries: { agent: { workspace: workspaceDir } } }
                 : { defaults: { workspace: workspaceDir } },
@@ -383,6 +404,9 @@ describe("startup admission before persistent writes", () => {
           path.join(stateDir, "agents", "main", "agent", "auth-profiles.json"),
           '{"version":1,"profiles":{}}\n',
         );
+        const workspaceBefore = retainedPluginRecords
+          ? fs.readFileSync(legacyWorkspacePath)
+          : undefined;
         const configBefore = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : null;
         const schemaBefore = schemaMetadata(databasePath);
         const before = manifest(stateDir);
@@ -417,21 +441,22 @@ describe("startup admission before persistent writes", () => {
           console.log("__CANONICAL_IDENTITY_READY__");
         }
       `;
+        const env: NodeJS.ProcessEnv = {
+          PATH: process.env.PATH,
+          HOME: root,
+          USERPROFILE: root,
+          OPENCLAW_STATE_DIR: stateDir,
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_WORKSPACE_DIR:
+            config === "clobbered" ? path.join(stateDir, "empty-workspace") : workspaceDir,
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+          OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(root, "bundled"),
+          NO_COLOR: "1",
+        };
         const result = await tempDirs.track(
           runSourceRuntime(
             runtimeRoot,
-            {
-              PATH: process.env.PATH,
-              HOME: root,
-              USERPROFILE: root,
-              OPENCLAW_STATE_DIR: stateDir,
-              OPENCLAW_CONFIG_PATH: configPath,
-              OPENCLAW_WORKSPACE_DIR:
-                config === "clobbered" ? path.join(stateDir, "empty-workspace") : workspaceDir,
-              OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-              OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(root, "bundled"),
-              NO_COLOR: "1",
-            },
+            env,
             [
               "--input-type=module",
               "--eval",
@@ -488,6 +513,39 @@ describe("startup admission before persistent writes", () => {
         } else {
           expect(manifest(stateDir)).toEqual(before);
           expect(schemaMetadata(databasePath)).toEqual(schemaBefore);
+        }
+        if (retainedPluginRecords) {
+          // Startup preservation is proved above; explicit Doctor now owns the repair.
+          if (prepared.isOpen) {
+            prepared.close();
+          }
+          const args = ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"];
+          const doctor = await tempDirs.track(
+            compiled
+              ? runBuiltRuntime(runtimeRoot, env, args, 60_000)
+              : runSourceRuntime(
+                  runtimeRoot,
+                  env,
+                  [path.join(runtimeRoot, "src", "entry.ts"), ...args],
+                  60_000,
+                ),
+          );
+          const doctorOutput = `${doctor.stdout}\n${doctor.stderr}`;
+          expect(doctor.code, doctorOutput).toBe(0);
+          expect(fs.existsSync(legacyWorkspacePath)).toBe(false);
+          const archives = fs
+            .readdirSync(workspaceDir)
+            .filter((name) => name.startsWith("openclaw-workspace-state.json.migrated."));
+          expect(archives).toHaveLength(1);
+          expect(fs.readFileSync(path.join(workspaceDir, archives[0]!))).toEqual(workspaceBefore);
+          expect(schemaMetadata(databasePath, workspaceDir).workspaceSetup).toEqual({
+            version: 1,
+            bootstrap_seeded_at: "2026-07-02T00:00:00.000Z",
+            setup_completed_at: "2026-07-02T00:00:00.000Z",
+          });
+          expect(JSON.parse(fs.readFileSync(configPath, "utf8")).plugins).not.toHaveProperty(
+            "installs",
+          );
         }
       } finally {
         if (prepared.isOpen) {
