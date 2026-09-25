@@ -444,6 +444,10 @@ it("does not reuse sibling or startup observations when an attempt fails before 
     "sibling-refusal-worker.json",
     "sibling-refusal-child.json",
     "sibling-refusal-cleanup.json",
+    "legacy-operator-restored-index.json",
+    "restored-index-post-update.json",
+    "restored-index-candidate-import.json",
+    "restored-index-rollback.json",
   ];
   for (const name of logs) {
     fs.mkdirSync(path.dirname(path.join(f.artifacts, name)), { recursive: true });
