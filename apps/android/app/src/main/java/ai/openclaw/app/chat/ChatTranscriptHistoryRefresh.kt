@@ -8,7 +8,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** Coalesces durable transcript invalidations until the current owner can read them. */
+/** Preserves independent history reads and coalesces recovery after worker refusals. */
 internal class ChatTranscriptHistoryRefresh(
   private val scope: CoroutineScope,
   private val retryDelayMs: Long,
@@ -30,6 +30,29 @@ internal class ChatTranscriptHistoryRefresh(
   private var pending: Pending? = null
 
   fun request(
+    owner: Owner,
+    isCurrent: () -> Boolean,
+    refresh: suspend () -> Unit,
+  ) {
+    if (!isCurrent()) return
+    scope.launch {
+      if (!isCurrent()) return@launch
+      try {
+        refresh()
+      } catch (err: CancellationException) {
+        throw err
+      } catch (err: Throwable) {
+        if (isRetryableRefusal(err)) queueRecovery(owner, isCurrent, refresh)
+      }
+    }
+  }
+
+  private fun isRetryableRefusal(err: Throwable): Boolean =
+    err is GatewayRequestRejected &&
+      err.gatewayError.code == "UNAVAILABLE" &&
+      err.gatewayError.details?.retryable == true
+
+  private fun queueRecovery(
     owner: Owner,
     isCurrent: () -> Boolean,
     refresh: suspend () -> Unit,
@@ -62,18 +85,16 @@ internal class ChatTranscriptHistoryRefresh(
                     }
                   }
                 if (!shouldRead) break
+                delay(retryDelayMs)
+                if (!isCurrent()) break
                 try {
                   refresh()
                 } catch (err: CancellationException) {
                   throw err
                 } catch (err: Throwable) {
-                  if (err is GatewayRequestRejected &&
-                    err.gatewayError.code == "UNAVAILABLE" &&
-                    err.gatewayError.details?.retryable == true
-                  ) {
+                  if (isRetryableRefusal(err)) {
                     // A worker refusal does not discharge a committed transcript invalidation.
                     synchronized(this@ChatTranscriptHistoryRefresh) { request.requested = true }
-                    delay(retryDelayMs)
                   }
                 }
               }

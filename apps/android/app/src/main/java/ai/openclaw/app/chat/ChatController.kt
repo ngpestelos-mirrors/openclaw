@@ -7701,20 +7701,21 @@ class ChatController internal constructor(
       }
     }
     if (purpose == HistoryRefreshPurpose.Transcript) {
-      synchronized(gatewayScopeApplyLock) {
-        if (!isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())) return
-        val owner = ChatTranscriptHistoryRefresh.Owner(sessionKey, generation, currentCacheScope(), resolveAgentIdForSessionKey(sessionKey))
-        transcriptHistoryRefresh.request(
-          owner,
-          isCurrent = {
-            synchronized(gatewayScopeApplyLock) {
-              isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get()) &&
-                owner.gatewayScope == currentCacheScope() && owner.agentId == resolveAgentIdForSessionKey(_sessionKey.value)
-            }
-          },
-          refresh = ::refresh,
-        )
-      }
+      val owner =
+        synchronized(gatewayScopeApplyLock) {
+          if (!isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())) return
+          ChatTranscriptHistoryRefresh.Owner(sessionKey, generation, currentCacheScope(), resolveAgentIdForSessionKey(sessionKey))
+        }
+      transcriptHistoryRefresh.request(
+        owner,
+        isCurrent = {
+          synchronized(gatewayScopeApplyLock) {
+            isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get()) &&
+              owner.gatewayScope == currentCacheScope() && owner.agentId == resolveAgentIdForSessionKey(_sessionKey.value)
+          }
+        },
+        refresh = ::refresh,
+      )
       return
     }
     scope.launch { refresh() }
