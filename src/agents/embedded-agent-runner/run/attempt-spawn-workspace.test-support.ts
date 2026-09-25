@@ -1320,7 +1320,7 @@ export async function createContextEngineAttemptRunner(params: {
       sessionKey: params.sessionKey,
       sessionFile: params.sessionKey,
       sessionTarget: {
-        agentId: "main",
+        agentId: params.attemptOverrides?.agentId ?? "main",
         sessionId: "embedded-session",
         sessionKey: params.sessionKey,
         storePath: sessionStore,

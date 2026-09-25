@@ -561,10 +561,7 @@ describe("sessions_spawn tool", () => {
           worktreeName: "issue-review",
           worktreeBaseRef: "main",
         },
-        {
-          signal: undefined,
-          sessionMutationCommitGuard: expect.any(Function),
-        },
+        { assertCreationCurrent: expect.any(Function) },
       );
       expectRegisteredSubagentRun(registerRun, {
         runId: "run-visible",
@@ -638,7 +635,7 @@ describe("sessions_spawn tool", () => {
     expect(callGateway).toHaveBeenCalledWith(
       "sessions.create",
       expect.not.objectContaining({ category: expect.anything() }),
-      { signal: undefined, sessionMutationCommitGuard: expect.any(Function) },
+      { assertCreationCurrent: expect.any(Function) },
     );
   });
 
@@ -903,7 +900,7 @@ describe("sessions_spawn tool", () => {
       expect(callGateway).toHaveBeenCalledWith(
         "sessions.create",
         expect.objectContaining({ timeoutMs: seconds * 1000 }),
-        { signal: undefined, sessionMutationCommitGuard: expect.any(Function) },
+        { assertCreationCurrent: expect.any(Function) },
       );
       expectRegisteredSubagentRun(registerRun, {
         runId: "run-visible-timed",
@@ -973,7 +970,7 @@ describe("sessions_spawn tool", () => {
         spawnDepth: 1,
       }),
       expect.objectContaining({ via: "spawn", requesterSessionKey: "agent:main:main" }),
-      { signal: undefined, sessionMutationCommitGuard: expect.any(Function) },
+      { assertCreationCurrent: expect.any(Function) },
     );
     expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("fork");
     const creation = mockCallArg(callGateway, 0, 2, "sessions.create");
@@ -1127,7 +1124,7 @@ describe("sessions_spawn tool", () => {
       expect(callGateway).toHaveBeenCalledWith(
         "sessions.create",
         expect.objectContaining({ cwd }),
-        { signal: undefined, sessionMutationCommitGuard: expect.any(Function) },
+        { assertCreationCurrent: expect.any(Function) },
       );
     });
   });
@@ -1236,7 +1233,7 @@ describe("sessions_spawn tool", () => {
           },
         },
       },
-      { signal: undefined, sessionMutationCommitGuard: expect.any(Function) },
+      { assertCreationCurrent: expect.any(Function) },
     );
     expectRegisteredSubagentRun(registerRun, {
       childSessionKey: "agent:main:dashboard:restricted-child",
@@ -1312,7 +1309,7 @@ describe("sessions_spawn tool", () => {
           "sessions.create",
           expect.objectContaining({ parentSessionKey }),
           expect.objectContaining({ requesterSessionKey: parentSessionKey }),
-          { signal: undefined, sessionMutationCommitGuard: expect.any(Function) },
+          { assertCreationCurrent: expect.any(Function) },
         );
       });
     },
@@ -1360,7 +1357,7 @@ describe("sessions_spawn tool", () => {
         expect(callGateway).toHaveBeenCalledWith(
           "sessions.create",
           expect.objectContaining({ agentId: "worker", parentSessionKey: "global" }),
-          { signal: undefined, sessionMutationCommitGuard: expect.any(Function) },
+          { assertCreationCurrent: expect.any(Function) },
         );
       }
     },
@@ -1616,7 +1613,7 @@ describe("sessions_spawn tool", () => {
           spawnDepth: 2,
           task: expect.stringContaining("[Subagent Task]\n\ninspect from the grandchild"),
         }),
-        { signal: undefined, sessionMutationCommitGuard: expect.any(Function) },
+        { assertCreationCurrent: expect.any(Function) },
       );
     });
   });
