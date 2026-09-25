@@ -10,7 +10,7 @@ import type { CodexSandboxPolicy, CodexTurnEnvironmentParams } from "./protocol.
 import type { CodexSandboxExecEnvironment } from "./sandbox-exec-server.js";
 import type { CodexAppServerBindingStore } from "./session-binding.js";
 import type { CodexAppServerClientFactory } from "./shared-client.js";
-import type { CodexAppServerThreadLifecycleBinding } from "./thread-lifecycle.js";
+import type { CodexAppServerThreadLifecycleBinding } from "./thread-lifecycle-types.js";
 import type { CodexAppServerTurnRouter, CodexThreadRouteReservation } from "./turn-router.js";
 
 export type CodexRunAttemptOptions = {
