@@ -3,7 +3,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
-import type { DB } from "../../state/openclaw-agent-db.generated.js";
+import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import {
   ensureSessionTranscriptArchiveSchema,
@@ -17,7 +17,7 @@ import type {
   TranscriptArchivePublishResult,
 } from "./session-accessor.sqlite-archive-types.js";
 
-type TranscriptArchiveDatabase = Pick<DB, "session_transcript_archives">;
+type TranscriptArchiveDatabase = Pick<OpenClawAgentKyselyDatabase, "session_transcript_archives">;
 
 const PENDING_ARCHIVE_PUBLISH_BATCH_SIZE = 4;
 
