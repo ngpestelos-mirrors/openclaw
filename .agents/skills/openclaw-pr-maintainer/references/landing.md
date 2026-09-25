@@ -6,11 +6,11 @@ release artifacts under ordinary ship authority.
 
 ## Checkout and source
 
-`scripts/pr` owns review/prepare worktrees under the canonical repository. If that
-location is outside writable scope, use a fresh full ordinary checkout inside the
-allowed workspace before initializing the operation. Preserve complete history
-and blobs for provenance. Do not clone away an active/uncertain operation or use a
-new lock namespace to retry an uncertain merge.
+`scripts/pr` owns review/prepare worktree placement. Use the emitted `worktree=`
+path; do not derive the directory. Ensure the native-selected location is writable
+before initializing the operation. Preserve complete history and blobs for
+provenance. Do not clone away an active/uncertain operation or use a new lock
+namespace to retry an uncertain merge.
 
 Run the trusted canonical/origin-main wrapper. Untrusted PR code must not supply
 the local wrapper or execute locally; use the source isolation procedure from
