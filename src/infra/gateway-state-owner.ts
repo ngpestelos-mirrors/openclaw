@@ -24,6 +24,7 @@ import {
   parseGatewayLockPayload,
 } from "./gateway-lock-payload.js";
 import { applyPrivateModeSync } from "./private-mode.js";
+import { normalizeSqliteNonNegativeInteger } from "./sqlite-busy-timeout.js";
 import { runWithSqliteCleanup } from "./sqlite-lifecycle-errors.js";
 import { isLockOwnerDefinitelyStale } from "./stale-lock-file.js";
 
@@ -95,6 +96,49 @@ export const GatewayStateOwnerContentionError = resolveGlobalSingleton(
 export type GatewayStateOwnerContentionError = InstanceType<
   typeof GatewayStateOwnerContentionError
 >;
+
+const ForeignStateSchemaOwnerError = resolveGlobalSingleton(
+  Symbol.for("openclaw.foreignStateSchemaOwnerError"),
+  () =>
+    class extends Error {
+      constructor(readonly databasePath: string) {
+        super(
+          `OpenClaw state at ${databasePath} is undergoing offline maintenance; retry when it finishes.`,
+        );
+      }
+    },
+);
+
+/** Retry cold admission only; the same budget covers opening and its first unentered write. */
+export function withStateDatabaseColdAdmission<T>(
+  params: { databasePath: string; busyTimeoutMs: number; canRetry?: () => boolean },
+  open: (remainingBusyTimeoutMs: () => number) => T,
+): T {
+  const budget = normalizeSqliteNonNegativeInteger(params.busyTimeoutMs, "busyTimeoutMs");
+  const deadline = performance.now() + budget;
+  const canonical = resolveIdentityPathViaExistingAncestorSync(params.databasePath);
+  const remainingBusyTimeoutMs = () => Math.max(0, Math.ceil(deadline - performance.now()));
+  const waiting = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  for (;;) {
+    try {
+      assertStateDatabaseAccessAllowed(params.databasePath);
+      return open(remainingBusyTimeoutMs);
+    } catch (error) {
+      if (
+        !(error instanceof ForeignStateSchemaOwnerError) ||
+        resolveIdentityPathViaExistingAncestorSync(error.databasePath) !== canonical ||
+        params.canRetry?.() === false
+      ) {
+        throw error;
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
+        throw error;
+      }
+      Atomics.wait(waiting, 0, 0, Math.min(10, remaining));
+    }
+  }
+}
 
 /** Startup and state removal must meet outside the state tree, independent of TMPDIR. */
 export function resolveGatewayStateOwnerPath(databasePath: string): string {
@@ -344,7 +388,10 @@ export function acquireGatewayStateOwner(params: {
 }
 
 /** Accepted schema work retains the sidecar even when its process owner stops lending. */
-export function acquireStateDatabaseSchemaLease(databasePath: string): StateDatabaseSchemaLease {
+export function acquireStateDatabaseSchemaLease(
+  databasePath: string,
+  options: { busyTimeoutMs?: number } = {},
+): StateDatabaseSchemaLease {
   const pathname = resolveGatewayStateOwnerPath(databasePath);
   let owner = owners.get(pathname);
   if (owner && (!owner.accepting || !hasPhysicalOwnership(owner))) {
@@ -353,13 +400,30 @@ export function acquireStateDatabaseSchemaLease(databasePath: string): StateData
   if (owner) {
     assertStateDatabaseAccessAllowed(databasePath);
   }
-  const payload = owner?.payload ?? defaultPayload(databasePath);
-  const lock = acquireOwnerFile(
-    databasePath,
-    pathname,
-    payload,
-    owner ? 0 : OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-  );
+  const payload = owner?.payload ?? {
+    ...defaultPayload(databasePath),
+    stateOwnerKind: "schema" as const,
+  };
+  let lock: ReturnType<typeof acquireFileLockSync>;
+  try {
+    lock = acquireOwnerFile(
+      databasePath,
+      pathname,
+      payload,
+      owner ? 0 : (options.busyTimeoutMs ?? OPENCLAW_SQLITE_BUSY_TIMEOUT_MS),
+    );
+  } catch (error) {
+    if (error instanceof GatewayStateOwnerContentionError) {
+      try {
+        assertStateDatabaseAccessAllowed(databasePath);
+      } catch (currentOwnerError) {
+        if (currentOwnerError instanceof ForeignStateSchemaOwnerError) {
+          throw currentOwnerError;
+        }
+      }
+    }
+    throw error;
+  }
   const projectionPath =
     owner?.projectionPath ??
     path.join(
@@ -521,6 +585,9 @@ export function assertStateDatabaseAccessAllowed(
   if (owner.pid === process.pid) {
     assertMaintenance();
     return;
+  }
+  if (owner.stateOwnerKind === "schema" && owner.role === "sqlite-maintenance") {
+    throw new ForeignStateSchemaOwnerError(databasePath);
   }
   throw new Error(
     `OpenClaw state at ${databasePath} is undergoing offline maintenance; retry when it finishes.`,

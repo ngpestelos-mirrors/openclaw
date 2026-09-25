@@ -25,7 +25,7 @@ export const StateSchemaMutationConflictError = resolveGlobalSingleton(
 
 /** Ordinary transactions use SQLite; schema changes retain the installation's process owner. */
 export function withStateDatabaseSchemaMaintenance<T>(
-  { databasePath }: { databasePath: string },
+  { databasePath, busyTimeoutMs }: { databasePath: string; busyTimeoutMs?: number },
   operation: () => T,
 ): T {
   if (requestSqliteWorkerSchemaMaintenance(databasePath)) {
@@ -39,7 +39,7 @@ export function withStateDatabaseSchemaMaintenance<T>(
   }
   let lease: StateDatabaseSchemaLease;
   try {
-    lease = acquireStateDatabaseSchemaLease(canonical);
+    lease = acquireStateDatabaseSchemaLease(canonical, { busyTimeoutMs });
   } catch (error) {
     if (error instanceof GatewayStateOwnerContentionError) {
       throw new StateSchemaMutationConflictError(canonical, error);

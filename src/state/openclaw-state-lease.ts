@@ -135,7 +135,7 @@ async function runStateLeaseOwnerInScope<T>(
   const heartbeatMs = Math.max(250, Math.min(30_000, Math.floor(validated.leaseMs / 3)));
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
-  let runTimerRenewal = AsyncLocalStorage.snapshot();
+  let runTimerRenewal: ReturnType<typeof AsyncLocalStorage.snapshot> | undefined;
   const abortLost = (cause?: unknown) => {
     if (!leaseLost.signal.aborted) {
       leaseLost.abort(
@@ -362,6 +362,9 @@ async function runStateLeaseOwnerInScope<T>(
       }
     };
     const renewFromTimer = () => {
+      if (!runTimerRenewal) {
+        return;
+      }
       try {
         runTimerRenewal(renewAndSchedule);
       } catch (error) {
@@ -510,6 +513,7 @@ async function runStateLeaseOwnerInScope<T>(
         }
       } else {
         scheduleExpiry();
+        runTimerRenewal = AsyncLocalStorage.snapshot();
         heartbeat = setInterval(renewFromTimer, heartbeatMs);
         heartbeat.unref?.();
       }
@@ -613,5 +617,6 @@ async function runStateLeaseOwnerInScope<T>(
     clearTimeout(expiryTimer);
     heartbeat = undefined;
     expiryTimer = undefined;
+    runTimerRenewal = undefined;
   });
 }

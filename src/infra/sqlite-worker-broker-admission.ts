@@ -254,7 +254,8 @@ export function assertSqliteWorkerActorReusable(
 export function prepareSqliteWorkerActorContext(actor: Actor | undefined, job: Job): void {
   const { request } = job;
   const stateContext = request.stateContext ?? actor?.stateContext;
-  if (actor) {
+  // A drained actor retains native disposal custody after its caller loses admission.
+  if (actor && request.type !== "close") {
     assertStateDatabaseAccessAllowed(actor.stateDatabasePath ?? actor.databasePath, {
       maintenanceScope: job.maintenanceScope,
     });

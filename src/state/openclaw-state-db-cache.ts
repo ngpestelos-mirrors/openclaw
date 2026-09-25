@@ -464,9 +464,7 @@ function retireOpenClawStateDatabaseHandle(
   retireAdmission = true,
   options?: OpenClawStateDatabaseCloseOptions,
 ): void {
-  if (database.db.isOpen) {
-    assertStateDatabaseAccessAllowed(database.path);
-  }
+  // Retained native custody permits disposal after the caller loses admission.
   assertStateDatabaseBorrowersReleased(borrowers.get(database.db), database.path);
   const borrowedOwner = borrowers.get(database.db);
   try {

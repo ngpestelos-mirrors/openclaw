@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { expect, it, vi, type Mock } from "vitest";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { stampConfigWriteMetadata } from "../../config/io.meta.js";
+import { resolveConfigPath } from "../../config/paths.js";
 import type { CallGatewayOptions } from "../../gateway/call.js";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
 import { acquireGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
@@ -50,6 +51,12 @@ function createServingOwnerFixture() {
       try {
         coordinator = acquireGatewayStateOwner({
           databasePath: resolveOpenClawStateSqlitePath(env),
+          payload: {
+            pid: process.pid,
+            createdAt: new Date().toISOString(),
+            configPath: resolveConfigPath(env),
+            role: "gateway",
+          },
         });
         lease = acquireGatewayOwnerLease({
           env,

@@ -46,6 +46,10 @@ export async function createDiskSwap(sourceRoot, base) {
     clearTimeout,
   });
   const files = [
+    "infra/errno",
+    "infra/fs-safe-defaults",
+    "infra/fs-safe-remove",
+    "infra/mutation-authority",
     "infra/package-update-swap",
     "infra/package-update-filesystem",
     "infra/package-update-integrity",
@@ -94,8 +98,12 @@ export async function createDiskSwap(sourceRoot, base) {
     if (modules.has(path.basename(specifier))) {
       continue;
     }
-    const names = [...namesSet];
-    const builtin = specifier.startsWith("node:") ? await import(specifier) : undefined;
+    const dependency = specifier.startsWith("node:")
+      ? await import(specifier)
+      : specifier.startsWith("@openclaw/fs-safe/")
+        ? await import(pathToFileURL(require.resolve(specifier)).href)
+        : undefined;
+    const names = dependency ? Object.keys(dependency) : [...namesSet];
     stubs.set(
       specifier,
       new vm.SyntheticModule(
@@ -104,8 +112,8 @@ export async function createDiskSwap(sourceRoot, base) {
           for (const name of names) {
             this.setExport(
               name,
-              builtin
-                ? builtin[name]
+              dependency
+                ? dependency[name]
                 : Object.hasOwn(values, name)
                   ? values[name]
                   : function () {

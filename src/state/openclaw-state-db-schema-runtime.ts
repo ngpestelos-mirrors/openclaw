@@ -84,7 +84,7 @@ export function ensureOpenClawStateRuntimeSchema(
     // Preserve transactional schema convergence and its diagnostics after a clean rollback.
   }
 
-  return withStateDatabaseSchemaMaintenance({ databasePath: pathname }, () => {
+  return withStateDatabaseSchemaMaintenance({ databasePath: pathname, busyTimeoutMs }, () => {
     const now = Date.now();
     const retiredTableChanges: string[] = [];
     const applied = runStateSchemaMigrationTransaction(

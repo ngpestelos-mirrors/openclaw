@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { resolveConfigPath } from "../../config/paths.js";
 import { withGatewayServiceUpdateAuthority } from "../../daemon/service-update-authority.js";
 import {
   acquireGatewayOwnerLease,
@@ -39,6 +40,18 @@ vi.mock("./lifecycle-audit.js", () => ({
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const { runServiceRestart } = await import("./lifecycle-core.js");
+
+function acquireServingStateOwner(env: NodeJS.ProcessEnv = process.env) {
+  return acquireGatewayStateOwner({
+    databasePath: resolveOpenClawStateSqlitePath(env),
+    payload: {
+      pid: process.pid,
+      createdAt: new Date().toISOString(),
+      configPath: resolveConfigPath(env),
+      role: "gateway",
+    },
+  });
+}
 
 function beforeIntentWriteAdmission(operation: () => void) {
   const write = existingWrites.runExistingOpenClawStateWriteTransaction;
@@ -129,9 +142,7 @@ it.each([
     if (!serviceState) {
       vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     }
-    const coordinator = acquireGatewayStateOwner({
-      databasePath: resolveOpenClawStateSqlitePath(env),
-    });
+    const coordinator = acquireServingStateOwner(env);
     const lease = acquireGatewayOwnerLease({
       env,
       port: 18789,
@@ -176,9 +187,7 @@ it("targets the replacement published before restart-intent write admission", as
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   // Synthetic process identities isolate the race; lease storage and intent consumption are real.
   vi.spyOn(processOwners, "readStateLeaseProcessOwnerStatus").mockReturnValue("live");
-  const coordinator = acquireGatewayStateOwner({
-    databasePath: resolveOpenClawStateSqlitePath(process.env),
-  });
+  const coordinator = acquireServingStateOwner();
   try {
     publishServingOwner(process.pid + 2);
     let publications = 0;
@@ -213,9 +222,7 @@ it.each([
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     vi.spyOn(processOwners, "readStateLeaseProcessOwnerStatus").mockReturnValue(state);
     const { db } = openOpenClawStateDatabase();
-    const coordinator = acquireGatewayStateOwner({
-      databasePath: resolveOpenClawStateSqlitePath(process.env),
-    });
+    const coordinator = acquireServingStateOwner();
     try {
       publishServingOwner(
         process.pid + 2,
@@ -342,9 +349,7 @@ it("refuses stopped native status while unpublished Gateway startup holds author
 it("targets the verified serving child even when native status reports stopped", async () => {
   vi.spyOn(process, "platform", "get").mockReturnValue("linux");
   vi.spyOn(processOwners, "readStateLeaseProcessOwnerStatus").mockReturnValue("live");
-  const coordinator = acquireGatewayStateOwner({
-    databasePath: resolveOpenClawStateSqlitePath(process.env),
-  });
+  const coordinator = acquireServingStateOwner();
   service.readRuntime.mockResolvedValue({ status: "stopped" });
   try {
     publishServingOwner(process.pid);

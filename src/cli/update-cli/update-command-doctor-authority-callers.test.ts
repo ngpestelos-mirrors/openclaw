@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as doctorMaintenance from "../../commands/doctor-maintenance.js";
 import { readConfigFileSnapshot } from "../../config/config.js";
 import { recordDeferredPluginMigrations } from "../../infra/deferred-plugin-migrations.js";
-import { tryAcquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
+import { acquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import * as packageRoot from "../../infra/openclaw-root.js";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
 import {
@@ -285,7 +285,15 @@ describe("unproved Doctor authority callers", () => {
       }
     };
     const before = inspect();
-    const holder = tryAcquireGatewayStateOwner(databasePath);
+    const holder = acquireGatewayStateOwner({
+      databasePath,
+      payload: {
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+        configPath: state.configPath,
+        role: "gateway",
+      },
+    });
     expect(holder).not.toBeNull();
     const maintenance = vi.spyOn(doctorMaintenance, "beginDoctorMaintenance");
     try {

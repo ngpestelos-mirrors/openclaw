@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import { withStateDatabaseColdAdmission } from "../infra/gateway-state-owner.js";
 import {
   normalizeSqliteNonNegativeInteger,
   runWithSqliteBusyTimeout,
@@ -9,7 +10,10 @@ import {
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
 import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.js";
-import type { SqliteTransactionOptions } from "../infra/sqlite-transaction.js";
+import {
+  assertTransactionUsable,
+  type SqliteTransactionOptions,
+} from "../infra/sqlite-transaction.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { createSqliteWalReclamationResult } from "../infra/sqlite-wal-reclamation.js";
 import {
@@ -247,6 +251,7 @@ function openOpenClawStateDatabaseWithBusyTimeout(
   options: OpenClawStateDatabaseOptions = {},
   busyTimeoutMs = OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   lockFailureReporting: SqliteLockFailureReporting = "report",
+  remainingColdAdmissionTimeout?: () => number,
 ): OpenClawStateDatabase {
   getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
   const env = options.env ?? process.env;
@@ -263,16 +268,14 @@ function openOpenClawStateDatabaseWithBusyTimeout(
   }
   const pathname = resolveDatabasePath(options);
   const existingSchema = isExistingOpenClawStateSchema(pathname);
-  // Latched paths are quarantined: the recorder closed any live handle, and
-  // every open fails fast here until doctor repairs the file and clears it.
-  try {
-    stateDbCache.assertOpenClawStateDatabaseOpenAllowed(pathname);
-  } catch (error) {
-    stateDbCache.recordOpenClawStateDatabaseLifecycleOpenError(pathname, error);
-    throw error;
-  }
   const cached = stateDbCache.getCachedOpenClawStateDatabase(pathname);
   if (cached?.db.isOpen) {
+    try {
+      stateDbCache.assertOpenClawStateDatabaseOpenAllowed(pathname);
+    } catch (error) {
+      stateDbCache.recordOpenClawStateDatabaseLifecycleOpenError(pathname, error);
+      throw error;
+    }
     assertStateDatabaseSchemaAdmission(cached);
     assertOpenClawStateWriteAllowed({
       database: cached.db,
@@ -289,29 +292,32 @@ function openOpenClawStateDatabaseWithBusyTimeout(
     }
     return cached;
   }
-  try {
-    assertOpenClawStateDatabaseFreshOpenAllowed(options);
-  } catch (error) {
-    stateDbCache.recordOpenClawStateDatabaseLifecycleOpenError(pathname, error);
-    throw error;
-  }
   let unpublished: OpenClawStateDatabase | undefined;
   try {
-    if (cached) {
-      // A closed handle can leave Kysely and WAL helpers cached.
-      stateDbCache.closeStaleCachedOpenClawStateDatabase(cached);
-    }
-    unpublished = openUnpublishedStateDatabase({
-      pathname,
-      env,
-      busyTimeoutMs,
-      lockFailureReporting,
-      existingSchema,
-      initializationAgentPaths: options.initializationAgentPaths,
-      ensureSchema: (database, initialization) =>
-        ensureSchema(database, pathname, env, initialization, busyTimeoutMs),
-      recordOpenFailure: recordOpenClawStateDatabaseOpenFailure,
-    });
+    const open = (remaining: () => number) => {
+      getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
+      stateDbCache.assertOpenClawStateDatabaseOpenAllowed(pathname);
+      assertOpenClawStateDatabaseFreshOpenAllowed(options);
+      if (cached) {
+        // A closed handle can leave Kysely and WAL helpers cached.
+        stateDbCache.closeStaleCachedOpenClawStateDatabase(cached);
+      }
+      return openUnpublishedStateDatabase({
+        pathname,
+        env,
+        busyTimeoutMs: remaining(),
+        lockFailureReporting,
+        existingSchema,
+        initializationAgentPaths: options.initializationAgentPaths,
+        ensureSchema: (database, initialization) =>
+          ensureSchema(database, pathname, env, initialization, remaining()),
+        recordOpenFailure: recordOpenClawStateDatabaseOpenFailure,
+      });
+    };
+    unpublished = remainingColdAdmissionTimeout
+      ? open(remainingColdAdmissionTimeout)
+      : withStateDatabaseColdAdmission({ databasePath: pathname, busyTimeoutMs }, open);
+    setSqliteBusyTimeout(unpublished.db, busyTimeoutMs);
   } catch (error) {
     if (lockFailureReporting === "report" || !isOpenClawStateWriteContentionError(error)) {
       stateDbCache.recordOpenClawStateDatabaseLifecycleOpenError(pathname, error);
@@ -450,13 +456,20 @@ export function runOpenClawStateWriteTransaction<T>(
     isExistingOpenClawStateSchema(existing.path, existing.db);
   }
   let database = existing;
-  let result: T;
-  try {
+  let callbackEntered = false;
+  let committed: { database: OpenClawStateDatabase; value: T };
+  const execute = (remaining?: () => number) => {
     const acquired = options.database
       ? openOpenClawStateDatabase(options)
-      : (database ?? openOpenClawStateDatabase(options));
+      : (database ??
+        openOpenClawStateDatabaseWithBusyTimeout(
+          options,
+          OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+          "report",
+          remaining,
+        ));
     database = acquired;
-    result = runManagedStateTransaction(
+    const value = runManagedStateTransaction(
       acquired.db,
       () => {
         assertStateDatabaseSchemaAdmission(acquired);
@@ -467,14 +480,40 @@ export function runOpenClawStateWriteTransaction<T>(
           schemaReady: !options.database && acquired === getOpenClawStateDatabaseIfOpen(options),
         });
         observeOpenClawDatabaseMaintenanceResource(acquired.db);
+        callbackEntered = true;
         return operation(acquired);
       },
       {
         databaseLabel: acquired.path,
         ...transactionOptions,
+        ...(remaining ? { busyTimeoutMs: remaining() } : {}),
         operationLabel: transactionOptions.operationLabel ?? "state.write",
       },
     );
+    return { database: acquired, value };
+  };
+  try {
+    committed = existing
+      ? execute()
+      : withStateDatabaseColdAdmission(
+          {
+            databasePath: resolveDatabasePath(options),
+            busyTimeoutMs: transactionOptions.busyTimeoutMs ?? OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+            canRetry() {
+              if (
+                callbackEntered ||
+                (database && (!database.db.isOpen || database.db.isTransaction))
+              ) {
+                return false;
+              }
+              if (database) {
+                assertTransactionUsable(database.db);
+              }
+              return true;
+            },
+          },
+          execute,
+        );
   } catch (error) {
     if (database) {
       stateDbCache.evictOpenClawStateDatabaseAfterCorruption(database, error);
@@ -482,14 +521,14 @@ export function runOpenClawStateWriteTransaction<T>(
     throw error;
   }
   try {
-    if (!isExistingOpenClawStateSchema(database.path, database.db)) {
-      ensureOpenClawStatePermissions(database.path, options.env ?? process.env);
+    if (!isExistingOpenClawStateSchema(committed.database.path, committed.database.db)) {
+      ensureOpenClawStatePermissions(committed.database.path, options.env ?? process.env);
     }
   } catch {
     // The write already committed; permission hardening is best-effort here so
     // callers never retry an operation that is durable in SQLite.
   }
-  return result;
+  return committed.value;
 }
 
 /**

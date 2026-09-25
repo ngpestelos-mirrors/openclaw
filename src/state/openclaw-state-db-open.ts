@@ -93,7 +93,10 @@ export function openUnpublishedStateDatabase(
     return openNativeStateDatabase(params, initialization);
   };
   return !params.existingSchema && !existsSync(params.pathname)
-    ? withStateDatabaseSchemaMaintenance({ databasePath: params.pathname }, open)
+    ? withStateDatabaseSchemaMaintenance(
+        { databasePath: params.pathname, busyTimeoutMs: params.busyTimeoutMs },
+        open,
+      )
     : open();
 }
 

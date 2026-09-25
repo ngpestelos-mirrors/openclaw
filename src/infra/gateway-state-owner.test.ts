@@ -20,10 +20,130 @@ import {
   resolveGatewayStateOwnerPath,
   tryAcquireGatewayStateOwner,
   tryBorrowGatewayStateOwner,
+  withStateDatabaseColdAdmission,
 } from "./gateway-state-owner.js";
+import * as nodeSqlite from "./node-sqlite.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 
 describe("Gateway state ownership", () => {
+  it.each(["already held", "after native open", "replaced by maintenance"] as const)(
+    "joins a transient schema owner for a created but uninitialized database: %s",
+    async (arrival) => {
+      await withTempDir("openclaw-cold-schema-owner-", async (root) => {
+        const databasePath = path.join(root, "openclaw.sqlite");
+        fs.writeFileSync(databasePath, "");
+        const seed = acquireGatewayStateOwner({ databasePath });
+        const marker = seed.path;
+        seed.release();
+        const payload = {
+          pid: process.ppid,
+          ownerId: "foreign-schema-fixture",
+          createdAt: new Date().toISOString(),
+          configPath: path.join(root, "openclaw.json"),
+          role: "sqlite-maintenance",
+          stateOwnerKind: "schema",
+        };
+        const publishMarker = () => fs.writeFileSync(marker, JSON.stringify(payload));
+        const native = nodeSqlite.openNodeSqliteDatabase;
+        let intercepted = false;
+        const open = vi
+          .spyOn(nodeSqlite, "openNodeSqliteDatabase")
+          .mockImplementation((...args) => {
+            const database = native(...args);
+            if (arrival === "after native open" && args[0] === databasePath && !intercepted) {
+              intercepted = true;
+              publishMarker();
+            }
+            return database;
+          });
+        if (arrival !== "after native open") {
+          publishMarker();
+        }
+        const wait = vi.spyOn(Atomics, "wait").mockImplementation(() => {
+          expect(fs.statSync(databasePath).size).toBe(0);
+          if (arrival === "replaced by maintenance") {
+            const { stateOwnerKind: _schema, ...maintenance } = payload;
+            fs.writeFileSync(marker, JSON.stringify(maintenance));
+          } else {
+            fs.unlinkSync(marker);
+          }
+          return "ok";
+        });
+        try {
+          if (arrival === "replaced by maintenance") {
+            expect(() => openOpenClawStateDatabase({ path: databasePath })).toThrow(
+              "offline maintenance",
+            );
+            expect(fs.statSync(databasePath).size).toBe(0);
+          } else {
+            const database = openOpenClawStateDatabase({ path: databasePath });
+            expect(
+              database.db.prepare("SELECT role FROM schema_meta WHERE meta_key = 'primary'").get(),
+            ).toEqual({ role: "global" });
+            expect(database.db.prepare("PRAGMA busy_timeout").get()?.timeout).toBe(5_000);
+          }
+          expect(wait).toHaveBeenCalledOnce();
+        } finally {
+          wait.mockRestore();
+          open.mockRestore();
+          fs.rmSync(marker, { force: true });
+          closeOpenClawStateDatabaseForTest();
+        }
+      });
+    },
+  );
+
+  it("keeps one cold-open budget across changing schema owners and never waits on its own PID", async () => {
+    await withTempDir("openclaw-cold-schema-budget-", async (root) => {
+      const databasePath = path.join(root, "openclaw.sqlite");
+      const seed = acquireGatewayStateOwner({ databasePath });
+      const marker = seed.path;
+      seed.release();
+      let owner = 0;
+      const publish = (pid: number) =>
+        fs.writeFileSync(
+          marker,
+          JSON.stringify({
+            pid,
+            ownerId: `schema-fixture-${owner++}`,
+            createdAt: new Date().toISOString(),
+            configPath: path.join(root, "openclaw.json"),
+            role: "sqlite-maintenance",
+            stateOwnerKind: "schema",
+          }),
+        );
+      let now = 0;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+      const wait = vi
+        .spyOn(Atomics, "wait")
+        .mockImplementation((_array, _index, _value, timeout) => {
+          now += timeout ?? 0;
+          publish(process.ppid);
+          return "timed-out";
+        });
+      const open = vi.fn();
+      try {
+        publish(process.ppid);
+        expect(() =>
+          withStateDatabaseColdAdmission({ databasePath, busyTimeoutMs: 25 }, open),
+        ).toThrow("offline maintenance");
+        expect(now).toBe(25);
+        expect(open).not.toHaveBeenCalled();
+        wait.mockClear();
+        publish(process.pid);
+        expect(() =>
+          withStateDatabaseColdAdmission({ databasePath, busyTimeoutMs: 25 }, open),
+        ).toThrow("offline maintenance");
+        expect(wait).not.toHaveBeenCalled();
+        expect(open).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+        wait.mockRestore();
+        fs.rmSync(marker, { force: true });
+      }
+    });
+  });
+
   it("explains contention while preserving the database path and native cause", () => {
     const databasePath = "/synthetic/openclaw.sqlite";
     const cause = new Error("synthetic native lock contention");
