@@ -68,7 +68,7 @@ export function createIngressSettleOwner<TPayload, TMetadata>(
         state.phase = "settled";
         removeActive(state);
       } catch (error) {
-        state.settlementFailure = { error };
+        state.settlementFailure = isIngressAdoptionLostError(error) ? undefined : { error };
         throw error;
       } finally {
         state.settlement = undefined;

@@ -210,33 +210,51 @@ describe("channel ingress drain ownership", () => {
     });
   });
 
-  it("throws IngressAdoptionLostError when complete returns false (lease reclaimed)", async () => {
+  it("rejects adoption after reclaim without blocking disposal or disturbing the successor", async () => {
     await withTempState(async (stateDir) => {
       const queue = createTestIngressQueue(stateDir);
       await queue.enqueue("evt-reclaim", { text: "x" }, { laneKey: "l1" });
 
-      queue.complete = async () => false;
-
+      const adopt = createDeferredCore();
+      const abort = new AbortController();
       let adoptError: unknown;
-      const drain = createChannelIngressDrain<Payload>({
-        queue,
-        dispatchClaimedEvent: async (_event, lifecycle) => {
-          try {
-            await lifecycle.onAdopted();
-          } catch (err) {
-            adoptError = err;
-            throw err;
-          }
+      const drain = createChannelIngressDrain<Payload>(
+        {
+          queue,
+          abortSignal: abort.signal,
+          dispatchClaimedEvent: async (_event, lifecycle) => {
+            await adopt.promise;
+            try {
+              await lifecycle.onAdopted();
+            } catch (err) {
+              adoptError = err;
+              throw err;
+            }
+          },
         },
-      });
+        true,
+      );
+      try {
+        await drain.drainOnce();
+        const [original] = await queue.listClaims();
+        expect(await queue.release(original)).toBe(true);
+        const successor = await queue.claim("evt-reclaim", { ownerId: "replacement" });
+        expect(successor).not.toBeNull();
+        adopt.resolve();
+        await drain.waitForIdle();
+        expect(isIngressAdoptionLostError(adoptError)).toBe(true);
+        expect(isIngressAdoptionLostError(adoptError) && adoptError.code).toBe("reclaimed");
+        expect(drain.activeLaneKeys().has("l1")).toBe(true);
 
-      await drain.drainOnce();
-      await drain.waitForIdle();
-      expect(isIngressAdoptionLostError(adoptError)).toBe(true);
-      expect(isIngressAdoptionLostError(adoptError) && adoptError.code).toBe("reclaimed");
-      // Claim remains held — not settled as a false success.
-      expect(drain.activeLaneKeys().has("l1")).toBe(true);
-      drain.dispose();
+        abort.abort();
+        await drain.dispose({ waitForSettlements: true });
+        expect(await queue.listClaims()).toEqual([successor]);
+      } finally {
+        adopt.resolve();
+        abort.abort();
+        await drain.waitForIdle();
+        drain.dispose();
+      }
     });
   });
 
