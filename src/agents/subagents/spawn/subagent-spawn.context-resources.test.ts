@@ -372,7 +372,7 @@ describe("spawn context-engine resource custody", () => {
       expect(fixture.database.isOpen).toBe(true);
       expect(launches).toBe(0);
       if (mode === "withdrawal") {
-        const hold = scheduler.holdQueuedSwarmRun(result.runId!);
+        const hold = scheduler.holdSwarmRunReservation(result.runId!);
         expect(hold?.withdraw()).toBe(true);
         let released = false;
         const release = Promise.resolve(hold?.release()).then(() => {

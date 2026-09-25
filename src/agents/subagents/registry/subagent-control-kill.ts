@@ -18,7 +18,7 @@ import type {
 } from "../../../tasks/task-registry-control.types.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
-import { holdQueuedSwarmRun } from "../swarm/swarm-scheduler.js";
+import { holdSwarmRunReservation } from "../swarm/swarm-scheduler.js";
 import {
   killSubagentRun,
   persistSubagentAbortedLastRun,
@@ -52,7 +52,7 @@ type KillTree = KillBinding & {
   children: KillTree[];
   errors: Set<string>;
   discoveryFailed: boolean;
-  dispatchHold?: ReturnType<typeof holdQueuedSwarmRun>;
+  dispatchHold?: ReturnType<typeof holdSwarmRunReservation>;
 };
 
 type KillSelection = {
@@ -92,10 +92,10 @@ async function withSubagentKillScope<T>(
     : taskControl;
   const selected = new Set<string>();
   const releaseRetirements: Array<() => void> = [];
-  const holds: Array<NonNullable<ReturnType<typeof holdQueuedSwarmRun>>> = [];
+  const holds: Array<NonNullable<ReturnType<typeof holdSwarmRunReservation>>> = [];
   const hold = (tree: KillTree) => {
     if (!tree.dispatchHold) {
-      tree.dispatchHold = holdQueuedSwarmRun(tree.entry.schedulerSlotId ?? tree.entry.runId);
+      tree.dispatchHold = holdSwarmRunReservation(tree.entry.schedulerSlotId ?? tree.entry.runId);
       if (tree.dispatchHold) {
         holds.push(tree.dispatchHold);
       }

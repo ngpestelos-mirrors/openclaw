@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { holdQueuedSwarmRun, reserveSwarmRun } from "../swarm/swarm-scheduler.js";
+import { holdSwarmRunReservation, reserveSwarmRun } from "../swarm/swarm-scheduler.js";
 import type { registerQueuedRegistrationClaimCases } from "./subagent-registry-queued-registration-claims.test-support.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -19,7 +19,7 @@ export function registerQueuedRegistrationNoTaskCases(
           activeRunIds: [],
         }),
       ).toBe(true);
-      const reservation = holdQueuedSwarmRun(f.registration.runId);
+      const reservation = holdSwarmRunReservation(f.registration.runId);
       if (!reservation) {
         throw new Error("missing original reservation");
       }

@@ -61,7 +61,7 @@ import {
   activateSwarmRun,
   closeSwarmScheduler,
   enqueueSwarmRun,
-  holdQueuedSwarmRun,
+  holdSwarmRunReservation,
   releaseSwarmRun,
   reserveSwarmRun,
 } from "../swarm/swarm-scheduler.js";
@@ -665,7 +665,7 @@ describe("recursive spawn production boundary", () => {
           expect(findTaskByRunId(childRunId)?.status).toBe("cancelled");
         }
         if (parentState === "operator-revoked") {
-          const queued = expectDefined(holdQueuedSwarmRun(childRunId), "queued collector");
+          const queued = expectDefined(holdSwarmRunReservation(childRunId), "queued collector");
           expectDefined(source, "operator source").revoke();
           try {
             // Revocation removes the reservation synchronously; release joins its physical cleanup.
@@ -902,7 +902,7 @@ describe("recursive spawn production boundary", () => {
           gatewayContextResolver: () => context,
         },
         async () => {
-          const hold = holdQueuedSwarmRun("queued-cleanup");
+          const hold = holdSwarmRunReservation("queued-cleanup");
           if (!hold) {
             throw new Error("expected the queued cleanup reservation");
           }

@@ -7,7 +7,7 @@ import {
   getAsyncWorkSignal,
   trackAsyncWork,
 } from "../../../shared/async-work-scope.js";
-import { createDeferredCore } from "../../../shared/deferred.js";
+import { createDeferredCore, type Deferred } from "../../../shared/deferred.js";
 
 type SwarmRemovalReason = "cancelled" | "shutdown";
 
@@ -32,6 +32,8 @@ type QueuedSwarmRun = {
   callbackWork?: AsyncWorkScope;
   removeAbortListener?: () => void;
   holds: number;
+  holdsReleased?: Deferred;
+  startFailureEntered?: boolean;
   retryReady: boolean;
 };
 
@@ -135,6 +137,7 @@ function finalizeRemovedRun(
 async function startQueuedRun(lane: SwarmGroupLane, item: QueuedSwarmRun, launch: SwarmLaunch) {
   item.removeAbortListener?.();
   item.removeAbortListener = undefined;
+  item.startFailureEntered = false;
   lane.active.add(item.runId);
   runLocations.set(item.runId, { lane, state: "active", item });
   publishCapacityChange(item);
@@ -145,6 +148,13 @@ async function startQueuedRun(lane: SwarmGroupLane, item: QueuedSwarmRun, launch
   } catch (error) {
     let failurePersisted = false;
     try {
+      // Stop retains the provisional session until its cancellation result publishes.
+      // Admission has already settled; only its failure cleanup waits for these holds.
+      while (item.holds > 0) {
+        item.holdsReleased ??= createDeferredCore();
+        await item.holdsReleased.promise;
+      }
+      item.startFailureEntered = true;
       failurePersisted = await launch.onStartFailure(error);
     } catch {
       // A durable queued row still owns this work; retry after a short backoff.
@@ -410,10 +420,14 @@ export function isSwarmRunActive(runId: string): boolean {
   return runLocations.get(runId)?.state === "active";
 }
 
-/** Holds this exact reservation, including preparation that has not activated yet. */
-export function holdQueuedSwarmRun(runId: string) {
+/** Holds dispatch or pending-launch failure cleanup for this exact reservation. */
+export function holdSwarmRunReservation(runId: string) {
   const location = runLocations.get(runId);
-  if (location?.state !== "queued") {
+  if (
+    !location?.item ||
+    (location.state !== "queued" &&
+      (!pendingLaunches.has(location.item) || location.item.startFailureEntered))
+  ) {
     return undefined;
   }
   const { lane, item } = location;
@@ -426,12 +440,19 @@ export function holdQueuedSwarmRun(runId: string) {
       if (!released) {
         released = true;
         item.holds -= 1;
+        if (item.holds === 0) {
+          item.holdsReleased?.resolve();
+          item.holdsReleased = undefined;
+        }
         if (runLocations.get(runId) === location) {
           publishCapacityChange(item);
         }
         pumpLane(lane);
       }
-      await item.removal?.catch(() => {});
+      // Another cancellation may still hold the cleanup that removal must join.
+      if (item.holds === 0) {
+        await item.removal?.catch(() => {});
+      }
     },
     withdraw() {
       // A retained durable kill may withdraw only its never-started reservation.
@@ -442,6 +463,17 @@ export function holdQueuedSwarmRun(runId: string) {
 }
 
 const testing = {
+  capturePendingLaunch(runId: string) {
+    const item = runLocations.get(runId)?.item;
+    if (!item || !pendingLaunches.has(item)) {
+      return undefined;
+    }
+    return () => ({
+      holds: item.holds,
+      waitingForHolds: item.holdsReleased !== undefined,
+      startFailureEntered: item.startFailureEntered === true,
+    });
+  },
   reset() {
     for (const location of runLocations.values()) {
       location.item?.removeAbortListener?.();
