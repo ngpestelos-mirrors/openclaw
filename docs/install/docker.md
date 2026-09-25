@@ -238,7 +238,7 @@ entrypoint, run Doctor against the same mounted state/config before launching th
 Gateway; a custom entrypoint bypasses this activation step.
 
 This includes agent database schema upgrades, shared-state audit migrations, and
-legacy workspace setup imports. Before advancing database schemas, startup saves
+legacy workspace setup imports. Before advancing database schemas, Doctor saves
 verified SQLite copies beside the originals as
 `<database>.pre-startup-migration-<id>.bak`. The shared database and affected agent
 databases use the same backup ID. Config backups and retired workspace-file
