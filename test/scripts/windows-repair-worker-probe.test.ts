@@ -29,7 +29,8 @@ async function fixture(files: Record<string, string>, bundled: Record<string, st
   const lifecycleMarker = path.join(packageRoot, PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH);
   await fs.writeFile(lifecycleMarker, "pending\n");
   const tarball = path.join(root, "candidate.tgz");
-  execFileSync("tar", ["-czf", tarball, "-C", root, "package"], {
+  execFileSync("tar", ["-czf", path.basename(tarball), "package"], {
+    cwd: root,
     env: { ...process.env, COPYFILE_DISABLE: "1" },
   });
   await fs.rm(lifecycleMarker);
