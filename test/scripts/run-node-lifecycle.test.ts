@@ -1,12 +1,4 @@
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,6 +7,8 @@ import { expect, it } from "vitest";
 import { toErrorObject } from "../../scripts/lib/error-format.mts";
 import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
 import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
+import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
+import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import { isProcessAlive, waitForDead, waitForPidFile } from "../helpers/process-wait.js";
 import { runQaGatewayFixture } from "../helpers/qa-gateway-cleanup.js";
 import { runNodeScript } from "../helpers/run-node-script.js";
@@ -169,7 +163,13 @@ else process.exit(outcome);
 it.runIf(process.platform !== "win32").each(["runner", "watch"] as const)(
   "preserves native %s signal loss while a private-pipe worker survives",
   async (mode) => {
-    const root = mkdtempSync(path.join(path.dirname(tmpdir()), "openclaw-native-signal-"));
+    const lifetime = createFixtureLifetime();
+    const root = lifetime.createTempDir("openclaw-native-signal-", path.dirname(tmpdir()));
+    // These faults deliberately lose the staged build owner. Keep its pending
+    // claims inside this fixture until the independent rescue joins every writer,
+    // rather than enrolling them in the enclosing Vitest namespace. The lifetime
+    // keeps that ancestor claimed until rescue, including if this test worker dies.
+    const resourceOwner = createVitestResourceOwner(root);
     const checkout = path.join(root, "checkout");
     const sourceRoot = process.cwd();
     const hook = fileURLToPath(new URL("./fixtures/native-runner-signals.mjs", import.meta.url));
@@ -234,6 +234,7 @@ it.runIf(process.platform !== "win32").each(["runner", "watch"] as const)(
           isProcessAlive(worker),
           "the fixture must retain the escaped worker until rescue",
         ).toBe(true);
+        expect(() => resourceOwner.assertReleased()).toThrow("Unreleased Vitest resource claim");
       },
       async () => {
         // This private release is independent of the native cleanup under test.
@@ -246,7 +247,7 @@ it.runIf(process.platform !== "win32").each(["runner", "watch"] as const)(
           await waitForDead(Number(readFileSync(pidPath, "utf8")), 5_000);
         }
       }),
-      () => {
+      async () => {
         if (
           pidPaths.some(
             (pidPath) =>
@@ -255,7 +256,7 @@ it.runIf(process.platform !== "win32").each(["runner", "watch"] as const)(
         ) {
           throw new Error(`Native signal fixture still owns processes; retained ${root}`);
         }
-        rmSync(root, { recursive: true, force: true });
+        await lifetime.cleanup();
       },
     );
   },
