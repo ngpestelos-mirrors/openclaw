@@ -847,7 +847,8 @@ describe("web monitor inbox delivery and dedupe", () => {
         },
       ],
     });
-    await waitForMessageCalls(onMessage, 1);
+    await waitForInboundWorkDrained();
+    expect(onMessage).toHaveBeenCalledTimes(1);
 
     sock.ev.emit("messages.upsert", {
       type: "notify",
@@ -859,9 +860,7 @@ describe("web monitor inbox delivery and dedupe", () => {
         },
       ],
     });
-    await settleInboundWork();
-
-    await waitForMessageCalls(onMessage, 2);
+    await waitForInboundWorkDrained();
     expect(onMessage.mock.calls.map(([message]) => message.payload.body)).toEqual(["ping", "pong"]);
     expect(await queue.listClaims()).toHaveLength(1);
     expect(await queue.listPending({ limit: "all" })).toEqual([]);
