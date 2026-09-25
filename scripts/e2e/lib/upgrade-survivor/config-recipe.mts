@@ -159,7 +159,23 @@ const configuredPluginInstallSteps = [
   ),
 ];
 
+const loggingConfigSteps: ConfigStep[] = [
+  {
+    id: "logging-file",
+    intent: "logging",
+    // Raw debug output stays in the isolated home, outside uploaded artifact roots.
+    argv: ["config", "set", "logging.file", "~/openclaw-upgrade-survivor/gateway.jsonl"],
+  },
+  {
+    id: "logging-level",
+    intent: "logging",
+    argv: ["config", "set", "logging.level", "debug"],
+  },
+];
+
 const scenarioConfigSteps = new Map<string, ConfigStep[]>([
+  ["base", loggingConfigSteps],
+  ["legacy-operator-state", loggingConfigSteps],
   [
     "acpx-openclaw-tools-bridge",
     [
@@ -247,6 +263,10 @@ export function resolveUpgradeSurvivorConfigSteps(
   scenario = "base",
   configuredUpdateChannel = process.env.OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL,
 ): ConfigStep[] {
+  // The installed legacy fixture owns its config; this late recipe only enables diagnostics.
+  if (scenario === "legacy-operator-state") {
+    return resolveScenarioConfigSteps(scenario);
+  }
   const validateStep = sharedRecipe.at(-1);
   const updateChannel =
     configuredUpdateChannel || (scenario === "prerelease-plugin-registry" ? "beta" : "stable");

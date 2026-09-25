@@ -2380,6 +2380,11 @@ if [ "$SCENARIO" = "legacy-operator-state" ]; then
     phase patch-restored-index node scripts/e2e/lib/upgrade-survivor/legacy-operator-restored-index.mjs patch
     phase stop-restored-index-baseline stop_gateway
     phase restore-baseline-index node scripts/e2e/lib/upgrade-survivor/legacy-operator-restored-index.mjs restore
+    openclaw_e2e_run_script_entrypoint \
+      scripts/e2e/lib/upgrade-survivor/config-recipe apply \
+      --summary "$ARTIFACT_ROOT/package-integrity-config.json" \
+      --baseline-version "$baseline_version" ||
+      echo "Package integrity logging unavailable; preserving the update test outcome." >&3
     # Do not restart the published Gateway after restoring stale metadata over its current SQLite state.
   fi
   phase prepare-schema-expectation prepare_schema_expectation
