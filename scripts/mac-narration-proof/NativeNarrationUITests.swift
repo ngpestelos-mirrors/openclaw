@@ -109,7 +109,7 @@ final class NativeNarrationUITests: XCTestCase {
         try await self.capture(app, stage: stage, state: "completed")
 
         XCTAssertTrue(work.isHittable)
-        work.click()
+        self.clickDisclosureChevron(work)
         XCTAssertTrue(first.waitForExistence(timeout: 5))
         XCTAssertTrue(second.waitForExistence(timeout: 5))
         XCTAssertLessThan(first.frame.minY, second.frame.minY)
@@ -117,7 +117,7 @@ final class NativeNarrationUITests: XCTestCase {
         try await self.capture(app, stage: stage, state: "expanded")
 
         XCTAssertTrue(work.isHittable)
-        work.click()
+        self.clickDisclosureChevron(work)
         XCTAssertTrue(first.waitForNonExistence(timeout: 5))
         XCTAssertTrue(second.waitForNonExistence(timeout: 5))
         XCTAssertTrue(finalReply.exists, "Collapsing work must preserve the final reply")
@@ -135,13 +135,13 @@ final class NativeNarrationUITests: XCTestCase {
         XCTAssertFalse(completedFirst.exists)
         XCTAssertFalse(completedSecond.exists)
         self.attachScreenshot(completedPanel, name: "mac-quick-chat-\(stage)-completed")
-        quickWork.click()
+        self.clickDisclosureChevron(quickWork)
         XCTAssertTrue(completedFirst.waitForExistence(timeout: 5))
         XCTAssertTrue(completedSecond.waitForExistence(timeout: 5))
         XCTAssertLessThan(completedFirst.frame.minY, completedSecond.frame.minY)
         XCTAssertTrue(quickFinal.exists)
         self.attachScreenshot(completedPanel, name: "mac-quick-chat-\(stage)-expanded")
-        quickWork.click()
+        self.clickDisclosureChevron(quickWork)
         XCTAssertTrue(completedFirst.waitForNonExistence(timeout: 5))
         XCTAssertTrue(quickFinal.exists)
         self.closeQuickChat(app)
@@ -149,6 +149,14 @@ final class NativeNarrationUITests: XCTestCase {
         // Both revisions traverse the complete real flow. Only missing active
         // or replayed narration is the expected negative-control failure.
         XCTAssertTrue(activeVisible && recoveredVisible && quickVisible, "NARRATION_MISSING_WHILE_RUNNING")
+    }
+
+    @MainActor
+    private func clickDisclosureChevron(_ disclosure: XCUIElement) {
+        // Xcode 27 reports the whole heading as AXDisclosureTriangle, but its
+        // center hits the inert label. Native captures place the chevron 26pt from its leading edge.
+        disclosure.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+            .withOffset(CGVector(dx: 26, dy: 0)).click()
     }
 
     @MainActor
