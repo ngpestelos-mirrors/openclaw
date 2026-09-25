@@ -1,7 +1,10 @@
 import path from "node:path";
-import type {
-  UpdateInitialStoreTransport,
-  UpdateManagedGenerationIssuer,
+import { isDeepStrictEqual } from "node:util";
+import type { UpdateInitialStoreInvocation } from "../../infra/update-initial-store-invocation.js";
+import {
+  snapshotUpdateInitialStoreTransport,
+  type UpdateInitialStoreTransport,
+  type UpdateManagedGenerationIssuer,
 } from "../../infra/update-initial-store-transport.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
@@ -52,6 +55,34 @@ export type UpdateCommandExecutorOptions = {
       legacyPackageHandoff?: { handoffId: string; root: string };
     }
 );
+
+/** Admit transported stores before preparation can read or write the run ledger.
+ * Pin the executor input too: later caller edits must not change the selected pair. */
+export function captureUpdateCommandStoreOptions(
+  input: UpdateInitialStoreInvocation | undefined,
+  options?: UpdateCommandExecutorOptions,
+) {
+  const transport =
+    options && Object.hasOwn(options, "initialStores")
+      ? snapshotUpdateInitialStoreTransport(options.initialStores!)
+      : undefined;
+  if (
+    input !== undefined &&
+    transport &&
+    !isDeepStrictEqual(input.selection, transport.selection)
+  ) {
+    throw new Error("Conflicting update initial store selections.");
+  }
+  return {
+    invocation:
+      input === undefined && transport
+        ? { version: 1 as const, selection: transport.selection }
+        : input,
+    executor: options
+      ? { ...options, ...(transport ? { initialStores: transport } : {}) }
+      : undefined,
+  };
+}
 
 /** A live invocation, never a serialized claim, PID or recovered history row. */
 export type UpdateCommandExecutor = {

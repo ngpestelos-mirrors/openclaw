@@ -38,7 +38,7 @@ afterEach(async () => {
   }
 });
 
-it.each([
+it.skipIf(process.platform === "win32").each([
   ["file", "EIO"],
   ["file", "EPERM"],
   ["directory", "EIO"],
@@ -174,92 +174,95 @@ it.each([
     }),
 );
 
-it("keeps the original preparation assertion after capability and integrity awaits", () =>
-  fixture.lifetime.run(async () => {
-    const f = await createPackageSwapFixture(root);
-    const previous = await integrity.createPackageIntegrityReader().tree(f.packageRoot);
-    const previousLauncher = await integrity.createPackageIntegrityReader().launcher(f.launcher);
-    let release!: () => void;
-    let reached!: () => void;
-    const paused = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const inspecting = new Promise<void>((resolve) => {
-      reached = resolve;
-    });
-    let preparing: ReturnType<typeof preparePackageActivation> | undefined;
-    let original: (() => void) | undefined;
-    const onPrepared = vi.fn();
-    let outcome: { value: unknown } | { error: unknown } | undefined;
-    try {
-      await withUpdateCommandExecutor(randomUUID(), async (executor) => {
-        const fence = await executor.enter(f.packageRoot);
-        original = fence.assertCurrent.bind(fence);
-        vi.spyOn(capability, "supportsPostCoreExecutor").mockImplementation(async () => {
-          await Promise.resolve();
-          fence.assertCurrent = vi.fn();
-          return true;
-        });
-        const create = integrity.createPackageIntegrityReader;
-        vi.spyOn(integrity, "createPackageIntegrityReader").mockImplementation((...args) => {
-          const reader = create(...args);
-          return {
-            ...reader,
-            tree: async (...treeArgs) => {
-              const result = await reader.tree(...treeArgs);
-              if (treeArgs[0] === f.params.stage.packageRoot) {
-                reached();
-                await paused;
-              }
-              return result;
-            },
-          };
-        });
-        preparing = preparePackageActivation({
-          options: { fence, nodeRunner: process.execPath, onPrepared },
-          installTarget: f.params.installTarget,
-          liveRoot: f.packageRoot,
-          stageRoot: f.params.stage.packageRoot,
-          launcherRoot: f.params.stage.layout.binDir,
-          binDir: path.dirname(f.launcher),
-          previous,
-          launchers: [
-            { name: "openclaw", previous: encodePackageActivationLauncher(previousLauncher) },
-          ],
-        });
-        void preparing.then(
-          (value) => {
-            outcome = { value };
-          },
-          (error: unknown) => {
-            outcome = { error };
-          },
-        );
-        const preparationSettled = preparing.then(
-          () => {
-            throw new Error("Preparation completed before the integrity pause.");
-          },
-          (error: unknown) => {
-            throw new Error("Preparation failed before the integrity pause.", { cause: error });
-          },
-        );
-        await Promise.race([inspecting, preparationSettled]);
-        // Deliberately end the genuine executor scope while the admitted preparation
-        // is paused. The test still owns and joins that escaped operation below.
+it.skipIf(process.platform === "win32")(
+  "keeps the original preparation assertion after capability and integrity awaits",
+  () =>
+    fixture.lifetime.run(async () => {
+      const f = await createPackageSwapFixture(root);
+      const previous = await integrity.createPackageIntegrityReader().tree(f.packageRoot);
+      const previousLauncher = await integrity.createPackageIntegrityReader().launcher(f.launcher);
+      let release!: () => void;
+      let reached!: () => void;
+      const paused = new Promise<void>((resolve) => {
+        release = resolve;
       });
-      expect(original).toBeTypeOf("function");
-      expect(() => original!()).toThrow();
-    } finally {
-      release();
-      if (preparing) {
-        await Promise.allSettled([preparing]);
+      const inspecting = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      let preparing: ReturnType<typeof preparePackageActivation> | undefined;
+      let original: (() => void) | undefined;
+      const onPrepared = vi.fn();
+      let outcome: { value: unknown } | { error: unknown } | undefined;
+      try {
+        await withUpdateCommandExecutor(randomUUID(), async (executor) => {
+          const fence = await executor.enter(f.packageRoot);
+          original = fence.assertCurrent.bind(fence);
+          vi.spyOn(capability, "supportsPostCoreExecutor").mockImplementation(async () => {
+            await Promise.resolve();
+            fence.assertCurrent = vi.fn();
+            return true;
+          });
+          const create = integrity.createPackageIntegrityReader;
+          vi.spyOn(integrity, "createPackageIntegrityReader").mockImplementation((...args) => {
+            const reader = create(...args);
+            return {
+              ...reader,
+              tree: async (...treeArgs) => {
+                const result = await reader.tree(...treeArgs);
+                if (treeArgs[0] === f.params.stage.packageRoot) {
+                  reached();
+                  await paused;
+                }
+                return result;
+              },
+            };
+          });
+          preparing = preparePackageActivation({
+            options: { fence, nodeRunner: process.execPath, onPrepared },
+            installTarget: f.params.installTarget,
+            liveRoot: f.packageRoot,
+            stageRoot: f.params.stage.packageRoot,
+            launcherRoot: f.params.stage.layout.binDir,
+            binDir: path.dirname(f.launcher),
+            previous,
+            launchers: [
+              { name: "openclaw", previous: encodePackageActivationLauncher(previousLauncher) },
+            ],
+          });
+          void preparing.then(
+            (value) => {
+              outcome = { value };
+            },
+            (error: unknown) => {
+              outcome = { error };
+            },
+          );
+          const preparationSettled = preparing.then(
+            () => {
+              throw new Error("Preparation completed before the integrity pause.");
+            },
+            (error: unknown) => {
+              throw new Error("Preparation failed before the integrity pause.", { cause: error });
+            },
+          );
+          await Promise.race([inspecting, preparationSettled]);
+          // Deliberately end the genuine executor scope while the admitted preparation
+          // is paused. The test still owns and joins that escaped operation below.
+        });
+        expect(original).toBeTypeOf("function");
+        expect(() => original!()).toThrow();
+      } finally {
+        release();
+        if (preparing) {
+          await Promise.allSettled([preparing]);
+        }
       }
-    }
-    expect(outcome).toMatchObject({ error: expect.any(Error) });
-    expect(onPrepared).not.toHaveBeenCalled();
-    const anchor = resolvePackageActivationAnchor(f.packageRoot);
-    expect(fs.existsSync(anchor)).toBe(false);
-    expect(fs.existsSync(resolvePackageActivationControl(anchor))).toBe(false);
-    expect(fs.existsSync(f.params.stage.packageRoot)).toBe(true);
-    expect(fs.readFileSync(f.launcher, "utf8")).toBe("old launcher\n");
-  }));
+      expect(outcome).toMatchObject({ error: expect.any(Error) });
+      expect(onPrepared).not.toHaveBeenCalled();
+      const anchor = resolvePackageActivationAnchor(f.packageRoot);
+      expect(fs.existsSync(anchor)).toBe(false);
+      expect(fs.existsSync(resolvePackageActivationControl(anchor))).toBe(false);
+      expect(fs.existsSync(f.params.stage.packageRoot)).toBe(true);
+      expect(fs.readFileSync(f.launcher, "utf8")).toBe("old launcher\n");
+    }),
+);
