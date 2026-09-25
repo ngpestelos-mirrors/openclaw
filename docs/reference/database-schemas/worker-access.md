@@ -197,6 +197,14 @@ lookup keeps its current-only, byte-limit, and reset-archive behavior; counts ke
 their projection-readiness retry. Process-held incognito transcripts remain with
 their in-memory owner. Schemas, retained data, and update behavior are unchanged.
 
+Exact transcript-event matching also uses the history worker for disk discovery,
+payload decoding, and selection. Callers supply a serializable selection for the
+latest event, visible final result, idempotency key, or active assistant message.
+The host captures the physical source before yielding and rechecks its admission
+before returning the result. Cold archives retain their existing restoration
+owner. Native transaction callbacks and process-held incognito transcripts retain
+their synchronous reader; worker failures never fall back to host disk reads.
+
 The asynchronous transcript-search facade similarly moves durable FTS reads for
 all four Gateway/tool callers through the existing worker lifecycle. Each caller
 rechecks current scope and authorization after awaiting. Warm `sessions.list`
@@ -334,11 +342,25 @@ worker transition owner. Accepted run updates retain FIFO order through preparat
 commit, and publication. The worker rereads exact task and backing records, while
 the host rechecks the captured runtime, registry entry, and execution authority at
 admission. Delivery callbacks await settlement before mirroring or cleanup. The
-shipped synchronous detached-task SDK remains a separate compatibility adapter;
-other native task mutation callers remain migration debt. Transaction diagnostics
+shipped synchronous detached-task SDK remains a separate compatibility adapter.
+
+Asynchronous completion waits, kill reconciliation, delivery, and cleanup select
+tasks through the existing prepared registry reader. Each poll shares one accepted
+read, preserves preferred-run and backing-record selection, and rechecks abort,
+runtime ownership, and lifecycle authority after awaiting. Synchronous permission,
+kill, and requester-wake commits retain their native boundary, as do shipped custom
+runtime hooks. Those boundaries do not provide a fallback for worker read failures.
+Other native task mutation callers remain migration debt. Transaction diagnostics
 report slow native admission and transaction holds with the operation label.
-Schemas, retention, and update behavior
-are unchanged.
+Schemas, retention, and update behavior are unchanged.
+
+Concurrent first opens wait for a transient schema initializer within the
+database's busy timeout. This admission wait ends before a user mutation callback
+is entered; callbacks and uncertain rollbacks are never replayed. Existing
+handles and true offline maintenance retain their normal admission rules.
+Completed leases discard their saved async context. Exact retained native handles
+can be disposed after request revocation; new application mutations still require
+live operation authority.
 
 Background exec registration and terminal writes use the existing task creation
 receipt and worker. A command that exits during registration joins its running
@@ -372,6 +394,16 @@ ordinary discovery reads retain committed-state isolation. This avoids preparing
 a child-process snapshot while holding the shared-state write transaction. Agent
 database admission refusals remain with their in-memory admission owner. Schemas,
 retention, configuration, and update behavior are unchanged.
+
+Cron activation, exact reservation cleanup, and stale-family removal use typed
+commands through the existing worker mutation owner. The host retains the
+partition lock, reservation identity, live policy, and runner settlement. The
+worker rereads durable receipt and deletion guards before committing. Publication
+uses the matching committed receipt once; a lost reply never causes a replay.
+Deferred receipt finishing retains the captured physical worker context through
+settlement. Reservation creation and remaining manual or timer finalizers retain
+their native implementation as migration debt. Schemas, retention, configuration,
+and update behavior are unchanged.
 
 Streaming assistant and tool-result completion events use the session manager's
 existing SQLite writer domain. The host retains extension hooks, redaction, and

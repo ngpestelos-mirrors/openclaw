@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { movePathWithCopyFallback } from "@openclaw/fs-safe/atomic";
 import { truncateWithMarker } from "@openclaw/normalization-core/utf16-slice";
 import { assertWorkspaceStateMigrationReady } from "../agents/workspace-legacy-state.js";
 import {
@@ -8,14 +9,13 @@ import {
 } from "../agents/workspace-state-identity.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { pathExists } from "../infra/fs-safe.js";
-import { acquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
+import { acquireGatewayLock } from "../infra/gateway-lock.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { isPathInside } from "../infra/path-guards.js";
-import { movePathWithCopyFallback } from "../infra/replace-file.js";
 import {
   isUpdateRehearsalReadOnlyPath,
   resolveUpdateRehearsalRoot,
@@ -34,17 +34,13 @@ import {
   readSkillProposalRollback,
   resolveSkillProposalTarget,
 } from "../skills/workshop/store.js";
-import {
-  createOpenClawDatabaseMaintenanceScope,
-  getOpenClawDatabaseMaintenanceScope,
-} from "../state/openclaw-state-db-async-lifecycle.js";
+import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
-import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import {
   inspectWorkshopAutomationReferences,
   type WorkshopAutomationReference,
@@ -432,60 +428,54 @@ export async function migrateLegacySkillWorkshopProposals(params: {
   unavailableWorkspaceDirs?: ReadonlyMap<string, string>;
 }): Promise<MigrationResult> {
   const env = params.env ?? process.env;
-  let maintenance = getOpenClawDatabaseMaintenanceScope();
-  let owner: ReturnType<typeof acquireGatewayStateOwner> | undefined;
-  if (!maintenance?.ownsSchemaMaintenance) {
-    owner = acquireGatewayStateOwner({ databasePath: resolveOpenClawStateSqlitePath(env) });
-    maintenance = createOpenClawDatabaseMaintenanceScope({
-      schemaMaintenance: true,
-      assertOwnerCurrent: owner.assertCurrent,
-      assertDatabaseAccess: owner.assertDatabaseAccess,
-    });
-  }
-  const scope = maintenance;
-  const assertCurrent = () => scope.assertOwnerCurrent();
-  try {
-    return await scope.run(async () => {
-      assertCurrent();
-      const backupRoots = await listPendingLegacyCollectionBackupRoots(params.config, env);
-      assertCurrent();
-      const sidecars = await importLegacySkillProposalSidecars({ config: params.config, env });
-      assertCurrent();
-      const relocation = await relocateLegacyWorkshopTargets(
-        params.config,
-        env,
-        backupRoots,
-        assertCurrent,
-        params.unavailableWorkspaceDirs,
+  const migrate = async (assertCurrent: () => void): Promise<MigrationResult> => {
+    assertCurrent();
+    const backupRoots = await listPendingLegacyCollectionBackupRoots(params.config, env);
+    assertCurrent();
+    const sidecars = await importLegacySkillProposalSidecars({ config: params.config, env });
+    assertCurrent();
+    const relocation = await relocateLegacyWorkshopTargets(
+      params.config,
+      env,
+      backupRoots,
+      assertCurrent,
+      params.unavailableWorkspaceDirs,
+    );
+    if (
+      relocation.movedSkills > 0 ||
+      relocation.retargetedProposals > 0 ||
+      relocation.staleProposals > 0 ||
+      relocation.migratedBackupRoots > 0
+    ) {
+      sidecars.changes.push(
+        `Relocated ${relocation.movedSkills} Skill Workshop skill${relocation.movedSkills === 1 ? "" : "s"}, retargeted ${relocation.retargetedProposals} proposal${relocation.retargetedProposals === 1 ? "" : "s"}, marked ${relocation.staleProposals} stale, and migrated ${relocation.migratedBackupRoots} legacy collection backup root${relocation.migratedBackupRoots === 1 ? "" : "s"}.`,
       );
-      if (
-        relocation.movedSkills > 0 ||
-        relocation.retargetedProposals > 0 ||
-        relocation.staleProposals > 0 ||
-        relocation.migratedBackupRoots > 0
-      ) {
-        sidecars.changes.push(
-          `Relocated ${relocation.movedSkills} Skill Workshop skill${relocation.movedSkills === 1 ? "" : "s"}, retargeted ${relocation.retargetedProposals} proposal${relocation.retargetedProposals === 1 ? "" : "s"}, marked ${relocation.staleProposals} stale, and migrated ${relocation.migratedBackupRoots} legacy collection backup root${relocation.migratedBackupRoots === 1 ? "" : "s"}.`,
-        );
-      }
-      const warnings = [...sidecars.warnings, ...relocation.warnings];
-      const recoverableWarningCount =
-        (sidecars.warningDisposition === "recoverable" ? sidecars.warnings.length : 0) +
-        relocation.recoverableWarningCount;
-      return {
-        changes: sidecars.changes,
-        detected: sidecars.detected,
-        migrated: sidecars.migrated,
-        warnings,
-        ...(warnings.length > 0 && warnings.length === recoverableWarningCount
-          ? { warningDisposition: "recoverable" as const }
-          : {}),
-      };
-    });
-  } finally {
-    if (owner) {
-      await scope.close();
-      owner.release();
     }
+    const warnings = [...sidecars.warnings, ...relocation.warnings];
+    const recoverableWarningCount =
+      (sidecars.warningDisposition === "recoverable" ? sidecars.warnings.length : 0) +
+      relocation.recoverableWarningCount;
+    return {
+      changes: sidecars.changes,
+      detected: sidecars.detected,
+      migrated: sidecars.migrated,
+      warnings,
+      ...(warnings.length > 0 && warnings.length === recoverableWarningCount
+        ? { warningDisposition: "recoverable" as const }
+        : {}),
+    };
+  };
+  const maintenance = getOpenClawDatabaseMaintenanceScope();
+  if (maintenance?.ownsSchemaMaintenance) {
+    return await maintenance.run(() => migrate(() => maintenance.assertOwnerCurrent()));
+  }
+  const owner = await acquireGatewayLock({ env, role: "sqlite-maintenance", allowInTests: true });
+  if (!owner) {
+    throw new Error("Skill Workshop migration requires exclusive state ownership");
+  }
+  try {
+    return await owner.run(() => migrate(() => owner.assertCurrent()));
+  } finally {
+    await owner.release();
   }
 }
