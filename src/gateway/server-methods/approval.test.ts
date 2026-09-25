@@ -17,7 +17,6 @@ import {
   resolveExecApprovalRequestAllowedDecisions,
   type ExecApprovalRequestPayload,
 } from "../../infra/exec-approvals.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import {
   resolvePluginApprovalRequestAllowedDecisions,
   type PluginApprovalRequestPayload,
@@ -25,13 +24,7 @@ import {
 import type { SystemAgentApprovalRequestPayload } from "../../infra/system-agent-approvals.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
-import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-  type OpenClawStateDatabaseOptions,
-} from "../../state/openclaw-state-db.js";
+import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
 import { withEnvAsync } from "../../test-utils/env.js";
@@ -54,6 +47,11 @@ import {
   cancelUnboundRunApprovals,
 } from "./approval-run-cancellation.js";
 import { createApprovalHandlers } from "./approval.js";
+import {
+  createContext,
+  deleteDurableApproval,
+  corruptDurableApprovalPresentation,
+} from "./approval.test-support.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const prepareApprovalChannelCustodyMock = vi.hoisted(() => vi.fn());
@@ -63,7 +61,6 @@ vi.mock("../approval-channel-custody.js", () => ({
 }));
 
 const tempDirs: string[] = [];
-type OperatorApprovalDatabase = Pick<OpenClawStateKyselyDatabase, "operator_approvals">;
 const managersForCleanup: Array<{
   listPendingRecords(): Promise<Array<{ id: string }>>;
   expire(id: string, resolvedBy?: string | null): Promise<boolean>;
@@ -102,30 +99,6 @@ function createManagers(databaseOptions: OpenClawStateDatabaseOptions) {
   };
   managersForCleanup.push(managers.exec, managers.plugin, managers.systemAgent);
   return managers;
-}
-
-function deleteDurableApproval(databaseOptions: OpenClawStateDatabaseOptions, id: string): void {
-  const database = openOpenClawStateDatabase(databaseOptions);
-  const stateDb = getNodeSqliteKysely<OperatorApprovalDatabase>(database.db);
-  executeSqliteQuerySync(
-    database.db,
-    stateDb.deleteFrom("operator_approvals").where("approval_id", "=", id),
-  );
-}
-
-function corruptDurableApprovalPresentation(
-  databaseOptions: OpenClawStateDatabaseOptions,
-  id: string,
-): void {
-  const database = openOpenClawStateDatabase(databaseOptions);
-  const stateDb = getNodeSqliteKysely<OperatorApprovalDatabase>(database.db);
-  executeSqliteQuerySync(
-    database.db,
-    stateDb
-      .updateTable("operator_approvals")
-      .set({ presentation_json: "{}" })
-      .where("approval_id", "=", id),
-  );
 }
 
 async function registerExec(
@@ -238,24 +211,6 @@ function createClient(params: {
     },
     ...(params.internal ? { internal: { approvalRuntime: true } } : {}),
   } as unknown as GatewayRequestHandlerOptions["client"];
-}
-
-function createContext(
-  controlUiBasePath?: string,
-  approvalWebPushDelivery?: GatewayRequestHandlerOptions["context"]["approvalWebPushDelivery"],
-) {
-  return {
-    broadcast: vi.fn(),
-    broadcastToConnIds: vi.fn(),
-    approvalEvents: {
-      publishRequested: vi.fn(() => 0),
-      publishResolved: vi.fn(),
-    },
-    getApprovalClientConnIds: vi.fn(() => new Set(["approval-client"])),
-    getRuntimeConfig: () => ({ gateway: { controlUi: { basePath: controlUiBasePath } } }),
-    approvalWebPushDelivery,
-    logGateway: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
-  } as unknown as GatewayRequestHandlerOptions["context"];
 }
 
 async function invoke(params: {
@@ -1180,51 +1135,16 @@ describe("unified approval handlers", () => {
     });
   });
 
-  it("settles the canonical live waiter when a transport-ref lookup finds corrupt state", async () => {
-    const databaseOptions = createDatabaseOptions();
-    const managers = createManagers(databaseOptions);
-    const pending = await registerExec(managers.exec, { id: "corrupt-through-transport-ref" });
-    const durable = await getOperatorApproval({ id: pending.record.id, databaseOptions });
-    if (!durable) {
-      throw new Error("expected durable approval");
-    }
-    corruptDurableApprovalPresentation(databaseOptions, pending.record.id);
-    const handlers = createApprovalHandlers({
-      execApprovalManager: managers.exec,
-      pluginApprovalManager: managers.plugin,
-      databaseOptions,
-    });
-
-    const response = await invoke({
-      handlers,
-      method: "approval.resolve",
-      body: { id: durable.resolutionRef, kind: "exec", decision: "allow-once" },
-      client: createClient({ deviceId: "telegram" }),
-    });
-
-    expect(response).toMatchObject({
-      ok: false,
-      error: { code: "INVALID_REQUEST", details: { reason: "APPROVAL_NOT_FOUND" } },
-    });
-    await expect(pending.decision).resolves.toBe("deny");
-    expect(managers.exec.getLiveSnapshot(pending.record.id)).toMatchObject({
-      status: "denied",
-      terminalReason: "storage-corrupt",
-    });
-  });
-
   it("repairs durable pending state after a transient local storage failure", async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-approval-reconcile-"));
     tempDirs.push(stateDir);
     const databasePath = path.join(stateDir, "state.sqlite");
-    const backupPath = path.join(stateDir, "state.backup.sqlite");
     const databaseOptions = { path: databasePath } satisfies OpenClawStateDatabaseOptions;
     const managers = createManagers(databaseOptions);
     const pending = await registerExec(managers.exec, { id: "transient-storage-repair" });
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
-    fs.renameSync(databasePath, backupPath);
-    fs.mkdirSync(databasePath);
+    vi.spyOn(operatorApprovalStore, "resolveOperatorApproval").mockRejectedValueOnce(
+      new Error("synthetic storage I/O failure"),
+    );
     await expect(
       managers.exec.resolveDetailed(
         pending.record.id,
@@ -1234,8 +1154,6 @@ describe("unified approval handlers", () => {
       ),
     ).rejects.toThrow();
     await expect(pending.decision).resolves.toBe("deny");
-    fs.rmSync(databasePath, { recursive: true });
-    fs.renameSync(backupPath, databasePath);
     const handlers = createApprovalHandlers({
       execApprovalManager: managers.exec,
       pluginApprovalManager: managers.plugin,

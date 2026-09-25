@@ -1,20 +1,20 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   closeOpenClawStateDatabaseByPathAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../../state/openclaw-state-db.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
-import {
-  handleApprovalResolve,
-  handlePendingApprovalRequest,
-  registerPendingApprovalRecord,
-} from "./approval-shared.js";
+import * as operatorApprovalStore from "../operator-approval-store.js";
+import { handlePendingApprovalRequest, registerPendingApprovalRecord } from "./approval-shared.js";
+import { handleApprovalResolve } from "./approval.test-support.js";
 import type { GatewayRequestContext } from "./types.js";
 
 vi.mock("../../infra/approval-turn-source.js", () => ({ hasApprovalTurnSourceRoute: () => false }));
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("approval storage failures", () => {
   it("sanitizes durable registration failures while retaining server diagnostics", async () => {
@@ -70,10 +70,9 @@ describe("approval storage failures", () => {
     const record = manager.create({ command: "echo safe" }, 60_000, "route-failure");
     const decisionPromise = (await manager.register(record, 60_000)).decision;
     const afterDecision = vi.fn();
-    await closeOpenClawStateDatabaseByPathAsync(databasePath);
-    closeOpenClawStateDatabaseForTest();
-    fs.rmSync(databasePath, { force: true });
-    fs.mkdirSync(databasePath);
+    vi.spyOn(operatorApprovalStore, "forceDenyOperatorApproval").mockRejectedValueOnce(
+      new Error("synthetic storage I/O failure at " + databasePath),
+    );
     const respond = vi.fn();
     const logError = vi.fn();
 
@@ -131,10 +130,9 @@ describe("approval storage failures", () => {
     });
     const record = manager.create({ command: "echo safe" }, 60_000, "resolve-failure");
     const decisionPromise = (await manager.register(record, 60_000)).decision;
-    await closeOpenClawStateDatabaseByPathAsync(databasePath);
-    closeOpenClawStateDatabaseForTest();
-    fs.rmSync(databasePath, { force: true });
-    fs.mkdirSync(databasePath);
+    vi.spyOn(operatorApprovalStore, "resolveOperatorApproval").mockRejectedValueOnce(
+      new Error("synthetic storage I/O failure at " + databasePath),
+    );
     const respond = vi.fn();
     const logError = vi.fn();
 

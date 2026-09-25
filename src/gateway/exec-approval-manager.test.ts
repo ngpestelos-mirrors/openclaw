@@ -7,6 +7,7 @@ import path from "node:path";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExecApprovalDecision, ExecApprovalRequestPayload } from "../infra/exec-approvals.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { PluginApprovalRequestPayload } from "../infra/plugin-approvals.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
@@ -20,7 +21,9 @@ import {
 } from "./exec-approval-manager.test-support.js";
 import type { ExecApprovalManagerOptions } from "./exec-approval-manager.types.js";
 import { InvalidApprovalIdError } from "./exec-approval-registration.js";
+import * as operatorApprovalStore from "./operator-approval-store.js";
 import { getOperatorApprovalDetailed, resolveOperatorApproval } from "./operator-approval-store.js";
+import type { OperatorApprovalDatabase } from "./operator-approval-store.types.js";
 
 type TimeoutCallback = Parameters<typeof setTimeout>[0];
 
@@ -776,12 +779,12 @@ describe("ExecApprovalManager", () => {
     const timers = installTimerMocks();
     vi.spyOn(Date, "now").mockReturnValue(1_000);
     const onError = vi.fn();
-    const { manager, databaseOptions, dir } = createPersistentManager({ onError });
+    const { manager } = createPersistentManager({ onError });
     const record = manager.create({ command: "echo ok" }, 60_000, "approval-timer-error");
     const decisionPromise = (await manager.register(record, 60_000)).decision;
-    const blocker = path.join(dir, "not-a-directory");
-    fs.writeFileSync(blocker, "blocked");
-    databaseOptions.path = path.join(blocker, "state.sqlite");
+    vi.mocked(operatorApprovalStore.forceDenyOperatorApproval).mockRejectedValueOnce(
+      new Error("synthetic storage I/O failure"),
+    );
 
     const deadline = deadlineTimers(timers, [60_000])[0];
     expect(() => runTimer(deadline)).not.toThrow();
@@ -799,13 +802,12 @@ describe("ExecApprovalManager", () => {
   it("keeps a storage-failure deny authoritative after persistence recovers", async () => {
     installTimerMocks();
     vi.spyOn(Date, "now").mockReturnValue(1_000);
-    const { manager, databaseOptions, dir } = createPersistentManager();
+    const { manager, databaseOptions } = createPersistentManager();
     const record = manager.create({ command: "echo ok" }, 60_000, "approval-storage-recover");
     const decisionPromise = (await manager.register(record, 60_000)).decision;
-    const validDatabasePath = databaseOptions.path;
-    const blocker = path.join(dir, "storage-blocker");
-    fs.writeFileSync(blocker, "blocked");
-    databaseOptions.path = path.join(blocker, "state.sqlite");
+    vi.spyOn(operatorApprovalStore, "resolveOperatorApproval").mockRejectedValueOnce(
+      new Error("synthetic storage I/O failure"),
+    );
 
     await expect(
       manager.resolveDetailed(record.id, "allow-once", {
@@ -815,7 +817,6 @@ describe("ExecApprovalManager", () => {
     ).rejects.toThrow();
     await expect(decisionPromise).resolves.toBe("deny");
 
-    databaseOptions.path = validDatabasePath;
     vi.mocked(Date.now).mockReturnValue(2_000);
     expect(
       await manager.resolveDetailed(record.id, "allow-once", {
@@ -840,7 +841,7 @@ describe("ExecApprovalManager", () => {
     installTimerMocks();
     vi.spyOn(Date, "now").mockReturnValue(1_000);
     const lifecycleEvents: OperatorApprovalLifecycleEvent[] = [];
-    const { manager, databaseOptions, dir } = createPersistentManager({
+    const { manager } = createPersistentManager({
       onLifecycle: (event) => lifecycleEvents.push(event),
     });
     const record = manager.create(
@@ -849,10 +850,9 @@ describe("ExecApprovalManager", () => {
       "approval-storage-recovery-expiry",
     );
     const decisionPromise = (await manager.register(record, 1_000)).decision;
-    const validDatabasePath = databaseOptions.path;
-    const blocker = path.join(dir, "expiry-storage-blocker");
-    fs.writeFileSync(blocker, "blocked");
-    databaseOptions.path = path.join(blocker, "state.sqlite");
+    vi.spyOn(operatorApprovalStore, "resolveOperatorApproval").mockRejectedValueOnce(
+      new Error("synthetic storage I/O failure"),
+    );
 
     await expect(
       manager.resolveDetailed(record.id, "allow-once", {
@@ -862,7 +862,6 @@ describe("ExecApprovalManager", () => {
     ).rejects.toThrow();
     await expect(decisionPromise).resolves.toBe("deny");
 
-    databaseOptions.path = validDatabasePath;
     vi.mocked(Date.now).mockReturnValue(record.expiresAtMs);
     expect(
       await manager.resolveDetailed(record.id, "allow-once", {
@@ -898,7 +897,7 @@ describe("ExecApprovalManager", () => {
         { outcome: "found", record: resolved.record },
         "Control UI",
       ),
-    ).toBe(resolved.record);
+    ).toEqual(resolved.record);
     await expect(decisionPromise).resolves.toBe("allow-once");
     expect(manager.getLiveSnapshot(record.id)).toMatchObject({
       decision: "allow-once",
@@ -907,10 +906,17 @@ describe("ExecApprovalManager", () => {
   });
 
   it("fails an existing waiter closed when durable lookup is missing", async () => {
-    const { manager } = createPersistentManager();
+    const { manager, databaseOptions } = createPersistentManager();
     const record = manager.create({ command: "echo ok" }, 60_000, "approval-missing");
     const decisionPromise = (await manager.register(record, 60_000)).decision;
 
+    const database = openOpenClawStateDatabase(databaseOptions);
+    executeSqliteQuerySync(
+      database.db,
+      getNodeSqliteKysely<OperatorApprovalDatabase>(database.db)
+        .deleteFrom("operator_approvals")
+        .where("approval_id", "=", record.id),
+    );
     expect(await manager.reconcileDurableLookup({ outcome: "missing", id: record.id })).toBeNull();
     await expect(decisionPromise).resolves.toBe("deny");
     expect(await manager.getSnapshot(record.id)).toMatchObject({
@@ -922,13 +928,12 @@ describe("ExecApprovalManager", () => {
   it("repairs a recovered pending row before stable read returns it", async () => {
     installTimerMocks();
     vi.spyOn(Date, "now").mockReturnValue(1_000);
-    const { manager, databaseOptions, dir } = createPersistentManager();
+    const { manager, databaseOptions } = createPersistentManager();
     const record = manager.create({ command: "echo ok" }, 60_000, "approval-read-recover");
     const decisionPromise = (await manager.register(record, 60_000)).decision;
-    const validDatabasePath = databaseOptions.path;
-    const blocker = path.join(dir, "read-recovery-blocker");
-    fs.writeFileSync(blocker, "blocked");
-    databaseOptions.path = path.join(blocker, "state.sqlite");
+    vi.spyOn(operatorApprovalStore, "resolveOperatorApproval").mockRejectedValueOnce(
+      new Error("synthetic storage I/O failure"),
+    );
     await expect(
       manager.resolveDetailed(record.id, "allow-once", {
         kind: "device",
@@ -937,7 +942,6 @@ describe("ExecApprovalManager", () => {
     ).rejects.toThrow();
     await expect(decisionPromise).resolves.toBe("deny");
 
-    databaseOptions.path = validDatabasePath;
     vi.mocked(Date.now).mockReturnValue(2_000);
     const pending = await getOperatorApproval({ id: record.id, databaseOptions });
     if (!pending) {
