@@ -46,7 +46,19 @@ export function createCopilotAgentHarness(
           pluginId: "copilot",
         });
         onAcquired({ release: host.close, releaseBeforeResultWhenIdle: true });
-        const prepared = { ...params, hostCapabilities: host.capabilities };
+        const retainSourceAuthority = host.capabilities.retainSourceAuthority;
+        if (!retainSourceAuthority) {
+          throw new Error("Compaction fixture requires the production source capability");
+        }
+        const prepared = {
+          ...params,
+          hostCapabilities: {
+            kind: host.capabilities.kind,
+            version: host.capabilities.version,
+            assertActive: host.capabilities.assertActive,
+            retainSourceAuthority,
+          },
+        };
         return await compact(prepared);
       });
     },
