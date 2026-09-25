@@ -625,8 +625,10 @@ intact and produces an actionable warning; OpenClaw does not downgrade a newer
 installed build.
 
 Verified distributions live in immutable directories under
-`~/Library/Application Support/OpenClaw/Codex/versions`. An atomic selection receipt
-chooses the concrete executable, marketplace, and native service together. The
+`~/Library/Application Support/OpenClaw/Codex/versions`. Retained Codex plugin state
+in OpenClaw's SQLite database selects the concrete executable, marketplace, and
+native service together. Activation uses compare-and-set so a concurrent update
+cannot overwrite a newer selection. The
 updater does not replace `/Applications/ChatGPT.app` or `/Applications/Codex.app`.
 Existing conversations retain their original files and generation; new clients
 select the verified distribution after the normal plugin reload/generation handoff.

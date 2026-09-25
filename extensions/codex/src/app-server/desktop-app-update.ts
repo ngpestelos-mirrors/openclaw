@@ -16,11 +16,13 @@ import {
   readRealDirectoryIdentity,
 } from "./computer-use-service-path.js";
 import {
+  observeCodexManagedDesktopSelection,
   publishCodexManagedDesktopSelection,
   readCodexManagedDesktopSelection,
   resolveCodexManagedDesktopAppPath,
   resolveCodexManagedDesktopRoot,
   type CodexManagedDesktopSelection,
+  type CodexManagedDesktopStateOptions,
 } from "./managed-desktop-installation.js";
 
 const TEAM_ID = "2DC432GLL2";
@@ -45,21 +47,23 @@ export type CodexDesktopAppUpdateResult = {
   warnings?: string[];
 };
 
-/** The maintenance caller owns selection and compatibility; publication owns its receipt. */
-export async function updateCodexDesktopApp(params: {
-  appBundlePath: string;
-  signal: AbortSignal;
-  assertCurrent: () => void;
-  /** Must settle candidate processes, or reject with a canonical cleanup-uncertain error. */
-  validateCandidate: (candidate: Candidate) => Promise<void>;
-  deps?: {
-    runExec?: Execute;
-    platform?: NodeJS.Platform;
-    /** Process architecture; x64 still requires a host probe to detect Rosetta. */
-    arch?: string;
-    managedRoot?: string;
-  };
-}): Promise<CodexDesktopAppUpdateResult> {
+/** The maintenance caller owns selection and compatibility; publication owns its SQLite selection. */
+export async function updateCodexDesktopApp(
+  params: CodexManagedDesktopStateOptions & {
+    appBundlePath: string;
+    signal: AbortSignal;
+    assertCurrent: () => void;
+    /** Must settle candidate processes, or reject with a canonical cleanup-uncertain error. */
+    validateCandidate: (candidate: Candidate) => Promise<void>;
+    deps?: {
+      runExec?: Execute;
+      platform?: NodeJS.Platform;
+      /** Process architecture; x64 still requires a host probe to detect Rosetta. */
+      arch?: string;
+      managedRoot?: string;
+    };
+  },
+): Promise<CodexDesktopAppUpdateResult> {
   if ((params.deps?.platform ?? process.platform) !== "darwin") {
     throw new Error("Official Codex desktop updates require macOS.");
   }
@@ -69,13 +73,12 @@ export async function updateCodexDesktopApp(params: {
     throw new Error("Codex desktop maintenance only updates the selected official app bundle.");
   }
   const managedRoot = path.resolve(params.deps?.managedRoot ?? resolveCodexManagedDesktopRoot());
-  const previous = readCodexManagedDesktopSelection(managedRoot);
+  const observation = await observeCodexManagedDesktopSelection({ ...params, root: managedRoot });
+  const previous = observation.installation;
   if (previous && previous.appBundlePath !== target) {
     throw new Error("Codex managed desktop selection changed; retry the update.");
   }
-  const expectedReceipt = previous
-    ? { contents: previous.receiptContents, identity: previous.receiptIdentity }
-    : undefined;
+
   const execute = params.deps?.runExec ?? runExec;
   const assertCurrent = () => {
     params.signal.throwIfAborted();
@@ -192,11 +195,8 @@ export async function updateCodexDesktopApp(params: {
       assertCurrent();
       await params.validateCandidate(candidatePaths(target));
       await assertAppUnchanged(target, initial, exec);
-      const current = readCodexManagedDesktopSelection(managedRoot);
-      if (
-        current?.receiptIdentity !== previous?.receiptIdentity ||
-        current?.receiptContents !== previous?.receiptContents
-      ) {
+      const current = await observeCodexManagedDesktopSelection({ ...params, root: managedRoot });
+      if (current.comparison !== observation.comparison) {
         throw new Error("Codex managed desktop selection changed; retry the update.");
       }
       assertCurrent();
@@ -244,7 +244,9 @@ export async function updateCodexDesktopApp(params: {
       await publishCodexManagedDesktopSelection({
         root: managedRoot,
         selection,
-        expectedReceipt,
+        env: params.env,
+        store: params.store,
+        expectedComparison: observation.comparison,
         signal: params.signal,
         assertCurrent,
       });
@@ -259,13 +261,13 @@ export async function updateCodexDesktopApp(params: {
       retainWork = true;
       retainGeneration = true;
     }
-    // A receipt write can commit before its lock-release/cleanup reports failure.
+    // A SQLite write can commit before acknowledgement or cleanup reports failure.
     // Reconcile that exact generation, never delete an already selected bundle.
     if (publicationAttempted && selection) {
-      // Even a superseded receipt may already have admitted readers of this path.
+      // Even a superseded selection may already have admitted readers of this path.
       retainGeneration = true;
       try {
-        const current = readCodexManagedDesktopSelection(managedRoot);
+        const current = await readCodexManagedDesktopSelection(managedRoot, params);
         if (
           current?.selection.generation === selection.generation &&
           current.selection.appName === selection.appName
@@ -280,7 +282,7 @@ export async function updateCodexDesktopApp(params: {
           }
         }
       } catch {
-        // Ambiguous receipt state retains the candidate for manual recovery.
+        // Ambiguous selection state retains the candidate for manual recovery.
       }
     }
   } finally {

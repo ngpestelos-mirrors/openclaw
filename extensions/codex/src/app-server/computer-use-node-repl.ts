@@ -4,12 +4,79 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { parse as parseToml } from "smol-toml";
+import { defineCodexBuildState } from "../build-state.js";
 import { resolveMacOSDesktopCodexAppPathCandidateForBundle } from "./desktop-app-paths.js";
 import { normalizeCodexAppServerArgs, readCodexAppServerConfigOptions } from "./launch-args.js";
 
 export const CODEX_COMPUTER_USE_NODE_REPL_SERVER = "node_repl";
 export const CODEX_COMPUTER_USE_NODE_REPL_PROBE =
   '{ const { sky } = await import("@oai/sky"); const apps = await sky.list_apps(); nodeRepl.write(JSON.stringify({ appCount: Array.isArray(apps) ? apps.length : Object.keys(apps).length })); }';
+
+type NativeBridgeOwnership = {
+  appServerCommand: string;
+  codexHome: string;
+  launchArgs: readonly string[];
+  command: string;
+  env: Record<string, string>;
+};
+
+const bridgeOwnership = defineCodexBuildState("openclaw.codexComputerUseNodeReplOwnership", () => ({
+  generatedArgs: new WeakMap<readonly string[], NativeBridgeOwnership>(),
+  clients: new WeakMap<object, NativeBridgeOwnership>(),
+}));
+
+/** Binds only canonical, unchanged launch wiring to the process actually spawned. */
+export function bindCodexComputerUseNodeReplClient(
+  client: object,
+  start: { transport?: string; command?: string; args?: string[]; env?: NodeJS.ProcessEnv },
+): void {
+  const owner = start.args && bridgeOwnership().generatedArgs.get(start.args);
+  if (
+    !owner ||
+    start.transport !== "stdio" ||
+    start.command !== owner.appServerCommand ||
+    start.env?.CODEX_HOME !== owner.codexHome ||
+    start.args?.length !== owner.launchArgs.length ||
+    !owner.launchArgs.every((arg, index) => start.args?.[index] === arg)
+  ) {
+    return;
+  }
+  bridgeOwnership().clients.set(client, owner);
+}
+
+/** Effective native configuration cannot replace the bridge after admission. */
+export async function hasCodexComputerUseNodeReplOwnership(params: {
+  client?: object;
+  request: (
+    method: "config/read",
+    params: { includeLayers: false },
+  ) => Promise<{ config?: unknown }>;
+}): Promise<boolean> {
+  const owner = params.client && bridgeOwnership().clients.get(params.client);
+  if (!owner) {
+    return false;
+  }
+  const response = await params.request("config/read", {
+    includeLayers: false,
+  });
+  const servers = asOptionalRecord(asOptionalRecord(response.config)?.mcp_servers);
+  const server = asOptionalRecord(servers?.[CODEX_COMPUTER_USE_NODE_REPL_SERVER]);
+  const env = asOptionalRecord(server?.env);
+  return Boolean(
+    server &&
+    server.command === owner.command &&
+    Array.isArray(server.args) &&
+    server.args.length === 0 &&
+    server.enabled !== false &&
+    (server.environment_id == null || server.environment_id === "local") &&
+    server.url == null &&
+    server.cwd == null &&
+    (server.env_vars == null || (Array.isArray(server.env_vars) && server.env_vars.length === 0)) &&
+    env &&
+    Object.keys(env).length === Object.keys(owner.env).length &&
+    Object.entries(owner.env).every(([key, value]) => env[key] === value),
+  );
+}
 
 type ComputerUseNativeOwnershipParams = {
   appServerCommand: string;
@@ -106,10 +173,18 @@ export async function resolveCodexComputerUseNodeReplStartArgs(
   // The native plugin registry relies on its managed marketplace wrapper. A
   // direct .app source override makes installed plugins appear uninstalled.
   // Authorized provisioning refreshes that wrapper before this process starts.
-  return normalizeCodexAppServerArgs(
+  const launchArgs = normalizeCodexAppServerArgs(
     args,
     `mcp_servers.${CODEX_COMPUTER_USE_NODE_REPL_SERVER}={command=${JSON.stringify(command)},args=[],startup_timeout_sec=120,env={${envToml}}}`,
   );
+  bridgeOwnership().generatedArgs.set(launchArgs, {
+    appServerCommand: params.appServerCommand,
+    codexHome: params.codexHome,
+    launchArgs: [...launchArgs],
+    command,
+    env,
+  });
+  return launchArgs;
 }
 
 async function readComputerUseOwnershipFailure(

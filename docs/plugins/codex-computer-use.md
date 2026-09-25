@@ -174,9 +174,11 @@ part of that fence. After changing native Codex plugin config outside the
 Gateway, restart the Gateway and start a new chat before relying on the new
 selection.
 
-The Gateway watches the managed selection receipt and all standard ChatGPT and Codex desktop candidates that can
-supply the app-server or Computer Use artifacts. It does not poll the request
-path. After a detected update settles, existing turns continue on their current
+The Gateway reads retained runtime selection through the plugin-state worker
+before an unpinned client acquisition. It watches standard ChatGPT and Codex
+desktop candidates and the selected managed bundle for artifact changes. An
+unchanged selection does not trigger another bundle fingerprint or download.
+After a detected update settles, existing turns continue on their current
 app-server generation and new acquisitions stop using it. For each eligible
 isolated home, OpenClaw waits for the last old-generation turn to release its
 client before refreshing the signed Computer Use service, shared cache, and

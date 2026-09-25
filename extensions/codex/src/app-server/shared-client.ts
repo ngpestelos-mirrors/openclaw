@@ -53,6 +53,7 @@ import {
 import type { CodexDesktopGeneration } from "./desktop-generation-owner.js";
 import {
   isCodexDesktopGenerationCurrent,
+  readCodexDesktopGenerationCandidates,
   waitForCodexDesktopGeneration,
 } from "./desktop-generation.js";
 import { ownCodexInferenceClient } from "./inference-routing.js";
@@ -340,6 +341,12 @@ async function resolveCodexAppServerClientStartContext(
   )
     ? await waitForCodexDesktopGeneration()
     : undefined;
+  const desktopCandidates = desktopGeneration
+    ? readCodexDesktopGenerationCandidates(desktopGeneration)
+    : undefined;
+  if (desktopGeneration && !desktopCandidates) {
+    throw new CodexAppServerStartSelectionChangedError();
+  }
   const preparedAuth = options?.preparedAuth;
   const preparedApiKey = preparedAuth?.kind === "api-key" ? preparedAuth.apiKey.trim() : undefined;
   if (preparedAuth && options?.authProfileId !== undefined) {
@@ -439,7 +446,10 @@ async function resolveCodexAppServerClientStartContext(
     startOptions: requestedStartOptions,
     agentDir,
   });
-  const managedStartOptions = await resolveManagedCodexAppServerStartOptions(agentStartOptions);
+  const managedStartOptions = await resolveManagedCodexAppServerStartOptions(
+    agentStartOptions,
+    desktopCandidates ? { desktopCandidates } : {},
+  );
   // Preserve ordinary profile environment policy; only explicitly prepared
   // handoffs clear all inherited auth variables before spawning.
   const startOptions = await bridgeCodexAppServerStartOptions({

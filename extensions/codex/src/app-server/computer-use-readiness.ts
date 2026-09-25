@@ -9,6 +9,7 @@ import type { CodexAppServerClient } from "./client.js";
 import {
   CODEX_COMPUTER_USE_NODE_REPL_PROBE,
   CODEX_COMPUTER_USE_NODE_REPL_SERVER,
+  hasCodexComputerUseNodeReplOwnership,
 } from "./computer-use-node-repl.js";
 import type { ResolvedCodexComputerUseConfig } from "./config.js";
 import type { ToolCallResult as CodexMcpToolCallResult } from "./protocol-mcp.js";
@@ -108,6 +109,15 @@ export async function runCodexComputerUseLiveTest(params: {
       | { ok: true; liveTest: CodexComputerUseLiveTestStatus }
       | { ok: false; error: unknown };
     try {
+      const assertNativeBridgeOwned = async () => {
+        if (
+          params.config.mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER &&
+          !(await hasCodexComputerUseNodeReplOwnership(params))
+        ) {
+          throw new Error("Computer Use node_repl is not the admitted official desktop bridge");
+        }
+      };
+      await assertNativeBridgeOwned();
       const thread = await params.request<CodexThreadStartResponse>(
         "thread/start",
         {
@@ -120,6 +130,7 @@ export async function runCodexComputerUseLiveTest(params: {
         },
       );
       threadId = thread.thread.id;
+      await assertNativeBridgeOwned();
       const toolResult = await params.request<CodexMcpToolCallResult>(
         "mcpServer/tool/call",
         {

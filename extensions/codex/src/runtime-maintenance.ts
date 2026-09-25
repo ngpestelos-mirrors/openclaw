@@ -1,3 +1,4 @@
+import path from "node:path";
 import { resolveDefaultModelForAgent } from "openclaw/plugin-sdk/agent-runtime";
 import { listAgentIds, resolveAgentDir } from "openclaw/plugin-sdk/agent-scope-runtime";
 import { resolveEffectiveAgentRuntime } from "openclaw/plugin-sdk/command-auth-native";
@@ -16,7 +17,10 @@ import {
   resolveCodexAppServerStartOptionsForAgent,
   resolveCodexComputerUseConfig,
 } from "./app-server/config.js";
-import { resolveMacOSDesktopCodexAppPathCandidates } from "./app-server/desktop-app-paths.js";
+import {
+  resolveMacOSDesktopCodexAppPathCandidateForBundle,
+  resolveMacOSDesktopCodexAppPathCandidates,
+} from "./app-server/desktop-app-paths.js";
 import { updateCodexDesktopApp } from "./app-server/desktop-app-update.js";
 import {
   probeCodexDesktopRuntime,
@@ -95,14 +99,19 @@ export function createCodexRuntimeMaintenanceChecks(
       });
       const selected = await (deps.resolveCommand ?? resolveManagedCodexAppServerStartOptions)(
         start,
-        { pluginRoot: operation.pluginRoot },
+        { pluginRoot: operation.pluginRoot, env },
       );
       assertCurrent();
-      const desktop = resolveMacOSDesktopCodexAppPathCandidates("darwin").find(
-        (candidate) => candidate.appServerCommandPath === selected.command,
-      );
+      const desktop =
+        resolveMacOSDesktopCodexAppPathCandidates("darwin").find(
+          (candidate) => candidate.appServerCommandPath === selected.command,
+        ) ??
+        resolveMacOSDesktopCodexAppPathCandidateForBundle(
+          path.dirname(path.dirname(path.dirname(selected.command))),
+          { platform: "darwin" },
+        );
       // Package-only, explicit executables and remote servers keep their existing owners.
-      if (!desktop) {
+      if (!desktop || desktop.appServerCommandPath !== selected.command) {
         continue;
       }
       const target = targets.get(desktop.appBundlePath) ?? {
@@ -180,6 +189,7 @@ export function createCodexRuntimeMaintenanceChecks(
           try {
             const result = await updateApp({
               appBundlePath: target.appBundlePath,
+              env: ctx.env,
               signal: operation.signal,
               assertCurrent,
               validateCandidate: async ({ appBundlePath }) => {

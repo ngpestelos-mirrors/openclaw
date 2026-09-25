@@ -6,36 +6,21 @@ import path from "node:path";
 import { sha256File } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   resolveMacOSDesktopCodexAppPathCandidates,
+  resolveSelectedMacOSDesktopCodexAppPathCandidates,
   type MacOSDesktopCodexAppPathCandidate,
 } from "./desktop-app-paths.js";
-import {
-  readCodexManagedDesktopSelection,
-  resolveCodexManagedDesktopReceiptPath,
-  resolveCodexManagedDesktopRoot,
-} from "./managed-desktop-installation.js";
+import { resolveCodexManagedDesktopRoot } from "./managed-desktop-installation.js";
 
 const MAX_COMPUTER_USE_PLUGIN_TREE_ENTRIES = 4_096;
 
 /** Fingerprints every desktop candidate that can own a managed fallback artifact. */
 export async function readMacOSDesktopGenerationFingerprint(
-  candidates: readonly MacOSDesktopCodexAppPathCandidate[] = resolveMacOSDesktopCodexAppPathCandidates(
-    "darwin",
-  ),
-  managedRoot = resolveCodexManagedDesktopRoot(),
+  candidates?: readonly MacOSDesktopCodexAppPathCandidate[],
 ): Promise<string> {
-  const receiptPath = resolveCodexManagedDesktopReceiptPath(managedRoot);
-  let selectionFingerprint: string;
-  try {
-    const selected = readCodexManagedDesktopSelection(managedRoot);
-    selectionFingerprint = selected
-      ? `${selected.receiptIdentity}:${selected.receiptContents}`
-      : "missing";
-  } catch {
-    // Invalid receipts never authorize following a symlink or reading unbounded data.
-    selectionFingerprint = "invalid";
-  }
-  const entries: string[] = [`selection:${receiptPath}:${selectionFingerprint}`];
-  for (const candidate of candidates) {
+  const selectedCandidates =
+    candidates ?? (await resolveSelectedMacOSDesktopCodexAppPathCandidates("darwin"));
+  const entries: string[] = [];
+  for (const candidate of selectedCandidates) {
     const command = await statFingerprint(candidate.appServerCommandPath);
     entries.push(`candidate:${candidate.appName}:${candidate.appServerCommandPath}:${command}`);
     for (const artifactPath of resolveMacOSDesktopGenerationPaths(candidate)) {
@@ -81,8 +66,8 @@ export function resolveMacOSDesktopGenerationWatchPaths(
   managedRoot = resolveCodexManagedDesktopRoot(),
 ): string[] {
   const watched = new Set<string>(["/Applications"]);
-  // Observe first installation as well as later receipt replacements. Rearming
-  // narrows this ancestor to the managed root after maintenance creates it.
+  // Observe resource changes, not SQLite commits. Unpinned acquisitions refresh
+  // the selection through the worker; no database files are watched.
   let managedWatchRoot = managedRoot;
   while (!existsSync(managedWatchRoot) && path.dirname(managedWatchRoot) !== managedWatchRoot) {
     managedWatchRoot = path.dirname(managedWatchRoot);

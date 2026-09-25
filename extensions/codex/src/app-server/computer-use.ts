@@ -15,7 +15,10 @@ import {
   type CodexAppServerClient,
 } from "./client.js";
 import { resolveCodexManagedBundledMarketplacePath } from "./computer-use-marketplace.js";
-import { CODEX_COMPUTER_USE_NODE_REPL_SERVER } from "./computer-use-node-repl.js";
+import {
+  CODEX_COMPUTER_USE_NODE_REPL_SERVER,
+  hasCodexComputerUseNodeReplOwnership,
+} from "./computer-use-node-repl.js";
 import {
   createComputerUseRequest,
   runCodexComputerUseLiveTest,
@@ -628,7 +631,15 @@ async function readComputerUseTools(params: {
     config.mcpServerName === "computer-use" &&
     params.plugin.summary.id === "computer-use@openai-bundled" &&
     params.plugin.mcpServers.length === 0;
+  let ownershipRejected = false;
   const readServer = async () => {
+    if (
+      (usesOfficialNativeBridge || config.mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER) &&
+      !(await hasCodexComputerUseNodeReplOwnership(params))
+    ) {
+      ownershipRejected = true;
+      return undefined;
+    }
     const configured = await readMcpServerStatus(params.request, config.mcpServerName);
     if (configured || !usesOfficialNativeBridge) {
       return configured;
@@ -642,7 +653,7 @@ async function readComputerUseTools(params: {
   };
   let server = await readServer();
   let tools = Object.keys(server?.tools ?? {}).toSorted();
-  if ((!server || tools.length === 0) && params.installPlugin) {
+  if ((!server || tools.length === 0) && params.installPlugin && !ownershipRejected) {
     await params.request("config/mcpServer/reload", undefined);
     server = await readServer();
     tools = Object.keys(server?.tools ?? {}).toSorted();

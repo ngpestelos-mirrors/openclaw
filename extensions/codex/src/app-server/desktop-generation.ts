@@ -6,7 +6,10 @@ import type {
   OpenClawPluginServiceContext,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { defineCodexBuildState } from "../build-state.js";
-import { resolveMacOSDesktopCodexAppPathCandidates } from "./desktop-app-paths.js";
+import {
+  resolveSelectedMacOSDesktopCodexAppPathCandidates,
+  type MacOSDesktopCodexAppPathCandidate,
+} from "./desktop-app-paths.js";
 import {
   readMacOSDesktopGenerationFingerprint,
   resolveMacOSDesktopGenerationWatchPaths,
@@ -15,10 +18,7 @@ import {
   createCodexDesktopGenerationOwner,
   type CodexDesktopGeneration,
 } from "./desktop-generation-owner.js";
-import {
-  resolveCodexManagedDesktopReceiptPath,
-  resolveCodexManagedDesktopRoot,
-} from "./managed-desktop-installation.js";
+import { resolveCodexManagedDesktopRoot } from "./managed-desktop-installation.js";
 
 const APPLICATIONS_PATH = "/Applications";
 const REARM_INITIAL_DELAY_MS = 100;
@@ -32,8 +32,9 @@ type WatchFactory = (
 ) => FSWatcher;
 type DesktopGenerationRuntime = {
   platform: NodeJS.Platform;
-  readFingerprint: () => Promise<string>;
-  resolveWatchPaths: () => string[];
+  readFingerprint: (candidates: readonly MacOSDesktopCodexAppPathCandidate[]) => Promise<string>;
+  resolveCandidates: () => Promise<readonly MacOSDesktopCodexAppPathCandidate[]>;
+  resolveWatchPaths: (candidates: readonly MacOSDesktopCodexAppPathCandidate[]) => string[];
   pathExists: (watchedPath: string) => boolean;
   watchPath: WatchFactory;
 };
@@ -46,6 +47,9 @@ type DesktopGenerationState = {
   rearmTimer?: NodeJS.Timeout;
   rearmDelayMs?: number;
   context?: OpenClawPluginServiceContext;
+  candidates?: readonly MacOSDesktopCodexAppPathCandidate[];
+  resolveCandidates?: DesktopGenerationRuntime["resolveCandidates"];
+  selectionRefresh?: Promise<void>;
   readFingerprint?: () => Promise<string>;
   resolveWatchPaths?: () => string[];
   pathExists?: (watchedPath: string) => boolean;
@@ -57,8 +61,40 @@ const state = defineCodexBuildState(
   (): DesktopGenerationState => ({}),
 );
 
-export function waitForCodexDesktopGeneration(): Promise<CodexDesktopGeneration | undefined> {
-  return state().owner?.wait() ?? Promise.resolve(undefined);
+export async function waitForCodexDesktopGeneration(): Promise<CodexDesktopGeneration | undefined> {
+  const current = state();
+  const owner = current.owner;
+  if (!owner) {
+    return undefined;
+  }
+  // Every unpinned acquisition observes foreign commits. Only a changed selection
+  // invalidates the existing owner; unchanged rows do not rehash bundles or settle.
+  const refresh = (current.selectionRefresh ?? Promise.resolve()).then(async () => {
+    const candidates = await current.resolveCandidates?.();
+    if (current.owner !== owner || !candidates) {
+      return;
+    }
+    if (selectionKey(candidates) !== selectionKey(current.candidates ?? [])) {
+      current.candidates = candidates;
+      owner.markDirty();
+      scheduleRearm(current, owner);
+    }
+  });
+  current.selectionRefresh = refresh.catch(() => {});
+  await refresh;
+  return current.owner === owner ? owner.wait() : undefined;
+}
+
+/** Pins executable candidates to the acquired owner generation, without another DB read. */
+export function readCodexDesktopGenerationCandidates(
+  generation: CodexDesktopGeneration | undefined,
+): readonly MacOSDesktopCodexAppPathCandidate[] | undefined {
+  const current = state();
+  return current.owner?.isCurrent(generation) ? current.candidates : undefined;
+}
+
+function selectionKey(candidates: readonly MacOSDesktopCodexAppPathCandidate[]): string {
+  return JSON.stringify(candidates.map((candidate) => candidate.appServerCommandPath));
 }
 
 export function isCodexDesktopGenerationCurrent(
@@ -74,6 +110,7 @@ export function createCodexDesktopGenerationService(
   runtime: DesktopGenerationRuntime = {
     platform: process.platform,
     readFingerprint: readMacOSDesktopGenerationFingerprint,
+    resolveCandidates: () => resolveSelectedMacOSDesktopCodexAppPathCandidates("darwin"),
     resolveWatchPaths: resolveMacOSDesktopGenerationWatchPaths,
     pathExists: existsSync,
     watchPath: (watchedPath, options, listener) => watch(watchedPath, options, listener),
@@ -87,8 +124,16 @@ export function createCodexDesktopGenerationService(
       }
       const current = state();
       current.context = ctx;
-      current.readFingerprint = runtime.readFingerprint;
-      current.resolveWatchPaths = runtime.resolveWatchPaths;
+      const startEpoch = (current.armEpoch ?? 0) + 1;
+      current.armEpoch = startEpoch;
+      const candidates = await runtime.resolveCandidates();
+      if (current.context !== ctx || current.armEpoch !== startEpoch) {
+        return;
+      }
+      current.candidates = candidates;
+      current.resolveCandidates = runtime.resolveCandidates;
+      current.readFingerprint = () => runtime.readFingerprint(current.candidates ?? []);
+      current.resolveWatchPaths = () => runtime.resolveWatchPaths(current.candidates ?? []);
       current.pathExists = runtime.pathExists;
       current.watchPath = runtime.watchPath;
       current.owner = createCodexDesktopGenerationOwner({
@@ -106,6 +151,9 @@ export function createCodexDesktopGenerationService(
       current.owner = undefined;
       current.armEpoch = (current.armEpoch ?? 0) + 1;
       current.context = undefined;
+      current.candidates = undefined;
+      current.resolveCandidates = undefined;
+      current.selectionRefresh = undefined;
       current.readFingerprint = undefined;
       current.resolveWatchPaths = undefined;
       current.pathExists = undefined;
@@ -130,10 +178,9 @@ function armWatchers(current: DesktopGenerationState): boolean {
   current.armEpoch = armEpoch;
   const watchers = new Set<FSWatcher>();
   current.watchers = watchers;
-  const candidates = resolveMacOSDesktopCodexAppPathCandidates("darwin");
+  const candidates = current.candidates ?? [];
   const candidateNames = new Set<string>(candidates.map((candidate) => candidate.appName));
   const managedRoot = resolveCodexManagedDesktopRoot();
-  const receiptPath = resolveCodexManagedDesktopReceiptPath(managedRoot);
   const managedBundlePaths = candidates
     .map((candidate) => candidate.appBundlePath)
     .filter((bundlePath) => isPathWithin(managedRoot, bundlePath));
@@ -166,9 +213,8 @@ function armWatchers(current: DesktopGenerationState): boolean {
           ) {
             const changedPath = path.resolve(watchedPath, filename.toString());
             // Downloads and unselected versions are not a generation change. Only
-            // publication, the selected bundle, or root creation/replacement matters.
+            // the selected bundle or root creation/replacement matters.
             if (
-              changedPath !== receiptPath &&
               !isPathWithin(changedPath, managedRoot) &&
               !managedBundlePaths.some((bundlePath) => isPathWithin(bundlePath, changedPath))
             ) {

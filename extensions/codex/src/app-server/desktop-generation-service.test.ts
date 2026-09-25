@@ -6,6 +6,7 @@ import * as desktopAppPaths from "./desktop-app-paths.js";
 import {
   createCodexDesktopGenerationService,
   isCodexDesktopGenerationCurrent,
+  readCodexDesktopGenerationCandidates,
   waitForCodexDesktopGeneration,
 } from "./desktop-generation.js";
 import * as managedDesktopInstallation from "./managed-desktop-installation.js";
@@ -30,6 +31,9 @@ function createHarness(
   let fingerprint = initialFingerprint;
   const registrations: WatchRegistration[] = [];
   const readFingerprint = vi.fn(async () => fingerprint);
+  const resolveCandidates = vi.fn(async () =>
+    desktopAppPaths.resolveMacOSDesktopCodexAppPathCandidates("darwin"),
+  );
   const onGenerationChange = vi.fn();
   const clearFailure = vi.fn();
   const reportFailure = vi.fn();
@@ -39,6 +43,7 @@ function createHarness(
     {
       platform: "darwin",
       readFingerprint,
+      resolveCandidates,
       resolveWatchPaths,
       pathExists: () => true,
       watchPath: (watchedPath, options, listener) => {
@@ -52,6 +57,7 @@ function createHarness(
     service,
     registrations,
     readFingerprint,
+    resolveCandidates,
     onGenerationChange,
     clearFailure,
     reportFailure,
@@ -205,7 +211,7 @@ describe("Codex desktop generation service", () => {
     expect(harness.readFingerprint).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["receipt", "selected bundle through root", "selected bundle watch"])(
+  it.each(["selected bundle through root", "selected bundle watch"])(
     "invalidates the selected generation for %s changes",
     async (changedArtifact) => {
       vi.useFakeTimers();
@@ -217,10 +223,10 @@ describe("Codex desktop generation service", () => {
       harness.onGenerationChange.mockClear();
       const watchedPath = changedArtifact === "selected bundle watch" ? appBundlePath : managedRoot;
       const registration = harness.registrations.find((entry) => entry.watchedPath === watchedPath);
-      const filename =
-        changedArtifact === "receipt"
-          ? "selected.json"
-          : path.relative(watchedPath, path.join(appBundlePath, "Contents/Resources/codex"));
+      const filename = path.relative(
+        watchedPath,
+        path.join(appBundlePath, "Contents/Resources/codex"),
+      );
 
       harness.setFingerprint("managed-after");
       registration?.listener("rename", Buffer.from(filename));
@@ -257,13 +263,37 @@ describe("Codex desktop generation service", () => {
     expect(isCodexDesktopGenerationCurrent(generation)).toBe(false);
     await vi.advanceTimersByTimeAsync(1_100);
     expect(harness.registrations.at(-1)?.watchedPath).toBe(managedRoot);
-    const root = harness.registrations.at(-1);
-    harness.setFingerprint("installed-selection");
-    root?.listener("rename", "selected.json");
+    expect(harness.registrations.at(-1)?.watchedPath).toBe(managedRoot);
+  });
+
+  it("observes an external selection commit on the next acquisition without polling or rehashing unchanged rows", async () => {
+    vi.useFakeTimers();
+    const { appBundlePath } = managedWatchFixture();
+    const harness = createHarness("selected-old");
+    service = harness.service;
+    await startAndSettle(harness);
+    const oldGeneration = await waitForCodexDesktopGeneration();
+    const oldCandidates = readCodexDesktopGenerationCandidates(oldGeneration);
+    expect(oldCandidates?.[0]?.appBundlePath).toBe(appBundlePath);
+    await waitForCodexDesktopGeneration();
+    expect(harness.readFingerprint).toHaveBeenCalledTimes(2);
+    harness.onGenerationChange.mockClear();
+    harness.setFingerprint("selected-new");
+    const nextCandidate = {
+      ...oldCandidates![0]!,
+      appBundlePath: `${appBundlePath}-next`,
+      appServerCommandPath: `${appBundlePath}-next/Contents/Resources/codex`,
+    };
+    harness.resolveCandidates.mockResolvedValue([nextCandidate]);
+    const next = waitForCodexDesktopGeneration();
     await vi.advanceTimersByTimeAsync(1_100);
-    expect(await waitForCodexDesktopGeneration()).toMatchObject({
-      fingerprint: "installed-selection",
-    });
+    const nextGeneration = await next;
+    expect(nextGeneration?.fingerprint).toBe("selected-new");
+    expect(isCodexDesktopGenerationCurrent(oldGeneration)).toBe(false);
+    expect(readCodexDesktopGenerationCandidates(oldGeneration)).toBeUndefined();
+    expect(readCodexDesktopGenerationCandidates(nextGeneration)).toEqual([nextCandidate]);
+    expect(oldCandidates?.[0]?.appBundlePath).toBe(appBundlePath);
+    expect(harness.onGenerationChange).toHaveBeenCalledOnce();
   });
 
   it("settles the current generation while persistent watcher registration retries", async () => {
@@ -288,6 +318,7 @@ describe("Codex desktop generation service", () => {
       {
         platform: "darwin",
         readFingerprint,
+        resolveCandidates: async () => [],
         resolveWatchPaths: () => ["/Applications"],
         pathExists: () => true,
         watchPath,
@@ -318,6 +349,27 @@ describe("Codex desktop generation service", () => {
     expect(reportFailure).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledOnce();
     expect(clearFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a stopped service after its initial selection read resolves", async () => {
+    const harness = createHarness("not-admitted");
+    service = harness.service;
+    let resolveSelection!: (
+      value: readonly desktopAppPaths.MacOSDesktopCodexAppPathCandidate[],
+    ) => void;
+    harness.resolveCandidates.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSelection = resolve;
+        }),
+    );
+    const starting = service.start?.({ logger: { warn: harness.warn } } as never);
+    await service.stop?.({} as never);
+    resolveSelection([]);
+    await starting;
+    expect(harness.registrations).toEqual([]);
+    expect(harness.readFingerprint).not.toHaveBeenCalled();
+    expect(await waitForCodexDesktopGeneration()).toBeUndefined();
   });
 
   it("does not publish a generation after service stop during settling", async () => {

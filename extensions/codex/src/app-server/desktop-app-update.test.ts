@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  createPluginStateKeyedStoreForTests,
+  resetPluginStateStoreForTests,
+} from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { commandProcessCleanup, type runExec } from "openclaw/plugin-sdk/process-runtime";
+import { closeOpenClawStateDatabaseByPathAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { updateCodexDesktopApp } from "./desktop-app-update.js";
@@ -12,14 +17,32 @@ const NEW = { build: "101", hash: "ccdd" };
 const OTHER = { build: "102", hash: "eeff" };
 
 describe("official Codex desktop update transaction", () => {
-  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-  afterEach(() => vi.restoreAllMocks());
+  const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+    afterEach(async () => {
+      // The worker must release SQLite handles before Windows can remove the fixture.
+      for (const root of tempDirs.dirs) {
+        await closeOpenClawStateDatabaseByPathAsync(
+          path.join(root, "state", "state", "openclaw.sqlite"),
+        );
+      }
+      cleanup();
+    }),
+  );
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetPluginStateStoreForTests();
+  });
 
   async function fixture(initialCandidate = NEW, name = "ChatGPT.app", mountedNames = [name]) {
     let candidate = initialCandidate;
     const root = await fs.realpath(tempDirs.make("openclaw-desktop-update-"));
     const target = path.join(root, name);
     const managedRoot = path.join(root, "managed");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
+    const store = createPluginStateKeyedStoreForTests<managedDesktop.CodexManagedDesktopSelection>(
+      "codex",
+      { namespace: "managed-desktop-selection", retention: "retained", env },
+    );
     await writeApp(target, OLD);
     const controller = new AbortController();
     const events: string[] = [];
@@ -74,6 +97,8 @@ describe("official Codex desktop update transaction", () => {
       ).toBe(true);
     });
     const params = {
+      env,
+      store,
       appBundlePath: target,
       signal: controller.signal,
       assertCurrent: vi.fn(),
@@ -121,9 +146,10 @@ describe("official Codex desktop update transaction", () => {
     await expect(readIdentity(result.appBundlePath)).resolves.toEqual(NEW);
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
     expect((await fs.lstat(f.target)).ino).toBe(inode);
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)?.appBundlePath).toBe(
-      result.appBundlePath,
-    );
+    expect(
+      (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))
+        ?.appBundlePath,
+    ).toBe(result.appBundlePath);
     await expect(stagingDebris(f.managedRoot)).resolves.toEqual([]);
   });
 
@@ -171,9 +197,10 @@ describe("official Codex desktop update transaction", () => {
           expect.stringContaining("older than installed build 100"),
         ]);
       }
-      expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)?.appBundlePath).toBe(
-        result.appBundlePath,
-      );
+      expect(
+        (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))
+          ?.appBundlePath,
+      ).toBe(result.appBundlePath);
       expect(f.execute.mock.calls.find(([command]) => command === "/usr/bin/ditto")?.[1][1]).toBe(
         f.target,
       );
@@ -183,7 +210,10 @@ describe("official Codex desktop update transaction", () => {
   it.each([NEW, OLD])("does not recopy a current managed generation (%j)", async (candidate) => {
     const f = await fixture();
     const first = await updateCodexDesktopApp(f.params);
-    const selection = managedDesktop.readCodexManagedDesktopSelection(f.managedRoot);
+    const selection = await managedDesktop.readCodexManagedDesktopSelection(
+      f.managedRoot,
+      f.params,
+    );
     f.setCandidate(candidate);
     f.execute.mockClear();
     f.validateCandidate.mockClear();
@@ -199,7 +229,9 @@ describe("official Codex desktop update transaction", () => {
       expect.objectContaining({ appBundlePath: first.appBundlePath }),
     );
     expect(f.execute.mock.calls.some(([command]) => command === "/usr/bin/ditto")).toBe(false);
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toEqual(selection);
+    expect(await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params)).toEqual(
+      selection,
+    );
     await expect(readIdentity(first.appBundlePath)).resolves.toEqual(NEW);
   });
 
@@ -278,9 +310,10 @@ describe("official Codex desktop update transaction", () => {
     const result = await updateCodexDesktopApp(f.params);
     expect(path.basename(result.appBundlePath)).toBe("ChatGPT.app");
     expect(result.backupPath).toBe(f.target);
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)?.selection.appName).toBe(
-      "ChatGPT.app",
-    );
+    expect(
+      (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))?.selection
+        .appName,
+    ).toBe("ChatGPT.app");
     await expect(readIdentity(result.appBundlePath)).resolves.toEqual(NEW);
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
   });
@@ -293,7 +326,9 @@ describe("official Codex desktop update transaction", () => {
         "exactly one recognized desktop app",
       );
       expect(f.validateCandidate).not.toHaveBeenCalled();
-      expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
+      expect(
+        await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+      ).toBeUndefined();
       await expect(readIdentity(f.target)).resolves.toEqual(OLD);
     },
   );
@@ -303,7 +338,9 @@ describe("official Codex desktop update transaction", () => {
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("invalid signature");
     expect(f.validateCandidate).not.toHaveBeenCalled();
     expect(f.execute.mock.calls.some(([command]) => command === "/usr/bin/ditto")).toBe(false);
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
+    expect(
+      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+    ).toBeUndefined();
   });
 
   it("does not run candidate code or publish an invalidly signed bundle", async () => {
@@ -311,7 +348,9 @@ describe("official Codex desktop update transaction", () => {
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("invalid signature");
     expect(f.validateCandidate).not.toHaveBeenCalled();
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
+    expect(
+      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+    ).toBeUndefined();
     await expect(stagingDebris(f.managedRoot)).resolves.toEqual([]);
   });
 
@@ -320,7 +359,9 @@ describe("official Codex desktop update transaction", () => {
     f.validateCandidate.mockRejectedValueOnce(new Error("Computer Use is missing"));
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("Computer Use is missing");
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
+    expect(
+      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+    ).toBeUndefined();
     await expect(fs.readdir(path.join(f.managedRoot, "versions"))).resolves.toEqual([]);
   });
 
@@ -342,7 +383,9 @@ describe("official Codex desktop update transaction", () => {
       expect((failure as Error).message).toContain("Unselected candidate retained at");
       const candidate = f.candidatePath();
       await expect(readIdentity(candidate)).resolves.toEqual(NEW);
-      expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
+      expect(
+        await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+      ).toBeUndefined();
       expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
       expect(f.events.some((event) => event.startsWith("hdiutil detach"))).toBe(false);
       await expect(readIdentity(f.target)).resolves.toEqual(OLD);
@@ -364,7 +407,9 @@ describe("official Codex desktop update transaction", () => {
       const failure = await updateCodexDesktopApp(f.params).catch((caught: unknown) => caught);
       expect(commandProcessCleanup.isUncertain(failure)).toBe(true);
       expect(f.validateCandidate).not.toHaveBeenCalled();
-      expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
+      expect(
+        await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+      ).toBeUndefined();
       expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
       expect(f.events.some((event) => event.startsWith("hdiutil detach"))).toBe(false);
       if (failedCommand === "/usr/bin/ditto") {
@@ -388,7 +433,9 @@ describe("official Codex desktop update transaction", () => {
     });
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("maintenance authority revoked");
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
+    expect(
+      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+    ).toBeUndefined();
     await expect(fs.readdir(path.join(f.managedRoot, "versions"))).resolves.toEqual([]);
     expect(f.events.some((event) => event.startsWith("hdiutil detach"))).toBe(true);
   });
@@ -433,11 +480,13 @@ describe("official Codex desktop update transaction", () => {
       await fs.writeFile(path.join(appBundlePath, ".test-signature"), "invalid");
     });
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("invalid signature");
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
+    expect(
+      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+    ).toBeUndefined();
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
   });
 
-  it("preserves another updater's selection instead of overwriting its receipt", async () => {
+  it("preserves another updater's selection instead of overwriting its row", async () => {
     const f = await fixture();
     const winner = {
       version: 1 as const,
@@ -450,26 +499,33 @@ describe("official Codex desktop update transaction", () => {
       await managedDesktop.publishCodexManagedDesktopSelection({
         root: f.managedRoot,
         selection: winner,
-        expectedReceipt: undefined,
+        ...f.params,
+        expectedComparison: (
+          await managedDesktop.observeCodexManagedDesktopSelection({
+            ...f.params,
+            root: f.managedRoot,
+          })
+        ).comparison,
         signal: f.controller.signal,
         assertCurrent: f.params.assertCurrent,
       });
     });
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("selection changed");
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)?.appBundlePath).toBe(
-      winnerPath,
-    );
+    expect(
+      (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))
+        ?.appBundlePath,
+    ).toBe(winnerPath);
     await expect(readIdentity(winnerPath)).resolves.toEqual(OTHER);
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
   });
 
-  it("reconciles a receipt that committed before publication cleanup failed", async () => {
+  it("reconciles a selection that committed before publication cleanup failed", async () => {
     const f = await fixture();
     const publish = managedDesktop.publishCodexManagedDesktopSelection;
     vi.spyOn(managedDesktop, "publishCodexManagedDesktopSelection").mockImplementation(
       async (params) => {
         await publish(params);
-        throw new Error("post-rename lock cleanup failed");
+        throw new Error("post-commit acknowledgement failed");
       },
     );
     const result = await updateCodexDesktopApp(f.params);
@@ -477,14 +533,15 @@ describe("official Codex desktop update transaction", () => {
     expect(result.warnings).toEqual([
       expect.stringContaining("selection was activated, but publication cleanup failed"),
     ]);
-    expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)?.appBundlePath).toBe(
-      result.appBundlePath,
-    );
+    expect(
+      (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))
+        ?.appBundlePath,
+    ).toBe(result.appBundlePath);
     await expect(readIdentity(result.appBundlePath)).resolves.toEqual(NEW);
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
   });
 
-  it("preserves canonical cleanup failure after the receipt committed", async () => {
+  it("preserves canonical cleanup failure after the row committed", async () => {
     const f = await fixture();
     const publish = managedDesktop.publishCodexManagedDesktopSelection;
     vi.spyOn(managedDesktop, "publishCodexManagedDesktopSelection").mockImplementation(
@@ -496,7 +553,10 @@ describe("official Codex desktop update transaction", () => {
     const failure = await updateCodexDesktopApp(f.params).catch((caught: unknown) => caught);
     expect(commandProcessCleanup.isUncertain(failure)).toBe(true);
     expect((failure as Error).message).toContain("Selection was activated; candidate retained at");
-    const selected = managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)!;
+    const selected = (await managedDesktop.readCodexManagedDesktopSelection(
+      f.managedRoot,
+      f.params,
+    ))!;
     await expect(readIdentity(selected.appBundlePath)).resolves.toEqual(NEW);
     expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
     expect(f.events.some((event) => event.startsWith("hdiutil detach"))).toBe(false);
@@ -506,8 +566,8 @@ describe("official Codex desktop update transaction", () => {
   it("retains a possibly selected generation when publication state cannot be confirmed", async () => {
     const f = await fixture();
     vi.spyOn(managedDesktop, "publishCodexManagedDesktopSelection").mockImplementation(async () => {
-      await fs.writeFile(path.join(f.managedRoot, "selected.json"), "invalid receipt");
-      throw new Error("receipt commit is uncertain");
+      vi.spyOn(f.params.store, "lookup").mockRejectedValue(new Error("database read failed"));
+      throw new Error("selection commit is uncertain");
     });
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow(
       /Selection state is unconfirmed; candidate retained at/u,
@@ -564,7 +624,10 @@ describe("official Codex desktop update transaction", () => {
     const failure = await updateCodexDesktopApp(f.params).catch((caught: unknown) => caught);
     expect(commandProcessCleanup.isUncertain(failure)).toBe(true);
     expect((failure as Error).message).toContain("Selection was activated; candidate retained at");
-    const selected = managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)!;
+    const selected = (await managedDesktop.readCodexManagedDesktopSelection(
+      f.managedRoot,
+      f.params,
+    ))!;
     await expect(readIdentity(selected.appBundlePath)).resolves.toEqual(NEW);
     expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);

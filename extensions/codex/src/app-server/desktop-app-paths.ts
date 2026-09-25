@@ -5,6 +5,7 @@ import { assertNoSymlinkParentsSync } from "openclaw/plugin-sdk/file-access-runt
 import {
   isCodexManagedDesktopAppPath,
   readCodexManagedDesktopSelection,
+  type CodexManagedDesktopStateOptions,
 } from "./managed-desktop-installation.js";
 
 export type MacOSDesktopCodexAppPathCandidate = {
@@ -38,25 +39,29 @@ const MACOS_DESKTOP_CODEX_APP_PATH_CANDIDATES: readonly MacOSDesktopCodexAppPath
   },
 ] as const;
 
+/** Pure standard templates; no durable state is loaded during registration. */
 export function resolveMacOSDesktopCodexAppPathCandidates(
   platform: NodeJS.Platform = process.platform,
-  managedRoot?: string,
 ): readonly MacOSDesktopCodexAppPathCandidate[] {
+  return platform === "darwin" ? MACOS_DESKTOP_CODEX_APP_PATH_CANDIDATES : [];
+}
+
+/** Unpinned runtime discovery observes foreign SQLite commits through the read worker. */
+export async function resolveSelectedMacOSDesktopCodexAppPathCandidates(
+  platform: NodeJS.Platform = process.platform,
+  managedRoot?: string,
+  options: CodexManagedDesktopStateOptions = {},
+): Promise<readonly MacOSDesktopCodexAppPathCandidate[]> {
   if (platform !== "darwin") {
     return [];
   }
-  try {
-    const managed = readCodexManagedDesktopSelection(managedRoot);
-    if (managed) {
-      return [
+  const managed = await readCodexManagedDesktopSelection(managedRoot, options);
+  return managed
+    ? [
         candidateAtPath(managed.selection.appName, managed.appBundlePath),
         ...MACOS_DESKTOP_CODEX_APP_PATH_CANDIDATES,
-      ];
-    }
-  } catch {
-    // An invalid receipt must never introduce a command. Maintenance reports its repair error.
-  }
-  return MACOS_DESKTOP_CODEX_APP_PATH_CANDIDATES;
+      ]
+    : MACOS_DESKTOP_CODEX_APP_PATH_CANDIDATES;
 }
 
 /** Historical owned generations remain valid sources for already-admitted clients. */

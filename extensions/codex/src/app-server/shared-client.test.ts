@@ -70,6 +70,9 @@ const mocks = vi.hoisted(() => ({
   desktopGeneration: undefined as { epoch: number; fingerprint: string } | undefined,
   desktopGenerationCurrent: true,
   waitForCodexDesktopGeneration: vi.fn(),
+  readCodexDesktopGenerationCandidates: vi.fn<
+    () => readonly import("./desktop-app-paths.js").MacOSDesktopCodexAppPathCandidate[] | undefined
+  >(() => []),
   resolveCodexComputerUseNodeReplStartArgs: vi.fn(
     async (params: { args?: string[] }) => params.args ?? ["app-server"],
   ),
@@ -111,6 +114,7 @@ vi.mock("./desktop-generation.js", () => ({
     generation.epoch === mocks.desktopGeneration?.epoch &&
     generation.fingerprint === mocks.desktopGeneration?.fingerprint,
   waitForCodexDesktopGeneration: mocks.waitForCodexDesktopGeneration,
+  readCodexDesktopGenerationCandidates: mocks.readCodexDesktopGenerationCandidates,
 }));
 
 vi.mock("./computer-use-node-repl.js", async (importOriginal) => ({
@@ -336,6 +340,8 @@ describe("shared Codex app-server client", () => {
     );
     mocks.desktopGeneration = undefined;
     mocks.desktopGenerationCurrent = true;
+    mocks.readCodexDesktopGenerationCandidates.mockReset();
+    mocks.readCodexDesktopGenerationCandidates.mockReturnValue([]);
     mocks.waitForCodexDesktopGeneration.mockReset();
     mocks.waitForCodexDesktopGeneration.mockImplementation(async () => mocks.desktopGeneration);
     mocks.resolveCodexComputerUseNodeReplStartArgs.mockReset();
@@ -2605,6 +2611,27 @@ describe("shared Codex app-server client", () => {
     });
   });
 
+  it("rejects a lost generation snapshot through the existing bounded selection retry classifier", async () => {
+    mocks.desktopGeneration = { epoch: 1, fingerprint: "superseded" };
+    mocks.readCodexDesktopGenerationCandidates.mockReturnValue(undefined);
+    await expect(
+      getLeasedSharedCodexAppServerClient({
+        agentDir: "/tmp/openclaw-agent",
+        timeoutMs: 1_000,
+        startOptions: {
+          transport: "stdio",
+          homeScope: "agent",
+          command: "codex",
+          commandSource: "managed",
+          managedCommandOrder: "desktop-first",
+          args: ["app-server"],
+          headers: {},
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CODEX_APP_SERVER_START_SELECTION_CHANGED" });
+    expect(mocks.resolveManagedCodexAppServerStartOptions).not.toHaveBeenCalled();
+  });
+
   it("waits for a dirty desktop generation before reusing a warm managed client", async () => {
     const generation = { epoch: 1, fingerprint: "desktop-x" };
     mocks.desktopGeneration = generation;
@@ -2630,6 +2657,10 @@ describe("shared Codex app-server client", () => {
     const firstAcquire = getLeasedSharedCodexAppServerClient(options);
     await sendInitializeResult(harness, "openclaw/0.149.0 (macOS; test)");
     const first = await firstAcquire;
+    expect(mocks.resolveManagedCodexAppServerStartOptions).toHaveBeenCalledWith(
+      expect.any(Object),
+      { desktopCandidates: mocks.readCodexDesktopGenerationCandidates.mock.results[0]?.value },
+    );
     const dirty = createDeferred<typeof generation>();
     mocks.desktopGenerationCurrent = false;
     mocks.waitForCodexDesktopGeneration.mockReturnValue(dirty.promise);

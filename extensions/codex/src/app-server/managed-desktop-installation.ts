@@ -2,12 +2,8 @@
 import fs, { type BigIntStats } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
-import {
-  assertNoSymlinkParentsSync,
-  readRegularFileSync,
-} from "openclaw/plugin-sdk/file-access-runtime";
-import { withFileLock } from "openclaw/plugin-sdk/file-lock";
+import { assertNoSymlinkParentsSync } from "openclaw/plugin-sdk/file-access-runtime";
+import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 
 export type CodexManagedDesktopSelection = Readonly<{
   version: 1;
@@ -18,18 +14,30 @@ export type CodexManagedDesktopSelection = Readonly<{
 export type CodexManagedDesktopInstallation = Readonly<{
   selection: CodexManagedDesktopSelection;
   appBundlePath: string;
-  receiptContents: string;
-  receiptIdentity: string;
 }>;
 
 export function resolveCodexManagedDesktopRoot(): string {
   return path.join(os.homedir(), "Library", "Application Support", "OpenClaw", "Codex");
 }
 
-export function resolveCodexManagedDesktopReceiptPath(
-  root = resolveCodexManagedDesktopRoot(),
-): string {
-  return path.join(root, "selected.json");
+export type CodexManagedDesktopStateOptions = {
+  env?: NodeJS.ProcessEnv;
+  store?: Required<PluginStateKeyedStore<CodexManagedDesktopSelection>>;
+};
+
+async function selectionStore(options: CodexManagedDesktopStateOptions) {
+  if (options.store) {
+    return options.store;
+  }
+  // Descriptor registration stays light; the canonical SQLite worker loads only
+  // when runtime selection or explicit maintenance actually reads durable state.
+  const { createPluginStateKeyedStore } =
+    await import("openclaw/plugin-sdk/plugin-state-store-runtime");
+  return createPluginStateKeyedStore<CodexManagedDesktopSelection>("codex", {
+    namespace: "managed-desktop-selection",
+    retention: "retained",
+    env: options.env,
+  });
 }
 
 export function resolveCodexManagedDesktopAppPath(
@@ -62,36 +70,49 @@ export function isCodexManagedDesktopAppPath(
   }
 }
 
-/** Strict reads let maintenance refuse a damaged receipt instead of overwriting it. */
-export function readCodexManagedDesktopSelection(
+/** Read-only worker lookup: discovery never creates a database or a selector file. */
+export async function readCodexManagedDesktopSelection(
   root = resolveCodexManagedDesktopRoot(),
-): CodexManagedDesktopInstallation | undefined {
-  const receipt = readReceipt(root);
-  if (!receipt) {
-    return undefined;
-  }
-  const selection: unknown = JSON.parse(receipt.contents);
-  assertSelection(selection);
-  const appBundlePath = resolveCodexManagedDesktopAppPath(selection, root);
-  inspectCandidate(root, appBundlePath);
+  options: CodexManagedDesktopStateOptions = {},
+): Promise<CodexManagedDesktopInstallation | undefined> {
+  const selected = await (await selectionStore(options)).lookup(path.resolve(root));
+  return inspectSelection(selected, root);
+}
+
+/** Capture writable admission and a row comparison before downloading a candidate. */
+export async function observeCodexManagedDesktopSelection(
+  params: CodexManagedDesktopStateOptions & {
+    root?: string;
+    signal: AbortSignal;
+    assertCurrent: () => void;
+  },
+): Promise<{ installation: CodexManagedDesktopInstallation | undefined; comparison: string }> {
+  const root = path.resolve(params.root ?? resolveCodexManagedDesktopRoot());
+  const assertCurrent = () => {
+    params.signal.throwIfAborted();
+    params.assertCurrent();
+  };
+  assertCurrent();
+  const store = (await selectionStore(params)).withCurrent({ assertCurrent });
+  const observation = await store.observe(root);
+  assertCurrent();
   return {
-    selection,
-    appBundlePath,
-    receiptContents: receipt.contents,
-    receiptIdentity: receipt.identity,
+    installation: inspectSelection(observation.value, root),
+    comparison: observation.comparison,
   };
 }
 
-/** Atomically selects a validated generation; never moves or removes app resources. */
-export async function publishCodexManagedDesktopSelection(params: {
-  root?: string;
-  selection: CodexManagedDesktopSelection;
-  expectedReceipt: { contents: string; identity: string } | undefined;
-  signal: AbortSignal;
-  assertCurrent: () => void;
-}): Promise<void> {
+/** Atomically selects verified resources using canonical action-bound SQLite CAS. */
+export async function publishCodexManagedDesktopSelection(
+  params: CodexManagedDesktopStateOptions & {
+    root?: string;
+    selection: CodexManagedDesktopSelection;
+    expectedComparison: string;
+    signal: AbortSignal;
+    assertCurrent: () => void;
+  },
+): Promise<void> {
   const root = path.resolve(params.root ?? resolveCodexManagedDesktopRoot());
-  const receiptPath = resolveCodexManagedDesktopReceiptPath(root);
   const assertCurrent = () => {
     params.signal.throwIfAborted();
     params.assertCurrent();
@@ -105,46 +126,34 @@ export async function publishCodexManagedDesktopSelection(params: {
     if (inspectRoot(root) !== rootIdentity) {
       throw new Error("Codex managed desktop root changed during publication.");
     }
-    const current = readReceipt(root);
-    if (
-      current?.identity !== params.expectedReceipt?.identity ||
-      current?.contents !== params.expectedReceipt?.contents
-    ) {
-      throw new Error("Codex managed desktop selection changed; retry the update.");
-    }
     if (inspectCandidate(root, appBundlePath) !== candidateIdentity) {
       throw new Error("Codex managed desktop candidate changed during publication.");
     }
     assertCurrent();
   };
-  await withFileLock(
-    receiptPath,
-    {
-      retries: { retries: 0, factor: 1, minTimeout: 0, maxTimeout: 0 },
-      stale: 60_000,
-      staleRecovery: "remove-if-definitely-stale",
-      assertResourceUnborrowed: () => {
-        if (inspectRoot(root) !== rootIdentity) {
-          throw new Error("Codex managed desktop root changed while holding its selector lock.");
-        }
-      },
-    },
-    async () => {
-      // Descriptor registration only reads selection; load the broader mutation
-      // facade during explicit publication, then recheck authority and identities.
-      const { replaceFileAtomic } = await import("openclaw/plugin-sdk/security-runtime");
-      assertUnchanged();
-      await replaceFileAtomic({
-        filePath: receiptPath,
-        content: `${JSON.stringify(params.selection)}\n`,
-        mode: 0o600,
-        preserveExistingMode: false,
-        syncTempFile: true,
-        syncParentDir: true,
-        beforeRename: async () => assertUnchanged(),
-      });
-    },
-  );
+  const store = (await selectionStore(params)).withCurrent({ assertCurrent: assertUnchanged });
+  const result = await store.compareAndApply(root, params.expectedComparison, {
+    operation: "update",
+    action: "set",
+    value: params.selection,
+  });
+  if (result.status === "conflict") {
+    throw new Error("Codex managed desktop selection changed; retry the update.");
+  }
+  assertCurrent();
+}
+
+function inspectSelection(
+  selection: unknown,
+  root: string,
+): CodexManagedDesktopInstallation | undefined {
+  if (selection === undefined) {
+    return undefined;
+  }
+  assertSelection(selection);
+  const appBundlePath = resolveCodexManagedDesktopAppPath(selection, root);
+  inspectCandidate(root, appBundlePath);
+  return { selection, appBundlePath };
 }
 
 function assertSelection(value: unknown): asserts value is CodexManagedDesktopSelection {
@@ -194,31 +203,6 @@ function inspectCandidate(root: string, appBundlePath: string): string {
     throw new Error("Codex managed desktop candidate must contain a real executable.");
   }
   return `${identity(bundle)}:${identity(executable)}`;
-}
-
-function readReceipt(root: string): { contents: string; identity: string } | undefined {
-  const receiptPath = resolveCodexManagedDesktopReceiptPath(root);
-  let before: BigIntStats;
-  try {
-    before = fs.lstatSync(receiptPath, { bigint: true });
-  } catch (error) {
-    if (extractErrorCode(error) === "ENOENT") {
-      return undefined;
-    }
-    throw error;
-  }
-  inspectRoot(root);
-  if (!before.isFile()) {
-    throw new Error("Codex managed desktop receipt must be a regular file.");
-  }
-  assertOwned(before);
-  const contents = readRegularFileSync({ filePath: receiptPath, maxBytes: 4096 }).buffer.toString(
-    "utf8",
-  );
-  if (identity(fs.lstatSync(receiptPath, { bigint: true })) !== identity(before)) {
-    throw new Error("Codex managed desktop receipt changed while reading.");
-  }
-  return { contents, identity: identity(before) };
 }
 
 function assertOwned(stat: BigIntStats): void {

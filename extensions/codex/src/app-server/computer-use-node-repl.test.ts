@@ -5,8 +5,11 @@ import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertCodexDesktopComputerUseProbeSupported,
+  bindCodexComputerUseNodeReplClient,
+  hasCodexComputerUseNodeReplOwnership,
   resolveCodexComputerUseNodeReplStartArgs,
 } from "./computer-use-node-repl.js";
+import { requireRecord } from "./computer-use.test-support.js";
 import * as desktopPaths from "./desktop-app-paths.js";
 
 describe("desktop Computer Use node_repl process config", () => {
@@ -46,6 +49,64 @@ describe("desktop Computer Use node_repl process config", () => {
       },
     };
   }
+
+  it.each(["official", "copied args", "changed args", "other command", "other home"])(
+    "binds only the actual canonical launch (%s)",
+    async (scenario) => {
+      const { params, home } = await fixture();
+      const args = await resolveCodexComputerUseNodeReplStartArgs(params);
+      const config = parseToml(args.filter((_, index) => args[index - 1] === "-c").join("\n"));
+      const request = vi.fn(async () => ({ config }));
+      const client = {};
+      const start = {
+        transport: "stdio",
+        command: params.appServerCommand,
+        args,
+        env: { CODEX_HOME: home },
+      };
+      if (scenario === "copied args") {
+        start.args = [...args];
+      } else if (scenario === "changed args") {
+        args.push("-c", 'mcp_servers.node_repl.command="/custom/server"');
+      } else if (scenario === "other command") {
+        start.command = "/custom/codex";
+      } else if (scenario === "other home") {
+        start.env.CODEX_HOME = "/custom/home";
+      }
+      bindCodexComputerUseNodeReplClient(client, start);
+      await expect(hasCodexComputerUseNodeReplOwnership({ client, request })).resolves.toBe(
+        scenario === "official",
+      );
+      expect(request).toHaveBeenCalledTimes(scenario === "official" ? 1 : 0);
+    },
+  );
+
+  it.each([
+    ["command", "/custom/node_repl"],
+    ["args", ["--custom"]],
+    ["env", { SKY_CUA_SERVICE_PATH: "/custom/service" }],
+    ["env_vars", ["NODE_OPTIONS"]],
+    ["environment_id", "remote-environment"],
+    ["url", "https://custom.invalid/mcp"],
+    ["cwd", "/custom/workdir"],
+    ["enabled", false],
+  ] as const)("rejects changed effective MCP %s after an admitted launch", async (key, value) => {
+    const { params, home } = await fixture();
+    const args = await resolveCodexComputerUseNodeReplStartArgs(params);
+    const config = parseToml(args.filter((_, index) => args[index - 1] === "-c").join("\n"));
+    const server = requireRecord(requireRecord(config.mcp_servers, "servers").node_repl, "server");
+    const client = {};
+    bindCodexComputerUseNodeReplClient(client, {
+      transport: "stdio",
+      command: params.appServerCommand,
+      args,
+      env: { CODEX_HOME: home },
+    });
+    server[key] = value;
+    const request = vi.fn(async () => ({ config }));
+    await expect(hasCodexComputerUseNodeReplOwnership({ client, request })).resolves.toBe(false);
+    expect(request).toHaveBeenCalledExactlyOnceWith("config/read", { includeLayers: false });
+  });
 
   it.each([undefined, false])(
     "wires an enabled native plugin without changing config or service (OpenClaw enabled: %s)",

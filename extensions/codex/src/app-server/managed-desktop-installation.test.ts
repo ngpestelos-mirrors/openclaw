@@ -1,10 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  createPluginStateKeyedStoreForTests,
+  resetPluginStateStoreForTests,
+} from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { closeOpenClawStateDatabaseByPathAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { withTempDir } from "openclaw/plugin-sdk/test-env";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   resolveMacOSDesktopCodexAppPathCandidateForBundle,
-  resolveMacOSDesktopCodexAppPathCandidates,
+  resolveSelectedMacOSDesktopCodexAppPathCandidates,
 } from "./desktop-app-paths.js";
 import {
   readMacOSDesktopGenerationFingerprint,
@@ -12,10 +17,10 @@ import {
 } from "./desktop-generation-fingerprint.js";
 import {
   isCodexManagedDesktopAppPath,
+  observeCodexManagedDesktopSelection,
   publishCodexManagedDesktopSelection,
   readCodexManagedDesktopSelection,
   resolveCodexManagedDesktopAppPath,
-  resolveCodexManagedDesktopReceiptPath,
   type CodexManagedDesktopSelection,
 } from "./managed-desktop-installation.js";
 
@@ -26,7 +31,17 @@ const first: CodexManagedDesktopSelection = {
 };
 const second: CodexManagedDesktopSelection = { ...first, generation: "build-2" };
 const authority = () => ({ signal: new AbortController().signal, assertCurrent: () => {} });
-
+function stateOptions(root: string) {
+  const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
+  return {
+    env,
+    store: createPluginStateKeyedStoreForTests<CodexManagedDesktopSelection>("codex", {
+      namespace: "managed-desktop-selection",
+      retention: "retained",
+      env,
+    }),
+  };
+}
 async function stage(root: string, selection: CodexManagedDesktopSelection): Promise<string> {
   const bundle = resolveCodexManagedDesktopAppPath(selection, root);
   const resources = path.join(bundle, "Contents", "Resources");
@@ -35,37 +50,67 @@ async function stage(root: string, selection: CodexManagedDesktopSelection): Pro
   return bundle;
 }
 
-function expectedReceipt(root: string) {
-  const previous = readCodexManagedDesktopSelection(root);
-  return previous
-    ? { contents: previous.receiptContents, identity: previous.receiptIdentity }
-    : undefined;
+async function withDesktopStateFixture(
+  prefix: string,
+  run: (root: string) => Promise<void>,
+): Promise<void> {
+  await withTempDir(prefix, async (root) => {
+    try {
+      await run(root);
+    } finally {
+      await closeOpenClawStateDatabaseByPathAsync(
+        path.join(root, "state", "state", "openclaw.sqlite"),
+      );
+    }
+  });
 }
 
 describe("immutable managed Codex desktop selection", () => {
-  it("selects a new complete generation without changing resources retained by an old client", async () => {
-    await withTempDir("codex-managed-desktop-", async (root) => {
-      const oldBundle = await stage(root, first);
-      await publishCodexManagedDesktopSelection({
-        root,
-        selection: first,
-        expectedReceipt: undefined,
-        ...authority(),
-      });
-      const previous = expectedReceipt(root);
-      const oldClientCommand = path.join(oldBundle, "Contents", "Resources", "codex");
-      const oldFingerprint = await readMacOSDesktopGenerationFingerprint([], root);
-      const nextBundle = await stage(root, second);
-      await publishCodexManagedDesktopSelection({
-        root,
-        selection: second,
-        expectedReceipt: previous,
-        ...authority(),
-      });
+  afterEach(() => resetPluginStateStoreForTests());
 
-      expect(resolveMacOSDesktopCodexAppPathCandidates("darwin", root)[0]?.appBundlePath).toBe(
-        nextBundle,
+  it("publishes through SQLite while retaining old client resources and observes a separate writer", async () => {
+    await withDesktopStateFixture("codex-managed-desktop-", async (root) => {
+      const options = stateOptions(root);
+      const oldBundle = await stage(root, first);
+      const initial = await observeCodexManagedDesktopSelection({
+        root,
+        ...options,
+        ...authority(),
+      });
+      await publishCodexManagedDesktopSelection({
+        root,
+        ...options,
+        selection: first,
+        expectedComparison: initial.comparison,
+        ...authority(),
+      });
+      const previous = await observeCodexManagedDesktopSelection({
+        root,
+        ...options,
+        ...authority(),
+      });
+      const oldClientCommand = path.join(oldBundle, "Contents", "Resources", "codex");
+      const oldCandidates = await resolveSelectedMacOSDesktopCodexAppPathCandidates(
+        "darwin",
+        root,
+        options,
       );
+      const oldFingerprint = await readMacOSDesktopGenerationFingerprint(oldCandidates.slice(0, 1));
+      const nextBundle = await stage(root, second);
+      // Another store instance models the explicit CLI writer rather than local selector state.
+      await publishCodexManagedDesktopSelection({
+        root,
+        ...stateOptions(root),
+        selection: second,
+        expectedComparison: previous.comparison,
+        ...authority(),
+      });
+      const nextCandidates = await resolveSelectedMacOSDesktopCodexAppPathCandidates(
+        "darwin",
+        root,
+        options,
+      );
+      expect(nextCandidates[0]?.appBundlePath).toBe(nextBundle);
       expect(await fs.readFile(oldClientCommand, "utf8")).toBe("build-1");
       expect(isCodexManagedDesktopAppPath(oldBundle, root)).toBe(true);
       expect(
@@ -74,56 +119,72 @@ describe("immutable managed Codex desktop selection", () => {
           managedRoot: root,
         })?.appServerCommandPath,
       ).toBe(oldClientCommand);
-      expect(await readMacOSDesktopGenerationFingerprint([], root)).not.toBe(oldFingerprint);
+      expect(await readMacOSDesktopGenerationFingerprint(nextCandidates.slice(0, 1))).not.toBe(
+        oldFingerprint,
+      );
+      expect(await options.store.lookup(path.resolve(root))).toEqual(second);
+      await expect(fs.stat(path.join(root, "selected.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
       expect(resolveMacOSDesktopGenerationWatchPaths([], root)).toContain(root);
     });
   });
 
-  it("rejects a stale writer even when another writer replaces the receipt with identical bytes", async () => {
-    await withTempDir("codex-managed-stale-", async (root) => {
+  it("rejects a stale writer instead of overwriting a foreign selection", async () => {
+    await withDesktopStateFixture("codex-managed-stale-", async (root) => {
+      const options = stateOptions(root);
       await stage(root, first);
       await stage(root, second);
-      await publishCodexManagedDesktopSelection({
+      const before = await observeCodexManagedDesktopSelection({
         root,
-        selection: first,
-        expectedReceipt: undefined,
+        ...options,
         ...authority(),
       });
-      const before = expectedReceipt(root);
-      const receipt = resolveCodexManagedDesktopReceiptPath(root);
-      await fs.writeFile(`${receipt}.replacement`, before?.contents ?? "", { mode: 0o600 });
-      await fs.rename(`${receipt}.replacement`, receipt);
+      await publishCodexManagedDesktopSelection({
+        root,
+        ...stateOptions(root),
+        selection: first,
+        expectedComparison: before.comparison,
+        ...authority(),
+      });
       await expect(
         publishCodexManagedDesktopSelection({
           root,
+          ...options,
           selection: second,
-          expectedReceipt: before,
+          expectedComparison: before.comparison,
           ...authority(),
         }),
       ).rejects.toThrow("selection changed");
-      expect(readCodexManagedDesktopSelection(root)?.selection).toEqual(first);
+      expect((await readCodexManagedDesktopSelection(root, options))?.selection).toEqual(first);
     });
   });
 
-  it("does not publish after authority is revoked at the atomic commit boundary", async () => {
-    await withTempDir("codex-managed-revoked-", async (root) => {
+  it("rechecks authority at worker write admission and leaves selection absent on revocation", async () => {
+    await withDesktopStateFixture("codex-managed-revoked-", async (root) => {
+      const options = stateOptions(root);
       await stage(root, first);
+      const before = await observeCodexManagedDesktopSelection({
+        root,
+        ...options,
+        ...authority(),
+      });
       let checks = 0;
       await expect(
         publishCodexManagedDesktopSelection({
           root,
+          ...options,
           selection: first,
-          expectedReceipt: undefined,
+          expectedComparison: before.comparison,
           signal: new AbortController().signal,
           assertCurrent: () => {
-            checks += 1;
-            if (checks >= 4) {
+            if (++checks >= 4) {
               throw new Error("maintenance authority revoked");
             }
           },
         }),
       ).rejects.toThrow("maintenance authority revoked");
-      expect(readCodexManagedDesktopSelection(root)).toBeUndefined();
+      expect(await readCodexManagedDesktopSelection(root, options)).toBeUndefined();
     });
   });
 
@@ -134,45 +195,47 @@ describe("immutable managed Codex desktop selection", () => {
     },
   );
 
-  it("ignores a receipt with an unowned path, an unknown app, or a symlinked generation", async () => {
-    await withTempDir("codex-managed-invalid-", async (root) => {
+  it("rejects invalid stored descriptors and symlinked generations", async () => {
+    await withDesktopStateFixture("codex-managed-invalid-", async (root) => {
+      const options = stateOptions(root);
       const bundle = await stage(root, first);
-      const receipt = resolveCodexManagedDesktopReceiptPath(root);
       for (const value of [
         { ...first, generation: "../../escape" },
         { ...first, appName: "Other.app" },
         { ...first, appBundlePath: "/tmp/arbitrary.app" },
       ]) {
-        await fs.writeFile(receipt, JSON.stringify(value), { mode: 0o600 });
-        expect(() => readCodexManagedDesktopSelection(root)).toThrow();
-        expect(resolveMacOSDesktopCodexAppPathCandidates("darwin", root)[0]?.appBundlePath).toBe(
-          "/Applications/ChatGPT.app",
-        );
+        // SAFETY: This regression intentionally seeds malformed persisted input.
+        await options.store.register(path.resolve(root), value as CodexManagedDesktopSelection);
+        await expect(readCodexManagedDesktopSelection(root, options)).rejects.toThrow("Invalid");
+        await expect(
+          resolveSelectedMacOSDesktopCodexAppPathCandidates("darwin", root, options),
+        ).rejects.toThrow("Invalid");
       }
       const generation = path.dirname(bundle);
       await fs.rename(generation, `${generation}.retained`);
       await fs.symlink(`${generation}.retained`, generation);
-      await fs.writeFile(receipt, JSON.stringify(first), { mode: 0o600 });
-      expect(() => readCodexManagedDesktopSelection(root)).toThrow();
+      await options.store.register(path.resolve(root), first);
+      await expect(readCodexManagedDesktopSelection(root, options)).rejects.toThrow();
       expect(isCodexManagedDesktopAppPath(bundle, root)).toBe(false);
-      expect(resolveMacOSDesktopCodexAppPathCandidates("darwin", root)[0]?.appBundlePath).toBe(
-        "/Applications/ChatGPT.app",
-      );
     });
   });
 
-  it("ignores a symlinked receipt and watches the existing ancestor before first installation", async () => {
-    await withTempDir("codex-managed-first-", async (root) => {
-      const futureRoot = path.join(root, "future", "Codex");
-      expect(resolveMacOSDesktopGenerationWatchPaths([], futureRoot)).toContain(root);
-      const source = path.join(root, "untrusted.json");
-      await fs.writeFile(source, JSON.stringify(first), { mode: 0o600 });
-      await fs.symlink(source, resolveCodexManagedDesktopReceiptPath(root));
-      expect(() => readCodexManagedDesktopSelection(root)).toThrow("regular file");
-      expect(resolveMacOSDesktopCodexAppPathCandidates("darwin", root)[0]?.appBundlePath).toBe(
-        "/Applications/ChatGPT.app",
-      );
-      await expect(readMacOSDesktopGenerationFingerprint([], root)).resolves.toBeTypeOf("string");
+  it("ignores the unshipped JSON selector and discovers without creating a database", async () => {
+    await withDesktopStateFixture("codex-managed-first-", async (root) => {
+      const options = stateOptions(root);
+      await stage(root, first);
+      await fs.writeFile(path.join(root, "selected.json"), JSON.stringify(first));
+      expect(await readCodexManagedDesktopSelection(root, options)).toBeUndefined();
+      expect(
+        (await resolveSelectedMacOSDesktopCodexAppPathCandidates("darwin", root, options))[0]
+          ?.appBundlePath,
+      ).toBe("/Applications/ChatGPT.app");
+      await expect(fs.stat(options.env.OPENCLAW_STATE_DIR)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(
+        resolveMacOSDesktopGenerationWatchPaths([], path.join(root, "future", "Codex")),
+      ).toContain(root);
     });
   });
 });
