@@ -33,6 +33,18 @@ git -C "$source_repo" worktree add --detach "$checkout" "$revision"
   printf 'Native SwiftPM development app bundle; synthetic Gateway; no release/TCC/provider proof.\n'
 } > "$output/provenance.txt"
 
+# Match the native CI build's required generated resource preparation.
+if ! (
+  cd "$checkout"
+  pnpm install --frozen-lockfile --prefer-offline --optional \
+    --filter '@openclaw/mermaid-renderer...' --config.ignore-scripts=false \
+    --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
+  node scripts/prepare-apple-mermaid.mjs
+) > "$output/assets.log" 2>&1; then
+  tail -n 100 "$output/assets.log"
+  exit 1
+fi
+
 if ! swift build --package-path "$checkout/apps/macos" --build-system native --product OpenClaw \
   > "$output/build.log" 2>&1; then
   tail -n 100 "$output/build.log"
