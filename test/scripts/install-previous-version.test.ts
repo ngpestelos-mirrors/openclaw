@@ -15,10 +15,8 @@ function runInstallerVersionSelection(
   const root = tempDirs.make("openclaw-install-previous-");
   const binDir = path.join(root, "bin");
   const callsFile = path.join(root, "calls.argv");
-  const globalConfigFile = path.join(root, "global.npmrc");
   mkdirSync(binDir);
   writeFileSync(callsFile, "");
-  writeFileSync(globalConfigFile, "");
   writeFileSync(
     path.join(binDir, "npm"),
     `#!/bin/sh
@@ -60,7 +58,7 @@ exit ${fixtureStop}
       HOME: root,
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       NPM_CONFIG_PREFIX: path.join(root, "npm-global"),
-      NPM_CONFIG_GLOBALCONFIG: globalConfigFile,
+      NPM_CONFIG_GLOBALCONFIG: path.join(root, "global.npmrc"),
       FIXTURE_CALLS: callsFile,
       FIXTURE_TARGET: options.target,
       FIXTURE_VERSIONS: JSON.stringify(options.versions),
