@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { list as listTar } from "tar";
+import { hashFile } from "./gateway-bench-installed-package.ts";
+import { PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH } from "./package-lifecycle-marker.mjs";
 
 export type PackagedOwnerEvidence = {
   file: string;
@@ -29,6 +32,80 @@ export async function verifyPackageMember(packageRoot: string, tarball: string, 
   return { file: relative, sha256 };
 }
 
+// Authenticate the installed package once, before any owner can import computed
+// or transitive local modules. External npm dependencies are installed separately.
+export async function createPackagedOwnerLoader(packageRoot: string, tarball: string) {
+  const bindings = new Map<string, PackagedOwnerEvidence>();
+  const errors: string[] = [];
+  await listTar({
+    file: tarball,
+    strict: true,
+    onReadEntry(entry) {
+      const parts = entry.path.replace(/\/$/u, "").split("/");
+      if (
+        parts.shift() !== "package" ||
+        parts.some((part) => !part || part === "." || part === ".." || /[\\:]/u.test(part))
+      ) {
+        errors.push(`Invalid package member: ${entry.path}`);
+        return;
+      }
+      if (entry.type === "Directory") {
+        return;
+      }
+      const relative = parts.join("/");
+      if (entry.type !== "File" || !relative || bindings.has(relative)) {
+        errors.push(`Unsupported or duplicate package member: ${entry.path}`);
+        return;
+      }
+      // Published tarballs carry this marker; successful postinstall removes it.
+      // A still-installed marker is rejected as an unbound member below.
+      if (relative === PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH) {
+        return;
+      }
+      const binding = { file: relative, sha256: "" };
+      bindings.set(relative, binding);
+      const hash = createHash("sha256");
+      entry.on("data", (chunk: Buffer) => hash.update(chunk));
+      entry.on("end", () => {
+        binding.sha256 = hash.digest("hex");
+      });
+    },
+  });
+  assert.equal(errors.length, 0, errors.join("\n"));
+  assert.ok(bindings.size > 0, "Package tarball has no files");
+  const missing = new Set(bindings.keys());
+  assert.ok(
+    (await fs.lstat(packageRoot)).isDirectory(),
+    "Installed package root must be a directory",
+  );
+  async function verifyDirectory(directory: string) {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      // npm may install dependencies here; these are not members of this tarball.
+      if (directory === packageRoot && entry.name === "node_modules") {
+        continue;
+      }
+      const file = path.join(directory, entry.name);
+      const relative = path.relative(packageRoot, file).replaceAll(path.sep, "/");
+      if (entry.isDirectory()) {
+        await verifyDirectory(file);
+      } else {
+        const binding = bindings.get(relative);
+        assert.ok(entry.isFile() && binding, `Unbound installed package member: ${relative}`);
+        assert.equal(
+          await hashFile(file),
+          binding.sha256,
+          `Installed module differs from the bound package: ${relative}`,
+        );
+        missing.delete(relative);
+      }
+    }
+  }
+  await verifyDirectory(packageRoot);
+  assert.equal(missing.size, 0, `Missing installed package members: ${[...missing].join(", ")}`);
+  return (stem: string, names: readonly string[], evidence: PackagedOwnerEvidence[]) =>
+    loadPackagedOwner(packageRoot, bindings, stem, names, evidence);
+}
+
 type Callable = (...args: unknown[]) => unknown;
 function isCallable(value: unknown): value is Callable {
   return typeof value === "function";
@@ -36,9 +113,9 @@ function isCallable(value: unknown): value is Callable {
 
 // Use named owner exports, never coincidental minified function names. Missing or
 // ambiguous owners fail instead of replacing production authority in the fixture.
-export async function loadPackagedOwner(
+async function loadPackagedOwner(
   packageRoot: string,
-  tarball: string,
+  bindings: ReadonlyMap<string, PackagedOwnerEvidence>,
   stem: string,
   names: readonly string[],
   evidence: PackagedOwnerEvidence[],
@@ -79,12 +156,6 @@ export async function loadPackagedOwner(
     aliases.set(name, match.alias);
     selected.set(match.file, aliases);
   }
-  // Build output can split one owner's exports across implementation and facade
-  // chunks. Authenticate every selected member before importing any of them.
-  const bindings = new Map<string, PackagedOwnerEvidence>();
-  for (const file of selected.keys()) {
-    bindings.set(file, await verifyPackageMember(packageRoot, tarball, file));
-  }
   const owner: Record<string, Callable> = {};
   for (const [file, aliases] of selected) {
     const namespace: Record<string, unknown> = await import(pathToFileURL(file).href);
@@ -95,7 +166,7 @@ export async function loadPackagedOwner(
       owner[name] = value;
       exports[name] = alias;
     }
-    const binding = bindings.get(file);
+    const binding = bindings.get(path.relative(packageRoot, file).replaceAll(path.sep, "/"));
     assert.ok(binding);
     evidence.push({ ...binding, exports });
   }
