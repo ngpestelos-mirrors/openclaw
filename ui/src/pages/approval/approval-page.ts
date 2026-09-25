@@ -482,13 +482,13 @@ export class ApprovalPage extends OpenClawLightDomElement {
     `;
   }
 
-  private renderState(state: "loading" | "unavailable" | "missing-scope" | "connection") {
+  private renderState(kind: "loading" | "unavailable" | "missing-scope" | "connection") {
     const title = {
       loading: "approvalPage.loadingTitle",
       unavailable: "approvalPage.unavailableTitle",
       "missing-scope": "common.disabled",
       connection: "approvalPage.connectionErrorTitle",
-    }[state];
+    }[kind];
     const description = {
       loading: "approvalPage.loadingDescription",
       unavailable: "approvalPage.unavailableDescription",
@@ -496,20 +496,20 @@ export class ApprovalPage extends OpenClawLightDomElement {
     };
     return html`
       <div
-        class="approval-page__state approval-page__state--${state === "missing-scope" ? "unavailable" : state}"
-        role=${state === "loading" ? "status" : "alert"}
+        class="approval-page__state approval-page__state--${kind === "missing-scope" ? "unavailable" : kind}"
+        role=${kind === "loading" ? "status" : "alert"}
       >
         ${
-          state === "loading"
+          kind === "loading"
             ? html`<div class="approval-page__spinner" aria-hidden="true"></div>`
             : html`<div class="approval-page__state-mark" aria-hidden="true">!</div>`
         }
         <h1 id="approval-page-title">${t(title)}</h1>
         <p>
-          ${state === "missing-scope" ? html`<code>${APPROVAL_REQUIRED_SCOPE}</code>` : t(description[state])}
+          ${kind === "missing-scope" ? html`<code>${APPROVAL_REQUIRED_SCOPE}</code>` : t(description[kind])}
         </p>
         ${
-          state === "connection"
+          kind === "connection"
             ? html`<button
                 type="button"
                 class="btn"

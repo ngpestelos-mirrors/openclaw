@@ -14,6 +14,11 @@ function getWebview(): WebView2Bridge | undefined {
   return (window as Window & { chrome?: { webview?: WebView2Bridge } }).chrome?.webview;
 }
 
+// WebView2's one-argument host API is distinct from Window.postMessage.
+function sendToNative(message: unknown): void {
+  getWebview()?.postMessage(message);
+}
+
 function readNativeDraft(raw: unknown): string | null {
   if (!raw || typeof raw !== "object" || !("type" in raw) || raw.type !== "draft-text") {
     return null;
@@ -55,7 +60,7 @@ export function createNativeChatDrafts(): NativeChatDrafts {
   };
 
   bridge.addEventListener("message", handler);
-  bridge.postMessage({ type: "ready" });
+  sendToNative({ type: "ready" });
 
   return {
     subscribe(listener) {
