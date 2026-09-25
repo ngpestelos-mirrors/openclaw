@@ -137,8 +137,11 @@ export async function waitForScheduledTaskRunningEvidence(
   }
 }
 
-export async function isRegisteredScheduledTask(env: GatewayServiceEnv): Promise<boolean> {
-  const res = await execSchtasks(["/Query", "/TN", resolveTaskName(env)]).catch(() => ({
+export async function isRegisteredScheduledTask(
+  env: GatewayServiceEnv,
+  timeoutMs?: number,
+): Promise<boolean> {
+  const res = await execSchtasks(["/Query", "/TN", resolveTaskName(env)], timeoutMs).catch(() => ({
     code: 1,
     stdout: "",
     stderr: "",
@@ -490,7 +493,8 @@ export async function startStartupEntry(
 export async function isScheduledTaskInstalled(args: GatewayServiceEnvArgs): Promise<boolean> {
   const effectiveEnv = args.env ?? (process.env as GatewayServiceEnv);
   return (
-    (await isRegisteredScheduledTask(effectiveEnv)) || (await isStartupEntryInstalled(effectiveEnv))
+    (await isRegisteredScheduledTask(effectiveEnv, args.timeoutMs)) ||
+    (await isStartupEntryInstalled(effectiveEnv))
   );
 }
 

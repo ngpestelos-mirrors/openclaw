@@ -1,6 +1,7 @@
 // Windows schtasks exec tests cover scheduled task command execution.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execSchtasks } from "./schtasks-exec.js";
+import { isScheduledTaskInstalled } from "./schtasks-runtime.js";
 
 const runCommandWithTimeout = vi.hoisted(() => vi.fn());
 
@@ -41,20 +42,46 @@ describe("execSchtasks", () => {
     );
   });
 
-  it("maps a timeout into a non-zero schtasks result", async () => {
-    runCommandWithTimeout.mockResolvedValue({
-      stdout: "",
-      stderr: "",
-      code: null,
-      signal: "SIGTERM",
-      killed: true,
-      termination: "timeout",
-    });
+  it.each([undefined, 200, 10_000])(
+    "passes the installed-task query deadline %s to the process runner",
+    async (timeoutMs) => {
+      runCommandWithTimeout.mockResolvedValue({
+        stdout: "registered",
+        stderr: "",
+        code: 0,
+        termination: "exit",
+      });
 
-    await expect(execSchtasks(["/Create"])).resolves.toEqual({
-      stdout: "",
-      stderr: "schtasks timed out after 15000ms",
-      code: 124,
-    });
-  });
+      await expect(
+        isScheduledTaskInstalled({
+          env: { OPENCLAW_WINDOWS_TASK_NAME: "Deadline Fixture" },
+          timeoutMs,
+        }),
+      ).resolves.toBe(true);
+      expect(runCommandWithTimeout).toHaveBeenCalledExactlyOnceWith(
+        ["schtasks", "/Query", "/TN", "Deadline Fixture"],
+        expect.objectContaining({ timeoutMs: timeoutMs ?? 15_000, noOutputTimeoutMs: 30_000 }),
+      );
+    },
+  );
+
+  it.each([undefined, 200])(
+    "maps deadline %s into a non-zero schtasks result",
+    async (timeoutMs) => {
+      runCommandWithTimeout.mockResolvedValue({
+        stdout: "",
+        stderr: "",
+        code: null,
+        signal: "SIGTERM",
+        killed: true,
+        termination: "timeout",
+      });
+
+      await expect(execSchtasks(["/Create"], timeoutMs)).resolves.toEqual({
+        stdout: "",
+        stderr: `schtasks timed out after ${timeoutMs ?? 15_000}ms`,
+        code: 124,
+      });
+    },
+  );
 });

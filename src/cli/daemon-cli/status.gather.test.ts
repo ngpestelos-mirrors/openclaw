@@ -58,6 +58,7 @@ import {
   type PortUsageTestSummary,
 } from "./status.gather.probes.test-support.js";
 import { registerProxyAuthStatusTests } from "./status.gather.proxy-auth.test-support.js";
+import { registerStatusTimeoutTests } from "./status.gather.timeout.test-support.js";
 import { printDaemonStatus } from "./status.print.js";
 
 const readFile = fs.readFile.bind(fs);
@@ -169,6 +170,11 @@ let cliLoadedConfig: Record<string, unknown> = {
     bind: "loopback",
   },
 };
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
 
 vi.mock("../../config/config.js", () => ({
   getRuntimeConfig: () => cliLoadedConfig,
@@ -1306,101 +1312,14 @@ describe("gatherDaemonStatus", () => {
     ]);
   });
 
-  it.each(["darwin", "linux"] as const)(
-    "renders Gateway-specific timeout recovery on %s",
-    async (platform) =>
-      withMockedPlatform(platform, async () => {
-        serviceIsLoaded.mockImplementationOnce(async (args?: { timeoutMs?: number }) => {
-          if (args?.timeoutMs === undefined) {
-            return await new Promise<boolean>(() => {});
-          }
-          throw new Error("systemctl is-enabled timed out");
-        });
-        serviceReadRuntime.mockImplementationOnce(async (_env, opts) => {
-          if (opts?.timeoutMs === undefined) {
-            return await new Promise<{ status: string }>(() => {});
-          }
-          throw new Error("錯誤: 系統找不到指定的檔案。");
-        });
-
-        const status = await gatherStatus({
-          rpc: { timeout: "100", json: true },
-          probe: false,
-          deep: true,
-        });
-
-        expect(serviceIsLoaded).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 100 }));
-        expect(serviceReadRuntime).toHaveBeenCalledWith(expect.any(Object), { timeoutMs: 100 });
-        expect(auditGatewayServiceConfig).toHaveBeenCalledWith(
-          expect.objectContaining({ timeoutMs: 100 }),
-        );
-        expect(status.service.loadState).toEqual({
-          status: "unknown",
-          detail: "Error: systemctl is-enabled timed out",
-        });
-        expect(status.service.loaded).toBeNull();
-        expect(status.service.runtime).toEqual({
-          status: "unknown",
-          detail: "service runtime inspection failed; retry with openclaw gateway status --deep",
-          inspectionFailure: {
-            code: "service-runtime-inspection-failed",
-            detail: "錯誤: 系統找不到指定的檔案。",
-          },
-        });
-
-        const writeJson = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
-        try {
-          printDaemonStatus(status, { json: true, deep: true });
-          expect(writeJson).toHaveBeenCalledOnce();
-          const serialized = JSON.stringify(writeJson.mock.calls[0]?.[0]);
-          if (!serialized) {
-            throw new Error("expected terminal JSON output");
-          }
-          expect(JSON.parse(serialized)).toMatchObject({
-            service: {
-              loaded: null,
-              loadState: {
-                status: "unknown",
-                detail: "Error: systemctl is-enabled timed out",
-              },
-              runtime: {
-                status: "unknown",
-                detail:
-                  "service runtime inspection failed; retry with openclaw gateway status --deep",
-                inspectionFailure: {
-                  code: "service-runtime-inspection-failed",
-                  detail: "錯誤: 系統找不到指定的檔案。",
-                },
-              },
-            },
-          });
-        } finally {
-          writeJson.mockRestore();
-        }
-
-        const output = capturePrintedDaemonStatus(status, { json: false, deep: true }).logs;
-        expect(output).toContain("Service: LaunchAgent (unknown)");
-        expect(output).not.toContain("Service: LaunchAgent (not loaded)");
-        expect(output).toContain(
-          "Runtime: unknown (service runtime inspection failed; retry with openclaw gateway status --deep)",
-        );
-        expect(output).not.toContain("系統找不到指定的檔案");
-      }),
-    1_000,
-  );
-
-  it.each(["bogus", "0", "-1", "1.5"])(
-    "rejects invalid status timeout %s before reading service state",
-    async (timeout) => {
-      await expect(gatherStatus({ rpc: { timeout } })).rejects.toThrow(
-        `Invalid --timeout. Use a positive millisecond value, e.g. --timeout 30000. Received: "${timeout}".`,
-      );
-
-      expect(serviceReadCommand).not.toHaveBeenCalled();
-      expect(serviceIsLoaded).not.toHaveBeenCalled();
-      expect(serviceReadRuntime).not.toHaveBeenCalled();
-    },
-  );
+  registerStatusTimeoutTests({
+    gatherStatus,
+    serviceIsLoaded,
+    serviceReadRuntime,
+    serviceReadCommand,
+    auditGatewayServiceConfig,
+    makeTempDir: () => tempDirs.make("status-native-timeout-"),
+  });
 
   it("keeps gateway status read-only when service management is unsupported", async () => {
     serviceReadCommand.mockResolvedValueOnce(null);

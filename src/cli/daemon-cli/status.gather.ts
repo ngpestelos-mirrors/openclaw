@@ -306,7 +306,8 @@ async function gatherDaemonStatusImpl(
   const service = resolveGatewayService();
   const serviceState = await readGatewayServiceState(service, {
     env: process.env,
-    timeoutMs,
+    timeoutMs:
+      process.platform === "win32" && opts.rpc.timeout === undefined ? undefined : timeoutMs,
   });
   const { command, env: serviceEnv, loadState, runtime } = serviceState;
   const loaded = loadState.status === "loaded";
