@@ -7,7 +7,6 @@ import { decodeWindowsLauncherScript } from "../infra/windows-launcher-encoding.
 import { execFileUtf8 } from "./exec-file.js";
 import { execSchtasks } from "./schtasks-exec.js";
 import {
-  buildScheduledTaskXml,
   buildTaskScript,
   buildHiddenLauncherScript,
   readScheduledTaskCommand,
@@ -16,6 +15,7 @@ import {
   resolveTaskLauncherScriptPath,
   resolveTaskUser,
 } from "./schtasks-layout.js";
+import { buildScheduledTaskXml } from "./schtasks-xml.js";
 import {
   isInstallerServiceDescription,
   serviceDefinitionPreserved,

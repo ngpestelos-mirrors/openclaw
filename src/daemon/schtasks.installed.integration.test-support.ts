@@ -15,6 +15,8 @@ import { run, type CommandRecord } from "./schtasks.installed-command.test-suppo
 import {
   doctorReportSchema,
   inspectDisabledDiscoveryTasks,
+  inspectInstalledSelectedStartupFallback,
+  inspectInstalledStartupSiblings,
   type InstalledTask as Task,
 } from "./schtasks.installed-diagnostics.test-support.js";
 import {
@@ -255,6 +257,7 @@ export async function runInstalledLifecycle(
     );
     const before = await status(selected, beforeIdentity);
     observations.before = before;
+    let candidateStatus = before;
     const configBefore = await fs.readFile(selected.configPath);
     if (key !== "fresh") {
       const peer = await createTask("peer");
@@ -301,6 +304,7 @@ export async function runInstalledLifecycle(
       const after = await status(selected, candidateIdentity);
       assert.notEqual(after.service.runtime.pid, before.service.runtime.pid);
       observations.after = after;
+      candidateStatus = after;
       assert.deepEqual(
         JSON.parse(await fs.readFile(selected.configPath, "utf8")).gateway,
         JSON.parse(configBefore.toString()).gateway,
@@ -324,6 +328,17 @@ export async function runInstalledLifecycle(
       observations.extraServices = extras;
       assert.deepEqual(await hashInstall(peer.installRoot), peerInstallBefore);
       observations.peerPreserved = true;
+      observations.startupSiblings = await inspectInstalledStartupSiblings({
+        selected,
+        launcher: peer,
+        expectedStatus: after,
+        doctor: (task) => doctor(task, 0),
+        deepStatus: async (task) =>
+          JSON.parse(await cli(task, ["gateway", "status", "--deep", "--json"])),
+        lifetime,
+        admissions,
+        admissionPath,
+      });
       await cli(peer, ["gateway", "stop", "--force", "--json"]);
       await owners.waitForLoopbackPortRelease(peer.gatewayPort);
       await cli(peer, ["gateway", "uninstall", "--json"]);
@@ -349,6 +364,17 @@ export async function runInstalledLifecycle(
         admissions,
         admissionPath,
       });
+      observations.startupSiblings = await inspectInstalledStartupSiblings({
+        selected,
+        launcher: selected,
+        expectedStatus: before,
+        doctor: (task) => doctor(task, 0),
+        deepStatus: async (task) =>
+          JSON.parse(await cli(task, ["gateway", "status", "--deep", "--json"])),
+        lifetime,
+        admissions,
+        admissionPath,
+      });
     }
     const configBeforePreview = await fs.readFile(selected.configPath);
     const healthy = await preview();
@@ -358,6 +384,17 @@ export async function runInstalledLifecycle(
     );
     await cli(selected, ["gateway", "stop", "--force", "--json"]);
     await owners.waitForLoopbackPortRelease(selected.gatewayPort);
+    observations.selectedStartupFallback = await inspectInstalledSelectedStartupFallback({
+      selected,
+      expectedCommand: candidateStatus.service.command.programArguments,
+      doctor: (task) => doctor(task, 0),
+      deepStatus: async (task) =>
+        JSON.parse(await cli(task, ["gateway", "status", "--deep", "--json"])),
+      canBindLoopbackPort: owners.canBindLoopbackPort,
+      lifetime,
+      admissions,
+      admissionPath,
+    });
     if (key === "2026.9.3") {
       assert.ok(authorityPeerRoot);
       const { inspectInstalledTaskAuthority } =

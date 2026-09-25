@@ -23,6 +23,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("findExtraGatewayServices (win32)", () => {
   const originalPlatform = process.platform;
+  let nativeEnv: { APPDATA: string };
   const task = (taskPath: string, executable: string, args: string) => ({
     taskPath,
     state: null,
@@ -30,6 +31,7 @@ describe("findExtraGatewayServices (win32)", () => {
   });
 
   beforeEach(() => {
+    nativeEnv = { APPDATA: tempDirs.make("openclaw-windows-inventory-") };
     Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
     listScheduledTasksMock.mockReset().mockReturnValue([]);
     readScheduledTaskCommandMock.mockReset();
@@ -49,7 +51,7 @@ describe("findExtraGatewayServices (win32)", () => {
       throw new Error("Access denied");
     });
 
-    const result = await findExtraGatewayServices({}, { deep: true });
+    const result = await findExtraGatewayServices(nativeEnv, { deep: true });
 
     expect(result).toEqual({
       services: [],
@@ -94,7 +96,7 @@ describe("findExtraGatewayServices (win32)", () => {
       },
     ]);
 
-    const result = await findExtraGatewayServices({}, { deep: true });
+    const result = await findExtraGatewayServices(nativeEnv, { deep: true });
 
     expect(result.errors).toEqual([]);
     expect(result.services).toEqual([
@@ -128,7 +130,7 @@ describe("findExtraGatewayServices (win32)", () => {
         environment: { OPENCLAW_SERVICE_MARKER: "openclaw", OPENCLAW_SERVICE_KIND: kind },
       });
 
-      const result = await findExtraGatewayServices({}, { deep: true });
+      const result = await findExtraGatewayServices(nativeEnv, { deep: true });
 
       expect(result.errors).toEqual([]);
       expect(result.services).toEqual([
@@ -144,7 +146,7 @@ describe("findExtraGatewayServices (win32)", () => {
         { taskPath: "\\OpenClaw Gateway", state: null, actions },
         { taskPath: "\\Selected Custom", state: null, actions },
       ]);
-      const env = { OPENCLAW_WINDOWS_TASK_NAME: "\\Selected Custom" };
+      const env = { ...nativeEnv, OPENCLAW_WINDOWS_TASK_NAME: "\\Selected Custom" };
 
       const extras = await findExtraGatewayServices(env, { deep: true });
 
@@ -173,7 +175,7 @@ describe("findExtraGatewayServices (win32)", () => {
       const label = `\\${name}`;
       listScheduledTasksMock.mockReturnValue([task(label, `C:\\${marker}\\${marker}.exe`, args)]);
       const extras = await findExtraGatewayServices(
-        { OPENCLAW_WINDOWS_TASK_NAME: name },
+        { ...nativeEnv, OPENCLAW_WINDOWS_TASK_NAME: name },
         { deep: true },
       );
       expect(extras.errors).toEqual([]);
@@ -190,7 +192,7 @@ describe("findExtraGatewayServices (win32)", () => {
       listScheduledTasksMock.mockReturnValue([task(label, "C:\\custom\\gateway.cmd", "")]);
       readScheduledTaskCommandMock.mockRejectedValue(new Error("Access denied"));
 
-      const result = await findExtraGatewayServices({}, { deep: true });
+      const result = await findExtraGatewayServices(nativeEnv, { deep: true });
 
       expect(result).toEqual({
         services: [],
@@ -227,7 +229,7 @@ describe("findExtraGatewayServices (win32)", () => {
           ],
         },
       ]);
-      await expect(findExtraGatewayServices({}, { deep: true })).resolves.toEqual({
+      await expect(findExtraGatewayServices(nativeEnv, { deep: true })).resolves.toEqual({
         services: [expect.objectContaining({ label, marker: "openclaw", legacy: false })],
         errors: [],
       });
@@ -246,7 +248,7 @@ describe("findExtraGatewayServices (win32)", () => {
       throw new Error("Nested launcher could not be read");
     });
 
-    const result = await findExtraGatewayServices({}, { deep: true });
+    const result = await findExtraGatewayServices(nativeEnv, { deep: true });
 
     expect(result).toEqual({
       services: [],

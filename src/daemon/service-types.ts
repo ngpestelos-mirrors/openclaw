@@ -275,6 +275,8 @@ export type GatewayServiceManagedOverrides = {
 export type GatewayServiceCommandConfig = GatewayServiceCommandSnapshot & {
   sourcePath?: string;
   definitionPaths?: string[];
+  /** Selected login items observed with the Scheduled Task registration missing. */
+  startupEntryPaths?: string[];
   managedDefinition?: GatewayServiceCommandSnapshot;
   managedOverrides?: GatewayServiceManagedOverrides;
   reloadPending?: true;

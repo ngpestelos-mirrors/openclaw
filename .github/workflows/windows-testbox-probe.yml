@@ -1117,6 +1117,7 @@ jobs:
             }
             if ($records.Count -eq 0) { Write-Host "No installed task mutation was admitted."; exit 0 }
             $seen = @{}
+            $startupEntries = @()
             # Validate the entire finite authority set before performing any cleanup.
             foreach ($record in $records) {
               $index = [array]::IndexOf(@("fresh", "2026.9.3", "2026.9.4"), [string]$record.cell)
@@ -1136,7 +1137,24 @@ jobs:
               }
               if ($discovery -and [IO.Path]::GetFullPath($record.scriptPath) -ine [IO.Path]::GetFullPath((Join-Path $expectedRoot "$($record.role).cmd"))) { throw "Discovery launcher path differs from its fixture." }
               if ($record.role -cin @("direct", "extra") -and $record.cleanupNeedle -cne $expectedProfile) { throw "Diagnostic task cleanup token differs from its exact profile." }
+              if ($record.PSObject.Properties.Name -ccontains "startupEntryPaths") {
+                $entryCount = @($record.startupEntryPaths).Count
+                if ($record.role -cnotin @("selected", "peer") -or ($record.cell -ceq "fresh" -and $record.role -cne "selected") -or $record.startupEntriesInitiallyAbsent -ne $true -or $entryCount -notin @(2, 3) -or ($entryCount -eq 3 -and $record.role -cne "selected")) { throw "Startup paths lack their exact installed fixture admission." }
+                $startupRoot = Join-Path $expectedRoot "appdata/Microsoft/Windows/Start Menu/Programs/Startup"
+                $extensions = @("cmd", "vbs", "sibling.vbs")
+                foreach ($entryIndex in 0..($entryCount - 1)) {
+                  $expectedEntry = Join-Path $startupRoot "$expectedTask.$($extensions[$entryIndex])"
+                  if ([IO.Path]::GetFullPath($record.startupEntryPaths[$entryIndex]) -ine [IO.Path]::GetFullPath($expectedEntry)) { throw "Startup cleanup path differs from its exact fixture." }
+                  $startupEntries += $expectedEntry
+                }
+              }
               $seen[$expectedTask] = $true
+            }
+            foreach ($startupEntry in $startupEntries) {
+              try {
+                if (Test-Path -LiteralPath $startupEntry -ErrorAction Stop) { Remove-Item -LiteralPath $startupEntry -Force -ErrorAction Stop }
+                if (Test-Path -LiteralPath $startupEntry -ErrorAction Stop) { throw "Startup entry remains: $startupEntry" }
+              } catch { $cleanupErrors += "Startup entry absence is unverified: $startupEntry" }
             }
             foreach ($record in $records) { schtasks.exe /End /TN $record.taskName 2>$null }
             foreach ($record in $records) {

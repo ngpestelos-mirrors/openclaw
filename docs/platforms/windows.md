@@ -171,6 +171,16 @@ Gateway status and Doctor read the Scheduled Task's numeric current state, indep
 
 Strict maintenance inspection follows the task's registered CMD or VBS launcher, or a directly registered executable with literal arguments, and rechecks its captured definition before using the result. Runtime inspection uses that registered command rather than a default launcher. Direct executable inspection does not grant ownership to rewrite the executable or its task definition. Automatic update service management still reports these custom actions as unavailable and leaves them untouched because it cannot restore a managed launcher; environment expansion and ambiguous argument quoting remain uninspectable. Deep discovery identifies OpenClaw and legacy helpers from executable or launcher evidence; an unrelated task's display name alone does not identify a service. Canonical and selected task names suppress extra-service findings only when the registered action is a modern Gateway; legacy and Node actions remain visible. Doctor reports incomplete inspection separately from services eligible for existing cleanup.
 
+`openclaw gateway status --deep` and `openclaw doctor --deep` report sibling
+profiles from the current account's Startup folder. If its Scheduled Task is
+absent, the selected Startup fallback is omitted from the extra-service list. Each
+Startup file remains a separate service definition even when a task has the same
+name. Inspection follows that exact file and its captured Gateway
+script. The complete inventory retains errors for unreadable or malformed Gateway
+launchers; Doctor and status list only successfully inspected extra services.
+Startup inspection hints use the exact file path and do not grant Task Scheduler
+control over it.
+
 The task probe allows Windows PowerShell to inherit or create a console because
 some PowerShell 5.1 hosts fail inspection when console creation is disabled.
 Invoking it from an app without a console can briefly display a console window.
