@@ -1,0 +1,28 @@
+name: NativeNarrationProof
+options:
+  deploymentTarget:
+    macOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    GENERATE_INFOPLIST_FILE: YES
+    ENABLE_APP_SANDBOX: NO
+targets:
+  NativeNarrationUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - NativeNarrationUITests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.openclaw.proof.mac-narration
+schemes:
+  NativeNarrationProof:
+    shared: true
+    build:
+      targets:
+        NativeNarrationUITests: all
+    test:
+      targets:
+        - name: NativeNarrationUITests
+          parallelizable: false
