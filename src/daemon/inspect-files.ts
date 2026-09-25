@@ -3,7 +3,6 @@ import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { hasErrnoCode } from "../infra/errno.js";
 import { resolveNodeLaunchAgentLabel } from "./constants.js";
-import type { GatewayServiceInventory } from "./inspect.js";
 
 export async function readServiceFile(filePath: string): Promise<Buffer | null> {
   return fs.readFile(filePath).catch(() => null);
@@ -34,7 +33,7 @@ export async function collectServiceFiles(params: {
   dir: string;
   extension: string;
   isPotentialName: (name: string) => boolean;
-  errors?: GatewayServiceInventory["errors"];
+  errors?: Array<{ source: string; message: string }>;
 }): Promise<ServiceFileEntry[]> {
   const out: ServiceFileEntry[] = [];
   let entries: string[];
