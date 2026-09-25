@@ -182,6 +182,33 @@ export async function prepareSourceBuild(
     const objects = git("rev-parse", "--path-format=absolute", "--git-path", "objects");
     const index = git("rev-parse", "--path-format=absolute", "--git-path", "index");
     if (head && objects && index) {
+      // HEAD/index alone lose checkout interpretation (notably Windows mode bits
+      // and link materialization), making clean copied inputs look modified.
+      // Read effective values, including worktree overrides, but never copy Git
+      // routing, includes, hooks, credentials, or worktree administration.
+      const config = spawnSync(
+        "git",
+        [
+          "config",
+          "--null",
+          "--get-regexp",
+          "^core\\.(filemode|symlinks|ignorecase|autocrlf|eol|precomposeunicode)$",
+        ],
+        { cwd: root, env: { ...inputEnv, GIT_OPTIONAL_LOCKS: "0" }, encoding: "utf8" },
+      );
+      if (config.status !== 0 && config.status !== 1) {
+        throw new Error("Could not capture source checkout Git interpretation settings.");
+      }
+      const settings = config.stdout
+        .split("\0")
+        .filter(Boolean)
+        .map((entry) => {
+          const separator = entry.indexOf("\n");
+          return separator < 0
+            ? entry.slice("core.".length)
+            : `${entry.slice("core.".length, separator)} = ${JSON.stringify(entry.slice(separator + 1))}`;
+        });
+      await fs.promises.writeFile(path.join(gitDir, "config"), `[core]\n${settings.join("\n")}\n`);
       await fs.promises.writeFile(path.join(gitDir, "HEAD"), head + "\n");
       await fs.promises.mkdir(path.join(gitDir, "refs"));
       await fs.promises.symlink(objects, path.join(gitDir, "objects"), "junction");
