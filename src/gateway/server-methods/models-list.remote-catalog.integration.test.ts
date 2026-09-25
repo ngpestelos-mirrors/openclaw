@@ -5,10 +5,12 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { ModelsListResult } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { withPreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
+import { startSerializedSnapshotBuildBatch } from "../../agents/prepared-model-runtime.build.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   loadPublishedGatewayReplyDispatchRuntime,
 } from "../../agents/prepared-model-runtime.js";
+import { retainPreparedPluginGeneration } from "../../agents/prepared-model-runtime.plugin-lifetime.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import * as updateStartup from "../../infra/update-startup.js";
 import { setRemoteModelCatalogOverlaySourcesForTest } from "../../model-catalog/remote-overlay.test-support.js";
@@ -346,6 +348,47 @@ it(
         expect(
           newRun.snapshot.createStores().modelRegistry.find("kimi", "remote-first")?.cost.input,
         ).toBe(7);
+        const retirement = new AbortController();
+        const retainedBuild = startSerializedSnapshotBuildBatch(
+          [
+            {
+              input: { ...input, allowGatewaySubagentBinding: true },
+              pluginGeneration: oldRun.pluginGeneration,
+              catalogOwner: oldRun.snapshot.catalogOwner,
+              retirementSignal: retirement.signal,
+              isGenerationCurrent: () => !retirement.signal.aborted,
+            },
+          ],
+          new Map(),
+          30_000,
+          "static",
+        );
+        const retained = expectDefined((await retainedBuild.pending)[0], "retained generation");
+        const releaseRetained = retainPreparedPluginGeneration(retained.pluginGeneration);
+        try {
+          expect(
+            retained.snapshot.createStores().modelRegistry.find("kimi", "remote-first")?.cost.input,
+          ).toBe(1);
+          const retainedCatalog = expectDefined(
+            await retained.snapshot.loadFullModelCatalog?.({
+              refresh: true,
+              waitForCompletion: true,
+            }),
+            "retained catalog",
+          );
+          const retainedIds = retainedCatalog.entries
+            .filter((row) => row.provider === "kimi")
+            .map((row) => row.id);
+          expect(retainedIds).toContain("remote-first");
+          expect(retainedIds).not.toContain("remote-next");
+          expect(
+            retained.snapshot.createStores().modelRegistry.find("kimi", "remote-first")?.cost.input,
+          ).toBe(1);
+        } finally {
+          retirement.abort();
+          await releaseRetained();
+          await retainedBuild.completion;
+        }
         for (const rejected of [
           "{",
           JSON.stringify({ ...next, generatedAt: generatedAt + 2, minVersion: "9999.1.1" }),
