@@ -3,7 +3,8 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { isPathInside } from "../../src/infra/path-guards.js";
+import { fileURLToPath } from "node:url";
+import { isPathInside } from "@openclaw/fs-safe/path";
 import type { RuntimeRelocation } from "../../src/infra/update-runtime-relocation.js";
 import { listTsdownOutputRoots } from "../tsdown-build.mts";
 import { collectSourceCheckoutPluginBuildEntries } from "./bundled-plugin-build-entries.mjs";
@@ -52,7 +53,17 @@ export async function prepareSourceBuild(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
-  const { relocateRuntimeTree } = await import("../../src/infra/update-runtime-relocation.js");
+  // Requirement-only callers load this module with native Node. Load the source
+  // relocation closure lazily with its own aliases, not the caller's cwd/config.
+  const { relocateRuntimeTree }: typeof import("../../src/infra/update-runtime-relocation.ts") =
+    process.versions.bun
+      ? await import("../../src/infra/update-runtime-relocation.ts")
+      : await (
+          await import("tsx/esm/api")
+        ).tsImport(new URL("../../src/infra/update-runtime-relocation.ts", import.meta.url).href, {
+          parentURL: import.meta.url,
+          tsconfig: fileURLToPath(new URL("../../tsconfig.json", import.meta.url)),
+        });
   signal?.throwIfAborted();
   const root = fs.realpathSync(rootDir);
   const artifacts = path.join(root, ".artifacts");

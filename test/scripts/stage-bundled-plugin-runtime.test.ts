@@ -1,5 +1,7 @@
 // Stage Bundled Plugin Runtime tests cover stage bundled plugin runtime script behavior.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +10,7 @@ import {
   prepareBundledPluginRuntime,
   stageBundledPluginRuntime,
 } from "../../scripts/stage-bundled-plugin-runtime.mts";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 
 async function withTempDir(run: (dir: string) => Promise<void>) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openclaw-stage-runtime-"));
@@ -361,6 +364,86 @@ describe("prepareBundledPluginRuntime", () => {
 });
 
 describe("private source-build publication", () => {
+  it("prepares from native Node outside the source tsconfig", async () => {
+    await withTempDir(async (root) => {
+      fs.mkdirSync(path.join(root, ".git"));
+      fs.writeFileSync(path.join(root, "input.txt"), "source input");
+      const result = execFileSync(
+        resolveTestNodeExecPath(),
+        [
+          "--input-type=module",
+          "--eval",
+          `import fs from "node:fs";
+          import path from "node:path";
+          import { prepareSourceBuild } from ${JSON.stringify(new URL("../../scripts/lib/source-build-stage.mts", import.meta.url).href)};
+          const staged = await prepareSourceBuild(process.cwd(), process.env);
+          try {
+            console.log(JSON.stringify({
+              input: fs.readFileSync(path.join(staged.cwd, "input.txt"), "utf8"),
+              private: staged.cwd !== process.cwd(),
+            }));
+          } finally { await staged.cleanup(); }`,
+        ],
+        {
+          cwd: root,
+          env: { ...process.env, NODE_OPTIONS: undefined, TSX_TSCONFIG_PATH: undefined },
+          encoding: "utf8",
+        },
+      );
+      expect(JSON.parse(result)).toEqual({ input: "source input", private: true });
+      expect(fs.readdirSync(path.join(root, ".artifacts"))).toEqual([]);
+    });
+  });
+
+  it("rebinds copied relative directory links for Windows asset dependencies", async () => {
+    const { prepareSourceBuild } = await import("../../scripts/lib/source-build-stage.mts");
+    await withTempDir(async (root) => {
+      fs.mkdirSync(path.join(root, ".git"));
+      const packageDir = "node_modules/.pnpm/asset-package/node_modules/asset-package";
+      const alias = "extensions/demo/node_modules/asset-package";
+      fs.mkdirSync(path.join(root, packageDir), { recursive: true });
+      fs.mkdirSync(path.dirname(path.join(root, alias)), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, packageDir, "package.json"),
+        JSON.stringify({ name: "asset-package", main: "index.js" }),
+      );
+      fs.writeFileSync(path.join(root, packageDir, "index.js"), "original dependency");
+      const relative = path.relative(
+        path.dirname(path.join(root, alias)),
+        path.join(root, packageDir),
+      );
+      fs.symlinkSync(relative, path.join(root, alias), "dir");
+      // Node 24's fs.cp can infer a file symlink before its directory target is
+      // copied. The unchanged relative target must still be rebound by type.
+      // On POSIX this checks the Windows API contract, not native Windows traversal.
+      const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+      const symlink = vi.spyOn(fs.promises, "symlink");
+      try {
+        const staged = await prepareSourceBuild(root, {});
+        try {
+          expect(symlink).toHaveBeenCalledWith(
+            path.join(staged.cwd, packageDir),
+            path.join(staged.cwd, alias),
+            "junction",
+          );
+          const require = createRequire(path.join(staged.cwd, "extensions/demo/build.mjs"));
+          const resolved = require.resolve("asset-package");
+          expect(resolved).toBe(path.join(staged.cwd, packageDir, "index.js"));
+          fs.writeFileSync(resolved, "private dependency write");
+          expect(fs.readFileSync(path.join(root, packageDir, "index.js"), "utf8")).toBe(
+            "original dependency",
+          );
+          expect(fs.readlinkSync(path.join(root, alias))).toBe(relative);
+        } finally {
+          await staged.cleanup();
+        }
+      } finally {
+        symlink.mockRestore();
+        platform.mockRestore();
+      }
+    });
+  });
+
   it.each([false, true])(
     "isolates dependency caches and preserves source edits (drift=%s)",
     async (drift) => {

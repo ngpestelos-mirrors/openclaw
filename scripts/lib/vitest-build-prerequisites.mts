@@ -27,6 +27,14 @@ export type VitestRuntimeTestSelection = {
 // while unrelated workers may still be importing its public plugin facades.
 const runtimeConsumers = [
   {
+    // The ordinary Claude CLI proof must not build the shared checkout from a
+    // test worker under its command deadline. Other workers already read dist.
+    file: "src/process/exec.windows.integration.test.ts",
+    configs: ["test/vitest/vitest.process.config.ts"],
+    mode: "runtime",
+    dir: "src",
+  },
+  {
     file: "src/gateway/server-methods/agent.visitor-access.test.ts",
     configs: [
       "test/vitest/vitest.gateway-methods-isolated.config.ts",

@@ -37,13 +37,15 @@ export async function relocateRuntimeSymlink(
   const replacement = path.isAbsolute(link)
     ? target
     : path.relative(path.dirname(destinationFile), target);
-  if (replacement === link) {
-    return;
-  }
-  // Copied relative links still describe their original location. Inspect that
-  // source before rebinding; Windows junctions require the final absolute target.
+  // Node 24 fs.cp can copy a directory symlink as a file symlink on Windows.
+  // Even an unchanged relative target needs its directory type restored. Inspect
+  // the original link: the copied link may already be untraversable.
   const type =
     process.platform === "win32" && (await fs.stat(sourceFile)).isDirectory() ? "junction" : "file";
+  if (replacement === link && type !== "junction") {
+    return;
+  }
+  // Windows junctions require the final absolute target.
   await fs.unlink(file);
   await fs.symlink(type === "junction" ? target : replacement, file, type);
 }

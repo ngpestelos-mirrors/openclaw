@@ -34,6 +34,13 @@ describe("Windows CI whole-file placement", () => {
           resolveVitestPretestBuildMode([{ includePatterns: shard.targets }]) !== undefined,
       ),
     ).toHaveLength(1);
+    const cliProofShard = shards.find((shard) =>
+      shard.targets.includes("src/process/exec.windows.integration.test.ts"),
+    );
+    expect(cliProofShard).toBeDefined();
+    expect(resolveVitestPretestBuildMode([{ includePatterns: cliProofShard!.targets }])).toBe(
+      "runtime",
+    );
     expect(createWindowsTestShards(packageScripts(inventory.toReversed()))).toEqual(shards);
     expect(
       shards.filter((shard) =>

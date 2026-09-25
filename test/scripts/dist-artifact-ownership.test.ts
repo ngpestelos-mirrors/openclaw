@@ -537,8 +537,8 @@ describe.skipIf(process.platform === "win32")("dist artifact ownership", () => {
               if (event === 'exit') queueMicrotask(() => listener(0, null));
             }};
           },
-          runRuntimePostBuild: () => new Promise(resolve => {
-            fs.writeFileSync(${JSON.stringify(marker)}, 'complete');
+          runRuntimePostBuild: ({ cwd }) => new Promise(resolve => {
+            fs.writeFileSync(cwd + '/dist/postbuild-finished', 'complete');
             ${checkpoint("source-postbuild-ready")}
             socket.on('close', resolve);
           }),
@@ -552,7 +552,9 @@ describe.skipIf(process.platform === "win32")("dist artifact ownership", () => {
       );
       writerGate.write("continue");
       expect(await writer.done).toMatchObject({ code: 0 });
-      (await runner.event("source-postbuild-ready")).write("continue");
+      const postbuildGate = await runner.event("source-postbuild-ready");
+      expect(fs.existsSync(marker), "postbuild stays private until its writer joins").toBe(false);
+      postbuildGate.write("continue");
       const result = await runner.done;
       expect(result.code, result.output).toBe(0);
       expect(fs.readFileSync(marker, "utf8")).toBe("complete");
