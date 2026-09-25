@@ -365,7 +365,7 @@ Counts use `Q/F/S/A/R` in that order. Source locations are available in `--json`
 | **src/infra** · `src/infra/update-run-interruption-store.ts`                                                 |         1/0/0/0/0 |        124 | Runtime/mixed candidate; main-thread reachability needs tracing          |
 | **src/infra** · `src/infra/update-run-ledger.ts`                                                             |         2/4/0/0/0 |        139 | Runtime/mixed candidate; main-thread reachability needs tracing          |
 | **src/infra** · `src/infra/update-run-read.kernel.ts`                                                        |         1/2/0/0/0 |         49 | Runtime/mixed candidate; main-thread reachability needs tracing          |
-| **src/infra** · `src/infra/update-run-reader.ts`                                                             |         1/0/0/0/0 |        250 | Runtime/mixed candidate; main-thread reachability needs tracing          |
+| **src/infra** · `src/infra/update-run-reader.ts`                                                             |         1/0/0/0/0 |        279 | Runtime/mixed candidate; main-thread reachability needs tracing          |
 | **src/infra** · `src/infra/update-run-recovery-store.ts`                                                     |         1/0/0/0/0 |         21 | Runtime/mixed candidate; main-thread reachability needs tracing          |
 | **src/infra** · `src/infra/update-run-write.ts`                                                              |         1/0/0/0/0 |         56 | Runtime/mixed candidate; main-thread reachability needs tracing          |
 | **src/infra/outbound** · `src/infra/outbound/current-conversation-bindings.ts`                               |         1/0/4/0/0 |         63 | Runtime/mixed candidate; main-thread reachability needs tracing          |
@@ -609,7 +609,7 @@ Counts use `Q/F/S/A/R` in that order. Source locations are available in `--json`
 | **src/sessions** · `src/sessions/session-state-events.worker.ts`                                     |         0/0/2/0/0 |         37 | Worker implementation; keep SQL in this owner |
 | **src/skills/workshop** · `src/skills/workshop/store.worker.ts`                                      |         0/0/2/0/0 |         86 | Worker implementation; keep SQL in this owner |
 | **src/state** · `src/state/openclaw-agent-execution-cleanup.worker.ts`                               |         0/0/1/0/0 |         16 | Worker implementation; keep SQL in this owner |
-| **src/state** · `src/state/openclaw-agent-execution.worker.ts`                                       |         0/0/0/4/0 |        400 | Worker implementation; keep SQL in this owner |
+| **src/state** · `src/state/openclaw-agent-execution.worker.ts`                                       |         0/0/0/4/0 |        412 | Worker implementation; keep SQL in this owner |
 | **src/state** · `src/state/openclaw-state-read.worker.ts`                                            |         1/0/0/0/0 |        523 | Worker implementation; keep SQL in this owner |
 | **src/state** · `src/state/openclaw-state-worker-runtime.ts`                                         |         0/0/9/0/0 |        332 | Worker implementation; keep SQL in this owner |
 | **src/state** · `src/state/user-channel-identities.worker.ts`                                        |         0/0/1/0/0 |         71 | Worker implementation; keep SQL in this owner |
