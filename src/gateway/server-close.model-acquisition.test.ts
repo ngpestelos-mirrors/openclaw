@@ -6,7 +6,10 @@ import { Worker } from "node:worker_threads";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { expect, it, vi } from "vitest";
 import { getPreparedModelCatalogWorkerPoolSnapshot } from "../agents/prepared-model-catalog-worker.js";
-import { registerPreparedModelRuntimePublicationListener } from "../agents/prepared-model-runtime.js";
+import {
+  refreshPreparedModelRuntimeSnapshots,
+  registerPreparedModelRuntimePublicationListener,
+} from "../agents/prepared-model-runtime.js";
 import { registerPreparedModelRuntimeClose } from "../agents/prepared-model-runtime.lifecycle.js";
 import { getPreparedModelRuntimeStartupStatus } from "../agents/prepared-model-runtime.startup-status.js";
 import { readConfigFileSnapshot } from "../config/io.js";
@@ -21,56 +24,60 @@ const auditMaintenance = vi.hoisted(() => ({
   gate: undefined as { entered: () => void; release: Promise<void> } | undefined,
 }));
 
-it("cancels managed reload acquisition before joining it during Gateway close", async () => {
-  const fixture = await createGatewayMetadataCloseFixture("managed-model-close");
-  process.env.OPENCLAW_TEST_MINIMAL_GATEWAY = "0";
-  fixture.config.gateway = { reload: { mode: "hybrid" } };
-  fixture.config.agents = {
-    defaults: { workspace: fixture.state.workspaceDir, model: `${fixture.pluginId}/before` },
-    entries: { main: { default: true, workspace: fixture.state.workspaceDir } },
-  };
-  const entered = createDeferredCore();
-  const cancelled = createDeferredCore();
-  const finishAcquisition = createDeferredCore();
-  const escape = createDeferredCore();
-  const closeFence = createDeferredCore();
-  let armed = false;
-  let acquisitionSignal: AbortSignal | undefined;
-  let acquisitionFinished = false;
-  let closeFinished = false;
-  let closing: Promise<void> | undefined;
-  const bridgeKey = `__managed_model_close_${path.basename(fixture.state.root)}`;
-  Object.defineProperty(globalThis, bridgeKey, {
-    configurable: true,
-    value: async (signal: AbortSignal) => {
-      if (!armed) {
-        return;
-      }
-      acquisitionSignal = signal;
-      const onAbort = () => cancelled.resolve();
-      signal.addEventListener("abort", onAbort, { once: true });
-      entered.resolve();
-      try {
-        await Promise.race([cancelled.promise, escape.promise]);
-        await finishAcquisition.promise;
-      } finally {
-        signal.removeEventListener("abort", onAbort);
-        acquisitionFinished = true;
-      }
-    },
-  });
-  await fs.writeFile(
-    path.join(fixture.rootDir, "openclaw.plugin.json"),
-    JSON.stringify({
-      id: fixture.pluginId,
-      providers: [fixture.pluginId],
-      providerCatalogEntry: "./catalog.cjs",
-      configSchema: { type: "object", properties: {} },
-    }),
-  );
-  await fs.writeFile(
-    path.join(fixture.rootDir, "catalog.cjs"),
-    `module.exports = { id: ${JSON.stringify(fixture.pluginId)}, label: "Reload acquisition fixture", auth: [],
+it.each(["final Gateway", "live sibling", "closing sibling"] as const)(
+  "joins managed reload acquisition during close with a %s",
+  async (scope) => {
+    const fixture = await createGatewayMetadataCloseFixture("managed-model-close");
+    process.env.OPENCLAW_TEST_MINIMAL_GATEWAY = "0";
+    fixture.config.gateway = { reload: { mode: "hybrid" } };
+    fixture.config.agents = {
+      defaults: { workspace: fixture.state.workspaceDir, model: `${fixture.pluginId}/before` },
+      entries: { main: { default: true, workspace: fixture.state.workspaceDir } },
+    };
+    const entered = createDeferredCore();
+    const cancelled = createDeferredCore();
+    const finishAcquisition = createDeferredCore();
+    const escape = createDeferredCore();
+    const reloaderStopEntered = createDeferredCore();
+    let armed = false;
+    let acquisitionSignal: AbortSignal | undefined;
+    let acquisitionFinished = false;
+    let closeFinished = false;
+    let closing: Promise<void> | undefined;
+    let siblingClosing: Promise<void> | undefined;
+    const restorers: Array<() => void> = [];
+    const bridgeKey = `__managed_model_close_${path.basename(fixture.state.root)}`;
+    Object.defineProperty(globalThis, bridgeKey, {
+      configurable: true,
+      value: async (signal: AbortSignal) => {
+        if (!armed) {
+          return;
+        }
+        acquisitionSignal = signal;
+        const onAbort = () => cancelled.resolve();
+        signal.addEventListener("abort", onAbort, { once: true });
+        entered.resolve();
+        try {
+          await Promise.race([cancelled.promise, escape.promise]);
+          await finishAcquisition.promise;
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+          acquisitionFinished = true;
+        }
+      },
+    });
+    await fs.writeFile(
+      path.join(fixture.rootDir, "openclaw.plugin.json"),
+      JSON.stringify({
+        id: fixture.pluginId,
+        providers: [fixture.pluginId],
+        providerCatalogEntry: "./catalog.cjs",
+        configSchema: { type: "object", properties: {} },
+      }),
+    );
+    await fs.writeFile(
+      path.join(fixture.rootDir, "catalog.cjs"),
+      `module.exports = { id: ${JSON.stringify(fixture.pluginId)}, label: "Reload acquisition fixture", auth: [],
       staticCatalog: { async run(ctx) {
         await globalThis[${JSON.stringify(bridgeKey)}](ctx.signal);
         return { provider: { api: "openai-completions", baseUrl: "https://fixture.invalid/v1",
@@ -78,53 +85,104 @@ it("cancels managed reload acquisition before joining it during Gateway close", 
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 })) } };
       } }
     };`,
-  );
-  try {
-    const port = await fixture.reservePort();
-    const server = await fixture.start(port);
-    const kernel = fixture.kernels.get(port)!;
-    kernel.connectionWork.signal.addEventListener("abort", () => closeFence.resolve(), {
-      once: true,
-    });
-    const snapshot = await readConfigFileSnapshot();
-    armed = true;
-    await fixture.state.writeConfig({
-      ...snapshot.sourceConfig,
-      agents: {
-        ...snapshot.sourceConfig.agents,
-        defaults: {
-          ...snapshot.sourceConfig.agents?.defaults,
-          model: `${fixture.pluginId}/after`,
+    );
+    try {
+      const siblingPort = scope !== "final Gateway" ? await fixture.reservePort() : undefined;
+      const siblingServer =
+        siblingPort !== undefined ? await fixture.start(siblingPort) : undefined;
+      if (siblingPort !== undefined) {
+        // Keep a real serving sibling without a second watcher replacing this publication.
+        await fixture.kernels.get(siblingPort)!.runtimeState.configReloader.stop();
+      }
+      const port = await fixture.reservePort();
+      const server = await fixture.start(port);
+      const kernel = fixture.kernels.get(port)!;
+      const reloader = kernel.runtimeState.configReloader;
+      const stopReloader = reloader.stop.bind(reloader);
+      const observedStop = vi.spyOn(reloader, "stop").mockImplementation(() => {
+        reloaderStopEntered.resolve();
+        return stopReloader();
+      });
+      restorers.push(() => observedStop.mockRestore());
+      const snapshot = await readConfigFileSnapshot();
+      armed = true;
+      await fixture.state.writeConfig({
+        ...snapshot.sourceConfig,
+        agents: {
+          ...snapshot.sourceConfig.agents,
+          defaults: {
+            ...snapshot.sourceConfig.agents?.defaults,
+            model: `${fixture.pluginId}/after`,
+          },
         },
-      },
-    });
-    await entered.promise;
-    expect(acquisitionSignal?.aborted).toBe(false);
-    closing = server.close({ reason: "managed model acquisition fixture" }).finally(() => {
-      closeFinished = true;
-    });
-    void closing.catch(() => {});
-    await Promise.race([
-      closeFence.promise,
-      closing.then(() => {
-        throw new Error("Gateway close did not fence its work");
-      }),
-    ]);
-    expect(acquisitionSignal?.aborted).toBe(true);
-    expect(acquisitionFinished).toBe(false);
-    expect(closeFinished).toBe(false);
-    finishAcquisition.resolve();
-    await closing;
-    expect(acquisitionFinished).toBe(true);
-  } finally {
-    armed = false;
-    escape.resolve();
-    finishAcquisition.resolve();
-    await Promise.allSettled([closing]);
-    await fixture.cleanup();
-    Reflect.deleteProperty(globalThis, bridgeKey);
-  }
-});
+      });
+      await entered.promise;
+      expect(acquisitionSignal?.aborted).toBe(false);
+      closing = server.close({ reason: "managed model acquisition fixture" }).finally(() => {
+        closeFinished = true;
+      });
+      void closing.catch(() => {});
+      await Promise.race([
+        reloaderStopEntered.promise,
+        closing.then(() => {
+          throw new Error("Gateway close did not stop its reloader");
+        }),
+      ]);
+      if (scope === "final Gateway") {
+        expect(acquisitionSignal?.aborted).toBe(true);
+        expect(() => refreshPreparedModelRuntimeSnapshots(snapshot.sourceConfig)).toThrow(
+          /shutdown/,
+        );
+      } else if (scope === "closing sibling") {
+        const siblingReloader = fixture.kernels.get(siblingPort!)!.runtimeState.configReloader;
+        const stopSiblingReloader = siblingReloader.stop.bind(siblingReloader);
+        const siblingStopEntered = createDeferredCore();
+        const observedSiblingStop = vi.spyOn(siblingReloader, "stop").mockImplementation(() => {
+          siblingStopEntered.resolve();
+          return stopSiblingReloader();
+        });
+        restorers.push(() => observedSiblingStop.mockRestore());
+        siblingClosing = siblingServer!.close({ reason: "close final sibling" });
+        void siblingClosing.catch(() => {});
+        await Promise.race([
+          siblingStopEntered.promise,
+          siblingClosing.then(() => {
+            throw new Error("Sibling close did not stop its reloader");
+          }),
+        ]);
+        expect(acquisitionSignal?.aborted).toBe(true);
+      }
+      expect(acquisitionFinished).toBe(false);
+      expect(closeFinished).toBe(false);
+      escape.resolve();
+      finishAcquisition.resolve();
+      await Promise.all([closing, siblingClosing]);
+      expect(acquisitionFinished).toBe(true);
+      armed = false;
+      if (scope === "live sibling") {
+        const context = fixture.kernels.get(siblingPort!)!.gatewayRequestContext;
+        expect(context.resolveGatewayContext?.()).toBe(context);
+        expect(context.getRuntimeConfig().agents?.defaults?.model).toBe(
+          `${fixture.pluginId}/after`,
+        );
+        await expect(context.loadGatewayModelCatalog({ agentId: "main" })).resolves.toContainEqual(
+          expect.objectContaining({ provider: fixture.pluginId, id: "after" }),
+        );
+      }
+    } finally {
+      armed = false;
+      escape.resolve();
+      finishAcquisition.resolve();
+      await Promise.allSettled([closing, siblingClosing]);
+      try {
+        await fixture.cleanup();
+      } finally {
+        restorers.toReversed().forEach((restore) => restore());
+        Reflect.deleteProperty(globalThis, bridgeKey);
+      }
+    }
+  },
+);
 
 vi.mock("../audit/audit-event-writer.js", async (importOriginal) => {
   const { createAuditEventWriter } =

@@ -191,8 +191,6 @@ export type PreparedModelRuntimePublicationOptions = {
 };
 
 export type PreparedModelRuntimeRefreshOptions = {
-  /** Cancels this caller's acquisition without closing other Gateway owners. */
-  abortSignal?: AbortSignal;
   gatewayLifecycle?: boolean;
   /** Startup may serve settled agents while the remaining publication continues. */
   startup?: boolean;

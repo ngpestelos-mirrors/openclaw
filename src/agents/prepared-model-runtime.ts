@@ -123,8 +123,23 @@ export const loadPublishedGatewayReplyDispatchRuntime = replyDispatchPublication
 let releaseProcessLifetime: (() => void) | undefined;
 function captureModelRuntimeLifetime(): () => void {
   const assertCurrent = capturePreparedModelRuntimeLifetime();
-  releaseProcessLifetime ??= registerPreparedModelRuntimeClose(closeModelRuntime);
+  if (!releaseProcessLifetime) {
+    // Completed process teardown ends the previous refresh admission fence.
+    refreshCancellation = new AbortController();
+    releaseProcessLifetime = registerPreparedModelRuntimeClose(closeModelRuntime);
+  }
   return assertCurrent;
+}
+
+/** Seal refresh admission and cancel acquisition after every Gateway fences admission. */
+export function cancelPreparedModelRuntimeRefresh(): void {
+  if (releaseProcessLifetime && refreshCancellation.signal.aborted) {
+    return;
+  }
+  captureModelRuntimeLifetime();
+  // Fence pending publications before cancellation can reenter a provider callback.
+  refreshRequestEpoch += 1;
+  refreshCancellation.abort(new Error("prepared model runtime acquisition stopped for shutdown"));
 }
 
 async function closeModelRuntime(error: Error): Promise<void> {
@@ -446,6 +461,7 @@ export function markPreparedModelRuntimeSnapshotsStale(
   } = {},
 ): PreparedModelRuntimeReplacementGateId | undefined {
   captureModelRuntimeLifetime();
+  refreshCancellation.signal.throwIfAborted();
   const previousCancellation = refreshCancellation;
   refreshCancellation = new AbortController();
   setPreparedModelRuntimeStartupStatus(undefined);
@@ -506,9 +522,6 @@ export function refreshPreparedModelRuntimeSnapshots(
   config: OpenClawConfig | (() => OpenClawConfig | Promise<OpenClawConfig>),
   options: PreparedModelRuntimeRefreshOptions = {},
 ): Promise<void> {
-  if (options.abortSignal?.aborted) {
-    return Promise.reject(toStringifiedError(options.abortSignal.reason));
-  }
   if (options.isPublicationCurrent?.() === false) {
     return Promise.resolve();
   }
@@ -522,15 +535,11 @@ export function refreshPreparedModelRuntimeSnapshots(
     agentIds: initialAgentIds,
   });
   const requestEpoch = refreshRequestEpoch;
-  const acquisitionSignal = options.abortSignal
-    ? AbortSignal.any([refreshCancellation.signal, options.abortSignal])
-    : refreshCancellation.signal;
+  const acquisitionSignal = refreshCancellation.signal;
   const replacement = pendingModelRuntimeReplacement;
   let publicationAgentIds = initialAgentIds;
   const isPublicationCurrent = () =>
-    requestEpoch === refreshRequestEpoch &&
-    !options.abortSignal?.aborted &&
-    options.isPublicationCurrent?.() !== false;
+    requestEpoch === refreshRequestEpoch && options.isPublicationCurrent?.() !== false;
   const startup =
     options.startup === true && options.catalogMode === "static" && replacement
       ? new PreparedModelRuntimeStartup({

@@ -25,14 +25,12 @@ export function resolveReloadAgentIds(
 }
 
 export function refreshModelRuntimeAfterHotReload(params: {
-  abortSignal?: AbortSignal;
   config: OpenClawConfig;
   agentIds: ReadonlySet<string> | undefined;
   pluginMetadataSnapshot: PluginMetadataSnapshot | undefined;
   isPublicationCurrent?: () => boolean;
 }): Promise<void> {
   return refreshPreparedModelRuntimeSnapshots(params.config, {
-    ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
     catalogMode: "static",
     joinSupersedingPublication: true,
     ...(params.isPublicationCurrent ? { isPublicationCurrent: params.isPublicationCurrent } : {}),
