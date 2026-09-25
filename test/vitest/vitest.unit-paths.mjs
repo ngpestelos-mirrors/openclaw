@@ -98,12 +98,9 @@ export function filterUnitConfigTestFiles(files) {
     exclude = exclude.filter((pattern) => !literalExcludes.has(pattern));
   }
   const selected = new Set(
-    filterFilesByPatterns(
-      candidates,
-      unitTestIncludePatterns,
-      exclude,
-      path.matchesGlob,
-    ).filter((file) => !isSharedVitestExcludedPath(file)),
+    filterFilesByPatterns(candidates, unitTestIncludePatterns, exclude, path.matchesGlob).filter(
+      (file) => !isSharedVitestExcludedPath(file),
+    ),
   );
   return files.filter((file) => selected.has(normalizeRepoPath(file)));
 }
