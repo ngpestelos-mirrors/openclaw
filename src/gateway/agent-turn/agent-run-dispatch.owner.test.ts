@@ -80,6 +80,7 @@ function taskReceipt(
 ): CreatedDetachedTaskRun {
   return {
     task,
+    release() {},
     async bindRunOwner(cancel, assertCurrent) {
       assertCurrent();
       const release = mocks.bindTaskRunOwner(task, cancel);

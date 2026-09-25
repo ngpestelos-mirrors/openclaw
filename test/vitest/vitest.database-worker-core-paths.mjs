@@ -93,6 +93,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/subagents/announce/subagent-announce.requester-settle-wake.test.ts",
   "src/agents/subagents/registry/subagent-control.accounting.test.ts",
   "src/agents/subagents/registry/subagent-registry.persistence.test.ts",
+  "src/agents/subagents/registry/subagent-registry-running-registration.native.test.ts",
   "src/agents/subagents/registry/subagent-registry.session-failure.test.ts",
   "src/agents/subagents/spawn/subagent-spawn.test.ts",
   "src/agents/subagents/spawn/subagent-spawn-session-patch.test.ts",

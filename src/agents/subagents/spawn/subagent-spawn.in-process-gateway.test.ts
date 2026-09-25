@@ -47,8 +47,10 @@ import { createOperationalRunInstanceRef } from "../../admitted-run-context.js";
 import { loadAgentRuntimePluginRegistryHandle } from "../../runtime-plugins.js";
 import { withGatewayToolCallerIdentity } from "../../tools/gateway-caller-context.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
+import { SubagentRegistryWriteError } from "../registry/subagent-registry-persistence.js";
 import {
   persistSubagentRunsToDisk,
+  persistSubagentRunsToDiskAsyncOrThrow,
   persistSubagentRunsToDiskOrThrow,
   restoreSubagentRunsFromDisk,
 } from "../registry/subagent-registry-state.js";
@@ -200,6 +202,7 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
     vi.mocked(loadAgentRuntimePluginRegistryHandle).mockReset();
     vi.mocked(persistSubagentRunsToDisk).mockReset();
     vi.mocked(persistSubagentRunsToDiskOrThrow).mockReset();
+    vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockReset();
     vi.mocked(restoreSubagentRunsFromDisk).mockReset();
     subagentSpawnTesting.setDepsForTest();
     resetDetachedTaskLifecycleRuntimeForTests();
@@ -743,9 +746,9 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
     });
     // The registry never takes ownership, which is exactly when the suppressed
     // gateway CLI row would have been the only record of the accepted run.
-    vi.mocked(persistSubagentRunsToDiskOrThrow).mockImplementation(() => {
-      throw new Error("state db unavailable");
-    });
+    vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockRejectedValueOnce(
+      new SubagentRegistryWriteError("not-committed", new Error("state db unavailable")),
+    );
 
     const result = await withPluginRuntimeGatewayRequestScope(
       {
@@ -956,9 +959,9 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
         } as T;
       },
     });
-    vi.mocked(persistSubagentRunsToDiskOrThrow).mockImplementation(() => {
-      throw new Error("state db unavailable");
-    });
+    vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockRejectedValueOnce(
+      new SubagentRegistryWriteError("not-committed", new Error("state db unavailable")),
+    );
 
     const result = await withPluginRuntimeGatewayRequestScope(
       {
