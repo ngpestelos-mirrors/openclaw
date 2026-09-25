@@ -96,7 +96,8 @@ function formatRefuseMessage(params: {
     ...new Set(params.serviceProfiles.map((profile) => formatStopHint(profile))),
     ...new Set(
       params.startupEntries.map(
-        (startupPath) => `stop the process launched by Startup entry ${JSON.stringify(startupPath)}`,
+        (startupPath) =>
+          `stop the process launched by Startup entry ${JSON.stringify(startupPath)}`,
       ),
     ),
   ].join(", ");
