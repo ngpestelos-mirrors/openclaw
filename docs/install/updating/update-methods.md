@@ -87,9 +87,11 @@ Before manually rebuilding a source checkout, stop every Gateway serving its
 `dist` files. Build entry points inspect discoverable managed Gateways, including
 sibling profiles, and refuse when a live service shares that output. On systemd,
 this includes processes remaining in the service cgroup after its main PID exits.
-Follow the reported service/profile stop command or use `openclaw update`. A separate
-candidate checkout with independent output can build while the installed Gateway
-continues serving. This check observes current services; it does not prevent a
+Follow the reported service/profile stop command. For the selected managed service,
+`openclaw update` can coordinate the stop and restart. A Startup-only sibling must
+instead be stopped using the exact Startup-file guidance; updating the selected
+service cannot stop that sibling. A separate candidate checkout with independent
+output can build while the installed Gateway continues serving. This check observes current services; it does not prevent a
 service from starting during compilation, and unavailable inspection does not
 prove that no Gateway is running.
 

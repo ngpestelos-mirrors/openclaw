@@ -400,6 +400,8 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
           expect(result.message).toContain("profile rescue");
           expect(result.message).toContain(`Startup entry ${JSON.stringify(second)}`);
           expect(result.message).not.toContain("openclaw gateway stop --profile rescue");
+          expect(result.message).not.toContain("openclaw update");
+          expect(result.message).not.toContain("matching service stop");
         }
       });
     },

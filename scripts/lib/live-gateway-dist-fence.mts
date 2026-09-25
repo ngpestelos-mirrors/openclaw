@@ -101,9 +101,13 @@ function formatRefuseMessage(params: {
       ),
     ),
   ].join(", ");
+  const recovery =
+    params.startupEntries.length > 0
+      ? `Stop the Gateway first (${stopHints}), then rebuild and start.`
+      : `Stop the Gateway first (${stopHints} or the matching service stop) or run \`openclaw update\`, then rebuild and start.`;
   return (
     `[openclaw] Refusing to rebuild dist while a managed Gateway${profileText}${unit} is still running from this checkout's dist${entry}. ` +
-    `Stop the Gateway first (${stopHints} or the matching service stop) or run \`openclaw update\`, then rebuild and start.`
+    recovery
   );
 }
 
