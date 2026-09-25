@@ -20,7 +20,6 @@ import {
 } from "./provider-catalog-live-outcome.internal.js";
 import {
   buildSingleProviderApiKeyCatalog,
-  getCachedLiveCatalogValue,
   type ManifestProviderCatalogEntry,
 } from "./provider-catalog-shared.js";
 import {
@@ -205,21 +204,14 @@ export async function buildLiveModelProviderConfig<T extends ModelDefinitionConf
       }
       return fallback;
     }
-    const liveModelIds = await getCachedLiveCatalogValue({
-      keyParts: cacheKeyParts ?? [
-        params.providerId,
-        "models",
-        params.endpoint,
-        liveModelCatalogAuthCacheKey(params),
-      ],
-      ttlMs: params.ttlMs,
-      load: async () => await fetchLiveProviderModelIds(params),
-      shouldCache: (modelIds) => modelIds.length > 0 || params.discoveryMode === "strict",
+    const models = await projectCachedLiveModelRows({
+      ...params,
+      cacheKeyParts,
+      fallback,
+      projectRows: buildOpenAICompatibleLiveModels,
     });
-    const liveModelIdSet = new Set(liveModelIds);
-    const models = params.models.filter((model) => liveModelIdSet.has(model.id));
     if (models.length > 0 || params.discoveryMode === "strict") {
-      return buildProviderConfig(params, models);
+      return { ...fallback, models: [...models] };
     }
   } catch (error) {
     if (params.discoveryMode === "strict") {

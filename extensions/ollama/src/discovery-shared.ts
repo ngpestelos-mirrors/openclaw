@@ -298,7 +298,11 @@ export async function resolveOllamaDiscoveryResult(params: {
     return null;
   }
   const { apiKey, discoveryApiKey } = auth;
-  if (hasExplicitModels && explicit) {
+  if (
+    hasExplicitModels &&
+    explicit &&
+    (discoveryEnabled === false || (configuredBaseUrl && isHostedOllamaCloud(configuredBaseUrl)))
+  ) {
     const discoveredBaseUrl = resolveOllamaApiBase(configuredBaseUrl);
     const api = explicit.api ?? "ollama";
     return {

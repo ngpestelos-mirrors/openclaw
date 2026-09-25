@@ -833,10 +833,7 @@ describe("provider-catalog-live-runtime", () => {
   });
 
   it("caches live provider configs and falls back to static rows on failure", async () => {
-    const { fetchGuard, fetchGuardMock } = buildFetchGuard([
-      { id: "model-b", object: "model" },
-      { id: "unknown-model", object: "model" },
-    ]);
+    const { fetchGuard, fetchGuardMock } = buildFetchGuard([{ id: "model-b", object: "model" }]);
     const providerConfig = {
       api: "openai-completions" as const,
       baseUrl: "https://provider.example.test/v1",

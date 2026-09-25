@@ -135,7 +135,7 @@ function isSafeLiveModelId(value: string): boolean {
 }
 
 const NON_TEXT_MODEL_ID_PATTERN =
-  /(?:^|[/_:.-])(?:embed(?:ding)?|rerank(?:er)?|whisper|transcri(?:be|ption)|tts|speech|moderation|guard|gpt-image|dall-e|flux|sdxl|stable-diffusion|imagen|image-gen(?:eration)?|text-to-image|veo|sora|video-gen(?:eration)?|text-to-video)(?:$|[/_:.-])/i;
+  /(?:^|[/_:.-])(?:embed(?:ding)?|rerank(?:er)?|whisper|transcri(?:be|ption)|tts|speech|realtime|audio|moderation|guard|image|dall-e|flux|sdxl|stable-diffusion|imagen|image-gen(?:eration)?|text-to-image|veo|sora|video|video-gen(?:eration)?|text-to-video|babbage|davinci|gpt-3[.]5-turbo-instruct)(?:$|[/_:.-])/i;
 
 function rowAdvertisesNonTextModel(
   record: Record<string, unknown>,
@@ -249,7 +249,12 @@ function buildOpenAICompatibleLiveModel(
 ): ModelDefinitionConfig | undefined {
   const record = readLiveModelCatalogRecord(row);
   const id = readLiveModelCatalogStringField(record, ["id", "model", "model_name", "modelName"]);
-  if (!record || !id || !isSafeLiveModelId(id)) {
+  if (
+    !record ||
+    !id ||
+    !isSafeLiveModelId(id) ||
+    (record.object !== undefined && record.object !== "model")
+  ) {
     return undefined;
   }
   if (readLiveModelCatalogBooleanField(record, ["active", "enabled", "available"]) === false) {

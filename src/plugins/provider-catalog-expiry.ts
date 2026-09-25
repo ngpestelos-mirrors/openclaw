@@ -27,11 +27,11 @@ export async function withProviderCatalogExpiry<T>(
   }
   const current: CatalogExpiryCapture = { providers: parent.providers };
   const value = await capture.run(current, load);
-  if (current.expiresAt !== undefined) {
-    for (const provider of providerIds(value)) {
-      const previous = parent.providers.get(provider);
-      parent.providers.set(provider, Math.min(previous ?? Infinity, current.expiresAt));
-    }
+  // Uncached discovery still expires; otherwise one successful listing pins inventory forever.
+  current.expiresAt ??= Date.now() + 30_000;
+  for (const provider of providerIds(value)) {
+    const previous = parent.providers.get(provider);
+    parent.providers.set(provider, Math.min(previous ?? Infinity, current.expiresAt));
   }
   return value;
 }

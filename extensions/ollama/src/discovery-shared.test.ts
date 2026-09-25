@@ -240,7 +240,7 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
         buildProvider: buildMockProvider,
       });
 
-      expect(result).toMatchObject({ provider: { apiKey, models: [cloudModel] } });
+      expect(result).toMatchObject({ provider: { apiKey } });
     },
   );
 
@@ -295,8 +295,7 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
     expect(result).toMatchObject({ provider: { models: [cloudModel] } });
   });
 
-  it("preserves explicit local model context overrides without discovery", async () => {
-    let providerCalled = false;
+  it("discovers newly installed models even when setup saved an initial inventory", async () => {
     const result = await resolveOllamaDiscoveryResult({
       ctx: {
         config: createModelProviderConfig({
@@ -310,14 +309,14 @@ describe("resolveOllamaDiscoveryResult — hosted Ollama Cloud guard", () => {
         resolveProviderApiKey: () => ({}),
       },
       pluginConfig: {},
-      buildProvider: async () => {
-        providerCalled = true;
-        return await buildMockProvider();
-      },
+      buildProvider: async () => ({
+        baseUrl: "http://127.0.0.1:11434",
+        api: "ollama",
+        models: [cloudModel, discoveredModel],
+      }),
     });
 
-    expect(providerCalled).toBe(false);
-    expect(result).toMatchObject({ provider: { models: [cloudModel] } });
+    expect(result).toMatchObject({ provider: { models: [cloudModel, discoveredModel] } });
   });
 
   it.each([

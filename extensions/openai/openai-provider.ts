@@ -269,20 +269,21 @@ async function buildOpenAILiveProviderConfig(
   if (!isOpenAIHttpsApiBaseUrl(baseUrl)) {
     return { provider: fallback };
   }
-  const [
-    { getCachedLiveProviderModelRows, LiveModelCatalogHttpError },
-    { isNonSecretApiKeyMarker },
-  ] = await Promise.all([
-    import("openclaw/plugin-sdk/provider-catalog-live-runtime"),
-    import("openclaw/plugin-sdk/provider-auth"),
-  ]);
+  const [{ buildLiveModelProviderConfig, LiveModelCatalogHttpError }, { isNonSecretApiKeyMarker }] =
+    await Promise.all([
+      import("openclaw/plugin-sdk/provider-catalog-live-runtime"),
+      import("openclaw/plugin-sdk/provider-auth"),
+    ]);
   const rejectionScope =
     params.apiKey && !params.discoveryApiKey && isNonSecretApiKeyMarker(params.apiKey)
       ? "catalog"
       : undefined;
   try {
-    const rows = await getCachedLiveProviderModelRows({
+    const provider = await buildLiveModelProviderConfig({
       providerId: PROVIDER_ID,
+      discoveryMode: "strict",
+      providerConfig: fallback,
+      models: [...models, ...buildOpenAIDiscoverablePlatformModels(baseUrl)],
       endpoint: OPENAI_MODELS_ENDPOINT,
       apiKey: params.apiKey,
       discoveryApiKey: params.discoveryApiKey,
@@ -291,33 +292,9 @@ async function buildOpenAILiveProviderConfig(
       ttlMs: OPENAI_MODELS_CACHE_TTL_MS,
       auditContext: "openai-model-discovery",
     });
-    const discoveredIds = new Set(
-      rows.flatMap((row) => {
-        if (!row || typeof row !== "object" || Array.isArray(row)) {
-          return [];
-        }
-        const candidate = row as { id?: unknown; object?: unknown };
-        if (candidate.object !== undefined && candidate.object !== "model") {
-          return [];
-        }
-        const modelId = typeof candidate.id === "string" ? candidate.id.trim() : "";
-        return modelId ? [modelId] : [];
-      }),
-    );
-    const selectedIds = new Set<string>();
-    // A successful account catalog is authoritative even when it has no
-    // visible supported models; static rows cannot grant model access.
+    // A successful account catalog is authoritative, including an empty one.
     return {
-      provider: {
-        ...fallback,
-        models: [...models, ...buildOpenAIDiscoverablePlatformModels(baseUrl)].filter((model) => {
-          if (!discoveredIds.has(model.id) || selectedIds.has(model.id)) {
-            return false;
-          }
-          selectedIds.add(model.id);
-          return true;
-        }),
-      },
+      provider,
       outcome: { provider: PROVIDER_ID, status: "ready" },
     };
   } catch (error) {

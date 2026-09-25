@@ -49,6 +49,33 @@ afterEach(() => {
 });
 
 describe("strict catalog acquisition", () => {
+  it("admits new listed chat models without admitting non-chat endpoints", async () => {
+    fetchGuard.mockImplementation(async ({ url }) => ({
+      response: Response.json({
+        data: [
+          { id: "known" },
+          { id: "new-chat-model" },
+          { id: "gpt-realtime" },
+          { id: "gpt-audio-preview" },
+          { id: "text-embedding-3-small" },
+          { id: "gpt-image-1" },
+          { id: "whisper-1" },
+          { id: "tts-1" },
+          { id: "omni-moderation-latest" },
+          { id: "misleading-chat-name", capabilities: { completion_chat: false } },
+        ],
+      }),
+      finalUrl: url,
+      release: async () => {},
+    }));
+    const provider = await buildLiveModelProviderConfig({
+      ...catalogParams,
+      discoveryMode: "strict",
+    });
+    expect(provider.models.map(({ id }) => id)).toEqual(["known", "new-chat-model"]);
+    expect(provider.models[0]).toEqual(seed.models[0]);
+  });
+
   it.each(["ids", "projection", "openai-compatible"] as const)(
     "%s preserves failure, caches authoritative empty until expiry and supports bypass",
     async (projection) => {
