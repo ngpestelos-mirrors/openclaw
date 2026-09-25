@@ -2,6 +2,7 @@ import path from "node:path";
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
+import { resolveInstallWorkTimeoutMs } from "../../infra/install-mode-options.js";
 import {
   runGlobalPackageUpdateSteps,
   type PackageUpdateTransaction,
@@ -43,7 +44,8 @@ import {
   buildUpdateDoctorEnv,
   resolveUpdateDoctorExecutionPolicy,
 } from "../../infra/update-runner-doctor.js";
-import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
+import type { UpdateStepResult } from "../../infra/update-step-result.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -76,6 +78,7 @@ export async function readPackageUpdateIdentity(root: string) {
 type PackageDoctorOptions = {
   root: string;
   timeoutMs?: number;
+  workTimeoutMs?: number | null;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
   results?: UpdateStepResult[];
   managedServiceEnv?: NodeJS.ProcessEnv;
@@ -309,7 +312,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
         }),
         [UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]: doctorResultPath,
       },
-      timeoutMs: params.timeoutMs,
+      timeoutMs: resolveInstallWorkTimeoutMs(params.workTimeoutMs, params.timeoutMs),
       ...(runCommand ? { runCommand } : {}),
     });
   let outcome: { step: UpdateStepResult } | { error: unknown };
@@ -409,6 +412,8 @@ export type PackageInstallUpdateParams = {
   tag: string;
   installSpec?: string;
   timeoutMs: number;
+  /** Null leaves forward work unbounded; omission retains the caller's timeout. */
+  workTimeoutMs?: number | null;
   startedAt: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
   managedServiceEnv?: NodeJS.ProcessEnv;
@@ -579,6 +584,7 @@ export async function runPackageInstallUpdate(
       params.requirePackageReplacement === true || params.installKind === "git",
     runCommand: runCommandWithTimeout,
     timeoutMs: params.timeoutMs,
+    workTimeoutMs: params.workTimeoutMs,
     ...(installEnv === undefined ? {} : { env: installEnv }),
     runStep: (stepParams) =>
       runUpdateStep({

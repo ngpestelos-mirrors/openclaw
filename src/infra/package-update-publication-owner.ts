@@ -356,7 +356,14 @@ export function createPublicationOwner(
       observed = await inspect();
       assertCurrent();
       if (observed.launcherStates.get(entry.name) === "candidate") {
-        const id = packageActivationIdentity(path.join(descriptor.binDir, entry.name), "launcher");
+        const destination = path.join(descriptor.binDir, entry.name);
+        const id = packageActivationIdentity(destination, "launcher");
+        // The rename may have succeeded before its directory sync/ack failed.
+        requireDirectorySync(await syncDirectory(descriptor.binDir), "Recovered package launcher");
+        assertCurrent();
+        if (packageActivationIdentity(destination, "launcher") !== id) {
+          throw new Error("Recovered launcher changed during persistence.");
+        }
         if (!record.publications.some((item) => item.name === entry.name)) {
           transition("publishing", null, [
             ...record.publications,
@@ -371,14 +378,21 @@ export function createPublicationOwner(
         () => {
           assertCurrent();
           if (
-            entryIdentity(path.join(descriptor.binDir, entry.name), "launcher") !==
-              entry.previousIdentity ||
             entryIdentity(root(`launchers/${entry.name}`), "launcher") !== entry.candidateIdentity
           ) {
             throw new Error("Launcher publication preimage changed.");
           }
         },
         (staged) => {
+          // The destination preimage is required only before publication. The
+          // continuing authority also runs after rename, against the new inode.
+          assertCurrent();
+          if (
+            entryIdentity(path.join(descriptor.binDir, entry.name), "launcher") !==
+            entry.previousIdentity
+          ) {
+            throw new Error("Launcher publication preimage changed.");
+          }
           transition("publishing", {
             kind: "launcher",
             name: entry.name,
@@ -476,7 +490,10 @@ export function createPublicationOwner(
       transition("retiring", { kind: "remove", name, identity: id, selected });
       await removePackagePath(target, () => {
         assertCurrent();
-        if (packageActivationIdentity(target, true) !== id) {
+        // The removal owner also checks authority after its final unlink. That
+        // intended absence is safe; a replacement directory never is.
+        const current = entryIdentity(target, true);
+        if (current !== null && current !== id) {
           throw new Error("Retirement target changed before removal.");
         }
       });

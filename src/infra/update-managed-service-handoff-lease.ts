@@ -103,6 +103,7 @@ export function createManagedHandoffLeaseStore(
     processState,
     inspectProcessIdentity,
     isProcessIdentityCurrent,
+    validateDarwinAncestorProcesses,
     acceptSelfIdentity,
   } = createManagedHandoffProcessIdentityReader({
     env: serviceManagerEnv,
@@ -126,7 +127,11 @@ export function createManagedHandoffLeaseStore(
     readLegacyParent,
     currentLegacyParent,
     sameRow,
-  } = createManagedHandoffLeaseRows(options, withDatabase, isProcessIdentityCurrent);
+  } = createManagedHandoffLeaseRows(options, withDatabase, {
+    isProcessIdentityCurrent,
+    validateDarwinAncestorProcesses,
+  });
+
   function transact<T>(db: HandoffDatabase, operation: () => T): T {
     return withDatabase.transact(db, operation, { logger });
   }

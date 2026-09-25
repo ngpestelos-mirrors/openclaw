@@ -61,7 +61,9 @@ export type PackageReverseAuthority = {
    * remains live through publication, settlement and completion verification. */
   beforeStatePublication: (binding: Readonly<PackageActivationReverseBinding>) => void;
 };
-function captureAuthority(authority: PackageReverseAuthority): PackageReverseAuthority {
+export function capturePackageReverseAuthority(
+  authority: PackageReverseAuthority,
+): PackageReverseAuthority {
   return {
     assertCurrent: authority.assertCurrent.bind(authority),
     assertWritersSettled: authority.assertWritersSettled.bind(authority),
@@ -353,7 +355,13 @@ export function createPackageActivationReverseOwner(params: {
         let rows = await inspect(guard);
         if (rows[progress.completed] === "initial" && resource.before.kind !== "missing") {
           beforeEffect(resource);
-          await renamePackageReverseResource(resource.live, resource.move.displaced);
+          await renamePackageReverseResource(resource.live, resource.move.displaced, {
+            sourceIdentity: resource.before.identity,
+            assertBeforeRename: () => {
+              assertAuthority(binding, guard);
+              assertReverseParents(resource);
+            },
+          });
           await syncParents(resource);
         }
         await inspect(guard);
@@ -363,7 +371,13 @@ export function createPackageActivationReverseOwner(params: {
         rows = await inspect(guard);
         if (rows[progress.completed] !== "published" && resource.after.kind !== "missing") {
           beforeEffect(resource);
-          await renamePackageReverseResource(resource.move.staged, resource.live);
+          await renamePackageReverseResource(resource.move.staged, resource.live, {
+            sourceIdentity: resource.after.identity,
+            assertBeforeRename: () => {
+              assertAuthority(binding, guard);
+              assertReverseParents(resource);
+            },
+          });
         }
         // Also sync observed lost acknowledgements before advancing the journal.
         await syncParents(resource);
@@ -431,7 +445,7 @@ export function createPackageActivationReverseOwner(params: {
     },
     reverse: (bindingInput: PackageActivationReverseBinding, authority: PackageReverseAuthority) =>
       exclusively(async () => {
-        const guard = captureAuthority(authority);
+        const guard = capturePackageReverseAuthority(authority);
         const binding = freeze(packageActivationReverseBindingSchema.parse(bindingInput));
         const record = params.current();
         if (
@@ -500,9 +514,10 @@ export function createPackageActivationReverseOwner(params: {
     // scope. It is not a permanent assertion that serving state must equal T.
     verifyCompletion: (
       bindingInput: Readonly<PackageActivationReverseBinding>,
-      guard: PackageReverseAuthority,
+      authority: PackageReverseAuthority,
     ) =>
       exclusively(async () => {
+        const guard = capturePackageReverseAuthority(authority);
         const binding = freeze(packageActivationReverseBindingSchema.parse(bindingInput));
         const record = params.current();
         if (
@@ -566,9 +581,10 @@ export function createPackageActivationReverseOwner(params: {
         }) satisfies UpdateRecoveryPublicationCompletion;
       }),
     resumeReverse: (authority: PackageReverseAuthority) =>
-      exclusively(() => publish(captureAuthority(authority))),
-    settleReverse: (guard: PackageReverseAuthority) =>
+      exclusively(() => publish(capturePackageReverseAuthority(authority))),
+    settleReverse: (authority: PackageReverseAuthority) =>
       exclusively(async () => {
+        const guard = capturePackageReverseAuthority(authority);
         if (params.current().phase !== "reverse-complete") {
           throw new Error("Incomplete reverse publication cannot settle or release evidence.");
         }

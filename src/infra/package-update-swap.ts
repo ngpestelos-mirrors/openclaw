@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { movePathWithCopyFallback } from "@openclaw/fs-safe/atomic";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { formatErrorMessage } from "./errors.js";
 import {
@@ -45,7 +46,6 @@ import { createPackageSwapResults } from "./package-update-swap-results.js";
 import { retireVerifiedPackageSwap } from "./package-update-swap-retirement.js";
 import { resolveStagedPackageSwapTarget } from "./package-update-swap-target.js";
 import { runPackagePostInstallVerification } from "./package-update-verification-step.js";
-import { movePathWithCopyFallback } from "./replace-file.js";
 import {
   createFreeBsdPkgOwnershipInspection,
   FreeBsdPkgOwnershipError,
@@ -57,7 +57,7 @@ import {
 } from "./update-native-package-stage.js";
 import { isFailedUpdateStep } from "./update-run-step.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "./update-run-timeouts.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
+import type { UpdateStepResult } from "./update-step-result.js";
 
 export { PackageUpdateActivationError } from "./package-update-swap-contract.js";
 export type {

@@ -5,6 +5,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { captureUpdateCommandExecutorAuthority } from "../cli/update-cli/update-command-executor.js";
 import { requireDirectorySync, syncDirectory } from "./directory-durability.js";
+import { retainMutationAuthority } from "./mutation-authority.js";
 import {
   completePackageActivationCustody,
   inspectPackageActivationCustody,
@@ -81,12 +82,17 @@ export function resolvePackageActivationRecoveryCommand(record: PackageActivatio
   return packageActivationRecoveryCommand(node, anchor, record.descriptor.operationId, helper);
 }
 
-export async function preparePackageActivationJournal(params: PackageActivationPreparation) {
+export async function preparePackageActivationJournal(
+  params: PackageActivationPreparation,
+  assertion = params.options.fence.assertCurrent.bind(params.options.fence),
+) {
+  const assertCurrent = retainMutationAuthority(assertion);
+  assertCurrent();
   const authority = captureUpdateCommandExecutorAuthority(
     params.options.fence,
     params.options.runId,
   );
-  const assertCurrent = params.options.fence.assertCurrent;
+  assertCurrent();
   if (process.platform === "win32" || authority.installKey !== params.liveRoot) {
     throw new Error("Package publication recovery requires its original POSIX npm directory.");
   }

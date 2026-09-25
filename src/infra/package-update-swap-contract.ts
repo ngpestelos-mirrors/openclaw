@@ -12,7 +12,7 @@ import type { ResolvedGlobalInstallTarget } from "./update-global.js";
 import type { NativePackageStage } from "./update-native-package-stage.js";
 import type { NpmGlobalPrefixLayout } from "./update-npm-prefix.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery-types.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
+import type { UpdateStepResult } from "./update-step-result.js";
 
 type UpdatePublishedStateGeneration = Readonly<
   Pick<

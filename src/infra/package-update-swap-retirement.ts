@@ -5,7 +5,7 @@ import {
 } from "./package-update-filesystem.js";
 import type { PackageRootIntegrityFingerprint } from "./package-update-integrity.js";
 import type { createNpmPackageRootLinkLifecycle } from "./package-update-npm-root.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
+import type { UpdateStepResult } from "./update-step-result.js";
 
 /** Called only by the verified, cached transaction completion path. */
 export async function retireVerifiedPackageSwap(params: {

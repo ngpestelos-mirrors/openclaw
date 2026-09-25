@@ -157,7 +157,7 @@ export async function preparePackageActivation(
     );
     return undefined;
   }
-  const prepared = await preparePackageActivationJournal({ ...params, options });
+  const prepared = await preparePackageActivationJournal({ ...params, options }, assertOriginal);
   let publishing = false;
   const assertRetained = () => {
     if (publishing && reverseExecutor) {

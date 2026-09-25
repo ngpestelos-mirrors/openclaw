@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
-import fsp from "node:fs/promises";
 import { withCommandProcessScope } from "../process/exec-spawn.js";
 import { sameFileMutationFingerprint } from "./file-descriptor.js";
 
@@ -120,8 +119,16 @@ export function readPackageReverseSymlink(file: string, initial: fs.BigIntStats)
 /** Only the original publication's rename may advance a held inode's ctime.
  * All other generation/metadata fields and the inode-addressed target stay bound.
  * Reconcile a lost acknowledgement too; never repin from the destination path. */
-export async function renamePackageReverseResource(from: string, to: string): Promise<void> {
+export async function renamePackageReverseResource(
+  from: string,
+  to: string,
+  options: { sourceIdentity: string; assertBeforeRename: () => void },
+): Promise<void> {
+  options.assertBeforeRename();
   const stat = fs.lstatSync(from, { bigint: true });
+  if (identity(stat) !== options.sourceIdentity || fs.lstatSync(to, { throwIfNoEntry: false })) {
+    throw new Error("Reverse rename source or destination preimage changed.");
+  }
   const scope = custody.getStore();
   if (scope && !scope.active) {
     throw new Error("Reverse symlink custody has ended.");
@@ -132,7 +139,9 @@ export async function renamePackageReverseResource(from: string, to: string): Pr
   }
   let failure: { error: unknown } | undefined;
   try {
-    await fsp.rename(from, to);
+    // No event-loop yield between the final retained-authority/slot checks and
+    // this effect. External filesystem writers are still governed by maintenance.
+    fs.renameSync(from, to);
   } catch (error) {
     failure = { error };
   }

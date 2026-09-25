@@ -8,7 +8,12 @@ import type { PackageUpdateTransaction } from "./package-update-swap-contract.js
 // Controlled activation boundary; these tests qualify transaction lifetime and
 // delegation, not source proof, executor admission, SQLite or file publication.
 const binding = {} as PackageActivationReverseBinding;
-const authority = {} as PackageReverseAuthority;
+const authority: PackageReverseAuthority = {
+  assertCurrent: () => {},
+  assertWritersSettled: () => {},
+  validateTarget: async () => {},
+  beforeStatePublication: () => {},
+};
 const assertion = () => {};
 const status = {
   phase: "reverse-complete" as const,
@@ -250,4 +255,43 @@ it("keeps native reverse publication usable after legacy rollback is refused", a
   const publishing = f.reverse.publish(binding, authority);
   f.work.resolve(status);
   await expect(publishing).resolves.toEqual(status);
+});
+
+it("captures queued settlement authority before waiting for publication", async () => {
+  const f = fixture();
+  let active = true;
+  const original = vi.fn(() => {
+    if (!active) {
+      throw new Error("queued original maintenance closed");
+    }
+  });
+  const guard: PackageReverseAuthority = {
+    ...authority,
+    assertCurrent: original,
+    assertWritersSettled: original,
+  };
+  const replacement = vi.fn();
+  let settled = false;
+  vi.mocked(f.activation.settleReverse).mockImplementationOnce(async (captured) => {
+    captured.assertCurrent();
+    captured.assertWritersSettled();
+    settled = true;
+    return status;
+  });
+  const publishing = f.reverse.publish(binding, guard);
+  const settling = f.reverse.settle(guard);
+  const refused = expect(settling).rejects.toThrow("queued original maintenance closed");
+  guard.assertCurrent = replacement;
+  guard.assertWritersSettled = replacement;
+  active = false;
+  f.work.resolve(status);
+  await publishing;
+  await refused;
+  expect(settled).toBe(false);
+  expect(replacement).not.toHaveBeenCalled();
+  expect(await f.transaction.complete({ activationVerified: true }, assertion)).toMatchObject({
+    name: "package-backup-retention",
+    exitCode: 1,
+  });
+  expect(f.legacy.complete).not.toHaveBeenCalled();
 });

@@ -39,7 +39,7 @@ type LeaseRead =
 export function createManagedHandoffLeaseRows(
   options: { databasePath: string; existingIdentity?: ManagedUpdateLeaseDatabaseIdentity },
   withDatabase: ReturnType<typeof createManagedHandoffLeaseDatabase>,
-  isProcessIdentityCurrent: (identity: HandoffProcessIdentity) => boolean,
+  processes: Parameters<typeof isBorrowedLegacyHandoffParentCurrent>[2],
 ) {
   const { databasePath } = options;
   const rowReaders = new WeakMap<HandoffDatabase, (root: string) => LeaseRow | undefined>();
@@ -142,11 +142,7 @@ export function createManagedHandoffLeaseRows(
     );
   }
   function currentLegacyParent(parent: BorrowedLegacyHandoffParent, db: HandoffDatabase) {
-    return isBorrowedLegacyHandoffParentCurrent(
-      parent,
-      () => row(db, parent.key),
-      isProcessIdentityCurrent,
-    );
+    return isBorrowedLegacyHandoffParentCurrent(parent, () => row(db, parent.key), processes);
   }
   const sameRow = (a: LeaseRow | undefined, b: LeaseRow | undefined) =>
     a?.owner === b?.owner && a?.payload_json === b?.payload_json && a?.updated_at === b?.updated_at;

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
+import { capturePackageReverseAuthority } from "./package-update-activation-reverse.js";
 import type { preparePackageActivation } from "./package-update-activation.js";
 import type { PackageUpdateTransaction } from "./package-update-swap-contract.js";
 
@@ -123,9 +124,13 @@ export function withPackageReverseTransaction(
           throw new Error("Package reverse publication is absent.");
         }
         const issued = reverse;
-        settlement ??= (async () => {
+        if (settlement) {
+          return settlement;
+        }
+        const guard = capturePackageReverseAuthority(authority);
+        settlement = (async () => {
           await issued;
-          const result = await settle(authority);
+          const result = await settle(guard);
           settled = true;
           return result;
         })();

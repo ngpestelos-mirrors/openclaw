@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import fsp from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
@@ -21,6 +20,7 @@ import {
   type PackageActivationIntent,
   type PackageActivationRecord,
 } from "./package-update-activation-schema.js";
+import { withPackageRecoverySnapshot } from "./package-update-activation-snapshot.js";
 import type { PackageLauncherFingerprint } from "./package-update-integrity.js";
 import {
   withExistingSqliteRollbackDatabase,
@@ -349,26 +349,27 @@ export function openPackageActivationJournal(anchor: string) {
         }
         hot = true;
         assertUnchanged();
-        const directory = await fsp.mkdtemp(path.join(control, ".recovery-snapshot-"));
-        try {
-          const targetPath = path.join(directory, "operation.sqlite");
-          await createVerifiedSqliteSnapshot({
-            sourcePath: journalPath,
-            targetPath,
-            preserveRowIds: true,
-            validate: (database) => {
-              decode(readRow(database));
-            },
-          });
-          const snapshot = openNodeSqliteDatabase(targetPath, { readOnly: true });
-          try {
-            record = decode(readRow(snapshot));
-          } finally {
-            snapshot.close();
-          }
-        } finally {
-          await fsp.rm(directory, { recursive: true, force: true });
-        }
+        record = await withPackageRecoverySnapshot(
+          control,
+          assertFiles,
+          async (targetPath, assertSnapshot) => {
+            await createVerifiedSqliteSnapshot({
+              sourcePath: journalPath,
+              targetPath,
+              preserveRowIds: true,
+              validate: (database) => {
+                decode(readRow(database));
+              },
+            });
+            assertSnapshot();
+            const snapshot = openNodeSqliteDatabase(targetPath, { readOnly: true });
+            try {
+              return decode(readRow(snapshot));
+            } finally {
+              snapshot.close();
+            }
+          },
+        );
       }
       assertUnchanged();
       return {
