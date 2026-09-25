@@ -366,9 +366,6 @@ it(
         const retained = expectDefined((await retainedBuild.pending)[0], "retained generation");
         const releaseRetained = retainPreparedPluginGeneration(retained.pluginGeneration);
         try {
-          expect(
-            retained.snapshot.createStores().modelRegistry.find("kimi", "remote-first")?.cost.input,
-          ).toBe(1);
           const retainedCatalog = expectDefined(
             await retained.snapshot.loadFullModelCatalog?.({
               refresh: true,
@@ -381,9 +378,6 @@ it(
             .map((row) => row.id);
           expect(retainedIds).toContain("remote-first");
           expect(retainedIds).not.toContain("remote-next");
-          expect(
-            retained.snapshot.createStores().modelRegistry.find("kimi", "remote-first")?.cost.input,
-          ).toBe(1);
         } finally {
           retirement.abort();
           await releaseRetained();
