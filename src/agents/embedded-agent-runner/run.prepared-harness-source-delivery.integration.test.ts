@@ -769,6 +769,7 @@ describe("prepared harness source delivery", () => {
     const workspaceDir = state.workspaceDir;
     const pluginRegistry = createEmptyPluginRegistry();
     const baseLease = await mockedAcquireAgentRunPreparedModelRuntime({
+      config,
       agentId: "main",
       agentDir: state.agentDir(),
       workspaceDir,
@@ -862,6 +863,7 @@ describe("prepared harness source delivery", () => {
       const config = {};
       const workspaceDir = state.workspaceDir;
       const baseLease = await mockedAcquireAgentRunPreparedModelRuntime({
+        config,
         agentId: "openclaw",
         agentDir: state.agentDir("openclaw"),
         workspaceDir,
