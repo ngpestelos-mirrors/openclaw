@@ -643,19 +643,22 @@ export async function admitChatSend(
   // handler disarms it once the media becomes referenced (durable admission
   // or ACK handing ownership to dispatch, which persists on all paths).
   let discardAbandonedPreparedMedia: (() => void) | undefined;
-  const cleanupAdmittedRun: typeof activeRunAbort.cleanup = () => {
-    activeRunAbort.cleanup();
-    retainedWork.release();
-    releaseGatewayRootContinuation();
-    discardAbandonedPreparedMedia?.();
-    discardAbandonedPreparedMedia = undefined;
+  const cleanupAdmittedRun = async () => {
+    try {
+      await retainedWork.release();
+    } finally {
+      activeRunAbort.cleanup();
+      releaseGatewayRootContinuation();
+      discardAbandonedPreparedMedia?.();
+      discardAbandonedPreparedMedia = undefined;
+    }
   };
-  const rejectSessionRoutingChanged = () => {
-    cleanupAdmittedRun();
+  const rejectSessionRoutingChanged = async () => {
+    await cleanupAdmittedRun();
     clearAgentRunContext(clientRunId, lifecycleGeneration);
     respondChatSessionRoutingChanged(respond);
   };
-  const finishAbortedChatSend = () => {
+  const finishAbortedChatSend = async () => {
     const stopReason = activeRunAbort.entry?.abortStopReason ?? "rpc";
     const endedAt = Date.now();
     const payload = buildAbortedChatSendPayload({ runId: clientRunId, stopReason, endedAt });
@@ -665,7 +668,7 @@ export async function admitChatSend(
       session: captureAgentJobSession(sessionBinding),
       entry: { ts: endedAt, ok: true, payload },
     });
-    cleanupAdmittedRun();
+    await cleanupAdmittedRun();
     clearAgentRunContext(clientRunId, lifecycleGeneration);
     respond(true, payload, undefined, { runId: clientRunId });
   };

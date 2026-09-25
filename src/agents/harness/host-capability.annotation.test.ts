@@ -241,7 +241,7 @@ describe("host-owned current admission annotation", () => {
                 }),
               ).toBe(true);
             }
-            const accepted = listSessionPendingInputs(f.target);
+            const accepted = await listSessionPendingInputs(f.target);
             const before = await loadTranscriptEvents(f.target);
             const content = kind === "collected" ? "prompt\nsecond prompt" : "prompt";
             const recorder =
@@ -255,7 +255,7 @@ describe("host-owned current admission annotation", () => {
                 : f.recorder;
             const persisted = expectDefined(await recorder.persistApproved(), "promoted input");
             const original = structuredClone(persisted.admission);
-            const consumptions = listSessionPendingInputReceipts(f.target, {
+            const consumptions = await listSessionPendingInputReceipts(f.target, {
               runIds: accepted.items.map((input) => input.runId),
             });
             expect(consumptions).toEqual(
@@ -267,7 +267,7 @@ describe("host-owned current admission annotation", () => {
                   }))
                 : [],
             );
-            expect(listSessionPendingInputs(f.target)).toEqual({ items: [], total: 0 });
+            expect(await listSessionPendingInputs(f.target)).toEqual({ items: [], total: 0 });
             host = createAgentHarnessHostCapabilities({
               attempt: {
                 ...f.attempt,
@@ -295,7 +295,7 @@ describe("host-owned current admission annotation", () => {
               accepted.items.map((input) => input.message),
             );
             expect(
-              listSessionPendingInputReceipts(f.target, {
+              await listSessionPendingInputReceipts(f.target, {
                 runIds: accepted.items.map((input) => input.runId),
               }),
             ).toEqual(consumptions);
@@ -306,7 +306,7 @@ describe("host-owned current admission annotation", () => {
           } finally {
             host?.close();
             for (const source of sources) {
-              source.finishPendingInput?.("interrupted");
+              await source.finishPendingInput?.("interrupted");
             }
           }
         },

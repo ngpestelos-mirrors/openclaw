@@ -183,9 +183,8 @@ the bounded delta. The main thread retains display/profile projection, byte
 budgets, and fresh sharing checks against the originally admitted sources. A
 failed visibility lookup joins worker retirement before its partial facts return;
 the host observes that failure only if projection reaches the lookup before a
-history reset. Pending inputs and receipts, retained
-transcript-session keys, and SSE inline subagent visibility reads remain migration
-debt. Process-held incognito databases and the existing
+history reset. Retained transcript-session keys and SSE inline subagent visibility reads remain
+migration debt. Pending-input pages and receipts use the custody reader worker. Process-held incognito databases and the existing
 CLI-import history path still need their owner/lifetime migration; they are not
 new synchronous exceptions or fallbacks for a failed durable worker read.
 
@@ -260,7 +259,7 @@ current sharing and the captured store and session generation after awaited
 history reads, publishing the response in that synchronous frame. Retained task
 history keeps its recorded transcript when the live session advances. Responses
 own their nested metadata independently of resident rows. Pending-input
-reconciliation remains a separate synchronous owner; this change does not alter
+reconciliation uses its custody worker owner; this change does not alter
 storage, migrations, configuration, or update behavior.
 
 A missing resident row gets a bounded worker sharing read before history treats
@@ -418,9 +417,21 @@ Custom report selectors consume prepared facts on the host, and the worker
 compares the transcript version before appending. Only a definite version conflict
 repeats selection; uncertain writes are never replayed. Startup orphan repair
 retains its native transaction so session settlement and the report remain atomic.
-Process-held incognito databases, user-input custody, custom-message writes, and
+Process-held incognito databases, custom-message writes, and
 the shipped synchronous SessionManager SDK remain separate migration work.
 Schemas, stored bytes, retention, and update behavior are unchanged.
+
+Durable pending-input custody uses the canonical agent executor for staging,
+user-message promotion, completion, terminal disposition, and stale-input repair.
+Staging still commits before `chat.send` acknowledges acceptance. Live host owners
+revalidate transaction and commit grants; cancellation joins terminal persistence
+before releasing the controller or session admission. Promotion adopts the committed
+input identity and consumption facts before updating the session manager view.
+Reconnect pages and receipt lookups use the existing history reader worker, including
+bounded accepted-message decoding. Repair rechecks exact unconsumed row identities
+under writer admission. Synchronous SessionManager SDK calls and process-held
+incognito databases retain their native kernels. No schema, durability, retention,
+configuration, or update migration changes are required.
 
 Channel identity administration, profile role assignments, email linking, and
 HTTP/WebSocket sign-in acquisition use that writer and the existing read worker.

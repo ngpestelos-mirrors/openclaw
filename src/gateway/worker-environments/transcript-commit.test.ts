@@ -612,8 +612,8 @@ describe("worker transcript commit application", () => {
         entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : [],
       ),
     ).toEqual(["First input", "Second input"]);
-    first.recorder?.finishPendingInput?.("interrupted");
-    second.recorder?.finishPendingInput?.("interrupted");
+    await first.recorder?.finishPendingInput?.("interrupted");
+    await second.recorder?.finishPendingInput?.("interrupted");
   });
 
   it("rejects a commit when lifecycle ownership changes in the writer queue", async () => {

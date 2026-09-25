@@ -52,7 +52,9 @@ export type ChatAbortControllerEntry = {
   /** Caller completion requested cleanup before terminal lifecycle persistence settled. */
   registrationCleanupRequested?: boolean;
   /** Bounded private timeout settlement while the aborted producer unwinds. */
-  pendingTimeoutCompletion?: { expiresAtMs: number; settle: () => void };
+  pendingTimeoutCompletion?: { expiresAtMs: number; settle: () => Promise<void> };
+  /** Exact-controller custody stays live until required input writes settle. */
+  pendingInputSettlement?: Promise<unknown>;
   /** False after the owning reply run commits a terminal outcome. */
   isAbortable?: (entry: ChatAbortControllerEntry) => boolean;
   /** Runs once when this registration is actually removed. */

@@ -6,6 +6,7 @@ import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sess
 import type {
   SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
+  TranscriptMessageAppendOptions,
   TranscriptAppendRefusal,
   TranscriptMessageAppendResult,
 } from "../../config/sessions/session-accessor.sqlite-contract.js";
@@ -15,6 +16,11 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-initial-entry.js";
 import { readTranscriptMutationAtSync } from "../../config/sessions/session-accessor.sqlite-metadata-read.js";
 import {
+  readSessionPendingInputWorkerConsumedIds,
+  runWithSessionPendingInputWorkerCustody,
+  type SessionPendingInputWorkerCustody,
+} from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
+import {
   inspectTranscriptEventsSync,
   loadTranscriptReadSnapshotSync,
   validatePreparedAssistantAppendSync,
@@ -23,7 +29,10 @@ import {
   resolveSqliteTranscriptScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
-import type { PreparedTranscriptMessageAppend } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
+import {
+  appendTranscriptMessageInTransaction,
+  type PreparedTranscriptMessageAppend,
+} from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
 import {
   appendTranscriptEventSnapshotSync,
   appendTranscriptMessageSnapshotSync,
@@ -36,6 +45,7 @@ import { runWithSessionTranscriptReadFence } from "../../config/sessions/session
 import { prepareTranscriptPayloadForReuse } from "../../config/sessions/transcript-payload.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { assertTransactionUsable } from "../../infra/sqlite-transaction.js";
 import type {
   SqliteWorkerBackend,
@@ -62,7 +72,22 @@ import type {
 
 type MetadataTarget = Omit<SessionTranscriptWriteScope, "env"> & SessionTranscriptRuntimeTarget;
 
-export type SessionMetadataOperations = {
+export type SessionMetadataOperations<TMessage = unknown> = {
+  "session.transcript.promotePendingInput": {
+    input: {
+      scope: MetadataTarget;
+      options: Omit<
+        TranscriptMessageAppendOptions<TMessage>,
+        "beforeFreshMessageCommit" | "prepareMessageAfterIdempotencyCheck"
+      >;
+      pendingCustody: SessionPendingInputWorkerCustody;
+    };
+    output: {
+      result: TranscriptMessageAppendResult<TMessage> | undefined;
+      consumedInputIds: readonly string[];
+      projectionNeedsReconcile: boolean;
+    };
+  };
   "session.transcript.appendMessage": {
     input: { scope: MetadataTarget; message: CustomMessage; cwd: string };
     output: {
@@ -83,11 +108,13 @@ export type SessionMetadataOperations = {
       scope: MetadataTarget;
       event: SessionHeader | ModelChangeEntry | ThinkingLevelChangeEntry | SessionMessageEntry;
       message?: {
-        prepared: PreparedTranscriptMessageAppend<SessionMessageEntry["message"]>;
+        prepared?: PreparedTranscriptMessageAppend<SessionMessageEntry["message"]>;
+        config?: OpenClawConfig;
         cwd: string;
         validateTurn: boolean;
         idempotencyLookup?: "scan" | "scan-assistant" | "caller-checked";
       };
+      pendingCustody?: SessionPendingInputWorkerCustody;
       options: Pick<
         NonNullable<Parameters<typeof appendTranscriptEventSnapshotSync>[2]>,
         "appendIntent" | "expectedMutationAt"
@@ -108,6 +135,7 @@ export type SessionMetadataOperations = {
         TranscriptAppendRefusal
       >;
       projectionNeedsReconcile: boolean;
+      consumedInputIds?: readonly string[];
       reload?: Result<PreparedSessionTranscriptReload, OpenClawStateWorkerErrorPayload | undefined>;
     };
   };
@@ -117,11 +145,11 @@ export type SessionMetadataOperations = {
   };
 };
 
-export type SessionMetadataWorkerOperations = {
-  [Key in keyof SessionMetadataOperations]: {
-    input: SessionMetadataOperations[Key]["input"];
+export type SessionMetadataWorkerOperations<TMessage = unknown> = {
+  [Key in keyof SessionMetadataOperations<TMessage>]: {
+    input: SessionMetadataOperations<TMessage>[Key]["input"];
     output:
-      | { ok: true; value: SessionMetadataOperations[Key]["output"] }
+      | { ok: true; value: SessionMetadataOperations<TMessage>[Key]["output"] }
       | { ok: false; refusal?: TranscriptAppendRefusal };
   };
 };
@@ -217,6 +245,37 @@ export function bindSqliteWorkerBackend(
       return { ok: true, value: readTranscriptMutationAtSync(scope) };
     }
     assertCanonicalSessionKeyWrite(resolved.sessionKey, resolved.agentId);
+    if (command.type === "session.transcript.promotePendingInput") {
+      let projectionNeedsReconcile = false;
+      const result = runOpenClawAgentWriteTransaction((database) => {
+        if (database.db !== context.database) {
+          throw new Error("Pending input promotion lost its borrowed canonical connection");
+        }
+        context.admit("transaction");
+        const result = appendTranscriptMessageInTransaction(
+          database,
+          resolved,
+          command.input.options,
+          undefined,
+          {
+            scheduleProjectionReconcile: false,
+            onProjectionReconcileNeeded: () => {
+              projectionNeedsReconcile = true;
+            },
+          },
+        );
+        context.admit("commit");
+        return result;
+      }, options);
+      return {
+        ok: true,
+        value: {
+          result,
+          projectionNeedsReconcile,
+          consumedInputIds: readSessionPendingInputWorkerConsumedIds(),
+        },
+      };
+    }
     if (command.type === "session.transcript.appendMessage") {
       return runOpenClawAgentWriteTransaction<
         SessionMetadataWorkerOperations["session.transcript.appendMessage"]["output"]
@@ -247,16 +306,18 @@ export function bindSqliteWorkerBackend(
       if (!message) {
         throw new Error("Session message append requires prepared storage bytes");
       }
-      const { message: _message, ...envelope } = event;
-      const eventJson = `${JSON.stringify(envelope).slice(0, -1)},"message":${message.prepared.messageJson}}`;
-      message.prepared.physicalPayload = prepareTranscriptPayloadForReuse(
-        context.database,
-        eventJson,
-        {
-          ...envelope,
-          message: message.prepared.persistedMessage,
-        },
-      );
+      if (message.prepared) {
+        const { message: _message, ...envelope } = event;
+        const eventJson = `${JSON.stringify(envelope).slice(0, -1)},"message":${message.prepared.messageJson}}`;
+        message.prepared.physicalPayload = prepareTranscriptPayloadForReuse(
+          context.database,
+          eventJson,
+          {
+            ...envelope,
+            message: message.prepared.persistedMessage,
+          },
+        );
+      }
       if (message.validateTurn) {
         const mutationAt = validatePreparedAssistantAppendSync(
           scope,
@@ -312,6 +373,7 @@ export function bindSqliteWorkerBackend(
                 parentId: event.parentId,
                 now: Date.parse(event.timestamp),
                 cwd: message.cwd,
+                config: message.config,
                 idempotencyLookup: message.idempotencyLookup,
               },
               message.prepared,
@@ -321,6 +383,9 @@ export function bindSqliteWorkerBackend(
       context.admit("commit");
       return { ok: true, value: { snapshot, projectionNeedsReconcile } };
     }, options);
+    if (outcome.ok && "snapshot" in outcome.value) {
+      outcome.value.consumedInputIds = readSessionPendingInputWorkerConsumedIds();
+    }
     if (
       command.type === "session.metadata.append" &&
       command.input.event.type !== "session" &&
@@ -331,12 +396,22 @@ export function bindSqliteWorkerBackend(
     ) {
       const { event, view } = command.input;
       const committed = outcome.value.snapshot.value;
-      if (!committed.result?.appended) {
+      const result = committed.result;
+      if (!result) {
+        return outcome;
+      }
+      const adoptedMessage =
+        "messageId" in result &&
+        (result.messageId !== event.id ||
+          (event.type === "message" && event.message.role === "user" && !result.appended));
+      if (!result.appended && !adoptedMessage) {
         return outcome;
       }
       const version = view.loadedVersion;
-      const effectiveParentId = committed.result.effectiveParentId;
+      const effectiveParentId =
+        "effectiveParentId" in result ? result.effectiveParentId : undefined;
       if (
+        adoptedMessage ||
         (version &&
           (committed.before.generation !== version.generation ||
             committed.before.rawSeq !== version.rawSeq)) ||
@@ -363,7 +438,23 @@ export function bindSqliteWorkerBackend(
   return {
     execute(command) {
       try {
-        return execute(command);
+        const custody =
+          command.type === "session.metadata.append" ||
+          command.type === "session.transcript.promotePendingInput"
+            ? command.input.pendingCustody
+            : undefined;
+        return custody
+          ? runWithSessionPendingInputWorkerCustody(
+              custody,
+              () => {
+                if (!context.database.isTransaction) {
+                  throw new Error("Pending input promotion requires an admitted transaction");
+                }
+                assertTransactionUsable(context.database);
+              },
+              () => execute(command),
+            )
+          : execute(command);
       } catch (error) {
         if (error instanceof SessionTranscriptWriterClaimReboundError) {
           return { ok: false, refusal: copyTranscriptRefusal(error.cause) };

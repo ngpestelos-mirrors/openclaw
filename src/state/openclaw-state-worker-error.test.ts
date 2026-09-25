@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { McpOAuthStoreCorruptionError } from "../agents/mcp-oauth-store-error.js";
+import { SessionPendingInputCustodyError } from "../config/sessions/session-pending-input-custody-error.js";
 import { WorkerSessionAlreadyAttachedError } from "../gateway/worker-environments/session-attachment.js";
 import { SqliteCoordinatorError } from "../infra/sqlite-coordinator.js";
 import {
@@ -99,7 +100,13 @@ describe("shared-state worker error transport", () => {
   );
 
   it.each(
-    [RangeError, SyntaxError, TypeError, SkillUploadRequestError].flatMap((ErrorType) =>
+    [
+      RangeError,
+      SyntaxError,
+      TypeError,
+      SkillUploadRequestError,
+      SessionPendingInputCustodyError,
+    ].flatMap((ErrorType) =>
       [false, true].map((aggregate) => ({ ErrorType, name: ErrorType.name, aggregate })),
     ),
   )("preserves $name identity with aggregate=$aggregate", ({ ErrorType, aggregate }) => {
@@ -488,6 +495,7 @@ describe("shared-state worker error transport", () => {
       Object.assign(new Error("syntax imitation"), { name: "SyntaxError" }),
       Object.assign(new Error("type imitation"), { name: "TypeError" }),
       Object.assign(new Error("upload imitation"), { name: "SkillUploadRequestError" }),
+      Object.assign(new Error("custody imitation"), { name: "SessionPendingInputCustodyError" }),
       Object.assign(new Error("native open imitation"), { nativeOpen: true, code: "SQLITE_IOERR" }),
       Object.assign(new Error("terminal admission imitation"), {
         name: "SqliteIntegrityError",

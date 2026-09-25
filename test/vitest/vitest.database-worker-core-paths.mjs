@@ -1,5 +1,7 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/state/openclaw-agent-pending-inputs-schema.test.ts",
+  "src/auto-reply/reply/queue.pending-inputs.test.ts",
   "src/trajectory/runtime-store-writer.test.ts",
   "src/trajectory/runtime.test.ts",
   "src/infra/outbound/bound-delivery-router.test.ts",

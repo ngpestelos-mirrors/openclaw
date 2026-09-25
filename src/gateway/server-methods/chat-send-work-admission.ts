@@ -36,37 +36,41 @@ export function createChatSendWorkAdmission(params: {
   logGateway: Pick<GatewayRequestContext["logGateway"], "warn">;
 }) {
   let references = 1;
-  let finishPendingInput: (() => void) | undefined;
-  const release = () => {
+  let finishPendingInput: (() => Promise<void>) | undefined;
+  let cleanup: Promise<void> | undefined;
+  const release = (): Promise<void> | undefined => {
     if (references === 0) {
-      return;
+      return cleanup;
     }
     references -= 1;
     if (references !== 0) {
       return;
     }
-    try {
-      finishPendingInput?.();
-    } catch (error) {
-      // The durable row remains recoverable; a failed disposition write must
-      // not strand session/root drain ownership during shutdown.
-      params.logGateway.warn(`Failed to finish pending chat input: ${formatForLog(error)}`);
-    } finally {
+    cleanup = (async () => {
       try {
-        params.admission.release();
+        await finishPendingInput?.();
+      } catch (error) {
+        // The durable row remains recoverable; a failed disposition write must
+        // not strand session/root drain ownership during shutdown.
+        params.logGateway.warn(`Failed to finish pending chat input: ${formatForLog(error)}`);
       } finally {
-        params.releaseCallerAuthority?.();
+        try {
+          params.admission.release();
+        } finally {
+          params.releaseCallerAuthority?.();
+        }
       }
-    }
+    })();
+    return cleanup;
   };
   const hold = () => {
     let released = false;
     return () => {
       if (released) {
-        return;
+        return cleanup;
       }
       released = true;
-      release();
+      return release();
     };
   };
   return {
@@ -79,7 +83,7 @@ export function createChatSendWorkAdmission(params: {
       references += 1;
       return hold();
     },
-    setPendingInputCleanup: (finish: () => void) => {
+    setPendingInputCleanup: (finish: () => Promise<void>) => {
       finishPendingInput = finish;
     },
   };

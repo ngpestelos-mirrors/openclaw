@@ -35,6 +35,15 @@ export function createSessionHistoryWorkerReaders(
   runRequest: SessionHistoryWorkerRequestRunner,
 ): Omit<SessionHistoryWorkerDatabase, "generation" | "assertCurrent"> {
   return {
+    readPendingInputs: async (request) =>
+      await runRequest(
+        () => ({ kind: "session-pending-inputs", request }),
+        JSON.stringify(request).length * 2,
+        (value) => {
+          assertResultKind(value, "session-pending-inputs", "pending inputs");
+          return value.result;
+        },
+      ),
     findTranscriptEvent: async (request) =>
       await runRequest(
         () => ({ kind: "transcript-match", request }),

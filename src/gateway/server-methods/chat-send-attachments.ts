@@ -299,10 +299,10 @@ export async function prepareChatSendAttachments(params: {
       }
       await discardPreparedInboundMedia(offloadedRefs);
       if (aborted) {
-        finishAbortedChatSend();
+        await finishAbortedChatSend();
         return { ok: false as const };
       }
-      cleanupAdmittedRun();
+      await cleanupAdmittedRun();
       clearAgentRunContext(clientRunId, lifecycleGeneration);
       logAttachmentFailure(context.logGateway, "chat.send attachment parse/stage failed", err);
       respond(

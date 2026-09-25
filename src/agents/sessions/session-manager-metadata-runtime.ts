@@ -10,6 +10,7 @@ import type {
   OpenClawAgentDatabase,
   OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { openOpenClawAgentSqliteWorkerStore } from "../../state/openclaw-agent-worker-store.js";
 import type {
   SessionMetadataOperations,
@@ -20,17 +21,17 @@ const moduleUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionManag
 const log = createSubsystemLogger("agents/session-metadata");
 
 /** Each command settles and unbinds before the next; the enclosing manager keeps its FIFO turn. */
-export async function withSessionMetadataWorker<T>(
+export async function withSessionMetadataWorker<T, TMessage = unknown>(
   options: OpenClawAgentDatabaseOptions,
-  database: OpenClawAgentDatabase,
+  database: OpenClawAgentDatabase | { execution: OpenClawAgentDatabaseExecution },
   assertCurrent: () => void,
-  operation: (scope: Pick<SqliteWorkerStore<SessionMetadataOperations>, "execute">) => Promise<T>,
+  operation: (
+    scope: Pick<SqliteWorkerStore<SessionMetadataOperations<TMessage>>, "execute">,
+  ) => Promise<T>,
 ): Promise<T> {
-  const worker = await openOpenClawAgentSqliteWorkerStore<SessionMetadataWorkerOperations>(
-    options,
-    database.db,
-    { moduleUrl, input: undefined },
-  );
+  const worker = await openOpenClawAgentSqliteWorkerStore<
+    SessionMetadataWorkerOperations<TMessage>
+  >(options, "execution" in database ? database : database.db, { moduleUrl, input: undefined });
   let result: Result<T, unknown>;
   try {
     const value = await operation({

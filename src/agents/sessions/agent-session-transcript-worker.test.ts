@@ -4,6 +4,10 @@ import {
   loadTranscriptEventsSync,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import {
+  stageSessionPendingInput,
+  withSessionPendingInputPersistence,
+} from "../../config/sessions/session-accessor.pending-inputs.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { AgentEvent } from "../runtime/index.js";
@@ -29,7 +33,20 @@ it("commits streamed messages off the host thread before adopting guard state an
     };
     await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
     const manager = SessionManager.open(target, state.workspaceDir);
-    manager.appendMessage({ role: "user", content: "current turn", timestamp: 1 });
+    const user = {
+      role: "user" as const,
+      content: "current turn",
+      timestamp: 1,
+      idempotencyKey: "stream-worker:user",
+    };
+    const pending = await stageSessionPendingInput(target, {
+      runId: "stream-worker",
+      message: user,
+      assertCurrent: () => {},
+    });
+    if (!pending) {
+      throw new Error("Expected pending user custody");
+    }
     const committed: string[] = [];
     const guard = installSessionToolResultGuard(manager, {
       onMessagePersisted(message) {
@@ -43,14 +60,28 @@ it("commits streamed messages off the host thread before adopting guard state an
     ) => Promise<void>;
     const database = openOpenClawAgentDatabase({ agentId: "main", path: target.storePath });
     const hostExec = vi.spyOn(database.db, "exec");
+    const hostPrepare = vi.spyOn(database.db, "prepare");
     const assertWorkerCommit = async (
       message: Extract<AgentEvent, { type: "message_end" }>["message"],
     ) => {
       hostExec.mockClear();
+      hostPrepare.mockClear();
       await handleEvent({ type: "message_end", message });
       expect(hostExec.mock.calls.filter(([sql]) => /^BEGIN\b/iu.test(sql))).toEqual([]);
+      expect(hostPrepare).not.toHaveBeenCalled();
     };
     try {
+      await pending.run(() => assertWorkerCommit(user));
+      expect(manager.getLeafId()).toBe(pending.inputId);
+      await pending.finish("cancelled");
+      expect(() => pending.run(() => {})).toThrow("ownership ended");
+      await expect(
+        withSessionPendingInputPersistence(pending, () =>
+          manager.appendMessageWithTranscriptAnchorAsync(user),
+        ),
+      ).resolves.toMatchObject({ entryId: pending.inputId, appended: false });
+      expect(hostExec.mock.calls.filter(([sql]) => /^BEGIN\b/iu.test(sql))).toEqual([]);
+      expect(hostPrepare).not.toHaveBeenCalled();
       await assertWorkerCommit(
         createAssistant(
           testModel,
@@ -77,7 +108,7 @@ it("commits streamed messages off the host thread before adopting guard state an
       expect(manager.getLeafEntry()?.parentId).toBe(descendantId);
       expect(manager.getBranch().some((entry) => entry.id === descendantId)).toBe(true);
       expect(loadTranscriptEventsSync(target)).toEqual(manager.getPersistedEntries());
-      expect(committed).toEqual(["assistant", "toolResult", "assistant"]);
+      expect(committed).toEqual(["user", "assistant", "toolResult", "assistant"]);
 
       SessionManager.open(target).appendMessage({
         role: "user",
@@ -92,9 +123,11 @@ it("commits streamed messages off the host thread before adopting guard state an
         }),
       ).rejects.toThrow("SQLite transcript changed");
       expect(loadTranscriptEventsSync(target)).toEqual(before);
-      expect(committed).toEqual(["assistant", "toolResult", "assistant"]);
+      expect(committed).toEqual(["user", "assistant", "toolResult", "assistant"]);
     } finally {
+      await pending.finish("interrupted");
       hostExec.mockRestore();
+      hostPrepare.mockRestore();
       session.dispose();
     }
   });

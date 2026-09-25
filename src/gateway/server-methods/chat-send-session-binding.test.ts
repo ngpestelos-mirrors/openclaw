@@ -284,7 +284,7 @@ it.each(admissionScenarios)(
           expect(await loadTranscriptEvents({ ...scope, ...binding })).toContainEqual(
             expect.objectContaining({ message: expect.objectContaining({ role: "user" }) }),
           );
-          admission.cleanupAdmittedRun();
+          await admission.cleanupAdmittedRun();
           expect(context.chatQueuedTurns.has(runId)).toBe(true);
         } else if (closure === "removed" || closure === "replaced") {
           admission.activeRunAbort.cleanup();
@@ -346,7 +346,7 @@ it.each(admissionScenarios)(
         release.resolve();
         if (owned) {
           await vi.waitFor(() => expect(context.chatAbortControllers.has(runId)).toBe(false));
-          owned.admission.cleanupAdmittedRun();
+          await owned.admission.cleanupAdmittedRun();
           clearAgentRunContext(runId, owned.admission.lifecycleGeneration);
         }
         holdDispatch.mockRestore();

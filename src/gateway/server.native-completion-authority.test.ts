@@ -270,7 +270,7 @@ describe("native completion final-effect authority", () => {
           expect(context.dedupe.get(`agent:${completion.idempotencyKey}`)).toMatchObject({
             ok: true,
           });
-          expect(listSessionPendingInputs(completion.sessionScope).total).toBe(0);
+          expect((await listSessionPendingInputs(completion.sessionScope)).total).toBe(0);
           expect(sessionAccessor.loadTranscriptEventsSync(completion.sessionScope)).toContainEqual(
             expect.objectContaining({
               type: "message",
@@ -284,7 +284,7 @@ describe("native completion final-effect authority", () => {
           expect(result.delivered).toBe(false);
           expect(execution).not.toHaveBeenCalled();
           expect(agentCommandMock).not.toHaveBeenCalled();
-          expect(listSessionPendingInputs(completion.sessionScope).total).toBe(0);
+          expect((await listSessionPendingInputs(completion.sessionScope)).total).toBe(0);
           expect(sessionAccessor.loadTranscriptEventsSync(completion.sessionScope)).toEqual(before);
           expect(context.dedupe.get(`agent:${completion.idempotencyKey}`)).toBeUndefined();
         }
@@ -478,7 +478,7 @@ describe("native completion final-effect authority", () => {
           expect(inject).not.toHaveBeenCalled();
           expect(session.getSteeringMessages()).toEqual([]);
           expect(sessionAccessor.loadTranscriptEventsSync(completion.sessionScope)).toEqual(before);
-          expect(listSessionPendingInputs(completion.sessionScope).total).toBe(0);
+          expect((await listSessionPendingInputs(completion.sessionScope)).total).toBe(0);
         }
         expect(agentCommandMock).not.toHaveBeenCalled();
         expect(context.dedupe.has(`agent:${completion.idempotencyKey}`)).toBe(false);

@@ -184,7 +184,7 @@ describe("legacy main session input handoff", () => {
       ),
       completions: [],
     });
-    expect(listSessionPendingInputs(f.scope(f.destination))).toMatchObject({
+    expect(await listSessionPendingInputs(f.scope(f.destination))).toMatchObject({
       total: 2,
       items: [
         { id: queued.inputId, message: queued.message, state: "interrupted" },
@@ -192,7 +192,7 @@ describe("legacy main session input handoff", () => {
       ],
     });
     expect(
-      listSessionPendingInputReceipts(f.scope(f.destination), { runIds: ["consumed"] }),
+      await listSessionPendingInputReceipts(f.scope(f.destination), { runIds: ["consumed"] }),
     ).toEqual([{ runId: "consumed", state: "consumed", consumedByEventId }]);
     expect(await f.accept(f.destination, "consumed")).toMatchObject({
       state: "consumed",

@@ -206,12 +206,14 @@ describe("spawn input ownership transfer", () => {
         );
         expect(prepared).toBeUndefined();
         expect(
-          listSessionPendingInputs({
-            agentId: "main",
-            sessionKey: childKey,
-            sessionId,
-            storePath: loaded.storePath,
-          }).total,
+          (
+            await listSessionPendingInputs({
+              agentId: "main",
+              sessionKey: childKey,
+              sessionId,
+              storePath: loaded.storePath,
+            })
+          ).total,
         ).toBe(0);
       } else {
         expect(await outcome).toHaveProperty("value.status", "accepted");
@@ -228,12 +230,14 @@ describe("spawn input ownership transfer", () => {
           expect(persisted?.appended).toBe(true);
           expect(persisted?.message.content).toBe("synthetic staged child input");
           expect(
-            listSessionPendingInputs({
-              agentId: "main",
-              sessionKey: childKey,
-              sessionId,
-              storePath: loaded.storePath,
-            }).total,
+            (
+              await listSessionPendingInputs({
+                agentId: "main",
+                sessionKey: childKey,
+                sessionId,
+                storePath: loaded.storePath,
+              })
+            ).total,
           ).toBe(0);
         }
       }
@@ -342,7 +346,7 @@ describe("accepted input Gateway instance retirement", () => {
       expect(accepted).toMatchObject({ runId, sessionKey: childKey, status: "accepted" });
       const originalAck = structuredClone(accepted);
       const prepared = await executionEntered.promise;
-      const pending = listSessionPendingInputs(scope);
+      const pending = await listSessionPendingInputs(scope);
       expect(pending).toMatchObject({
         total: 1,
         items: [
@@ -386,7 +390,7 @@ describe("accepted input Gateway instance retirement", () => {
           message: "Gateway instance dispatch unavailable for agent turn",
         },
       });
-      expect(listSessionPendingInputs(scope)).toEqual({
+      expect(await listSessionPendingInputs(scope)).toEqual({
         total: 1,
         items: [{ ...pending.items[0], state: "interrupted" }],
       });

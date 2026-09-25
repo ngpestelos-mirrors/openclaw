@@ -136,7 +136,8 @@ export async function prepareAgentRunUserTurn(params: {
   settleWakeReplay?: RequesterSettleWakeReplay;
   abortSignal?: AbortSignal;
   getAbortStopReason?: () => string;
-  deferTimeoutCompletion?: (settle: () => void) => boolean;
+  deferTimeoutCompletion?: (settle: () => Promise<void>) => boolean;
+  retainInputSettlement?: (settlement: Promise<unknown>) => void;
   request: AgentRunRequest;
   cfg: OpenClawConfig;
   cfgForAgent?: OpenClawConfig;
@@ -284,6 +285,7 @@ export async function prepareAgentRunUserTurn(params: {
       };
       recorder = createUserTurnTranscriptRecorder({
         trackInputCompletion: params.privateCompletion,
+        onProcessingCompletionPending: params.retainInputSettlement,
         pendingInputReplaySourceSessionKeys: settleWakeReplay?.sourceSessionKeys,
         input,
         target: () => {
@@ -344,9 +346,9 @@ export async function prepareAgentRunUserTurn(params: {
     if (params.privateCompletion && recorder && !recorder.getProcessingCompletion?.()) {
       const recordAbort = () => {
         const stopReason = params.getAbortStopReason?.() ?? "rpc";
-        const settle = () => {
+        const settle = async () => {
           try {
-            recorder.completeProcessing?.(
+            await recorder.completeProcessing?.(
               buildAgentRunTerminalOutcome({
                 status: stopReason === "timeout" ? "timeout" : "error",
                 stopReason,
@@ -359,11 +361,11 @@ export async function prepareAgentRunUserTurn(params: {
           }
         };
         // Give the timed-out producer its existing terminal grace to supply
-        // final facts. Stop still records its non-retry receipt synchronously.
+        // final facts. Stop retains its controller until the receipt settles.
         if (stopReason === "timeout" && params.deferTimeoutCompletion?.(settle)) {
           return;
         }
-        settle();
+        void settle();
       };
       // Abort reserves terminal ownership before notifying listeners. Record
       // the stop while that exact controller still exists, even after input consumption.
@@ -417,13 +419,13 @@ export function finalizePreparedAgentRunUserTurn(prepared: PreparedAgentRunUserT
   }
 }
 
-export function releasePreparedAgentRunUserTurn(
+export async function releasePreparedAgentRunUserTurn(
   prepared: PreparedAgentRunUserTurn,
   disposition: "cancelled" | "interrupted" = "interrupted",
-): void {
+): Promise<void> {
   try {
     prepared.releaseProcessingAbortObserver?.();
-    prepared.recorder?.finishPendingInput?.(disposition);
+    await prepared.recorder?.finishPendingInput?.(disposition);
   } finally {
     releaseExecApprovalFollowupRuntimeHandoff({
       handoffId: prepared.claimedExecApprovalFollowupHandoffId,
@@ -433,13 +435,13 @@ export function releasePreparedAgentRunUserTurn(
 }
 
 /** Settles failed input while preserving both admission and settlement failures. */
-export function releasePreparedAgentRunUserTurnAfterFailure(
+export async function releasePreparedAgentRunUserTurnAfterFailure(
   prepared: PreparedAgentRunUserTurn,
   error: unknown,
   disposition: "cancelled" | "interrupted" = "cancelled",
-): unknown {
+): Promise<unknown> {
   try {
-    releasePreparedAgentRunUserTurn(prepared, disposition);
+    await releasePreparedAgentRunUserTurn(prepared, disposition);
     return error;
   } catch (cleanupError) {
     return new AggregateError(

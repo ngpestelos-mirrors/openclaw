@@ -60,7 +60,7 @@ it("dispatches freshly reclaimed pending input despite its pre-restart inbound d
     let resumed: ReturnType<typeof createRecorder> | undefined;
     try {
       expect(await source.stageApproved?.({ runId, assertCurrent: () => {} })).toBe(true);
-      const original = listSessionPendingInputs(target).items[0];
+      const original = (await listSessionPendingInputs(target)).items[0];
       expect(original).toBeDefined();
       // Finishing the original queue-admission request commits inbound dedupe,
       // although its source remains pending for the still-starting native run.
@@ -69,11 +69,13 @@ it("dispatches freshly reclaimed pending input despite its pre-restart inbound d
         throw new Error("Original input did not acquire inbound dedupe");
       }
       claim.commit();
-      source.finishPendingInput?.("interrupted");
+      await source.finishPendingInput?.("interrupted");
       rotateAgentEventLifecycleGeneration();
       resumed = createRecorder();
       expect(await resumed.stageApproved?.({ runId, assertCurrent: () => {} })).toBe(true);
-      expect(listSessionPendingInputs(target).items).toEqual([{ ...original, state: "queued" }]);
+      expect((await listSessionPendingInputs(target)).items).toEqual([
+        { ...original, state: "queued" },
+      ]);
       expect(claimInboundDedupe(ctx).status).toBe("duplicate");
 
       const recorder = resumed;
@@ -93,7 +95,7 @@ it("dispatches freshly reclaimed pending input despite its pre-restart inbound d
       );
 
       expect(replyResolver).toHaveBeenCalledOnce();
-      expect(listSessionPendingInputs(target).items).toEqual([]);
+      expect((await listSessionPendingInputs(target)).items).toEqual([]);
       const transcript = await loadTranscriptEvents(target);
       const userMessages = transcript.filter((event) => {
         const record = asOptionalRecord(event);
@@ -106,8 +108,8 @@ it("dispatches freshly reclaimed pending input despite its pre-restart inbound d
         }),
       ]);
     } finally {
-      resumed?.finishPendingInput?.("interrupted");
-      source.finishPendingInput?.("interrupted");
+      await resumed?.finishPendingInput?.("interrupted");
+      await source.finishPendingInput?.("interrupted");
       dispatcher.markComplete();
       await dispatcher.waitForIdle();
       resetInboundDedupe();
@@ -156,7 +158,7 @@ it.each(["initial", "inflight", "cache-miss", "consumed", "session", "input", "r
         }
         first.commit();
         if (control !== "initial") {
-          original.finishPendingInput?.("interrupted");
+          await original.finishPendingInput?.("interrupted");
           rotateAgentEventLifecycleGeneration();
           recorder = createRecorder();
           expect(await recorder.stageApproved?.({ runId, assertCurrent })).toBe(true);
@@ -219,8 +221,8 @@ it.each(["initial", "inflight", "cache-miss", "consumed", "session", "input", "r
         restoreClock?.();
         resetInboundDedupe();
         current = true;
-        recorder.finishPendingInput?.("interrupted");
-        original.finishPendingInput?.("interrupted");
+        await recorder.finishPendingInput?.("interrupted");
+        await original.finishPendingInput?.("interrupted");
       }
     });
   },

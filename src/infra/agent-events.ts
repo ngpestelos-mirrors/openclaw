@@ -98,7 +98,8 @@ type AgentEventState = {
   nextListenerId: number;
   listenerRevision: number;
   auditListeners: Set<(evt: AgentEventPayload) => void>;
-  lifecycleRotationHandlers?: Map<string, (lifecycleGeneration: string) => void>;
+  lifecycleRotationHandlers?: Map<string, (lifecycleGeneration: string) => void | Promise<void>>;
+  lifecycleRetirement?: Promise<void>;
 };
 
 const AGENT_EVENT_ROUTING_FIELDS = [
@@ -166,12 +167,10 @@ export function isAgentEventLifecycleGenerationCurrent(lifecycleGeneration: stri
 /** Registers process-local state cleanup at the gateway lifecycle boundary. */
 export function registerAgentEventLifecycleRotationHandler(
   key: string,
-  handler: (lifecycleGeneration: string) => void,
+  handler: (lifecycleGeneration: string) => void | Promise<void>,
 ): void {
   const state = getAgentEventState();
-  const handlers =
-    state.lifecycleRotationHandlers ??
-    (state.lifecycleRotationHandlers = new Map<string, (lifecycleGeneration: string) => void>());
+  const handlers = state.lifecycleRotationHandlers ?? (state.lifecycleRotationHandlers = new Map());
   handlers.set(key, handler);
 }
 
@@ -200,13 +199,44 @@ export function rotateAgentEventLifecycleGeneration(): string {
   // owner is operationally reachable. Recovery and runtime consumers therefore
   // agree that only current-generation owners can drive or receive work.
   const errors: unknown[] = [];
-  notifyListeners(state.lifecycleRotationHandlers?.values() ?? [], lifecycleGeneration, (error) =>
-    errors.push(error),
+  const pending: Promise<void>[] = state.lifecycleRetirement ? [state.lifecycleRetirement] : [];
+  const retire = [...(state.lifecycleRotationHandlers?.values() ?? [])].map(
+    (handler) => (generation: string) => {
+      const settlement = handler(generation);
+      if (settlement) {
+        pending.push(settlement);
+      }
+    },
   );
+  notifyListeners(retire, lifecycleGeneration, (error) => errors.push(error));
+  if (pending.length) {
+    state.lifecycleRetirement = Promise.allSettled(pending).then((results) => {
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (failures.length) {
+        throw new AggregateError(failures, "Failed to settle retired agent lifecycle owners");
+      }
+    });
+    // Rotation revokes synchronously; the restart owner joins persistence before reopening.
+    void state.lifecycleRetirement.catch(() => {});
+  }
   if (errors.length > 0) {
     throw new AggregateError(errors, "Failed to retire stale agent lifecycle owners");
   }
   return lifecycleGeneration;
+}
+
+export async function settleAgentEventLifecycleRetirement(): Promise<void> {
+  const state = getAgentEventState();
+  const pending = state.lifecycleRetirement;
+  try {
+    await pending;
+  } finally {
+    if (state.lifecycleRetirement === pending) {
+      state.lifecycleRetirement = undefined;
+    }
+  }
 }
 
 function enrichAgentEvent(

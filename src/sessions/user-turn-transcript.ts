@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { Result } from "@openclaw/normalization-core/result";
 import type { AgentRunTerminalOutcome } from "../agents/agent-run-terminal-outcome.types.js";
 import {
   bindSessionPendingInputSources,
@@ -230,7 +229,8 @@ export function createUserTurnTranscriptRecorder(
   let replacementText: string | undefined;
   let confirmedSteerTargetRunId: string | undefined;
   let pendingInput: Awaited<ReturnType<typeof stageSessionPendingInput>>;
-  let processingCompletion: Result<AgentRunTerminalOutcome, unknown> | undefined;
+  let processingCompletion: AgentRunTerminalOutcome | undefined;
+  let processingCompletionPending: Promise<AgentRunTerminalOutcome> | undefined;
   let staging: Promise<boolean> | undefined;
 
   const applyReplacementText = (
@@ -576,35 +576,42 @@ export function createUserTurnTranscriptRecorder(
       return staging;
     },
     getPendingInputMessage: () => pendingInput?.message,
-    getProcessingCompletion: () =>
-      processingCompletion?.ok ? processingCompletion.value : pendingInput?.completion,
-    completeProcessing: (outcome) => {
+    getProcessingCompletion: () => processingCompletion ?? pendingInput?.completion,
+    completeProcessing: async (outcome) => {
       if (!pendingInput?.complete) {
         return undefined;
       }
       // Abort records its terminal outcome before releasing the controller.
       // Final publication reuses that committed result (or the original write
       // failure), without trying another write under revoked ownership.
-      if (!processingCompletion) {
-        try {
-          processingCompletion = { ok: true, value: pendingInput.complete(outcome) };
-        } catch (error) {
-          processingCompletion = { ok: false, error };
-        }
+      if (!processingCompletionPending) {
+        processingCompletionPending = pendingInput.complete(outcome).then((completed) => {
+          processingCompletion = completed;
+          return completed;
+        });
+        params.onProcessingCompletionPending?.(processingCompletionPending);
       }
-      if (!processingCompletion.ok) {
-        throw processingCompletion.error;
-      }
-      return processingCompletion.value;
+      return await processingCompletionPending;
     },
     isPendingInputConsumed: () => pendingInput?.state === "consumed",
     withPendingInput: (run) => (pendingInput ? pendingInput.run(run) : run()),
-    finishPendingInput: (disposition) => {
+    finishPendingInput: async (disposition) => {
+      if (processingCompletionPending) {
+        await processingCompletionPending.catch(() => undefined);
+      }
       if (pendingInput) {
-        pendingInput.finish(disposition);
+        await pendingInput.finish(disposition);
       } else {
-        for (const source of params.pendingInputSources ?? []) {
-          source.finishPendingInput?.(disposition);
+        const settled = await Promise.allSettled(
+          (params.pendingInputSources ?? []).map((source) =>
+            source.finishPendingInput?.(disposition),
+          ),
+        );
+        const failures = settled.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (failures.length) {
+          throw new AggregateError(failures, "Failed to finish collected input custody");
         }
       }
     },

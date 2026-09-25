@@ -272,7 +272,7 @@ it.each([
         if (owned) {
           await sharedDispatchSettled.promise;
           await vi.waitFor(() => expect(context.chatAbortControllers.has(runId)).toBe(false));
-          owned.admission.cleanupAdmittedRun();
+          await owned.admission.cleanupAdmittedRun();
         }
         holdPreparation.mockRestore();
         holdRuntimePlugins?.mockRestore();

@@ -210,8 +210,8 @@ export async function settleChatSendPreAckMessageInjection(params: {
   attempt: ReplyMessageInjectionAttempt | undefined;
   isAborted: () => boolean;
   sessionRoutingChanged: () => boolean;
-  onAborted: () => void;
-  onSessionRoutingChanged: () => void;
+  onAborted: () => Promise<void> | void;
+  onSessionRoutingChanged: () => Promise<void> | void;
 }): Promise<PreAckMessageInjectionResult> {
   if (!params.attempt || (await params.attempt.acceptance)) {
     return { status: "continue", attempt: params.attempt };
@@ -221,11 +221,11 @@ export async function settleChatSendPreAckMessageInjection(params: {
     throw outcome.error;
   }
   if (params.isAborted()) {
-    params.onAborted();
+    await params.onAborted();
     return { status: "handled" };
   }
   if (params.sessionRoutingChanged()) {
-    params.onSessionRoutingChanged();
+    await params.onSessionRoutingChanged();
     return { status: "handled" };
   }
   return { status: "continue", attempt: undefined };

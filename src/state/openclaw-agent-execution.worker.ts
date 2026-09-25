@@ -5,7 +5,10 @@ import type { Result } from "@openclaw/normalization-core/result";
 import type { SessionTranscriptInitializationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
-import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
+import {
+  assertTransactionUsable,
+  runSqliteDeferredTransactionSync,
+} from "../infra/sqlite-transaction.js";
 import {
   onSqliteWalCheckpoint,
   type SqliteWalCheckpointSnapshot,
@@ -302,6 +305,9 @@ function openAgentDatabaseBackend(
   let entryReader:
     | typeof import("../config/sessions/session-accessor.sqlite-entry-read.js")
     | undefined;
+  let pendingInputs:
+    | typeof import("../config/sessions/session-accessor.pending-inputs.kernel.js")
+    | undefined;
   let archives:
     | typeof import("../config/sessions/session-accessor.sqlite-archive-store-kernel.js")
     | undefined;
@@ -349,6 +355,60 @@ function openAgentDatabaseBackend(
     }
     if (command.type === "session.entry.read" && entryReader) {
       return entryReader.readSessionEntryRow(openWriter(), command.input.sessionKey)?.entry;
+    }
+    if (
+      (command.type === "session.pendingInput.read" ||
+        command.type === "session.pendingInput.stage" ||
+        command.type === "session.pendingInput.complete" ||
+        command.type === "session.pendingInput.finish" ||
+        command.type === "session.pendingInput.repair") &&
+      pendingInputs
+    ) {
+      const opened = openWriter();
+      const kernel = pendingInputs;
+      if (command.type === "session.pendingInput.read" && !command.input.trackCompletion) {
+        return runSqliteDeferredTransactionSync(opened.db, () =>
+          kernel.readSessionPendingInputStage(opened, command.input.resolved, command.input),
+        );
+      }
+      return runOpenClawAgentWriteTransaction(
+        (current) => {
+          if (current.db !== opened.db) {
+            throw new Error("Pending input lost its canonical database owner");
+          }
+          admit("transaction");
+          const result = (() => {
+            switch (command.type) {
+              case "session.pendingInput.read":
+                return kernel.readSessionPendingInputStage(
+                  current,
+                  command.input.resolved,
+                  command.input,
+                );
+              case "session.pendingInput.stage":
+                return kernel.commitSessionPendingInputStage(
+                  current,
+                  command.input.resolved,
+                  command.input,
+                );
+              case "session.pendingInput.complete":
+                return kernel.completeSessionPendingInputInDatabase(
+                  current,
+                  command.input.resolved,
+                  command.input,
+                );
+              case "session.pendingInput.finish":
+                return kernel.finishSessionPendingInputInDatabase(current, command.input);
+              case "session.pendingInput.repair":
+                return kernel.repairSessionPendingInputRowsInDatabase(current, command.input.rows);
+            }
+          })();
+          admit("commit");
+          return result;
+        },
+        options,
+        { operationLabel: command.type },
+      );
     }
     if (command.type === "trajectory.events.append" && trajectory) {
       const opened = openWriter();
@@ -484,6 +544,19 @@ function openAgentDatabaseBackend(
   };
   return {
     prepare(command) {
+      if (
+        command.type === "session.pendingInput.read" ||
+        command.type === "session.pendingInput.stage" ||
+        command.type === "session.pendingInput.complete" ||
+        command.type === "session.pendingInput.finish" ||
+        command.type === "session.pendingInput.repair"
+      ) {
+        return import("../config/sessions/session-accessor.pending-inputs.kernel.js").then(
+          (module) => {
+            pendingInputs = module;
+          },
+        );
+      }
       if (command.type === "session.entry.read") {
         return import("../config/sessions/session-accessor.sqlite-entry-read.js").then((module) => {
           entryReader = module;

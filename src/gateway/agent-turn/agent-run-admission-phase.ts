@@ -63,7 +63,6 @@ import {
   prepareAgentRunUserTurn,
   recordAgentRunUserTurnParticipant,
   reconcileAgentRunUserTurnCompletion,
-  releasePreparedAgentRunUserTurn,
   releasePreparedAgentRunUserTurnAfterFailure,
   type PreparedAgentRunUserTurn,
 } from "./agent-run-user-turn.js";
@@ -482,6 +481,7 @@ export async function prepareAgentRunDispatch(
       abortSignal: activeRunAbort.controller.signal,
       getAbortStopReason: () => activeRunAbort.entry?.abortStopReason ?? "rpc",
       deferTimeoutCompletion: activeRunAbort.deferTimeoutCompletion,
+      retainInputSettlement: activeRunAbort.retainInputSettlement,
       privateCompletion: params.privateCompletion,
       settleWakeReplay: params.settleWakeReplay,
       request: params.request,
@@ -515,13 +515,9 @@ export async function prepareAgentRunDispatch(
   } catch (err) {
     return rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, err));
   }
-  const inputAdmission = revalidateAdmission();
+  const inputAdmission = revalidateAdmission(userTurn);
   if (inputAdmission !== true) {
-    try {
-      return await inputAdmission;
-    } finally {
-      releasePreparedAgentRunUserTurn(userTurn, parentResume ? "cancelled" : "interrupted");
-    }
+    return await inputAdmission;
   }
   const accepted = {
     runId: params.runId,
@@ -583,7 +579,7 @@ export async function prepareAgentRunDispatch(
       assertInputOwnerCurrent();
       dispatchTaskTrackingMode = registeredFollowupTask;
     } catch (error) {
-      const failure = releasePreparedAgentRunUserTurnAfterFailure(userTurn, error);
+      const failure = await releasePreparedAgentRunUserTurnAfterFailure(userTurn, error);
       return rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, failure));
     }
   }
@@ -597,7 +593,7 @@ export async function prepareAgentRunDispatch(
     assertInputOwnerCurrent();
     capturedOperator.authority?.assertCurrent();
   } catch (error) {
-    const failure = releasePreparedAgentRunUserTurnAfterFailure(userTurn, error);
+    const failure = await releasePreparedAgentRunUserTurnAfterFailure(userTurn, error);
     return rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, failure));
   }
   try {
@@ -608,7 +604,7 @@ export async function prepareAgentRunDispatch(
         adoptParentResume();
         resumedTaskAdopted = true;
       } catch (err) {
-        const failure = releasePreparedAgentRunUserTurnAfterFailure(userTurn, err);
+        const failure = await releasePreparedAgentRunUserTurnAfterFailure(userTurn, err);
         return rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, failure));
       }
     }
@@ -675,7 +671,11 @@ export async function prepareAgentRunDispatch(
       restoreAdmittedRestartRecoveryInterrupted,
     };
   } catch (error) {
-    const failure = releasePreparedAgentRunUserTurnAfterFailure(userTurn, error, "interrupted");
+    const failure = await releasePreparedAgentRunUserTurnAfterFailure(
+      userTurn,
+      error,
+      "interrupted",
+    );
     try {
       await cleanupPreaccept();
     } catch (cleanupError) {

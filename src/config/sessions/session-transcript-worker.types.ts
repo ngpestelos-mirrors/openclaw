@@ -19,6 +19,10 @@ import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-tur
 import type { OpenClawRegisteredAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import type { AgentDatabaseExecutionFileIdentity } from "../../state/openclaw-agent-execution-contract.js";
 import type { SessionLifecycleTimestamps } from "./lifecycle.types.js";
+import type {
+  PendingInputReadRequest,
+  PendingInputReadResult,
+} from "./session-accessor.pending-inputs.read.js";
 import type { SessionTranscriptBoundedActiveContext } from "./session-accessor.sqlite-active-context.js";
 import type {
   SessionBranchSummaryReadRequest,
@@ -418,7 +422,14 @@ type SessionHistoricalEvictionCandidatesWorkerInput = {
   preserveRecentMs?: number | null;
 };
 
+type SessionPendingInputsWorkerInput = {
+  kind: "session-pending-inputs";
+  database: { agentId: string; path: string };
+  request: PendingInputReadRequest;
+};
+
 export type SessionHistoryWorkerInput =
+  | SessionPendingInputsWorkerInput
   | SessionHistoricalEvictionCandidatesWorkerInput
   | SessionArchivePruningWorkerInput
   | SessionColdMetadataWorkerInput
@@ -459,6 +470,7 @@ export type SessionHistoryWorkerPreparedInput = {
 }[SessionHistoryDatabaseWorkerInput["kind"]];
 
 export type SessionTranscriptWorkerValues = {
+  "session-pending-inputs": { kind: "session-pending-inputs"; result: PendingInputReadResult };
   "historical-eviction-candidates": {
     kind: "historical-eviction-candidates";
     sessionIds: string[];
@@ -522,6 +534,7 @@ export type SessionTranscriptWorkerReply<Kind extends keyof SessionTranscriptWor
     };
 
 export type SessionHistoryWorkerDatabase = {
+  readPendingInputs: (request: PendingInputReadRequest) => Promise<PendingInputReadResult>;
   findTranscriptEvent: (
     request: SessionTranscriptMatchWorkerInput["request"],
   ) => Promise<{ event: TranscriptEvent } | undefined>;

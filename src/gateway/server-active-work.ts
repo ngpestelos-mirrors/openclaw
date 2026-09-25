@@ -25,10 +25,11 @@ export function createGatewayServerActiveWorkInspectors(
     getTerminalPersistence: () =>
       Array.from(context.chatAbortControllers.values()).filter(
         (entry) =>
-          entry.controlUiVisible !== false &&
-          entry.projectSessionTerminalPersisted !== true &&
-          (entry.projectSessionTerminalPending === true ||
-            entry.projectSessionTerminalPersistence !== undefined),
+          entry.pendingInputSettlement !== undefined ||
+          (entry.controlUiVisible !== false &&
+            entry.projectSessionTerminalPersisted !== true &&
+            (entry.projectSessionTerminalPending === true ||
+              entry.projectSessionTerminalPersistence !== undefined)),
       ).length,
     getTerminalSessions: () => context.terminalSessions?.size ?? 0,
   };

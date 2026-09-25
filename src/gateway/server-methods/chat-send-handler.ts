@@ -147,13 +147,13 @@ async function handleChatSendWithOptions(
     }
   });
   if (activeRunAbort.controller.signal.aborted) {
-    finishAbortedChatSend();
+    await finishAbortedChatSend();
     return;
   }
   // Attachment preparation can suspend. Recheck immediately before the
   // synchronous ACK path so aborts and hot routing reloads cannot cross it.
   if (sessionRoutingChanged(context.getRuntimeConfig())) {
-    admitted.value.rejectSessionRoutingChanged();
+    await admitted.value.rejectSessionRoutingChanged();
     return;
   }
   const { imageOrder, prepareAttachmentsMs } = preparedAttachments.value;
@@ -302,9 +302,9 @@ async function handleChatSendWithOptions(
       userTurn,
     });
     const { ctx, isInternalTextSlashCommandTurn } = preparedUserTurn;
-    admitted.value.setPendingInputCleanup(() => {
+    admitted.value.setPendingInputCleanup(async () => {
       try {
-        userTurnRecorder.finishPendingInput?.(
+        await userTurnRecorder.finishPendingInput?.(
           activeRunAbort.controller.signal.aborted &&
             activeRunAbort.entry?.abortStopReason !== "restart" &&
             !isAgentRunRestartAbortReason(activeRunAbort.controller.signal.reason)
@@ -357,7 +357,7 @@ async function handleChatSendWithOptions(
               }),
       });
       if (userTurnRecorder.isPendingInputConsumed?.()) {
-        admitted.value.cleanupAdmittedRun();
+        await admitted.value.cleanupAdmittedRun();
         clearAgentRunContext(clientRunId, lifecycleGeneration);
         respond(true, { runId: clientRunId, status: "ok" }, undefined, {
           cached: true,
@@ -397,7 +397,7 @@ async function handleChatSendWithOptions(
             operation: goalOperation,
           });
         if (goalResult && (!persistedUserTurn || mutation?.replayed)) {
-          admitted.value.cleanupAdmittedRun();
+          await admitted.value.cleanupAdmittedRun();
           clearAgentRunContext(clientRunId, lifecycleGeneration);
           respond(true, { ...goalResult, replayed: true }, undefined, {
             cached: true,
@@ -447,14 +447,14 @@ async function handleChatSendWithOptions(
         ) {
           throw new Error("chat admission ownership changed before terminalization");
         }
-        finishAbortedChatSend();
+        await finishAbortedChatSend();
         return;
       }
       if (sessionRoutingChanged(context.getRuntimeConfig())) {
         if (!(await terminalizeRestartSafeAdmission({ retryable: true, status: "failed" }))) {
           throw new Error("chat admission ownership changed before terminalization");
         }
-        admitted.value.rejectSessionRoutingChanged();
+        await admitted.value.rejectSessionRoutingChanged();
         return;
       }
     }
@@ -487,10 +487,10 @@ async function handleChatSendWithOptions(
             })
         : undefined;
     if (activeRunAbort.controller.signal.aborted) {
-      return finishAbortedChatSend();
+      return await finishAbortedChatSend();
     }
     if (sessionRoutingChanged(context.getRuntimeConfig())) {
-      return admitted.value.rejectSessionRoutingChanged();
+      return await admitted.value.rejectSessionRoutingChanged();
     }
     const beginCapturedMessageInjection = createChatSendMessageInjectionStarter({
       operatorAuthority: admitted.value.operatorAuthority,
@@ -517,10 +517,10 @@ async function handleChatSendWithOptions(
     if (preAckReplyContextPromise) {
       applyChatSendReplyContextFields(ctx, await preAckReplyContextPromise);
       if (activeRunAbort.controller.signal.aborted) {
-        return finishAbortedChatSend();
+        return await finishAbortedChatSend();
       }
       if (sessionRoutingChanged(context.getRuntimeConfig())) {
-        return admitted.value.rejectSessionRoutingChanged();
+        return await admitted.value.rejectSessionRoutingChanged();
       }
     }
     assertInputAdmissionCurrent();

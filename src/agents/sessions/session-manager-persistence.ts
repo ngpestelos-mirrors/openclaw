@@ -4,6 +4,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { publishCommittedSessionIdentity } from "../../config/sessions/session-accessor.sqlite-identity.js";
+import type { captureSessionPendingInputWorkerCustody } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
 import { requireTranscriptEventAppendSnapshot } from "../../config/sessions/session-accessor.sqlite-transcript-append-result.js";
 import type { PreparedTranscriptMessageAppend } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
 import {
@@ -12,6 +13,7 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
+import { readMessageIdempotencyKey } from "../../config/sessions/transcript-message-identity.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import {
   captureOwnedTranscriptWriteAssertion,
@@ -169,6 +171,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
     message?: NonNullable<
       SessionMetadataWorkerOperations["session.metadata.append"]["input"]["message"]
     >,
+    pendingCustody?: ReturnType<typeof captureSessionPendingInputWorkerCustody>,
   ): Promise<PersistWorkerRecordResult> {
     this.assertTranscriptWriteActive();
     const target = this.persistenceTarget;
@@ -201,6 +204,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
       assertBinding();
       initialWriter?.assertActive();
       assertOwned();
+      pendingCustody?.assertCurrent();
     };
     const admission = resolveSessionTranscriptReadFence(captured);
     const { withSessionMetadataWorker } = await runInDetachedAsyncContext(
@@ -253,7 +257,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
           input: {
             scope: captured,
             event,
-            ...(event.type === "message" ? { message } : {}),
+            ...(event.type === "message" ? { message, pendingCustody: pendingCustody?.input } : {}),
             options: {
               ...(intent ? { appendIntent: intent } : {}),
               ...(expectedMutationAt !== undefined ? { expectedMutationAt } : {}),
@@ -269,6 +273,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
               : {}),
           },
         });
+        pendingCustody?.publishCommitted(result.consumedInputIds ?? []);
         if (result.projectionNeedsReconcile) {
           startSessionTranscriptIndexReconcile({
             ...options,
@@ -332,15 +337,26 @@ export class SessionManagerPersistence extends SessionManagerCore {
       }
       const { committed, reload } = outcome;
       const receipt = committed.result;
+      let adoptedMessageId: string | undefined;
       if (entry.type === "message") {
-        if (
-          !("messageId" in receipt) ||
-          receipt.messageId !== entry.id ||
-          receipt.effectiveParentId === undefined
-        ) {
+        if (!("messageId" in receipt) || receipt.effectiveParentId === undefined) {
           throw new Error(`Session transcript parent entry was not persisted: ${entry.id}`);
         }
         entry.message = receipt.message;
+        if (receipt.messageId !== entry.id) {
+          if (
+            entry.message.role !== "user" ||
+            !readMessageIdempotencyKey(entry.message) ||
+            message?.idempotencyLookup === "caller-checked" ||
+            !receipt.anchor
+          ) {
+            throw new Error(`Session transcript parent entry was not persisted: ${entry.id}`);
+          }
+          entry.id = receipt.messageId;
+        }
+        if (entry.message.role === "user" && !receipt.appended) {
+          adoptedMessageId = receipt.messageId;
+        }
         if (message?.idempotencyLookup === "caller-checked" && !receipt.appended) {
           throw new Error(`Session transcript append was not persisted: ${entry.id}`);
         }
@@ -365,6 +381,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
       return {
         result: {
           appended: receipt.appended,
+          ...(adoptedMessageId ? { adoptedMessageId } : {}),
           ...("anchor" in receipt && receipt.anchor ? { anchor: receipt.anchor } : {}),
           lifecycleRevision: committed.lifecycleRevision,
           effectiveParentId,

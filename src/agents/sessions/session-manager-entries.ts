@@ -5,9 +5,11 @@ import {
   validatePreparedAssistantAppendSync,
   type TranscriptEntryAnchor,
 } from "../../config/sessions/session-accessor.js";
+import { captureSessionPendingInputWorkerCustody } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
 import { prepareTranscriptMessageAppend } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
+import { readMessageIdempotencyKey } from "../../config/sessions/transcript-message-identity.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import { isSessionTranscriptSideAppendEntry } from "../../config/sessions/transcript-tree.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
@@ -177,6 +179,15 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
     viewWasSuperseded?: true;
   } {
     if (this.hasNewerPublishedTranscriptView(committed.committedVersion)) {
+      if (
+        committed.result?.adoptedMessageId &&
+        this.resolveCurrentTurnEntryId(isTalkRealtimeVoiceEntry) !==
+          committed.result.adoptedMessageId
+      ) {
+        throw new Error(
+          `Session transcript keyed user is outside the current turn: ${committed.result.adoptedMessageId}`,
+        );
+      }
       // A native SDK append can publish a later view before the worker receipt arrives.
       return {
         entry: {
@@ -207,7 +218,11 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
     preparedReload?: PreparedSessionTranscriptReload,
   ): { entry: T; anchor?: TranscriptEntryAnchor; lifecycleRevision?: string; appended: boolean } {
     if (persistenceResult?.adoptedMessageId) {
-      this.reloadPersistedTranscript();
+      if (preparedReload) {
+        this.adoptPreparedTranscriptReload(preparedReload);
+      } else {
+        this.reloadPersistedTranscript();
+      }
       // Context-excluded users have no payload in byId. The exact SQLite replay
       // anchors their identity; physical ancestry still closes older turns.
       // Final Talk speech records history without consuming the consult's keyed input.
@@ -356,15 +371,25 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
       viewWasSuperseded?: true;
     }
   > {
+    const pendingCustody =
+      message.role === "user" ? captureSessionPendingInputWorkerCustody() : undefined;
     return await withSessionManagerWrite(this, async (admission) => {
       this.assertTranscriptWriteActive();
-      // User custody and process-local incognito storage retain their native owners.
-      // The synchronous SDK also permits a transaction-local fresh-message callback.
+      const ownsPendingInput =
+        pendingCustody &&
+        pendingCustody.input.databasePath === admission?.database.path &&
+        pendingCustody.input.sessionKey === this.persistenceTarget?.sessionKey &&
+        pendingCustody.input.sessionId === this.getSessionId() &&
+        pendingCustody.input.idempotencyKey === readMessageIdempotencyKey(message);
+      // Process-local incognito storage and the SDK's fresh-message callbacks
+      // retain their native owner; pending custody already supplies the live guard.
       if (
         !admission ||
         isIncognitoSessionKey(this.persistenceTarget?.sessionKey) ||
-        (message.role !== "assistant" && message.role !== "toolResult") ||
-        options?.beforeFreshMessageCommit
+        (message.role !== "user" &&
+          message.role !== "assistant" &&
+          message.role !== "toolResult") ||
+        (options?.beforeFreshMessageCommit && !ownsPendingInput)
       ) {
         return this.appendMessageWithTranscriptAnchor(message, options);
       }
@@ -372,7 +397,7 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
       const canonical = canonicalizeSessionEntry<SessionMessageEntry>(
         {
           type: "message",
-          id: generateSessionEntryId(),
+          id: ownsPendingInput ? pendingCustody.input.transcriptInputId : generateSessionEntryId(),
           parentId: this.appendParentId,
           timestamp: new Date().toISOString(),
           message,
@@ -389,7 +414,7 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
           config: options?.config,
         }),
       );
-      if (!prepared) {
+      if (!prepared && message.role !== "user") {
         throw new Error("Session message append requires prepared storage bytes");
       }
       const target = this.getSessionTarget();
@@ -403,10 +428,12 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
         admission,
         {
           prepared,
+          ...(message.role === "user" && options?.config ? { config: options.config } : {}),
           cwd: this.cwd,
-          validateTurn: activeBranchAppend,
+          validateTurn: activeBranchAppend && message.role !== "user",
           idempotencyLookup: options?.idempotencyLookup,
         },
+        ownsPendingInput ? pendingCustody : undefined,
       );
       try {
         if (

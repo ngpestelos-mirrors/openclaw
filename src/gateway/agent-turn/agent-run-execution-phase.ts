@@ -167,7 +167,7 @@ export async function startAgentRunExecution(params: {
       }
     };
     let mediaCleanup: Promise<void> | undefined;
-    const cleanupAdmittedRun: typeof prepared.activeRunAbort.cleanup = () => {
+    const cleanupAdmittedRun = async () => {
       const refsToDiscard = unpersistedOffloadedRefs;
       unpersistedOffloadedRefs = [];
       try {
@@ -177,7 +177,10 @@ export async function startAgentRunExecution(params: {
           prepared.activeRunAbort.controller.signal.aborted &&
           stopReason !== "restart" &&
           (!prepared.userTurn.privateCompletion || outcome.reason === "cancelled");
-        releasePreparedAgentRunUserTurn(prepared.userTurn, cancelled ? "cancelled" : "interrupted");
+        await releasePreparedAgentRunUserTurn(
+          prepared.userTurn,
+          cancelled ? "cancelled" : "interrupted",
+        );
       } catch (error) {
         params.context.logGateway.warn(
           `failed to settle pending agent input: ${formatForLog(error)}`,
@@ -231,7 +234,7 @@ export async function startAgentRunExecution(params: {
         const outcome = buildAgentRunTerminalOutcome({ status: "error", error: renderedErr });
         if (recordCompletion) {
           try {
-            prepared.userTurn.recorder?.completeProcessing?.(outcome);
+            await prepared.userTurn.recorder?.completeProcessing?.(outcome);
           } catch (completionError) {
             params.context.logGateway.warn(
               `input completion persistence failed: ${formatForLog(completionError)}`,
@@ -258,7 +261,7 @@ export async function startAgentRunExecution(params: {
         });
         try {
           pendingRecovery = await prepared.restoreAdmittedRestartRecoveryInterrupted?.();
-          prepared.userTurn.recorder?.completeProcessing?.(outcome);
+          await prepared.userTurn.recorder?.completeProcessing?.(outcome);
         } catch (error) {
           // This helper also runs from the outer abort catch. A failed required
           // write must still publish a final error and release the admitted turn.
@@ -657,7 +660,7 @@ export async function startAgentRunExecution(params: {
                   );
                 } finally {
                   try {
-                    cleanupAdmittedRun();
+                    await cleanupAdmittedRun();
                   } finally {
                     scheduleMainSessionRecoveryPendingTarget(pendingRecovery);
                   }

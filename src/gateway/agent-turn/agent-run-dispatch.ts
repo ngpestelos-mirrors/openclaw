@@ -147,7 +147,7 @@ export function dispatchAgentRunFromGateway(
      * touching a same-runId entry owned by a concurrent chat.send.
      */
     abortController: AbortController;
-    cleanupAbortController: () => void;
+    cleanupAbortController: () => Promise<void> | void;
     io: AgentTurnIo;
     context: AgentTurnContext;
     canonicalSkillWorkspaceDir?: string;
@@ -315,15 +315,17 @@ export function dispatchAgentRunFromGateway(
   let runOwnerCleanedUp = false;
   let releaseTaskOwner: (() => void) | undefined;
   let cancellationReason: string | undefined;
-  const cleanupRunOwner = () => {
-    if (runOwnerCleanedUp) {
-      return;
+  let runOwnerCleanup: Promise<void> | undefined;
+  const cleanupRunOwner = (): Promise<void> => {
+    if (runOwnerCleanup) {
+      return runOwnerCleanup;
     }
     runOwnerCleanedUp = true;
     if (ownsRunRegistration()) {
       clearAgentRunContext(params.runId, params.ingressOpts.lifecycleGeneration);
     }
-    params.cleanupAbortController();
+    runOwnerCleanup = Promise.resolve(params.cleanupAbortController());
+    return runOwnerCleanup;
   };
   const cronCreatorAuthorityCapability = params.cronCreatorAuthority
     ? createCronCreatorAuthorityCapability(
@@ -474,7 +476,9 @@ export function dispatchAgentRunFromGateway(
       let recordedInputCompletion: AgentRunTerminalOutcome | undefined;
       try {
         recordedInputCompletion =
-          params.ingressOpts.userTurnTranscriptRecorder?.completeProcessing?.(terminalOutcome);
+          await params.ingressOpts.userTurnTranscriptRecorder?.completeProcessing?.(
+            terminalOutcome,
+          );
         terminalOutcome = recordedInputCompletion ?? terminalOutcome;
       } catch (error) {
         inputCompletionWriteFailed = true;
@@ -550,7 +554,7 @@ export function dispatchAgentRunFromGateway(
           session: captureAgentJobSession(jobSessionBinding),
           entry: { ts: Date.now(), ok: false, payload: failedPayload, error },
         });
-        cleanupRunOwner();
+        await cleanupRunOwner();
         params.io.emitFinal([false, failedPayload, error], {
           runId: params.runId,
           error: summary,
@@ -560,7 +564,7 @@ export function dispatchAgentRunFromGateway(
       persistTerminalDedupe();
       // A final response resumes durable delivery cleanup. Release the terminal
       // run owner first so exact-session deletion cannot race this admission.
-      cleanupRunOwner();
+      await cleanupRunOwner();
       // Send a second res frame (same id) so TS clients with expectFinal can wait.
       // Swift clients will typically treat the first res as the result and ignore this.
       params.io.emitFinal(
@@ -593,8 +597,9 @@ export function dispatchAgentRunFromGateway(
       if (!inputCompletionWriteFailed) {
         try {
           terminalOutcome =
-            params.ingressOpts.userTurnTranscriptRecorder?.completeProcessing?.(terminalOutcome) ??
-            terminalOutcome;
+            (await params.ingressOpts.userTurnTranscriptRecorder?.completeProcessing?.(
+              terminalOutcome,
+            )) ?? terminalOutcome;
         } catch (completionError) {
           params.context.logGateway.warn(
             `input completion persistence failed: ${formatForLog(completionError)}`,
@@ -644,15 +649,15 @@ export function dispatchAgentRunFromGateway(
         onRecovered: () => persistTerminalDedupe(true),
       });
       persistTerminalDedupe(settled);
-      cleanupRunOwner();
+      await cleanupRunOwner();
       params.io.emitFinal([aborted && settled, payload, aborted && settled ? undefined : error], {
         runId: params.runId,
         ...(aborted ? {} : { error: renderedErr }),
       });
       return { terminalOutcome, settled };
     })
-    .finally(() => {
-      cleanupRunOwner();
+    .finally(async () => {
+      await cleanupRunOwner();
       releaseTaskOwner?.();
     });
 

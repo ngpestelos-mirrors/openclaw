@@ -6,6 +6,7 @@ import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
 import { jsonUtf8Bytes } from "../infra/json-utf8-bytes.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   abortChatRunById,
   abortChatRunsForProvider,
@@ -146,6 +147,32 @@ describe("isChatStopCommandText", () => {
 });
 
 describe("registerChatAbortController", () => {
+  it.each([false, true])(
+    "retains cancellation authority through input settlement (failure: %s)",
+    async (failed) => {
+      const chatAbortControllers = new Map<string, ChatAbortControllerEntry>();
+      const registration = registerChatAbortController({
+        chatAbortControllers,
+        runId: "input-settlement",
+        sessionId: "sess-1",
+        sessionKey: "main",
+        timeoutMs: 60_000,
+      });
+      const settlement = createDeferredCore();
+      registration.retainInputSettlement(settlement.promise);
+      registration.controller.abort();
+      registration.cleanup();
+      expect(chatAbortControllers.get("input-settlement")).toBe(registration.entry);
+      if (failed) {
+        settlement.reject(new Error("input write failed"));
+      } else {
+        settlement.resolve();
+      }
+      await settlement.promise.catch(() => undefined);
+      expect(chatAbortControllers.has("input-settlement")).toBe(false);
+    },
+  );
+
   it.each([
     [Number.NaN, undefined, 0],
     [1_800_000_000_000, Number.POSITIVE_INFINITY, 1_800_000_000_000],

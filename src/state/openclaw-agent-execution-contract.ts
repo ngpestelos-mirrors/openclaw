@@ -1,5 +1,13 @@
 import type { SessionProviderReviewComparison } from "../config/sessions/provider-review.types.js";
 import type {
+  PendingInputCompletion,
+  PendingInputFinish,
+  PendingInputStageCommit,
+  PendingInputStageRead,
+  PendingInputStageSnapshot,
+} from "../config/sessions/session-accessor.pending-inputs.kernel.js";
+import type { PendingInputIdentity } from "../config/sessions/session-accessor.pending-inputs.read.js";
+import type {
   TranscriptArchivePublishPlan,
   TranscriptArchivePublishResult,
 } from "../config/sessions/session-accessor.sqlite-archive-types.js";
@@ -8,6 +16,7 @@ import type {
   SessionEntryReplacementCommit,
   SessionEntryReplacementCommitted,
 } from "../config/sessions/session-accessor.sqlite-replacement-state.js";
+import type { ResolvedTranscriptScope } from "../config/sessions/session-accessor.sqlite-scope.js";
 import type {
   PublishedSessionTranscriptArchive,
   SessionLegacyArchiveRemovalResult,
@@ -68,6 +77,23 @@ export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
   };
   "database.prepareWrite": { input: undefined; output: void };
   "session.entry.read": { input: { sessionKey: string }; output: SessionEntry | undefined };
+  "session.pendingInput.read": {
+    input: { resolved: Omit<ResolvedTranscriptScope, "env"> } & PendingInputStageRead;
+    output: PendingInputStageSnapshot | undefined;
+  };
+  "session.pendingInput.stage": {
+    input: { resolved: Omit<ResolvedTranscriptScope, "env"> } & PendingInputStageCommit;
+    output: boolean;
+  };
+  "session.pendingInput.complete": {
+    input: { resolved: Omit<ResolvedTranscriptScope, "env"> } & PendingInputCompletion;
+    output: PendingInputCompletion["outcome"];
+  };
+  "session.pendingInput.finish": { input: PendingInputFinish; output: void };
+  "session.pendingInput.repair": {
+    input: { rows: readonly PendingInputIdentity[] };
+    output: string[];
+  };
   "session.entries.replace": {
     input: SessionEntryReplacementCommit;
     output: SessionEntryReplacementCommitted;

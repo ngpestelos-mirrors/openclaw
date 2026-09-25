@@ -1,11 +1,14 @@
 import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core/expect";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { runWithSqliteBusyTimeout } from "../../infra/sqlite-busy-timeout.js";
+import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   deferOpenClawAgentPostCommitPublication,
   openOpenClawAgentDatabase,
@@ -43,6 +46,14 @@ describe("committed pending input release", () => {
   const options = () => toDatabaseOptions(resolveSqliteScope(scope()));
   const database = () => openOpenClawAgentDatabase(options());
   const receipts: SessionPendingInputReceipt[] = [];
+  const closeDatabases = async () => {
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+  };
+  const rotateLifecycle = async () => {
+    rotateAgentEventLifecycleGeneration();
+    await Promise.all(receipts.map((receipt) => receipt.finish("interrupted")));
+  };
   const message = (id: string, content = "Synthetic accepted input") => ({
     role: "user" as const,
     content,
@@ -88,11 +99,11 @@ describe("committed pending input release", () => {
   beforeEach(async () => {
     await upsertSessionEntryCore(scope(), { sessionId: scope().sessionId, updatedAt: 1 });
   });
-  afterEach(() => {
+  afterEach(async () => {
     for (const receipt of receipts.splice(0)) {
-      receipt.finish("interrupted");
+      await receipt.finish("interrupted");
     }
-    closeOpenClawAgentDatabasesForTest();
+    await closeDatabases();
   });
 
   it.each([false, true])(
@@ -106,7 +117,7 @@ describe("committed pending input release", () => {
         receipts.push(receipt);
       }
       await promote(receipt);
-      receipt.finish("cancelled");
+      await receipt.finish("cancelled");
       expect(() => receipt.run(() => {})).toThrow("ownership ended");
       const before = await loadTranscriptEvents(scope());
       expect(
@@ -152,8 +163,8 @@ describe("committed pending input release", () => {
       const foreign = new DatabaseSync(primary.path);
       try {
         foreign.exec("BEGIN IMMEDIATE");
+        await expect(receipt.finish("cancelled")).resolves.toBeUndefined();
         runWithSqliteBusyTimeout(primary.db, 1, () => {
-          expect(() => receipt.finish("cancelled")).not.toThrow();
           for (const source of sources) {
             expect(() => source.run(() => {})).toThrow("ownership ended");
           }
@@ -203,7 +214,7 @@ describe("committed pending input release", () => {
       message("collect-c", "First approved input\nSecond approved input"),
     )!;
     receipts.push(aggregate);
-    expect(listSessionPendingInputs(scope()).total).toBe(2);
+    expect((await listSessionPendingInputs(scope())).total).toBe(2);
     const appended = await promote(aggregate);
     expect(appended).toMatchObject({ appended: true, messageId: aggregate.inputId });
     expect(readSessionSubmittedInput(scope(), "collect-c:user")?.["__openclaw"]).toMatchObject({
@@ -214,20 +225,20 @@ describe("committed pending input release", () => {
         ],
       },
     });
-    expect(listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
-    expect(readSessionPendingInput(scope(), first.inputId)).toBeUndefined();
+    expect(await listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
+    expect(await readSessionPendingInput(scope(), first.inputId)).toBeUndefined();
     expect(
-      listSessionPendingInputReceipts(scope(), {
+      await listSessionPendingInputReceipts(scope(), {
         runIds: ["collect-a", "collect-b", "unknown"],
       }),
     ).toEqual([
       { runId: "collect-a", state: "consumed", consumedByEventId: aggregate.inputId },
       { runId: "collect-b", state: "consumed", consumedByEventId: aggregate.inputId },
     ]);
-    aggregate.finish("cancelled");
+    await aggregate.finish("cancelled");
     await replaceTranscriptEvents(scope(), []);
-    rotateAgentEventLifecycleGeneration();
-    closeOpenClawAgentDatabasesForTest();
+    await rotateLifecycle();
+    await closeDatabases();
     expect(readSessionSubmittedInput(scope(), "collect-a:user")).toEqual(first.message);
     expect(readSessionSubmittedInput(scope(), "collect-b:user")).toEqual(second.message);
     const duplicate = await stage("collect-a", {
@@ -243,7 +254,7 @@ describe("committed pending input release", () => {
       stage("collect-a", { message: message("collect-a", "Changed input") }),
     ).rejects.toThrow("conflicts");
     expect(await loadTranscriptEvents(scope())).toEqual([]);
-    expect(listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
+    expect(await listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
     expect(
       database()
         .db.prepare(
@@ -263,7 +274,7 @@ describe("committed pending input release", () => {
       },
     ]);
     expect(
-      listSessionPendingInputReceipts(
+      await listSessionPendingInputReceipts(
         { ...scope(), sessionId: "other" },
         { runIds: ["collect-a"] },
       ),
@@ -310,7 +321,7 @@ describe("committed pending input release", () => {
     );
     receipts.push(aggregate);
     await promote(aggregate);
-    aggregate.finish("interrupted");
+    await aggregate.finish("interrupted");
     const stored = () =>
       database().db.prepare("SELECT request_hash, message_json FROM session_pending_inputs").all();
     const before = stored();
@@ -369,6 +380,35 @@ describe("committed pending input release", () => {
       .db.prepare("SELECT seq, event_json, created_at FROM transcript_events ORDER BY seq")
       .all();
 
+  it("settles durable custody and private completion without host data SQL", async () => {
+    const hostSql = observeHostDataSql();
+    try {
+      const ordinary = await stage("worker-custody");
+      expect(await readSessionPendingInput(scope(), ordinary.inputId)).toMatchObject({
+        state: "queued",
+        message: ordinary.message,
+      });
+      await ordinary.finish("cancelled");
+      expect(await listSessionPendingInputs(scope())).toMatchObject({
+        total: 1,
+        items: [{ id: ordinary.inputId, state: "cancelled" }],
+      });
+      expect(
+        await listSessionPendingInputReceipts(scope(), { runIds: ["worker-custody"] }),
+      ).toEqual([{ runId: "worker-custody", state: "pending" }]);
+      const privateInput = await stagePrivate();
+      await privateInput.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+      await privateInput.finish("interrupted");
+      expect(hostSql.queries).toEqual([]);
+    } finally {
+      hostSql.restore();
+    }
+    expect(database().db.prepare("SELECT state FROM session_pending_inputs").all()).toEqual([
+      { state: "cancelled" },
+    ]);
+    expect(completionRows()).toMatchObject([{ succeeded: 1 }]);
+  });
+
   it.each(["pending", "completed", "transcript", "prepared transcript", "public pending"] as const)(
     "matches a shipped settle source by its whole request hash (%s)",
     async (state) => {
@@ -397,7 +437,7 @@ describe("committed pending input release", () => {
         .get()?.request_hash;
       if (state === "completed") {
         // Handled private input can leave only its hash/outcome, not a transcript.
-        first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+        await first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
         expect(readSessionSubmittedInput(scope(), `${runId}:user`)).toBeUndefined();
       }
       if (state.endsWith("transcript")) {
@@ -405,7 +445,7 @@ describe("committed pending input release", () => {
         expect(pendingCount()).toBe(0);
         expect(completionRows()).toEqual([]);
       }
-      first.finish("interrupted");
+      await first.finish("interrupted");
       const acceptedOrder = () =>
         database()
           .db.prepare(
@@ -414,8 +454,8 @@ describe("committed pending input release", () => {
           .all();
       const beforeReplay = acceptedOrder();
       const beforeTranscript = transcriptRows();
-      rotateAgentEventLifecycleGeneration();
-      closeOpenClawAgentDatabasesForTest();
+      await rotateLifecycle();
+      await closeDatabases();
       const replay = stage(runId, {
         message: {
           ...original,
@@ -440,7 +480,7 @@ describe("committed pending input release", () => {
       } else {
         expect(receipt.completion).toBeUndefined();
         expect(receipt.run(() => "resumed")).toBe("resumed");
-        receipt.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+        await receipt.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
         expect(completionRows()).toMatchObject([{ request_hash: originalHash }]);
       }
       expect(transcriptRows()).toEqual(beforeTranscript);
@@ -479,9 +519,9 @@ describe("committed pending input release", () => {
             .run(`${runId}:user`);
         }
       } else {
-        first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+        await first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
       }
-      first.finish("interrupted");
+      await first.finish("interrupted");
       const before = completionRows();
       const beforeTranscript = transcriptRows();
       if (difference === "session") {
@@ -571,7 +611,7 @@ describe("committed pending input release", () => {
         prepareMessageAfterIdempotencyCheck: lossyPrepare,
       });
       promoteSync(first);
-      first.finish("interrupted");
+      await first.finish("interrupted");
       expect(pendingCount()).toBe(0);
       expect(completionRows()).toEqual([]);
       const before = transcriptRows();
@@ -596,7 +636,7 @@ describe("committed pending input release", () => {
   it("opens a same-version store without completion tracking and installs it only on private use", async () => {
     const version = database().db.prepare("PRAGMA user_version").get();
     database().db.exec("DROP TABLE session_input_completions");
-    closeOpenClawAgentDatabasesForTest();
+    await closeDatabases();
     const hasCompletionTable = () =>
       Boolean(
         database()
@@ -606,18 +646,19 @@ describe("committed pending input release", () => {
     expect(hasCompletionTable()).toBe(false);
     const ordinary = await stage("ordinary-without-feature");
     expect(hasCompletionTable()).toBe(false);
-    ordinary.finish("cancelled");
-    await stagePrivate();
+    await ordinary.finish("cancelled");
+    const privateInput = await stagePrivate();
     expect(hasCompletionTable()).toBe(true);
     expect(database().db.prepare("PRAGMA user_version").get()).toEqual(version);
-    closeOpenClawAgentDatabasesForTest();
+    await privateInput.finish("interrupted");
+    await closeDatabases();
     expect(hasCompletionTable()).toBe(true);
   });
 
   it("preserves a message-hook veto when retrying already committed private input", async () => {
     const first = await stagePrivate();
     promoteSync(first);
-    first.finish("interrupted");
+    await first.finish("interrupted");
     const replay = await stageSessionPendingInput(scope(), {
       runId: "announce:private-child",
       trackCompletion: true,
@@ -637,11 +678,13 @@ describe("committed pending input release", () => {
         promoteSync(first);
       }
       const cancelled = buildAgentRunTerminalOutcome({ status: "error", stopReason: "rpc" });
-      first.complete!(cancelled);
-      expect(first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }))).toEqual(cancelled);
+      await first.complete!(cancelled);
+      expect(await first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }))).toEqual(
+        cancelled,
+      );
       expect(pendingCount()).toBe(0);
-      rotateAgentEventLifecycleGeneration();
-      closeOpenClawAgentDatabasesForTest();
+      await rotateLifecycle();
+      await closeDatabases();
       const retry = await stagePrivate();
       expect(retry.completion).toMatchObject({ reason: "cancelled", stopReason: "rpc" });
       expect(() => retry.run(() => "stopped work")).toThrow("already completed");
@@ -652,13 +695,15 @@ describe("committed pending input release", () => {
   it("retries a restart interruption instead of treating it as an operator stop", async () => {
     const first = await stagePrivate();
     promoteSync(first);
-    first.complete!(buildAgentRunTerminalOutcome({ status: "timeout", stopReason: "restart" }));
-    first.finish("interrupted");
-    rotateAgentEventLifecycleGeneration();
-    closeOpenClawAgentDatabasesForTest();
+    await first.complete!(
+      buildAgentRunTerminalOutcome({ status: "timeout", stopReason: "restart" }),
+    );
+    await first.finish("interrupted");
+    await rotateLifecycle();
+    await closeDatabases();
     const retry = await stagePrivate();
     expect(retry.completion).toBeUndefined();
-    retry.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+    await retry.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
     expect(completionRows()).toMatchObject([{ succeeded: 1 }]);
   });
 
@@ -671,12 +716,12 @@ describe("committed pending input release", () => {
       }
       let nextSpawns = 0;
       nextSpawns += 1;
-      first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+      await first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
       expect(pendingCount()).toBe(0);
       expect(completionRows()).toMatchObject([{ succeeded: 1, run_id: "announce:private-child" }]);
       // The child delivery save has not happened. A fresh process has only the DB.
-      rotateAgentEventLifecycleGeneration();
-      closeOpenClawAgentDatabasesForTest();
+      await rotateLifecycle();
+      await closeDatabases();
       const replay = await stagePrivate();
       expect(replay.completion).toMatchObject({ status: "ok", reason: "completed" });
       expect(() =>
@@ -698,12 +743,12 @@ describe("committed pending input release", () => {
         promoteSync(first);
       }
       expect(completionRows()).toEqual([]);
-      rotateAgentEventLifecycleGeneration();
-      closeOpenClawAgentDatabasesForTest();
+      await rotateLifecycle();
+      await closeDatabases();
       const resumed = await stagePrivate();
       expect(resumed.completion).toBeUndefined();
       expect(resumed.run(() => "one resumed execution")).toBe("one resumed execution");
-      resumed.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+      await resumed.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
       expect(pendingCount()).toBe(0);
       expect(completionRows()).toMatchObject([{ succeeded: 1 }]);
       await expect(stagePrivate("changed committed payload")).rejects.toThrow("conflicts");
@@ -712,46 +757,66 @@ describe("committed pending input release", () => {
 
   it("keeps private failed attempts retryable without letting stale failure replace success", async () => {
     const first = await stagePrivate();
-    first.complete!(
+    await first.complete!(
       buildAgentRunTerminalOutcome({ status: "error", error: "provider unavailable" }),
     );
     expect(completionRows()).toMatchObject([{ succeeded: 0 }]);
-    first.finish("interrupted");
+    await first.finish("interrupted");
     const retry = await stagePrivate();
-    retry.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
-    expect(() => first.complete!(buildAgentRunTerminalOutcome({ status: "error" }))).toThrow(
-      "released",
-    );
+    await retry.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+    await expect(
+      first.complete!(buildAgentRunTerminalOutcome({ status: "error" })),
+    ).rejects.toThrow("released");
     expect(completionRows()).toMatchObject([{ succeeded: 1 }]);
     expect(pendingCount()).toBe(0);
   });
 
   it("rolls back private success and input retirement together", async () => {
     const first = await stagePrivate();
-    expect(() =>
-      runOpenClawAgentWriteTransaction(() => {
-        first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
-        throw new Error("before commit");
-      }, options()),
-    ).toThrow("before commit");
+    database().db.exec(
+      "CREATE TRIGGER reject_private_retirement BEFORE DELETE ON session_pending_inputs BEGIN SELECT RAISE(ABORT, 'retirement failed'); END",
+    );
+    try {
+      await expect(first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }))).rejects.toThrow(
+        "retirement failed",
+      );
+    } finally {
+      database().db.exec("DROP TRIGGER reject_private_retirement");
+    }
     expect(completionRows()).toEqual([]);
     expect(pendingCount()).toBe(1);
-    first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
+    await first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
     expect(pendingCount()).toBe(0);
   });
 
-  it("keeps committed private success when a postcommit observer fails", async () => {
-    const first = await stagePrivate();
-    expect(() =>
-      runOpenClawAgentWriteTransaction((current) => {
-        deferOpenClawAgentPostCommitPublication(current, () => {
-          throw new Error("observer failed");
-        });
-        first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
-      }, options()),
-    ).toThrow("observer failed");
-    expect(completionRows()).toMatchObject([{ succeeded: 1 }]);
-    expect(pendingCount()).toBe(0);
+  it("rolls back private completion when live authority is revoked at commit", async () => {
+    let current = true;
+    const first = await stagePrivate("private child marker", () => {
+      if (!current) {
+        throw new Error("completion authority revoked");
+      }
+    });
+    const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
+    const admission = vi
+      .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
+      .mockImplementation((callback, attachment) =>
+        createAdmission((request, grant) => {
+          if (request.stage === "commit") {
+            current = false;
+          }
+          return callback(request, grant);
+        }, attachment),
+      );
+    try {
+      await expect(first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }))).rejects.toThrow(
+        "completion authority revoked",
+      );
+      expect(current).toBe(false);
+      expect(completionRows()).toEqual([]);
+      expect(pendingCount()).toBe(1);
+    } finally {
+      admission.mockRestore();
+    }
   });
 
   it.each(["owner", "session", "lifecycle"] as const)(
@@ -770,9 +835,11 @@ describe("committed pending input release", () => {
         await upsertSessionEntryCore(scope(), { sessionId: "replacement-parent", updatedAt: 2 });
       }
       if (boundary === "lifecycle") {
-        rotateAgentEventLifecycleGeneration();
+        await rotateLifecycle();
       }
-      expect(() => first.complete!(buildAgentRunTerminalOutcome({ status: "ok" }))).toThrow();
+      await expect(
+        first.complete!(buildAgentRunTerminalOutcome({ status: "ok" })),
+      ).rejects.toThrow();
       expect(completionRows()).toEqual([]);
     },
   );
@@ -800,7 +867,7 @@ describe("committed pending input release", () => {
           );
         }, options());
       }
-      receipt.finish("cancelled");
+      await receipt.finish("cancelled");
       expect(
         database()
           .db.prepare("SELECT state, consumed_event_id FROM session_pending_inputs ORDER BY seq")

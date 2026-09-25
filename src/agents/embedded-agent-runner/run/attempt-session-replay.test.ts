@@ -187,7 +187,7 @@ async function withInterruptedTurn(
         );
       });
     }
-    previous.finishPendingInput!("interrupted");
+    await previous.finishPendingInput!("interrupted");
     rotateAgentEventLifecycleGeneration();
     await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
@@ -250,7 +250,7 @@ async function withInterruptedTurn(
           }),
       });
     } finally {
-      recorder.finishPendingInput!("interrupted");
+      await recorder.finishPendingInput!("interrupted");
       await lifecycle.dispose();
       clearEmbeddedSessionPromptStates([target.sessionId]);
     }
@@ -549,7 +549,7 @@ describe("interrupted canonical user replay", () => {
               expect(recorder.hasPersisted()).toBe(true);
             }
           } finally {
-            recorder?.finishPendingInput!("interrupted");
+            await recorder?.finishPendingInput!("interrupted");
           }
         });
       });

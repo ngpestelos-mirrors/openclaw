@@ -88,7 +88,7 @@ export async function handleChatSendSetupError(params: {
   if (params.error instanceof ExpectedProfileMismatchError) {
     // Selection failure belongs to this request, not the run's recorded outcome.
     // Release only this admission; never poison a receipt or replay cache.
-    cleanupAdmittedRun();
+    await cleanupAdmittedRun();
     clearAgentRunContext(clientRunId, lifecycleGeneration);
     params.context.removeChatRun(clientRunId, clientRunId, sessionKey);
     params.respond(false, undefined, params.error.error);
@@ -124,7 +124,7 @@ export async function handleChatSendSetupError(params: {
       });
     }
   }
-  cleanupAdmittedRun();
+  await cleanupAdmittedRun();
   clearAgentRunContext(clientRunId, lifecycleGeneration);
   params.context.removeChatRun(clientRunId, clientRunId, sessionKey);
   const error =
@@ -395,7 +395,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
         });
       }
       clearRun();
-      cleanupAdmittedRun();
+      await cleanupAdmittedRun();
       // Reply-dispatch lifecycle events deliberately retain these until delivery settles.
       clearAgentRunContext(clientRunId, lifecycleGeneration);
       context.removeChatRun(clientRunId, clientRunId, sessionKey);
@@ -458,7 +458,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
         publishDispatchError?.();
       } finally {
         clearRun();
-        cleanupAdmittedRun();
+        await cleanupAdmittedRun();
       }
     }
   };

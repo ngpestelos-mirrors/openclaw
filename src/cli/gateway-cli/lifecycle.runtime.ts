@@ -38,7 +38,10 @@ export {
   waitForSystemServiceUpdateHandoffs,
 } from "../../infra/update-managed-service-handoff.js";
 export { resetGatewaySuspendCoordinatorForLifecycleRestart } from "../../infra/gateway-suspend-coordinator.js";
-export { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+export {
+  rotateAgentEventLifecycleGeneration,
+  settleAgentEventLifecycleRetirement,
+} from "../../infra/agent-events.js";
 export {
   markUpdateRestartSentinelFailure,
   readRestartSentinelReadOnly,

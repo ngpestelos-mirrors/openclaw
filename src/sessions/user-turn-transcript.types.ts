@@ -188,6 +188,7 @@ export type CreateUserTurnTranscriptRecorderParams = {
   /** Authenticated input identity independent of prepared media paths. */
   pendingInputRequestFingerprint?: string;
   trackInputCompletion?: boolean;
+  onProcessingCompletionPending?: (completion: Promise<AgentRunTerminalOutcome>) => void;
   /** Trusted settle replay candidates; storage must match the complete original request hash. */
   pendingInputReplaySourceSessionKeys?: readonly string[];
   /** Exact admitted source recorders consumed by this collected transcript message. */
@@ -223,11 +224,13 @@ export type UserTurnTranscriptRecorder = {
     assertCompletionCurrent?: () => void;
   }) => Promise<boolean>;
   getProcessingCompletion?: () => AgentRunTerminalOutcome | undefined;
-  completeProcessing?: (outcome: AgentRunTerminalOutcome) => AgentRunTerminalOutcome | undefined;
+  completeProcessing?: (
+    outcome: AgentRunTerminalOutcome,
+  ) => Promise<AgentRunTerminalOutcome | undefined>;
   getPendingInputMessage?: () => PersistedUserTurnMessage | undefined;
   isPendingInputConsumed?: () => boolean;
   withPendingInput?: <T>(run: () => T) => T;
-  finishPendingInput?: (disposition: "cancelled" | "interrupted") => void;
+  finishPendingInput?: (disposition: "cancelled" | "interrupted") => Promise<void>;
   /** Replaces generated current-turn text before runtime persistence/provider submission. */
   replaceTextBeforePersistence?: (text: string) => void;
   /** Confirms exact-run steering provenance after transcript commitment is proven. */

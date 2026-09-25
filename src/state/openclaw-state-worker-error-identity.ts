@@ -1,5 +1,6 @@
 import { McpOAuthStoreCorruptionError } from "../agents/mcp-oauth-store-error.js";
 import { WorkspaceAliasRepointedError } from "../agents/workspace-state-identity.js";
+import { SessionPendingInputCustodyError } from "../config/sessions/session-pending-input-custody-error.js";
 import { WorkerSessionAlreadyAttachedError } from "../gateway/worker-environments/session-attachment.js";
 import { SqliteCoordinatorError } from "../infra/sqlite-coordinator.js";
 import { SqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
@@ -49,6 +50,7 @@ export type ErrorIdentity =
         | "syntax-error"
         | "type-error"
         | "skill-upload-request"
+        | "pending-input-custody"
         | "mcp-oauth-corruption";
     }
   | { type: "coordinator-contention"; family: CoordinatorFamily }
@@ -71,6 +73,9 @@ export type ErrorIdentity =
   | { type: "agent-media-migration"; pathname: string; schemaVersion: number };
 
 export function identifyError(error: Error): ErrorIdentity {
+  if (error instanceof SessionPendingInputCustodyError) {
+    return { type: "pending-input-custody" };
+  }
   if (error instanceof WorkerSessionAlreadyAttachedError) {
     return {
       type: "worker-session-already-attached",
@@ -206,6 +211,7 @@ export function parseIdentity(node: Record<string, unknown>): ErrorIdentity | un
     case "syntax-error":
     case "type-error":
     case "skill-upload-request":
+    case "pending-input-custody":
     case "mcp-oauth-corruption":
       return { type: node.type };
     case "session-metadata":
@@ -288,6 +294,8 @@ export function createError(node: ErrorIdentity & { message: string }): Error {
       return new TypeError(node.message);
     case "skill-upload-request":
       return new SkillUploadRequestError(node.message);
+    case "pending-input-custody":
+      return new SessionPendingInputCustodyError(node.message);
     case "mcp-oauth-corruption":
       return new McpOAuthStoreCorruptionError("", "");
     case "aggregate":

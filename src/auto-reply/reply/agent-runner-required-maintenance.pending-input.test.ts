@@ -416,7 +416,7 @@ describe("required maintenance with restart-safe admitted input", () => {
           });
         } finally {
           await waitForSessionMaintenance(sessionKey);
-          recorder?.finishPendingInput?.("interrupted");
+          await recorder?.finishPendingInput?.("interrupted");
           admissionOwner.close();
           clearMemoryPluginState();
           clearRuntimeConfigSnapshot();

@@ -1,33 +1,34 @@
 import type { DatabaseSync } from "node:sqlite";
+import { stageSqliteTransactionState } from "../infra/sqlite-post-commit.js";
+import {
+  getAdmittedSqliteSchemaFacts,
+  type SqliteSchemaFacts,
+} from "../infra/sqlite-schema-facts.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
-import { ensureColumn, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
+import { ensureColumn, tableExists, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 
 export const SESSION_PENDING_INPUTS_TABLE = "session_pending_inputs";
 export const SESSION_INPUT_COMPLETIONS_TABLE = "session_input_completions";
-const presentDatabases = new WeakSet<DatabaseSync>();
 const completeDatabases = new WeakSet<DatabaseSync>();
 const completionDatabases = new WeakSet<DatabaseSync>();
-let absentDatabases = new WeakSet<DatabaseSync>();
+const consumptionColumns = new WeakMap<SqliteSchemaFacts, boolean>();
 
-/** Cache feature-table presence per connection; first use invalidates earlier absence checks. */
-export function hasSessionPendingInputsSchema(db: DatabaseSync): boolean {
-  if (presentDatabases.has(db)) {
-    return true;
-  }
-  if (!db.isTransaction && absentDatabases.has(db)) {
-    return false;
-  }
-  const present = Boolean(
-    // sqlite-allow-raw -- Feature-local schema discovery, never application data.
-    db
-      .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
-      .get(SESSION_PENDING_INPUTS_TABLE),
-  );
+function retainSchemaReadiness(db: DatabaseSync, ready: WeakSet<DatabaseSync>): void {
   if (!db.isTransaction) {
-    (present ? presentDatabases : absentDatabases).add(db);
+    ready.add(db);
+    return;
   }
-  return present;
+  stageSqliteTransactionState(db, {
+    stage: () => ready.add(db),
+    commit: () => {},
+    rollback: () => ready.delete(db),
+  });
+}
+
+/** Admitted schema facts observe feature creation by another worker on the next snapshot. */
+export function hasSessionPendingInputsSchema(db: DatabaseSync): boolean {
+  return tableExists(db, SESSION_PENDING_INPUTS_TABLE);
 }
 
 /** Lazily installs accepted-input custody without changing either schema version marker. */
@@ -41,7 +42,6 @@ export function ensureSessionPendingInputsSchema(db: DatabaseSync): void {
   if (start < 0) {
     throw new Error("OpenClaw pending-input schema marker is missing.");
   }
-  const nested = db.isTransaction;
   runSqliteImmediateTransactionSync(db, () => {
     // sqlite-allow-raw -- Canonical additive DDL only; application data uses Kysely.
     db.exec(
@@ -52,11 +52,7 @@ export function ensureSessionPendingInputsSchema(db: DatabaseSync): void {
     );
     ensureColumn(db, SESSION_PENDING_INPUTS_TABLE, "consumed_event_id TEXT");
   });
-  absentDatabases = new WeakSet();
-  if (!nested) {
-    presentDatabases.add(db);
-    completeDatabases.add(db);
-  }
+  retainSchemaReadiness(db, completeDatabases);
 }
 
 /** Completion tracking is opt-in; ordinary input admission does not create this table. */
@@ -70,13 +66,10 @@ export function ensureSessionInputCompletionsSchema(db: DatabaseSync): void {
   if (start < 0) {
     throw new Error("OpenClaw input-completion schema marker is missing.");
   }
-  const nested = db.isTransaction;
   runSqliteImmediateTransactionSync(db, () => {
     db.exec(OPENCLAW_AGENT_SCHEMA_SQL.slice(start)); // sqlite-allow-raw -- Canonical additive DDL only.
   });
-  if (!nested) {
-    completionDatabases.add(db);
-  }
+  retainSchemaReadiness(db, completionDatabases);
 }
 
 /** Existing same-version stores converge through Doctor/open; absent tables stay feature-local. */
@@ -93,12 +86,14 @@ export function ensurePendingInputConsumptionColumn(db: DatabaseSync): void {
 
 /** Read-only callers can inspect pre-feature stores without installing schema. */
 export function hasPendingInputConsumptionColumn(db: DatabaseSync): boolean {
-  if (completeDatabases.has(db)) {
-    return true;
+  const schema = getAdmittedSqliteSchemaFacts(db);
+  const cached = schema ? consumptionColumns.get(schema) : undefined;
+  if (cached !== undefined) {
+    return cached;
   }
   const present = tableHasColumn(db, SESSION_PENDING_INPUTS_TABLE, "consumed_event_id");
-  if (present && !db.isTransaction) {
-    completeDatabases.add(db);
+  if (schema) {
+    consumptionColumns.set(schema, present);
   }
   return present;
 }

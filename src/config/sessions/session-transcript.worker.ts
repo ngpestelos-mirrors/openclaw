@@ -133,6 +133,14 @@ serveOwnedWorkerTasks(
       }
     }
     try {
+      if (request.kind === "session-pending-inputs") {
+        const { readPendingInputsInDatabase } =
+          await import("./session-accessor.pending-inputs.read.js");
+        return await withHistoryDatabase(request.database, request.kind, () => ({
+          kind: "session-pending-inputs" as const,
+          result: readPendingInputsInDatabase(request.request),
+        }));
+      }
       if (request.kind === "historical-eviction-candidates") {
         const { withOpenClawAgentDatabaseReadOnly } =
           await import("../../state/openclaw-agent-db-readonly.js");

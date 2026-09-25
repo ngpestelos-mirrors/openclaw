@@ -275,7 +275,7 @@ describe("guardSessionManager transcript updates", () => {
       if (!approved) {
         throw new Error("Expected approved steering input");
       }
-      const pending = listSessionPendingInputs(target);
+      const pending = await listSessionPendingInputs(target);
       expect(pending.total).toBe(1);
       const guarded = guardSessionManager(SessionManager.open(target, root), {
         agentId: target.agentId,
@@ -300,7 +300,7 @@ describe("guardSessionManager transcript updates", () => {
         expect.objectContaining({ entryId }),
         { appended: true },
       );
-      expect(listSessionPendingInputs(target)).toEqual({ items: [], total: 0 });
+      expect(await listSessionPendingInputs(target)).toEqual({ items: [], total: 0 });
       expect(approvalHook).toHaveBeenCalledOnce();
 
       const unstagedId = guarded.appendMessage(makeUserMessage("Unstaged source", 3));
@@ -309,8 +309,8 @@ describe("guardSessionManager transcript updates", () => {
         message: { role: "user", content: "[approved] Unstaged source" },
       });
     } finally {
-      source.finishPendingInput?.("interrupted");
-      ambient.finishPendingInput?.("interrupted");
+      await source.finishPendingInput?.("interrupted");
+      await ambient.finishPendingInput?.("interrupted");
       resetGlobalHookRunner();
     }
   });

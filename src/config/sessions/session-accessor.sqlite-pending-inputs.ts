@@ -16,17 +16,10 @@ import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { SessionPendingInputs } from "../../state/openclaw-agent-db.generated.js";
-import {
-  getOpenClawAgentDatabaseIfOpen,
-  runOpenClawAgentWriteTransaction,
-  type OpenClawAgentDatabase,
-  type OpenClawAgentDatabaseOptions,
-} from "../../state/openclaw-agent-db.js";
+import { type OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { hasSessionPendingInputsSchema } from "../../state/openclaw-agent-pending-inputs-schema.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
-import { assertCapturedSessionEntryReadSource } from "./session-accessor.sqlite-exact-read.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
-import type { CapturedSessionEntryReadSource } from "./session-accessor.types.js";
 import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
 
 export type SessionPendingInputState = "queued" | "interrupted" | "cancelled";
@@ -58,11 +51,95 @@ export type SessionPendingInputOwner = {
   assertCurrent: () => void;
   /** Published only after the exact input was consumed by a committed transcript write. */
   consumed?: true;
-  finish: (disposition: Exclude<SessionPendingInputState, "queued">) => void;
+  finish: (disposition: Exclude<SessionPendingInputState, "queued">) => Promise<void>;
+  closing?: true;
+  settlement?: Promise<void>;
   restartRecovered?: true;
   /** Aggregate authority is the exact source closures, never persisted source identifiers. */
   sources?: readonly SessionPendingInputOwner[];
 };
+
+export type SessionPendingInputWorkerCustody = Omit<
+  SessionPendingInputOwner,
+  "assertCurrent" | "finish" | "config" | "sources" | "closing" | "settlement"
+> & { sources?: readonly SessionPendingInputWorkerCustody[] };
+
+const workerOwners = new WeakSet<SessionPendingInputOwner>();
+
+export function captureSessionPendingInputWorkerCustody() {
+  const owner = owners.current.getStore();
+  if (!owner) {
+    return undefined;
+  }
+  const sources = owner.sources ?? [owner];
+  const transcriptInputIds = new Map<SessionPendingInputOwner, string>();
+  const capture = (current: SessionPendingInputOwner): SessionPendingInputWorkerCustody => {
+    transcriptInputIds.set(current, current.transcriptInputId);
+    const {
+      assertCurrent: _assert,
+      finish: _finish,
+      config: _config,
+      closing: _closing,
+      settlement: _settlement,
+      sources,
+      ...input
+    } = current;
+    return { ...input, ...(sources ? { sources: sources.map(capture) } : {}) };
+  };
+  return {
+    input: capture(owner),
+    assertCurrent() {
+      for (const [current, inputId] of transcriptInputIds) {
+        if (current.transcriptInputId !== inputId) {
+          throw new SessionPendingInputCustodyError(
+            "Pending input transcript changed before worker promotion",
+          );
+        }
+      }
+      for (const source of sources) {
+        // A consumed source permits only exact persistence replay in the append kernel.
+        if (!source.consumed) {
+          assertPendingInputOwnerCurrent(source);
+        }
+      }
+    },
+    publishCommitted(consumedInputIds: readonly string[]) {
+      for (const source of sources) {
+        if (consumedInputIds.includes(source.inputId)) {
+          source.consumed = true;
+        }
+      }
+    },
+  };
+}
+
+/** Serialized custody supplies bytes; the host grant retains execution authority. */
+export function runWithSessionPendingInputWorkerCustody<T>(
+  input: SessionPendingInputWorkerCustody,
+  assertCurrent: () => void,
+  run: () => T,
+): T {
+  const install = (input: SessionPendingInputWorkerCustody): SessionPendingInputOwner => {
+    const owner: SessionPendingInputOwner = {
+      ...input,
+      sources: input.sources?.map(install),
+      assertCurrent,
+      finish: () => {
+        throw new Error("Worker custody cannot release its host owner");
+      },
+    };
+    workerOwners.add(owner);
+    return owner;
+  };
+  return owners.current.run(install(input), run);
+}
+
+export function readSessionPendingInputWorkerConsumedIds(): string[] {
+  const owner = owners.current.getStore();
+  return (owner?.sources ?? (owner ? [owner] : []))
+    .filter((source) => workerOwners.has(source) && source.consumed)
+    .map((source) => source.inputId);
+}
 
 const owners = resolveGlobalSingleton(Symbol.for("openclaw.sessionPendingInputOwners"), () => ({
   live: new Map<string, SessionPendingInputOwner>(),
@@ -79,15 +156,13 @@ const recoveredDedupeOwners = resolveGlobalSingleton(
   () => new WeakSet<SessionPendingInputOwner>(),
 );
 
-registerAgentEventLifecycleRotationHandler("session-pending-inputs", () => {
-  const failures: unknown[] = [];
-  for (const owner of owners.live.values()) {
-    try {
-      owner.finish("interrupted");
-    } catch (error) {
-      failures.push(error);
-    }
-  }
+registerAgentEventLifecycleRotationHandler("session-pending-inputs", async () => {
+  const results = await Promise.allSettled(
+    [...owners.live.values()].map((owner) => owner.finish("interrupted")),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
   if (failures.length) {
     throw new AggregateError(failures, "Failed to record interrupted pending inputs");
   }
@@ -108,30 +183,23 @@ function releaseSessionPendingInputOwner(owner: SessionPendingInputOwner): void 
 
 export function finishSessionPendingInputOwner(
   owner: SessionPendingInputOwner,
-  disposition: Exclude<SessionPendingInputState, "queued">,
-  source: CapturedSessionEntryReadSource,
-  options: OpenClawAgentDatabaseOptions,
-): void {
-  // Release authority even if recording the terminal disposition fails.
-  releaseSessionPendingInputOwner(owner);
-  if (owner.consumed) {
-    return;
+  persist: () => Promise<void>,
+): Promise<void> {
+  if (owner.settlement) {
+    return owner.settlement;
   }
-  const capturedOptions = { ...options, agentId: source.agentId, path: source.path };
-  assertCapturedSessionEntryReadSource(source, getOpenClawAgentDatabaseIfOpen(capturedOptions));
-  runOpenClawAgentWriteTransaction((current) => {
-    assertCapturedSessionEntryReadSource(source, current);
-    executeSqliteQuerySync(
-      current.db,
-      getSessionKysely(current.db)
-        .updateTable("session_pending_inputs")
-        .set({ state: disposition })
-        .where("input_id", "=", owner.inputId)
-        .where("lifecycle_generation", "=", owner.lifecycleGeneration)
-        .where("state", "=", "queued")
-        .where("consumed_event_id", "is", null),
-    );
-  }, capturedOptions);
+  // Revoke execution immediately, but retain registration until the native write settles.
+  owner.closing = true;
+  owner.settlement = (async () => {
+    try {
+      if (!owner.consumed) {
+        await persist();
+      }
+    } finally {
+      releaseSessionPendingInputOwner(owner);
+    }
+  })();
+  return owner.settlement;
 }
 
 function assertPendingInputOwnerCurrent(owner: SessionPendingInputOwner): void {
@@ -141,7 +209,12 @@ function assertPendingInputOwnerCurrent(owner: SessionPendingInputOwner): void {
     }
     return;
   }
+  if (workerOwners.has(owner)) {
+    owner.assertCurrent();
+    return;
+  }
   if (
+    owner.closing ||
     owners.live.get(owner.inputId) !== owner ||
     !isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration)
   ) {
@@ -193,16 +266,7 @@ export function readSessionPendingInputOwnerIds(
     "input_id" | "session_key" | "session_id" | "lifecycle_generation"
   >[],
 ): Set<string> {
-  const candidates = rows.filter((row) => {
-    const owner = owners.live.get(row.input_id);
-    return (
-      owner?.databasePath === database.path &&
-      owner.sessionId === row.session_id &&
-      owner.sessionKey === row.session_key &&
-      owner.lifecycleGeneration === row.lifecycle_generation &&
-      isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration)
-    );
-  });
+  const candidates = rows.filter((row) => hasSessionPendingInputOwner(database.path, row));
   if (!candidates.length) {
     return new Set();
   }
@@ -218,6 +282,23 @@ export function readSessionPendingInputOwnerIds(
     candidates
       .filter((row) => current.get(row.session_key) === row.session_id)
       .map((row) => row.input_id),
+  );
+}
+
+export function hasSessionPendingInputOwner(
+  databasePath: string,
+  row: Pick<
+    SessionPendingInputRow,
+    "input_id" | "session_key" | "session_id" | "lifecycle_generation"
+  >,
+): boolean {
+  const owner = owners.live.get(row.input_id);
+  return (
+    owner?.databasePath === databasePath &&
+    owner.sessionId === row.session_id &&
+    owner.sessionKey === row.session_key &&
+    owner.lifecycleGeneration === row.lifecycle_generation &&
+    isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration)
   );
 }
 
@@ -547,7 +628,7 @@ export function consumeSessionPendingInput(
   const inputIds = new Set(pending.sourceInputIds ?? [pending.inputId]);
   const consumedOwners = (owner?.sources ?? (owner ? [owner] : [])).filter(
     (candidate) =>
-      owners.live.get(candidate.inputId) === candidate &&
+      (owners.live.get(candidate.inputId) === candidate || workerOwners.has(candidate)) &&
       candidate.databasePath === database.path &&
       inputIds.has(candidate.inputId),
   );

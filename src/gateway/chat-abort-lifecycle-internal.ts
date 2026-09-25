@@ -41,6 +41,7 @@ export function notifyChatAbortControllerRemoved(entry: object): void {
 export async function waitForChatAbortTerminalPersistence(entry: {
   projectSessionTerminalPending?: boolean;
   projectSessionTerminalPersistence?: Promise<void>;
+  pendingInputSettlement?: Promise<unknown>;
 }): Promise<void> {
   const dispatch = terminalDispatchByEntry.get(entry);
   const preparedPersistence = entry.projectSessionTerminalPersistence;
@@ -53,6 +54,7 @@ export async function waitForChatAbortTerminalPersistence(entry: {
   if (persistence) {
     await persistence;
   }
+  await entry.pendingInputSettlement;
   if (!persistence && terminalPersistenceErrorByEntry.has(entry)) {
     throw terminalPersistenceErrorByEntry.get(entry);
   }
@@ -69,6 +71,7 @@ export async function waitForChatAbortControllerRemoval<
   TEntry extends {
     projectSessionTerminalPending?: boolean;
     projectSessionTerminalPersistence?: Promise<void>;
+    pendingInputSettlement?: Promise<unknown>;
   },
 >(params: {
   entries: ReadonlyMap<string, TEntry>;
@@ -80,6 +83,7 @@ export async function waitForChatAbortControllerRemoval<
       ({ entry }) =>
         entry.projectSessionTerminalPending !== true &&
         entry.projectSessionTerminalPersistence === undefined &&
+        entry.pendingInputSettlement === undefined &&
         !terminalPersistenceErrorByEntry.has(entry),
     );
   const registeredWaiters: Array<{ entry: TEntry; resolve: () => void }> = [];

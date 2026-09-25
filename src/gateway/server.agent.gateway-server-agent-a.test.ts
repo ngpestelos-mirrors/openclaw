@@ -929,7 +929,7 @@ describe("gateway server agent", () => {
     await expect(fs.stat(media?.[0]?.path ?? "")).resolves.toMatchObject({
       isFile: expect.any(Function),
     });
-    const pending = listSessionPendingInputs({
+    const pending = await listSessionPendingInputs({
       agentId: "main",
       sessionId: "sess-main-offloaded-media",
       sessionKey: String(call.sessionKey),

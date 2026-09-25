@@ -92,7 +92,8 @@ export function projectInFlightRunSnapshot(params: {
 type RegisteredChatAbortController = {
   controller: AbortController;
   markExecutionStarted: () => boolean;
-  deferTimeoutCompletion: (settle: () => void) => boolean;
+  deferTimeoutCompletion: (settle: () => Promise<void>) => boolean;
+  retainInputSettlement: (settlement: Promise<unknown>) => void;
   bindAgentRunDelegatedAuthority: (authority: AgentRunDelegatedAuthority) => void;
   cleanup: () => void;
 } & (
@@ -272,6 +273,7 @@ export function registerChatAbortController(params: {
       controller,
       registered: false,
       deferTimeoutCompletion: () => false,
+      retainInputSettlement: () => {},
       markExecutionStarted,
       bindAgentRunDelegatedAuthority,
       cleanup,
@@ -313,6 +315,25 @@ export function registerChatAbortController(params: {
     controller,
     registered: true,
     entry,
+    retainInputSettlement: (settlement) => {
+      const previous = entry.pendingInputSettlement;
+      const pending = previous ? Promise.allSettled([previous, settlement]) : settlement;
+      entry.pendingInputSettlement = pending;
+      const settled = () => {
+        if (entry.pendingInputSettlement !== pending) {
+          return;
+        }
+        entry.pendingInputSettlement = undefined;
+        if (
+          entry.registrationCleanupRequested &&
+          !entry.projectSessionTerminalPending &&
+          !entry.projectSessionTerminalPersistence
+        ) {
+          removeChatAbortControllerEntry(params.chatAbortControllers, params.runId, entry);
+        }
+      };
+      void pending.then(settled, settled);
+    },
     deferTimeoutCompletion: (settle) => {
       if (params.chatAbortControllers.get(params.runId) !== entry) {
         return false;
@@ -531,6 +552,10 @@ export function removeChatAbortControllerEntry(
   if (!entry || (expectedEntry && entry !== expectedEntry)) {
     return false;
   }
+  if (entry.pendingInputSettlement) {
+    entry.registrationCleanupRequested = true;
+    return false;
+  }
   const pending = entry.pendingTimeoutCompletion;
   if (pending) {
     if (isFutureDateTimestampMs(pending.expiresAtMs, { nowMs: Date.now() })) {
@@ -539,10 +564,16 @@ export function removeChatAbortControllerEntry(
     // Orphan cleanup must record the known timeout before revoking this exact
     // receipt owner. A late producer then reuses that receipt, never rewrites it.
     entry.pendingTimeoutCompletion = undefined;
-    pending.settle();
-    if (entries.get(runId) !== entry) {
-      return false;
-    }
+    const settlement = pending.settle();
+    entry.pendingInputSettlement = settlement;
+    const settled = () => {
+      if (entry.pendingInputSettlement === settlement) {
+        entry.pendingInputSettlement = undefined;
+        removeChatAbortControllerEntry(entries, runId, entry);
+      }
+    };
+    void settlement.then(settled, settled);
+    return false;
   }
   entries.delete(runId);
   try {

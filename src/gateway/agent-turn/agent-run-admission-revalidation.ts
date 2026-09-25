@@ -37,7 +37,7 @@ export function createAgentRunAdmissionRevalidator(options: {
     rejectPreaccept,
     cleanupPreaccept,
   } = options;
-  const revalidate = (): true | Promise<undefined> => {
+  return (userTurn?: PreparedAgentRunUserTurn): true | Promise<undefined> => {
     if (activeRunAbort.controller.signal.aborted) {
       setAbortedAgentDedupeEntries({
         dedupe: params.context.dedupe,
@@ -61,17 +61,21 @@ export function createAgentRunAdmissionRevalidator(options: {
         });
       }
     } catch (err) {
-      return rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, err));
+      const reject = () => rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, err));
+      return userTurn
+        ? releasePreparedAgentRunUserTurn(userTurn, "interrupted").then(reject, (cleanupError) =>
+            rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, cleanupError)),
+          )
+        : reject();
     }
     if (!params.respondToGatewayAdmissionOutcome()) {
       return true;
     }
-    return cleanupPreaccept(true).then(() => undefined);
-  };
-  return (userTurn?: PreparedAgentRunUserTurn): true | Promise<undefined> => {
-    const result = revalidate();
-    return result === true || !userTurn
-      ? result
-      : result.finally(() => releasePreparedAgentRunUserTurn(userTurn, "interrupted"));
+    const cleanup = () => cleanupPreaccept(true).then(() => undefined);
+    return userTurn
+      ? releasePreparedAgentRunUserTurn(userTurn, parentResume ? "cancelled" : "interrupted")
+          .finally(cleanup)
+          .then(() => undefined)
+      : cleanup();
   };
 }

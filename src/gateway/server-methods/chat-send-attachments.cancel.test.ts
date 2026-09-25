@@ -123,7 +123,7 @@ it.each([
     } finally {
       release();
       sandboxSpy.mockRestore();
-      admission.cleanupAdmittedRun();
+      await admission.cleanupAdmittedRun();
       clearAgentRunContext(runId, admission.lifecycleGeneration);
       if (prepared?.ok) {
         await attachments.discardPreparedInboundMedia(prepared.value.offloadedRefs);
@@ -439,7 +439,7 @@ it.each([
         parseSpy.mockRestore();
         discardSpy.mockRestore();
         failureSpy.mockRestore();
-        admission.cleanupAdmittedRun();
+        await admission.cleanupAdmittedRun();
         clearAgentRunContext(runId, admission.lifecycleGeneration);
         if (prepared?.ok) {
           await discard(prepared.value.offloadedRefs);

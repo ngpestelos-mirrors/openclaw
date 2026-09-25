@@ -784,11 +784,11 @@ describe("runAgentHarnessAttempt", () => {
             }),
           }),
         );
-        expect(listSessionPendingInputs(target)).toEqual({ items: [], total: 0 });
+        expect(await listSessionPendingInputs(target)).toEqual({ items: [], total: 0 });
         await runAgentHarnessAttempt({ ...params, suppressNextUserMessagePersistence: true });
         expect(await loadTranscriptEvents(target)).toEqual(committed);
       } finally {
-        recorder.finishPendingInput?.("interrupted");
+        await recorder.finishPendingInput?.("interrupted");
       }
     },
   );

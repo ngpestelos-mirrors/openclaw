@@ -238,9 +238,11 @@ export async function handleChatHistoryRequest({
     // Receipts belong to the currently selected physical session, never archived history.
     const inputReceipts = inputRunIds
       ? !messageId && sessionId && sessionId === entry?.sessionId
-        ? listSessionPendingInputReceipts(
-            { agentId: sessionAgentId, sessionKey: canonicalKey, sessionId, storePath },
-            { runIds: inputRunIds },
+        ? (
+            await listSessionPendingInputReceipts(
+              { agentId: sessionAgentId, sessionKey: canonicalKey, sessionId, storePath },
+              { runIds: inputRunIds },
+            )
           ).map((receipt) =>
             receipt.state === "pending" &&
             isQueuedChatTurnForSession(context.chatQueuedTurns, receipt.runId, {
