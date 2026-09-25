@@ -251,7 +251,7 @@ it.each([false, true])(
     instance.lifecycle.onDispose(dispose);
     cache.setupModules.set("retained-publication", instance);
     const release = retainPluginCache(cache);
-    const owner = retainGatewayPluginMetadata();
+    const owner = retainGatewayPluginMetadata(createTestGatewayScheduler());
     owner.publish(owner.runBootstrap(() => createPluginMetadataSnapshotFixture()));
     owner.publish(
       withPluginCache(createPluginCache(), () => createPluginMetadataSnapshotFixture()),
