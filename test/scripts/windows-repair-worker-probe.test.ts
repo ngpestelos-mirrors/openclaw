@@ -9,16 +9,22 @@ import {
   createPackagedOwnerLoader,
   type PackagedOwnerEvidence,
 } from "../../scripts/lib/windows-repair-package.mts";
+import { resolveNpmRunner } from "../../scripts/npm-runner.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const directories = useAutoCleanupTempDirTracker(afterEach);
 
-async function fixture(files: Record<string, string>) {
+async function fixture(files: Record<string, string>, bundled: Record<string, string> = {}) {
   const root = directories.make("windows-repair-package-owner-");
   const packageRoot = path.join(root, "package");
   await fs.mkdir(path.join(packageRoot, "dist"), { recursive: true });
   for (const [name, contents] of Object.entries(files)) {
     await fs.writeFile(path.join(packageRoot, "dist", name), contents);
+  }
+  for (const [name, contents] of Object.entries(bundled)) {
+    const file = path.join(packageRoot, "node_modules", name);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, contents);
   }
   const lifecycleMarker = path.join(packageRoot, PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH);
   await fs.writeFile(lifecycleMarker, "pending\n");
@@ -136,7 +142,7 @@ it.each(["static", "computed"])(
   },
 );
 
-it.each(["added", "missing", "pending lifecycle"])(
+it.each(["added", "missing", "pending lifecycle", "nested dependency"])(
   "refuses %s installed files before loading an owner",
   async (kind) => {
     const { packageRoot, tarball } = await fixture({
@@ -150,6 +156,10 @@ it.each(["added", "missing", "pending lifecycle"])(
       );
     } else if (kind === "added") {
       await fs.writeFile(path.join(packageRoot, "dist", "unbound.mjs"), "export {};");
+    } else if (kind === "nested dependency") {
+      const injected = path.join(packageRoot, "dist", "node_modules", "injected");
+      await fs.mkdir(injected, { recursive: true });
+      await fs.writeFile(path.join(injected, "index.js"), "module.exports = 1;");
     } else {
       await fs.rm(path.join(packageRoot, "dist", "implementation.mjs"));
     }
@@ -158,6 +168,101 @@ it.each(["added", "missing", "pending lifecycle"])(
     );
   },
 );
+
+it.each(["original", "changed", "missing", "added", "nested shadow"])(
+  "authenticates %s bundled dependencies while allowing separate npm dependencies",
+  async (kind) => {
+    const dependency = "@fixture/bundled";
+    const { packageRoot, tarball } = await fixture(
+      { "executor-fixture.mjs": "function admit() {} export { admit };" },
+      {
+        [`${dependency}/package.json`]: '{"name":"@fixture/bundled","version":"1.0.0"}',
+        [`${dependency}/index.js`]: "module.exports = 1;",
+        "target/package.json": '{"name":"target","version":"1.0.0"}',
+        "target/index.js": "module.exports = 1;",
+      },
+    );
+    const external = path.join(packageRoot, "node_modules", "@fixture", "external");
+    await fs.mkdir(external, { recursive: true });
+    await fs.writeFile(path.join(external, "index.js"), "module.exports = 2;");
+    const bundledRoot = path.join(packageRoot, "node_modules", dependency);
+    if (kind === "changed") {
+      await fs.writeFile(path.join(bundledRoot, "index.js"), "module.exports = 3;");
+    } else if (kind === "missing") {
+      await fs.rm(path.join(bundledRoot, "index.js"));
+    } else if (kind === "added") {
+      await fs.writeFile(path.join(bundledRoot, "extra.js"), "module.exports = 3;");
+    } else if (kind === "nested shadow") {
+      const shadow = path.join(bundledRoot, "node_modules", "target");
+      await fs.mkdir(shadow, { recursive: true });
+      await fs.writeFile(path.join(shadow, "index.js"), "module.exports = 3;");
+    }
+    const loaded = createPackagedOwnerLoader(packageRoot, tarball);
+    if (kind === "original") {
+      await expect(loaded).resolves.toBeTypeOf("function");
+    } else {
+      await expect(loaded).rejects.toThrow(
+        kind === "changed"
+          ? "Installed module differs from the bound package"
+          : kind === "missing"
+            ? "Missing installed package members"
+            : "Unbound installed package member",
+      );
+    }
+  },
+);
+
+it("authenticates a bundled package after npm pack and offline installation", async () => {
+  const root = directories.make("windows-repair-npm-package-");
+  const source = path.join(root, "source");
+  const consumer = path.join(root, "consumer");
+  const files = {
+    "package.json": JSON.stringify({
+      name: "proof-fixture",
+      version: "1.0.0",
+      type: "module",
+      dependencies: { bundled: "1.0.0" },
+      bundleDependencies: ["bundled"],
+    }),
+    "dist/executor-fixture.mjs": "function admit() {} export { admit };",
+    "node_modules/bundled/package.json": '{"name":"bundled","version":"1.0.0"}',
+    "node_modules/bundled/index.js": "module.exports = 1;",
+  };
+  for (const [name, contents] of Object.entries(files)) {
+    const file = path.join(source, name);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, contents);
+  }
+  await fs.mkdir(consumer);
+  await fs.writeFile(path.join(consumer, "package.json"), '{"private":true}');
+  const tarball = path.join(root, "proof-fixture-1.0.0.tgz");
+  for (const [cwd, args] of [
+    [source, ["pack", "--pack-destination", root]],
+    [consumer, ["install", "--no-audit", "--no-fund", tarball]],
+  ] as const) {
+    const npm = resolveNpmRunner({
+      npmArgs: [...args, "--offline", "--ignore-scripts", "--cache", path.join(root, "npm-cache")],
+    });
+    const result = spawnSync(npm.command, npm.args, {
+      cwd,
+      env: npm.env,
+      shell: npm.shell,
+      windowsVerbatimArguments: npm.windowsVerbatimArguments,
+      encoding: "utf8",
+      timeout: 180_000,
+    });
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+  }
+  const installed = path.join(consumer, "node_modules", "proof-fixture");
+  await expect(createPackagedOwnerLoader(installed, tarball)).resolves.toBeTypeOf("function");
+  await fs.writeFile(
+    path.join(installed, "node_modules", "bundled", "index.js"),
+    "module.exports = 2;",
+  );
+  await expect(createPackagedOwnerLoader(installed, tarball)).rejects.toThrow(
+    "Installed module differs from the bound package",
+  );
+});
 
 it("rejects a linked package directory before loading an owner", async () => {
   const { packageRoot, tarball } = await fixture({

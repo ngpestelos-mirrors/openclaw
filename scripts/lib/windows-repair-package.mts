@@ -73,6 +73,16 @@ export async function createPackagedOwnerLoader(packageRoot: string, tarball: st
   });
   assert.equal(errors.length, 0, errors.join("\n"));
   assert.ok(bindings.size > 0, "Package tarball has no files");
+  const directories = new Set<string>();
+  for (const file of bindings.keys()) {
+    for (
+      let parent = path.posix.dirname(file);
+      parent !== ".";
+      parent = path.posix.dirname(parent)
+    ) {
+      directories.add(parent);
+    }
+  }
   const missing = new Set(bindings.keys());
   assert.ok(
     (await fs.lstat(packageRoot)).isDirectory(),
@@ -80,12 +90,17 @@ export async function createPackagedOwnerLoader(packageRoot: string, tarball: st
   );
   async function verifyDirectory(directory: string) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-      // npm may install dependencies here; these are not members of this tarball.
-      if (directory === packageRoot && entry.name === "node_modules") {
-        continue;
-      }
       const file = path.join(directory, entry.name);
       const relative = path.relative(packageRoot, file).replaceAll(path.sep, "/");
+      // Only top-level dependency roots may belong to npm instead of the archive.
+      // Once inside a bundled package, nested dependencies must remain bound too.
+      const segments = relative.split("/");
+      const dependencyEntry =
+        segments[0] === "node_modules" &&
+        (segments.length <= 2 || (segments.length === 3 && segments[1]?.startsWith("@") === true));
+      if (dependencyEntry && !bindings.has(relative) && !directories.has(relative)) {
+        continue;
+      }
       if (entry.isDirectory()) {
         await verifyDirectory(file);
       } else {
