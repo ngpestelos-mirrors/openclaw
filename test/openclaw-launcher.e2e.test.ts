@@ -1782,6 +1782,87 @@ describe("openclaw launcher", () => {
     },
   );
 
+  it.each(["denied writes", "denied workers", "unrestricted"] as const)(
+    "keeps packaged cache maintenance within Node permissions: %s",
+    async (mode) => {
+      const fixtureRoot = await makeLauncherFixture(fixtures);
+      const cache = path.join(fixtureRoot, "cache");
+      const retired = path.join(cache, "openclaw", "old", "build-retired");
+      await fs.mkdir(retired, { recursive: true });
+      await fs.writeFile(path.join(retired, "sentinel"), "preserve restricted cache");
+      const preload = path.join(fixtureRoot, "observe-maintenance.mjs");
+      await fs.writeFile(
+        preload,
+        [
+          'import threads from "node:worker_threads";',
+          'import { syncBuiltinESMExports } from "node:module";',
+          "globalThis.maintenanceStarts = 0;",
+          "const OriginalWorker = threads.Worker;",
+          "threads.Worker = class extends OriginalWorker {",
+          "  constructor(url, options) {",
+          "    if (options?.workerData?.openclawCompileCacheDirectory) globalThis.maintenanceStarts++;",
+          "    super(url, options);",
+          "  }",
+          "};",
+          "syncBuiltinESMExports();",
+        ].join("\n"),
+      );
+      await fs.writeFile(
+        path.join(fixtureRoot, "dist", "entry.js"),
+        [
+          'import { MessageChannel } from "node:worker_threads";',
+          'import { maintainOpenClawCompileCache, resolveOpenClawCompileCacheDirectory } from "../node-compile-cache.mjs";',
+          "const { port1, port2 } = new MessageChannel();",
+          'port1.on("message", () => {});',
+          `const directory = resolveOpenClawCompileCacheDirectory({ installRoot: ${JSON.stringify(fixtureRoot)} });`,
+          "await maintainOpenClawCompileCache(directory);",
+          "port1.close(); port2.close();",
+          "process.stdout.write(JSON.stringify({ maintenanceStarts: globalThis.maintenanceStarts }));",
+        ].join("\n"),
+      );
+      const permissionArgs =
+        mode === "unrestricted"
+          ? []
+          : [
+              "--permission",
+              "--allow-fs-read=*",
+              ...(mode === "denied writes"
+                ? ["--allow-worker"]
+                : [`--allow-fs-write=${fixtureRoot}`]),
+            ];
+      const result = spawnSync(
+        testNodeExecPath,
+        [
+          ...permissionArgs,
+          "--import",
+          pathToFileURL(preload).href,
+          path.join(fixtureRoot, "openclaw.mjs"),
+        ],
+        {
+          cwd: fixtureRoot,
+          env: launcherEnv({
+            NODE_OPTIONS: undefined,
+            NODE_COMPILE_CACHE: cache,
+            OPENCLAW_PACKAGED_COMPILE_CACHE_RESPAWNED: "1",
+          }),
+          encoding: "utf8",
+          timeout: 5000,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      if (mode === "unrestricted") {
+        expect(JSON.parse(result.stdout).maintenanceStarts).toBeGreaterThan(0);
+        await expect(fs.stat(retired)).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        expect(JSON.parse(result.stdout).maintenanceStarts).toBe(0);
+        expect(await fs.readFile(path.join(retired, "sentinel"), "utf8")).toBe(
+          "preserve restricted cache",
+        );
+      }
+    },
+  );
+
   it.each(["execArgv", "NODE_OPTIONS"] as const)(
     "does not replay a packaged CLI preload in maintenance workers via %s",
     async (source) => {

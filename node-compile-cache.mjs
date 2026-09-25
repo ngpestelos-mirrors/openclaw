@@ -48,6 +48,10 @@ export function resolveOpenClawCompileCacheDirectory({ installRoot, env = proces
 }
 
 export async function maintainOpenClawCompileCache(directory) {
+  // Node permission grants and later revocations do not extend to workers.
+  if (process.permission) {
+    return undefined;
+  }
   const owner = (globalThis[Symbol.for("openclaw.nodeCompileCacheBase")] ??= {});
   const pending = (owner.maintenance ??= new Map());
   if (pending.has(directory)) {
