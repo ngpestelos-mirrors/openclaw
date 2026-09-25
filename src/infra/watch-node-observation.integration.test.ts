@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Root } from "@openclaw/fs-safe/root";
-import type { WatchOptions as BackendOptions } from "@openclaw/fs-safe/watch";
+import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
+import type { WatchOptions as BackendOptions, WatchSubscription } from "@openclaw/fs-safe/watch";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSourceObserver } from "../../scripts/watch-node-observation.mts";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -9,7 +10,10 @@ import { createDeferredCore } from "../shared/deferred.js";
 
 // Instrument readiness only; both modes use the exact installed watch/Root and
 // actual later filesystem edits. No synthetic dirty hints, sleeps, or reconcile.
-const admission = vi.hoisted(() => ({ notify: (_root: string) => {} }));
+const admission = vi.hoisted(() => ({
+  notify: (_root: string) => {},
+  subscriptions: [] as WatchSubscription[],
+}));
 vi.mock("@openclaw/fs-safe/watch", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@openclaw/fs-safe/watch")>();
   return {
@@ -20,6 +24,7 @@ vi.mock("@openclaw/fs-safe/watch", async (importOriginal) => {
         // Native delivery, not the 30s fallback scan, must observe later edits.
         intervalMs: options.mode === "node" ? 2_147_483_647 : options.intervalMs,
       });
+      admission.subscriptions.push(subscription);
       const report = (ready: Promise<void>) => {
         void ready.then(
           () => admission.notify(authority.rootReal),
@@ -41,6 +46,8 @@ const observers = new Set<ReturnType<typeof createSourceObserver>>();
 const temp = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
     admission.notify = () => {};
+    admission.subscriptions.length = 0;
+    __setFsSafeTestHooksForTest();
     // A test deadline can interrupt an awaited event before its finally runs.
     // Keep physical workers owned by the test lifecycle in that case too.
     await Promise.all([...observers].map((observer) => observer.close()));
@@ -167,3 +174,60 @@ describe.each(["node", "poll"] as const)("developer source target edits (%s)", (
     },
   );
 });
+
+it.runIf(process.platform === "linux" && !process.versions.bun && !process.versions.deno)(
+  "joins a held native development scan and never publishes stale restart hints",
+  async ({ signal }) => {
+    const cwd = temp.make("developer-held-scan-");
+    await fs.mkdir(path.join(cwd, "src"));
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    const abort = () => release.resolve();
+    signal.addEventListener("abort", abort, { once: true });
+    let held = false;
+    __setFsSafeTestHooksForTest({
+      async beforeWatchRegistration() {
+        if (held) {
+          return;
+        }
+        held = true;
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    const changed = vi.fn();
+    const failed = vi.fn();
+    const observer = createSourceObserver(["src"], {
+      cwd,
+      env: { CHOKIDAR_USEPOLLING: "false" },
+      ignored: () => false,
+      onChange: changed,
+      onError: failed,
+    });
+    observers.add(observer);
+    try {
+      await entered.promise;
+      let joined = false;
+      const closing = observer.close().then(() => {
+        joined = true;
+      });
+      await Promise.resolve();
+      expect(joined).toBe(false);
+      __setFsSafeTestHooksForTest();
+      release.resolve();
+      await closing;
+      expect(admission.subscriptions.length).toBeGreaterThan(0);
+      for (const subscription of admission.subscriptions) {
+        expect(subscription.health()).toMatchObject({ state: "closed", workers: 0 });
+      }
+      expect(changed).not.toHaveBeenCalled();
+      expect(failed).not.toHaveBeenCalled();
+    } finally {
+      __setFsSafeTestHooksForTest();
+      release.resolve();
+      signal.removeEventListener("abort", abort);
+      await observer.close();
+      observers.delete(observer);
+    }
+  },
+);

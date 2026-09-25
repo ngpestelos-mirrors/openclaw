@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createSourceTargetDiscovery,
@@ -38,7 +39,9 @@ describe("developer linked-source admission", () => {
     );
     const groups = await discovery.discover(signal());
     expect(groups).toHaveLength(2);
-    expect(groups[0].scopes).toEqual([{ path: "packages", kind: "tree", depth: 128 }]);
+    expect(expectDefined(groups[0], "admitted observation").scopes).toEqual([
+      { path: "packages", kind: "tree", depth: 128 },
+    ]);
     expect(mapped(groups, path.join(outside, "foo", "src", "main.ts"))).toEqual([
       path.join(cwd, "packages", "bar", "src", "main.ts"),
       path.join(cwd, "packages", "foo", "src", "main.ts"),
@@ -80,8 +83,12 @@ describe("developer linked-source admission", () => {
     await fs.unlink(alias);
     await directoryLink(path.join(outside, "second"), alias);
     const retargeted = await discovery.discover(signal());
-    expect(retargeted[0].authority).toBe(initial[0].authority);
-    expect(retargeted[1].authority).toBe(dangling[1].authority);
+    expect(expectDefined(retargeted[0], "admitted observation").authority).toBe(
+      expectDefined(initial[0], "admitted observation").authority,
+    );
+    expect(expectDefined(retargeted[1], "admitted observation").authority).toBe(
+      expectDefined(dangling[1], "admitted observation").authority,
+    );
     expect(mapped(retargeted, path.join(destination, "main.ts"))).toEqual([]);
     expect(mapped(retargeted, path.join(outside, "second", "main.ts"))).toContain(
       path.join(alias, "main.ts"),

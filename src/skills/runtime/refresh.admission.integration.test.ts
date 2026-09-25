@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Root } from "@openclaw/fs-safe/root";
+import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
 import type {
   WatchFunction,
   WatchOptions,
@@ -339,6 +340,64 @@ it.skipIf(!nativeSupported)(
       expect(refreshState.getSkillsSnapshotVersion(workspaceDir)).toBe(snapshotVersion);
       expect(changed).not.toHaveBeenCalled();
     } finally {
+      unsubscribe();
+      await refresh.closeSkillsWatchers();
+    }
+  },
+);
+
+it.runIf(nativeSupported)(
+  "joins a held native Skills scan without late availability or re-admission",
+  async ({ signal }) => {
+    vi.stubEnv("CHOKIDAR_USEPOLLING", "false");
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    const abort = () => release.resolve();
+    signal.addEventListener("abort", abort, { once: true });
+    const owned: WatchSubscription[] = [];
+    onSubscription = (_root, _options, subscription) => {
+      owned.push(subscription);
+    };
+    const events = vi.fn();
+    const unsubscribe = refresh.registerSkillsChangeListener(events);
+    let held = false;
+    __setFsSafeTestHooksForTest({
+      async beforeWatchRegistration() {
+        if (held) {
+          return;
+        }
+        held = true;
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    try {
+      refresh.ensureSkillsWatcher({
+        workspaceDir: fixture.workspaceDir,
+        sourcePlan: resolveWorkspaceSkillSourcePlan(fixture.workspaceDir, { workspaceOnly: true }),
+      });
+      await entered.promise;
+      const admitted = owned.length;
+      const before = events.mock.calls.length;
+      let joined = false;
+      const closing = refresh.closeSkillsWatchers().then(() => {
+        joined = true;
+      });
+      await Promise.resolve();
+      expect(joined).toBe(false);
+      __setFsSafeTestHooksForTest();
+      release.resolve();
+      await closing;
+      expect(owned).toHaveLength(admitted);
+      expect(owned.length).toBeGreaterThan(0);
+      for (const subscription of owned) {
+        expect(subscription.health()).toMatchObject({ state: "closed", workers: 0 });
+      }
+      expect(events).toHaveBeenCalledTimes(before);
+    } finally {
+      __setFsSafeTestHooksForTest();
+      release.resolve();
+      signal.removeEventListener("abort", abort);
       unsubscribe();
       await refresh.closeSkillsWatchers();
     }

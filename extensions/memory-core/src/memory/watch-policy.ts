@@ -29,7 +29,7 @@ const IGNORED = new Set([
 
 function missing(error: unknown): boolean {
   return (
-    Boolean(error) &&
+    error !== null &&
     typeof error === "object" &&
     "code" in error &&
     (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "not-found")

@@ -88,7 +88,6 @@ describe.each(["node", "poll"] as const)("memory %s watchers on the real filesys
               sources: ["memory"],
               store: { vector: { enabled: false } },
               query: { minScore: 0 },
-              sync: { watch: true, watchDebounceMs: 30 },
             },
           },
         };

@@ -171,7 +171,7 @@ it.runIf(nativeSupported)(
         });
         const timers = vi.spyOn(globalThis, "setTimeout");
         __setFsSafeTestHooksForTest({
-          beforeWatchRegistration() {
+          async beforeWatchRegistration() {
             throw new Error("scan unavailable");
           },
         });
@@ -193,6 +193,116 @@ it.runIf(nativeSupported)(
         // These are exclusively the worker instances whose retirement this test faulted.
         await Promise.all([...owned].map((worker) => worker.terminate()));
         await adapter.stop().catch(() => {});
+      }
+    });
+  },
+);
+
+it.runIf(nativeSupported).each(["stop", "replace"] as const)(
+  "joins and fences a held native Config scan during %s",
+  async (ending) => {
+    vi.stubEnv("VITEST", undefined);
+    vi.stubEnv("CHOKIDAR_USEPOLLING", "false");
+    await withTestDir({ prefix: "config-held-scan-" }, async (directory) => {
+      const configPath = path.join(directory, "openclaw.json");
+      const include = path.join(directory, "include.json");
+      await fs.writeFile(configPath, "before");
+      await fs.writeFile(include, "{}");
+      const ready = createDeferred();
+      const entered = createDeferred();
+      const release = createDeferred();
+      const closeCalled = createDeferred();
+      const replacementReady = createDeferred();
+      const later = createDeferred();
+      const subscriptions: Array<{
+        root: Awaited<ReturnType<typeof root>>;
+        subscription: observation.WatchSubscription;
+      }> = [];
+      const actualWatch = observation.watch;
+      vi.spyOn(observation, "watch").mockImplementation((authority, options) => {
+        const subscription = actualWatch(authority, { ...options, intervalMs: 2_147_483_647 });
+        subscriptions.push({ root: authority, subscription });
+        if (subscriptions.length === 2) {
+          void subscription.ready.then(replacementReady.resolve, replacementReady.reject);
+        }
+        return subscription;
+      });
+      const reads: Promise<void>[] = [];
+      const changed = vi.fn(() => {
+        reads.push(
+          fs.readFile(configPath, "utf8").then((value) => {
+            if (value === "later") {
+              later.resolve();
+            }
+          }, later.reject),
+        );
+      });
+      const adapter = createConfigFileAdapter({
+        path: configPath,
+        onChange: changed,
+        onReady: () => ready.resolve(),
+        log: { warn: ready.reject, error: ready.reject },
+      });
+      let scan: Promise<unknown> | undefined;
+      let retired: Promise<void> | undefined;
+      try {
+        adapter.start();
+        await ready.promise;
+        const old = subscriptions[0]!;
+        const close = old.subscription.close.bind(old.subscription);
+        vi.spyOn(old.subscription, "close").mockImplementation(() => {
+          closeCalled.resolve();
+          return close();
+        });
+        let held = false;
+        __setFsSafeTestHooksForTest({
+          async beforeWatchRegistration() {
+            if (held) {
+              return;
+            }
+            held = true;
+            entered.resolve();
+            await release.promise;
+          },
+        });
+        scan = old.subscription.reconcile().catch((error: unknown) => error);
+        await entered.promise;
+        await fs.writeFile(configPath, "during retired scan");
+        let joined = false;
+        retired = (ending === "stop" ? adapter.stop() : adapter.acceptPaths([include])).then(() => {
+          joined = true;
+        });
+        await closeCalled.promise;
+        expect(joined).toBe(false);
+        expect(changed).not.toHaveBeenCalled();
+        __setFsSafeTestHooksForTest();
+        release.resolve();
+        await Promise.all([scan, retired]);
+        expect(old.subscription.health()).toMatchObject({
+          state: "closed",
+          workers: 0,
+          observedDirectories: 0,
+        });
+        if (ending === "replace") {
+          await replacementReady.promise;
+          expect(subscriptions).toHaveLength(2);
+          expect(subscriptions[1]!.root).toBe(old.root);
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+          expect(changed).toHaveBeenCalledOnce();
+          await Promise.all(reads);
+          await fs.writeFile(configPath, "later");
+          await later.promise;
+        } else {
+          expect(changed).not.toHaveBeenCalled();
+        }
+      } finally {
+        __setFsSafeTestHooksForTest();
+        release.resolve();
+        await Promise.allSettled([scan, retired]);
+        await adapter.stop();
+        await Promise.all(reads);
       }
     });
   },

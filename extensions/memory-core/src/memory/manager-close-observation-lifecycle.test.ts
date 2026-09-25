@@ -82,7 +82,6 @@ describe("MemoryIndexManager observation close lifecycle", () => {
           sources: ["memory", "sessions"],
           rememberAcrossConversations: true,
           store: { vector: { enabled: false } },
-          sync: { watch: true, intervalMinutes: 0 },
         },
       },
     };

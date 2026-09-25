@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
+import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { expect, it, vi } from "vitest";
@@ -107,3 +108,117 @@ it("closes remote watch admission while startup is waiting on a filesystem probe
     await state.cleanup();
   }
 });
+
+it.each(["input end", "output error"] as const)(
+  "joins held Memory scans and stdout retirement after %s",
+  async (ending) => {
+    vi.stubEnv("CHOKIDAR_USEPOLLING", "true");
+    vi.stubEnv("CHOKIDAR_INTERVAL", "20");
+    const state = await createOpenClawTestState({ label: "memory-watch-stdout" });
+    const input = new PassThrough();
+    const written = createDeferred<void>();
+    const retired = createDeferred<void>();
+    const closingStarted = createDeferred<void>();
+    const scanEntered = createDeferred<void>();
+    const releaseScan = createDeferred<void>();
+    let physicalClosed = false;
+    void retired.promise.then(() => {
+      physicalClosed = true;
+    });
+    let blocked = true;
+    const callbacks: Array<(error?: Error | null) => void> = [];
+    const output = new Writable({
+      highWaterMark: 1,
+      write(_chunk, _encoding, callback) {
+        written.resolve();
+        if (blocked) {
+          callbacks.push(callback);
+        } else {
+          callback();
+        }
+      },
+    });
+    // oxlint-disable-next-line typescript/unbound-method -- The intercepted instance is passed to the real close owner.
+    const originalClose = MemoryFileWatcher.prototype.close;
+    const close = vi.spyOn(MemoryFileWatcher.prototype, "close").mockImplementation(function (
+      this: MemoryFileWatcher,
+    ) {
+      closingStarted.resolve();
+      const pending = originalClose.call(this);
+      void pending.then(retired.resolve, retired.reject);
+      return pending;
+    });
+    const worker = serveMemoryFiles({ workspace: state.workspaceDir, input, output, watch: true });
+    let finished = false;
+    void worker.then(
+      () => {
+        finished = true;
+      },
+      () => {
+        finished = true;
+      },
+    );
+    try {
+      input.write(
+        JSON.stringify({
+          agentId: "main",
+          settings: {
+            extraPaths: [],
+            multimodal: { enabled: false, modalities: [], maxFileBytes: 10485760 },
+            sync: { watchDebounceMs: 10 },
+          },
+        }) + "\n",
+      );
+      await written.promise;
+      expect(output.writableNeedDrain).toBe(true);
+      let held = false;
+      __setFsSafeTestHooksForTest({
+        async beforeWatchRegistration() {
+          if (held) {
+            return;
+          }
+          held = true;
+          scanEntered.resolve();
+          await releaseScan.promise;
+        },
+      });
+      await scanEntered.promise;
+      const failure = new Error("Memory stdout failed");
+      if (ending === "output error") {
+        output.destroy(failure);
+      } else {
+        input.end();
+      }
+      await closingStarted.promise;
+      expect(physicalClosed).toBe(false);
+      expect(finished).toBe(false);
+      __setFsSafeTestHooksForTest();
+      releaseScan.resolve();
+      await retired.promise;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      if (ending === "input end") {
+        expect(finished).toBe(false);
+        blocked = false;
+        callbacks.splice(0).forEach((callback) => callback());
+        await worker;
+        expect(output.writableLength).toBe(0);
+      } else {
+        await expect(worker).rejects.toMatchObject({ errors: [failure] });
+      }
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      __setFsSafeTestHooksForTest();
+      releaseScan.resolve();
+      blocked = false;
+      callbacks.splice(0).forEach((callback) => callback());
+      input.end();
+      await worker.catch(() => {});
+      close.mockRestore();
+      output.destroy();
+      await state.cleanup();
+      vi.unstubAllEnvs();
+    }
+  },
+);

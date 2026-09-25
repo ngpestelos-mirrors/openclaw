@@ -1,6 +1,7 @@
 import path from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import {
   markGatewayRestartDraining,
@@ -310,4 +311,71 @@ it("reacquires a closed transport and rejects late events after binding retireme
   expect(getSkillsSnapshotVersion(gateway)).toBe(version);
   await refresh.closeSkillsWatchers();
   expect(() => refresh.ensureSkillsWatcher(params)).toThrow("Workspace access is stopped");
+});
+
+it("joins accepted stdout writes after retiring Skills observation", async () => {
+  const workspace = await fixture.createFixtureDirectory("skills-watch-stdout");
+  const input = new PassThrough();
+  const written = createDeferred();
+  const retired = createDeferred();
+  let blocked = true;
+  const callbacks: Array<(error?: Error | null) => void> = [];
+  const output = new Writable({
+    highWaterMark: 1,
+    write(_chunk, _encoding, callback) {
+      written.resolve();
+      if (blocked) {
+        callbacks.push(callback);
+      } else {
+        callback();
+      }
+    },
+  });
+  const originalClose = refresh.closeSkillsWatchers;
+  vi.spyOn(refresh, "closeSkillsWatchers").mockImplementation((...args) => {
+    const pending = originalClose(...args);
+    void pending.then(retired.resolve, retired.reject);
+    return pending;
+  });
+  const worker = serveWorkspaceSkills({
+    workspace,
+    home: workspace,
+    operation: "watch",
+    input,
+    output,
+  });
+  let finished = false;
+  void worker.then(
+    () => {
+      finished = true;
+    },
+    () => {
+      finished = true;
+    },
+  );
+  try {
+    input.write(
+      JSON.stringify({
+        sourcePlan: resolveWorkspaceSkillSourcePlan(workspace, { workspaceOnly: true }),
+      }) + "\n",
+    );
+    await written.promise;
+    expect(output.writableNeedDrain).toBe(true);
+    await observer.readyAll();
+    input.end();
+    await retired.promise;
+    await waitForSkillsWatcherTurn();
+    expect(observer.subscriptions.every((entry) => entry.closed)).toBe(true);
+    expect(finished).toBe(false);
+    blocked = false;
+    callbacks.splice(0).forEach((callback) => callback());
+    await worker;
+    expect(output.writableLength).toBe(0);
+  } finally {
+    blocked = false;
+    callbacks.splice(0).forEach((callback) => callback());
+    input.end();
+    await worker;
+    output.destroy();
+  }
 });

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Root } from "@openclaw/fs-safe/root";
 import type { WatchOptions as BackendOptions, WatchSubscription } from "@openclaw/fs-safe/watch";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSourceObserver } from "../../scripts/watch-node-observation.mts";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -109,8 +110,10 @@ describe("developer source observer lifetime", () => {
       const observer = start(cwd);
       await observer.ready;
       expect(installed).toHaveLength(1);
-      expect(installed[0].options.mode).toBe(mode);
-      expect(installed[0].options.intervalMs).toBe(mode === "poll" ? 100 : undefined);
+      expect(expectDefined(installed[0], "admitted observation").options.mode).toBe(mode);
+      expect(expectDefined(installed[0], "admitted observation").options.intervalMs).toBe(
+        mode === "poll" ? 100 : undefined,
+      );
     },
   );
 
@@ -145,8 +148,8 @@ describe("developer source observer lifetime", () => {
       await observer.close();
       expect(onError).toHaveBeenCalledExactlyOnceWith(unavailable);
       expect(installed).toHaveLength(1);
-      expect(installed[0].options.mode).toBe("node");
-      expect(installed[0].close).toHaveBeenCalledOnce();
+      expect(expectDefined(installed[0], "admitted observation").options.mode).toBe("node");
+      expect(expectDefined(installed[0], "admitted observation").close).toHaveBeenCalledOnce();
     },
   );
 
@@ -164,7 +167,10 @@ describe("developer source observer lifetime", () => {
     });
     await observer.ready;
     expect(installed).toHaveLength(1);
-    expect(installed[0].options).toMatchObject({ mode: "poll", intervalMs: interval });
+    expect(expectDefined(installed[0], "admitted observation").options).toMatchObject({
+      mode: "poll",
+      intervalMs: interval,
+    });
   });
 
   it("maps target notifications lexically and never reads advisory filenames", async () => {
@@ -191,7 +197,7 @@ describe("developer source observer lifetime", () => {
     installed.forEach((entry, index) => {
       vi.mocked(entry.close).mockImplementation(() => {
         reentrant.push(observer.close());
-        return joins[index].promise;
+        return expectDefined(joins[index], "physical close join").promise;
       });
     });
     const closing = observer.close();
@@ -201,10 +207,10 @@ describe("developer source observer lifetime", () => {
     void closing.then(() => {
       settled = true;
     });
-    joins[0].resolve();
-    await joins[0].promise;
+    expectDefined(joins[0], "physical close join").resolve();
+    await expectDefined(joins[0], "physical close join").promise;
     expect(settled).toBe(false);
-    joins[1].resolve();
+    expectDefined(joins[1], "physical close join").resolve();
     await closing;
     for (const entry of installed) {
       expect(entry.close).toHaveBeenCalledTimes(1);
@@ -252,7 +258,9 @@ describe("developer source observer lifetime", () => {
       entered.resolve();
       return gate.promise;
     });
-    dirty(installed[0], [{ path: "src/alias", type: "structural" }]);
+    dirty(expectDefined(installed[0], "admitted observation"), [
+      { path: "src/alias", type: "structural" },
+    ]);
     await entered.promise;
     const closing = observer.close();
     let settled = false;
@@ -261,7 +269,7 @@ describe("developer source observer lifetime", () => {
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    expect(installed[0].close).toHaveBeenCalledTimes(1);
+    expect(expectDefined(installed[0], "admitted observation").close).toHaveBeenCalledTimes(1);
     gate.resolve(path.join(outside, "missing"));
     await closing;
     expect(installed).toHaveLength(1);
@@ -320,7 +328,7 @@ describe("developer source observer lifetime", () => {
     retired.resolve();
     await readmitted.promise;
     expect(installed).toHaveLength(3);
-    expect(installed[2].authority).toBe(target.authority);
+    expect(expectDefined(installed[2], "admitted observation").authority).toBe(target.authority);
     expect(target.close).toHaveBeenCalledTimes(1);
   });
 
@@ -330,8 +338,8 @@ describe("developer source observer lifetime", () => {
     const observer = start(cwd, vi.fn(), onError);
     await observer.ready;
     const failure = new Error("source observation lost");
-    installed[0].options.onHealth?.({
-      ...installed[0].subscription.health(),
+    expectDefined(installed[0], "admitted observation").options.onHealth?.({
+      ...expectDefined(installed[0], "admitted observation").subscription.health(),
       state: "unavailable",
       error: failure,
     });
@@ -347,10 +355,14 @@ describe("developer source observer lifetime", () => {
     await observer.ready;
     const observationError = new Error("source authority lost");
     const closeError = new Error("worker retirement failed");
-    vi.mocked(installed[0].close).mockRejectedValue(observationError);
-    vi.mocked(installed[1].close).mockRejectedValue(closeError);
-    installed[0].options.onHealth?.({
-      ...installed[0].subscription.health(),
+    vi.mocked(expectDefined(installed[0], "admitted observation").close).mockRejectedValue(
+      observationError,
+    );
+    vi.mocked(expectDefined(installed[1], "admitted observation").close).mockRejectedValue(
+      closeError,
+    );
+    expectDefined(installed[0], "admitted observation").options.onHealth?.({
+      ...expectDefined(installed[0], "admitted observation").subscription.health(),
       state: "unavailable",
       error: observationError,
     });
@@ -388,7 +400,7 @@ describe("developer source observer lifetime", () => {
         process.platform === "win32" ? "junction" : "dir",
       );
       dirty(
-        installed[0],
+        expectDefined(installed[0], "admitted observation"),
         reason === "structural" ? [{ path: "src/alias", type: "structural" }] : undefined,
       );
       await admitted.promise;
@@ -396,7 +408,7 @@ describe("developer source observer lifetime", () => {
       if (reason === "whole-scope") {
         expect(onChange).toHaveBeenCalledWith();
       }
-      const target = installed[1];
+      const target = expectDefined(installed[1], "admitted observation");
       dirty(target, [{ path: "target/later.ts", type: "content" }]);
       expect(onChange).toHaveBeenCalledWith(path.join(cwd, "src", "alias", "later.ts"));
     },
@@ -417,7 +429,9 @@ describe("developer source observer lifetime", () => {
     const observer = start(cwd, vi.fn(), onError);
     await expect(observer.ready).rejects.toThrow("4 lifetime-pinned Root budget");
     expect(onError).toHaveBeenCalledTimes(1);
-    expect(onError.mock.calls[0][0]).not.toHaveProperty("code");
+    expect(expectDefined(onError.mock.calls[0], "reported watcher failure")[0]).not.toHaveProperty(
+      "code",
+    );
     expect(backend.watch).not.toHaveBeenCalled();
     await expect(observer.close()).rejects.toThrow("4 lifetime-pinned Root budget");
   });
