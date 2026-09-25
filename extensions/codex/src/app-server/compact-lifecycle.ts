@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { runWithAsyncWorkResources } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { isCodexNoActiveTurnInterruptError } from "./attempt-client-cleanup.js";
@@ -11,79 +12,7 @@ import {
   readCodexNotificationTurnId,
 } from "./notification-correlation.js";
 import { isJsonObject } from "./protocol.js";
-import type {
-  CodexAppServerBindingIdentity,
-  CodexAppServerBindingStore,
-  CodexAppServerThreadBinding,
-  CodexBindingAuthority,
-} from "./session-binding.js";
-import {
-  isSameCodexAppServerThreadOwner,
-  withCodexAppServerThreadMutation,
-} from "./thread-ownership.js";
-
-export async function clearContextEngineProjectionBeforeNativeCompaction(params: {
-  sessionId: string;
-  bindingStore: CodexAppServerBindingStore;
-  identity: CodexAppServerBindingIdentity;
-  binding: CodexAppServerThreadBinding;
-  assertCurrent: () => void;
-  authority: CodexBindingAuthority;
-}): Promise<void> {
-  const contextEngineBinding = params.binding.contextEngine;
-  if (!contextEngineBinding?.projection) {
-    return;
-  }
-  // Native Codex compaction mutates the thread history outside the projection
-  // guard. Clear only the projection marker so the next turn reprojects context.
-  await params.bindingStore.mutate(
-    params.identity,
-    {
-      kind: "patch",
-      threadId: params.binding.threadId,
-      patch: {
-        contextEngine: {
-          ...contextEngineBinding,
-          projection: undefined,
-        },
-      },
-    },
-    params.assertCurrent,
-    params.authority,
-  );
-  embeddedAgentLog.info("cleared codex context-engine projection before native compaction", {
-    sessionId: params.sessionId,
-    threadId: params.binding.threadId,
-    previousEpoch: contextEngineBinding.projection.epoch,
-    previousFingerprint: contextEngineBinding.projection.fingerprint,
-  });
-}
-
-export function isSameNativeCompactionBinding(
-  current: CodexAppServerThreadBinding,
-  expected: CodexAppServerThreadBinding,
-): boolean {
-  return (
-    isSameCodexAppServerThreadOwner(current, expected) &&
-    current.authProfileId === expected.authProfileId &&
-    current.contextEngine?.engineId === expected.contextEngine?.engineId &&
-    current.contextEngine?.policyFingerprint === expected.contextEngine?.policyFingerprint &&
-    current.contextEngine?.projection?.mode === expected.contextEngine?.projection?.mode &&
-    current.contextEngine?.projection?.epoch === expected.contextEngine?.projection?.epoch &&
-    current.contextEngine?.projection?.fingerprint ===
-      expected.contextEngine?.projection?.fingerprint
-  );
-}
-
-export function isCodexThreadNotFoundError(error: unknown): boolean {
-  // codex-rs exposes no dedicated error code for a missing compaction thread:
-  // thread/compact/start returns generic INVALID_REQUEST (-32600), and the
-  // app-server's own contract/test asserts the "thread not found" MESSAGE as
-  // the discriminator (thread_processor.rs load_thread → invalid_request;
-  // compaction.rs asserts message.contains("thread not found")). So the message
-  // gates recovery, not user-facing classification; the generic code is ambiguous.
-  return coerceErrorMessage(error).toLowerCase().includes("thread not found");
-}
+import { withCodexAppServerThreadMutation } from "./thread-ownership.js";
 
 type CodexNativeCompactionCompletion =
   | { completed: true; turnId?: string; itemId?: string; tokensAfter?: number }
@@ -96,6 +25,7 @@ export function watchCodexNativeCompactionCompletion(params: {
   timeoutMs: number;
   interruptGraceMs: number;
   retireUnconfirmed: () => Promise<void>;
+  onCompactionTurn?: (turnId: string) => void;
 }) {
   const runOutsideBindingLease = AsyncLocalStorage.snapshot();
   let settled = false;
@@ -107,6 +37,7 @@ export function watchCodexNativeCompactionCompletion(params: {
   let compactionItemId: string | undefined;
   let compactionItemCompleted = false;
   let tokensAfter: number | undefined;
+  let admissionFailure: string | undefined;
   const { promise: completion, resolve: resolveCompletion } =
     createDeferred<CodexNativeCompactionCompletion>();
   let removeNotificationHandler = () => {};
@@ -245,6 +176,15 @@ export function watchCodexNativeCompactionCompletion(params: {
     if (item?.type === "contextCompaction") {
       if (notification.method === "item/started") {
         compactionTurnId = compactionTurnId ?? notificationTurnId;
+        if (!compactionItemId && compactionTurnId) {
+          try {
+            params.onCompactionTurn?.(compactionTurnId);
+          } catch (error) {
+            admissionFailure = coerceErrorMessage(error);
+            abortRequested = true;
+            beginInterruptGrace();
+          }
+        }
         compactionItemId = item.id;
         requestInterrupt();
         return;
@@ -263,6 +203,10 @@ export function watchCodexNativeCompactionCompletion(params: {
     }
     const turn = isJsonObject(notification.params.turn) ? notification.params.turn : undefined;
     const status = typeof turn?.status === "string" ? turn.status : undefined;
+    if (admissionFailure) {
+      fail(admissionFailure);
+      return;
+    }
     if (status !== "completed") {
       fail(`codex app-server compaction turn ended with status ${status ?? "unknown"}`);
       return;
@@ -319,31 +263,38 @@ export async function runExclusiveCodexNativeCompaction<T>(
   signal: AbortSignal | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
-  signal?.throwIfAborted();
-  let started = false;
-  const queued = withCodexAppServerThreadMutation(threadId, async () => {
-    started = true;
+  return await runWithAsyncWorkResources(async (onAcquired) => {
     signal?.throwIfAborted();
-    return run();
+    let started = false;
+    const queued = withCodexAppServerThreadMutation(threadId, async () => {
+      started = true;
+      signal?.throwIfAborted();
+      return run();
+    });
+    onAcquired({
+      release: async () => {
+        await Promise.allSettled([queued]);
+      },
+    });
+    if (!signal) {
+      return queued;
+    }
+    let removeAbortListener = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      const onAbort = () => {
+        if (!started) {
+          reject(signal.reason instanceof Error ? signal.reason : new Error("compaction aborted"));
+        }
+      };
+      removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      // The canceled promise settles immediately, but its queued task remains
+      // behind its predecessor so later compactions cannot overtake active work.
+      return await Promise.race([queued, aborted]);
+    } finally {
+      removeAbortListener();
+    }
   });
-  if (!signal) {
-    return queued;
-  }
-  let removeAbortListener = () => {};
-  const aborted = new Promise<never>((_, reject) => {
-    const onAbort = () => {
-      if (!started) {
-        reject(signal.reason instanceof Error ? signal.reason : new Error("compaction aborted"));
-      }
-    };
-    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
-    // The canceled promise settles immediately, but its queued task remains
-    // behind its predecessor so later compactions cannot overtake active work.
-    return await Promise.race([queued, aborted]);
-  } finally {
-    removeAbortListener();
-  }
 }

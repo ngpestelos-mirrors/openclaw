@@ -59,9 +59,14 @@ export async function resolveNativeSessionBinding<TBinding>(
     ) {
       throw params.createSupersededError(params.target.sessionId);
     }
-    binding = await authority.withCurrent(() => params.readBinding());
+    binding = await authority.withCurrent(() => {
+      const current = params.readBinding();
+      params.assertBinding?.(current);
+      return current;
+    });
+  } else if (!binding) {
+    params.assertBinding?.(binding);
   }
-  await authority.withCurrent(() => params.assertBinding?.(binding));
   return {
     binding,
     assertCurrent: authority.assertLegacyCurrent,

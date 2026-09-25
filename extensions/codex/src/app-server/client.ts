@@ -48,7 +48,11 @@ import {
 } from "./protocol.js";
 import { createCodexRequestAttempt, type CodexRequestAttempt } from "./request-attempt.js";
 import type { CodexRequestWaiterFinished } from "./request-observation.js";
-import { CODEX_APP_SERVER_OVERLOADED_ERROR_CODE, CodexAppServerRpcError } from "./rpc-error.js";
+import {
+  CODEX_APP_SERVER_OVERLOADED_ERROR_CODE,
+  CodexAppServerRpcError,
+  CodexAppServerScopedRequestRejectedError,
+} from "./rpc-error.js";
 import { CodexServerRequests, type CodexServerRequestHandler } from "./server-requests.js";
 import { createStdioTransport } from "./transport-stdio.js";
 import { createWebSocketTransport } from "./transport-websocket.js";
@@ -700,7 +704,6 @@ export class CodexAppServerClient {
         new CodexAppServerLocalRequestCancellationError(method, reason, written, cause),
       localError: (error, written) =>
         written &&
-        !(error instanceof CodexAppServerRpcError) &&
         !isCodexAppServerIndeterminateRequestCancellationError(error) &&
         !isCodexAppServerIndeterminateTransportError(error)
           ? new CodexAppServerIndeterminateTransportError(method, error)
@@ -749,7 +752,13 @@ export class CodexAppServerClient {
       if (deadline !== undefined && performance.now() >= deadline) {
         throw new CodexAppServerLocalRequestCancellationError(method, "timed out", false);
       }
-      options.assertCurrent?.();
+      try {
+        options.assertCurrent?.();
+      } catch (cause) {
+        throw cause instanceof CodexAppServerScopedRequestRejectedError
+          ? cause
+          : new CodexAppServerScopedRequestRejectedError(coerceErrorMessage(cause), { cause });
+      }
       if (attempt.pending) {
         this.writeMessage(
           message,
@@ -760,6 +769,15 @@ export class CodexAppServerClient {
           },
         );
       }
+    };
+    const rejectAdmission = (cause: unknown) => {
+      // Only a failure before entering the wire callback proves an authority
+      // rejection. The attempt owns possible-write classification after entry.
+      attempt.failLocal(
+        !consumed && !(cause instanceof CodexAppServerScopedRequestRejectedError)
+          ? new CodexAppServerScopedRequestRejectedError(coerceErrorMessage(cause), { cause })
+          : toStringifiedError(cause),
+      );
     };
     try {
       if (options.withCurrent) {
@@ -772,12 +790,12 @@ export class CodexAppServerClient {
               throw new Error("Codex request authority did not admit the wire write");
             }
           })
-          .catch((error: unknown) => attempt.failLocal(toStringifiedError(error)));
+          .catch(rejectAdmission);
       } else {
         write();
       }
     } catch (error) {
-      attempt.failLocal(toStringifiedError(error));
+      rejectAdmission(error);
     }
     return result;
   }

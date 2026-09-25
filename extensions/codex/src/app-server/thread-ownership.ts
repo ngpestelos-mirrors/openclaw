@@ -15,7 +15,6 @@ import type {
   CodexAppServerBindingIdentity,
   CodexAppServerBindingStore,
   CodexAppServerThreadBinding,
-  CodexBindingAuthority,
 } from "./session-binding.js";
 import { retainSharedCodexAppServerClientByInstanceId } from "./shared-client.js";
 import { withCodexAppServerThreadMutation } from "./thread-ownership-queue.js";
@@ -36,40 +35,6 @@ export function isSameCodexAppServerThreadOwner(
     current.threadId === expected.threadId &&
     current.clientId === expected.clientId
   );
-}
-
-/** Admit retention under the durable row owner or current native-process custody. */
-export function createCodexAppServerRetentionAuthority(params: {
-  authority: CodexBindingAuthority;
-  hasBackgroundCustody: () => boolean;
-}): CodexBindingAuthority {
-  return {
-    ...params.authority,
-    assertLegacyCurrent: () => {
-      if (!params.hasBackgroundCustody()) {
-        params.authority.assertLegacyCurrent();
-      }
-    },
-    withCurrent: async <T>(write: () => T): Promise<T> => {
-      if (params.hasBackgroundCustody()) {
-        return write();
-      }
-      let admitted = false;
-      try {
-        return await params.authority.withCurrent(() => {
-          admitted = true;
-          return write();
-        });
-      } catch (error) {
-        // A native process admitted while the row reader waited is the current
-        // cleanup owner. Never retry after the row-protected write began.
-        if (admitted || !params.hasBackgroundCustody()) {
-          throw error;
-        }
-        return write();
-      }
-    },
-  };
 }
 
 /** Fences native subscription and commit together; Codex subscriptions are not reference-counted. */

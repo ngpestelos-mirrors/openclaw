@@ -20,6 +20,11 @@ export async function attestCodexThreadToolSurface(
     assertCurrent: () => void;
   },
 ): Promise<void> {
+  if (params.appIds.length === 0 && !params.restrictedToolSurface) {
+    params.signal?.throwIfAborted();
+    params.assertCurrent();
+    return;
+  }
   if (params.withCurrent) {
     await params.withCurrent(params.assertCurrent);
   } else {

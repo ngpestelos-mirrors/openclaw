@@ -1,61 +1,6 @@
-import { combineNativeSessionBindingAuthority } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
-import type { CodexBindingAuthority } from "./session-binding.js";
 import { createCodexTestBindingStore } from "./session-binding.test-helpers.js";
-import { createCodexAppServerRetentionAuthority } from "./thread-ownership.js";
-
-function createAuthority(withCurrent: CodexBindingAuthority["withCurrent"]): CodexBindingAuthority {
-  return {
-    lineage: [],
-    assertCurrent: () => {},
-    assertLegacyCurrent: () => {},
-    withCurrent,
-  };
-}
-
-describe("Codex retained subscription authority", () => {
-  it("admits native custody that starts while durable row admission waits", async () => {
-    const entered = createDeferred<void>();
-    const reject = createDeferred<never>();
-    let background = false;
-    const write = vi.fn(() => "retained");
-    const rowAuthority = createAuthority(async () => {
-      entered.resolve();
-      return await reject.promise;
-    });
-    const authority = createCodexAppServerRetentionAuthority({
-      // Native binding leases compose this sole authority before acquisition.
-      authority: combineNativeSessionBindingAuthority(rowAuthority),
-      hasBackgroundCustody: () => background,
-    });
-    const retention = authority.withCurrent(write);
-    await expect(
-      Promise.race([entered.promise.then(() => "entered"), retention.then(() => "retained")]),
-    ).resolves.toBe("entered");
-    background = true;
-    reject.reject(new Error("session row was replaced"));
-    await expect(retention).resolves.toBe("retained");
-    expect(write).toHaveBeenCalledOnce();
-  });
-
-  it("never retries a row-protected write after reader cleanup fails", async () => {
-    let background = false;
-    const write = vi.fn(() => {
-      background = true;
-      return "retained";
-    });
-    const authority = createCodexAppServerRetentionAuthority({
-      authority: createAuthority(async (consume) => {
-        consume();
-        throw new Error("row reader cleanup failed");
-      }),
-      hasBackgroundCustody: () => background,
-    });
-    await expect(authority.withCurrent(write)).rejects.toThrow("row reader cleanup failed");
-    expect(write).toHaveBeenCalledOnce();
-  });
-});
 
 describe("Codex thread ownership across module copies", () => {
   it("orders ordinary mutation and adoption while another thread proceeds", async () => {

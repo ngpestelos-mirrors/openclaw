@@ -199,19 +199,15 @@ async function prepareCodexInferenceRoute(params: {
     params.signal?.throwIfAborted();
     params.assertCurrent();
   };
-  if (params.authority) {
-    await params.authority.withCurrent(assertCurrent);
-  } else {
-    assertCurrent();
-  }
+  assertCurrent();
   const snapshot =
     params.effectiveConfig ??
-    (await readCodexEffectiveConfig(params.client, params.cwd, { signal: params.signal }));
-  if (params.authority) {
-    await params.authority.withCurrent(assertCurrent);
-  } else {
-    assertCurrent();
-  }
+    (await readCodexEffectiveConfig(params.client, params.cwd, {
+      signal: params.signal,
+      assertCurrent: params.assertCurrent,
+      ...(params.authority ? { withCurrent: params.authority.withCurrent } : {}),
+    }));
+  assertCurrent();
   const unsupported = () => {
     if (owner.oauth) {
       throw new Error(
@@ -330,23 +326,13 @@ async function prepareCodexInferenceRoute(params: {
           withCurrent: params.authority?.withCurrent,
         },
       );
-  if (params.authority) {
-    await params.authority.withCurrent(assertCurrent);
-  } else {
-    assertCurrent();
-  }
+  assertCurrent();
   const type = account?.account?.type;
   if (owner.oauth && type !== "apiKey") {
     return unsupported();
   }
   if (!customProvider && type !== "apiKey" && type !== "chatgpt") {
     return unsupported();
-  }
-  if (!customProvider && owner.authRoute && owner.authRoute !== type) {
-    throw new Error("Codex native account route changed; reconnect before retrying");
-  }
-  if (type === "apiKey" || type === "chatgpt") {
-    owner.authRoute = type;
   }
   // Pinned native ModelProviderInfo::to_api_provider uses these defaults only without an override.
   // chatgpt_base_url owns other native services; it is not the model-provider base URL.
@@ -355,11 +341,7 @@ async function prepareCodexInferenceRoute(params: {
       (type === "apiKey" ? "https://api.openai.com/v1" : "https://chatgpt.com/backend-api/codex"),
   );
   const { isBlockedHostnameOrIp } = await import("openclaw/plugin-sdk/ssrf-runtime");
-  if (params.authority) {
-    await params.authority.withCurrent(assertCurrent);
-  } else {
-    assertCurrent();
-  }
+  assertCurrent();
   if (isBlockedHostnameOrIp(target.hostname)) {
     return unsupported();
   }
@@ -382,9 +364,6 @@ async function prepareCodexInferenceRoute(params: {
     params.config?.["features.memories"] ??
     (isJsonObject(params.config?.features) ? params.config.features.memories : undefined) ??
     (isJsonObject(snapshot.config.features) ? snapshot.config.features.memories : undefined);
-  // A configured native startup service may outlive the foreground that created its thread.
-  // generate_memories controls new thread recording, not processing of eligible prior history.
-  owner.memoryConfigured ||= memoryFeature === true;
   const modelPolicyEnforced = params.modelPolicyEnforced !== false;
   const key = JSON.stringify([
     provider,
@@ -394,43 +373,63 @@ async function prepareCodexInferenceRoute(params: {
     preserveCodexBackendRoutes,
     modelPolicyEnforced,
   ]);
-  let pending = owner.routes.get(key);
-  if (!pending) {
-    if (owner.routes.size >= MAX_ROUTES) {
-      if (params.optionalProjection) {
-        return unsupported();
-      }
-      throw new Error(
-        "Codex inference route limit reached; start a fresh managed native connection before retrying.",
-      );
+  const prepareRoute = () => {
+    assertCurrent();
+    if (!customProvider && owner.authRoute && owner.authRoute !== type) {
+      throw new Error("Codex native account route changed; reconnect before retrying");
     }
-    pending = Promise.all([
-      import("./inference-proxy.js"),
-      import("./native-subagent-monitor.js"),
-      import("./inference-dispatch.js"),
-    ]).then(([{ createCodexInferenceProxy }, native, { createCodexInferenceModelBinding }]) => {
-      assertClient();
-      return createCodexInferenceProxy({
-        upstream: target,
-        assertCurrent: assertClient,
-        oauth: owner.oauth,
-        preserveAzureUrlFeatures,
-        preserveCodexBackendRoutes,
-        bindModelExecution: createCodexInferenceModelBinding({
-          client,
-          provider,
-          modelPolicyEnforced,
+    if (type === "apiKey" || type === "chatgpt") {
+      owner.authRoute = type;
+    }
+    // A configured native startup service may outlive the foreground that created its thread.
+    // generate_memories controls new thread recording, not processing of eligible prior history.
+    owner.memoryConfigured ||= memoryFeature === true;
+    let pending = owner.routes.get(key);
+    if (!pending) {
+      if (owner.routes.size >= MAX_ROUTES) {
+        if (params.optionalProjection) {
+          return unsupported();
+        }
+        throw new Error(
+          "Codex inference route limit reached; start a fresh managed native connection before retrying.",
+        );
+      }
+      pending = Promise.all([
+        import("./inference-proxy.js"),
+        import("./native-subagent-monitor.js"),
+        import("./inference-dispatch.js"),
+      ]).then(([{ createCodexInferenceProxy }, native, { createCodexInferenceModelBinding }]) => {
+        assertClient();
+        return createCodexInferenceProxy({
+          upstream: target,
           assertCurrent: assertClient,
-          memoryConfigured: () => owner.memoryConfigured,
-          captureModelSource: native.codexNativeSubagentMonitorRuntime.captureModelSource,
-          resolveModelThreadId: native.codexNativeSubagentMonitorRuntime.resolveModelThreadId,
-        }),
+          oauth: owner.oauth,
+          preserveAzureUrlFeatures,
+          preserveCodexBackendRoutes,
+          bindModelExecution: createCodexInferenceModelBinding({
+            client,
+            provider,
+            modelPolicyEnforced,
+            assertCurrent: assertClient,
+            memoryConfigured: () => owner.memoryConfigured,
+            captureModelSource: native.codexNativeSubagentMonitorRuntime.captureModelSource,
+            resolveModelThreadId: native.codexNativeSubagentMonitorRuntime.resolveModelThreadId,
+          }),
+        });
       });
-    });
-    // Keep a failed route failed for this physical client; never fall back to unmodified inference.
-    owner.routes.set(key, pending);
+      // Keep a failed route failed for this physical client; never fall back to unmodified inference.
+      owner.routes.set(key, pending);
+    }
+    // The admission publishes only the pending route, never awaits its startup.
+    return { pending };
+  };
+  const prepared = params.authority
+    ? await params.authority.withCurrent(prepareRoute)
+    : prepareRoute();
+  if (!prepared) {
+    return undefined;
   }
-  const route = await pending;
+  const route = await prepared.pending;
   const publish = () => {
     assertCurrent();
     route.assertCurrent();
@@ -503,7 +502,11 @@ export async function prepareCodexInferenceThreadConfig(params: {
   params.assertCurrent();
   const effectiveConfig =
     params.effectiveConfig ??
-    (await readCodexEffectiveConfig(params.client, params.cwd, { signal: params.signal }));
+    (await readCodexEffectiveConfig(params.client, params.cwd, {
+      signal: params.signal,
+      assertCurrent: params.assertCurrent,
+      ...(params.authority ? { withCurrent: params.authority.withCurrent } : {}),
+    }));
   params.signal?.throwIfAborted();
   params.assertCurrent();
   const route =
@@ -524,11 +527,8 @@ export async function prepareCodexInferenceThreadConfig(params: {
         withCurrent: params.authority?.withCurrent,
       },
     );
-    if (params.authority) {
-      await params.authority.withCurrent(params.assertCurrent);
-    } else {
-      params.assertCurrent();
-    }
+    params.signal?.throwIfAborted();
+    params.assertCurrent();
     if (thread.id !== binding.threadId || thread.status?.type !== "notLoaded") {
       throw new Error(
         "Codex loaded thread has no owned inference route; reconnect before retrying",

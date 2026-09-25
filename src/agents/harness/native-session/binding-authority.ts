@@ -37,7 +37,16 @@ export function readNativeSessionBindingEntries<T>(
   reads: readonly NativeSessionBindingRead[],
   consume: (entries: readonly (SessionEntry | undefined)[]) => T,
 ): Promise<T> {
-  const durable = reads.filter((read) => !isIncognitoSessionKey(read.sessionKey));
+  const sameRead = (left: NativeSessionBindingRead, right: NativeSessionBindingRead) =>
+    left.agentId === right.agentId &&
+    left.sessionKey === right.sessionKey &&
+    left.storePath === right.storePath &&
+    left.env === right.env;
+  // Share row observations, not lineage assertions or their lifecycle guards.
+  const unique = reads.filter(
+    (read, index) => reads.findIndex((candidate) => sameRead(candidate, read)) === index,
+  );
+  const durable = unique.filter((read) => !isIncognitoSessionKey(read.sessionKey));
   return withSessionEntriesFromStoresInWorker(
     durable.map((read) => ({
       ...read,
@@ -49,7 +58,7 @@ export function readNativeSessionBindingEntries<T>(
       ],
     })),
     (prepared) => {
-      const entries = reads.map((read) => {
+      const entries = unique.map((read) => {
         const index = durable.indexOf(read);
         // Process-owned incognito handles cannot be reopened in a durable reader worker.
         return index < 0
@@ -67,7 +76,9 @@ export function readNativeSessionBindingEntries<T>(
       for (const read of prepared) {
         read.assertCurrent();
       }
-      return consume(entries);
+      return consume(
+        reads.map((read) => entries[unique.findIndex((candidate) => sameRead(candidate, read))]),
+      );
     },
     { ordered: true },
   );
@@ -123,7 +134,7 @@ export function createNativeSessionBindingAuthority(
 export function combineNativeSessionBindingAuthority(
   ...authorities: readonly (NativeSessionBindingAuthority | undefined)[]
 ): NativeSessionBindingAuthority {
-  const present = authorities.filter((authority) => authority !== undefined);
+  const present = [...new Set(authorities.filter((authority) => authority !== undefined))];
   if (present.length === 1) {
     return present[0]!;
   }

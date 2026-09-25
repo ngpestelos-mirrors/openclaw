@@ -17,7 +17,7 @@ import {
 } from "./client.js";
 import { assertCodexThreadResumeResponse } from "./protocol-validators.js";
 import type { CodexThreadResumeParams, CodexThreadResumeResponse } from "./protocol.js";
-import { CodexAppServerScopedRequestRejectedError } from "./request.js";
+import { CodexAppServerScopedRequestRejectedError } from "./rpc-error.js";
 import { isCodexAppServerStartSelectionChangedError } from "./shared-client.js";
 
 /** Resumes one thread, releasing or isolating every possible native subscription. */
@@ -34,34 +34,6 @@ export async function resumeCodexAppServerThread(params: {
 }): Promise<CodexThreadResumeResponse> {
   const threadId = params.request.threadId;
   let response: CodexThreadResumeResponse;
-  let ownershipRejected = false;
-  const assertCurrent =
-    params.assertCurrent &&
-    (() => {
-      try {
-        params.assertCurrent?.();
-      } catch (error) {
-        // Only this physical pre-write callback proves no subscription was acquired.
-        ownershipRejected = true;
-        throw error;
-      }
-    });
-  const withCurrent =
-    params.withCurrent &&
-    (async (write: () => void) => {
-      let admitted = false;
-      try {
-        await params.withCurrent!(() => {
-          admitted = true;
-          write();
-        });
-      } catch (error) {
-        if (!admitted) {
-          ownershipRejected = true;
-        }
-        throw error;
-      }
-    });
   try {
     response = assertCodexThreadResumeResponse(
       await (params.requestResume
@@ -69,15 +41,14 @@ export async function resumeCodexAppServerThread(params: {
         : params.client.request("thread/resume", params.request, {
             ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
             ...(params.signal ? { signal: params.signal } : {}),
-            assertCurrent,
-            withCurrent,
+            assertCurrent: params.assertCurrent,
+            withCurrent: params.withCurrent,
           })),
     );
     assertCodexThreadResumeSubscription(threadId, response.thread.id);
     forgetCodexWorkspaceReferences(params.client, threadId);
   } catch (error) {
     if (
-      ownershipRejected ||
       isCodexAppServerStartSelectionChangedError(error) ||
       isCodexAppServerStartupError(error) ||
       error instanceof CodexAppServerScopedRequestRejectedError ||

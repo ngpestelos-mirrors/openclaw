@@ -18,9 +18,11 @@ import type {
   CodexControlRequestObservation,
   CodexControlRequestPhase,
 } from "./request-observation.js";
-import { CodexAppServerRpcError } from "./rpc-error.js";
+import { CodexAppServerRpcError, CodexAppServerScopedRequestRejectedError } from "./rpc-error.js";
 import type { CodexAppServerClientOptions } from "./shared-client.js";
 import { withAbortableTimeout, withTimeout } from "./timeout.js";
+
+export { CodexAppServerScopedRequestRejectedError } from "./rpc-error.js";
 
 type CodexAppServerClientRequestParams = {
   client: CodexAppServerClient;
@@ -95,33 +97,12 @@ export async function requestCodexAppServerClientJson<T = JsonValue | undefined>
     const requestParams = params.requestParams;
     const attemptWaiterFinished =
       method === "thread/list" ? params.controlObservation?.attemptWaiterFinished : undefined;
-    const withCurrent = params.withCurrent;
     const options = {
       timeoutMs,
       signal: params.signal,
-      withCurrent: withCurrent
-        ? async (write: () => void) => {
-            let admitted = false;
-            try {
-              await withCurrent(() => {
-                admitted = true;
-                write();
-              });
-            } catch (cause) {
-              if (!admitted) {
-                throw new CodexAppServerScopedRequestRejectedError(
-                  cause instanceof Error ? cause.message : String(cause),
-                  { cause },
-                );
-              }
-              throw cause;
-            }
-          }
-        : undefined,
+      withCurrent: params.withCurrent,
+      assertCurrent: params.assertCurrent,
       ...(attemptWaiterFinished ? { attemptWaiterFinished } : {}),
-      ...(params.assertCurrent
-        ? { assertCurrent: () => assertRequestOwnerCurrent(params.assertCurrent) }
-        : {}),
     };
     phase = "client-request";
     observeControlPhase(params.controlObservation, phase);
@@ -199,14 +180,6 @@ export type CodexAppServerScopedRequest = <T = JsonValue | undefined>(request: {
   /** Rechecks caller-owned authority immediately before each physical write. */
   assertCurrent?: () => void;
 }) => Promise<T>;
-
-/** A scoped guard rejected the request before a physical write. */
-export class CodexAppServerScopedRequestRejectedError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "CodexAppServerScopedRequestRejectedError";
-  }
-}
 
 function createScopeCleanupError(message: string): CodexAppServerScopedRequestRejectedError {
   // Every completed scope needs a fresh abort reason, even on success. Skip its
