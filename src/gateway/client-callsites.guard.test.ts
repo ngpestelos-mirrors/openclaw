@@ -4,6 +4,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { isTestSupportFileTarget } from "../../scripts/lib/changed-path-facts.mjs";
 import { toRepoRelativePath } from "../test-utils/repo-files.js";
 
 const GATEWAY_CLIENT_CONSTRUCTOR_PATTERN = /new\s+GatewayClient\s*\(/;
@@ -22,13 +23,13 @@ const ALLOWED_GATEWAY_CLIENT_CALLSITES = new Set([
   "src/tui/gateway-chat.ts",
 ]);
 
-async function collectSourceFiles(dir: string): Promise<string[]> {
+async function collectSourceFiles(root: string, dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files: string[] = [];
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...(await collectSourceFiles(fullPath)));
+      files.push(...(await collectSourceFiles(root, fullPath)));
       continue;
     }
     if (!entry.isFile()) {
@@ -39,7 +40,7 @@ async function collectSourceFiles(dir: string): Promise<string[]> {
     }
     if (
       entry.name.endsWith(".test.ts") ||
-      entry.name.endsWith(".test-support.ts") ||
+      isTestSupportFileTarget(toRepoRelativePath(root, fullPath)) ||
       entry.name.endsWith(".e2e.ts") ||
       entry.name.endsWith(".e2e.test.ts") ||
       entry.name.endsWith(".live.test.ts")
@@ -55,8 +56,8 @@ describe("GatewayClient production callsites", () => {
   it("remain constrained to allowlisted files", async () => {
     const root = process.cwd();
     const sourceFiles = [
-      ...(await collectSourceFiles(path.join(root, "src"))),
-      ...(await collectSourceFiles(path.join(root, "extensions"))),
+      ...(await collectSourceFiles(root, path.join(root, "src"))),
+      ...(await collectSourceFiles(root, path.join(root, "extensions"))),
     ];
     const callsites: string[] = [];
     for (const fullPath of sourceFiles) {

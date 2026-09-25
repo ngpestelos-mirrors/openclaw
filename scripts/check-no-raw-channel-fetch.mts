@@ -4,6 +4,7 @@
 import * as ts from "typescript/unstable/ast";
 import { bundledPluginCallsite } from "./lib/bundled-plugin-paths.mjs";
 import { runCallsiteGuard } from "./lib/callsite-guard.mts";
+import { isTestSupportFileTarget } from "./lib/changed-path-facts.mjs";
 import {
   collectCallExpressionLines,
   runAsScript,
@@ -25,7 +26,6 @@ const allowedRawFetchCallsites = new Set([
   bundledPluginCallsite("discord", "src/voice-message.ts", 333),
   bundledPluginCallsite("elevenlabs", "speech-provider.ts", 295),
   bundledPluginCallsite("elevenlabs", "tts.ts", 74),
-  bundledPluginCallsite("feishu", "src/monitor.webhook.test-helpers.ts", 25),
   bundledPluginCallsite("github-copilot", "login.ts", 80),
   bundledPluginCallsite("github-copilot", "login.ts", 112),
   bundledPluginCallsite("googlechat", "src/auth.ts", 83),
@@ -94,7 +94,7 @@ async function main() {
     sourceRoots,
     extraTestSuffixes: [".browser.test.ts", ".node.test.ts"],
     findCallLines: findRawFetchCallLines,
-    skipRelativePath: (relPath) => relPath.includes("/test-support/"),
+    skipRelativePath: isTestSupportFileTarget,
     allowCallsite: (callsite) => allowedRawFetchCallsites.has(callsite),
     header: "Found raw fetch() usage in channel/plugin runtime sources outside allowlist:",
     footer: "Use fetchWithSsrFGuard() or existing channel/plugin SDK wrappers for network calls.",
