@@ -7,6 +7,7 @@ import {
   runGlobalPackageUpdateSteps,
   type PackageUpdateTransaction,
 } from "../../infra/package-update-steps.js";
+import type { PackageActivationOptions } from "../../infra/package-update-swap-contract.js";
 import { PackageUpdateActivationError } from "../../infra/package-update-swap-contract.js";
 import {
   failedPackageVerificationStep,
@@ -429,6 +430,7 @@ export type PackageInstallUpdateParams = {
   onTransaction: (transaction: PackageUpdateTransaction) => void;
   onConfigSnapshot?: PackageDoctorOptions["onConfigSnapshot"];
   getDoctorContext?: PackageDoctorOptions["getDoctorContext"];
+  activation?: PackageActivationOptions;
 };
 
 /** Retain one staged target while its runtime initializes a fresh profile. */
@@ -577,6 +579,7 @@ export async function runPackageInstallUpdate(
     beforeActivate: params.beforeActivate,
     assertCurrent: params.assertCurrent,
     onTransaction: params.onTransaction,
+    activation: params.activation,
     installTarget,
     installSpec,
     packageName,

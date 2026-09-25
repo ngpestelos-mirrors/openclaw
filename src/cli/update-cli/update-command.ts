@@ -3,6 +3,11 @@ import { formatConfigIssueLines } from "../../config/issue-format.js";
 import { withGatewayServiceUpdateAuthority } from "../../daemon/service-update-authority.js";
 import { tryProcessCwd } from "../../infra/safe-cwd.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
+import {
+  assertUpdateInitialStoreInvocation,
+  currentUpdateInitialStoreAdmission,
+  withUpdateInitialStoreInvocation,
+} from "../../infra/update-initial-store-invocation.js";
 import type { RetainUpdateRuntime } from "../../infra/update-retained-runtime.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
@@ -16,6 +21,7 @@ import {
   type UpdateCommandOptions,
 } from "./shared.js";
 import { withUpdateCandidateAdmission } from "./update-command-candidate-admission.js";
+import type { UpdateCommandExecutorOptions } from "./update-command-executor-options.js";
 import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
@@ -23,6 +29,7 @@ import {
 } from "./update-command-executor.js";
 import type { InitializedUpdate } from "./update-command-initialization.js";
 import { admitUpdateRequesterContinuation } from "./update-command-managed-context.js";
+import { prepareMutableUpdateRuntime } from "./update-command-mutable-runtime.js";
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
 import type { StagedPackageInstallUpdate } from "./update-command-package.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
@@ -32,7 +39,6 @@ import {
   assertUpdatePackageActivationAdmission,
   createUpdateRunProgress,
   prepareUpdateCommand,
-  prepareMutableUpdateRuntime,
   resolveUpdateCommandAdmissionEnv,
   resolveUpdateCommandAdmissionRoot,
   withUpdatePreviewSignals,
@@ -51,16 +57,23 @@ import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
 
 type PreparedUpdate = NonNullable<Awaited<ReturnType<typeof prepareUpdateCommand>>>;
 
-export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<void> {
-  const { withRetainedUpdateRuntime } = await import("../../infra/update-retained-runtime.js");
-  return await withRetainedUpdateRuntime(import.meta.url, (retainRuntime) =>
-    updateCommandWithRuntime(inputOpts, retainRuntime),
-  );
+export async function updateCommand(
+  inputOpts: UpdateCommandOptions,
+  executorOptions?: UpdateCommandExecutorOptions,
+): Promise<void> {
+  return withUpdateInitialStoreInvocation(inputOpts.initialStores, async () => {
+    assertUpdateInitialStoreInvocation();
+    const { withRetainedUpdateRuntime } = await import("../../infra/update-retained-runtime.js");
+    return await withRetainedUpdateRuntime(import.meta.url, (retainRuntime) =>
+      updateCommandWithRuntime(inputOpts, retainRuntime, executorOptions),
+    );
+  });
 }
 
 async function updateCommandWithRuntime(
   inputOpts: UpdateCommandOptions,
   retainRuntime: RetainUpdateRuntime,
+  executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const invocationCwd = tryProcessCwd();
   const recoveryState: UpdateCommandRecoveryState = {
@@ -70,6 +83,7 @@ async function updateCommandWithRuntime(
   const prepared = await withUpdateAdmissionReporting(inputOpts, () =>
     withUpdateInProgressEnv(invocationCwd, () => prepareUpdateCommand(inputOpts)),
   );
+  assertUpdateInitialStoreInvocation(resolveUpdateCommandAdmissionRoot(prepared));
   // Post-core children report phase results; the outer updater owns the run ledger.
   if (prepared.postCoreUpdateResume) {
     return await withUpdateInProgressEnv(invocationCwd, async () =>
@@ -92,9 +106,15 @@ async function updateCommandWithRuntime(
       expectedForeground:
         prepared.controlPlaneUpdateSentinelMeta?.completionOwner === "gateway-restart" || undefined,
     });
+    assertUpdateInitialStoreInvocation(root, env);
     const { updateStateNeedsInitialization } = await import("./update-command-initialization.js");
     assertUpdatePackageActivationAdmission(root, { serviceRoot });
-    if (await updateStateNeedsInitialization(env)) {
+    const needsInitialization = await updateStateNeedsInitialization(env);
+    assertUpdateInitialStoreInvocation(root, env);
+    if (needsInitialization) {
+      if (currentUpdateInitialStoreAdmission()) {
+        throw new Error("Explicit private update invocation requires existing initialized state.");
+      }
       const { initializeAndRunUpdate } = await import("./update-command-initialization-run.js");
       return await initializeAndRunUpdate(
         inputOpts,
@@ -110,7 +130,9 @@ async function updateCommandWithRuntime(
             invocationCwd,
             retainRuntime,
             initialization,
+            executorOptions,
           ),
+        executorOptions,
       );
     }
     return await runAdmittedUpdate(
@@ -119,6 +141,8 @@ async function updateCommandWithRuntime(
       recoveryState,
       invocationCwd,
       retainRuntime,
+      undefined,
+      executorOptions,
     );
   });
 }
@@ -130,6 +154,7 @@ async function runAdmittedUpdate(
   invocationCwd: string | undefined,
   retainRuntime: RetainUpdateRuntime,
   initialization?: InitializedUpdate,
+  executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const run = await admitUpdateCommandRun({
     opts: inputOpts,
@@ -217,7 +242,18 @@ async function runAdmittedUpdate(
             withUpdateInProgressEnv(invocationCwd, () =>
               withUpdateCommandTerminalResult((registerRun) => {
                 registerRun(run);
-                return withUpdateCommandExecutor(run.runId, executeWith);
+                const selection = currentUpdateInitialStoreAdmission()?.selection;
+                return withUpdateCommandExecutor(
+                  run.runId,
+                  executeWith,
+                  executorOptions ??
+                    (selection
+                      ? {
+                          directOriginal: { databasePath: selection.handoff.databasePath },
+                          initialStores: { protocol: "initial-pair-v1", selection },
+                        }
+                      : undefined),
+                );
               }, opts),
             ),
           );
