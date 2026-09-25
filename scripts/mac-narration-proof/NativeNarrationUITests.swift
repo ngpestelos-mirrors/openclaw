@@ -21,7 +21,7 @@ final class NativeNarrationUITests: XCTestCase {
         // XCUIApplication(url:) is Apple's macOS external-bundle launch API;
         // this test runner is never an app host or a replacement UI.
         let app = XCUIApplication(url: URL(fileURLWithPath: appPath))
-        app.launchArguments = ["--chat", "--attach-only", "-AppleInterfaceStyle", "Dark"]
+        app.launchArguments = ["--attach-only", "-AppleInterfaceStyle", "Dark"]
         app.launchEnvironment = [
             "HOME": proofHome,
             "CFFIXED_USER_HOME": proofHome,
@@ -41,6 +41,7 @@ final class NativeNarrationUITests: XCTestCase {
             app.terminate()
         }
         app.launch()
+        self.openNativeChat(app)
 
         let input = app.textViews["chat-message-input"]
         XCTAssertTrue(input.waitForExistence(timeout: 30), "Native desktop composer did not open")
@@ -86,6 +87,7 @@ final class NativeNarrationUITests: XCTestCase {
 
         app.terminate()
         app.launch()
+        self.openNativeChat(app)
         _ = try await self.control("await-reconnect")
         XCTAssertTrue(current.waitForExistence(timeout: 10), "Native desktop in-flight history did not load")
         let recoveredVisible = first.waitForExistence(timeout: 2) && second.waitForExistence(timeout: 2)
@@ -147,6 +149,20 @@ final class NativeNarrationUITests: XCTestCase {
         // Both revisions traverse the complete real flow. Only missing active
         // or replayed narration is the expected negative-control failure.
         XCTAssertTrue(activeVisible && recoveredVisible && quickVisible, "NARRATION_MISSING_WHILE_RUNNING")
+    }
+
+    @MainActor
+    private func openNativeChat(_ app: XCUIApplication) {
+        // Exercise the ordinary Gateway menu action after app startup. The CLI
+        // auto-open request races primary-connection initialization on both revisions.
+        app.activate()
+        let gateways = app.menuBars.menuBarItems["Gateways"]
+        XCTAssertTrue(gateways.waitForExistence(timeout: 10))
+        gateways.click()
+        let primary = app.menuItems.matching(identifier: "primary").firstMatch
+        XCTAssertTrue(primary.waitForExistence(timeout: 10))
+        XCTAssertTrue(primary.isHittable)
+        primary.click()
     }
 
     @MainActor

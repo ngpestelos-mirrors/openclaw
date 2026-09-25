@@ -93,6 +93,9 @@ for setting in 'openclaw.nativeExperienceEnabled' 'openclaw.onboardingSeen'; do
   HOME="$app_home" CFFIXED_USER_HOME="$app_home" defaults write ai.openclaw.mac.profile.macproof "$setting" -bool true
 done
 HOME="$app_home" CFFIXED_USER_HOME="$app_home" defaults write ai.openclaw.mac.profile.macproof openclaw.onboardingVersion -int 8
+HOME="$app_home" CFFIXED_USER_HOME="$app_home" defaults read ai.openclaw.mac.profile.macproof \
+  openclaw.nativeExperienceEnabled > "$output/native-experience-enabled.txt"
+test "$(cat "$output/native-experience-enabled.txt")" = 1
 keychain="$app_home/Library/Keychains/proof.keychain-db"
 for action in create unlock; do
   HOME="$app_home" CFFIXED_USER_HOME="$app_home" security "$action-keychain" -p '' "$keychain"
@@ -121,6 +124,8 @@ fi
 status=0
 xcodebuild "${args[@]}" -resultBundlePath "$output/$stage.xcresult" test-without-building \
   > "$output/ui-test.log" 2>&1 || status=$?
+/usr/bin/log show --last 8m --style compact --predicate 'process == "OpenClaw"' \
+  > "$output/app-runtime.log" 2>&1 || true
 curl --fail --silent http://127.0.0.1:19876/narration > "$output/events.json"
 curl --fail --silent http://127.0.0.1:19876/ > "$output/requests.json"
 xcrun xcresulttool get test-results summary --path "$output/$stage.xcresult" --compact > "$output/summary.json"
