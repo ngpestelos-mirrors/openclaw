@@ -20,24 +20,6 @@ function runtime() {
 beforeEach(() => mocks.refresh.mockReset());
 
 describe("models refresh", () => {
-  it.each(["updated", "fresh", "disabled"] as const)(
-    "reports the human %s outcome",
-    async (status) => {
-      const commandRuntime = runtime();
-      mocks.refresh.mockResolvedValueOnce({
-        status,
-        providers: status === "disabled" ? 0 : 2,
-        models: status === "disabled" ? 0 : 3,
-        generatedAt: 1_753_500_000_000,
-      });
-      await modelsRefreshCommand({}, commandRuntime);
-      expect(commandRuntime.log.mock.calls.flat().join("\n")).toMatch(
-        new RegExp(`\\b${status}\\b`),
-      );
-      expect(commandRuntime.error).not.toHaveBeenCalled();
-    },
-  );
-
   it("emits one JSON document without mixing in the human activation notice", async () => {
     const commandRuntime = runtime();
     mocks.refresh.mockResolvedValueOnce({

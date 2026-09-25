@@ -453,6 +453,36 @@ it(
         expect(
           newRun.snapshot.createStores().modelRegistry.find("kimi", "remote-first")?.cost.input,
         ).toBe(7);
+
+        const beforeDisable = await client.request<{ hash: string }>("config.get", {});
+        await client.request("config.patch", {
+          baseHash: beforeDisable.hash,
+          raw: JSON.stringify({ models: { catalogRefresh: { enabled: false } } }),
+        });
+        await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
+        const withoutRemote = await list(true);
+        expect(kimiIds(withoutRemote)).not.toContain("remote-next");
+        expect(kimiIds(withoutRemote)).not.toContain("remote-last");
+        expect(currentPrice()).toBeUndefined();
+        const disabledThread = providerThread;
+        exitWorkerOnce = true;
+        await settleInterrupted(list(true), "worker exit with remote catalog disabled");
+        await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
+        expect(kimiIds(await list(true))).not.toContain("remote-last");
+        expect(currentPrice()).toBeUndefined();
+        expect(providerThread).not.toBe(disabledThread);
+        expect(
+          withPreparedModelRuntimePluginGenerationScope(
+            oldRun.pluginGeneration,
+            () =>
+              resolveModelCostConfig({
+                config,
+                agentDir: state.agentDir(),
+                provider: "kimi",
+                model: "remote-first",
+              })?.input,
+          ),
+        ).toBe(1);
       } finally {
         releaseProvider();
         await disconnectGatewayClient(client);
