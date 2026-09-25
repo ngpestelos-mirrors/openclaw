@@ -1,7 +1,6 @@
 // Copilot plugin module implements harness behavior.
 import type { CopilotClient } from "@github/copilot-sdk";
 import {
-  buildAgentHookContextChannelFields,
   compactWithSafetyTimeout,
   getModelProviderRequestTransport,
   projectSettledTurnFinalizationAttemptResult,
@@ -23,6 +22,13 @@ import type { AttemptParamsLike, ModelRefInputObject } from "./src/attempt-types
 import type { CopilotSessionConfig } from "./src/attempt.js";
 import { createCopilotByokAuth, resolveCopilotAuth, tokenFingerprint } from "./src/auth-bridge.js";
 import { createCopilotByokProxy } from "./src/byok-proxy.js";
+import {
+  buildCopilotCompactionHookContext,
+  isStaleSdkSessionError,
+  throwIfAborted,
+  type CopilotHistoryCompactResult,
+  type CopilotHistoryCompactSession,
+} from "./src/history-compaction.js";
 import {
   isCopilotByokUnsupportedProviderError,
   resolveCopilotProvider,
@@ -82,32 +88,6 @@ interface TrackedSession {
   authMode: "gitHubToken" | "useLoggedInUser" | "byok";
   authProfileId?: string;
   authProfileVersion?: string;
-}
-
-interface CopilotHistoryCompactResult {
-  success: boolean;
-  tokensRemoved: number;
-  messagesRemoved: number;
-  summaryContent?: string;
-  contextWindow?: {
-    tokenLimit: number;
-    currentTokens: number;
-    messagesLength: number;
-    systemTokens?: number;
-    conversationTokens?: number;
-    toolDefinitionsTokens?: number;
-  };
-}
-
-interface CopilotHistoryCompactSession {
-  abort(): Promise<void>;
-  disconnect(): Promise<void>;
-  rpc: {
-    history: {
-      abortManualCompaction(): Promise<{ aborted: boolean }>;
-      compact(params?: { customInstructions?: string }): Promise<CopilotHistoryCompactResult>;
-    };
-  };
 }
 
 export type CopilotSessionBinding = {
@@ -288,28 +268,9 @@ async function deleteStoredBinding(
   }
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) {
-    return;
-  }
-  const reason = "reason" in signal ? signal.reason : undefined;
-  if (reason instanceof Error) {
-    throw reason;
-  }
-  const error = reason ? new Error("aborted", { cause: reason }) : new Error("aborted");
-  error.name = "AbortError";
-  throw error;
-}
-
-function isStaleSdkSessionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /\b(404|not found|no such session|unknown session|stale|deleted|does not exist)\b/i.test(
-    message,
-  );
-}
-
 async function compactTrackedSdkSession(params: {
   abortSignal?: AbortSignal;
+  assertCurrent: () => void;
   client: CopilotClient;
   customInstructions?: string;
   gitHubToken?: string;
@@ -317,6 +278,7 @@ async function compactTrackedSdkSession(params: {
   sessionConfig: CopilotSessionConfig;
   sdkSessionId: string;
 }): Promise<CopilotHistoryCompactResult> {
+  params.assertCurrent();
   throwIfAborted(params.abortSignal);
   const session = (await params.client.resumeSession(params.sdkSessionId, {
     ...params.sessionConfig,
@@ -329,6 +291,7 @@ async function compactTrackedSdkSession(params: {
     ? { customInstructions: params.customInstructions }
     : undefined;
   try {
+    params.assertCurrent();
     throwIfAborted(params.abortSignal);
     return await session.rpc.history.compact(request);
   } finally {
@@ -513,20 +476,6 @@ function computeAttemptCompactKey(params: AttemptParamsLike): string {
 
 function computeCompactRequestKey(params: CopilotCompactParamsLike): string {
   return computeSessionKey({ kind: "compact", params }, { includeApi: false, includeAuth: false });
-}
-
-function buildCopilotCompactionHookContext(params: AgentHarnessCompactParams) {
-  return {
-    ...(params.runId ? { runId: params.runId } : {}),
-    agentId: params.agentId,
-    sessionKey: params.sessionKey,
-    sessionId: params.sessionId,
-    workspaceDir: params.workspaceDir,
-    modelProviderId: params.provider,
-    modelId: params.model,
-    trigger: params.trigger,
-    ...buildAgentHookContextChannelFields(params),
-  };
 }
 
 export function createCopilotAgentHarness(
@@ -1001,11 +950,26 @@ export function createCopilotAgentHarness(
         }
       }),
 
-    compact: (params: AgentHarnessCompactParams): Promise<AgentHarnessCompactResult | undefined> =>
+    compact: (
+      params: AgentHarnessCompactParams &
+        Partial<Pick<AgentHarnessCompactParams<2>, "hostCapabilities">>,
+    ): Promise<AgentHarnessCompactResult | undefined> =>
       trackOperation(async () => {
         if (disposed) {
           return undefined;
         }
+        const hostCapabilities = params.hostCapabilities;
+        if (
+          hostCapabilities?.kind !== "agent-harness-host-capability" ||
+          hostCapabilities.version !== 1 ||
+          typeof hostCapabilities.assertActive !== "function" ||
+          typeof hostCapabilities.retainSourceAuthority !== "function"
+        ) {
+          throw new Error(
+            "This host did not provide compaction source authority. Update OpenClaw before compacting this session.",
+          );
+        }
+        hostCapabilities.assertActive();
         // The SDK owns Copilot history compaction. OpenClaw only resumes
         // the tracked SDK session and calls the session-scoped RPC; durable
         // OpenClaw session/transcript state stays in SQLite, with no marker
@@ -1099,10 +1063,12 @@ export function createCopilotAgentHarness(
             sessionFile: params.sessionFile,
             ctx: hookContext,
           });
+          hostCapabilities.assertActive();
           compactResult = await compactWithSafetyTimeout(
             (abortSignal) =>
               compactTrackedSdkSession({
                 abortSignal,
+                assertCurrent: hostCapabilities.assertActive,
                 client,
                 customInstructions: params.customInstructions,
                 gitHubToken:

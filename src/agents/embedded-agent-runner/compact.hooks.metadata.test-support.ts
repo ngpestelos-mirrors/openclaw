@@ -105,3 +105,19 @@ export function createCompactHooksPreparedModelRuntime(input: {
     createStores: () => ({ authStorage: {}, modelRegistry: {} }),
   };
 }
+
+export type MockResolvedModel = {
+  logicalRef: { provider: string; model: string };
+  model: {
+    provider: string;
+    api: string;
+    baseUrl?: string;
+    id: string;
+    input: unknown[];
+    contextWindow?: number;
+    requestTimeoutMs?: number;
+  };
+  error: null;
+  authStorage: Pick<import("../sessions/auth-storage.js").AuthStorage, "setRuntimeApiKey">;
+  modelRegistry: Record<string, never> | import("../sessions/model-registry.js").ModelRegistry;
+};

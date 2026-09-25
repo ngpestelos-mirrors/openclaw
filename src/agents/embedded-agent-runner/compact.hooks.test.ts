@@ -49,7 +49,12 @@ import { createEventBus } from "../sessions/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../sessions/extensions/loader.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { SettingsManager } from "../sessions/settings-manager.js";
-import { useCompactHooksSessionFixture } from "./compact.hooks.fixture.test-support.js";
+import {
+  acquiredPreparedModelRuntime,
+  expectedNativeCompactionOptions,
+  useCompactHooksSessionFixture,
+  type CompactHooksQueuedCompaction,
+} from "./compact.hooks.fixture.test-support.js";
 import {
   acquireAgentRunPreparedModelRuntimeMock,
   attemptServerEndpointCompactionMock,
@@ -115,7 +120,7 @@ import {
 } from "./runs.js";
 
 let compactEmbeddedAgentSessionDirect: typeof import("./compact.js").compactEmbeddedAgentSessionDirect;
-let compactEmbeddedAgentSession: typeof import("./compact.queued.js").compactEmbeddedAgentSession;
+let compactEmbeddedAgentSession: CompactHooksQueuedCompaction;
 let compactTesting: typeof import("./compact.js").testing;
 let onSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.js").onSessionTranscriptUpdate;
 let onInternalSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.js").onInternalSessionTranscriptUpdate;
@@ -3553,20 +3558,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 });
 
 describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
-  async function acquiredPreparedModelRuntime() {
-    const pendingLease = acquireAgentRunPreparedModelRuntimeMock.mock.results[0]?.value;
-    if (!pendingLease) {
-      throw new Error("expected prepared model runtime acquisition");
-    }
-    return (await pendingLease).snapshot;
-  }
-
-  function expectedNativeCompactionOptions(
-    nativeCompactionRequest: "after_context_engine" | "required_preflight",
-  ) {
-    return { nativeCompactionRequest, preparedModelRuntime: expect.any(Object) };
-  }
-
   function mockQueuedRouteAwareModel(
     defaultApi: "openai-responses" | "openai-chatgpt-responses" = "openai-responses",
   ) {
@@ -4766,7 +4757,10 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         model: "gpt-5.5",
         agentHarnessId: "codex",
       }),
-      { nativeCompactionRequest: "after_context_engine", preparedModelRuntime: snapshot },
+      {
+        ...expectedNativeCompactionOptions("after_context_engine"),
+        preparedModelRuntime: snapshot,
+      },
     );
     const compactArg = mockCallArg(contextEngineCompactMock) as {
       runtimeContext?: Record<string, unknown>;

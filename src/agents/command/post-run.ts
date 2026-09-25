@@ -173,6 +173,8 @@ export async function finalizeEmbeddedAgentCommand(params: {
     evidence: RestartRecoveryTerminalDeliveryEvidenceResult,
   ) => void;
 }) {
+  const operatorAuthority = params.opts.operatorAuthority;
+  const assertSourceCurrent = params.opts.assertSourceCurrent;
   const {
     cfg,
     body,
@@ -451,6 +453,8 @@ export async function finalizeEmbeddedAgentCommand(params: {
       let maintenanceLifecycleRevision = sessionEntry?.lifecycleRevision;
       const authorize = () => {
         throwAgentRunRestartAbortReason(params.opts.abortSignal?.reason);
+        assertSourceCurrent?.();
+        operatorAuthority?.assertCurrent();
         assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
         return (
           maintenance.remainingMs() > 0 && !maintenance.signal.aborted && !sessionReboundDuringRun
@@ -463,6 +467,11 @@ export async function finalizeEmbeddedAgentCommand(params: {
         publishSessionOwnership(
           accepted.previousSessionId === undefined ? undefined : accepted.sessionId,
         );
+      };
+      const assertActive = () => {
+        if (!authorize()) {
+          throw new Error("Command compaction is no longer active");
+        }
       };
       try {
         if (maintenance.remainingMs() > 0) {
@@ -491,11 +500,8 @@ export async function finalizeEmbeddedAgentCommand(params: {
               abortSignal: maintenance.signal,
             },
             {
-              assertActive: () => {
-                if (!authorize()) {
-                  throw new Error("Command compaction is no longer active");
-                }
-              },
+              assertActive,
+              sourceAuthority: { assertActive, operatorAuthority },
               onCommitted,
             },
           );
