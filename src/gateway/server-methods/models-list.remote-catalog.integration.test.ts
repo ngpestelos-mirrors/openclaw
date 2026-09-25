@@ -1,5 +1,4 @@
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it, vi } from "vitest";
@@ -14,17 +13,13 @@ import {
 import { retainPreparedPluginGeneration } from "../../agents/prepared-model-runtime.plugin-lifetime.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import * as updateStartup from "../../infra/update-startup.js";
-import { flushLogger, setLoggerOverride } from "../../logging/logger.js";
 import { setRemoteModelCatalogOverlaySourcesForTest } from "../../model-catalog/remote-overlay.test-support.js";
 import { refreshRemoteModelCatalog } from "../../model-catalog/remote-refresh.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { resolveModelCostConfig } from "../../utils/usage-format.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "../test-helpers.e2e.js";
 
-afterEach(() => {
-  vi.restoreAllMocks();
-  setLoggerOverride(null);
-});
+afterEach(() => vi.restoreAllMocks());
 
 it(
   "publishes one remote rows/pricing generation without blocking readers or repricing admitted runs",
@@ -35,6 +30,9 @@ it(
       ...createUpdateCheck(params),
       start: () => {},
     }));
+    const unexpectedRestart = vi.fn(() => {
+      throw new Error("Remote catalog publication unexpectedly requested a Gateway restart");
+    });
     const state = await createOpenClawTestState({
       label: "remote-catalog-publication",
       env: {
@@ -208,8 +206,6 @@ it(
       };
       await state.writeConfig(cfg);
       state.applyEnv();
-      const logFile = await state.writeText("catalog.log", "");
-      setLoggerOverride({ level: "debug", consoleLevel: "silent", file: logFile });
       await state.writeAuthProfiles({
         version: 1,
         profiles: {
@@ -223,6 +219,7 @@ it(
         configPath: state.configPath,
         token,
         scopes: ["operator.admin"],
+        hotReloadRecovery: unexpectedRestart,
       });
       try {
         await server.startupSettled;
@@ -500,16 +497,10 @@ it(
         ).toBe(7);
 
         const beforeDisable = await client.request<{ hash: string }>("config.get", {});
-        try {
-          await client.request("config.patch", {
-            baseHash: beforeDisable.hash,
-            raw: JSON.stringify({ models: { catalogRefresh: { enabled: false } } }),
-          });
-        } catch (error) {
-          await flushLogger();
-          console.error(await readFile(logFile, "utf8"));
-          throw error;
-        }
+        await client.request("config.patch", {
+          baseHash: beforeDisable.hash,
+          raw: JSON.stringify({ models: { catalogRefresh: { enabled: false } } }),
+        });
         await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
         const withoutRemote = await list(true);
         expect(kimiIds(withoutRemote)).not.toContain("remote-next");
@@ -536,6 +527,7 @@ it(
             ),
           ),
         ).toEqual([1, 7]);
+        expect(unexpectedRestart).not.toHaveBeenCalled();
       } finally {
         releaseProvider();
         await disconnectGatewayClient(client);
