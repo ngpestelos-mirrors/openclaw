@@ -1,4 +1,5 @@
 import pLimit from "p-limit";
+import { withRemoteModelCatalogSnapshot } from "../model-catalog/remote-overlay.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
 import { createPreparedRuntimeAuthProfileUsageReader } from "./auth-profiles/runtime-snapshots.js";
 import {
@@ -207,14 +208,16 @@ export function createFullModelCatalogAccess(
   let nativePending: Promise<ModelCatalogSnapshot> | undefined;
   const assertCurrent = () =>
     assertPreparedModelRuntimeInputCurrent(params.agentFacts.input, params.isCurrent);
-  const worker = createPreparedModelCatalogWorker({
-    pluginRegistry: params.pluginGeneration.pluginRegistry,
-    agentFacts: params.agentFacts,
-    pluginMetadataSnapshot: params.pluginGeneration.pluginMetadataSnapshot,
-    preferBuiltPluginArtifacts: params.pluginGeneration.preferBuiltPluginArtifacts,
-    isCurrent: params.isCurrent,
-    retirementSignal: params.retirementSignal,
-  });
+  const worker = withRemoteModelCatalogSnapshot(params.pluginGeneration.remoteCatalog, () =>
+    createPreparedModelCatalogWorker({
+      pluginRegistry: params.pluginGeneration.pluginRegistry,
+      agentFacts: params.agentFacts,
+      pluginMetadataSnapshot: params.pluginGeneration.pluginMetadataSnapshot,
+      preferBuiltPluginArtifacts: params.pluginGeneration.preferBuiltPluginArtifacts,
+      isCurrent: params.isCurrent,
+      retirementSignal: params.retirementSignal,
+    }),
+  );
   const staticCatalog = project(params.catalogFacts.modelCatalog);
   if (hasNativeCatalog) {
     staticCatalog.authoritative = false;
