@@ -910,7 +910,7 @@ jobs:
           $packageRoot = Join-Path $prefix "node_modules/openclaw"
           $package = Get-Content -LiteralPath (Join-Path $packageRoot "package.json") -Raw | ConvertFrom-Json
           $lockPath = Join-Path $prefix "package-lock.json"
-          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json -AsHashtable
           if ($package.version -cne $contract.version -or $lock.packages.'node_modules/openclaw'.integrity -cne $contract.integrity) { throw "Installed released package differs from the authenticated input." }
           foreach ($marker in @(".openclaw-lifecycle-pending", "dist/openclaw-install-guard")) {
             if (Test-Path -LiteralPath (Join-Path $packageRoot $marker)) { throw "Released package lifecycle has not settled: $marker" }
