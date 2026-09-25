@@ -178,7 +178,11 @@ describe("update.status effective channel", () => {
     refreshGatewayUpdateStatusMock.mockRejectedValueOnce(new Error("fetch timed out"));
     const { updateHandlers } = await import("./update.js");
     const respond = vi.fn();
-    await updateHandlers["update.status"]({
+    const handler = updateHandlers["update.status"];
+    if (!handler) {
+      throw new Error("update.status handler is unavailable");
+    }
+    await handler({
       params: { refreshCheckout: true },
       respond,
       context: {

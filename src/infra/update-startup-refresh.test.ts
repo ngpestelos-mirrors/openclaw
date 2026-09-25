@@ -19,6 +19,8 @@ import {
   getUpdateAvailable,
   getUpdateSchedule,
   resetUpdateStatusState,
+  setUpdateAvailableCache,
+  setUpdateScheduleCache,
 } from "./update-status-state.js";
 
 vi.mock("../version.js", () => ({ VERSION: "1.0.0" }));
@@ -96,7 +98,6 @@ describe("interactive Dev update discovery", () => {
     expect(checkUpdateStatus).toHaveBeenCalledWith({
       root: "/opt/openclaw",
       signal: expect.any(AbortSignal),
-      timeoutMs: 5_000,
       fetchGit: true,
       includeRegistry: false,
       useDetachedDevUpstream: true,
@@ -142,6 +143,41 @@ describe("interactive Dev update discovery", () => {
     expect(getUpdateSchedule()?.campaign).toBeUndefined();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(runCampaignUpdate).not.toHaveBeenCalled();
+  });
+
+  it("preserves Dev package availability during an interactive checkout check", async () => {
+    const available = { currentVersion: "1.0.0", latestVersion: "1.1.0", channel: "dev" as const };
+    const schedule = {
+      channel: "dev" as const,
+      autoEnabled: false,
+      target: { kind: "package" as const, version: "1.1.0" },
+    };
+    setUpdateAvailableCache({ next: available });
+    setUpdateScheduleCache({ next: schedule });
+    vi.mocked(checkUpdateStatus).mockResolvedValue({
+      root: "/opt/openclaw",
+      installKind: "package",
+      packageManager: "npm",
+    });
+
+    await refreshGatewayUpdateStatus({ update: { channel: "dev" } });
+
+    expect(getUpdateAvailable()).toBe(available);
+    expect(getUpdateSchedule()).toBe(schedule);
+  });
+
+  it("publishes manual target changes through the lifecycle callbacks", async () => {
+    const onUpdateAvailableChange = vi.fn();
+    const onUpdateScheduleChange = vi.fn();
+    lifecycle = createGatewayUpdateLifecycle({ onUpdateAvailableChange, onUpdateScheduleChange });
+    await refreshGatewayUpdateStatus({ update: { channel: "dev" } });
+    expect(onUpdateAvailableChange).toHaveBeenLastCalledWith(getUpdateAvailable());
+    expect(onUpdateScheduleChange).toHaveBeenLastCalledWith(getUpdateSchedule());
+
+    mockDevGitStatus({ behind: 0 });
+    await refreshGatewayUpdateStatus({ update: { channel: "dev" } });
+    expect(onUpdateAvailableChange).toHaveBeenLastCalledWith(null);
+    expect(onUpdateScheduleChange).toHaveBeenLastCalledWith(getUpdateSchedule());
   });
 
   it.each([
@@ -304,7 +340,7 @@ describe("interactive Dev update discovery", () => {
     }
   });
 
-  it("cancels and joins a manual Dev refresh that exceeds the quick-check budget", async () => {
+  it("lets progressing discovery outlive the former quick-check budget", async () => {
     mockDevGitStatus();
     const started = createDeferred<AbortSignal | undefined>();
     const remote = createDeferred<UpdateCheckResult>();
@@ -321,13 +357,12 @@ describe("interactive Dev update discovery", () => {
     });
     try {
       const signal = await started.promise;
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(signal?.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(signal?.aborted).toBe(false);
       expect(settled).toBe(false);
       remote.resolve(createDevGitStatus());
-      expect(await refresh).toBeInstanceOf(Error);
-      expect(getUpdateAvailable()).toBeNull();
-      expect(getUpdateSchedule()).toBeNull();
+      expect(await refresh).toBeUndefined();
+      expect(getUpdateAvailable()?.upstreamSha).toBe("upstream-sha");
     } finally {
       remote.resolve(createDevGitStatus());
       await refresh;

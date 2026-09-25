@@ -66,8 +66,6 @@ export async function resolveDevGitUpdate(status: UpdateCheckResult, signal: Abo
   return { git, target, available };
 }
 
-const INTERACTIVE_UPDATE_CHECK_TIMEOUT_MS = 5_000;
-
 /** Refreshes the Dev checkout and available target without starting an update. */
 export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
   const lifecycle = currentUpdateCheckLifecycle();
@@ -76,7 +74,7 @@ export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
     return pending;
   }
   const refresh = lifecycle
-    .run(async (lifecycleSignal) => {
+    .run(async (signal) => {
       const scheduleAtStart = getUpdateSchedule();
       const configured = normalizeUpdateChannel(cfg.update?.channel);
       if (
@@ -86,71 +84,58 @@ export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
         return;
       }
       const devGitCheckGeneration = ++lifecycle.devGitCheckGeneration;
-      const deadline = new AbortController();
-      const timeout = setTimeout(
-        () => deadline.abort(new Error("Update checkout check timed out. Try again.")),
-        INTERACTIVE_UPDATE_CHECK_TIMEOUT_MS,
-      );
-      timeout.unref();
-      const signal = AbortSignal.any([lifecycleSignal, deadline.signal]);
-      try {
-        // The interactive probe owns its cancellation; shared startup initialization
-        // must not be cancelled when this request reaches its shorter deadline.
-        const { root, status, installReceipt } = await resolveStartupInstallStatus(
-          true,
-          signal,
-          INTERACTIVE_UPDATE_CHECK_TIMEOUT_MS,
-        );
-        const channel =
-          configured ??
-          resolveEffectiveUpdateChannel({ currentVersion: VERSION, ...status }).channel;
-        const isCurrent = () => {
-          if (
-            !lifecycle.isCurrent() ||
-            signal.aborted ||
-            gatewayUpdateCampaign.getState()?.state === "applying" ||
-            (getUpdateSchedule() !== scheduleAtStart && getUpdateSchedule()?.channel !== channel)
-          ) {
-            return false;
-          }
-          if (lifecycle.devGitCheckGeneration !== devGitCheckGeneration) {
-            throw new Error("Update check was superseded by a newer check. Try again.");
-          }
-          return true;
-        };
-        if (channel !== "dev" || !isCurrent()) {
+      // Use the existing Git discovery budget and lifecycle-owned cancellation.
+      const { root, status, installReceipt } = await resolveStartupInstallStatus(true, signal);
+      const channel =
+        configured ?? resolveEffectiveUpdateChannel({ currentVersion: VERSION, ...status }).channel;
+      const isCurrent = () => {
+        if (
+          !lifecycle.isCurrent() ||
+          signal.aborted ||
+          gatewayUpdateCampaign.getState()?.state === "applying" ||
+          (getUpdateSchedule() !== scheduleAtStart && getUpdateSchedule()?.channel !== channel)
+        ) {
+          return false;
+        }
+        if (lifecycle.devGitCheckGeneration !== devGitCheckGeneration) {
+          throw new Error("Update check was superseded by a newer check. Try again.");
+        }
+        return true;
+      };
+      if (channel !== "dev" || status.installKind !== "git" || !isCurrent()) {
+        return;
+      }
+      const comparison = resolveGitScheduleStatus(status, installReceipt, root);
+      const update =
+        comparison?.status === "unavailable" ? null : await resolveDevGitUpdate(status, signal);
+      if (!isCurrent()) {
+        return;
+      }
+      if (update) {
+        if (!gatewayUpdateCampaign.reconcileTarget(update.target)) {
           return;
         }
-        const comparison = resolveGitScheduleStatus(status, installReceipt, root);
-        const update =
-          comparison?.status === "unavailable" ? null : await resolveDevGitUpdate(status, signal);
-        if (!isCurrent()) {
-          return;
-        }
-        if (update) {
-          if (!gatewayUpdateCampaign.reconcileTarget(update.target)) {
-            return;
-          }
-        } else {
-          gatewayUpdateCampaign.clear();
-        }
-        // Reconciliation can clear a waiting campaign through its status callback.
-        // Read the schedule afterward so the refresh cannot revive its old target.
-        const schedule = getUpdateSchedule();
-        const current =
-          schedule?.channel === channel
-            ? schedule
-            : { channel, autoEnabled: Boolean(cfg.update?.auto?.enabled) };
-        const next = withUpdateInstallStatus(current, status, true, installReceipt, root);
-        setUpdateAvailableCache({ next: update?.available ?? null });
-        setUpdateScheduleCache({
-          next: update ? { ...next, target: update.target } : withoutTarget(next),
-        });
-        if (next.install?.git?.status === "unavailable") {
-          throw new Error("The latest Dev update could not be checked. Try again.");
-        }
-      } finally {
-        clearTimeout(timeout);
+      } else {
+        gatewayUpdateCampaign.clear();
+      }
+      // Reconciliation can clear a waiting campaign through its status callback.
+      // Read the schedule afterward so the refresh cannot revive its old target.
+      const schedule = getUpdateSchedule();
+      const current =
+        schedule?.channel === channel
+          ? schedule
+          : { channel, autoEnabled: Boolean(cfg.update?.auto?.enabled) };
+      const next = withUpdateInstallStatus(current, status, true, installReceipt, root);
+      setUpdateAvailableCache({
+        next: update?.available ?? null,
+        onUpdateAvailableChange: lifecycle.onUpdateAvailableChange,
+      });
+      setUpdateScheduleCache({
+        next: update ? { ...next, target: update.target } : withoutTarget(next),
+        onUpdateScheduleChange: lifecycle.onUpdateScheduleChange,
+      });
+      if (next.install?.git?.status === "unavailable") {
+        throw new Error("The latest Dev update could not be checked. Try again.");
       }
     })
     .finally(() => {

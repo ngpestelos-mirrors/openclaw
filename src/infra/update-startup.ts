@@ -788,7 +788,7 @@ export function createGatewayUpdateCheck(params: {
   start: () => void;
   stop: () => Promise<void>;
 } {
-  const lifecycle = params.lifecycle ?? createGatewayUpdateLifecycle();
+  const lifecycle = params.lifecycle ?? createGatewayUpdateLifecycle(params);
   lifecycle.campaign = gatewayUpdateCampaign;
   let started = false;
   let observedCatalog: { sourceUrl: string; generatedAt: number } | undefined;

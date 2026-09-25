@@ -1,9 +1,18 @@
 import { sleepWithAbort } from "@openclaw/retry";
+import type {
+  UpdateAvailable,
+  UpdateScheduleState,
+} from "../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { UpdateCampaignController } from "./update-campaign.js";
 import type { resolveStartupInstallStatus } from "./update-install-status.js";
 
-export type UpdateCheckLifecycle = {
+type UpdateCheckNotifications = {
+  onUpdateAvailableChange?: (updateAvailable: UpdateAvailable | null) => void;
+  onUpdateScheduleChange?: (schedule: UpdateScheduleState) => void;
+};
+
+export type UpdateCheckLifecycle = UpdateCheckNotifications & {
   signal: AbortSignal;
   campaign?: Pick<UpdateCampaignController, "clear">;
   isCurrent: () => boolean;
@@ -17,7 +26,9 @@ export type UpdateCheckLifecycle = {
 };
 let updateCheckLifecycle: UpdateCheckLifecycle | undefined;
 
-export function createGatewayUpdateLifecycle(): UpdateCheckLifecycle {
+export function createGatewayUpdateLifecycle(
+  notifications: UpdateCheckNotifications = {},
+): UpdateCheckLifecycle {
   const predecessor = updateCheckLifecycle?.stop();
   const controller = new AbortController();
   const { signal } = controller;
@@ -64,6 +75,7 @@ export function createGatewayUpdateLifecycle(): UpdateCheckLifecycle {
     }).catch(() => undefined);
   };
   const lifecycle: UpdateCheckLifecycle = {
+    ...notifications,
     signal,
     isCurrent: () => updateCheckLifecycle === lifecycle,
     devGitCheckGeneration: 0,

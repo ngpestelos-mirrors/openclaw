@@ -72,7 +72,7 @@ describe("application update status response ownership", () => {
     }
   });
 
-  it("keeps progress polling while checkout discovery exceeds the progress deadline", async () => {
+  it("keeps progress polling while checkout discovery exceeds ordinary request deadlines", async () => {
     vi.useFakeTimers();
     const discovery = deferred<unknown>();
     const first = updateRunFixture({ phase: "staging", updatedAtMs: 1_000 });
@@ -93,7 +93,12 @@ describe("application update status response ownership", () => {
       const refreshing = overlays.refreshUpdateStatus();
       await flushMicrotasks();
       run = next;
-      await vi.advanceTimersByTimeAsync(6_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledWith(
+        "update.status",
+        { refreshCheckout: true },
+        { timeoutMs: null },
+      );
       expect(overlays.snapshot.updateRun).toEqual(next);
       expect(overlays.snapshot.updateStatusRefreshing).toBe(true);
 

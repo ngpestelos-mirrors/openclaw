@@ -245,7 +245,8 @@ export function createUpdateStatusRefresher(params: {
         .request<UpdateRestartStatusResponse>(
           "update.status",
           refreshCheckout ? { refreshCheckout: true } : {},
-          refreshCheckout ? undefined : { timeoutMs: 5_000 },
+          // Checkout discovery is bounded by the Gateway Git command budgets.
+          { timeoutMs: refreshCheckout ? null : 5_000 },
         )
         .catch((error: unknown) => {
           if (mode !== "background" && isCurrent()) {
