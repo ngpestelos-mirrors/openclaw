@@ -1,6 +1,7 @@
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
@@ -127,6 +128,39 @@ describe("iOS release test identity", () => {
     extra.testNodes.push(...result(IOS_RELEASE_TESTS[1]).testNodes);
     expect(() => requireExactTestResult(extra, IOS_RELEASE_TESTS[0])).toThrow();
   });
+});
+
+it("writes a failure proof when the real CLI rejects an impossible target", () => {
+  const output = path.join(tempDirs.make("ios-release-e2e-cli-"), "proof.json");
+  const targetSha = "0".repeat(40);
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "./scripts/tsx.mjs",
+      "scripts/ios-release-e2e.ts",
+      "--mode",
+      "stock",
+      "--target-sha",
+      targetSha,
+      "--output",
+      output,
+    ],
+    { encoding: "utf8", timeout: 15_000 },
+  );
+  expect(child.error).toBeUndefined();
+  expect(child.signal).toBeNull();
+  expect(child.status, child.stderr).toBe(1);
+  const proof = JSON.parse(readFileSync(output, "utf8"));
+  expect(proof).toMatchObject({
+    targetSha,
+    mode: "stock",
+    status: "failed",
+    trials: [],
+    errors: ["gate-setup-failed"],
+  });
+  expect(proof.gatewayBuildMs).toBeUndefined();
+  expect(proof.nativeBuildMs).toBeUndefined();
 });
 
 describe("sampled simulator-tree footprint", () => {

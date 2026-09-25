@@ -468,5 +468,9 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  await main();
+  // The native adapter imports this module, so finish module evaluation before loading it.
+  void main().catch(() => {
+    console.error("iOS E2E failed before proof could be written.");
+    process.exitCode = 1;
+  });
 }
