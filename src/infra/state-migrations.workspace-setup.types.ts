@@ -14,4 +14,5 @@ export type LegacyWorkspaceStateDetection = {
   hasLegacy: boolean;
   historicalWorkspaceDirs?: string[];
   rehearsalInventoryPaths?: string[];
+  unboundCopyPaths?: string[];
 };

@@ -3,11 +3,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
+import * as durability from "./directory-durability.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import {
   clearApnsRegistrationIfCurrent,
@@ -27,11 +28,33 @@ describe("legacy APNs Doctor migration", () => {
   let envSnapshot: ReturnType<typeof captureEnv> | undefined;
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(async () => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
       await closeStateDatabaseForTest();
       envSnapshot?.restore();
       envSnapshot = undefined;
       cleanup();
     });
+  });
+
+  it("leaves a Web Push source-bound stage to its own migration owner", async () => {
+    const stateDir = tempDirs.make("apns-sibling-copy-");
+    const directory = path.join(
+      stateDir,
+      "push",
+      ".doctor-source-copy-00000000-0000-4000-8000-000000000001-" +
+        Buffer.from("web-push-subscriptions.json").toString("base64url"),
+    );
+    await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
+    const payload = path.join(directory, "payload");
+    await fsp.writeFile(payload, "synthetic-web-push-state", { mode: 0o600 });
+    const detected = detectLegacyApnsRegistrations({ stateDir, doctorOnlyStateMigrations: true });
+    expect(detected.hasLegacy).toBe(false);
+    expect(await migrateLegacyApnsRegistrations({ detected, stateDir })).toEqual({
+      changes: [],
+      warnings: [],
+    });
+    expect(await fsp.readFile(payload, "utf8")).toBe("synthetic-web-push-state");
   });
 
   function useStateDir(): string {
@@ -100,6 +123,108 @@ describe("legacy APNs Doctor migration", () => {
       ...overrides,
     });
   }
+
+  it("recovers streamed APNs private copy after post-delete sync failure without replaying registrations", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    const stateDir = useStateDir();
+    const canonical = await registerApnsRegistration({
+      nodeId: "legacy-direct",
+      transport: "direct",
+      token: "f".repeat(32),
+      topic: "ai.openclaw.ios",
+      environment: "production",
+      baseDir: stateDir,
+    });
+    const sourcePath = await writeLegacyState(stateDir, { "legacy-direct": directRegistration() });
+    const original = await fsp.readFile(sourcePath);
+    const link = vi
+      .spyOn(fsp, "link")
+      .mockRejectedValue(
+        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
+      );
+    const sync = durability.requireDirectorySync;
+    const failedSync = vi
+      .spyOn(durability, "requireDirectorySync")
+      .mockImplementation((outcome, label) => {
+        if (label === "Legacy migration source directory" && !fs.existsSync(sourcePath)) {
+          throw new Error("post-delete sync failed");
+        }
+        sync(outcome, label);
+      });
+    expect((await migrate(stateDir)).warnings.join("\n")).toContain("post-delete sync failed");
+    link.mockRestore();
+    failedSync.mockRestore();
+    const stage = fs
+      .readdirSync(path.dirname(sourcePath))
+      .find((name) => name.startsWith(".doctor-source-copy-"));
+    expect(stage).toBeDefined();
+    const payload = path.join(path.dirname(sourcePath), stage!, "payload");
+    expect(fs.existsSync(sourcePath)).toBe(false);
+    expect(await fsp.readFile(payload)).toEqual(original);
+    const db = openOpenClawStateDatabase({ env: envFor(stateDir) }).db;
+    expect(await loadApnsRegistration("legacy-direct", stateDir)).toEqual(canonical);
+
+    const receiptRemoved = () =>
+      db
+        .prepare("SELECT removed_source FROM migration_sources WHERE migration_kind = ?")
+        .get("legacy-apns-registrations-json")?.removed_source;
+    const extraStage = path.join(
+      path.dirname(sourcePath),
+      ".doctor-source-copy-00000000-0000-4000-8000-000000000000-" +
+        Buffer.from(path.basename(sourcePath)).toString("base64url"),
+    );
+    await fsp.mkdir(extraStage, { mode: 0o700 });
+    await fsp.writeFile(payload, Buffer.alloc(original.length, 0x61));
+    expect((await migrate(stateDir)).warnings.join("\n")).toContain("copy differs from receipt");
+    expect(receiptRemoved()).toBe(0);
+    expect(fs.existsSync(extraStage)).toBe(false);
+
+    expect((await migrate(stateDir)).warnings.join("\n")).toContain("copy differs from receipt");
+    await fsp.writeFile(payload, original);
+    await fsp.chmod(payload, 0o644);
+    expect((await migrate(stateDir)).warnings.join("\n")).toContain("not privately owned");
+    await fsp.chmod(payload, 0o600);
+    db.prepare("DELETE FROM apns_registrations WHERE node_id = ?").run("legacy-direct");
+    expect((await migrate(stateDir)).warnings.join("\n")).toContain(
+      "canonical APNs registration or tombstone no longer covers",
+    );
+    expect(fs.existsSync(payload)).toBe(true);
+    db.prepare(
+      "INSERT INTO apns_registration_tombstones (node_id, deleted_at_ms) VALUES (?, ?)",
+    ).run("legacy-direct", Date.now());
+    const report = (
+      db
+        .prepare("SELECT report_json FROM migration_sources WHERE migration_kind = ?")
+        .get("legacy-apns-registrations-json") as { report_json: string }
+    ).report_json;
+    db.prepare("UPDATE migration_sources SET report_json = ? WHERE migration_kind = ?").run(
+      "{}",
+      "legacy-apns-registrations-json",
+    );
+    expect((await migrate(stateDir)).warnings.join("\n")).toContain("APNs receipt does not cover");
+    db.prepare("UPDATE migration_sources SET report_json = ? WHERE migration_kind = ?").run(
+      report,
+      "legacy-apns-registrations-json",
+    );
+    await fsp.mkdir(extraStage, { mode: 0o700 });
+    await fsp.writeFile(path.join(extraStage, "payload"), Buffer.alloc(original.length, 0x61), {
+      mode: 0o600,
+    });
+    expect((await migrate(stateDir)).warnings.join("\n")).toContain("copy differs from receipt");
+    expect(receiptRemoved()).toBe(0);
+    expect(fs.existsSync(payload)).toBe(false);
+    await fsp.writeFile(path.join(extraStage, "payload"), original, { mode: 0o600 });
+    const retry = await migrate(stateDir);
+    expect(retry.warnings).toEqual([]);
+    expect(receiptRemoved()).toBe(1);
+    expect(retry.changes).toContain(
+      "Removed interrupted private APNs copy covered by its SQLite receipt.",
+    );
+    expect(fs.existsSync(payload)).toBe(false);
+    expect(await loadApnsRegistration("legacy-direct", stateDir)).toBeNull();
+    expect((await migrate(stateDir)).changes).toEqual([]);
+  });
 
   it("detects source and interrupted claims only for explicit Doctor repair", async () => {
     const stateDir = useStateDir();

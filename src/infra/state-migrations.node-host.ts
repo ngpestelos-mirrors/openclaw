@@ -1,4 +1,5 @@
 // Doctor-only import for the retired node-host JSON config.
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { root, type Root } from "@openclaw/fs-safe";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -11,14 +12,31 @@ import {
 } from "../node-host/config.js";
 import { normalizeNodeHostCloudflareAccessConfig } from "../node-host/gateway-cloudflare-access.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
-import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
+import { pathMayExistSync } from "./path-existence.js";
 import { assertAllowedJsonFields } from "./state-migrations.json-fields.js";
 import { withLegacyMigrationStateLock } from "./state-migrations.lock.js";
+import {
+  hasPendingLegacyMigrationSourceRemoval,
+  markLegacyMigrationSourceRemoved,
+  readLegacyMigrationReceipt,
+  readLegacyMigrationReceiptFromDatabase,
+  recordLegacyMigrationReceipt,
+  resolveLegacyMigrationSourceKey,
+} from "./state-migrations.receipts.js";
+import {
+  cleanupLegacyMigrationSourceCopy,
+  listUnboundLegacyMigrationSourceCopies,
+  listLegacyMigrationSourceCopies,
+} from "./state-migrations.source-copy.js";
 import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceOrClaimMayExist,
@@ -29,6 +47,11 @@ import {
 import type { LegacyStateDetection, MigrationMessages } from "./state-migrations.types.js";
 
 const LEGACY_NODE_HOST_MAX_BYTES = 64 * 1024;
+const MIGRATION_KIND = "legacy-node-host-json";
+const sourceKey = (sourcePath: string) =>
+  resolveLegacyMigrationSourceKey("node-host-json", sourcePath);
+const canonicalFingerprint = (state: CanonicalNodeHostState) =>
+  createHash("sha256").update(JSON.stringify(state)).digest("hex");
 const CONFIG_KEYS = new Set(["version", "nodeId", "token", "displayName", "gateway"]);
 const GATEWAY_KEYS = new Set(["host", "port", "tls", "tlsFingerprint", "contextPath"]);
 
@@ -49,8 +72,111 @@ export function detectLegacyNodeHostConfig(params: {
     sourcePath,
     hasLegacy:
       params.doctorOnlyStateMigrations === true &&
-      legacyMigrationSourceOrClaimMayExist(sourcePath, LEGACY_NODE_HOST_CONFIG_CLAIM_SUFFIX),
+      (legacyMigrationSourceOrClaimMayExist(sourcePath, LEGACY_NODE_HOST_CONFIG_CLAIM_SUFFIX) ||
+        listLegacyMigrationSourceCopies(sourcePath).length > 0 ||
+        listUnboundLegacyMigrationSourceCopies(path.dirname(sourcePath)).length > 0 ||
+        hasPendingLegacyMigrationSourceRemoval([sourceKey(sourcePath)], {
+          ...process.env,
+          OPENCLAW_STATE_DIR: params.stateDir,
+        })),
   };
+}
+
+async function recoverNodeHostCopies(params: {
+  stateRoot: Root;
+  stateDir: string;
+  sourcePath: string;
+  env: NodeJS.ProcessEnv;
+  warnings: string[];
+}): Promise<MigrationMessages> {
+  const changes: string[] = [];
+  const warnings = params.warnings;
+  let removedPayloads = 0;
+  const copies = listLegacyMigrationSourceCopies(params.sourcePath);
+  for (const directory of copies) {
+    try {
+      if (!readLegacyMigrationReceipt(sourceKey(params.sourcePath), params.env)) {
+        throw new Error("private node-host copy has no migration receipt");
+      }
+      if (
+        pathMayExistSync(params.sourcePath) ||
+        pathMayExistSync(params.sourcePath + LEGACY_NODE_HOST_CONFIG_CLAIM_SUFFIX)
+      ) {
+        throw new Error("node-host source or claim remains beside its private copy");
+      }
+      const removedPayload = await cleanupLegacyMigrationSourceCopy({
+        stateRoot: params.stateRoot,
+        directory: path.relative(params.stateDir, directory),
+        maxBytes: LEGACY_NODE_HOST_MAX_BYTES,
+        verify: (buffer, rawSha256) => {
+          const receipt = readLegacyMigrationReceipt(sourceKey(params.sourcePath), params.env);
+          // Historical node-host snapshots hash decoded text, not raw bytes.
+          if (
+            !receipt ||
+            receipt.sourceSizeBytes !== buffer.length ||
+            receipt.sourceSha256 !==
+              createHash("sha256").update(buffer.toString("utf8")).digest("hex")
+          ) {
+            throw new Error("private node-host copy differs from its migration receipt");
+          }
+          const report: unknown = JSON.parse(receipt.reportJson);
+          const db = openOpenClawStateDatabase({ env: params.env }).db;
+          const row = executeSqliteQueryTakeFirstSync(
+            db,
+            getNodeSqliteKysely<NodeHostConfigDatabase>(db)
+              .selectFrom("config_machine_state")
+              .selectAll()
+              .where("state_key", "=", NODE_HOST_CONFIG_KEY),
+          );
+          const canonical = row ? rowToCanonicalState(row) : null;
+          if (
+            !isRecord(report) ||
+            report.source !== MIGRATION_KIND ||
+            report.sourceRawSha256 !== rawSha256 ||
+            !["canonical-preserved", "legacy-imported", "verified"].includes(
+              String(report.decision),
+            ) ||
+            !canonical ||
+            report.nodeId !== canonical.config.nodeId ||
+            typeof report.canonicalFingerprint !== "string" ||
+            !Number.isSafeInteger(report.canonicalUpdatedAtMs) ||
+            (canonicalFingerprint(canonical) !== report.canonicalFingerprint &&
+              canonical.updatedAtMs <= Number(report.canonicalUpdatedAtMs)) ||
+            pathMayExistSync(params.sourcePath) ||
+            pathMayExistSync(params.sourcePath + LEGACY_NODE_HOST_CONFIG_CLAIM_SUFFIX)
+          ) {
+            throw new Error("canonical node-host state no longer matches its migration receipt");
+          }
+        },
+      });
+      if (removedPayload) {
+        removedPayloads++;
+        changes.push("Removed interrupted private node-host copy covered by its SQLite receipt.");
+      }
+    } catch (error) {
+      warnings.push(
+        "Preserved interrupted node-host copy " +
+          directory +
+          ": " +
+          String(error) +
+          ". Inspect it and rerun Doctor.",
+      );
+    }
+  }
+  const pending = readLegacyMigrationReceipt(sourceKey(params.sourcePath), params.env);
+  if (
+    warnings.length === 0 &&
+    (copies.length === 0 || removedPayloads > 0) &&
+    pending &&
+    !pending.removedSource &&
+    !legacyMigrationSourceOrClaimMayExist(params.sourcePath, LEGACY_NODE_HOST_CONFIG_CLAIM_SUFFIX)
+  ) {
+    markLegacyMigrationSourceRemoved(pending.sourceKey, params.env);
+    if (copies.length === 0) {
+      changes.push("Finalized retired node-host source cleanup receipt.");
+    }
+  }
+  return { changes, warnings };
 }
 
 function optionalLegacyString(value: unknown, label: string): string | undefined {
@@ -238,7 +364,12 @@ function writeCanonicalState(
   );
 }
 
-function migrateIntoDatabase(params: { env: NodeJS.ProcessEnv; legacy: CanonicalNodeHostState }): {
+function migrateIntoDatabase(params: {
+  env: NodeJS.ProcessEnv;
+  legacy: CanonicalNodeHostState;
+  sourcePath: string;
+  snapshot: LegacySourceSnapshot;
+}): {
   imported: boolean;
   preservedCanonical: boolean;
 } {
@@ -246,6 +377,19 @@ function migrateIntoDatabase(params: { env: NodeJS.ProcessEnv; legacy: Canonical
   let preservedCanonical = false;
   runOpenClawStateWriteTransaction(
     ({ db }) => {
+      const key = sourceKey(params.sourcePath);
+      const existingReceipt = readLegacyMigrationReceiptFromDatabase(db, key);
+      if (existingReceipt && !existingReceipt.removedSource) {
+        const report: unknown = JSON.parse(existingReceipt.reportJson);
+        if (
+          existingReceipt.sourceSha256 !== params.snapshot.sha256 ||
+          !isRecord(report) ||
+          report.sourceRawSha256 !==
+            createHash("sha256").update(params.snapshot.buffer).digest("hex")
+        ) {
+          throw new Error("node-host source differs from its prior SQLite migration receipt");
+        }
+      }
       const stateDb = getNodeSqliteKysely<NodeHostConfigDatabase>(db);
       const row = executeSqliteQueryTakeFirstSync(
         db,
@@ -257,6 +401,17 @@ function migrateIntoDatabase(params: { env: NodeJS.ProcessEnv; legacy: Canonical
       const existing = row ? rowToCanonicalState(row) : null;
       if (existing && existing.config.nodeId !== params.legacy.config.nodeId) {
         throw new Error("legacy node-host nodeId conflicts with canonical SQLite identity");
+      }
+      if (existingReceipt && !existingReceipt.removedSource) {
+        if (!existing) {
+          throw new Error(
+            "canonical node-host config is missing after its SQLite migration receipt",
+          );
+        }
+        // A committed receipt retires this source. Later canonical edits win;
+        // retrying a held claim must never replay its retired config.
+        preservedCanonical = true;
+        return;
       }
 
       let expected = params.legacy;
@@ -302,6 +457,33 @@ function migrateIntoDatabase(params: { env: NodeJS.ProcessEnv; legacy: Canonical
       ) {
         throw new Error("SQLite verification failed for node-host config");
       }
+      {
+        const now = Date.now();
+        recordLegacyMigrationReceipt(db, {
+          sourceKey: key,
+          upsert: existingReceipt !== null,
+          migrationKind: MIGRATION_KIND,
+          sourcePath: params.sourcePath,
+          targetTable: "config_machine_state",
+          sourceSha256: params.snapshot.sha256,
+          sourceSizeBytes: params.snapshot.size,
+          sourceRecordCount: 1,
+          runId: key + ":" + params.snapshot.sha256.slice(0, 16),
+          now,
+          reportJson: JSON.stringify({
+            source: MIGRATION_KIND,
+            sourceRawSha256: createHash("sha256").update(params.snapshot.buffer).digest("hex"),
+            nodeId: verified.config.nodeId,
+            canonicalFingerprint: canonicalFingerprint(verified),
+            canonicalUpdatedAtMs: verified.updatedAtMs,
+            decision: preservedCanonical
+              ? "canonical-preserved"
+              : imported
+                ? "legacy-imported"
+                : "verified",
+          }),
+        });
+      }
     },
     { env: params.env },
   );
@@ -321,9 +503,21 @@ async function migrateWithExclusiveStateOwnership(params: {
     return { changes: [], warnings: [] };
   }
   const changes: string[] = [];
-  const warnings: string[] = [];
   const notices: string[] = [];
   const sourcePath = params.detected.sourcePath;
+  const warnings = listUnboundLegacyMigrationSourceCopies(path.dirname(sourcePath)).map(
+    (directory) =>
+      "Preserved unbound node-host private copy " + directory + ". Inspect it and rerun Doctor.",
+  );
+  if (!legacyMigrationSourceOrClaimMayExist(sourcePath, LEGACY_NODE_HOST_CONFIG_CLAIM_SUFFIX)) {
+    return await recoverNodeHostCopies({
+      stateRoot: params.stateRoot,
+      stateDir: params.stateDir,
+      sourcePath,
+      env: params.env,
+      warnings,
+    });
+  }
   const source = new LegacyMigrationSourceClaim({
     stateRoot: params.stateRoot,
     stateDir: params.stateDir,
@@ -375,7 +569,7 @@ async function migrateWithExclusiveStateOwnership(params: {
 
   let result: ReturnType<typeof migrateIntoDatabase>;
   try {
-    result = migrateIntoDatabase({ env: params.env, legacy });
+    result = migrateIntoDatabase({ env: params.env, legacy, sourcePath, snapshot });
   } catch (error) {
     const restoreError = await source.restore();
     warnings.push(
@@ -390,6 +584,7 @@ async function migrateWithExclusiveStateOwnership(params: {
       sourceReappearedMessage: `legacy node-host source reappeared during import: ${sourcePath}`,
       remainingMessage: "legacy node-host source or Doctor claim remains after cleanup",
     });
+    markLegacyMigrationSourceRemoved(sourceKey(sourcePath), params.env);
   } catch (error) {
     warnings.push(`Node-host state is in SQLite, but legacy cleanup failed: ${String(error)}`);
     return { changes, warnings };

@@ -2,10 +2,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { root, type Root } from "@openclaw/fs-safe";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { mcpOAuthStoreKeyFromLegacyFileName } from "../agents/mcp-oauth-identity.js";
 import { parseMcpOAuthStoreJson } from "../agents/mcp-oauth-store.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
-import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -25,6 +29,11 @@ import {
   type LegacyMigrationReceipt,
 } from "./state-migrations.receipts.js";
 import {
+  cleanupLegacyMigrationSourceCopy,
+  listLegacyMigrationCopySourcePaths,
+  listLegacyMigrationSourceCopies,
+} from "./state-migrations.source-copy.js";
+import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceSnapshotsMatch as snapshotsMatch,
   readLegacyMigrationSourceSnapshot,
@@ -40,6 +49,49 @@ const MAX_LEGACY_STORE_BYTES = 4 * 1024 * 1024;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 type McpOAuthMigrationDatabase = Pick<OpenClawStateKyselyDatabase, "mcp_oauth_stores">;
+
+function verifyReceiptStore(
+  sourcePath: string,
+  receipt: LegacyMigrationReceipt,
+  env: NodeJS.ProcessEnv,
+): void {
+  const current = readLegacyMigrationReceipt(receipt.sourceKey, env);
+  if (
+    !current ||
+    current.sourceSha256 !== receipt.sourceSha256 ||
+    current.reportJson !== receipt.reportJson
+  ) {
+    throw new Error("MCP OAuth migration receipt changed during copy cleanup");
+  }
+  const report: unknown = JSON.parse(receipt.reportJson);
+  const storeKey = storeKeyForSource(sourcePath);
+  if (
+    !isRecord(report) ||
+    report.source !== MIGRATION_KIND ||
+    report.storeKey !== storeKey ||
+    report.target !== "mcp_oauth_stores"
+  ) {
+    throw new Error("MCP OAuth migration receipt has no verified canonical target");
+  }
+  const db = openOpenClawStateDatabase({ env }).db;
+  const row = executeSqliteQueryTakeFirstSync(
+    db,
+    getNodeSqliteKysely<McpOAuthMigrationDatabase>(db)
+      .selectFrom("mcp_oauth_stores")
+      .selectAll()
+      .where("store_key", "=", storeKey),
+  );
+  if (!row || row.format_version !== 1) {
+    throw new Error("canonical MCP OAuth store is unavailable");
+  }
+  // Refresh and logout legitimately change a valid canonical store. The durable
+  // receipt retires the old bytes; never replay them over the current owner.
+  try {
+    parseMcpOAuthStoreJson(storeKey, row.store_json);
+  } catch (error) {
+    throw new Error("canonical MCP OAuth store is invalid", { cause: error });
+  }
+}
 
 type LegacySourceSnapshot = LegacyMigrationSourceSnapshot & { store: Record<string, unknown> };
 
@@ -99,7 +151,13 @@ export function detectLegacyMcpOAuthStores(params: {
   }
   try {
     const sourcePaths = listLegacySourcePaths(sourceDir);
-    return { sourceDir, sourcePaths, hasLegacy: sourcePaths.length > 0 };
+    return {
+      sourceDir,
+      sourcePaths,
+      hasLegacy:
+        sourcePaths.length > 0 ||
+        fs.readdirSync(sourceDir).some((name) => name.startsWith(".doctor-source-copy-")),
+    };
   } catch {
     return { sourceDir, sourcePaths: [], hasLegacy: pathMayExistSync(sourceDir) };
   }
@@ -257,7 +315,10 @@ async function cleanupReceiptAuthoritativeSources(params: {
     }
     removed += 1;
   }
-  if (!params.receipt.removedSource || removed > 0) {
+  if (
+    (!params.receipt.removedSource || removed > 0) &&
+    listLegacyMigrationSourceCopies(params.sourcePath).length === 0
+  ) {
     markLegacyMigrationSourceRemoved(params.receipt.sourceKey, params.env);
   }
   return removed;
@@ -297,8 +358,57 @@ async function migrateOneStore(params: {
       }
     } catch (error) {
       warnings.push(`MCP OAuth state is in SQLite, but legacy cleanup failed: ${String(error)}`);
+      return { changes, warnings };
+    }
+    let removedPayloads = 0;
+    for (const directory of listLegacyMigrationSourceCopies(params.sourcePath)) {
+      try {
+        if ((await source.exists()) || (await source.exists(true))) {
+          throw new Error("legacy source or claim is still present");
+        }
+        const removedPayload = await cleanupLegacyMigrationSourceCopy({
+          stateRoot: params.stateRoot,
+          directory: relativeLegacyPath(params.stateDir, directory),
+          maxBytes: MAX_LEGACY_STORE_BYTES,
+          verify: (_buffer, sha256) => {
+            if (sha256 !== receipt.sourceSha256) {
+              throw new Error("private copy differs from the MCP OAuth migration receipt");
+            }
+            verifyReceiptStore(params.sourcePath, receipt, params.env);
+            if (pathMayExistSync(params.sourcePath) || pathMayExistSync(source.claimPath)) {
+              throw new Error("legacy source or claim reappeared during copy cleanup");
+            }
+          },
+        });
+        if (removedPayload) {
+          removedPayloads++;
+          changes.push("Removed interrupted private MCP OAuth copy covered by its SQLite receipt.");
+        }
+      } catch (error) {
+        warnings.push(
+          `Preserved interrupted MCP OAuth copy ${directory}: ${String(error)}. Inspect it and rerun Doctor.`,
+        );
+      }
+    }
+    if (warnings.length > 0) {
+      return { changes, warnings };
+    }
+    if (removedPayloads > 0 && !receipt.removedSource) {
+      markLegacyMigrationSourceRemoved(receipt.sourceKey, params.env);
     }
     return notices.length > 0 ? { changes, warnings, notices } : { changes, warnings };
+  }
+  if (
+    listLegacyMigrationSourceCopies(params.sourcePath).length > 0 &&
+    !(await source.exists()) &&
+    !(await source.exists(true))
+  ) {
+    return {
+      changes,
+      warnings: [
+        `Preserved private MCP OAuth copies for ${path.basename(params.sourcePath)} without a matching SQLite receipt. Inspect the directory and rerun Doctor.`,
+      ],
+    };
   }
 
   const hasSource = await source.exists();
@@ -403,6 +513,26 @@ async function migrateWithExclusiveStateOwnership(params: {
       return { changes, warnings };
     }
     return { changes, warnings: [`Failed reading legacy MCP OAuth directory: ${String(error)}`] };
+  }
+  const copyPaths = listLegacyMigrationCopySourcePaths(
+    path.join(params.stateDir, LEGACY_MCP_OAUTH_DIR),
+  ).filter(
+    (sourcePath) => exactLegacyBaseName(path.basename(sourcePath)) === path.basename(sourcePath),
+  );
+  sourcePaths = [...new Set([...sourcePaths, ...copyPaths])].toSorted();
+  const copies = (await params.stateRoot.list(LEGACY_MCP_OAUTH_DIR, { withFileTypes: true }))
+    .filter((entry) => entry.name.startsWith(".doctor-source-copy-"))
+    .map((entry) => path.join(params.stateDir, LEGACY_MCP_OAUTH_DIR, entry.name));
+  for (const directory of copies) {
+    if (
+      !sourcePaths.some((sourcePath) =>
+        listLegacyMigrationSourceCopies(sourcePath).includes(directory),
+      )
+    ) {
+      warnings.push(
+        `Preserved unbound MCP OAuth private copy ${directory}. Inspect it and rerun Doctor.`,
+      );
+    }
   }
   for (const sourcePath of sourcePaths) {
     try {

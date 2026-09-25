@@ -33,6 +33,9 @@ export type MigrationReceipt = {
   sha256: string | null;
   removedSource: boolean;
   archivePath?: string;
+  sourceMtimeMs?: number;
+  canonicalFingerprint?: string;
+  reportJson: string;
 };
 
 type WorkspaceSetupMilestones = {
@@ -68,13 +71,19 @@ export function readReceipt(
   env: NodeJS.ProcessEnv,
 ): MigrationReceipt | null {
   const receipt = readLegacyMigrationReceipt(resolveWorkspaceMigrationSourceKey(source), env);
-  const archivePath = receipt ? safeParseJsonRecord(receipt.reportJson)?.archivePath : undefined;
+  const report = receipt ? safeParseJsonRecord(receipt.reportJson) : undefined;
+  const archivePath = report?.archivePath;
+  const sourceMtimeMs = report?.sourceMtimeMs;
+  const canonicalFingerprint = report?.canonicalFingerprint;
   return receipt
     ? {
         sourceKey: receipt.sourceKey,
+        reportJson: receipt.reportJson,
         sha256: receipt.sourceSha256,
         removedSource: receipt.removedSource,
         ...(typeof archivePath === "string" ? { archivePath } : {}),
+        ...(typeof sourceMtimeMs === "number" ? { sourceMtimeMs } : {}),
+        ...(typeof canonicalFingerprint === "string" ? { canonicalFingerprint } : {}),
       }
     : null;
 }

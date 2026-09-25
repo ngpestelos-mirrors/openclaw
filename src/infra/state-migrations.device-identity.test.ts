@@ -229,6 +229,26 @@ describe.each(["auto", "off"])("legacy device identity Doctor migration (native=
     ).toBe(true);
   });
 
+  it("detects and preserves an unbound private stage after a verified identity import", async () => {
+    const { env, stateDir } = useStateDir();
+    const sourcePath = await writeLegacy({ stateDir });
+    expect((await migrate(stateDir, env)).warnings).toEqual([]);
+    const canonical = identityRow(env);
+    const directory = path.join(path.dirname(sourcePath), ".doctor-source-copy-unrecognized");
+    await fsp.mkdir(directory, { mode: 0o700 });
+    await fsp.writeFile(path.join(directory, "payload"), "unknown private material");
+    expect(
+      detectLegacyDeviceIdentity({ stateDir, doctorOnlyStateMigrations: true }).hasLegacy,
+    ).toBe(true);
+
+    const retry = await migrate(stateDir, env);
+    expect(retry.notices?.join("\n")).toContain("Preserved unbound device identity private copy");
+    expect(fs.readFileSync(path.join(directory, "payload"), "utf8")).toBe(
+      "unknown private material",
+    );
+    expect(identityRow(env)).toEqual(canonical);
+  });
+
   it("keeps normal migration read-only and imports with explicit startup authority", async () => {
     const { env, stateDir } = useStateDir();
     const sourcePath = await writeLegacy({ stateDir });
@@ -865,12 +885,19 @@ describe.each(["auto", "off"])("legacy device identity Doctor migration (native=
     const replacement = `${JSON.stringify({ version: 1, ...anotherIdentity() })}\n`;
     await fsp.writeFile(claimPath, replacement, "utf8");
 
+    const emptyCopy = path.join(
+      path.dirname(sourcePath),
+      ".doctor-source-copy-00000000-0000-4000-8000-000000000001-" +
+        Buffer.from(path.basename(sourcePath)).toString("base64url"),
+    );
+    await fsp.mkdir(emptyCopy, { mode: 0o700 });
     closeOpenClawStateDatabaseForTest();
     const retry = await migrate(stateDir, env);
 
     expect(retry.warnings).toEqual([]);
     expect(retry.notices?.join("\n")).toContain("canonical SQLite identity remains authoritative");
     await expect(fsp.readFile(claimPath, "utf8")).resolves.toBe(replacement);
+    expect(fs.existsSync(emptyCopy)).toBe(false);
     expect(receipt(env)).toMatchObject({ removed_source: 0 });
   });
 

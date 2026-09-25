@@ -1,4 +1,5 @@
 // Owner-authorized import for the retired primary device identity JSON.
+import path from "node:path";
 import { root, type Root } from "@openclaw/fs-safe";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -39,6 +40,7 @@ import {
 } from "./state-migrations.receipts.js";
 import {
   cleanupLegacyMigrationSourceCopy,
+  listLegacyMigrationCopyNames,
   listLegacyMigrationSourceCopies,
 } from "./state-migrations.source-copy.js";
 import {
@@ -334,11 +336,13 @@ async function cleanupReceiptSources(params: {
     }
   }
   let removedCopies = 0;
-  for (const directory of listLegacyMigrationSourceCopies(params.detected.sourcePath)) {
+  const associatedCopies = listLegacyMigrationSourceCopies(params.detected.sourcePath);
+  for (const directory of associatedCopies) {
     try {
-      await cleanupLegacyMigrationSourceCopy({
+      const removedPayload = await cleanupLegacyMigrationSourceCopy({
         stateRoot: params.stateRoot,
         directory: relativeLegacyPath(params.stateDir, directory),
+        maxBytes: MAX_LEGACY_IDENTITY_BYTES,
         verify: (buffer, sha256) => {
           if (sha256 !== params.receipt.sourceSha256) {
             throw new Error("staged copy differs from the device identity migration receipt");
@@ -350,7 +354,7 @@ async function cleanupReceiptSources(params: {
           verifyCanonicalIdentity(identity, params.env);
         },
       });
-      removedCopies += 1;
+      removedCopies += Number(removedPayload);
     } catch (error) {
       const message = `Interrupted device identity copy cleanup preserved ${directory}: ${String(error)}`;
       try {
@@ -363,6 +367,23 @@ async function cleanupReceiptSources(params: {
       }
       warnings.push(message);
     }
+  }
+  const associated = new Set(associatedCopies);
+  for (const name of listLegacyMigrationCopyNames(path.dirname(params.detected.sourcePath))) {
+    const directory = path.join(path.dirname(params.detected.sourcePath), name);
+    if (associated.has(directory)) {
+      continue;
+    }
+    const message = `Preserved unbound device identity private copy ${directory}; inspect it before retrying Doctor.`;
+    try {
+      if (readStoredDeviceIdentityReadOnly({ env: params.env, identityKey: IDENTITY_KEY })) {
+        notices.push(message);
+        continue;
+      }
+    } catch {
+      // Invalid canonical identity still needs a readiness-blocking warning.
+    }
+    warnings.push(message);
   }
   if (removedCopies > 0) {
     changes.push(
@@ -424,6 +445,14 @@ async function migrateWithExclusiveStateOwnership(params: {
   if (receipt) {
     return await cleanupReceiptSources({ ...params, receipt });
   }
+  if (listLegacyMigrationCopyNames(path.dirname(params.detected.sourcePath)).length > 0) {
+    return {
+      changes: [],
+      warnings: [
+        "Preserved interrupted device identity copies without a verified migration receipt. Inspect the identity directory before retrying Doctor.",
+      ],
+    };
+  }
 
   const hasSource = await source.exists();
   const hasClaim = await source.exists(true);
@@ -441,15 +470,7 @@ async function migrateWithExclusiveStateOwnership(params: {
       ? params.detected.claimPath
       : null;
   if (!activePath) {
-    return {
-      changes: [],
-      warnings:
-        listLegacyMigrationSourceCopies(params.detected.sourcePath).length > 0
-          ? [
-              "Preserved interrupted device identity copies without a verified migration receipt. Inspect the identity directory before retrying Doctor.",
-            ]
-          : [],
-    };
+    return { changes: [], warnings: [] };
   }
 
   let snapshot: LegacySourceSnapshot;

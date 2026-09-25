@@ -69,16 +69,56 @@ function hashGeneration(filePath: string, expected: fs.BigIntStats, maxBytes: nu
   }
 }
 
-/** Discover recovery artifacts only; the import owner must authorize their removal. */
-export function listLegacyMigrationSourceCopies(sourcePath: string): string[] {
-  const parent = path.dirname(sourcePath);
+function legacyMigrationCopySourceName(sourcePath: string): string {
+  return Buffer.from(path.basename(sourcePath)).toString("base64url");
+}
+
+function sourceNameFromCopy(name: string): string | null {
+  const encoded =
+    /^\.doctor-source-copy-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-([A-Za-z0-9_-]+)$/u.exec(
+      name,
+    )?.[1];
+  if (!encoded) {
+    return null;
+  }
+  const filename = Buffer.from(encoded, "base64url").toString();
+  return filename &&
+    filename !== "." &&
+    filename !== ".." &&
+    !filename.includes("\0") &&
+    !filename.includes("/") &&
+    !filename.includes("\\") &&
+    legacyMigrationCopySourceName(filename) === encoded
+    ? filename
+    : null;
+}
+
+/** A private stage identifies its filename; receipts still authorize its deletion. */
+export function listLegacyMigrationCopySourcePaths(parent: string): string[] {
+  return [
+    ...new Set(
+      listLegacyMigrationCopyNames(parent).flatMap((name) => {
+        const filename = sourceNameFromCopy(name);
+        return filename ? [path.join(parent, filename)] : [];
+      }),
+    ),
+  ];
+}
+
+/** Other bound consumers may share a parent; only undecodable stages are unbound. */
+export function listUnboundLegacyMigrationSourceCopies(parent: string): string[] {
+  return listLegacyMigrationCopyNames(parent)
+    .filter((name) => sourceNameFromCopy(name) === null)
+    .map((name) => path.join(parent, name));
+}
+
+/** Inventory is advisory; unknown names are never authorized for deletion. */
+export function listLegacyMigrationCopyNames(parent: string): string[] {
   try {
-    return fs
-      .readdirSync(parent)
-      .filter((name) =>
-        /^\.doctor-source-copy-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(name),
-      )
-      .map((name) => path.join(parent, name));
+    if (!fs.lstatSync(parent, { throwIfNoEntry: false })?.isDirectory()) {
+      return [];
+    }
+    return fs.readdirSync(parent).filter((name) => name.startsWith(".doctor-source-copy-"));
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT")) {
       return [];
@@ -87,12 +127,24 @@ export function listLegacyMigrationSourceCopies(sourcePath: string): string[] {
   }
 }
 
+/** Discover recovery artifacts only; the import owner must authorize their removal. */
+export function listLegacyMigrationSourceCopies(sourcePath: string): string[] {
+  const parent = path.dirname(sourcePath);
+  return listLegacyMigrationCopyNames(parent)
+    .filter((name) => sourceNameFromCopy(name) === path.basename(sourcePath))
+    .map((name) => path.join(parent, name));
+}
+
 /** Retire a stranded copy only while its receipt and canonical data remain verified. */
-export async function cleanupLegacyMigrationSourceCopy(params: {
-  stateRoot: Root;
-  directory: string;
-  verify: (buffer: Buffer, sha256: string) => void;
-}): Promise<void> {
+export async function cleanupLegacyMigrationSourceCopy(
+  params: {
+    stateRoot: Root;
+    directory: string;
+  } & (
+    | { maxBytes: number; verify: (buffer: Buffer, sha256: string) => void }
+    | { expectedSizeBytes: number; verifyDigest: (sha256: string) => void }
+  ),
+): Promise<boolean> {
   const root = params.stateRoot;
   const parent = await pinDirectory(await root.resolve(path.dirname(params.directory)));
   try {
@@ -117,40 +169,70 @@ export async function cleanupLegacyMigrationSourceCopy(params: {
       assertPrivate(fs.lstatSync(stagePath, { bigint: true }));
     };
     assertStage();
+    // A failed post-unlink parent sync must be retried before retiring the last
+    // recovery bytes. The import owner verifies its receipt and canonical state.
+    requireDirectorySync(await parent.sync(), "Legacy migration source recovery directory");
+    const removeEmptyStage = async () => {
+      await root.remove(params.directory, {
+        assertBeforeMutation: () => {
+          assertStage();
+          if (fs.readdirSync(stagePath).length !== 0) {
+            mismatch("recovery directory is not empty");
+          }
+        },
+      });
+      requireDirectorySync(await parent.sync(), "Legacy migration copy recovery directory");
+    };
     const entries = fs.readdirSync(stagePath);
-    if (entries.length > 0) {
-      if (entries.length !== 1 || entries[0] !== "payload") {
-        mismatch("recovery directory contains incomplete or unknown material");
+    if (entries.length === 0) {
+      // A crash after payload removal leaves no recovery bytes. Retire only the
+      // still-private empty directory, never incomplete or unknown file material.
+      await removeEmptyStage();
+      return false;
+    }
+    if (entries.length !== 1 || entries[0] !== "payload") {
+      mismatch("recovery directory contains incomplete or unknown material");
+    }
+    const relativePayload = path.join(params.directory, "payload");
+    const payloadPath = path.join(stagePath, "payload");
+    const identity = fs.lstatSync(payloadPath, { bigint: true });
+    assertFile(payloadPath, identity);
+    assertPrivate(identity);
+    let sha256: string;
+    let buffer: Buffer | undefined;
+    if ("verifyDigest" in params) {
+      if (
+        !Number.isSafeInteger(params.expectedSizeBytes) ||
+        params.expectedSizeBytes < 0 ||
+        identity.size !== BigInt(params.expectedSizeBytes)
+      ) {
+        mismatch("streamed recovery payload has an invalid size");
       }
-      const relativePayload = path.join(params.directory, "payload");
-      const payloadPath = path.join(stagePath, "payload");
-      const identity = fs.lstatSync(payloadPath, { bigint: true });
-      assertFile(payloadPath, identity);
-      assertPrivate(identity);
-      const { buffer } = await root.read(relativePayload, {
+      sha256 = hashGeneration(payloadPath, identity, params.expectedSizeBytes);
+    } else {
+      const read = await root.read(relativePayload, {
         hardlinks: "reject",
         symlinks: "reject",
+        maxBytes: params.maxBytes,
       });
-      const sha256 = createHash("sha256").update(buffer).digest("hex");
-      const assertPayload = () => {
-        assertStage();
-        if (hashGeneration(payloadPath, identity, buffer.length) !== sha256) {
-          mismatch("recovery payload changed");
-        }
-        params.verify(buffer, sha256);
-      };
-      assertPayload();
-      await root.remove(relativePayload, { assertBeforeMutation: assertPayload });
+      buffer = read.buffer;
+      sha256 = createHash("sha256").update(buffer).digest("hex");
     }
-    await root.remove(params.directory, {
-      assertBeforeMutation: () => {
-        assertStage();
-        if (fs.readdirSync(stagePath).length !== 0) {
-          mismatch("recovery directory is not empty");
-        }
-      },
-    });
-    requireDirectorySync(await parent.sync(), "Legacy migration copy recovery directory");
+    const assertPayload = () => {
+      assertStage();
+      if (hashGeneration(payloadPath, identity, Number(identity.size)) !== sha256) {
+        mismatch("recovery payload changed");
+      }
+      if ("verifyDigest" in params) {
+        params.verifyDigest(sha256);
+      } else if (buffer) {
+        params.verify(buffer, sha256);
+      }
+    };
+    assertPayload();
+    await root.remove(relativePayload, { assertBeforeMutation: assertPayload });
+    await removeEmptyStage();
+    return true;
   } finally {
     await parent.close();
   }
@@ -245,7 +327,13 @@ export async function prepareLegacyMigrationSourceCopy(params: {
     await assertSourceUnchanged();
     assertSource();
 
-    const stageName = `.doctor-source-copy-${randomUUID()}`;
+    const stageName = `.doctor-source-copy-${randomUUID()}-${legacyMigrationCopySourceName(sourcePath)}`;
+    if (Buffer.byteLength(stageName) > 255) {
+      throw new FsSafeError(
+        "too-large",
+        "legacy migration source filename is too long for a private copy",
+      );
+    }
     const stageRelativePath = path.join(parentRelativePath, stageName);
     const stagePath = path.join(parent.receipt.realPath, stageName);
     createDirectorySync(stagePath, {

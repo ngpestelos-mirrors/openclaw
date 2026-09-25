@@ -3,7 +3,10 @@ import path from "node:path";
 import { root, type Root } from "@openclaw/fs-safe";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
-import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -29,6 +32,11 @@ import {
   resolveLegacyMigrationSourceKey,
   type LegacyMigrationReceipt,
 } from "./state-migrations.receipts.js";
+import { recoverLegacyMigrationReceiptCopies } from "./state-migrations.source-copy-recovery.js";
+import {
+  listUnboundLegacyMigrationSourceCopies,
+  listLegacyMigrationSourceCopies,
+} from "./state-migrations.source-copy.js";
 import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceOrClaimMayExist,
@@ -40,6 +48,7 @@ import type { LegacyStateDetection, MigrationMessages } from "./state-migrations
 const LEGACY_APNS_REGISTRATION_PATH = "push/apns-registrations.json";
 const APNS_DOCTOR_CLAIM_SUFFIX = ".doctor-importing";
 const MIGRATION_KIND = "legacy-apns-registrations-json";
+
 // Legacy values are wall-clock timestamps. Bounding them to ECMAScript Date's
 // finite range rejects hostile counters with ~367 trillion successor values left.
 const MAX_LEGACY_APNS_UPDATED_AT_MS = 8_640_000_000_000_000;
@@ -89,7 +98,9 @@ export function detectLegacyApnsRegistrations(params: {
     sourcePath,
     hasLegacy:
       params.doctorOnlyStateMigrations === true &&
-      legacyMigrationSourceOrClaimMayExist(sourcePath, APNS_DOCTOR_CLAIM_SUFFIX),
+      (legacyMigrationSourceOrClaimMayExist(sourcePath, APNS_DOCTOR_CLAIM_SUFFIX) ||
+        listLegacyMigrationSourceCopies(sourcePath).length > 0 ||
+        listUnboundLegacyMigrationSourceCopies(path.dirname(sourcePath)).length > 0),
   };
 }
 
@@ -302,7 +313,10 @@ async function cleanupReceiptAuthoritativeSources(params: {
     }
     removed += 1;
   }
-  if (!params.receipt.removedSource || removed > 0) {
+  if (
+    (!params.receipt.removedSource || removed > 0) &&
+    listLegacyMigrationSourceCopies(params.sourcePath).length === 0
+  ) {
     markLegacyMigrationSourceRemoved(params.receipt.sourceKey, params.env);
   }
   return removed;
@@ -335,10 +349,110 @@ async function migrateWithExclusiveStateOwnership(params: {
       readLegacySourceSnapshot(params.stateRoot, params.stateDir, snapshotPath),
   });
   await source.recoverLinkedMove();
+  const pushParent = path.dirname(sourcePath);
+  for (const directory of listUnboundLegacyMigrationSourceCopies(pushParent)) {
+    warnings.push(
+      "Preserved unbound APNs private copy " + directory + ". Inspect it and rerun Doctor.",
+    );
+  }
   const receipt = readLegacyMigrationReceipt(
     resolveLegacyMigrationSourceKey("apns-json", params.detected.sourcePath),
     params.env,
   );
+  const recoverCopies = async () => {
+    // Match a safely streamed source copy to the committed raw-byte receipt.
+    // No full APNs JSON payload enters memory, even on the recovery path.
+    let coveredNodeIds: ReadonlySet<string> | undefined;
+    if (receipt?.sourceSha256) {
+      for (const directory of listLegacyMigrationSourceCopies(sourcePath)) {
+        const nodeIds = new Set<string>();
+        try {
+          const snapshot = await readLegacyJsonObjectStream({
+            stateRoot: params.stateRoot,
+            relativePath: relativeLegacyPath(params.stateDir, path.join(directory, "payload")),
+            property: "registrationsByNodeId",
+            onEntry: (rawNodeId, rawRegistration) => {
+              const [nodeId] = parseLegacyApnsRegistration(rawNodeId, rawRegistration, params.env);
+              if (nodeIds.has(nodeId)) {
+                throw new Error("legacy APNs registration has a duplicate node id");
+              }
+              nodeIds.add(nodeId);
+            },
+          });
+          if (
+            snapshot.sha256 === receipt.sourceSha256 &&
+            snapshot.size === receipt.sourceSizeBytes
+          ) {
+            coveredNodeIds = nodeIds;
+            break;
+          }
+        } catch {
+          // The helper preserves unsafe or unparseable material with a warning.
+        }
+      }
+    }
+    const recovery = await recoverLegacyMigrationReceiptCopies({
+      stateRoot: params.stateRoot,
+      stateDir: params.stateDir,
+      sourcePath,
+      claimPath: source.claimPath,
+      env: params.env,
+      receipt,
+      label: "APNs",
+      streamed: true,
+      verifyCanonical: (current) => {
+        const report: unknown = JSON.parse(current.reportJson);
+        if (
+          !isRecord(report) ||
+          report.source !== MIGRATION_KIND ||
+          !coveredNodeIds ||
+          report.sourceRecordCount !== coveredNodeIds.size ||
+          !Number.isSafeInteger(report.importedRecordCount) ||
+          !Number.isSafeInteger(report.preservedSqliteRecordCount) ||
+          !Number.isSafeInteger(report.suppressedDeletedRecordCount) ||
+          Number(report.importedRecordCount) < 0 ||
+          Number(report.preservedSqliteRecordCount) < 0 ||
+          Number(report.suppressedDeletedRecordCount) < 0 ||
+          Number(report.importedRecordCount) +
+            Number(report.preservedSqliteRecordCount) +
+            Number(report.suppressedDeletedRecordCount) !==
+            coveredNodeIds.size
+        ) {
+          throw new Error("APNs receipt does not cover the private copy");
+        }
+        const db = openOpenClawStateDatabase({ env: params.env }).db;
+        const stateDb = getNodeSqliteKysely<ApnsMigrationDatabase>(db);
+        for (const nodeId of coveredNodeIds) {
+          const row = executeSqliteQueryTakeFirstSync(
+            db,
+            stateDb.selectFrom("apns_registrations").selectAll().where("node_id", "=", nodeId),
+          );
+          const tombstone = executeSqliteQueryTakeFirstSync(
+            db,
+            stateDb
+              .selectFrom("apns_registration_tombstones")
+              .select("node_id")
+              .where("node_id", "=", nodeId),
+          );
+          if (Boolean(row) === Boolean(tombstone)) {
+            throw new Error(
+              "canonical APNs registration or tombstone no longer covers the private copy",
+            );
+          }
+          if (row) {
+            apnsRegistrationFromRow(row);
+          }
+        }
+      },
+    });
+    if (recovery.removed > 0 && receipt) {
+      if (recovery.warnings.length === 0 && warnings.length === 0) {
+        markLegacyMigrationSourceRemoved(receipt.sourceKey, params.env);
+      }
+      changes.push("Removed interrupted private APNs copy covered by its SQLite receipt.");
+    }
+    warnings.push(...recovery.warnings);
+  };
   if (receipt) {
     try {
       const removed = await cleanupReceiptAuthoritativeSources({
@@ -349,6 +463,7 @@ async function migrateWithExclusiveStateOwnership(params: {
       if (removed > 0) {
         notices.push("Discarded retired APNs JSON state already covered by its SQLite receipt.");
       }
+      await recoverCopies();
     } catch (error) {
       warnings.push(`APNs state is in SQLite, but legacy cleanup failed: ${String(error)}`);
     }
@@ -357,6 +472,10 @@ async function migrateWithExclusiveStateOwnership(params: {
 
   const hasSource = await source.exists();
   const hasClaim = await source.exists(true);
+  if (!hasSource && !hasClaim && listLegacyMigrationSourceCopies(sourcePath).length > 0) {
+    await recoverCopies();
+    return { changes, warnings };
+  }
   if (hasSource && hasClaim) {
     return {
       changes,

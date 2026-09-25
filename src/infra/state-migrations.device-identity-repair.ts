@@ -9,7 +9,7 @@ import {
 import { formatErrorMessage } from "./errors.js";
 import { pathMayExistSync } from "./path-existence.js";
 import type { LegacyDeviceIdentityDetection } from "./state-migrations.device-identity.types.js";
-import { listLegacyMigrationSourceCopies } from "./state-migrations.source-copy.js";
+import { listLegacyMigrationCopyNames } from "./state-migrations.source-copy.js";
 import type { MigrationMessages } from "./state-migrations.types.js";
 
 const LEGACY_IDENTITY_RELATIVE_PATH = path.join("identity", "device.json");
@@ -49,7 +49,7 @@ export function detectLegacyDeviceIdentity(params: {
       (pathMayExistSync(claimPath) ||
         pathMayExistSync(nativeClaimPath) ||
         pathMayExistSync(sourcePath) ||
-        listLegacyMigrationSourceCopies(sourcePath).length > 0),
+        listLegacyMigrationCopyNames(path.dirname(sourcePath)).length > 0),
     hasInvalidCanonical,
   };
 }
@@ -59,7 +59,11 @@ export function legacyDeviceIdentitySourcePaths(detected: LegacyDeviceIdentityDe
     detected.sourcePath,
     detected.claimPath,
     detected.nativeClaimPath,
-    ...(detected.hasLegacy ? listLegacyMigrationSourceCopies(detected.sourcePath) : []),
+    ...(detected.hasLegacy
+      ? listLegacyMigrationCopyNames(path.dirname(detected.sourcePath)).map((name) =>
+          path.join(path.dirname(detected.sourcePath), name),
+        )
+      : []),
   ];
 }
 
@@ -68,7 +72,7 @@ export function hasLegacyDeviceIdentityPath(detected: LegacyDeviceIdentityDetect
     pathMayExistSync(detected.claimPath) ||
     pathMayExistSync(detected.nativeClaimPath) ||
     pathMayExistSync(detected.sourcePath) ||
-    listLegacyMigrationSourceCopies(detected.sourcePath).length > 0
+    listLegacyMigrationCopyNames(path.dirname(detected.sourcePath)).length > 0
   );
 }
 

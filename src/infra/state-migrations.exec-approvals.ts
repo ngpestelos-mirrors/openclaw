@@ -1,12 +1,17 @@
 // Doctor-only import for the retired exec approvals JSON store.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { root, type Root } from "@openclaw/fs-safe";
+import { readRegularFileSync } from "@openclaw/fs-safe/advanced";
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { err, ok } from "@openclaw/normalization-core/result";
 import { z } from "zod";
-import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import {
   normalizeExecApprovalsInternal,
   parsePersistedExecApprovals,
@@ -25,10 +30,16 @@ import type { LegacyExecApprovalsDetection } from "./state-migrations.exec-appro
 import { withLegacyMigrationStateLock } from "./state-migrations.lock.js";
 import {
   markLegacyMigrationSourceRemoved,
+  readLegacyMigrationReceipt,
   readLegacyMigrationReceiptFromDatabase,
   recordLegacyMigrationReceipt,
   resolveLegacyMigrationSourceKey,
 } from "./state-migrations.receipts.js";
+import { recoverLegacyMigrationReceiptCopies } from "./state-migrations.source-copy-recovery.js";
+import {
+  listUnboundLegacyMigrationSourceCopies,
+  listLegacyMigrationSourceCopies,
+} from "./state-migrations.source-copy.js";
 import {
   LegacyMigrationSourceClaim,
   legacyMigrationSourceOrClaimMayExist,
@@ -43,6 +54,10 @@ export const MAX_LEGACY_EXEC_APPROVALS_BYTES = 4 * 1024 * 1024;
 const MIGRATION_KIND = "legacy-exec-approvals-json";
 const TARGET_TABLE = "exec_approvals_config";
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const canonicalRawHash = (raw: string | null) =>
+  createHash("sha256")
+    .update(raw ?? "")
+    .digest("hex");
 
 type LegacySourceSnapshot = Omit<LegacyMigrationSourceSnapshot, "raw"> & { raw: string | null };
 
@@ -100,7 +115,10 @@ export function detectLegacyExecApprovals(params: {
 }): LegacyExecApprovalsDetection {
   const env = { ...process.env, OPENCLAW_STATE_DIR: params.stateDir };
   const sourcePath = resolveExecApprovalsPath(env);
-  const sourcePresent = legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX);
+  const sourcePresent =
+    legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX) ||
+    listLegacyMigrationSourceCopies(sourcePath).length > 0 ||
+    listUnboundLegacyMigrationSourceCopies(path.dirname(sourcePath)).length > 0;
   return {
     sourcePath,
     hasLegacy: params.doctorOnlyStateMigrations === true && sourcePresent,
@@ -153,11 +171,12 @@ function decideAndRecordMigration(params: {
       let receiptImportedSameSource = false;
       if (receipt?.sourceSha256 === params.snapshot.sha256) {
         try {
-          const report = JSON.parse(receipt.reportJson) as { decision?: unknown };
+          const report: unknown = JSON.parse(receipt.reportJson);
           receiptImportedSameSource =
-            report.decision === "legacy-imported" ||
-            report.decision === "invalid-canonical-repaired" ||
-            report.decision === "receipt-authoritative";
+            isRecord(report) &&
+            (report.decision === "legacy-imported" ||
+              report.decision === "invalid-canonical-repaired" ||
+              report.decision === "receipt-authoritative");
         } catch {
           // A malformed receipt is not authority to discard security state.
         }
@@ -237,6 +256,14 @@ function decideAndRecordMigration(params: {
             ? 1
             : 0,
         removesSource: removeSource,
+        ...(removeSource
+          ? {
+              canonicalRawSha256: canonicalRawHash(
+                readExecApprovalsConfigRow(db)?.raw_json ?? null,
+              ),
+              canonicalPresent: Boolean(readExecApprovalsConfigRow(db)),
+            }
+          : {}),
       });
       recordLegacyMigrationReceipt(db, {
         sourceKey,
@@ -283,6 +310,89 @@ async function migrateWithExclusiveStateOwnership(params: {
   removeSource?: (sourcePath: string) => Promise<void> | void;
 }): Promise<MigrationMessages> {
   const sourcePath = params.detected.sourcePath;
+  const copies = listLegacyMigrationSourceCopies(sourcePath);
+  if (copies.length > 0) {
+    const receipt = readLegacyMigrationReceipt(
+      resolveLegacyMigrationSourceKey("exec-approvals-json", sourcePath),
+      params.env,
+    );
+    const recovery = await recoverLegacyMigrationReceiptCopies({
+      stateRoot: params.stateRoot,
+      stateDir: params.stateDir,
+      sourcePath,
+      claimPath: sourcePath + DOCTOR_CLAIM_SUFFIX,
+      env: params.env,
+      receipt,
+      label: "exec approvals",
+      maxBytes: MAX_LEGACY_EXEC_APPROVALS_BYTES,
+      verifyCanonical: (current) => {
+        const report: unknown = JSON.parse(current.reportJson);
+        if (
+          !isRecord(report) ||
+          report.source !== MIGRATION_KIND ||
+          report.removesSource !== true ||
+          ![
+            "empty-legacy-retired",
+            "legacy-imported",
+            "invalid-canonical-repaired",
+            "receipt-authoritative",
+            "canonical-preserved",
+          ].includes(String(report.decision)) ||
+          typeof report.canonicalRawSha256 !== "string" ||
+          typeof report.canonicalPresent !== "boolean"
+        ) {
+          throw new Error("exec approvals receipt does not authorize source retirement");
+        }
+        const canonical = readExecApprovalsConfigRow(
+          openOpenClawStateDatabase({ env: params.env }).db,
+        );
+        const validCanonical = canonical && tryParsePersistedExecApprovals(canonical.raw_json);
+        if (
+          (!canonical && (report.canonicalPresent || report.decision !== "empty-legacy-retired")) ||
+          (canonical &&
+            !validCanonical &&
+            (!report.canonicalPresent ||
+              canonicalRawHash(canonical.raw_json) !== report.canonicalRawSha256))
+        ) {
+          throw new Error("canonical exec approvals no longer match the recorded decision");
+        }
+        if (report.decision === "empty-legacy-retired") {
+          const archive = report.archivePath;
+          if (
+            typeof archive !== "string" ||
+            !archive.startsWith(sourcePath + ".migrated." + current.sourceSha256 + ".") ||
+            !/^[0-9a-f-]{36}$/u.test(
+              archive.slice((sourcePath + ".migrated." + current.sourceSha256 + ".").length),
+            ) ||
+            createHash("sha256")
+              .update(
+                readRegularFileSync({
+                  filePath: archive,
+                  maxBytes: MAX_LEGACY_EXEC_APPROVALS_BYTES,
+                }).buffer,
+              )
+              .digest("hex") !== current.sourceSha256
+          ) {
+            throw new Error("archived empty exec approvals no longer match their receipt");
+          }
+        }
+      },
+    });
+    if (recovery.removed > 0 && recovery.warnings.length === 0 && receipt) {
+      markLegacyMigrationSourceRemoved(receipt.sourceKey, params.env);
+    }
+    if (
+      recovery.warnings.length > 0 ||
+      !legacyMigrationSourceOrClaimMayExist(sourcePath, DOCTOR_CLAIM_SUFFIX)
+    ) {
+      return {
+        changes: recovery.removed
+          ? ["Removed interrupted private exec approvals copy covered by its SQLite receipt."]
+          : [],
+        warnings: recovery.warnings,
+      };
+    }
+  }
   const source = new LegacyMigrationSourceClaim<LegacySourceSnapshot>({
     stateRoot: params.stateRoot,
     stateDir: params.stateDir,
@@ -449,12 +559,21 @@ export async function migrateLegacyExecApprovals(params: {
         maxBytes: MAX_LEGACY_EXEC_APPROVALS_BYTES,
         symlinks: "reject",
       });
-      return await migrateWithExclusiveStateOwnership({
+      const unboundWarnings = listUnboundLegacyMigrationSourceCopies(
+        path.dirname(detected.sourcePath),
+      ).map(
+        (directory) =>
+          "Preserved unbound exec approvals private copy " +
+          directory +
+          ". Inspect it and rerun Doctor.",
+      );
+      const migration = await migrateWithExclusiveStateOwnership({
         ...params,
         detected,
         env,
         stateRoot,
       });
+      return { ...migration, warnings: [...unboundWarnings, ...migration.warnings] };
     },
   });
   if (result.changes.length > 0) {

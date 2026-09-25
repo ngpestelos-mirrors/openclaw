@@ -14,6 +14,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import * as durability from "./directory-durability.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import {
   executeSqliteQuerySync,
@@ -685,6 +686,25 @@ describe("legacy MCP OAuth Doctor migration", () => {
     expect(fs.existsSync(sourcePath)).toBe(true);
   });
 
+  it("preserves a previously unbound private copy without replaying OAuth credentials", async () => {
+    const { env, stateDir } = useStateDir();
+    const sourcePath = await writeLegacy({ stateDir });
+    const original = await fsp.readFile(sourcePath);
+    expect((await migrate(stateDir, env)).warnings).toEqual([]);
+    const canonical = storeRow(env)?.store_json;
+    const directory = path.join(
+      path.dirname(sourcePath),
+      ".doctor-source-copy-11111111-1111-4111-8111-111111111111",
+    );
+    await fsp.mkdir(directory, { mode: 0o700 });
+    await fsp.writeFile(path.join(directory, "payload"), original);
+
+    const retry = await migrate(stateDir, env);
+    expect(retry.warnings.join("\n")).toContain("Preserved unbound MCP OAuth private copy");
+    expect(await fsp.readFile(path.join(directory, "payload"))).toEqual(original);
+    expect(storeRow(env)?.store_json).toBe(canonical);
+  });
+
   it("records the digest of the exact imported source bytes", async () => {
     const { env, stateDir } = useStateDir();
     const bytes = Buffer.from(`${JSON.stringify(validStore())}\n`, "utf8");
@@ -695,5 +715,141 @@ describe("legacy MCP OAuth Doctor migration", () => {
     expect(receipt(env, sourcePath)).toMatchObject({
       source_sha256: createHash("sha256").update(bytes).digest("hex"),
     });
+  });
+
+  it("recovers a source-bound private copy after the original deletion sync fails", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    const { env, stateDir } = useStateDir();
+    const sourcePath = await writeLegacy({ stateDir });
+    const original = await fsp.readFile(sourcePath);
+    const link = vi
+      .spyOn(fsp, "link")
+      .mockRejectedValue(
+        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
+      );
+    const requireSync = durability.requireDirectorySync;
+    const failedSync = vi
+      .spyOn(durability, "requireDirectorySync")
+      .mockImplementation((outcome, label) => {
+        if (label === "Legacy migration source directory" && !fs.existsSync(sourcePath)) {
+          throw new Error("post-delete parent sync failed");
+        }
+        requireSync(outcome, label);
+      });
+
+    const first = await migrate(stateDir, env);
+    expect(first.warnings.join("\n")).toContain("post-delete parent sync failed");
+    const copies = fs
+      .readdirSync(path.dirname(sourcePath))
+      .filter((name) => name.startsWith(".doctor-source-copy-"));
+    expect(copies).toHaveLength(1);
+    const directory = path.join(path.dirname(sourcePath), copies[0]!);
+    const payload = path.join(directory, "payload");
+    expect(await fsp.readFile(payload)).toEqual(original);
+    expect(fs.existsSync(sourcePath)).toBe(false);
+    expect(receipt(env, sourcePath)?.removed_source).toBe(0);
+    const canonical = storeRow(env)?.store_json;
+    expect(canonical).toBeDefined();
+    failedSync.mockRestore();
+    link.mockRestore();
+    closeOpenClawStateDatabaseForTest();
+
+    await fsp.writeFile(payload, "changed payload");
+    expect((await migrate(stateDir, env)).warnings.join("\n")).toContain(
+      "differs from the MCP OAuth migration receipt",
+    );
+    expect(fs.existsSync(payload)).toBe(true);
+    expect(receipt(env, sourcePath)?.removed_source).toBe(0);
+    await fsp.writeFile(payload, original);
+    const db = database(env);
+    executeSqliteQuerySync(
+      db,
+      getNodeSqliteKysely<MigrationDatabase>(db)
+        .updateTable("migration_sources")
+        .set({ source_sha256: "0".repeat(64) })
+        .where("source_path", "=", sourcePath),
+    );
+    expect((await migrate(stateDir, env)).warnings.join("\n")).toContain(
+      "differs from the MCP OAuth migration receipt",
+    );
+    expect(fs.existsSync(payload)).toBe(true);
+    executeSqliteQuerySync(
+      db,
+      getNodeSqliteKysely<MigrationDatabase>(db)
+        .updateTable("migration_sources")
+        .set({ source_sha256: createHash("sha256").update(original).digest("hex") })
+        .where("source_path", "=", sourcePath),
+    );
+    executeSqliteQuerySync(
+      db,
+      getNodeSqliteKysely<MigrationDatabase>(db)
+        .updateTable("mcp_oauth_stores")
+        .set({
+          store_json: JSON.stringify(
+            validStore({
+              tokens: {
+                access_token: 42,
+                token_type: "Bearer",
+              },
+            }),
+          ),
+        })
+        .where("store_key", "=", DEFAULT_FILE_NAME.slice(0, -5)),
+    );
+    expect((await migrate(stateDir, env)).warnings.join("\n")).toContain(
+      "canonical MCP OAuth store is invalid",
+    );
+    expect(fs.existsSync(payload)).toBe(true);
+    const refreshed = JSON.stringify(
+      validStore({ tokens: { access_token: "refreshed-test-token", token_type: "Bearer" } }),
+    );
+    executeSqliteQuerySync(
+      db,
+      getNodeSqliteKysely<MigrationDatabase>(db)
+        .updateTable("mcp_oauth_stores")
+        .set({ store_json: refreshed })
+        .where("store_key", "=", DEFAULT_FILE_NAME.slice(0, -5)),
+    );
+
+    const retry = await migrate(stateDir, env);
+    expect(retry.warnings).toEqual([]);
+    expect(retry.changes).toContain(
+      "Removed interrupted private MCP OAuth copy covered by its SQLite receipt.",
+    );
+    expect(fs.existsSync(directory)).toBe(false);
+    expect(storeRow(env)?.store_json).toBe(refreshed);
+    expect(receipt(env, sourcePath)?.removed_source).toBe(1);
+    expect((await migrate(stateDir, env)).changes).toEqual([]);
+  });
+
+  it("finishes receipt-covered cleanup when a copied original could not be removed", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    const { env, stateDir } = useStateDir();
+    const sourcePath = await writeLegacy({ stateDir });
+    const link = vi
+      .spyOn(fsp, "link")
+      .mockRejectedValue(
+        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
+      );
+    const first = await migrate(stateDir, env, {
+      removeSource() {
+        throw new Error("unlink refused");
+      },
+    });
+    expect(first.warnings.join("\n")).toContain("unlink refused");
+    expect(fs.existsSync(sourcePath)).toBe(true);
+    const canonical = storeRow(env)?.store_json;
+    link.mockRestore();
+    const retry = await migrate(stateDir, env);
+    expect(retry.warnings).toEqual([]);
+    expect(storeRow(env)?.store_json).toEqual(canonical);
+    expect(fs.existsSync(sourcePath)).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.dirname(sourcePath))
+        .some((name) => name.startsWith(".doctor-source-copy-")),
+    ).toBe(false);
   });
 });

@@ -125,7 +125,7 @@ function parseSetup(raw: string): ParsedSource {
   };
 }
 
-function parseAttestation(snapshot: SourceSnapshot): ParsedSource {
+function parseAttestation(snapshot: Pick<SourceSnapshot, "raw" | "mtimeMs">): ParsedSource {
   const lines = snapshot.raw.split(/\r?\n/);
   if (lines.at(-1) === "") {
     lines.pop();
@@ -158,7 +158,7 @@ function parseAttestation(snapshot: SourceSnapshot): ParsedSource {
 
 export function parseSource(
   source: LegacyWorkspaceStateSource,
-  snapshot: SourceSnapshot,
+  snapshot: Pick<SourceSnapshot, "raw" | "mtimeMs">,
 ): ParsedSource {
   return source.kind === "setup" ? parseSetup(snapshot.raw) : parseAttestation(snapshot);
 }
@@ -254,6 +254,7 @@ export function canonicalCoversParsedSource(params: {
   source: LegacyWorkspaceStateSource;
   parsed: ParsedSource;
   env: NodeJS.ProcessEnv;
+  expectedFingerprint?: string;
 }): boolean {
   const { db } = openOpenClawStateDatabase({ env: params.env });
   return runSqliteDeferredTransactionSync(db, () => {
@@ -269,7 +270,9 @@ export function canonicalCoversParsedSource(params: {
       // SQLite owns initialized milestones; a matching receipt permits cleanup only.
       return (
         row?.version === WORKSPACE_SETUP_STATE_VERSION &&
-        row.workspace_path === params.source.workspaceDir
+        row.workspace_path === params.source.workspaceDir &&
+        (!params.expectedFingerprint ||
+          createWorkspaceSetupFingerprint(row) === params.expectedFingerprint)
       );
     }
     if (params.source.kind !== "attestation" || params.parsed.kind !== "attestation") {
@@ -284,6 +287,25 @@ export function canonicalCoversParsedSource(params: {
     );
     if (!row || row.attested_at_ms == null) {
       return false;
+    }
+    if (params.expectedFingerprint) {
+      const hashes = new Map(
+        executeSqliteQuerySync(
+          db,
+          kysely
+            .selectFrom("workspace_generated_bootstrap_hashes")
+            .select(["filename", "sha256"])
+            .where("workspace_key", "=", params.source.workspaceKey),
+        ).rows.map((hashRow) => [hashRow.filename, hashRow.sha256]),
+      );
+      if (
+        attestationFingerprint({
+          attestedAtMs: row.attested_at_ms,
+          generatedHashes: hashes,
+        }) !== params.expectedFingerprint
+      ) {
+        return false;
+      }
     }
     if (row.attested_at_ms > params.parsed.value.attestedAtMs) {
       return true;
@@ -599,6 +621,7 @@ export function importAndRecordReceipt(params: {
         target: targetTable,
         workspaceKey: params.source.workspaceKey,
         sourceSha256: params.snapshot.sha256,
+        sourceMtimeMs: params.snapshot.mtimeMs,
         sourceRecordCount: params.parsed.recordCount,
         sourcePriority: params.source.priority,
         canonicalFingerprint: verifiedFingerprint,

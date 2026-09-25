@@ -2,7 +2,8 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surfaces.types.js";
@@ -13,6 +14,7 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
+import * as durability from "./directory-durability.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import {
@@ -33,6 +35,7 @@ import {
   detectLegacyStateMigrations,
   runLegacyStateMigrations,
 } from "./state-migrations.doctor.js";
+import * as receipts from "./state-migrations.receipts.js";
 import { detectLegacyWebPush, migrateLegacyWebPush } from "./state-migrations.web-push.js";
 
 describe("legacy Web Push Doctor migration", () => {
@@ -41,6 +44,9 @@ describe("legacy Web Push Doctor migration", () => {
     afterEach(async () => {
       await closeOpenClawStateDatabaseAsync();
       closeOpenClawStateDatabaseForTest();
+      __setFsSafeTestHooksForTest(undefined);
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
       envSnapshot?.restore();
       envSnapshot = undefined;
       cleanup();
@@ -129,6 +135,283 @@ describe("legacy Web Push Doctor migration", () => {
   function seedVapid(value: VapidKeyPair): void {
     writeConfigMachineState(WEB_PUSH_VAPID_STATE_KEY, value);
   }
+
+  it("finalizes an artifact-free pending receipt before accepting a newer source generation", async () => {
+    const stateDir = useStateDir();
+    const migrate = () =>
+      migrateLegacyWebPush({
+        detected: detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }),
+        stateDir,
+      });
+    const { subscriptionsPath } = await writeLegacyState({
+      stateDir,
+      subscriptions: [subscription()],
+    });
+    const key = receipts.resolveLegacyMigrationSourceKey(
+      "legacy-web-push-json",
+      subscriptionsPath!,
+    );
+    const mark = vi
+      .spyOn(receipts, "markLegacyMigrationSourceRemoved")
+      .mockImplementationOnce(() => {
+        throw new Error("receipt completion interrupted");
+      });
+    expect((await migrate()).warnings.join("\n")).toContain("receipt completion interrupted");
+    mark.mockRestore();
+    expect(fs.existsSync(subscriptionsPath!)).toBe(false);
+    expect(receipts.readLegacyMigrationReceipt(key, process.env)?.removedSource).toBe(false);
+    await fsp.rmdir(path.dirname(subscriptionsPath!));
+    expect(detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }).hasLegacy).toBe(true);
+    expect((await migrate()).warnings).toEqual([]);
+    expect(receipts.readLegacyMigrationReceipt(key, process.env)?.removedSource).toBe(true);
+    expect(fs.existsSync(path.dirname(subscriptionsPath!))).toBe(false);
+    const newer = subscription({
+      updatedAtMs: 3000,
+      keys: { p256dh: "newer-p256dh", auth: "newer-auth" },
+    });
+    await writeLegacyState({ stateDir, subscriptions: [newer] });
+    expect((await migrate()).warnings).toEqual([]);
+    expect(await listWebPushSubscriptions(stateDir)).toEqual([newer]);
+  });
+
+  it("still imports a newer recreated legacy subscription after completed retirement", async () => {
+    const stateDir = useStateDir();
+    const migrate = () =>
+      migrateLegacyWebPush({
+        detected: detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }),
+        stateDir,
+      });
+    await writeLegacyState({ stateDir, subscriptions: [subscription()] });
+    expect((await migrate()).warnings).toEqual([]);
+    const updated = subscription({
+      updatedAtMs: 3_000,
+      keys: { p256dh: "new-key", auth: "new-auth" },
+    });
+    const paths = await writeLegacyState({ stateDir, subscriptions: [updated] });
+    expect((await migrate()).warnings).toEqual([]);
+    expect(await listWebPushSubscriptions()).toContainEqual(updated);
+    expect(fs.existsSync(paths.subscriptionsPath!)).toBe(false);
+  });
+
+  it("finishes receipt-covered cleanup when a copied original could not be removed", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    const stateDir = useStateDir();
+    const { vapidKeysPath } = await writeLegacyState({ stateDir, vapid: vapidKeys() });
+    const link = vi
+      .spyOn(fsp, "link")
+      .mockRejectedValue(
+        Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
+      );
+    const migrate = (removeSource?: () => void) =>
+      migrateLegacyWebPush({
+        detected: detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }),
+        stateDir,
+        removeSource,
+      });
+    expect(
+      (
+        await migrate(() => {
+          throw new Error("unlink refused");
+        })
+      ).warnings.join("\n"),
+    ).toContain("unlink refused");
+    expect(fs.existsSync(vapidKeysPath!)).toBe(true);
+    const canonical = await readPersistedVapidKeyPair();
+    link.mockRestore();
+    expect((await migrate()).warnings).toEqual([]);
+    expect(await readPersistedVapidKeyPair()).toEqual(canonical);
+    expect(fs.existsSync(vapidKeysPath!)).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.join(stateDir, "push"))
+        .some((name) => name.startsWith(".doctor-source-copy-")),
+    ).toBe(false);
+  });
+
+  it("does not adopt an APNs private copy from the shared push directory", async () => {
+    const stateDir = useStateDir();
+    const paths = await writeLegacyState({ stateDir, vapid: vapidKeys() });
+    const otherSource = Buffer.from("apns-registrations.json").toString("base64url");
+    const otherStage = path.join(
+      stateDir,
+      "push",
+      ".doctor-source-copy-00000000-0000-4000-8000-000000000001-" + otherSource,
+    );
+    await fsp.mkdir(otherStage, { mode: 0o700 });
+    const otherPayload = path.join(otherStage, "payload");
+    await fsp.writeFile(otherPayload, "synthetic-other-owner-bytes", { mode: 0o600 });
+    const result = await migrateLegacyWebPush({
+      detected: detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }),
+      stateDir,
+    });
+    expect(result.warnings).toEqual([]);
+    expect(fs.existsSync(paths.vapidKeysPath!)).toBe(false);
+    expect(await fsp.readFile(otherPayload, "utf8")).toBe("synthetic-other-owner-bytes");
+    expect(detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }).hasLegacy).toBe(
+      false,
+    );
+  });
+
+  it.each(["subscriptions", "vapid"] as const)(
+    "recovers committed %s secrets from a private copy after post-delete sync failure",
+    async (kind) => {
+      vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+      vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+      const stateDir = useStateDir();
+      const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+      const paths = await writeLegacyState({
+        stateDir,
+        ...(kind === "subscriptions"
+          ? { subscriptions: [subscription()] }
+          : { vapid: vapidKeys() }),
+      });
+      const sourcePath = (
+        kind === "subscriptions" ? paths.subscriptionsPath : paths.vapidKeysPath
+      )!;
+      const original = await fsp.readFile(sourcePath);
+      const link = vi
+        .spyOn(fsp, "link")
+        .mockRejectedValue(
+          Object.assign(new Error("link denied"), { code: "EPERM", syscall: "link" }),
+        );
+      const requireSync = durability.requireDirectorySync;
+      const failedSync = vi
+        .spyOn(durability, "requireDirectorySync")
+        .mockImplementation((outcome, label) => {
+          if (label === "Legacy migration source directory" && !fs.existsSync(sourcePath)) {
+            throw new Error("post-delete parent sync failed");
+          }
+          requireSync(outcome, label);
+        });
+      const migrate = () =>
+        migrateLegacyWebPush({
+          detected: detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }),
+          env,
+          stateDir,
+        });
+
+      const first = await migrate();
+      expect(first.warnings.join("\n")).toContain("post-delete parent sync failed");
+      const copies = fs
+        .readdirSync(path.dirname(sourcePath))
+        .filter((name) => name.startsWith(".doctor-source-copy-"));
+      expect(copies).toHaveLength(1);
+      const directory = path.join(path.dirname(sourcePath), copies[0]!);
+      const payload = path.join(directory, "payload");
+      expect(await fsp.readFile(payload)).toEqual(original);
+      expect(fs.existsSync(sourcePath)).toBe(false);
+      expect(
+        kind === "subscriptions"
+          ? await listWebPushSubscriptions(stateDir)
+          : await readPersistedVapidKeyPair(stateDir),
+      ).toEqual(kind === "subscriptions" ? [subscription()] : vapidKeys());
+      failedSync.mockRestore();
+      link.mockRestore();
+      closeOpenClawStateDatabaseForTest();
+
+      await fsp.writeFile(payload, "changed recovery bytes");
+      expect((await migrate()).warnings.join("\n")).toContain("differs from its migration receipt");
+      expect(fs.existsSync(payload)).toBe(true);
+      await fsp.writeFile(payload, original);
+      if (kind === "vapid") {
+        await fsp.writeFile(payload, Buffer.alloc(64 * 1024 + 1, 0x41));
+        expect((await migrate()).warnings.join("\n")).toContain(
+          "Preserved interrupted Web Push copy",
+        );
+        expect(fs.statSync(payload).size).toBe(64 * 1024 + 1);
+        await fsp.writeFile(payload, original);
+        seedVapid(vapidKeys({ privateKey: "changed-canonical" }));
+        expect((await migrate()).warnings.join("\n")).toContain("canonical Web Push state changed");
+        expect(fs.existsSync(payload)).toBe(true);
+        seedVapid(vapidKeys());
+      }
+
+      const retry = await migrate();
+      expect(retry.warnings).toEqual([]);
+      expect(retry.changes).toContain(
+        "Removed interrupted private Web Push copy covered by its SQLite receipt.",
+      );
+      expect(fs.existsSync(directory)).toBe(false);
+      expect(fs.existsSync(sourcePath)).toBe(false);
+      expect(
+        kind === "subscriptions"
+          ? await listWebPushSubscriptions(stateDir)
+          : await readPersistedVapidKeyPair(stateDir),
+      ).toEqual(kind === "subscriptions" ? [subscription()] : vapidKeys());
+      expect((await migrate()).changes).toEqual([]);
+    },
+  );
+
+  it("preserves a changed receipt-covered claim at the destructive recovery boundary", async () => {
+    const stateDir = useStateDir();
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const { subscriptionsPath } = await writeLegacyState({
+      stateDir,
+      subscriptions: [subscription()],
+    });
+    const claimPath = subscriptionsPath + ".doctor-importing";
+    const migrate = (removeSource?: (sourcePath: string) => void) =>
+      migrateLegacyWebPush({
+        detected: detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }),
+        stateDir,
+        env,
+        removeSource,
+      });
+    const first = await migrate(() => {
+      throw new Error("leave committed claim");
+    });
+    expect(first.warnings.join("\n")).toContain("legacy cleanup failed");
+    expect(fs.existsSync(claimPath)).toBe(true);
+    const canonical = await listWebPushSubscriptions(stateDir);
+    const changed = "different validly owned retired source generation";
+    let replaced = false;
+    __setFsSafeTestHooksForTest({
+      beforeRootFallbackMutation(operation, targetPath) {
+        if (operation === "remove" && targetPath === claimPath && !replaced) {
+          fs.writeFileSync(claimPath, changed);
+          replaced = true;
+        }
+      },
+    });
+
+    const retry = await migrate();
+    expect(replaced).toBe(true);
+    expect(retry.warnings.join("\n")).toContain("source generation changed before cleanup");
+    expect(fs.readFileSync(claimPath, "utf8")).toBe(changed);
+    expect(await listWebPushSubscriptions(stateDir)).toEqual(canonical);
+  });
+
+  it("preserves an unbound old private copy without replaying the VAPID identity", async () => {
+    const stateDir = useStateDir();
+    const { vapidKeysPath } = await writeLegacyState({ stateDir, vapid: vapidKeys() });
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    expect(
+      (
+        await migrateLegacyWebPush({
+          detected: detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }),
+          stateDir,
+          env,
+        })
+      ).warnings,
+    ).toEqual([]);
+    const canonical = await readPersistedVapidKeyPair(stateDir);
+    const directory = path.join(
+      path.dirname(vapidKeysPath!),
+      ".doctor-source-copy-11111111-1111-4111-8111-111111111111",
+    );
+    await fsp.mkdir(directory, { mode: 0o700 });
+    await fsp.writeFile(path.join(directory, "payload"), JSON.stringify(vapidKeys()));
+
+    const retry = await migrateLegacyWebPush({
+      detected: detectLegacyWebPush({ stateDir, doctorOnlyStateMigrations: true }),
+      stateDir,
+      env,
+    });
+    expect(retry.warnings.join("\n")).toContain("Preserved unbound Web Push private copy");
+    expect(fs.existsSync(path.join(directory, "payload"))).toBe(true);
+    expect(await readPersistedVapidKeyPair(stateDir)).toEqual(canonical);
+  });
 
   it("detects original and interrupted-claim files only for explicit Doctor repair", async () => {
     const stateDir = useStateDir();

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } from "../state/openclaw-state-db-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -20,6 +21,7 @@ type MigrationReceiptDatabase = Pick<
 export type LegacyMigrationReceipt = {
   sourceKey: string;
   sourceSha256: string | null;
+  sourceSizeBytes: number | null;
   removedSource: boolean;
   reportJson: string;
 };
@@ -70,13 +72,14 @@ export function readLegacyMigrationReceiptFromDatabase(
     database,
     getNodeSqliteKysely<MigrationReceiptDatabase>(database)
       .selectFrom("migration_sources")
-      .select(["source_sha256", "removed_source", "report_json"])
+      .select(["source_sha256", "source_size_bytes", "removed_source", "report_json"])
       .where("source_key", "=", sourceKey),
   );
   return row
     ? {
         sourceKey,
         sourceSha256: row.source_sha256,
+        sourceSizeBytes: row.source_size_bytes,
         removedSource: row.removed_source === 1,
         reportJson: row.report_json,
       }
@@ -88,6 +91,27 @@ export function readLegacyMigrationReceipt(
   env: NodeJS.ProcessEnv,
 ): LegacyMigrationReceipt | null {
   return readLegacyMigrationReceiptFromDatabase(openOpenClawStateDatabase({ env }).db, sourceKey);
+}
+
+/** Detect unfinished cleanup without creating state or overriding schema diagnostics. */
+export function hasPendingLegacyMigrationSourceRemoval(
+  sourceKeys: readonly string[],
+  env: NodeJS.ProcessEnv,
+): boolean {
+  try {
+    return (
+      withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+        ({ db }) =>
+          sourceKeys.some(
+            (key) => readLegacyMigrationReceiptFromDatabase(db, key)?.removedSource === false,
+          ),
+        { env },
+      ) ?? false
+    );
+  } catch {
+    // Detection leaves unavailable or incompatible databases to their admission owner.
+    return false;
+  }
 }
 
 export function recordLegacyMigrationRun(database: DatabaseSync, run: LegacyMigrationRun): void {
