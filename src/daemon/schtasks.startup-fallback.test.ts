@@ -141,8 +141,15 @@ function createSpawnChild(error?: Error): ChildProcess {
   return child;
 }
 
-const NODE_PROCESS_QUERY =
-  "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
+function isProcessSnapshotQuery(command: string, args?: readonly string[]): boolean {
+  const commandIndex = args?.indexOf("-Command") ?? -1;
+  const script = commandIndex >= 0 ? args?.[commandIndex + 1] : undefined;
+  return (
+    command === getWindowsPowerShellExePath() &&
+    script !== undefined &&
+    /\bGet-CimInstance\s+Win32_Process(?:\s+-ErrorAction\s+Stop)?\s*\|/u.test(script)
+  );
+}
 const STARTUP_GATEWAY_COMMAND =
   '"C:\\Program Files\\nodejs\\node.exe" "C:\\openclaw\\dist\\index.js" gateway --port 18789';
 
@@ -168,7 +175,7 @@ async function writeRunningGatewayScript(
   );
   let terminated = false;
   spawnSync.mockImplementation((command, args) => {
-    if (command === getWindowsPowerShellExePath() && args?.includes(NODE_PROCESS_QUERY)) {
+    if (isProcessSnapshotQuery(command, args)) {
       return makeSpawnSyncResult({
         stdout: JSON.stringify([
           ...(!terminated && isRunning()
@@ -209,11 +216,7 @@ function mockWindowsNodeHostProcess(processId = 5151): void {
   vi.spyOn(process, "platform", "get").mockReturnValue("win32");
   let processAlive = true;
   spawnSync.mockImplementation((command, args) => {
-    if (
-      command === getWindowsPowerShellExePath() &&
-      Array.isArray(args) &&
-      args.includes(NODE_PROCESS_QUERY)
-    ) {
+    if (isProcessSnapshotQuery(command, args)) {
       return makeSpawnSyncResult({
         stdout: JSON.stringify(
           processAlive
@@ -409,7 +412,7 @@ beforeEach(() => {
   spawn.mockImplementation(() => createSpawnChild());
   spawnSync.mockReset();
   spawnSync.mockImplementation((command, args) =>
-    command === getWindowsPowerShellExePath() && args?.includes(NODE_PROCESS_QUERY)
+    isProcessSnapshotQuery(command, args)
       ? makeSpawnSyncResult({
           stdout: JSON.stringify([{ ProcessId: 9999, CommandLine: "powershell.exe" }]),
         })
@@ -845,11 +848,7 @@ describe("Windows startup fallback", () => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       let processAlive = true;
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return makeSpawnSyncResult({
             stdout: JSON.stringify(
               processAlive
@@ -908,11 +907,7 @@ describe("Windows startup fallback", () => {
       await writeGatewayScript(env);
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return makeSpawnSyncResult({
             stdout: JSON.stringify([
               {
@@ -940,10 +935,7 @@ describe("Windows startup fallback", () => {
       await writeGatewayScript(env);
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       spawnSync.mockImplementation((command, args) =>
-        (command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)) ||
-        command.endsWith("tasklist.exe")
+        isProcessSnapshotQuery(command, args) || command.endsWith("tasklist.exe")
           ? makeSpawnSyncResult({ status: 1 })
           : makeSpawnSyncResult(),
       );
@@ -971,11 +963,7 @@ describe("Windows startup fallback", () => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([4242]);
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return makeSpawnSyncResult({ status: 1 });
         }
         if (command.endsWith("tasklist.exe")) {
@@ -1004,11 +992,7 @@ describe("Windows startup fallback", () => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       let processAlive = true;
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return makeSpawnSyncResult({
             stdout: JSON.stringify(
               processAlive
@@ -1075,11 +1059,7 @@ describe("Windows startup fallback", () => {
       const commandLine = await writeGatewayPackageCommand(path.join(tmpDir, "other-install"));
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return makeSpawnSyncResult({
             stdout: JSON.stringify([
               {
@@ -1179,11 +1159,7 @@ describe("Windows startup fallback", () => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       let processQueries = 0;
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           processQueries += 1;
           if (processQueries > 5) {
             return makeSpawnSyncResult({ status: 1 });
@@ -1235,11 +1211,7 @@ describe("Windows startup fallback", () => {
       env.OPENCLAW_GATEWAY_PORT = "19433";
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return makeSpawnSyncResult({
             stdout: JSON.stringify([
               {
@@ -1308,9 +1280,7 @@ describe("Windows startup fallback", () => {
       env.OPENCLAW_GATEWAY_PORT = "19433";
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       spawnSync.mockImplementation((command, args) =>
-        command === getWindowsPowerShellExePath() &&
-        Array.isArray(args) &&
-        args.includes(NODE_PROCESS_QUERY)
+        isProcessSnapshotQuery(command, args)
           ? makeSpawnSyncResult({
               stdout: JSON.stringify([
                 {
@@ -1361,9 +1331,7 @@ describe("Windows startup fallback", () => {
       env.OPENCLAW_GATEWAY_PORT = "19433";
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       spawnSync.mockImplementation((command, args) =>
-        command === getWindowsPowerShellExePath() &&
-        Array.isArray(args) &&
-        args.includes(NODE_PROCESS_QUERY)
+        isProcessSnapshotQuery(command, args)
           ? makeSpawnSyncResult({
               stdout: JSON.stringify([
                 {
@@ -1401,11 +1369,7 @@ describe("Windows startup fallback", () => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       let processAlive = true;
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return makeSpawnSyncResult({
             stdout: JSON.stringify(
               processAlive
@@ -1461,11 +1425,7 @@ describe("Windows startup fallback", () => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       let processQueries = 0;
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(NODE_PROCESS_QUERY)
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           processQueries += 1;
           return makeSpawnSyncResult({
             stdout: JSON.stringify(
@@ -1797,7 +1757,7 @@ describe("Windows startup fallback", () => {
   it("does not fall back when a listener appears after the clean task exit", async () => {
     await withWindowsEnv("openclaw-win-startup-", async ({ env }) => {
       spawnSync.mockImplementation((command, args) =>
-        command === getWindowsPowerShellExePath() && args?.includes(NODE_PROCESS_QUERY)
+        isProcessSnapshotQuery(command, args)
           ? makeSpawnSyncResult({ status: 1 })
           : makeSpawnSyncResult(),
       );
@@ -1885,13 +1845,7 @@ describe("Windows startup fallback", () => {
       fastForwardTaskStartWait();
       findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([4242]);
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-          )
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return {
             pid: 0,
             output: [null, "", ""],
@@ -1951,13 +1905,7 @@ describe("Windows startup fallback", () => {
       const taskScriptPath = resolveTaskScriptPath(env);
       fastForwardTaskStartWait();
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-          )
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return {
             pid: 0,
             output: [null, "", ""],
@@ -2008,9 +1956,7 @@ describe("Windows startup fallback", () => {
         hints: [],
       });
       spawnSync.mockImplementation((command, args) =>
-        command === getWindowsPowerShellExePath() &&
-        Array.isArray(args) &&
-        args.includes(NODE_PROCESS_QUERY)
+        isProcessSnapshotQuery(command, args)
           ? makeSpawnSyncResult({
               stdout: JSON.stringify([
                 {
@@ -2045,11 +1991,7 @@ describe("Windows startup fallback", () => {
         await writeGatewayScript(env);
         queueNativeResponses({ ...notYetRunTaskSnapshot(), state });
         spawnSync.mockImplementation((command, args) => {
-          if (
-            command === getWindowsPowerShellExePath() &&
-            Array.isArray(args) &&
-            args.includes(NODE_PROCESS_QUERY)
-          ) {
+          if (isProcessSnapshotQuery(command, args)) {
             return makeSpawnSyncResult({
               stdout: JSON.stringify([
                 {
@@ -2100,13 +2042,7 @@ describe("Windows startup fallback", () => {
       findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([4242]);
       queueNativeResponses(notYetRunTaskSnapshot());
       spawnSync.mockImplementation((command, args) => {
-        if (
-          command === getWindowsPowerShellExePath() &&
-          Array.isArray(args) &&
-          args.includes(
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-          )
-        ) {
+        if (isProcessSnapshotQuery(command, args)) {
           return {
             pid: 0,
             output: [null, "", ""],
