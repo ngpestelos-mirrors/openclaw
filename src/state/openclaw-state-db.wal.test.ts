@@ -124,7 +124,7 @@ it("yields before periodic maintenance and never waits for a competing SQLite wr
   }
 });
 
-it("refuses offline maintenance without borrowing the timer caller's authority", async () => {
+it("refuses checkpoints without borrowing the timer caller's maintenance authority", async () => {
   const { database, periodic } = openWithPeriodicMaintenance(
     path.join(tempDirs.make("state-wal-maintenance-authority-"), "openclaw.sqlite"),
   );
@@ -143,7 +143,9 @@ it("refuses offline maintenance without borrowing the timer caller's authority",
     expect(observations).toEqual(["error"]);
     expect(database.walMaintenance.health?.error).toContain("offline maintenance");
     expect(prepare).not.toHaveBeenCalled();
-    expect(() => closeOpenClawStateDatabaseByPath(database.path)).toThrow("offline maintenance");
+    expect(database.walMaintenance.checkpoint()).toBe(false);
+    expect(observations).toEqual(["error", "error"]);
+    expect(prepare).not.toHaveBeenCalled();
     expect(database.db.isOpen).toBe(true);
     expect(sqliteBytes(database.path)).toEqual(before);
   } finally {

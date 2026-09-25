@@ -8961,6 +8961,9 @@ struct ChatViewModelTests {
         try await waitUntil("compact attempted") {
             await transport.compactSessionKeys() == ["main"]
         }
+        try await waitUntil("compact failure settled") {
+            await MainActor.run { !vm.isLoading && vm.canRequestSessionCompact }
+        }
         #expect(await MainActor.run { vm.errorText } == "Unable to compact the thread. Please try again.")
     }
 
@@ -9039,6 +9042,9 @@ struct ChatViewModelTests {
 
         try await waitUntil("first compact attempted") {
             await transport.compactSessionKeys() == ["main"]
+        }
+        try await waitUntil("first compact failure settled") {
+            await MainActor.run { !vm.isLoading && vm.canRequestSessionCompact }
         }
         #expect(await MainActor.run { vm.errorText } == "Unable to compact the thread. Please try again.")
 
