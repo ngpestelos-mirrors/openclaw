@@ -13,10 +13,45 @@ const head = "a".repeat(40);
 const base = "b".repeat(40);
 const tested = "c".repeat(40);
 const broadJobs = Object.entries(workflow.jobs).filter(
-  ([id]) => !["readiness", "preflight", "security-fast", "ci-gate"].includes(id),
+  ([id]) =>
+    !["readiness", "preflight", "security-fast", "ci-gate", "seal_release_child_evidence"].includes(
+      id,
+    ),
 );
 
 describe("attempt-bound workflow entry paths", () => {
+  it("accounts for all 30 workloads without treating the release receipt as PR proof", () => {
+    const ids = broadJobs.map(([id]) => id);
+    expect(ids).toHaveLength(30);
+    expect(ids).toEqual(
+      expect.arrayContaining(["checks-baseline-ratchets", "android-access-native"]),
+    );
+    const gate = workflow.jobs["ci-gate"];
+    expect(gate.needs.toSorted()).toEqual(
+      ["readiness", "preflight", "security-fast", ...ids].toSorted(),
+    );
+    const verifyStep = gate.steps.find(
+      (step: { name: string }) => step.name === "Verify selected CI lanes",
+    );
+    expect(Object.keys(verifyStep.env)).toEqual([
+      "READINESS_RESULT",
+      "READINESS_ATTEMPT",
+      "READINESS_ENFORCED",
+      "READINESS_REQUEST_ID",
+      "BROAD_CI",
+      "JOB_RESULTS",
+    ]);
+    const results = verifyStep.env.JOB_RESULTS;
+    expect(
+      results
+        .trim()
+        .split("\n")
+        .map((row: string) => row.split("=")[0])
+        .toSorted(),
+    ).toEqual(["preflight", "security-fast", ...ids].toSorted());
+    expect(workflow.jobs.seal_release_child_evidence.needs).toContain("ci-gate");
+    expect(workflow.jobs.seal_release_child_evidence.if).not.toContain("readiness");
+  });
   it("keeps drafts metadata-only and releases cancelled workflows", () => {
     const gate = readCiWorkflow().jobs["ci-gate"];
     for (const eventName of ["pull_request", "push", "workflow_dispatch"] as const) {
@@ -83,7 +118,16 @@ describe("attempt-bound workflow entry paths", () => {
         expect(
           evaluateWorkflowExpression(job.if, {
             ...context,
-            preflightOutputs: { ...selected, readiness_enforced: "true", readiness_attempt: "1" },
+            preflightOutputs: {
+              ...selected,
+              runner_profile: "hybrid",
+              frozen_target: "false",
+              compatibility_target: "false",
+              validation_tier: "full",
+              release_scope: "full",
+              readiness_enforced: "true",
+              readiness_attempt: "1",
+            },
           }),
           id,
         ).toBe(false);

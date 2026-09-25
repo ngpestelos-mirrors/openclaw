@@ -547,6 +547,8 @@ export const PluginsInspectResultSchema = closedObject({
 });
 
 const PluginInstallOptions = {
+  /** False preserves existing enablement policy while installing the source. */
+  enable: Type.Optional(Type.Boolean()),
   mode: Type.Optional(Type.Union([Type.Literal("install"), Type.Literal("update")])),
   acknowledgeInstallPolicyWarning: Type.Optional(Type.Literal(true)),
   acknowledgeCapabilities: Type.Optional(PluginCapabilityAcknowledgmentSchema),
@@ -613,6 +615,7 @@ export const PluginRuntimeApplicationSchema = closedObject({
   generation: Type.Integer({ minimum: 0 }),
   pluginIds: Type.Array(NonEmptyString),
   sourceDigests: Type.Optional(Type.Record(NonEmptyString, NonEmptyString)),
+  selectedEntries: Type.Optional(Type.Record(NonEmptyString, NonEmptyString)),
 });
 
 export const PluginsChangedEventSchema = closedObject({

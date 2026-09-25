@@ -99,6 +99,7 @@ export function createSecurityReviewFixture(
         encoding: "utf8",
         env: {
           GITHUB_TOKEN: "fixture-token",
+          OPENCLAW_DEPENDENCY_GUARD_AUTOSCRUB_TOKEN: "fixture-autoscrub-token",
           ...(deadline === undefined
             ? {}
             : { OPENCLAW_SECURITY_REVIEW_DEADLINE_MS: String(deadline) }),
