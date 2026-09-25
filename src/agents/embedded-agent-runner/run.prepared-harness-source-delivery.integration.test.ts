@@ -661,6 +661,11 @@ describe("prepared harness source delivery", () => {
     mockedAcquireAgentRunPreparedModelRuntime.mockClear();
     mockedAcquireAgentRunPreparedModelRuntime.mockResolvedValueOnce({
       ...baseLease,
+      pluginGeneration: {
+        ...baseLease.pluginGeneration,
+        pluginMetadataSnapshot: metadataSnapshot,
+        pluginRegistry,
+      },
       snapshot: {
         ...baseLease.snapshot,
         metadataSnapshot,
@@ -815,6 +820,7 @@ describe("prepared harness source delivery", () => {
         servedMetadataSnapshot = borrowed.metadataSnapshot;
         return {
           ...baseLease,
+          pluginGeneration: admittedGeneration,
           snapshot: borrowed as typeof baseLease.snapshot,
           [Symbol.asyncDispose]: release,
         };
@@ -892,6 +898,10 @@ describe("prepared harness source delivery", () => {
           signal?.throwIfAborted();
           return {
             ...baseLease,
+            pluginGeneration: {
+              ...baseLease.pluginGeneration,
+              pluginMetadataSnapshot: isolatedMetadataSnapshot,
+            },
             snapshot: {
               ...baseLease.snapshot,
               config,
