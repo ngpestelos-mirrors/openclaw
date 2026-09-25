@@ -30,6 +30,8 @@ const mount: ControlUiAccessory["mount"] = (container, initialContext) => {
   link.className = "discord-origin-link";
   link.target = "_blank";
   link.rel = "noopener noreferrer";
+  // This control navigates directly; do not offer a reader preview or in-app browser.
+  link.dataset.linkReaderExternal = "";
   link.hidden = true;
   container.append(link);
 
@@ -74,7 +76,7 @@ const mount: ControlUiAccessory["mount"] = (container, initialContext) => {
           return;
         link.href = `https://discord.com/channels/${guildId}/${channelId}`;
         link.textContent = row.origin.threadId ? "Discord Thread ↗" : "Discord Conversation ↗";
-        link.title =
+        link.ariaDescription =
           visited.size > 1
             ? "Open the Discord conversation that started the parent session"
             : "Return to this session’s Discord conversation";
