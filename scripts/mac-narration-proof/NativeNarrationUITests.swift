@@ -180,23 +180,27 @@ final class NativeNarrationUITests: XCTestCase {
         let quickChat = app.menuItems["Quick Chat"]
         XCTAssertTrue(quickChat.waitForExistence(timeout: 5))
         quickChat.click()
-        let toggle = app.buttons["quick-chat-toggle-conversation"]
+        // macOS exposes this NSPanel as a dialog. SwiftUI inherits the composer
+        // container identifier onto its children, so use the real control label.
+        let panel = app.dialogs.firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 8))
+        let deferPermissions = panel.buttons["Not now"]
+        if deferPermissions.exists { deferPermissions.click() }
+        let toggle = panel.buttons["Expand conversation"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 8), "Status menu did not open Quick Chat")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: toggle)
         let result = await XCTWaiter.fulfillment(of: [enabled], timeout: 10)
         XCTAssertEqual(result, .completed)
         toggle.click()
-        // The full chat stays behind the panel with identical text. Queries
-        // must stay inside this window or they would prove the wrong surface.
-        let panel = app.windows.containing(.button, identifier: "quick-chat-toggle-conversation").firstMatch
-        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        // The full chat stays behind the panel with identical text. Keep all
+        // transcript queries scoped to this dialog, not the whole application.
         return panel
     }
 
     @MainActor
     private func closeQuickChat(_ app: XCUIApplication) {
         app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(app.buttons["quick-chat-toggle-conversation"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.dialogs.firstMatch.waitForNonExistence(timeout: 5))
     }
 
     @MainActor
