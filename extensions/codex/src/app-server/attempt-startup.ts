@@ -94,6 +94,7 @@ import {
 import type { CodexNativeWebSearchSupport } from "./web-search.js";
 
 const CODEX_APP_SERVER_STARTUP_MAX_ATTEMPTS = 3;
+
 type CodexSandboxContext = Awaited<ReturnType<typeof resolveSandboxContext>>;
 
 /** Resources and bindings returned after a Codex attempt thread starts. */

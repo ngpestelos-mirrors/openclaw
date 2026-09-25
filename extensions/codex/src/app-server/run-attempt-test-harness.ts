@@ -62,6 +62,7 @@ import {
   adaptCodexTestClientFactory,
   createCodexTestModel,
   createCodexTestToolTerminalObserver,
+  stubCodexInferenceTransportEnv,
   useAutoCleanupTempDirTracker,
   type CodexTestAppServerClientFactory,
 } from "./test-support.js";
@@ -687,23 +688,7 @@ export function setupRunAttemptTestHooks(): void {
     vi.stubEnv("OPENCLAW_TRAJECTORY", "0");
     vi.stubEnv("CODEX_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
-    // Synthetic clients model stock transport. Tests of custom trust roots or
-    // proxies set their own environment after this common fixture admission.
-    for (const key of [
-      "CODEX_CA_CERTIFICATE",
-      "SSL_CERT_FILE",
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "ALL_PROXY",
-      "NO_PROXY",
-      "http_proxy",
-      "https_proxy",
-      "all_proxy",
-      "no_proxy",
-      "REQUEST_METHOD",
-    ]) {
-      vi.stubEnv(key, undefined);
-    }
+    stubCodexInferenceTransportEnv();
     tempDir = tempDirs.make("openclaw-codex-run-", resolvePreferredOpenClawTmpDir());
     // createParams models an ordinary durable session; seeded native bindings
     // must have the same authoritative core owner as a real resumed conversation.

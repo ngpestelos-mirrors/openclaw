@@ -27,6 +27,7 @@ import { mergeCodexThreadConfigs } from "./plugin-thread-config.js";
 import {
   assertCodexThreadAcceptsDirectInput,
   assertCodexThreadStartResponse,
+  resolveCodexThreadRolloutPath,
 } from "./protocol-validators.js";
 import { isCodexThreadReadMissingError } from "./rpc-error.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
@@ -52,7 +53,6 @@ import { resolveCodexAppServerModelProvider } from "./thread-model-selection.js"
 import { CodexThreadPolicyHandoffError, refreshCodexThreadPolicy } from "./thread-policy.js";
 import { buildThreadResumeParams, buildThreadStartParams } from "./thread-requests.js";
 import { resumeCodexAppServerThread } from "./thread-resume.js";
-import { resolveCodexThreadRolloutPath } from "./thread-rollout-path.js";
 import { hasCodexAppServerSiblingRouteWork } from "./turn-router.js";
 
 export async function resumeExistingCodexThread(

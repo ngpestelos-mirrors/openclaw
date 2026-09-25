@@ -14,18 +14,11 @@ import {
   getCodexInferenceThreadQualification,
 } from "./inference-routing.js";
 import type { CodexConfigReadResponse } from "./protocol.js";
-import { createClientHarness } from "./test-support.js";
+import { createClientHarness, stubCodexInferenceTransportEnv } from "./test-support.js";
 
 const clients: ReturnType<typeof createClientHarness>[] = [];
 beforeEach(() => {
-  // Each case declares its transport; developer CA/proxy settings must not select a different path.
-  for (const key of ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE", "REQUEST_METHOD"]) {
-    vi.stubEnv(key, undefined);
-  }
-  for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) {
-    vi.stubEnv(key, undefined);
-    vi.stubEnv(key.toLowerCase(), undefined);
-  }
+  stubCodexInferenceTransportEnv();
 });
 afterEach(() => {
   for (const entry of clients.splice(0)) {
