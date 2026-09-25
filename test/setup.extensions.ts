@@ -23,7 +23,11 @@ beforeEach(async (context) => {
         const scheduler = clocks.createTestGatewayScheduler();
         stop = async () => {
           scheduler.beginClose();
-          await mcp.disposeAllSessionMcpRuntimes().finally(() => scheduler.stop());
+          try {
+            await mcp.disposeAllSessionMcpRuntimes();
+          } finally {
+            await scheduler.stop();
+          }
         };
         await mcp.setSessionMcpRuntimeScheduler(scheduler);
       },

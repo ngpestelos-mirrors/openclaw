@@ -411,7 +411,8 @@ export async function requestExecApprovalForTest(
         fixture.manager.getLocalSnapshot(payload.id),
         "registered approval deadline",
       );
-      using _clock = vi.spyOn(Date, "now").mockImplementation(clock.clock.now);
+      using dateNow = vi.spyOn(Date, "now");
+      dateNow.mockImplementation(clock.clock.now);
       await clock.advanceTo(record.expiresAtMs);
       await pending;
       return { ...fixture, ...payload };
