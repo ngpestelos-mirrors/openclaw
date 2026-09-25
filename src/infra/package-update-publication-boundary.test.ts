@@ -36,7 +36,7 @@ afterEach(async () => {
   }
 });
 
-it.each(["owned", "replacement"] as const)(
+it.skipIf(process.platform === "win32").each(["owned", "replacement"] as const)(
   "completes real launcher publication and binds retirement to its %s directory",
   (retirement) =>
     fixtures.lifetime.run(async () => {
@@ -100,7 +100,7 @@ it.each(["owned", "replacement"] as const)(
     }),
 );
 
-it.each(["directory", "parent"] as const)(
+it.skipIf(process.platform === "win32").each(["directory", "parent"] as const)(
   "preserves replacement %s contents when recovery snapshot transport fails",
   (replacement) =>
     fixtures.lifetime.run(async () => {

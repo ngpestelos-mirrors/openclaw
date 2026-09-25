@@ -21,7 +21,10 @@ import {
   type UpdateCommandOptions,
 } from "./shared.js";
 import { withUpdateCandidateAdmission } from "./update-command-candidate-admission.js";
-import type { UpdateCommandExecutorOptions } from "./update-command-executor-options.js";
+import {
+  captureUpdateCommandStoreOptions,
+  type UpdateCommandExecutorOptions,
+} from "./update-command-executor-options.js";
 import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
@@ -61,11 +64,12 @@ export async function updateCommand(
   inputOpts: UpdateCommandOptions,
   executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
-  return withUpdateInitialStoreInvocation(inputOpts.initialStores, async () => {
+  const captured = captureUpdateCommandStoreOptions(inputOpts.initialStores, executorOptions);
+  return withUpdateInitialStoreInvocation(captured.invocation, async () => {
     assertUpdateInitialStoreInvocation();
     const { withRetainedUpdateRuntime } = await import("../../infra/update-retained-runtime.js");
     return await withRetainedUpdateRuntime(import.meta.url, (retainRuntime) =>
-      updateCommandWithRuntime(inputOpts, retainRuntime, executorOptions),
+      updateCommandWithRuntime(inputOpts, retainRuntime, captured.executor),
     );
   });
 }
