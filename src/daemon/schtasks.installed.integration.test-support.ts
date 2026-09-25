@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Writable } from "node:stream";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { z } from "zod";
 import {
@@ -39,7 +38,6 @@ import {
   samePath,
   verifyPreparedInstall,
 } from "./schtasks.installed-package.test-support.js";
-import { resolveGatewayService } from "./service.js";
 
 type Lifetime = ReturnType<typeof createFixtureLifetime>;
 type Owners = {
@@ -537,17 +535,14 @@ export async function runInstalledLifecycle(
         if (registration.status === "missing") {
           return;
         }
-        const stdout = new Writable({
-          write(_chunk, _encoding, callback) {
-            callback();
-          },
-        });
-        try {
-          // Installed supervisors have no probe PID file; stop them before deleting authority.
-          await resolveGatewayService().stop({ env: task.env, stdout });
-        } finally {
-          stdout.end();
-        }
+        // The installed CLI owns the admitted profile, unlike Vitest's synthetic ambient state.
+        // Cleanup has its own bounded command lifetime even when the test body was aborted.
+        await run(
+          [task.entry, "--profile", task.profile, "gateway", "stop", "--force", "--json"],
+          task.env,
+          rootDir,
+          commands,
+        );
       });
       await cleanupTask(task, packageRoot(task.installRoot), path.join(rootDir, "commands.json"));
       await owners.waitForLoopbackPortRelease(task.gatewayPort);
