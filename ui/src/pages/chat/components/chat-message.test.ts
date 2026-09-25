@@ -1979,26 +1979,6 @@ describe("grouped chat rendering", () => {
     expect(statusFor(8_000)).toEqual(expected);
   });
 
-  it("does not assign unattributed messages to the configured viewer", () => {
-    const renderUser = (opts: Partial<RenderMessageGroupOptions>) => {
-      const container = document.createElement("div");
-      renderGroupedMessage(
-        container,
-        createUserMessage("hello", { timestamp: 1000 }),
-        "user",
-        opts,
-      );
-      return container;
-    };
-
-    const named = renderUser({ userName: "Buns" });
-    const sender = named.querySelector<HTMLElement>(".chat-group.user .chat-sender-name");
-    expect(sender?.textContent).toBe("User");
-
-    const avatar = named.querySelector<HTMLElement>(".chat-avatar.user");
-    expect(avatar?.tagName).toBe("DIV");
-  });
-
   it.each([
     { client: { id: "cli", mode: "cli" }, label: "CLI" },
     { client: { id: "openclaw-control-ui", mode: "webchat" }, label: "Web" },

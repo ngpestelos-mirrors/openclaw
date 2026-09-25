@@ -31,6 +31,16 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 describe("chat message authorship", () => {
+  it("does not assign unattributed messages to the configured viewer", () => {
+    const container = document.createElement("div");
+    containers.push(container);
+    const group = prepareMessageGroup(
+      createMessageEntry("unknown-author", createUserMessage("hello", { timestamp: 1000 })),
+    );
+    render(renderTestMessageGroup(group, { userName: "Buns" }), container);
+    expect(container.querySelector(".chat-group.user .chat-sender-name")?.textContent).toBe("User");
+    expect(container.querySelector(".chat-avatar.user")?.tagName).toBe("DIV");
+  });
   it.each(["viewer", null])(
     "keeps agent, human, and unknown authors distinct for viewer %s",
     (userId) => {
