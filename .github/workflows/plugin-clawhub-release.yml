@@ -833,21 +833,30 @@ jobs:
         run: |
           echo "Approved CLAW-277 03 - Split OpenClaw plugin ClawHub publishing into OIDC release and token bootstrap workflows release publish gate."
 
-      # The automated bot-dispatched route is unchanged; direct human dispatch binds this approval
+      # The bot-dispatched route waits for the parent's child-bound transaction
+      # authorization instead of a human gate; direct human dispatch binds this approval
       # to the exact child run and to the original child attempt whose parent receipt ClawHub
       # resolves for explicit-recovery finalization (openclaw/clawhub
       # convex/lib/openClawPublishAuthorization.ts validateRecoveryReceipt).
       - name: Checkout trusted release tooling
-        if: needs.validate_release_publish_approval.outputs.direct_recovery == 'true'
+        if: needs.validate_release_publish_approval.outputs.direct_recovery == 'true' || needs.validate_release_publish_approval.outputs.parent_approval == 'receipt'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
       - name: Setup Node
-        if: needs.validate_release_publish_approval.outputs.direct_recovery == 'true'
+        if: needs.validate_release_publish_approval.outputs.direct_recovery == 'true' || needs.validate_release_publish_approval.outputs.parent_approval == 'receipt'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - name: Wait for the release parent's ClawHub authorization
+        if: needs.validate_release_publish_approval.outputs.parent_approval == 'receipt'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PUBLISH_RUN_ID: ${{ inputs.release_publish_run_id }}
+          RELEASE_PUBLISH_RUN_ATTEMPT: ${{ inputs.release_publish_run_attempt }}
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: node scripts/release-approval-receipt.mjs wait-clawhub-authorization
       - name: Write recovery environment approval receipt
         if: needs.validate_release_publish_approval.outputs.direct_recovery == 'true'
         env:

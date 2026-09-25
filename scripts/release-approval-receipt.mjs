@@ -302,15 +302,84 @@ export async function downloadReleaseApprovalReceipt(params) {
   return { receipt, artifact };
 }
 
+// The parent authorizes ClawHub transactions only after plugin npm and the core
+// approval; without the human gate the child must block here until that
+// child-bound receipt exists, or ClawHub's publisher fails on a missing artifact.
+export async function awaitClawHubParentAuthorization({
+  parentRunId,
+  parentRunAttempt,
+  childRunId,
+  childRunAttempt,
+  toolingSha,
+  runGhJson = api,
+  sleep = (ms) =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    }),
+  deadlineMs = 90 * 60 * 1000,
+}) {
+  pattern(toolingSha, SHA, "Tooling SHA");
+  for (const [value, label] of [
+    [parentRunId, "Parent run id"],
+    [parentRunAttempt, "Parent run attempt"],
+    [childRunId, "Child run id"],
+    [childRunAttempt, "Child run attempt"],
+  ]) {
+    pattern(value, ID, label);
+  }
+  const name = `openclaw-clawhub-parent-authorization-v2-${parentRunId}-${parentRunAttempt}-${childRunId}-${childRunAttempt}`;
+  const deadline = Date.now() + deadlineMs;
+  for (;;) {
+    const listed = runGhJson(`actions/runs/${parentRunId}/artifacts?name=${name}&per_page=100`);
+    const artifacts = Array.isArray(listed.artifacts) ? listed.artifacts : [];
+    if (listed.total_count > 1 || artifacts.length > 1) {
+      throw new Error(`ClawHub parent authorization ${name} is ambiguous.`);
+    }
+    const [artifact] = artifacts;
+    if (artifact) {
+      if (
+        artifact.name !== name ||
+        artifact.expired !== false ||
+        String(artifact.workflow_run?.id) !== parentRunId ||
+        artifact.workflow_run.head_sha !== toolingSha
+      ) {
+        throw new Error(`ClawHub parent authorization ${name} does not belong to the parent.`);
+      }
+      return artifact;
+    }
+    const run = runGhJson(`actions/runs/${parentRunId}/attempts/${parentRunAttempt}`);
+    if (run.status !== "in_progress" || run.conclusion !== null) {
+      throw new Error(
+        `Release parent ${parentRunId}/${parentRunAttempt} is ${run.status}/${run.conclusion ?? "none"} without authorizing ClawHub transactions.`,
+      );
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`ClawHub parent authorization ${name} did not appear before the deadline.`);
+    }
+    await sleep(Math.min(15000, deadline - Date.now()));
+  }
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: { output: { type: "string" } },
   });
-  if (!values.output || positionals.length !== 1) {
-    throw new Error("Expected create or verify --output <path>.");
-  }
   const env = process.env;
+  if (positionals[0] === "wait-clawhub-authorization") {
+    const artifact = await awaitClawHubParentAuthorization({
+      parentRunId: env.RELEASE_PUBLISH_RUN_ID,
+      parentRunAttempt: env.RELEASE_PUBLISH_RUN_ATTEMPT,
+      childRunId: env.GITHUB_RUN_ID,
+      childRunAttempt: env.GITHUB_RUN_ATTEMPT,
+      toolingSha: env.EXPECTED_WORKFLOW_SHA,
+    });
+    console.log(`Release parent authorized ClawHub transactions: ${artifact.name}`);
+    return;
+  }
+  if (!values.output || positionals.length !== 1) {
+    throw new Error("Expected create, verify --output <path>, or wait-clawhub-authorization.");
+  }
   let bytes;
   let output;
   let message;

@@ -6,6 +6,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import JSZip from "jszip";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  awaitClawHubParentAuthorization,
   createReleaseApprovalReceipt,
   downloadReleaseApprovalReceipt,
   releaseApprovalArtifactName,
@@ -378,4 +379,78 @@ describe("release approval artifact download", () => {
       );
     },
   );
+});
+
+describe("ClawHub parent authorization wait", () => {
+  const name = "openclaw-clawhub-parent-authorization-v2-10-2-30-1";
+  const listing = `actions/runs/10/artifacts?name=${name}&per_page=100`;
+  const authorization = {
+    name,
+    expired: false,
+    workflow_run: { id: 10, head_sha: "a".repeat(40) },
+  };
+  const params = {
+    parentRunId: "10",
+    parentRunAttempt: "2",
+    childRunId: "30",
+    childRunAttempt: "1",
+    toolingSha: "a".repeat(40),
+    sleep: async () => {},
+  };
+  function api(
+    artifacts: unknown[][],
+    parent: { status: string; conclusion: string | null } = {
+      status: "in_progress",
+      conclusion: null,
+    },
+  ) {
+    let polls = 0;
+    return (path: string) => {
+      if (path === listing) {
+        const page = artifacts[Math.min(polls++, artifacts.length - 1)] ?? [];
+        return { total_count: page.length, artifacts: page };
+      }
+      expect(path).toBe("actions/runs/10/attempts/2");
+      return parent;
+    };
+  }
+
+  it("blocks until the child-bound authorization appears, then proceeds", async () => {
+    const runGhJson = api([[], [], [authorization]]);
+    await expect(awaitClawHubParentAuthorization({ ...params, runGhJson })).resolves.toEqual(
+      authorization,
+    );
+  });
+
+  it("fails when the parent leaves in_progress without authorizing", async () => {
+    const runGhJson = api([[]], { status: "completed", conclusion: "failure" });
+    await expect(awaitClawHubParentAuthorization({ ...params, runGhJson })).rejects.toThrow(
+      /completed\/failure without authorizing/u,
+    );
+  });
+
+  it("fails at the deadline while the parent is still running", async () => {
+    const runGhJson = api([[]]);
+    await expect(
+      awaitClawHubParentAuthorization({ ...params, runGhJson, deadlineMs: 0 }),
+    ).rejects.toThrow(/did not appear before the deadline/u);
+  });
+
+  it.each([
+    ["another parent", { ...authorization, workflow_run: { id: 11, head_sha: "a".repeat(40) } }],
+    ["other tooling", { ...authorization, workflow_run: { id: 10, head_sha: "b".repeat(40) } }],
+    ["expired", { ...authorization, expired: true }],
+  ])("rejects an authorization from %s", async (_label, artifact) => {
+    const runGhJson = api([[artifact]]);
+    await expect(awaitClawHubParentAuthorization({ ...params, runGhJson })).rejects.toThrow(
+      /does not belong to the parent/u,
+    );
+  });
+
+  it("rejects an ambiguous authorization listing", async () => {
+    const runGhJson = api([[authorization, authorization]]);
+    await expect(awaitClawHubParentAuthorization({ ...params, runGhJson })).rejects.toThrow(
+      /ambiguous/u,
+    );
+  });
 });

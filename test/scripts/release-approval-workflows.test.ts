@@ -142,5 +142,27 @@ describe("release approval workflow contracts", () => {
       "${{ needs.validate_release_publish_approval.outputs.parent_approval != 'receipt' && 'clawhub-plugin-release' || '' }}",
     );
     expect(approve.if).toContain("needs.validate_release_publish_approval.result == 'success'");
+    const receiptRoute =
+      "needs.validate_release_publish_approval.outputs.parent_approval == 'receipt'";
+    const wait = approve.steps.find(
+      (step) => step.name === "Wait for the release parent's ClawHub authorization",
+    );
+    expect(wait).toMatchObject({
+      if: receiptRoute,
+      env: {
+        RELEASE_PUBLISH_RUN_ID: "${{ inputs.release_publish_run_id }}",
+        RELEASE_PUBLISH_RUN_ATTEMPT: "${{ inputs.release_publish_run_attempt }}",
+        EXPECTED_WORKFLOW_SHA: "${{ github.workflow_sha }}",
+      },
+      run: "node scripts/release-approval-receipt.mjs wait-clawhub-authorization",
+    });
+    for (const name of ["Checkout trusted release tooling", "Setup Node"]) {
+      expect(approve.steps.find((step) => step.name === name)?.if).toContain(receiptRoute);
+    }
+    const publish = readWorkflow("plugin-clawhub-release").jobs.publish_plugins_clawhub as
+      | { needs?: string[]; if?: string }
+      | undefined;
+    expect(publish?.needs).toContain("approve_plugins_clawhub_release");
+    expect(publish?.if).toContain("needs.approve_plugins_clawhub_release.result == 'success'");
   });
 });
