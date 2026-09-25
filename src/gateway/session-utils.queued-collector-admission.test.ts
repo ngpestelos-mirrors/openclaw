@@ -9,6 +9,8 @@ import * as preparedModelRuntime from "../agents/prepared-model-runtime.js";
 import * as killControl from "../agents/subagents/registry/subagent-control-kill.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { isSubagentRunQueued } from "../agents/subagents/registry/subagent-registry-read.js";
+import * as subagentRegistry from "../agents/subagents/registry/subagent-registry.js";
+import * as spawnCleanup from "../agents/subagents/spawn/subagent-spawn-cleanup.js";
 import { spawnSubagentDirect } from "../agents/subagents/spawn/subagent-spawn.js";
 import { testing as spawnTesting } from "../agents/subagents/spawn/subagent-spawn.test-support.js";
 import { closeSwarmScheduler } from "../agents/subagents/swarm/swarm-scheduler.js";
@@ -48,6 +50,15 @@ describe("queued collector native admission", () => {
       let nativeRunId: string | undefined;
       let stopping: Promise<void> | undefined;
       const agentResponse = vi.fn();
+      const registration = vi.spyOn(subagentRegistry, "startQueuedSubagentRun");
+      const terminate = spawnCleanup.terminateAcceptedCollectorRun;
+      const termination = vi
+        .spyOn(spawnCleanup, "terminateAcceptedCollectorRun")
+        .mockImplementation(async (params) => {
+          order.push("terminating");
+          await terminate(params);
+          order.push("terminated");
+        });
       const kill = killControl.killSubagentRunAdmin;
       const killGate = vi
         .spyOn(killControl, "killSubagentRunAdmin")
@@ -112,6 +123,7 @@ describe("queued collector native admission", () => {
             params,
             respond,
             context,
+            sessionMutationCommitGuard: options?.sessionMutationCommitGuard,
             client: createSyntheticPluginRuntimeClient({
               agentRunTracking: options?.agentRunTracking,
               scopes: options?.syntheticScopes,
@@ -235,6 +247,9 @@ describe("queued collector native admission", () => {
           }),
         ]);
         expect(order).toEqual([]);
+        expect(registration).toHaveBeenCalledOnce();
+        expect(registration).toHaveReturnedWith(false);
+        expect(termination).not.toHaveBeenCalled();
         expect(loadGatewaySessionEntryReadOnly(entry.childSessionKey).entry).toBeDefined();
         expect(entry.execution.startedAt).toBeUndefined();
         releasePublication.resolve();
@@ -259,8 +274,20 @@ describe("queued collector native admission", () => {
         expect(context.chatAbortControllers.has(entry.runId)).toBe(false);
         // This unadopted launch still owns its provisional session; join its real cleanup.
         await closeSwarmScheduler();
+        expect(termination).toHaveBeenCalledOnce();
+        expect(termination).toHaveBeenCalledWith(
+          expect.objectContaining({
+            childSessionKey: entry.childSessionKey,
+            gatewayRunId: entry.runId,
+          }),
+        );
+        expect(termination.mock.calls[0]?.[0].sessionCleanup).toBeUndefined();
         expect(order).toEqual([
           ...(publicationFailure ? [] : ["published"]),
+          "terminating",
+          "deleting",
+          "deleted",
+          "terminated",
           "deleting",
           "deleted",
         ]);
@@ -275,6 +302,8 @@ describe("queued collector native admission", () => {
         await stopping;
         killGate.mockRestore();
         runtimeGate.mockRestore();
+        registration.mockRestore();
+        termination.mockRestore();
       }
     },
   );

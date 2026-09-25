@@ -75,6 +75,7 @@ export function createCollectorLaunchCallbacks(params: {
     release?.();
   };
   let launchTerminationConfirmed = false;
+  let pendingLaunchTermination: string | undefined;
   let dispatchAttempted = false;
   const startOnce = async () => {
     await runWithGatewayIndependentRootWorkContinuation(async () => {
@@ -118,14 +119,9 @@ export function createCollectorLaunchCallbacks(params: {
           throw new Error("collector registry row could not transition from queued to running");
         }
       } catch (error) {
-        await terminateAcceptedCollectorRun({
-          childSessionKey,
-          gatewayRunId,
-          ...provisionalSessionIdentity,
-          isCurrent: canCleanupCreatedSession,
-          ...(callCleanupGateway ? { callGateway: callCleanupGateway } : {}),
-        });
-        launchTerminationConfirmed = true;
+        // Termination can delete the provisional session. The scheduler's failure
+        // settlement waits for cancellation publication before taking that ownership.
+        pendingLaunchTermination = gatewayRunId;
         throw error;
       }
       await params.emitSpawnLifecycleHooks(gatewayRunId);
@@ -181,6 +177,16 @@ export function createCollectorLaunchCallbacks(params: {
           break;
         }
         await claim;
+      }
+      if (pendingLaunchTermination && !launchTerminationConfirmed) {
+        await terminateAcceptedCollectorRun({
+          childSessionKey,
+          gatewayRunId: pendingLaunchTermination,
+          ...provisionalSessionIdentity,
+          isCurrent: canCleanupCreatedSession,
+          ...(callCleanupGateway ? { callGateway: callCleanupGateway } : {}),
+        });
+        launchTerminationConfirmed = true;
       }
       const launchError = summarizeSpawnError(error);
       const settleFailure = async () => {

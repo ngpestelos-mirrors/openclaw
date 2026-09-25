@@ -52,7 +52,11 @@ import {
 } from "../../subagent-test-fixtures.test-helpers.js";
 import type { SubagentRegistryHarness } from "../../subagent-test-fixtures.test-helpers.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
-import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
+import {
+  enqueueSwarmRun,
+  holdSwarmRunReservation,
+  releaseSwarmRun,
+} from "../swarm/swarm-scheduler.js";
 import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import {
   SUBAGENT_ENDED_REASON_COMPLETE,
@@ -1505,7 +1509,7 @@ describe("subagent registry seam flow", () => {
     expect(mod.getSubagentRunByRunId("gateway-terminal-stale")).toBeUndefined();
   });
 
-  it("holds a restored FIFO slot until an accepted collector is confirmed stopped", async () => {
+  it("holds restored rollback for publication and retries settlement without relaunching", async () => {
     vi.useRealTimers();
     const now = Date.now();
     mockSingleCollectorConcurrency();
@@ -1538,11 +1542,20 @@ describe("subagent registry seam flow", () => {
       throw new Error("sqlite unavailable after Gateway acceptance");
     });
     let agentCalls = 0;
+    const dispatchedSessionKeys: unknown[] = [];
+    const launchEntered = createDeferred();
+    const releaseLaunch = createDeferred();
     let releaseAbort: (() => void) | undefined;
     const deleteReleases: Array<() => void> = [];
-    mocks.callGateway.mockImplementation(async (request: { method?: string }) => {
+    let deletionPublicationFailed = false;
+    mocks.callGateway.mockImplementation(async (request) => {
       if (request.method === "agent") {
         agentCalls += 1;
+        dispatchedSessionKeys.push(request.params?.sessionKey);
+        if (agentCalls === 1) {
+          launchEntered.resolve();
+          await releaseLaunch.promise;
+        }
         return { runId: `gateway-restored-${agentCalls}` };
       }
       if (request.method === "chat.abort") {
@@ -1559,6 +1572,31 @@ describe("subagent registry seam flow", () => {
     });
 
     hydrateAndActivateRegistry();
+    await launchEntered.promise;
+    const hold = expectDefined(
+      holdSwarmRunReservation("run-restored-stop-one"),
+      "restored launch publication hold",
+    );
+    const launchState = expectDefined(
+      swarmSchedulerTesting.capturePendingLaunch("run-restored-stop-one"),
+      "restored pending launch",
+    );
+    try {
+      releaseLaunch.resolve();
+      await waitForFast(() =>
+        expect(launchState()).toEqual({
+          holds: 1,
+          waitingForHolds: true,
+          startFailureEntered: false,
+        }),
+      );
+      expect(releaseAbort).toBeUndefined();
+      expect(deleteReleases).toEqual([]);
+      expect(agentCalls).toBe(1);
+    } finally {
+      releaseLaunch.resolve();
+      await hold.release();
+    }
     await waitForFast(() => expect(releaseAbort).toBeTypeOf("function"));
     expect(agentCalls).toBe(1);
 
@@ -1580,8 +1618,21 @@ describe("subagent registry seam flow", () => {
     deleteReleases[0]?.();
     await waitForFast(() => expect(deleteReleases).toHaveLength(2));
     expect(agentCalls).toBe(1);
+    mocks.emitSessionLifecycleEvent.mockImplementationOnce(({ reason }: { reason: string }) => {
+      expect(reason).toBe("delete");
+      deletionPublicationFailed = true;
+      throw new Error("restored deletion publication failed");
+    });
     deleteReleases[1]?.();
     await waitForFast(() => expect(agentCalls).toBe(2));
+    expect(deletionPublicationFailed).toBe(true);
+    expect(dispatchedSessionKeys).toEqual([
+      "agent:main:subagent:run-restored-stop-one",
+      "agent:main:subagent:run-restored-stop-two",
+    ]);
+    expect(
+      mocks.callGateway.mock.calls.filter(([request]) => request.method === "chat.abort"),
+    ).toHaveLength(1);
   });
 
   it("holds a restored FIFO slot while an indeterminate launch session is deleted", async () => {

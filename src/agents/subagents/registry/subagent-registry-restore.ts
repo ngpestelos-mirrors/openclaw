@@ -239,6 +239,7 @@ export function createSubagentRegistryRestorer(config: {
         );
         const currentSwarmConfig = resolveSwarmConfig(cfg, entry.requesterAgentId);
         let launchTerminationConfirmed = false;
+        let pendingLaunchTermination: { gatewayRunId: string; error: unknown } | undefined;
         let launchLifecycleGeneration: string | undefined;
         enqueueSwarmRun({
           // Global session keys repeat across agent stores, including restored queues.
@@ -253,6 +254,11 @@ export function createSubagentRegistryRestorer(config: {
             )
             .map((candidate) => candidate.schedulerSlotId ?? candidate.runId),
           start: async () => {
+            // Once accepted, retries settle this launch rather than dispatching a
+            // second agent against a provisional session that cleanup may remove.
+            if (pendingLaunchTermination) {
+              throw pendingLaunchTermination.error;
+            }
             await runWithGatewayIndependentRootWorkAdmission(async () => {
               launchLifecycleGeneration = getAgentEventLifecycleGeneration();
               const request = {
@@ -278,21 +284,26 @@ export function createSubagentRegistryRestorer(config: {
                   );
                 }
               } catch (error) {
-                await terminateAcceptedRestoredCollectorRun({
-                  entry,
-                  gatewayRunId,
-                  timeoutMs: launch.timeoutMs,
-                  expectedSessionId: cleanupSessionEntry?.sessionId,
-                  expectedLifecycleRevision: cleanupSessionEntry?.lifecycleRevision,
-                });
-                launchTerminationConfirmed = true;
+                // Restored launches share the scheduler's publication hold; rollback
+                // must not delete their provisional session before that hold releases.
+                pendingLaunchTermination = { gatewayRunId, error };
                 throw error;
               }
             }, "subagents:restore-launch");
           },
-          onStartFailure: (error) => {
+          onStartFailure: async (error) => {
             if (error instanceof GatewayDrainingError) {
               return false;
+            }
+            if (pendingLaunchTermination && !launchTerminationConfirmed) {
+              await terminateAcceptedRestoredCollectorRun({
+                entry,
+                gatewayRunId: pendingLaunchTermination.gatewayRunId,
+                timeoutMs: launch.timeoutMs,
+                expectedSessionId: cleanupSessionEntry?.sessionId,
+                expectedLifecycleRevision: cleanupSessionEntry?.lifecycleRevision,
+              });
+              launchTerminationConfirmed = true;
             }
             return failAndCleanupRestoredQueuedRun(
               runId,
