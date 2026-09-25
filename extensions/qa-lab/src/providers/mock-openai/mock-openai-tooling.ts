@@ -271,7 +271,9 @@ export function buildQaToolSearchArgs(
     return {
       message: /\bopenclaw_fixture=logging-level-info\b/u.test(prompt)
         ? 'config set logging.level "info"'
-        : "Reply exactly QA-SYSTEM-AGENT-DELEGATE-INFERENCE-OK. Do not call tools.",
+        : /\bopenclaw_fixture=exec-policy\b/u.test(prompt)
+          ? "config set approvals.exec.enabled true"
+          : "Reply exactly QA-SYSTEM-AGENT-DELEGATE-INFERENCE-OK. Do not call tools.",
     };
   }
   if (targetTool === "ask_user") {

@@ -95,7 +95,7 @@ export function createOpenClawDelegateToolsForRun(
       "Gateway restart, config, channels, plugins, agents, models/providers. " +
       "Setup flows collect credentials with masked entry; never request them in chat. " +
       (fullPermission
-        ? "Full Access applies permitted changes without asking for approval."
+        ? "Full Access applies permitted changes without asking for approval, except permission policy and Gateway authorization (tool, exec, sandbox, approval, owner, gateway.auth/roles/tools/trustedProxies/nodes), which wait for the user's decision."
         : approvesInChat
           ? "Changes wait for the user to approve in this chat (approval buttons or `/approve`) and return the final outcome."
           : "Changes wait for the user to approve in the Control UI or OpenClaw apps and return the final outcome."),

@@ -1,0 +1,114 @@
+title: A Full Access permission-policy change waits for the owner
+
+scenario:
+  id: system-agent-permission-floor
+  surface: channel
+  coverage:
+    primary:
+      - agent-runtime.delegated-tool-access
+    secondary:
+      - channels.qa-channel-outbound
+  objective: Verify a Full Access delegated change to approval policy posts an approval prompt instead of applying, and applies only after the owner approves.
+  gatewayConfigPatch:
+    commands:
+      ownerAllowFrom: [qa-channel:alice]
+    agents:
+      entries:
+        qa:
+          tools:
+            alsoAllow: [openclaw]
+  successCriteria:
+    - A Full Access change to approval policy posts an approval prompt instead of applying, and applies only after the owner approves.
+  docsRefs:
+    - docs/cli/openclaw.md
+    - docs/gateway/permission-modes.md
+  codeRefs:
+    - src/system-agent/permission-policy.ts
+    - src/gateway/server-methods/system-agent-approval.ts
+  execution:
+    kind: flow
+    summary: Drive a Full Access delegated policy change through an ephemeral Gateway, qa-channel, and mock provider.
+    config:
+      requiredProviderMode: mock-openai
+      requiredProvider: mock-openai
+      policyConversationId: qa-system-agent-permission-floor
+      policyPrompt: "@openclaw tool search qa check target=openclaw openclaw_fixture=exec-policy. Call the openclaw tool exactly once, then reply exactly: QA-PERMISSION-FLOOR-OK."
+      policyMarker: QA-PERMISSION-FLOOR-OK
+
+flow:
+  steps:
+    - name: holds a Full Access permission-policy change for the owner
+      actions:
+        - assert:
+            expr: "env.providerMode === 'mock-openai'"
+            message: this boundary scenario is mock-openai only
+        - call: waitForGatewayHealthy
+          args:
+            - ref: env
+            - 60000
+        - call: waitForQaChannelReady
+          args:
+            - ref: env
+            - 60000
+        - call: reset
+        - set: policyConversation
+          value:
+            id:
+              expr: config.policyConversationId
+            kind: channel
+            title: QA Owner Trust Policy
+        - set: approvalsExecBefore
+          value:
+            expr: "(await env.gateway.call('config.get', {}, { timeoutMs: 60000 })).config?.approvals?.exec?.enabled ?? null"
+        - sendInbound:
+            conversation:
+              ref: policyConversation
+            senderId: alice
+            senderName: Alice
+            text:
+              expr: config.policyPrompt
+        - call: waitForOutboundMessage
+          saveAs: policyPrompt
+          args:
+            - ref: state
+            - lambda:
+                params: [candidate]
+                expr: "candidate.direction === 'outbound' && candidate.conversation.id === policyConversation.id && String(candidate.text ?? '').includes('/approve system-agent:')"
+            - expr: liveTurnTimeoutMs(env, 180000)
+        - assert:
+            expr: "String(policyPrompt.text).includes('approvals.exec.enabled')"
+            message:
+              expr: "`approval prompt did not describe the policy change: ${policyPrompt.text}`"
+        - set: approvalsExecPending
+          value:
+            expr: "(await env.gateway.call('config.get', {}, { timeoutMs: 60000 })).config?.approvals?.exec?.enabled ?? null"
+        - assert:
+            expr: "approvalsExecPending === approvalsExecBefore"
+            message:
+              expr: "`Full Access applied a permission-policy change before approval: ${approvalsExecPending}`"
+        - set: approvalId
+          value:
+            expr: "String(policyPrompt.text).split('/approve ')[1].split(' ')[0]"
+        - sendInbound:
+            conversation:
+              ref: policyConversation
+            senderId: alice
+            senderName: Alice
+            text:
+              expr: "`/approve ${approvalId} allow-once`"
+            nativeCommand: { name: approve }
+        - call: waitForOutboundMessage
+          args:
+            - ref: state
+            - lambda:
+                params: [candidate]
+                expr: "candidate.direction === 'outbound' && candidate.conversation.id === policyConversation.id && String(candidate.text ?? '').includes(config.policyMarker)"
+            - expr: liveTurnTimeoutMs(env, 180000)
+        - set: approvalsExecAfter
+          value:
+            expr: "(await env.gateway.call('config.get', {}, { timeoutMs: 60000 })).config?.approvals?.exec?.enabled ?? null"
+        - assert:
+            expr: "approvalsExecAfter === true"
+            message:
+              expr: "`approved policy change did not apply: ${approvalsExecAfter}`"
+      detailsExpr: "JSON.stringify({ approvalsExecBefore, approvalsExecPending, approvalsExecAfter, prompt: policyPrompt.text }, null, 2)"
