@@ -206,7 +206,16 @@ function assertSeededAgents(snapshot) {
         .filter((name) => name.endsWith(".json"))
         .flatMap((name) => {
           const manifest = readJson(path.join(manifestDir, name));
-          return manifest.completedAt && !manifest.failedAt ? manifest.targets : [];
+          if (!manifest.completedAt || manifest.failedAt) {
+            return [];
+          }
+          const consumed = manifest.restore?.consumedArchives ?? [];
+          for (const target of manifest.targets) {
+            target.completedMoves = target.completedMoves.filter(
+              (move) => !consumed.includes(move.archivePath),
+            );
+          }
+          return manifest.targets;
         })
     : [];
   for (const agent of snapshot.agents) {
