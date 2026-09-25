@@ -469,6 +469,12 @@ serveOwnedWorkerTasks(
                   deferProfileDisplay: true,
                   resolveCronJobName: () => undefined,
                 };
+                if (request.request.kind === "run-input-policy") {
+                  return {
+                    kind: "run-input-policy",
+                    policy: options.readers.readRunInputPolicy(request.request.params),
+                  };
+                }
                 if (request.request.kind === "transcript-binding") {
                   return {
                     kind: "transcript-binding",

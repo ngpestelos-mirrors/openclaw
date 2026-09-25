@@ -4,6 +4,8 @@ import type {
   TranscriptArchivePublishResult,
 } from "../config/sessions/session-accessor.sqlite-archive-types.js";
 import type { SessionTranscriptInitializationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
+import type { SqliteSessionReclamationResult } from "../config/sessions/session-accessor.sqlite-lifecycle-types.js";
+import type { SessionMaintenanceExecutionPlan } from "../config/sessions/session-accessor.sqlite-maintenance-execution.js";
 import type {
   SessionEntryReplacementCommit,
   SessionEntryReplacementCommitted,
@@ -65,6 +67,10 @@ export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
     output: SessionTranscriptInitializationPublication;
   };
   "database.prepareWrite": { input: undefined; output: void };
+  "session.maintenance": {
+    input: SessionMaintenanceExecutionPlan;
+    output: SqliteSessionReclamationResult;
+  };
   "session.entries.replace": {
     input: SessionEntryReplacementCommit;
     output: SessionEntryReplacementCommitted;

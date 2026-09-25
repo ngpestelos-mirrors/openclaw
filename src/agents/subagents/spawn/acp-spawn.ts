@@ -1,7 +1,6 @@
 /** Implements ACP subagent/session spawning, binding, limits, and parent-stream setup. */
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { AcpTurnAttachment } from "../../../acp/control-plane/manager.types.js";
 import { cleanupFailedAcpSpawn } from "../../../acp/control-plane/spawn.js";
 import { isAcpEnabledByPolicy, resolveAcpAgentPolicyError } from "../../../acp/policy.js";
 import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
@@ -67,6 +66,7 @@ import {
   toGatewayImageAttachments,
   type AcpSpawnBootstrapDeliveryPlan,
 } from "./acp-spawn-bootstrap-delivery.js";
+import type { SpawnAcpContext, SpawnAcpParams, SpawnAcpSandboxMode } from "./acp-spawn-contract.js";
 import { launchAcpChildThroughGateway } from "./acp-spawn-gateway.js";
 import {
   type AcpSpawnParentRelayHandle,
@@ -78,11 +78,7 @@ import {
   resolveRequesterInternalSessionKey,
   validateAcpResumeSessionOwnership,
 } from "./acp-spawn-requester.js";
-import {
-  createAcpSpawnFailure,
-  type SpawnAcpMode,
-  type SpawnAcpResult,
-} from "./acp-spawn-result.js";
+import { createAcpSpawnFailure, type SpawnAcpResult } from "./acp-spawn-result.js";
 import {
   bindPreparedAcpThread,
   initializeAcpSpawnRuntime,
@@ -103,52 +99,6 @@ import {
 import { readGatewayRunId } from "./subagent-spawn-gateway.js";
 import { resolveSubagentSpawnOwnership } from "./subagent-spawn-ownership.js";
 import { resolveConfiguredSubagentRunTimeoutSeconds } from "./subagent-spawn-plan.js";
-
-type SpawnAcpSandboxMode = "inherit" | "require";
-
-type SpawnAcpParams = {
-  task: string;
-  taskName?: string;
-  label?: string;
-  agentId?: string;
-  resumeSessionId?: string;
-  model?: string;
-  thinking?: string;
-  runTimeoutSeconds?: number;
-  cwd?: string;
-  mode?: SpawnAcpMode;
-  thread?: boolean;
-  sandbox?: SpawnAcpSandboxMode;
-  cleanup?: "delete" | "keep";
-  expectsCompletionMessage?: boolean;
-  streamTo?: "parent";
-  attachments?: AcpTurnAttachment[];
-};
-
-type SpawnAcpContext = {
-  onSpawnEffectsStart?: () => void;
-  assertActive?: () => void;
-  agentSessionKey?: string;
-  requesterTurnRunId?: string;
-  completionOwnerKey?: string;
-  requesterAgentIdOverride?: string;
-  agentChannel?: string;
-  agentAccountId?: string;
-  agentTo?: string;
-  agentThreadId?: string | number;
-  currentMessagingTarget?: string;
-  currentChannelId?: string;
-  currentMessageId?: string | number;
-  /** Group chat ID for channels that distinguish group vs. topic (e.g. Telegram). */
-  agentGroupId?: string;
-  /** Group space label (guild/team id) from the originating channel context. */
-  agentGroupSpace?: string | null;
-  /** Trusted provider role ids for the requester in this group turn. */
-  agentMemberRoleIds?: string[];
-  sandboxed?: boolean;
-  inheritedToolAllowlist?: string[];
-  inheritedToolDenylist?: string[];
-};
 
 const ACP_SPAWN_ACCEPTED_NOTE =
   "initial ACP task queued in isolated session; follow-ups continue in the bound thread.";
@@ -224,6 +174,14 @@ export async function spawnAcpDirect(
       status: "forbidden",
       errorCode: "runtime_policy",
       error: runtimePolicyError,
+    });
+  }
+  if (ctx.inheritedToolPolicy) {
+    return createAcpSpawnFailure({
+      status: "forbidden",
+      errorCode: "runtime_policy",
+      error:
+        'ACP cannot enforce the delegated native tool policy. Use runtime="subagent" for this task.',
     });
   }
   const acpUnsupportedInheritedTool = findAcpUnsupportedInheritedToolDeny(

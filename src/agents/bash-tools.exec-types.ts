@@ -22,6 +22,7 @@ import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import type { EmbeddedFullAccessBlockedReason } from "./embedded-agent-runner/types.js";
 import type { ExecReviewerConfig } from "./exec-auto-reviewer.js";
 import type { PreparedGitHubToolEnvironment } from "./github-tool-identity.js";
+import type { DelegatedExecRestriction } from "./inherited-tool-parameters.types.js";
 
 /** Failure categories used to explain exec process exits. */
 type ExecProcessFailureKind =
@@ -63,6 +64,9 @@ export type ExecProcessOutcome =
 
 /** Runtime defaults passed into exec/process tool factories. */
 export type ExecToolDefaults = {
+  delegatedRestrictions?: readonly DelegatedExecRestriction[];
+  /** Preserve the receiver's command policy separately from inherited predicates. */
+  delegatedReceiverSecurity?: ExecSecurity;
   hasCronTool?: boolean;
   host?: ExecTarget;
   mode?: ExecMode;

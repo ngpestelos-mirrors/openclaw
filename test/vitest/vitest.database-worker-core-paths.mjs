@@ -91,6 +91,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/subagents/registry/subagent-registry.session-failure.test.ts",
   "src/agents/subagents/spawn/subagent-spawn.test.ts",
   "src/agents/subagents/spawn/subagent-spawn-session-patch.test.ts",
+  "src/agents/embedded-agent-runner/skill-runtime.library-read.test.ts",
   "src/agents/cli-runner/prepare.test.ts",
   "src/agents/cli-runner/prepare.durable-context.test.ts",
   "src/agents/embedded-agent-runner/run.prepared-harness-source-delivery.integration.test.ts",

@@ -9,6 +9,10 @@ import type { CallGatewayOptions } from "../../gateway/call.js";
 import { withInProcessAgentRuntimeIdentity } from "../../gateway/in-process-agent-runtime-identity.js";
 import { readInProcessSessionDeliveryGeneration } from "../../gateway/in-process-session-delivery.js";
 import {
+  bindInProcessSessionSendPolicy,
+  readInProcessSessionSendPolicy,
+} from "../../gateway/in-process-session-send-policy.js";
+import {
   bindInProcessSubagentResume,
   readInProcessSubagentResume,
 } from "../../gateway/in-process-subagent-resume.js";
@@ -81,7 +85,10 @@ export function withAgentToolGatewayRuntimeIdentity<T extends object>(
   }
   const carried = { ...request };
   agentToolGatewayRuntimeIdentities.set(carried, identity);
-  return bindInProcessSubagentResume(carried, readInProcessSubagentResume(request));
+  return bindInProcessSessionSendPolicy(
+    bindInProcessSubagentResume(carried, readInProcessSubagentResume(request)),
+    readInProcessSessionSendPolicy(request),
+  );
 }
 
 export type AgentToolGatewayRequestCaller = <T = Record<string, unknown>>(
@@ -233,6 +240,9 @@ async function callAgentToolGatewayRequestBound<T>(
     if (readInProcessSubagentResume(request)) {
       throw new Error("Task resume requires trusted in-process Gateway dispatch.");
     }
+    if (readInProcessSessionSendPolicy(request)) {
+      throw new Error("Delegated session input requires trusted in-process Gateway dispatch.");
+    }
     if (runtimeIdentity) {
       throw new Error("trusted agent runtime identity requires in-process Gateway dispatch");
     }
@@ -298,9 +308,12 @@ async function callAgentToolGatewayRequestBound<T>(
       await dispatchGatewayMethodInProcess<T>(
         method,
         (request.params ?? {}) as Record<string, unknown>,
-        bindInProcessSubagentResume(
-          withInProcessAgentRuntimeIdentity(dispatchOptions, runtimeIdentity),
-          readInProcessSubagentResume(request),
+        bindInProcessSessionSendPolicy(
+          bindInProcessSubagentResume(
+            withInProcessAgentRuntimeIdentity(dispatchOptions, runtimeIdentity),
+            readInProcessSubagentResume(request),
+          ),
+          readInProcessSessionSendPolicy(request),
         ),
       ),
     assertCurrent,

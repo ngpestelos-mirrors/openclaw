@@ -3,7 +3,6 @@
  *
  * Starts subagent or ACP-backed sessions with inherited tool policy and delivery context.
  */
-import { Type } from "typebox";
 import { isAcpRuntimeSpawnAvailable } from "../../acp/runtime/availability.js";
 import { supportsThreadBindingSpawn } from "../../channels/conversation-resolution.js";
 import { resolveThreadBindingSpawnPolicy } from "../../channels/thread-bindings-policy.js";
@@ -23,15 +22,10 @@ import {
   formatAcpInheritedToolAllowError,
   formatAcpInheritedToolDenyError,
 } from "../inherited-tool-deny.js";
-import { optionalStringEnum } from "../schema/typebox.js";
 import type { SpawnedToolContext } from "../spawned-context.js";
 import { withParentExecutionIdentity } from "../subagents/spawn/execution-identity-spawn-context.js";
 import { resolveAcpSessionsSpawnImageAttachments } from "../subagents/spawn/subagent-attachments.js";
-import {
-  SUBAGENT_SPAWN_CONTEXT_MODES,
-  SUBAGENT_SPAWN_MODES,
-  spawnSubagentDirect,
-} from "../subagents/spawn/subagent-spawn.js";
+import { spawnSubagentDirect } from "../subagents/spawn/subagent-spawn.js";
 import { normalizeSubagentTaskName } from "../subagents/spawn/subagent-task-name.js";
 import {
   SWARM_CODE_MODE_IDEMPOTENCY_KEY,
@@ -44,7 +38,6 @@ import {
 import { resolveSwarmConfig } from "../subagents/swarm/swarm-config.js";
 import {
   describeSessionsSpawnTool,
-  describeSubagentSpawnContext,
   SESSIONS_SPAWN_SUBAGENT_TOOL_DISPLAY_SUMMARY,
   SESSIONS_SPAWN_TOOL_DISPLAY_SUMMARY,
 } from "../tool-description-presets.js";
@@ -64,16 +57,12 @@ import {
   resolveEffectiveSessionToolsVisibility,
   resolveSandboxedSessionToolContext,
 } from "./sessions-helpers.js";
+import { createSessionsSpawnToolSchema } from "./sessions-spawn-tool.schema.js";
 import {
   maybeSpawnVisibleSession,
   type VisibleSessionsSpawnDeps,
-  VISIBLE_SESSIONS_SPAWN_SCHEMA,
 } from "./sessions-spawn-visible.js";
 
-const SESSIONS_SPAWN_RUNTIMES = ["subagent", "acp"] as const;
-const SESSIONS_SPAWN_SANDBOX_MODES = ["inherit", "require"] as const;
-// Keep the schema local to avoid a circular import through acp-spawn/openclaw-tools.
-const SESSIONS_SPAWN_ACP_STREAM_TARGETS = ["parent"] as const;
 const UNSUPPORTED_SESSIONS_SPAWN_PARAM_KEYS = [
   "target",
   "transport",
@@ -151,154 +140,6 @@ function resolveSessionsSpawnThreadAvailability(opts?: {
   };
 }
 
-function createSessionsSpawnToolSchema(params: {
-  acpAvailable: boolean;
-  threadAvailable: boolean;
-  subagentThreadAvailable: boolean;
-  swarmEnabled: boolean;
-}) {
-  const spawnModes = params.threadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
-  const schema = {
-    task: Type.String(),
-    taskName: Type.Optional(
-      Type.String({
-        description:
-          "Stable later-target alias; starts lowercase letter; then lowercase/digit/_/-.",
-      }),
-    ),
-    label: Type.Optional(
-      Type.String({
-        description: "Short task title shown in UI lists; name the work, not the agent.",
-      }),
-    ),
-    runtime: optionalStringEnum(
-      params.acpAvailable ? SESSIONS_SPAWN_RUNTIMES : (["subagent"] as const),
-      { description: 'Runtime; visible=true requires "subagent".' },
-    ),
-    agentId: Type.Optional(Type.String()),
-    model: Type.Optional(Type.String()),
-    runTimeoutSeconds: Type.Optional(
-      Type.Integer({
-        minimum: 0,
-        description:
-          "Per-run timeout in seconds; overrides the configured subagent default. Zero disables the timeout.",
-      }),
-    ),
-    thinking: Type.Optional(
-      Type.String({ description: "Thinking override; unavailable with visible=true." }),
-    ),
-    cwd: Type.Optional(
-      Type.String({
-        description:
-          "Child working directory. Visible paths outside configured agent workspaces require operator.admin. Mutually exclusive with projectId/projectGitUrl. With no source selector and worktree=true: inherit the same-agent parent managed repository; otherwise use the target agent workspace.",
-      }),
-    ),
-    ...(params.threadAvailable
-      ? {
-          thread: Type.Optional(
-            Type.Boolean({
-              description:
-                'Bind to the current conversation or a new thread, as supported by the channel; true defaults mode="session"; unavailable with visible=true.',
-            }),
-          ),
-        }
-      : {}),
-    mode: optionalStringEnum(spawnModes, {
-      description: params.threadAvailable
-        ? '"run" one-shot; "session" persistent/thread-bound. Visible sessions accept only omitted/default "run" and remain persistent.'
-        : '"run" one-shot. Visible sessions accept omitted/default "run" and remain persistent.',
-    }),
-    cleanup: optionalStringEnum(["delete", "keep"] as const, {
-      description: "Hidden session cleanup; visible=true always keeps the session.",
-    }),
-    expectsCompletionMessage: Type.Optional(
-      Type.Boolean({
-        description:
-          "false: fire-and-forget; requester gets no completion handoff when the child finishes.",
-      }),
-    ),
-    completionTarget: optionalStringEnum(["parent"] as const, {
-      description:
-        "parent: return results in a private requester turn; no automatic channel delivery. Native hidden run only; unavailable with ACP, collect, visible, thread, session mode, or expectsCompletionMessage=false.",
-    }),
-    sandbox: optionalStringEnum(SESSIONS_SPAWN_SANDBOX_MODES, {
-      description: '"inherit" parent sandbox policy; "require" fails unless child is sandboxed.',
-    }),
-    context: optionalStringEnum(SUBAGENT_SPAWN_CONTEXT_MODES, {
-      description: describeSubagentSpawnContext(params.subagentThreadAvailable),
-    }),
-    lightContext: Type.Optional(
-      Type.Boolean({
-        description: "Light bootstrap; subagent only; unavailable with visible=true.",
-      }),
-    ),
-    ...(params.swarmEnabled
-      ? {
-          collect: Type.Optional(
-            Type.Boolean({
-              description:
-                "Swarm collector child for large parallel fan-out, not one or a few children; no completion notification.",
-            }),
-          ),
-          outputSchema: Type.Optional(
-            Type.Record(Type.String(), Type.Unknown(), {
-              description: "JSON Schema for the child's structured result; requires collect=true.",
-            }),
-          ),
-          fastMode: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("auto")])),
-          groupId: Type.Optional(
-            Type.String({
-              description: "Groups parallel collector children; requires collect=true.",
-            }),
-          ),
-        }
-      : {}),
-    ...VISIBLE_SESSIONS_SPAWN_SCHEMA,
-
-    // Inline attachments (snapshot-by-value).
-    attachments: Type.Optional(
-      Type.Array(
-        Type.Object({
-          name: Type.String(),
-          content: Type.String(),
-          encoding: Type.Optional(optionalStringEnum(["utf8", "base64"] as const)),
-          mimeType: Type.Optional(Type.String()),
-        }),
-        {
-          maxItems: 50,
-          description: "Inline snapshots; visible=true accepts only an empty array.",
-        },
-      ),
-    ),
-    attachAs: Type.Optional(
-      Type.Object(
-        {
-          // Where the spawned agent should look for attachments.
-          // Kept as a hint; implementation materializes into the child workspace.
-          mountPath: Type.Optional(Type.String()),
-        },
-        {
-          description:
-            "Attachment mount hint; visible=true accepts only an omitted or blank mountPath.",
-        },
-      ),
-    ),
-    ...(params.acpAvailable
-      ? {
-          resumeSessionId: Type.Optional(
-            Type.String({
-              description: "ACP resume id already recorded for requester; ignored by subagent.",
-            }),
-          ),
-          streamTo: optionalStringEnum(SESSIONS_SPAWN_ACP_STREAM_TARGETS, {
-            description: 'ACP only; "parent" streams turn to requester. Ignored by subagent.',
-          }),
-        }
-      : {}),
-  };
-  return Type.Object(schema);
-}
-
 function resolveAcpUnavailableMessage(opts?: { sandboxed?: boolean; config?: OpenClawConfig }) {
   if (opts?.sandboxed === true) {
     return 'runtime="acp" is unavailable from sandboxed sessions because ACP sessions run on the host. Use runtime="subagent".';
@@ -336,15 +177,17 @@ export function createSessionsSpawnTool(
     SpawnedToolContext,
 ): AnyAgentTool {
   const effectiveConfig = opts?.config ?? getRuntimeConfig();
-  const acpAvailable = isAcpRuntimeSpawnAvailable({
-    config: effectiveConfig,
-    sandboxed: opts?.sandboxed,
-  });
+  const acpAvailable =
+    !opts?.captureInheritedToolPolicyForDelegation &&
+    isAcpRuntimeSpawnAvailable({
+      config: effectiveConfig,
+      sandboxed: opts?.sandboxed,
+    });
   const threadAvailability = resolveSessionsSpawnThreadAvailability({
     ...opts,
     config: effectiveConfig,
   });
-  const threadAvailable = threadAvailability.subagent || threadAvailability.acp;
+  const threadAvailable = threadAvailability.subagent || (acpAvailable && threadAvailability.acp);
   const requesterAgentId =
     opts?.requesterAgentIdOverride ?? parseAgentSessionKey(opts?.agentSessionKey)?.agentId;
   const swarmConfig = resolveSwarmConfig(effectiveConfig, requesterAgentId);
@@ -406,6 +249,15 @@ export function createSessionsSpawnTool(
           ? captureCollectorSpawnGuard(tool, _toolCallId, assertSourceActive)
           : assertSourceActive;
         assertActive();
+        if (
+          getGatewayToolCallerIdentity()?.operationalRunInstance &&
+          !opts?.captureInheritedToolPolicyForDelegation
+        ) {
+          return jsonResult({
+            status: "forbidden",
+            error: "Session spawn has no prepared source delegation policy.",
+          });
+        }
         if (params.outputSchema !== undefined && !collect) {
           throw new ToolInputError('sessions_spawn "outputSchema" requires collect=true.');
         }
@@ -511,6 +363,16 @@ export function createSessionsSpawnTool(
           return jsonResult(
             addRoleToFailureResult(visibleResult as { status: string }, requestedAgentId),
           );
+        }
+        if (runtime === "acp" && opts?.captureInheritedToolPolicyForDelegation) {
+          assertActive();
+          (await opts.captureInheritedToolPolicyForDelegation()).assertCurrent();
+          return jsonResult({
+            status: "forbidden",
+            error:
+              'ACP cannot enforce the delegated native tool policy. Use runtime="subagent" for this task.',
+            ...roleContext,
+          });
         }
         if (runtime === "acp" && !acpAvailable) {
           return jsonResult({
@@ -685,8 +547,12 @@ export function createSessionsSpawnTool(
               requesterAgentIdOverride: opts?.requesterAgentIdOverride,
               workspaceDir: opts?.workspaceDir,
               sessionPermissionPolicy: opts?.sessionPermissionPolicy,
-              inheritedToolAllowlist: opts?.inheritedToolAllowlist,
-              inheritedToolDenylist: opts?.inheritedToolDenylist,
+              captureInheritedToolPolicyForDelegation: async () => {
+                if (!opts?.captureInheritedToolPolicyForDelegation) {
+                  throw new Error("Session spawn has no prepared source delegation policy.");
+                }
+                return await opts.captureInheritedToolPolicyForDelegation();
+              },
               requesterRunId: opts?.requesterRunId,
               sandboxed: opts?.sandboxed,
               assertActive,

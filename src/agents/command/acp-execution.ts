@@ -15,6 +15,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
+import { readUserTurnDelegatedInputPolicy } from "../../sessions/user-turn-transcript.metadata.js";
 import {
   getAdmittedRunDelegatedAuthority,
   type PreparedAgentRunAdmission,
@@ -69,6 +70,16 @@ export async function runAcpAgentCommand(params: {
   acpResolution: AcpReadyResolution;
   trackInternalModelRunTarget: (target: AgentRunSessionTarget | undefined) => void;
 }) {
+  if (
+    params.sessionEntry?.inheritedToolPolicyVersion === 2 ||
+    params.sessionEntry?.inheritedToolPolicy !== undefined ||
+    params.opts.delegatedInputPolicy ||
+    readUserTurnDelegatedInputPolicy(
+      params.opts.userTurnTranscriptRecorder?.getPendingInputMessage?.(),
+    )
+  ) {
+    throw new Error("This ACP target cannot enforce the delegated native tool policy.");
+  }
   if (getInstallationTarget()) {
     throw new Error(LOCAL_INSTALLATION_TARGET_UNSUPPORTED);
   }

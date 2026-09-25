@@ -24,7 +24,10 @@ import { makeEmptyPluginMetadataOwners } from "../../../plugins/current-plugin-m
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.js";
 import { createLazyPromise } from "../../../shared/lazy-runtime.js";
 import { prepareSystemAgentRunAdmission } from "../../admitted-run-context.js";
+import type { OpenClawCodingToolsOptions } from "../../agent-tools.options.js";
 import type { EmbeddedContextFile } from "../../embedded-agent-helpers.js";
+import { emptyDelegatedToolParameterPolicy } from "../../inherited-tool-parameters.js";
+import { captureInheritedToolPolicy } from "../../inherited-tool-policy.js";
 import type { Agent, AgentMessage, StreamFn } from "../../runtime/index.js";
 import { agentSessionSetContextReplacementHook } from "../../sessions/agent-session-compaction.js";
 import { agentSessionSetPromptPreparation } from "../../sessions/agent-session-prompting.js";
@@ -35,7 +38,10 @@ import {
 } from "../../sessions/model-registry-runtime.js";
 import type { WorkspaceBootstrapFile } from "../../workspace.js";
 import type { SessionManagerMocks } from "./attempt-spawn-workspace.session-manager-mock.test-support.js";
-import { createSubscriptionMock } from "./attempt-spawn-workspace.subscription-mock.test-support.js";
+import {
+  createCompletedAssistantStream,
+  createSubscriptionMock,
+} from "./attempt-spawn-workspace.subscription-mock.test-support.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type SubscribeEmbeddedAgentSessionFn =
@@ -899,21 +905,6 @@ type SessionPromptOverride = (
   options?: { images?: unknown[]; preflightResult?: (submitted: boolean) => void },
 ) => Promise<void>;
 
-type TestAgentStream = {
-  result: () => Promise<unknown>;
-  [Symbol.asyncIterator]: () => AsyncIterator<unknown>;
-};
-
-function createCompletedAssistantStream(): TestAgentStream {
-  return {
-    async result() {
-      return { role: "assistant", content: "done" };
-    },
-    [Symbol.asyncIterator]() {
-      return (async function* () {})();
-    },
-  };
-}
 const ATTEMPT_SPAWN_WORKSPACE_TEST_SPECIFIER = "./attempt.ts?spawn-workspace-test";
 
 const loadRunEmbeddedAttempt = createLazyPromise(
@@ -956,12 +947,14 @@ export function resetEmbeddedAttemptHarness(
   hoisted.ensureGlobalUndiciDispatcherStreamTimeoutsMock.mockReset();
   hoisted.ensureGlobalUndiciStreamTimeoutsMock.mockReset();
   hoisted.createOpenClawCodingToolsMock.mockReset().mockImplementation((...args: unknown[]) => {
-    const options = args[0] as
-      | {
-          workspaceDir?: string;
-          spawnWorkspaceDir?: string;
-        }
-      | undefined;
+    const options = args[0] as OpenClawCodingToolsOptions | undefined;
+    if (options?.inheritedToolPolicyRef) {
+      options.inheritedToolPolicyRef.current = captureInheritedToolPolicy({
+        policies: [options.config?.tools],
+        runtimeAllow: options.runtimeToolAllowlist,
+        parameters: emptyDelegatedToolParameterPolicy(),
+      });
+    }
     return [
       {
         name: "sessions_spawn",

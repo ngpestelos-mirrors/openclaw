@@ -26,6 +26,10 @@ import {
   normalizeInheritedToolAllowlist,
   normalizeInheritedToolDenylist,
 } from "../../inherited-tool-deny.js";
+import {
+  parseInheritedToolPolicyV2,
+  type InheritedToolPolicyV2,
+} from "../../inherited-tool-policy.schema.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import {
   asSessionCapabilityLookup,
@@ -56,9 +60,10 @@ type PersistedSubagentToolPolicyEnvelope = {
   sessionKey: string;
   spawnedBy: string;
   completionOwnerSessionKey?: string;
-  inheritedToolAllow: string[];
-  inheritedToolDeny: string[];
-};
+} & (
+  | { version: 1; inheritedToolAllow: string[]; inheritedToolDeny: string[] }
+  | { version: 2; policy: InheritedToolPolicyV2 }
+);
 
 function normalizeSubagentRole(value: unknown): SubagentSessionRole | undefined {
   const trimmed = normalizeOptionalLowercaseString(value);
@@ -78,6 +83,11 @@ function shouldInspectStoredSubagentEnvelope(sessionKey: string): boolean {
 
 function isDashboardSessionKey(sessionKey: string): boolean {
   return parseAgentSessionKey(sessionKey)?.rest.startsWith("dashboard:") === true;
+}
+
+/** Key shape permits a lookup; only the saved envelope establishes child authority. */
+export function requiresSubagentCapabilityStore(sessionKey: string): boolean {
+  return shouldInspectStoredSubagentEnvelope(sessionKey) || isDashboardSessionKey(sessionKey);
 }
 
 function canInspectStoredSubagentEnvelope(
@@ -142,11 +152,7 @@ export function resolveSubagentCapabilityStore(
   }
   // Dashboard key shape permits only a store lookup. Callers still require a
   // persisted spawn envelope before granting subagent authority.
-  if (
-    !opts?.cfg ||
-    (!shouldInspectStoredSubagentEnvelope(normalizedSessionKey) &&
-      !isDashboardSessionKey(normalizedSessionKey))
-  ) {
+  if (!opts?.cfg || !requiresSubagentCapabilityStore(normalizedSessionKey)) {
     return undefined;
   }
   const parsed = parseAgentSessionKey(normalizedSessionKey);
@@ -308,13 +314,30 @@ export function resolvePersistedSubagentToolPolicyEnvelope(
     cfg?: OpenClawConfig;
     store?: SessionCapabilityStore;
     agentId?: string;
+    requiredVersion?: 2;
   },
 ): PersistedSubagentToolPolicyEnvelope | undefined {
   const stored = resolveStoredSubagentToolPolicy(sessionKey, opts);
+  if (isSessionCapabilityLookup(stored?.store)) {
+    stored.store.assertAvailable?.();
+  }
   if (!stored) {
+    if (opts?.requiredVersion === 2) {
+      throw new Error("Expected inherited tool policy v2 is unavailable.");
+    }
     return undefined;
   }
   const { sessionKey: normalizedSessionKey, store, entry } = stored;
+  const version = entry?.inheritedToolPolicyVersion;
+  if (version !== undefined && version !== 1 && version !== 2) {
+    throw new Error("Unsupported inherited tool policy version.");
+  }
+  if (opts?.requiredVersion === 2 && version !== 2) {
+    throw new Error("Expected inherited tool policy v2 is unavailable.");
+  }
+  if (entry?.inheritedToolPolicy !== undefined && version !== 2) {
+    throw new Error("Inherited tool policy v2 is missing its version marker.");
+  }
   const spawnedBy = normalizeOptionalString(entry?.spawnedBy);
   const hasSpawnDepth =
     typeof entry?.spawnDepth === "number" &&
@@ -325,14 +348,36 @@ export function resolvePersistedSubagentToolPolicyEnvelope(
   if (
     !entry ||
     !spawnedBy ||
-    entry.inheritedToolPolicyVersion !== 1 ||
+    (version !== 1 && version !== 2) ||
     !isSubagentEnvelopeSession(normalizedSessionKey, { ...opts, store, entry }) ||
     (!hasSpawnDepth && role === undefined && controlScope === undefined)
   ) {
+    if (version === 2) {
+      throw new Error("Inherited tool policy v2 has incomplete child lineage.");
+    }
     return undefined;
   }
   const completionOwnerSessionKey = normalizeOptionalString(entry.completionOwnerSessionKey);
+  if (isSessionCapabilityLookup(store)) {
+    store.assertAvailable?.();
+  }
+  if (version === 2) {
+    if (!completionOwnerSessionKey) {
+      throw new Error("Inherited tool policy v2 has no completion owner.");
+    }
+    if (entry.inheritedToolAllow !== undefined || entry.inheritedToolDeny !== undefined) {
+      throw new Error("Inherited tool policy v2 cannot contain legacy policy fields.");
+    }
+    return {
+      version,
+      sessionKey: normalizedSessionKey,
+      spawnedBy,
+      completionOwnerSessionKey,
+      policy: parseInheritedToolPolicyV2(entry.inheritedToolPolicy),
+    };
+  }
   return {
+    version: 1,
     sessionKey: normalizedSessionKey,
     spawnedBy,
     ...(completionOwnerSessionKey ? { completionOwnerSessionKey } : {}),

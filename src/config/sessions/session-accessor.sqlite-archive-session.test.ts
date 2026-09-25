@@ -3,6 +3,9 @@ import path from "node:path";
 import type { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
+import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
@@ -24,12 +27,16 @@ import type {
   TranscriptArchiveWorkerMessage,
 } from "./session-accessor.sqlite-archive-types.js";
 import { runExclusiveSqliteTranscriptArchiveWorker } from "./session-accessor.sqlite-archive.js";
+import { publishMaintenanceArchivesInWorker } from "./session-accessor.sqlite-maintenance-execution.js";
+import { applySessionEntryExactReplacements } from "./session-accessor.sqlite-replacement-projection.js";
+import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { waitForSessionTranscriptIndexReconcilesInStateDir } from "./session-transcript-reconcile.js";
 
 const archiveScopeHooks = vi.hoisted(() => ({
   afterMaterializeQueued: undefined as (() => void) | undefined,
+  beforeExport: undefined as (() => Promise<void>) | undefined,
   beforePublish: undefined as ((sessionIds: string[]) => Promise<void>) | undefined,
 }));
 
@@ -37,6 +44,12 @@ vi.mock("./session-accessor.sqlite-archive.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./session-accessor.sqlite-archive.js")>();
   return {
     ...actual,
+    runSqliteTranscriptArchivePublishWorker: async (
+      ...args: Parameters<typeof actual.runSqliteTranscriptArchivePublishWorker>
+    ) => {
+      await archiveScopeHooks.beforeExport?.();
+      return actual.runSqliteTranscriptArchivePublishWorker(...args);
+    },
     materializeSessionStateDeletePlans: (
       ...args: Parameters<typeof actual.materializeSessionStateDeletePlans>
     ) => {
@@ -79,6 +92,7 @@ describe("SQLite transcript archive sessions", () => {
 
   afterEach(async () => {
     archiveScopeHooks.afterMaterializeQueued = undefined;
+    archiveScopeHooks.beforeExport = undefined;
     archiveScopeHooks.beforePublish = undefined;
     vi.unstubAllEnvs();
     await waitForSessionTranscriptIndexReconcilesInStateDir(tempDir);
@@ -159,8 +173,15 @@ describe("SQLite transcript archive sessions", () => {
     );
   });
 
-  it("joins a failed publisher before returning and recovers its committed archive on retry", async () => {
+  it("recovers a committed archive through its worker without blocking foreground writes", async ({
+    signal,
+  }) => {
     const sessionKey = "agent:main:scoped-publish-failure";
+    const writerKey = "agent:main:archive-foreground-writer";
+    await replaceSessionEntry(
+      { sessionKey: writerKey, storePath },
+      { sessionId: "archive-foreground-writer", updatedAt: Date.now() },
+    );
     const sessionIds = ["scoped-publish-history", "scoped-publish-current"] as const;
     const events = sessionIds.map((sessionId) =>
       createTranscriptEvent(sessionId, "recover exact bytes"),
@@ -215,6 +236,80 @@ describe("SQLite transcript archive sessions", () => {
     ).toEqual({ published_at: null, last_publish_error: expect.stringContaining("collision") });
     expect(collisionPath).toBeDefined();
     fs.rmSync(collisionPath!);
+
+    const database = openLifecycleTestDatabase(storePath);
+    const databaseIdentity = readOpenClawAgentDatabaseIdentity(database).identity;
+    if (typeof databaseIdentity !== "string") {
+      throw new Error("expected a durable archive database");
+    }
+    const readPublication = () =>
+      executeSqliteQueryTakeFirstSync(
+        database.db,
+        getSessionKysely(database.db)
+          .selectFrom("session_transcript_archives")
+          .select("published_at")
+          .where("session_id", "=", sessionIds[0]),
+      );
+    const exportEntered = createDeferred();
+    const releaseExport = createDeferred();
+    archiveScopeHooks.beforeExport = async () => {
+      exportEntered.resolve();
+      await releaseExport.promise;
+    };
+    const publicationWorkers = observeArchiveSessionWorkers();
+    let publicationCompleted = false;
+    const publication = publishMaintenanceArchivesInWorker(
+      { agentId: "main", path: database.path },
+      databaseIdentity,
+      [],
+      () => signal.throwIfAborted(),
+    ).then((result) => {
+      publicationCompleted = true;
+      return result;
+    });
+    let writer: Promise<void> | undefined;
+    try {
+      await racePromiseWithAbortSignal(
+        Promise.race([
+          exportEntered.promise,
+          publication.then(() => {
+            throw new Error("archive publication skipped file export");
+          }),
+        ]),
+        signal,
+      );
+      writer = applySessionEntryExactReplacements({
+        agentId: "main",
+        storePath,
+        sessionKeys: [writerKey],
+        skipMaintenance: true,
+        update: ([row]) => {
+          if (!row) {
+            throw new Error("expected the foreground writer session");
+          }
+          return {
+            result: undefined,
+            replacements: [{ sessionKey: writerKey, entry: { ...row.entry, label: "progressed" } }],
+          };
+        },
+      });
+      await racePromiseWithAbortSignal(writer, signal);
+      expect(loadSessionEntry({ sessionKey: writerKey, storePath })?.label).toBe("progressed");
+      expect(publicationCompleted).toBe(false);
+      expect(readPublication()).toEqual({ published_at: null });
+      expect(fs.existsSync(collisionPath!)).toBe(false);
+      releaseExport.resolve();
+      await publication;
+      expect(readPublication()).toEqual({ published_at: expect.any(Number) });
+      expect(readArchiveLines(collisionPath)).toEqual([JSON.stringify(events[0])]);
+      expect(publicationWorkers.replies.map(({ message }) => message.type)).toEqual(["published"]);
+      expect(publicationWorkers.replies.every(({ worker }) => worker.threadId === -1)).toBe(true);
+    } finally {
+      releaseExport.resolve();
+      await Promise.allSettled([publication, writer]);
+      archiveScopeHooks.beforeExport = undefined;
+      publicationWorkers.stop();
+    }
 
     await expect(deleteSessionEntryLifecycle(deletionParams)).resolves.toMatchObject({
       deleted: true,
