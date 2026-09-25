@@ -1,4 +1,3 @@
-import chokidar from "chokidar";
 import { expect, vi, type TestContext } from "vitest";
 import { createInfoWarnErrorLogger } from "../../test/helpers/mock-logger.js";
 import type {
@@ -7,6 +6,7 @@ import type {
   OpenClawConfig,
 } from "../config/config.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
+import * as configFileSource from "../config/source-file.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import {
   startGatewayConfigReloader as startGatewayConfigReloaderImpl,
@@ -161,7 +161,7 @@ export function createReloaderHarness(
   } = {},
 ) {
   const watcher = createWatcherMock();
-  vi.spyOn(chokidar, "watch").mockReturnValue(watcher as unknown as never);
+  vi.spyOn(configFileSource, "createConfigFileAdapter").mockImplementation(watcher.attach);
   const onConfigChange = vi.fn(
     options.onConfigChange ?? (async (_plan: GatewayReloadPlan, _nextConfig: OpenClawConfig) => {}),
   );

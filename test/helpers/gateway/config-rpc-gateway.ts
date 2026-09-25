@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import chokidar from "chokidar";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { resolveDefaultAgentDir } from "../../../src/agents/agent-scope.js";
 import { prepareHostConfigSnapshot } from "../../../src/config/io.snapshot-preparation.js";
+import * as configFileSource from "../../../src/config/source-file.js";
 import { GatewayClient, GatewayClientRequestError } from "../../../src/gateway/client.js";
 import { invalidateConfigGetResponseCache } from "../../../src/gateway/config-get-response.js";
 import { pruneStaleControlPlaneBuckets } from "../../../src/gateway/control-plane-rate-limit.js";
@@ -25,7 +25,6 @@ let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
 let server: Awaited<ReturnType<typeof startGatewayServer>> | undefined;
 let client: GatewayClient | undefined;
 const hotReloadRecovery = vi.fn(() => ({ status: "emitted" as const }));
-const unarmedConfigWatchers: ReturnType<typeof chokidar.watch>[] = [];
 
 type ConfigRpcGatewayOptions = {
   configRelativePath?: string;
@@ -102,15 +101,19 @@ async function startConfigRpcGateway({
     await state.writeConfig(config);
   }
   if (!watchConfigFiles) {
-    const watch = chokidar.watch;
-    vi.spyOn(chokidar, "watch").mockImplementation((paths, options) => {
-      if ((Array.isArray(paths) ? paths : [paths]).includes(configPath)) {
-        // Keep managed writes and the real read cache active without independent file notifications.
-        const watcher = new chokidar.FSWatcher(options);
-        unarmedConfigWatchers.push(watcher);
-        return watcher;
+    const createConfigFileAdapter = configFileSource.createConfigFileAdapter;
+    vi.spyOn(configFileSource, "createConfigFileAdapter").mockImplementation((options) => {
+      if (options.path !== configPath) {
+        return createConfigFileAdapter(options);
       }
-      return watch(paths, options);
+      // Keep managed writes and the real read cache active without independent file notifications.
+      return {
+        start: () => {},
+        observePaths: async () => {},
+        acceptPaths: async () => {},
+        stop: async () => {},
+        status: () => "active" as const,
+      };
     });
   }
   hotReloadRecovery.mockClear();
@@ -158,7 +161,6 @@ async function stopConfigRpcGateway() {
       await server?.close();
       server = undefined;
     },
-    () => Promise.all(unarmedConfigWatchers.splice(0).map((watcher) => watcher.close())),
     () => resetGatewayRestartStateForInProcessRestart(),
     () => state?.cleanup(),
     () => resetLogger(),

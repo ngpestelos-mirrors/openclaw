@@ -4,7 +4,6 @@
 import fs from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import chokidar from "chokidar";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createInfoWarnErrorLogger } from "../../test/helpers/mock-logger.js";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -29,6 +28,7 @@ import {
   createRuntimeConfigWriteApplication,
   type RuntimeConfigWriteApplicationStatus,
 } from "../config/runtime-write-application.js";
+import * as configFileSource from "../config/source-file.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { CronService } from "../cron/service.js";
 import { skillCollectionReviewMonitorAgentId } from "../cron/skill-collection-review-monitor.js";
@@ -102,6 +102,7 @@ import {
 import { doesReloadAffectProviderAuth } from "./config-reload-recovery.js";
 import type { GatewayHotReloadApplication } from "./config-reload-status.types.js";
 import { prepareConfigReloadTest, waitForReloadState } from "./config-reload.test-support.js";
+import { createWatcherMock } from "./config-reload.watcher.test-support.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 import { commitHooksConfigReload } from "./hooks.js";
 import { createChannelManager } from "./server-channels.js";
@@ -5218,7 +5219,10 @@ describe("gateway Gmail hot reload handlers", () => {
     );
     let persistedSourceConfig = initialSourceConfig;
     let persistedHash = "initial-source";
-    const watch = vi.spyOn(chokidar, "watch");
+    const watcher = createWatcherMock();
+    const watch = vi
+      .spyOn(configFileSource, "createConfigFileAdapter")
+      .mockImplementation(watcher.attach);
     const initialPromoted = createDeferred();
     let supersededSource = createDeferred();
     const reloader = startManagedGatewayConfigReloader({
@@ -5273,10 +5277,7 @@ describe("gateway Gmail hot reload handlers", () => {
         persistedHash = notification.persistedHash;
         return publishConfigWrite(listener, notification);
       };
-      const watcher = watch.mock.results[0]?.value;
-      if (!watcher) {
-        throw new Error("Expected config watcher to be registered");
-      }
+      expect(watcher.adapter.start).toHaveBeenCalledOnce();
       watcher.emit("change", "/tmp/openclaw.json");
       await initialPromoted.promise;
       expect(activateRuntimeSecrets.prepareSnapshot).not.toHaveBeenCalled();
@@ -5935,8 +5936,10 @@ describe("gateway Gmail hot reload handlers", () => {
 
   it("keeps unchanged config unsettled until metadata hot replacement completes", async () => {
     vi.useFakeTimers();
-    const watcher = new chokidar.FSWatcher();
-    const watch = vi.spyOn(chokidar, "watch").mockReturnValue(watcher);
+    const watcher = createWatcherMock();
+    const watch = vi
+      .spyOn(configFileSource, "createConfigFileAdapter")
+      .mockImplementation(watcher.attach);
     const config: OpenClawConfig = { gateway: { reload: {} } };
     const started = createDeferred();
     const release = createDeferred();
@@ -7386,7 +7389,10 @@ describe("deferred channel reload abort generation", () => {
       const deferralStarted = createDeferred();
       const logReload = createInfoWarnErrorLogger();
       logReload.warn.mockImplementation(() => deferralStarted.resolve());
-      const watch = vi.spyOn(chokidar, "watch");
+      const watcher = createWatcherMock();
+      const watch = vi
+        .spyOn(configFileSource, "createConfigFileAdapter")
+        .mockImplementation(watcher.attach);
       setActivePluginRegistry(registry);
       const reloader = startManagedGatewayConfigReloader({
         initialConfig,
@@ -7429,8 +7435,7 @@ describe("deferred channel reload abort generation", () => {
 
         // Revoke the write epoch while real hot reload is waiting on unrelated work.
         // Hold the disk reread so cancellation settles before exact-candidate replay.
-        const watcher = watch.mock.results[0]?.value;
-        expect(watcher).toBeDefined();
+        expect(watcher.adapter.start).toHaveBeenCalledOnce();
         observationPending = true;
         watcher.emit("change", "/tmp/openclaw.json");
         expect(reloader.getDeferredChannelReloads?.()).toEqual([]);
@@ -7527,8 +7532,10 @@ describe("deferred channel reload abort generation", () => {
           },
         ]),
       );
-      const watcher = new chokidar.FSWatcher();
-      const watch = vi.spyOn(chokidar, "watch").mockReturnValue(watcher);
+      const watcher = createWatcherMock();
+      const watch = vi
+        .spyOn(configFileSource, "createConfigFileAdapter")
+        .mockImplementation(watcher.attach);
       const writer = createDirectConfigWriteFixture(initialConfig);
       const writeListenerRef = writer.ref;
       const channels = { start: vi.fn(async () => new Map()), stop: vi.fn(async () => {}) };
