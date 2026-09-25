@@ -7,7 +7,6 @@ import {
   desktopAudioStream,
   stubDesktopAudio,
 } from "./desktop-audio.test-support.ts";
-import { AudioContextMock } from "./desktop-audio.test-support.ts";
 import type { DesktopClient } from "./desktop-client.ts";
 import {
   clickPanelButton,
@@ -16,6 +15,7 @@ import {
   createPanel,
   desktopEnvironment,
 } from "./desktop-panel.test-support.ts";
+import { AudioContextMock } from "./desktop-pcm-queue.test-support.ts";
 
 describe("desktop panel audio wiring", () => {
   beforeEach(() => {
