@@ -30,6 +30,7 @@ export type ActiveHandlerState<TPayload, TMetadata> = {
   occupiesLane: boolean;
   task: Promise<void>;
   settlement?: Promise<void>;
+  settlementFailure?: { error: unknown };
   stallTimer?: ReturnType<typeof setTimeout>;
   claimRefreshTimer?: ReturnType<typeof setInterval>;
   /** Closed code: pre-adoption stall watchdog has claimed settle ownership. */
@@ -62,9 +63,13 @@ export function createIngressSettleOwner<TPayload, TMetadata>(
         // Only mark settled after the tombstone/fail/release write commits.
         // Write failure must keep heartbeat + in-memory ownership (wedged > duplicated).
         await fn();
+        state.settlementFailure = undefined;
         settled = true;
         state.phase = "settled";
         removeActive(state);
+      } catch (error) {
+        state.settlementFailure = { error };
+        throw error;
       } finally {
         state.settlement = undefined;
       }

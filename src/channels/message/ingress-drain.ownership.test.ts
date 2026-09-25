@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createChannelIngressDrain, isIngressAdoptionLostError } from "./ingress-drain.js";
 import {
@@ -62,6 +63,95 @@ describe("channel ingress drain ownership", () => {
       }
     });
   });
+
+  it.each(["before", "during"] as const)(
+    "keeps failed completion custody when the write rejects %s joined disposal",
+    async (timing) => {
+      await withTempState(async (stateDir) => {
+        const queue = createTestIngressQueue(stateDir);
+        await queue.enqueue("completion-failure", { text: "delivered" }, { laneKey: "lane" });
+        if (timing === "during") {
+          await queue.enqueue("sibling", { text: "delivered" }, { laneKey: "other" });
+        }
+        const writeStarted = createDeferredCore();
+        const finishWrite = createDeferredCore();
+        const siblingStarted = createDeferredCore();
+        const finishSibling = createDeferredCore();
+        const adoptionFailed = createDeferredCore();
+        const failure = new Error("completion write failed");
+        const complete = queue.complete.bind(queue);
+        queue.complete = async (value, options) => {
+          if (typeof value !== "string" && value.id === "sibling") {
+            siblingStarted.resolve();
+            await finishSibling.promise;
+            return complete(value, options);
+          }
+          writeStarted.resolve();
+          await finishWrite.promise;
+          throw failure;
+        };
+        const abort = new AbortController();
+        const delivered = vi.fn<(id: string) => void>();
+        const drain = createChannelIngressDrain(
+          {
+            queue,
+            abortSignal: abort.signal,
+            dispatchClaimedEvent: async (event, lifecycle) => {
+              delivered(event.id);
+              try {
+                await lifecycle.onAdopted();
+              } catch (error) {
+                adoptionFailed.resolve();
+                throw error;
+              }
+            },
+          },
+          true,
+        );
+        const peer = createChannelIngressDrain({
+          queue,
+          dispatchClaimedEvent: (event) => delivered(event.id),
+        });
+        try {
+          await drain.drainOnce();
+          await writeStarted.promise;
+          if (timing === "during") {
+            await siblingStarted.promise;
+          }
+          abort.abort();
+          if (timing === "before") {
+            finishWrite.resolve();
+            await drain.waitForIdle();
+          }
+          let disposalFinished = false;
+          const disposal = drain.dispose({ waitForSettlements: true }).finally(() => {
+            disposalFinished = true;
+          });
+          const rejection = expect(disposal).rejects.toBe(failure);
+          finishWrite.resolve();
+          await adoptionFailed.promise;
+          if (timing === "during") {
+            expect(disposalFinished).toBe(false);
+            finishSibling.resolve();
+          }
+          await rejection;
+          expect(await peer.recoverStaleClaims()).toBe(0);
+          expect(await peer.drainOnce()).toEqual({ started: 0 });
+          expect(delivered.mock.calls.map(([id]) => id).toSorted()).toEqual(
+            timing === "during" ? ["completion-failure", "sibling"] : ["completion-failure"],
+          );
+          expect(await queue.listClaims()).toMatchObject([{ id: "completion-failure" }]);
+        } finally {
+          abort.abort();
+          finishWrite.resolve();
+          finishSibling.resolve();
+          await drain.waitForIdle();
+          drain.dispose();
+          peer.dispose();
+        }
+      });
+    },
+  );
 
   it("does not steal live peer-drain claims; recovers after owner abort", async () => {
     await withTempState(async (stateDir) => {

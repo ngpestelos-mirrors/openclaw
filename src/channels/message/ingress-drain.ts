@@ -734,10 +734,15 @@ export function createChannelIngressDrain<
       }
       return (async () => {
         for (;;) {
-          const settlements = [...activeByClaim.values()].flatMap((state) =>
+          const states = [...activeByClaim.values()];
+          const settlements = states.flatMap((state) =>
             state.settlement ? [state.settlement] : [],
           );
           if (settlements.length === 0) {
+            const failure = states.find((state) => state.settlementFailure)?.settlementFailure;
+            if (failure) {
+              throw failure.error;
+            }
             // Keep the final empty check and retirement in the same synchronous turn.
             dispose();
             return;
