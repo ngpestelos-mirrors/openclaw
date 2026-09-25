@@ -173,6 +173,10 @@ beforeEach(() => {
   boundary.gatewayAcquire.mockImplementation(() => ({
     release: boundary.release,
     assertCurrent: boundary.ownerAssert,
+    run<T>(operation: () => T): T {
+      boundary.ownerAssert();
+      return operation();
+    },
   }));
   vi.stubEnv("OPENCLAW_STATE_DIR", "/synthetic/doctor-state");
   vi.stubEnv("OPENCLAW_CONFIG_PATH", "/synthetic/doctor-state/openclaw.json");

@@ -787,7 +787,7 @@ it.each(["in_progress", "completed"] as const)(
           ? progress.onStepStart?.(step)
           : progress.onStepComplete?.({ ...step, durationMs: 1, exitCode: 0 });
       expect(invoke).toThrow(
-        `Could not record update step "preflight worktree" (${status}): Another OpenClaw process owns state at /synthetic/openclaw.sqlite`,
+        `Could not record update step "preflight worktree" (${status}): ${cause.message}`,
       );
       try {
         invoke();

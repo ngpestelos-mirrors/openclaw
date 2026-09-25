@@ -309,7 +309,7 @@ it.each([false, true])(
     });
 
     if (expires) {
-      await expect(begin()).rejects.toThrow(/owns state|state ownership/);
+      await expect(begin()).rejects.toThrow("OpenClaw state database is busy at");
       expect(elapsed).toBe(GATEWAY_SERVICE_STOP_TIMEOUT_MS);
       expect(boundary.log).toHaveBeenCalledWith(
         expect.stringMatching(/Warning:.*state ownership.*openclaw doctor --fix/),
@@ -336,6 +336,10 @@ it("restores a service after state ownership fails without retaining a partial m
           heldLeases--;
         },
         assertCurrent: boundary.ownerAssert,
+        run<T>(operation: () => T): T {
+          boundary.ownerAssert();
+          return operation();
+        },
       };
     })
     .mockImplementationOnce(() => {
@@ -381,6 +385,10 @@ it.each(["drain", "acquired", "native-revoked", "install-drift"] as const)(
           gatewayHeld = false;
         },
         assertCurrent: boundary.ownerAssert,
+        run<T>(operation: () => T): T {
+          boundary.ownerAssert();
+          return operation();
+        },
       };
     });
     boundary.ownerAssert.mockImplementation(() => {
@@ -473,7 +481,7 @@ it.each([false, true])(
     if (stopFailed) {
       expect(collectNestedErrorCandidates(refusal)).toContain(stopError);
     } else {
-      expect(String(refusal)).toMatch(/owns state|state ownership/);
+      expect(String(refusal)).toContain("OpenClaw state database is busy at");
     }
     expect(elapsed).toBe(GATEWAY_SERVICE_STOP_TIMEOUT_MS);
     expect(boundary.ownerAssert).not.toHaveBeenCalled();

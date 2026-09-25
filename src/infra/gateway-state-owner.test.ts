@@ -24,6 +24,22 @@ import {
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 
 describe("Gateway state ownership", () => {
+  it("explains contention while preserving the database path and native cause", () => {
+    const databasePath = "/synthetic/openclaw.sqlite";
+    const cause = new Error("synthetic native lock contention");
+    const error = new GatewayStateOwnerContentionError(databasePath, cause);
+    expect(error.databasePath).toBe(databasePath);
+    expect(error.cause).toBe(cause);
+    expect(error.message).toContain(`OpenClaw state database is busy at ${databasePath}.`);
+    expect(error.message).toContain("Wait for the other OpenClaw process to finish, then retry.");
+    expect(error.message).toContain(
+      "If it persists, run `openclaw gateway status` and check for other OpenClaw processes using the same state directory.",
+    );
+    expect(error.message).toContain(
+      "A running Gateway can hold this ownership until it stops; stop it through its service manager or original terminal before retrying.",
+    );
+  });
+
   it.each(["schema", "nested maintenance"])(
     "retains accepted %s after the root stops lending",
     async (kind) => {

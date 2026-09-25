@@ -110,6 +110,7 @@ export async function beginDoctorMaintenance(params: {
   let resources: OpenClawDatabaseMaintenanceScope | undefined;
   let inspectingActivation = false;
   let staleReplacement: DoctorStaleGateway | undefined;
+  let assertUpdateAdmissionReadCurrent: (() => void) | undefined;
   let assertUpdateAdmissionCurrent: (() => void) | undefined;
   let authorityRefused = false;
   const assertAuthority = (assertion: () => void) => {
@@ -161,7 +162,7 @@ export async function beginDoctorMaintenance(params: {
           // Policy checks read SQLite; their storage access comes from the raw process owner.
           owner.run(() => {
             assertCallerCurrent?.();
-            assertUpdateAdmissionCurrent?.();
+            assertUpdateAdmissionReadCurrent?.();
             owner.assertCurrent();
           });
         },
@@ -485,7 +486,11 @@ export async function beginDoctorMaintenance(params: {
         if (inspection.serviceUpdateVerdict?.kind !== "absent" && inspection.offline !== true) {
           assertAuthority(() => {
             const admitted = resolveDoctorUpdateAdmission(env);
-            assertUpdateAdmissionCurrent = () => assertAuthority(admitted);
+            // Storage guards can run inside a transaction; receipts belong to service admission.
+            assertUpdateAdmissionReadCurrent = () => assertAuthority(admitted.assertCurrent);
+            const checkAndRecord = () => assertAuthority(admitted.recordContinuation);
+            assertUpdateAdmissionCurrent = () =>
+              gatewayOwner ? gatewayOwner.run(checkAndRecord) : checkAndRecord();
           });
         }
         if (inspection.serviceUpdateVerdict?.kind === "owned" && inspection.serviceEnv) {

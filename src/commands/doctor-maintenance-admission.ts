@@ -3,7 +3,10 @@ import { inspectUpdateRepairDriverAdmission } from "../infra/update-run-activity
 import { listUpdateRuns, recordUpdateRunRepairContinuation } from "../infra/update-run-ledger.js";
 import { openDoctorStateSchemaReadAdmission } from "../state/openclaw-state-db-doctor-schema.js";
 
-export function resolveDoctorUpdateAdmission(env: NodeJS.ProcessEnv): () => void {
+export function resolveDoctorUpdateAdmission(env: NodeJS.ProcessEnv): {
+  assertCurrent: () => void;
+  recordContinuation: () => void;
+} {
   const inheritedRunId = env[UPDATE_RUN_ID_ENV]?.trim();
   const readAdmission = () => {
     const runs = listUpdateRuns(
@@ -18,18 +21,19 @@ export function resolveDoctorUpdateAdmission(env: NodeJS.ProcessEnv): () => void
     return admission;
   };
   const admission = readAdmission();
-  let assertUpdateAdmissionCurrent = () => {
-    readAdmission();
-  };
   const continuation =
     admission.kind === "continuation"
       ? admission.run
       : admission.runs.find((run) => run.runId === inheritedRunId);
-  if (continuation?.steps.some((step) => step.step === "finalize:repair-continuation")) {
-    assertUpdateAdmissionCurrent = () => {
+  return {
+    assertCurrent: () => {
       readAdmission();
-      recordUpdateRunRepairContinuation(continuation.runId, inheritedRunId, { env });
-    };
-  }
-  return assertUpdateAdmissionCurrent;
+    },
+    recordContinuation: () => {
+      readAdmission();
+      if (continuation?.steps.some((step) => step.step === "finalize:repair-continuation")) {
+        recordUpdateRunRepairContinuation(continuation.runId, inheritedRunId, { env });
+      }
+    },
+  };
 }

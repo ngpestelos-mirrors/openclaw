@@ -110,9 +110,12 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
-  closeOpenClawStateDatabaseForTest();
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
+  try {
+    closeOpenClawStateDatabaseForTest();
+  } finally {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  }
 });
 
 type StoppedUnitState =
@@ -560,7 +563,19 @@ async function runDoctorFinishForStoppedUnit(
         scenario === "lifecycle-contended" ||
         scenario === "gateway-lifecycle-contended" ||
         scenario === "legacy-gateway-lifecycle-contended"
-          ? acquireGatewayStateOwner({ databasePath })
+          ? acquireGatewayStateOwner({
+              databasePath,
+              ...(scenario === "lifecycle-contended"
+                ? {}
+                : {
+                    payload: {
+                      pid: process.pid,
+                      createdAt: new Date().toISOString(),
+                      configPath: path.join(home, ".openclaw", "openclaw.json"),
+                      role: "gateway",
+                    },
+                  }),
+            })
           : undefined;
       const maintenance = await beginDoctorMaintenance({
         root: process.cwd(),
@@ -606,14 +621,16 @@ async function runDoctorFinishForStoppedUnit(
         expect(() => maintenance?.run(() => listUpdateRuns())).toThrow();
       }
       if (continuation === "lost-before-restart" && runId) {
-        createUpdateRun({ trigger: "cli", origin: { driver: readUpdateRunDriver() } });
+        maintenance?.run(() =>
+          createUpdateRun({ trigger: "cli", origin: { driver: readUpdateRunDriver() } }),
+        );
       }
       if (
         continuation === "dead-before-restart" ||
         continuation === "terminal-dead-before-restart"
       ) {
         if (continuation === "terminal-dead-before-restart" && runId) {
-          finishUpdateRun(runId, { status: "failed" });
+          maintenance?.run(() => finishUpdateRun(runId, { status: "failed" }));
         }
         const inspect = updateRunDriver.inspectUpdateRunDriver;
         vi.spyOn(updateRunDriver, "inspectUpdateRunDriver").mockImplementation((driver) =>
@@ -729,7 +746,7 @@ it("preserves the existing malformed continuation writer refusal before stopping
 
 it("refuses a foreign lifecycle holder before stopping the service", async () => {
   await expect(runDoctorFinishForStoppedUnit("lifecycle-contended")).rejects.toThrow(
-    "Another OpenClaw process owns state at",
+    "OpenClaw state database is busy at",
   );
   expect(mocks.stops).toBe(0);
 });

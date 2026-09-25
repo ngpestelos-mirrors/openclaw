@@ -17,7 +17,7 @@ it("respects another migration owner even when the state database is already ope
     try {
       await expect(
         migrateLegacySkillWorkshopProposals({ config: {}, env: state.env }),
-      ).rejects.toThrow("Another OpenClaw process owns state at");
+      ).rejects.toThrow("OpenClaw state database is busy at");
     } finally {
       otherOwner?.release();
     }

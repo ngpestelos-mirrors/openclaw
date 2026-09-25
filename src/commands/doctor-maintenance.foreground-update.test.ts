@@ -188,7 +188,7 @@ it.each([
             message: expect.stringContaining(
               outcome === "authority-lost"
                 ? "update owner was revoked"
-                : "Another OpenClaw process owns state at",
+                : "OpenClaw state database is busy at",
             ),
           }),
         });
@@ -221,7 +221,7 @@ it.each(["ordinary", "unfenced", "supervised"] as const)(
           runtime: { log, error: vi.fn(), exit: vi.fn() },
           ...(kind === "unfenced" ? {} : { assertCurrent: () => {} }),
         }),
-      ).rejects.toThrow("Another OpenClaw process owns state at");
+      ).rejects.toThrow("OpenClaw state database is busy at");
       expect(log).not.toHaveBeenCalled();
     } finally {
       predecessor?.release();
