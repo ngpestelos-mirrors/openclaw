@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
+import * as census from "../infra/openclaw-process-census.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import { retainGatewayPluginMetadata } from "./plugin-metadata-lifecycle.js";
@@ -215,7 +216,8 @@ async function startCliCapture(stateDir: string, source: string, worker: boolean
   }
 }
 
-it("metadata boot reclaims old abandoned artifacts and preserves recent and legacy files", async () => {
+it("metadata boot preserves recent captures and legacy files with another producer", async () => {
+  vi.spyOn(census, "inspectOtherOpenClawProcesses").mockReturnValue({ pids: [12345] });
   const stateDir = temp.make("plugin-capture-boot-");
   const source = createSource();
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
@@ -670,7 +672,7 @@ it.each(["captures", "first capture"])(
   },
 );
 
-it.each(["missing", "malformed", "symlink", "hardlink", "sidecar-symlink", "captures-symlink"])(
+it.each(["malformed", "symlink", "hardlink", "sidecar-symlink", "captures-symlink"])(
   "preserves an old capture with an unsafe %s marker or payload",
   async (kind) => {
     const stateDir = temp.make("plugin-capture-unsafe-legacy-");
@@ -691,7 +693,7 @@ it.each(["missing", "malformed", "symlink", "hardlink", "sidecar-symlink", "capt
       fs.symlinkSync(outsideFile, owner, "file");
     } else if (kind === "hardlink") {
       fs.linkSync(outsideFile, owner);
-    } else if (kind !== "missing") {
+    } else {
       fs.writeFileSync(owner, kind === "malformed" ? "not a SQLite owner" : "");
     }
     if (kind === "sidecar-symlink") {

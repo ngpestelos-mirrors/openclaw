@@ -14,7 +14,10 @@ import {
 import { removeTemporaryArtifacts } from "../infra/temp-artifact-cleanup.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { runInPluginSourceCaptureContext } from "./plugin-source-capture-context.js";
-import { PLUGIN_SOURCE_CAPTURE_PREFIX } from "./plugin-source-capture-path.js";
+import {
+  isLegacyPluginSourceCaptureName,
+  PLUGIN_SOURCE_CAPTURE_PREFIX,
+} from "./plugin-source-capture-path.js";
 
 const CAPTURE_GRACE_MS = 60 * 60 * 1_000;
 
@@ -36,7 +39,7 @@ const { instances, ownedRoots, sweeps, warningBackoff } = resolveGlobalSingleton
         try {
           const root = retireInstance(key, instance);
           if (root) {
-            fs.rmSync(root, { recursive: true, force: true });
+            removeInstanceSync(root);
           }
         } catch (error) {
           process.stderr.write(`Plugin source capture exit cleanup failed: ${String(error)}\n`);
@@ -144,9 +147,16 @@ async function reclaimInstance(directory: string, originalDirectory: fs.Stats): 
   }
 }
 
+function removeInstanceSync(root: string): void {
+  // A sharing violation must leave the custody token beside any retained payload.
+  fs.rmSync(path.join(root, "captures"), { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
 async function reclaimInstances(
   root: string,
   recordFailure: (error: unknown) => void,
+  legacy = false,
 ): Promise<void> {
   let entries: fs.Dirent[];
   try {
@@ -161,18 +171,54 @@ async function reclaimInstances(
     return;
   }
   const cutoff = Date.now() - CAPTURE_GRACE_MS;
+  let legacyAllowed: boolean | undefined;
   for (const entry of entries) {
-    if (!entry.isDirectory()) {
+    if (!entry.isDirectory() || (legacy && !isLegacyPluginSourceCaptureName(entry.name))) {
       continue;
     }
     const directory = path.join(root, entry.name);
     try {
       const stat = await fsPromises.lstat(directory);
-      if (!stat.isDirectory() || stat.mtimeMs > cutoff) {
+      const changed = legacy
+        ? Math.max(stat.mtimeMs, stat.ctimeMs, stat.birthtimeMs)
+        : stat.mtimeMs;
+      if (!stat.isDirectory() || changed > cutoff) {
         continue;
       }
       const canonical = await fsPromises.realpath(directory);
       if (ownedRoots.has(canonical)) {
+        continue;
+      }
+      const tokenPath = path.join(canonical, SQLITE_STAGING_TOKEN_FILES[0]);
+      const tokenStat = await fsPromises.lstat(tokenPath).catch((error: unknown) => {
+        if (!hasErrnoCode(error, "ENOENT")) {
+          throw error;
+        }
+        return undefined;
+      });
+      if (legacy && tokenStat) {
+        continue;
+      }
+      if (!tokenStat) {
+        if (legacy) {
+          if (legacyAllowed === undefined) {
+            const { inspectOtherOpenClawProcesses } =
+              await import("../infra/openclaw-process-census.js");
+            const census = inspectOtherOpenClawProcesses();
+            legacyAllowed = "error" in census || census.pids.length === 0;
+          }
+          if (!legacyAllowed) {
+            continue;
+          }
+        }
+        // Legacy writers have no token. Probe for Windows sharing violations before
+        // removing aged scratch; retain the recognizable name if removal is interrupted.
+        const retired = path.join(
+          root,
+          `${legacy ? PLUGIN_SOURCE_CAPTURE_PREFIX : ""}${randomUUID()}`,
+        );
+        await fsPromises.rename(canonical, retired);
+        await fsPromises.rm(retired, { recursive: true, force: true });
         continue;
       }
       await reclaimInstance(canonical, stat);
@@ -198,6 +244,22 @@ export function sweepPluginSourceCaptureDirectories(stateDir = resolveStateDir()
     };
     sweep = reclaimInstances(root, recordFailure)
       .catch(recordFailure)
+      .then(async () => {
+        const visited = new Set<string>();
+        for (const candidate of [path.join(stateDir, "tmp"), tmpdir()]) {
+          try {
+            const directory = await fsPromises.realpath(candidate);
+            if (!visited.has(directory)) {
+              visited.add(directory);
+              await reclaimInstances(directory, recordFailure, true);
+            }
+          } catch (error) {
+            if (!hasErrnoCode(error, "ENOENT")) {
+              recordFailure(error);
+            }
+          }
+        }
+      })
       .then(() => {
         if (failures === 0) {
           warningBackoff.delete(root);
@@ -277,7 +339,7 @@ function createCaptureDirectory(instance: Instance, stateDir: string, prefix: st
       }
       if (directory) {
         try {
-          fs.rmSync(directory, { recursive: true, force: true });
+          removeInstanceSync(directory);
         } catch (cleanupError) {
           warn(cleanupError);
         }
@@ -345,13 +407,18 @@ export function retainPluginSourceCaptureInstance(stateDir = resolveStateDir()) 
     release() {
       const root = retire();
       if (root) {
-        fs.rmSync(root, { recursive: true, force: true });
+        removeInstanceSync(root);
       }
     },
     async releaseAsync() {
       const root = retire();
       if (root) {
-        await removeTemporaryArtifacts(root, "Plugin source instance");
+        try {
+          await fsPromises.rm(path.join(root, "captures"), { recursive: true, force: true });
+          await fsPromises.rm(root, { recursive: true, force: true });
+        } catch (error) {
+          warn(error);
+        }
       }
     },
   };
