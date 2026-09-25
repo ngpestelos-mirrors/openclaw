@@ -459,7 +459,7 @@ export function createPreparedModelCatalogWorker(
   const captures = new Map<AbortController, Promise<PreparedSyntheticAuthFacts>>();
   const tasks = new Map<
     Promise<PreparedModelWorkerResult>,
-    { onRecovery?: (error: Error) => void }
+    { controller: AbortController; onRecovery?: (error: Error) => void }
   >();
   const assertCurrent = () => {
     if (stoppedError) {
@@ -505,6 +505,9 @@ export function createPreparedModelCatalogWorker(
     for (const controller of captures.keys()) {
       controller.abort(stoppedError);
     }
+    for (const task of tasks.values()) {
+      task.controller.abort(stoppedError);
+    }
     // Native probes live in the parent; drain them before retiring the compute worker.
     await Promise.allSettled(captures.values());
     if (gatewayOwned) {
@@ -544,8 +547,10 @@ export function createPreparedModelCatalogWorker(
     let message: PreparedModelWorkerResult;
     let requestPool: typeof pool;
     let pending: Promise<PreparedModelWorkerResult> | undefined;
-    const task: { onRecovery?: (error: Error) => void } = {};
     const controller = new AbortController();
+    const task: { controller: AbortController; onRecovery?: (error: Error) => void } = {
+      controller,
+    };
     const timeout = setTimeout(
       () => controller.abort(new WorkerTaskError("worker task timed out", "timeout")),
       PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
