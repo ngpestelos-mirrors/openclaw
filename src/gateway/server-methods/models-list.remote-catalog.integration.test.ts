@@ -228,14 +228,14 @@ it(
             provider: "kimi",
             model: "remote-first",
           })?.input;
-        const settleInterrupted = async (pending: Promise<ModelsListResult>) => {
+        const settleInterrupted = async (pending: Promise<ModelsListResult>, phase: string) => {
           const outcome = await withTestTimeout(
             pending.then(
               (value) => ({ value }),
               (error: unknown) => ({ error }),
             ),
             15_000,
-            "Superseded catalog request did not settle",
+            `Superseded catalog request did not settle: ${phase}`,
           );
           if ("error" in outcome) {
             expect(outcome.error).toMatchObject({ code: "UNAVAILABLE" });
@@ -292,7 +292,7 @@ it(
         const firstThread = providerThread;
         exitWorkerOnce = true;
         releaseProvider();
-        await settleInterrupted(refreshing);
+        await settleInterrupted(refreshing, "candidate worker exit");
         await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
         expect(kimiIds(await list())).not.toContain("remote-next");
         expect(
@@ -377,7 +377,7 @@ it(
 
         const committedThread = providerThread;
         exitWorkerOnce = true;
-        await settleInterrupted(list(true));
+        await settleInterrupted(list(true), "committed worker exit");
         await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
         expect(kimiIds(await list(true))).toContain("remote-next");
         expect(providerThread).not.toBe(committedThread);
@@ -434,7 +434,7 @@ it(
             "Concurrent publication did not finish",
           );
           expect(dispatch?.agentId).toBe("main");
-          await settleInterrupted(pending);
+          await settleInterrupted(pending, publication);
           const current = await withTestTimeout(
             list(),
             1_000,
