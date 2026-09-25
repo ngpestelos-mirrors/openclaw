@@ -95,6 +95,8 @@ When a plugin migration is deferred, the verified import receipt also captures
 unreferenced JSONL inputs. Completing the plugin migration archives those originals
 with the same identity and byte checks as indexed transcripts. Files created after
 capture and changed originals are verified separately before settlement.
+File-era session path repair preserves those originals until their verified import
+receipts finish archival, even after the pending plugin migration records clear.
 Retries and read-only checks reuse the verified receipt, including transcripts
 discovered outside `sessions.json`. Doctor reports one pending-plugin warning
 for these retained inputs; they do not fail the completed core migration or
