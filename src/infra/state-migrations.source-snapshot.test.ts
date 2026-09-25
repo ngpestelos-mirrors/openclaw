@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { root, type Root } from "@openclaw/fs-safe";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
@@ -6,6 +7,7 @@ import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as durability from "./directory-durability.js";
+import * as descriptors from "./file-descriptor.js";
 import {
   assertLegacyMigrationSourceUnchanged,
   claimAndRemoveLegacyMigrationSource,
@@ -162,6 +164,145 @@ describe("doctor legacy migration source contract", () => {
       expect(fs.existsSync(claim.claimPath)).toBe(false);
     },
   );
+
+  it.each(["EACCES", "EPERM"])(
+    "keeps the original until a verified native-off copy claim is retired (%s)",
+    async (code) => {
+      vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+      vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+      const { sourcePath, stateDir } = createSource();
+      const stateRoot = await root(stateDir, { hardlinks: "reject", symlinks: "reject" });
+      const claim = createClaim(stateRoot, stateDir, sourcePath);
+      const snapshot = await claim.read();
+      vi.spyOn(fsp, "link").mockRejectedValue(
+        Object.assign(new Error("Android denied the hardlink"), {
+          code,
+          syscall: "link",
+          path: sourcePath,
+          dest: claim.claimPath,
+        }),
+      );
+
+      const claimed = await claim.claim({ snapshot, mismatchMessage: "source changed" });
+
+      expect(legacyMigrationSourceSnapshotsMatch(claimed, snapshot)).toBe(true);
+      expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
+      expect(fs.existsSync(claim.claimPath)).toBe(false);
+      expect(legacyMigrationSourceSnapshotsMatch(await claim.read(true), snapshot)).toBe(true);
+      await claim.remove();
+      expect(fs.existsSync(sourcePath)).toBe(false);
+      expect(fs.readdirSync(stateDir)).toEqual([]);
+    },
+  );
+
+  it.each([
+    { mode: "auto", code: "EACCES", syscall: "link" },
+    { mode: "off", code: "EACCES", syscall: "open" },
+    { mode: "off", code: "EPERM", syscall: "fsync" },
+    { mode: "off", code: "EIO", syscall: "link" },
+  ])("does not copy for $mode/$syscall/$code", async ({ mode, code, syscall }) => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", mode);
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", mode);
+    const { sourcePath, stateDir } = createSource();
+    const stateRoot = await root(stateDir, { hardlinks: "reject", symlinks: "reject" });
+    vi.spyOn(stateRoot, "move").mockRejectedValue(
+      new FsSafeError("helper-unavailable", "unsupported rename", {
+        cause: Object.assign(new Error("unsupported rename"), { code: "ENOSYS" }),
+      }),
+    );
+    const failure = Object.assign(new Error("publication refused"), { code, syscall });
+    vi.spyOn(durability, "publishFileExclusive").mockRejectedValue(failure);
+    const claim = createClaim(stateRoot, stateDir, sourcePath);
+    const snapshot = await claim.read();
+
+    await expect(claim.claim({ snapshot, mismatchMessage: "source changed" })).rejects.toBe(
+      failure,
+    );
+
+    expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
+    expect(fs.readdirSync(stateDir)).toEqual(["legacy.json"]);
+  });
+
+  it("rolls back a copy claim without rewriting the retained original", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    vi.spyOn(fsp, "link").mockRejectedValue(
+      Object.assign(new Error("link denied"), { code: "EACCES", syscall: "link" }),
+    );
+    const { sourcePath, stateDir } = createSource();
+    const stateRoot = await root(stateDir, { hardlinks: "reject", symlinks: "reject" });
+    const claim = createClaim(stateRoot, stateDir, sourcePath);
+    const snapshot = await claim.read();
+    await claim.claim({ snapshot, mismatchMessage: "source changed" });
+
+    expect(await claim.restore()).toBeNull();
+
+    expect(legacyMigrationSourceSnapshotsMatch(await claim.read(), snapshot)).toBe(true);
+    expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
+    expect(fs.readdirSync(stateDir)).toEqual(["legacy.json"]);
+  });
+
+  it("preserves a replaced original and its verified copy instead of retiring either generation", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    vi.spyOn(fsp, "link").mockRejectedValue(
+      Object.assign(new Error("link denied"), { code: "EACCES", syscall: "link" }),
+    );
+    const { sourcePath, stateDir } = createSource();
+    const stateRoot = await root(stateDir, { hardlinks: "reject", symlinks: "reject" });
+    const claim = createClaim(stateRoot, stateDir, sourcePath);
+    const snapshot = await claim.read();
+    await claim.claim({ snapshot, mismatchMessage: "source changed" });
+    const replacement = path.join(stateDir, "replacement");
+    fs.writeFileSync(replacement, '{"version":2}\n');
+    const replacementInode = fs.statSync(replacement).ino;
+    fs.renameSync(replacement, sourcePath);
+
+    await expect(claim.remove()).rejects.toThrow();
+    expect(await claim.restore()).not.toBeNull();
+
+    expect(fs.statSync(sourcePath).ino).toBe(replacementInode);
+    expect(fs.readFileSync(sourcePath, "utf8")).toBe('{"version":2}\n');
+    const retainedFiles = fs
+      .readdirSync(stateDir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.join(entry.parentPath, entry.name));
+    expect(retainedFiles.some((file) => fs.readFileSync(file).equals(snapshot.buffer))).toBe(true);
+  });
+
+  it("retries after an interrupted partial copy without adopting it as a legacy claim", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    vi.spyOn(fsp, "link").mockRejectedValue(
+      Object.assign(new Error("link denied"), { code: "EACCES", syscall: "link" }),
+    );
+    const { sourcePath, stateDir } = createSource();
+    const stateRoot = await root(stateDir, { hardlinks: "reject", symlinks: "reject" });
+    const first = createClaim(stateRoot, stateDir, sourcePath);
+    const snapshot = await first.read();
+    vi.spyOn(descriptors, "copyFileHandle").mockImplementationOnce(async (_source, target) => {
+      await target.write("{");
+      throw new Error("copy interrupted");
+    });
+    const remove = vi
+      .spyOn(stateRoot, "remove")
+      .mockRejectedValueOnce(new Error("cleanup interrupted"));
+
+    await expect(first.claim({ snapshot, mismatchMessage: "source changed" })).rejects.toThrow(
+      "cleanup could not be verified",
+    );
+    remove.mockRestore();
+    expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
+    expect(fs.existsSync(first.claimPath)).toBe(false);
+
+    const retry = createClaim(stateRoot, stateDir, sourcePath);
+    await retry.recover("conflicting source");
+    await retry.claim({ snapshot, mismatchMessage: "source changed" });
+    expect(legacyMigrationSourceSnapshotsMatch(await retry.read(true), snapshot)).toBe(true);
+    await retry.remove();
+    expect(fs.existsSync(sourcePath)).toBe(false);
+    expect(fs.existsSync(retry.claimPath)).toBe(false);
+  });
 
   it.each([
     { mode: "require", code: "helper-unavailable", cause: undefined },

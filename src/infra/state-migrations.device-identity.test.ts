@@ -44,6 +44,7 @@ describe.each(["auto", "off"])("legacy device identity Doctor migration (native=
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(() => {
       closeOpenClawStateDatabaseForTest();
+      vi.restoreAllMocks();
       vi.unstubAllEnvs();
       cleanup();
     });
@@ -267,6 +268,13 @@ describe.each(["auto", "off"])("legacy device identity Doctor migration (native=
       const authPath = path.join(stateDir, "identity", "device-auth.json");
       const authBytes = Buffer.from([0x7b, 0x0a, 0xff, 0x00, 0x7d]);
       await fsp.writeFile(authPath, authBytes);
+      // The off backend must preserve the identity even under Android link denial.
+      vi.spyOn(fsp, "link").mockRejectedValue(
+        Object.assign(new Error("Android denied the hardlink"), {
+          code: "EACCES",
+          syscall: "link",
+        }),
+      );
 
       const result = await migrate(stateDir, env);
 

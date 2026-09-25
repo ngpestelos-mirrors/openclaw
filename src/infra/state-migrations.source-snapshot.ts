@@ -9,9 +9,13 @@ import {
   requireDirectorySync,
   type PinnedDirectory,
 } from "./directory-durability.js";
-import { hasErrnoCode } from "./errno.js";
+import { hasErrnoCode, isErrno } from "./errno.js";
 import { getFsSafeNativeConfig } from "./fs-safe-defaults.js";
 import { pathMayExistSync } from "./path-existence.js";
+import {
+  prepareLegacyMigrationSourceCopy,
+  type LegacyMigrationSourceCopy,
+} from "./state-migrations.source-copy.js";
 
 /** The stable source identity every doctor-owned import verifies before cleanup. */
 export type LegacyMigrationSourceSnapshot = {
@@ -65,6 +69,7 @@ export class LegacyMigrationSourceClaim<
   readonly claimPath: string;
   readonly sourceRelativePath: string;
   readonly claimRelativePath: string;
+  private retainedCopy: LegacyMigrationSourceCopy | undefined;
 
   constructor(
     private readonly params: {
@@ -96,12 +101,26 @@ export class LegacyMigrationSourceClaim<
 
   async exists(claimed = false): Promise<boolean> {
     return await this.params.stateRoot.exists(
-      claimed ? this.claimRelativePath : this.sourceRelativePath,
+      claimed && !this.retainedCopy ? this.claimRelativePath : this.sourceRelativePath,
     );
   }
 
   async read(claimed = false): Promise<TSnapshot> {
-    return await this.params.readSnapshot(claimed ? this.claimPath : this.sourcePath);
+    if (claimed && this.retainedCopy) {
+      await this.retainedCopy.verify();
+    }
+    return await this.params.readSnapshot(
+      claimed && !this.retainedCopy ? this.claimPath : this.sourcePath,
+    );
+  }
+
+  /** A verified copy claim intentionally retains its admitted original until commit. */
+  async assertSourceNotReappeared(message: string): Promise<void> {
+    if (this.retainedCopy) {
+      await this.retainedCopy.verify();
+    } else if (await this.exists()) {
+      throw new Error(message);
+    }
   }
 
   private async pinParent(): Promise<PinnedDirectory> {
@@ -123,7 +142,11 @@ export class LegacyMigrationSourceClaim<
     }
   }
 
-  private async move(from: string, to: string): Promise<void> {
+  private async move(
+    from: string,
+    to: string,
+    retainVerifiedCopy?: () => Promise<void>,
+  ): Promise<void> {
     const root = this.params.stateRoot;
     try {
       await root.move(from, to);
@@ -156,14 +179,30 @@ export class LegacyMigrationSourceClaim<
       try {
         identity = fs.fstatSync(opened.handle.fd, { bigint: true });
         await opened.handle.sync();
-        const published = await publishFileExclusive({
-          sourcePath,
-          targetPath,
-          expectedSourceIdentity: identity,
-          parentReceipt: parent.receipt,
-          strategy: "link-required",
-        });
-        requireDirectorySync(published.directorySync, "Legacy migration claim directory");
+        try {
+          const published = await publishFileExclusive({
+            sourcePath,
+            targetPath,
+            expectedSourceIdentity: identity,
+            parentReceipt: parent.receipt,
+            strategy: "link-required",
+          });
+          requireDirectorySync(published.directorySync, "Legacy migration claim directory");
+        } catch (error) {
+          // Only an uncommitted Node link denial admits copying. Read, policy,
+          // sync and post-publication failures must retain their original refusal.
+          if (
+            !retainVerifiedCopy ||
+            getFsSafeNativeConfig().mode !== "off" ||
+            !isErrno(error) ||
+            error.syscall !== "link" ||
+            (error.code !== "EACCES" && error.code !== "EPERM")
+          ) {
+            throw error;
+          }
+          await retainVerifiedCopy();
+          return;
+        }
       } finally {
         // FUSE can retain an unlinked open file as an extra .fuse_hidden hardlink.
         await opened[Symbol.asyncDispose]();
@@ -244,6 +283,11 @@ export class LegacyMigrationSourceClaim<
 
   async restore(): Promise<string | null> {
     try {
+      if (this.retainedCopy) {
+        await this.retainedCopy.discard();
+        this.retainedCopy = undefined;
+        return null;
+      }
       await this.recoverLinkedMove();
       if (!(await this.exists(true))) {
         return null;
@@ -264,7 +308,29 @@ export class LegacyMigrationSourceClaim<
     beforeClaim?: () => void;
   }): Promise<TSnapshot> {
     params.beforeClaim?.();
-    await this.move(this.sourceRelativePath, this.claimRelativePath);
+    if (this.retainedCopy) {
+      throw new Error("legacy migration source is already claimed");
+    }
+    await this.move(this.sourceRelativePath, this.claimRelativePath, async () => {
+      const assertSourceUnchanged = async () => {
+        if (
+          !legacyMigrationSourceSnapshotsMatch(
+            await this.params.readSnapshot(this.sourcePath),
+            params.snapshot,
+          )
+        ) {
+          throw new Error(params.mismatchMessage);
+        }
+      };
+      await assertSourceUnchanged();
+      this.retainedCopy = await prepareLegacyMigrationSourceCopy({
+        stateRoot: this.params.stateRoot,
+        sourceRelativePath: this.sourceRelativePath,
+        claimRelativePath: this.claimRelativePath,
+        expected: params.snapshot,
+        assertSourceUnchanged,
+      });
+    });
     const claimed = await this.read(true);
     if (!legacyMigrationSourceSnapshotsMatch(claimed, params.snapshot)) {
       throw new Error(params.mismatchMessage);
@@ -282,6 +348,11 @@ export class LegacyMigrationSourceClaim<
       skipSourceCheck?: boolean;
     } = {},
   ): Promise<void> {
+    if (this.retainedCopy) {
+      await this.retainedCopy.removeSource(params.removeSource);
+      this.retainedCopy = undefined;
+      return;
+    }
     if (!params.skipSourceCheck && (await this.exists())) {
       throw new Error(
         params.sourceReappearedMessage ??

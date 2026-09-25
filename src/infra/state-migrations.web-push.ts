@@ -295,9 +295,9 @@ async function removeClaimedSources(params: {
   removeSource?: (sourcePath: string) => Promise<void> | void;
 }): Promise<void> {
   for (const claim of params.claimed) {
-    if (await claim.exists()) {
-      throw new Error(`legacy Web Push source reappeared during import: ${claim.sourcePath}`);
-    }
+    await claim.assertSourceNotReappeared(
+      `legacy Web Push source reappeared during import: ${claim.sourcePath}`,
+    );
   }
   for (const claim of params.claimed) {
     await claim.remove({ removeSource: params.removeSource, skipSourceCheck: true });

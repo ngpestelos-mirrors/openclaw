@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertNoUnmigratedWorkspaceState } from "../agents/workspace-legacy-state.js";
 import { resolveWorkspaceStateIdentity } from "../agents/workspace-state-identity.js";
 import {
@@ -22,6 +22,10 @@ const HASH = "a".repeat(64);
 
 describe("legacy workspace Doctor migration", () => {
   const { detect, migrate, setup } = useWorkspaceMigrationTestFixture();
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
   async function writeEmptyReservedAttestation(
     context: ReturnType<typeof setup>,
@@ -131,7 +135,15 @@ describe("legacy workspace Doctor migration", () => {
     });
   });
 
-  it("preserves configured metadata when orphan discovery finds the same marker", async () => {
+  it("preserves configured metadata and original timestamps when native-off links are denied", async () => {
+    vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    vi.stubEnv("OPENCLAW_FS_SAFE_NATIVE_MODE", "off");
+    vi.spyOn(fsp, "link").mockRejectedValue(
+      Object.assign(new Error("Android denied the hardlink"), {
+        code: "EACCES",
+        syscall: "link",
+      }),
+    );
     const context = setup();
     const workspaceAlias = path.join(context.homeDir, "workspace-link");
     fs.symlinkSync(

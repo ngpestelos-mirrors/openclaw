@@ -358,9 +358,7 @@ async function migrateOneStore(params: {
   }
 
   try {
-    if (await source.exists()) {
-      throw new Error("legacy MCP OAuth source reappeared during import");
-    }
+    await source.assertSourceNotReappeared("legacy MCP OAuth source reappeared during import");
     const finalSnapshot = await source.read(true);
     if (!snapshotsMatch(snapshot, finalSnapshot)) {
       throw new Error("legacy MCP OAuth claim changed after SQLite import");

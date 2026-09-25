@@ -508,9 +508,7 @@ async function migrateOneSource(params: {
       });
     }
 
-    if (await sourceClaim.exists()) {
-      throw new Error("legacy workspace source reappeared during import");
-    }
+    await sourceClaim.assertSourceNotReappeared("legacy workspace source reappeared during import");
     const unchanged = await sourceClaim.read(true);
     if (!snapshotsMatch(snapshot, unchanged)) {
       throw new Error("legacy workspace claim changed after import");
