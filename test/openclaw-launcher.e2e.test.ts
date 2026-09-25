@@ -1784,19 +1784,21 @@ describe("openclaw launcher", () => {
 
   it("finishes a packaged command while compile-cache maintenance is stalled", async () => {
     const fixtureRoot = await makeLauncherFixture(fixtures);
-    const marker = path.join(fixtureRoot, "maintenance-started");
+    const channelName = JSON.stringify(`cache-maintenance:${fixtureRoot}`);
     const preload = path.join(fixtureRoot, "stall-cache.mjs");
     await fs.writeFile(
       preload,
       [
         'import fs from "node:fs/promises";',
         'import path from "node:path";',
-        'import { writeFileSync } from "node:fs";',
+        'import { BroadcastChannel } from "node:worker_threads";',
         "const lstat = fs.lstat;",
         "fs.lstat = function (target, ...args) {",
         '  if (path.basename(String(target)) === "openclaw") {',
-        `    writeFileSync(${JSON.stringify(marker)}, "started");`,
-        "    return new Promise(() => setInterval(() => {}, 1000));",
+        `    const channel = new BroadcastChannel(${channelName});`,
+        '    channel.onmessage = () => channel.postMessage("started");',
+        '    channel.postMessage("started");',
+        "    return new Promise(() => {});",
         "  }",
         "  return lstat.call(this, target, ...args);",
         "};",
@@ -1805,14 +1807,14 @@ describe("openclaw launcher", () => {
     await fs.writeFile(
       path.join(fixtureRoot, "dist", "entry.js"),
       [
-        'import { existsSync } from "node:fs";',
+        'import { BroadcastChannel } from "node:worker_threads";',
         "await new Promise((resolve) => {",
-        "  const poll = setInterval(() => {",
-        `    if (existsSync(${JSON.stringify(marker)})) {`,
-        "      clearInterval(poll);",
-        "      resolve();",
-        "    }",
-        "  }, 10);",
+        `  const channel = new BroadcastChannel(${channelName});`,
+        "  channel.onmessage = () => {",
+        "    channel.close();",
+        "    resolve();",
+        "  };",
+        '  channel.postMessage("ready");',
         "});",
         'process.stdout.write("command-completed");',
       ].join("\n"),
