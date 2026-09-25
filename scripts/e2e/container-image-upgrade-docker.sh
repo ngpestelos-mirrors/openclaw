@@ -72,8 +72,7 @@ for cell in default compose old-shape unsafe; do
     -v "$volume:/home/node/.openclaw"
     -v "$ROOT_DIR/scripts/e2e/lib/container-image-upgrade/fixture.mjs:/proof/scripts/e2e/lib/container-image-upgrade/fixture.mjs:ro"
     -v "$ROOT_DIR/scripts/lib/sqlite-transcript-payload.mjs:/proof/scripts/lib/sqlite-transcript-payload.mjs:ro"
-    -v "$SOURCE_ROOT/test/fixtures/sqlite/openclaw-agent-schema-v19.sql:/proof/openclaw-agent-schema-v19.sql:ro"
-    -v "$SOURCE_ROOT/test/fixtures/sqlite/openclaw-state-v2026.7.1-2.sqlite.gz:/proof/openclaw-state-v2026.7.1-2.sqlite.gz:ro"
+    -v "$SOURCE_ROOT/test/fixtures/state-corpus/2026.9.2:/proof/state-corpus/2026.9.2:ro"
   )
   environment=(
     -e HOME=/home/node -e OPENCLAW_STATE_DIR=/home/node/.openclaw

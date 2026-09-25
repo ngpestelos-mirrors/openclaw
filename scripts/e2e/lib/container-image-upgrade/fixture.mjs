@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { gunzipSync } from "node:zlib";
 import {
   readSqliteTranscriptPayload,
   sqliteTranscriptPayloadColumns,
@@ -15,9 +14,7 @@ const workspace = path.join(state, "workspace");
 const agentPath = path.join(state, "agents/main/agent/openclaw-agent.sqlite");
 const sharedPath = path.join(state, "state/openclaw.sqlite");
 const recordPath = path.join(state, "container-image-fixture.json");
-const sessionKey = "agent:main:container-image-upgrade";
-const sessionId = "container-image-upgrade";
-const marker = "CONTAINER_IMAGE_RETAINED_SESSION";
+const corpusPath = "/proof/state-corpus/2026.9.2";
 const setup = { version: 1, setupCompletedAt: "2026-07-02T00:00:00.000Z" };
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
@@ -57,7 +54,7 @@ function logicalSnapshot(file) {
     };
   });
 }
-function assertSession(file) {
+function readSession(file, { sessionKey, sessionId }) {
   return open(file, (db) => {
     const row = db
       .prepare("SELECT current_session_id FROM session_nodes WHERE session_key=?")
@@ -68,12 +65,13 @@ function assertSession(file) {
         `SELECT ${sqliteTranscriptPayloadColumns(db)} FROM transcript_events WHERE session_id=? ORDER BY seq`,
       )
       .all(sessionId);
-    const expected = readJson(recordPath).events;
-    assert.deepEqual(
-      events.map((event) => JSON.parse(readSqliteTranscriptPayload(event))),
-      expected,
-    );
+    return events.map((event) => readSqliteTranscriptPayload(event));
   });
+}
+function assertSession(file) {
+  for (const session of readJson(recordPath).sessions) {
+    assert.deepEqual(readSession(file, session), session.events);
+  }
 }
 function backups(file) {
   return fs
@@ -117,87 +115,68 @@ function verifyWorkspace(required) {
 }
 function seed(unsafe) {
   assert(!fs.existsSync(sharedPath) && !fs.existsSync(agentPath));
-  fs.mkdirSync(path.dirname(agentPath), { recursive: true });
-  fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
-  fs.mkdirSync(workspace, { recursive: true });
-  const schema = fs.readFileSync("/proof/openclaw-agent-schema-v19.sql", "utf8");
-  assert.equal(sha(schema), "fe93217454642e911608f81afc53c9fb3bb7c20cc32bc73f8f6eeaaf232b91b8");
-  const sharedFixture = fs.readFileSync("/proof/openclaw-state-v2026.7.1-2.sqlite.gz");
-  assert.equal(
-    sha(sharedFixture),
-    "c775499d9a46462ae2368090a0c4ec75877784c40694046dd3af63df77b8737c",
-  );
-  fs.writeFileSync(sharedPath, gunzipSync(sharedFixture));
-  const now = Date.now();
-  const events = [
-    {
-      type: "session",
-      version: 3,
-      id: sessionId,
-      timestamp: new Date(now).toISOString(),
-      cwd: workspace,
-    },
-    {
-      type: "message",
-      id: "retained-message",
-      parentId: null,
-      timestamp: new Date(now + 1).toISOString(),
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: marker }],
-        api: "openai-completions",
-        provider: "fixture",
-        model: "fixture",
-      },
-    },
-  ];
-  const db = new DatabaseSync(agentPath);
-  try {
-    db.exec(schema);
-    db.exec("PRAGMA user_version=19");
-    db.prepare(
-      "INSERT INTO schema_meta (meta_key,role,schema_version,agent_id,app_version,created_at,updated_at) VALUES ('primary','agent',?,'main','2026.9.4',1,1)",
-    ).run(unsafe ? 18 : 19);
-    db.prepare(
-      "INSERT INTO session_nodes (session_key,current_session_id,entry_json,updated_at) VALUES (?,?,?,?)",
-    ).run(sessionKey, sessionId, JSON.stringify({ sessionId, updatedAt: now }), now);
-    db.prepare(
-      "INSERT INTO session_windows (session_id,session_key,reason,created_at,updated_at) VALUES (?,?,'initial',?,?)",
-    ).run(sessionId, sessionKey, now, now);
-    for (const [seq, event] of events.entries()) {
-      db.prepare(
-        "INSERT INTO transcript_events (session_id,seq,event_json,created_at) VALUES (?,?,?,1)",
-      ).run(sessionId, seq, JSON.stringify(event));
-    }
-  } finally {
-    db.close();
+  // This pair was produced by the released writers, including the deletion journal
+  // and registry. Do not manufacture a journal for an unrelated older shared DB.
+  const corpusHashes = {
+    "manifest.json": "4bea2b9a37d9fe9074be78ac7b671216acc75f436d06023ba184ba4ddc995e7d",
+    "state/state/openclaw.sqlite":
+      "fb532c2017744b962ea20d28cf4c5db04a822050617e88d86c275da9de5f11b1",
+    "state/agents/main/agent/openclaw-agent.sqlite":
+      "b6a2acab9c22ab197a5e1e19787b3be59585fab7719f6553ab545113d21b5e55",
+  };
+  for (const [file, expected] of Object.entries(corpusHashes)) {
+    assert.equal(sha(fs.readFileSync(path.join(corpusPath, file))), expected, file);
   }
+  const manifest = readJson(path.join(corpusPath, "manifest.json"));
+  assert.equal(manifest.release, "2026.9.2");
+  assert.equal(manifest.source, "3928bad9badfcb6c7d140530435e806fb8092190");
+  fs.cpSync(path.join(corpusPath, "state"), state, { recursive: true });
+  const sessions = manifest.sessions.map((session) => ({
+    ...session,
+    events: readSession(agentPath, session),
+  }));
+  if (unsafe) {
+    const db = new DatabaseSync(agentPath);
+    try {
+      db.prepare("UPDATE schema_meta SET schema_version=18 WHERE meta_key='primary'").run();
+    } finally {
+      db.close();
+    }
+  }
+  fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(path.join(workspace, "openclaw-workspace-state.json"), JSON.stringify(setup));
-  fs.writeFileSync(
-    path.join(state, "openclaw.json"),
-    JSON.stringify(
-      {
-        gateway: {
-          mode: "local",
-          auth: { mode: "token", token: process.env.OPENCLAW_GATEWAY_TOKEN },
-        },
-        plugins: { enabled: false },
-        agents: { defaults: { workspace } },
-      },
-      null,
-      2,
-    ),
-  );
+  const config = readJson(path.join(state, "openclaw.json"));
+  assert.equal(config.agents.defaults.workspace, "/home/fixture/workspace");
+  assert.equal(config.agents.entries.main.workspace, "/home/fixture/workspace");
+  assert.equal(config.agents.entries.main.agentDir, "/home/fixture/.openclaw/agents/main/agent");
+  config.agents.defaults.workspace = workspace;
+  config.agents.entries.main.workspace = workspace;
+  config.agents.entries.main.agentDir = path.dirname(agentPath);
+  config.gateway = {
+    mode: "local",
+    auth: { mode: "token", token: process.env.OPENCLAW_GATEWAY_TOKEN },
+  };
+  config.plugins = { enabled: false };
+  fs.writeFileSync(path.join(state, "openclaw.json"), JSON.stringify(config, null, 2));
   const record = {
     unsafe,
-    events,
-    schemaSha256: sha(schema),
+    corpus: { release: manifest.release, source: manifest.source, hashes: corpusHashes },
+    sessions,
     agentSha256: sha(fs.readFileSync(agentPath)),
     sharedSha256: sha(fs.readFileSync(sharedPath)),
     agent: logicalSnapshot(agentPath),
     shared: logicalSnapshot(sharedPath),
   };
-  assert.equal(record.shared.version, 1);
+  assert.equal(record.shared.version, 15);
+  assert.equal(record.agent.version, 19);
+  open(sharedPath, (db) => {
+    assert.equal(db.prepare("SELECT count(*) AS count FROM agent_deletion_journal").get().count, 0);
+    const rows = db.prepare("SELECT agent_id, path FROM agent_databases").all();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].agent_id, "main");
+    assert.equal(rows[0].path, "agents/main/agent/openclaw-agent.sqlite");
+    assert.equal(path.resolve(state, rows[0].path), agentPath);
+  });
   fs.writeFileSync(recordPath, JSON.stringify(record, null, 2));
   console.log(JSON.stringify(record));
 }
@@ -301,18 +280,23 @@ if (action === "seed") {
   await ready();
 } else if (action === "history") {
   rpc("update.status", {});
-  const value = rpc("chat.history", { sessionKey, limit: 100 });
-  assert(
-    value.messages?.some((entry) => {
-      const message = entry.message ?? entry;
-      return (
-        message.role === "assistant" &&
-        message.content?.some((part) => part.type === "text" && part.text === marker)
-      );
-    }),
-    "Retained assistant message is missing from public chat.history",
-  );
-  console.log(JSON.stringify(value));
+  const histories = readJson(recordPath).sessions.map((session) => {
+    const value = rpc("chat.history", { sessionKey: session.sessionKey, limit: 100 });
+    assert(
+      value.messages?.some((entry) => {
+        const message = entry.message ?? entry;
+        return (
+          message.role === "user" &&
+          message.content?.some(
+            (part) => part.type === "text" && part.text === session.transcriptText,
+          )
+        );
+      }),
+      `Retained user message is missing from public chat.history: ${session.sessionKey}`,
+    );
+    return { sessionKey: session.sessionKey, value };
+  });
+  console.log(JSON.stringify(histories));
 } else {
   throw new Error(`Unknown fixture action: ${action}`);
 }
