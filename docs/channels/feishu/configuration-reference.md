@@ -88,6 +88,11 @@ accounts that share a path and encrypt key remain distinguishable on their
 separate explicit legacy listeners. Give those accounts distinct encrypt keys or
 webhook paths before moving their callbacks to the shared Gateway port.
 
+Accounts sharing a Gateway path share its unauthenticated request-rate and
+in-flight body-read budgets because signature verification needs the complete
+body. Use distinct `webhookPath` pathnames for separate budgets. Trusted legacy
+endpoints retain independent in-flight capacity even when their paths match.
+
 On update, the plugin's Doctor migration moves an explicitly configured
 `webhookPort` and its effective `webhookHost` into
 `legacyWebhook: { port, host }`. Doctor's normal config backup protects the

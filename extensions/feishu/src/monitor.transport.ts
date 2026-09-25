@@ -412,15 +412,28 @@ async function handleFeishuWebhook(
     respondText(res, 404, "Not Found");
     return;
   }
-  const { accountId, rawPath: path, runtime, preAuthInFlightLimiter } = firstTarget;
-  const error = runtime?.error ?? console.error;
-  const preAuthInFlightKey = canonicalizeWebhookRouteKey(requestPath);
+  const { rawPath: path, runtime, preAuthInFlightLimiter } = firstTarget;
+  const accountId = targets.length === 1 ? firstTarget.accountId : undefined;
+  const preAuthInFlightKey = legacyListener
+    ? JSON.stringify([legacyListener.host, legacyListener.port])
+    : "gateway";
   let selectedTarget: FeishuWebhookTarget | null = null;
+  const reportError = (message: string, err: unknown) => {
+    const error = (selectedTarget ? selectedTarget.runtime : runtime)?.error ?? console.error;
+    const ownerAccountId = selectedTarget?.accountId ?? accountId;
+    const label = ownerAccountId === undefined ? "feishu" : `feishu[${ownerAccountId}]`;
+    error(`${label}: ${message}: ${String(err)}`);
+  };
 
   // Transport-owned rejections close without finish. Anomaly counts describe
   // selected error outcomes, not successful delivery to the client.
   res.once("close", () => {
-    recordWebhookStatus(runtime, accountId, path, res.statusCode);
+    recordWebhookStatus(
+      selectedTarget ? selectedTarget.runtime : runtime,
+      selectedTarget?.accountId ?? accountId,
+      selectedTarget?.rawPath ?? path,
+      res.statusCode,
+    );
   });
   res.once("finish", () => {
     // Refresh lastEventAt / lastTransportActivityAt on every successful 2xx
@@ -465,7 +478,7 @@ async function handleFeishuWebhook(
       "Rate limit exceeded",
       "text/plain; charset=utf-8",
     ).catch((err: unknown) => {
-      error(`feishu[${accountId}]: webhook concurrency rejection failed: ${String(err)}`);
+      reportError("webhook concurrency rejection failed", err);
     });
     return;
   }
@@ -555,7 +568,7 @@ async function handleFeishuWebhook(
       res.end(JSON.stringify(invocation.value));
     }
   } catch (err) {
-    error(`feishu[${accountId}]: webhook handler error: ${String(err)}`);
+    reportError("webhook handler error", err);
     if (!res.headersSent) {
       respondText(res, 500, "Internal Server Error");
     }
@@ -592,7 +605,6 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
     webhookTargets.get(path)?.[0]?.preAuthInFlightLimiter ??
     createWebhookInFlightLimiter({
       maxInFlightPerKey: FEISHU_PRE_AUTH_MAX_IN_FLIGHT,
-      maxTrackedKeys: 1,
     });
   const registration = registerWebhookTarget(webhookTargets, {
     ...params,

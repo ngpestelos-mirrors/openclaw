@@ -20,6 +20,14 @@ import {
 const probeFeishuMock = vi.hoisted(() => vi.fn());
 const webhookBodyTimeoutMs = vi.hoisted(() => ({ value: 50 }));
 const preAuthInFlightLimit = vi.hoisted(() => ({ value: undefined as number | undefined }));
+const legacyListener = vi.hoisted(() => ({
+  value: undefined as { port: number; host?: string } | undefined,
+}));
+
+vi.mock("openclaw/plugin-sdk/webhook-ingress", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/webhook-ingress")>()),
+  getWebhookLegacyListener: () => legacyListener.value,
+}));
 
 vi.mock("openclaw/plugin-sdk/webhook-request-guards", async (importOriginal) => {
   const actual =
@@ -269,6 +277,7 @@ function waitForWebhookResponseClose(): Promise<void> {
 }
 
 afterEach(async () => {
+  legacyListener.value = undefined;
   preAuthInFlightLimit.value = undefined;
   webhookBodyTimeoutMs.value = 50;
   feishuWebhookRateLimiter.clear();
@@ -276,6 +285,7 @@ afterEach(async () => {
 });
 
 afterAll(() => {
+  vi.doUnmock("openclaw/plugin-sdk/webhook-ingress");
   vi.doUnmock("./probe.js");
   vi.doUnmock("./client.js");
   vi.doUnmock("./runtime.js");
@@ -505,6 +515,62 @@ describe("Feishu webhook security hardening", () => {
       webhookBodyTimeoutMs.value = 50;
       abortController.abort();
       await monitorPromise;
+    }
+  });
+
+  it("keeps pre-auth capacity independent for distinct trusted legacy listeners", async () => {
+    preAuthInFlightLimit.value = 1;
+    webhookBodyTimeoutMs.value = 5_000;
+    const { EventDispatcher } =
+      await vi.importActual<typeof import("@larksuiteoapi/node-sdk")>("@larksuiteoapi/node-sdk");
+    const path = "/hook-legacy-pre-auth";
+    const port = await getGatewayPort();
+    const url = `http://127.0.0.1:${port}${path}`;
+    const abortController = new AbortController();
+    const monitors = [3000, 3001].map((legacyPort) => {
+      const account = createFeishuWebhookTestAccount(`legacy-${legacyPort}`, path);
+      return monitorWebhook({
+        account: {
+          ...account,
+          config: { ...account.config, legacyWebhook: { port: legacyPort, host: "127.0.0.1" } },
+        },
+        accountId: account.accountId,
+        abortSignal: abortController.signal,
+        runtime: createRuntimeSpies(),
+        eventDispatcher: new EventDispatcher({ encryptKey: "encrypt_key" }),
+        invokeWebhookEvent: async () => ({ kind: "durable", value: { port: legacyPort } }),
+      });
+    });
+    const heldReceived = new Promise<void>((resolve) => {
+      getGatewayServer().once("request", () => resolve());
+    });
+    const heldClosed = waitForWebhookResponseClose();
+    legacyListener.value = { port: 3000, host: "127.0.0.1" };
+    const held = openIncompleteWebhookRequest(url);
+    const body = JSON.stringify({ schema: "2.0", event: {} });
+    const post = () =>
+      fetch(url, {
+        method: "POST",
+        headers: signFeishuPayload({ encryptKey: "encrypt_key", rawBody: body }),
+        body,
+      });
+    try {
+      await heldReceived;
+      expect(held.isClosed()).toBe(false);
+      legacyListener.value = { port: 3001, host: "127.0.0.1" };
+      const second = await post();
+      expect(second.status).toBe(200);
+      await expect(second.json()).resolves.toEqual({ port: 3001 });
+      legacyListener.value = { port: 3000, host: "127.0.0.1" };
+      expect((await post()).status).toBe(429);
+      expect(held.isClosed()).toBe(false);
+    } finally {
+      held.socket.destroy();
+      await held.response;
+      await heldClosed;
+      legacyListener.value = undefined;
+      abortController.abort();
+      await Promise.all(monitors);
     }
   });
 

@@ -40,6 +40,7 @@ vi.mock("./client.js", async () => {
 
 vi.mock("./runtime.js", () => createFeishuRuntimeMockModule());
 
+import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 import { cleanupFeishuMonitorStateForTests } from "./monitor.cleanup.test-helpers.js";
 import { monitorFeishuProvider } from "./monitor.js";
 import { monitorWebhook } from "./monitor.transport.js";
@@ -169,6 +170,7 @@ describe("Feishu webhook signed-request e2e", () => {
       vi.fn(async () => ({ account: "second" })),
       vi.fn(async () => ({ account: "third" })),
     ] as const;
+    const runtimes = [createRuntimeSpies(), createRuntimeSpies(), createRuntimeSpies()] as const;
     const start = (index: 0 | 1 | 2, encryptKey: string) => {
       const account = createFeishuWebhookTestAccount(`shared-${index}`, path);
       const eventDispatcher = new Lark.EventDispatcher({ encryptKey });
@@ -182,16 +184,16 @@ describe("Feishu webhook signed-request e2e", () => {
         accountId: `shared-${index}`,
         abortSignal: controllers[index].signal,
         eventDispatcher,
-        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+        runtime: runtimes[index],
       });
     };
     const monitors = [start(0, "first-key"), start(1, "second-key")];
     const rawBody = JSON.stringify({ schema: "2.0", event: {} });
-    const post = (encryptKey: string) =>
+    const post = (encryptKey: string, body = rawBody) =>
       fetch(`http://127.0.0.1:${port}${path}`, {
         method: "POST",
-        headers: signFeishuPayload({ encryptKey, rawBody }),
-        body: rawBody,
+        headers: signFeishuPayload({ encryptKey, rawBody: body }),
+        body,
       });
     try {
       const first = await post("first-key");
@@ -203,14 +205,30 @@ describe("Feishu webhook signed-request e2e", () => {
       expect(dispatchers[0]).toHaveBeenCalledTimes(1);
       expect(dispatchers[1]).toHaveBeenCalledTimes(1);
 
+      const invalidJson = await post("second-key", "{not-json");
+      expect(invalidJson.status).toBe(400);
+      expect(await invalidJson.text()).toBe("Invalid JSON");
+      expect(runtimes[1].log).toHaveBeenCalledWith(
+        "feishu[shared-1]: webhook anomaly path=/hook-shared-accounts status=400 count=1",
+      );
+      expect(runtimes[0].log.mock.calls.flat().join(" ")).not.toContain("webhook anomaly");
+      dispatchers[1].mockRejectedValueOnce(new Error("second dispatch failed"));
+      const failed = await post("second-key");
+      expect(failed.status).toBe(500);
+      expect(await failed.text()).toBe("Internal Server Error");
+      expect(runtimes[1].error).toHaveBeenCalledWith(
+        "feishu[shared-1]: webhook handler error: Error: second dispatch failed",
+      );
+      expect(runtimes[0].error).not.toHaveBeenCalled();
+
       monitors.push(start(2, "second-key"));
       expect((await post("second-key")).status).toBe(401);
-      expect(dispatchers[1]).toHaveBeenCalledTimes(1);
+      expect(dispatchers[1]).toHaveBeenCalledTimes(2);
       expect(dispatchers[2]).not.toHaveBeenCalled();
       // This supplies the trusted Gateway boundary input, not a network or header claim.
       legacyListener.value = { port: 3001, host: "127.0.0.1" };
       expect((await post("second-key")).status).toBe(200);
-      expect(dispatchers[1]).toHaveBeenCalledTimes(2);
+      expect(dispatchers[1]).toHaveBeenCalledTimes(3);
       expect(dispatchers[2]).not.toHaveBeenCalled();
       legacyListener.value = { port: 3001 };
       expect((await post("second-key")).status).toBe(404);
@@ -221,7 +239,7 @@ describe("Feishu webhook signed-request e2e", () => {
       await monitors[0];
       expect((await post("first-key")).status).toBe(401);
       expect((await post("second-key")).status).toBe(200);
-      expect(dispatchers[1]).toHaveBeenCalledTimes(3);
+      expect(dispatchers[1]).toHaveBeenCalledTimes(4);
     } finally {
       legacyListener.value = undefined;
       for (const controller of controllers) {
@@ -337,31 +355,6 @@ describe("Feishu webhook signed-request e2e", () => {
 
         expect(response.status).toBe(401);
         expect(await response.text()).toBe("Invalid signature");
-      },
-    );
-  });
-
-  it("returns 400 for signed invalid json after signature validation", async () => {
-    probeFeishuMock.mockResolvedValue({ ok: true, botOpenId: "bot_open_id" });
-
-    await withRunningWebhookMonitor(
-      {
-        accountId: "signed-invalid-json",
-        path: "/hook-e2e-signed-invalid-json",
-        verificationToken: "verify_token",
-        encryptKey: "encrypt_key",
-      },
-      monitorFeishuProvider,
-      async (url) => {
-        const rawBody = "{not-json";
-        const response = await fetch(url, {
-          method: "POST",
-          headers: signFeishuPayload({ encryptKey: "encrypt_key", rawBody }),
-          body: rawBody,
-        });
-
-        expect(response.status).toBe(400);
-        expect(await response.text()).toBe("Invalid JSON");
       },
     );
   });

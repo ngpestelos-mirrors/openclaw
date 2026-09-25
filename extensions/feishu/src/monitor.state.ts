@@ -35,15 +35,16 @@ export function clearFeishuBotIdentityState(accountId: string): void {
 
 export function recordWebhookStatus(
   runtime: RuntimeEnv | undefined,
-  accountId: string,
+  accountId: string | undefined,
   path: string,
   statusCode: number,
 ): void {
+  const label = accountId === undefined ? "feishu" : `feishu[${accountId}]`;
   feishuWebhookAnomalyTracker.record({
-    key: `${accountId}:${path}:${statusCode}`,
+    key: `${label}:${path}:${statusCode}`,
     statusCode,
     log: runtime?.log ?? console.log,
     message: (count) =>
-      `feishu[${accountId}]: webhook anomaly path=${path} status=${statusCode} count=${count}`,
+      `${label}: webhook anomaly path=${path} status=${statusCode} count=${count}`,
   });
 }
