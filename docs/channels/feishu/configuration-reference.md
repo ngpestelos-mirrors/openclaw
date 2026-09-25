@@ -100,6 +100,8 @@ original settings. This temporary listener forwards to the same Gateway route,
 including its signature verification; it does not run a second webhook handler.
 Existing canonical `legacyWebhook` settings win. A host without an explicit port
 does not enable a legacy listener.
+An omitted `legacyWebhook.host` binds to `127.0.0.1`; an explicitly configured host,
+including a wildcard address, is preserved.
 
 Installations that used the implicit old port `3000` must point their reverse
 proxy upstream or Feishu callback URL to the Gateway port. Startup and Doctor

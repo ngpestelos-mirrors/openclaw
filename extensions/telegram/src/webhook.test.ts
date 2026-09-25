@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import { request } from "node:http";
 import os from "node:os";
 import nodePath from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -54,6 +53,7 @@ import {
   requireMockCall,
   requireRecord,
   telegramMessageUpdate,
+  waitForWebhookState,
   type TestTelegramMessageUpdate,
 } from "./test-support/webhook-fixtures.js";
 import {
@@ -62,10 +62,10 @@ import {
   webhookUrl,
 } from "./test-support/webhook-gateway.js";
 import {
-  collectResponseBody,
   postWebhookHeadersOnly,
   postWebhookJson,
   postWebhookPayloadWithChunkPlan,
+  postWebhookWithDeclaredLength,
   yieldWebhookTask,
 } from "./test-support/webhook-http.js";
 
@@ -121,13 +121,6 @@ const TELEGRAM_TOKEN = "tok";
 const TELEGRAM_SECRET = "secret";
 const TELEGRAM_WEBHOOK_PATH = "/hook";
 const TELEGRAM_WEBHOOK_RATE_LIMIT_BURST = WEBHOOK_RATE_LIMIT_DEFAULTS.maxRequests + 10;
-
-async function waitForWebhookState<T>(
-  assertion: () => T | Promise<T>,
-  options: { timeout?: number; interval?: number } = {},
-): Promise<T> {
-  return await vi.waitFor(assertion, { interval: 1, ...options });
-}
 
 vi.mock("grammy", async () => {
   const actual = await vi.importActual<typeof import("grammy")>("grammy");
@@ -396,6 +389,34 @@ describe("startTelegramWebhook", () => {
       },
     );
   });
+
+  it.each([
+    { name: "omitted host", configured: { port: 8787 }, host: "127.0.0.1" },
+    { name: "explicit wildcard", configured: { port: 8787, host: "0.0.0.0" }, host: "0.0.0.0" },
+    { name: "explicit address", configured: { port: 8787, host: "127.0.0.2" }, host: "127.0.0.2" },
+  ])(
+    "prepares the legacy listener for $name and accepts its signed callback",
+    async ({ configured, host }) => {
+      await withStartedWebhook(
+        {
+          secret: TELEGRAM_SECRET,
+          path: TELEGRAM_WEBHOOK_PATH,
+          legacyWebhook: configured,
+        },
+        async ({ port }) => {
+          const endpoint = { port: 8787, host };
+          expect(gateway.registry.httpRoutes[0]?.legacyListeners).toEqual([endpoint]);
+          legacyListenerForRequest.mockReturnValue(endpoint);
+          const response = await postWebhookJson({
+            url: webhookUrl(port, TELEGRAM_WEBHOOK_PATH),
+            payload: JSON.stringify(telegramMessageUpdate(809, "legacy bind address")),
+            secret: TELEGRAM_SECRET,
+          });
+          expect(response.status).toBe(200);
+        },
+      );
+    },
+  );
 
   it("routes shared paths by secret and rejects ambiguous accounts", async () => {
     const statusA = vi.fn();
@@ -2464,39 +2485,18 @@ describe("startTelegramWebhook", () => {
   });
 
   it("rejects payloads larger than 1MB before invoking webhook handler", async () => {
-    handleUpdateSpy.mockClear();
     await withStartedWebhook(
       {
         secret: TELEGRAM_SECRET,
         path: TELEGRAM_WEBHOOK_PATH,
       },
       async ({ port }) => {
-        const responseOrError = await new Promise<
-          | { kind: "response"; statusCode: number; body: string }
-          | { kind: "error"; code: string | undefined }
-        >((resolve) => {
-          const req = request(
-            {
-              hostname: "127.0.0.1",
-              port,
-              path: TELEGRAM_WEBHOOK_PATH,
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                "content-length": String(1_024 * 1_024 + 2_048),
-                "x-telegram-bot-api-secret-token": TELEGRAM_SECRET,
-              },
-            },
-            (res) => {
-              collectResponseBody(res, (payload) => {
-                resolve({ kind: "response", ...payload });
-              });
-            },
-          );
-          req.on("error", (error: NodeJS.ErrnoException) => {
-            resolve({ kind: "error", code: error.code });
-          });
-          req.end("{}");
+        const responseOrError = await postWebhookWithDeclaredLength({
+          port,
+          path: TELEGRAM_WEBHOOK_PATH,
+          secret: TELEGRAM_SECRET,
+          declaredLength: 1_024 * 1_024 + 2_048,
+          body: "{}",
         });
 
         expect(responseOrError).toEqual({

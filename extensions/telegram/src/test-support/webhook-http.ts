@@ -10,7 +10,7 @@ export async function yieldWebhookTask(): Promise<void> {
   });
 }
 
-export function collectResponseBody(
+function collectResponseBody(
   res: IncomingMessage,
   onDone: (payload: { statusCode: number; body: string }) => void,
 ): void {
@@ -140,6 +140,42 @@ export async function postWebhookHeadersOnly(params: {
     });
 
     req.flushHeaders();
+  });
+}
+
+export async function postWebhookWithDeclaredLength(params: {
+  port: number;
+  path: string;
+  secret: string;
+  declaredLength: number;
+  body: string;
+}): Promise<
+  | { kind: "response"; statusCode: number; body: string }
+  | { kind: "error"; code: string | undefined }
+> {
+  return await new Promise((resolve) => {
+    const req = request(
+      {
+        hostname: "127.0.0.1",
+        port: params.port,
+        path: params.path,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(params.declaredLength),
+          "x-telegram-bot-api-secret-token": params.secret,
+        },
+      },
+      (res) => {
+        collectResponseBody(res, (payload) => {
+          resolve({ kind: "response", ...payload });
+        });
+      },
+    );
+    req.on("error", (error: NodeJS.ErrnoException) => {
+      resolve({ kind: "error", code: error.code });
+    });
+    req.end(params.body);
   });
 }
 

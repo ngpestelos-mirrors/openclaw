@@ -76,33 +76,77 @@ async function rejectWebhookRequest(
 
 type RegisteredNextcloudTalkWebhookTarget = NextcloudTalkWebhookTarget & { rawPath: string };
 
-function createWebhookHandler(
-  opts: NextcloudTalkWebhookTarget,
-  getTargets: () => readonly RegisteredNextcloudTalkWebhookTarget[],
-) {
-  const { onError } = opts;
-  const webhookAuthRateLimiter = createAuthRateLimiter({
-    maxAttempts: WEBHOOK_RATE_LIMIT_DEFAULTS.maxRequests,
-    windowMs: WEBHOOK_RATE_LIMIT_DEFAULTS.windowMs,
-    lockoutMs: WEBHOOK_RATE_LIMIT_DEFAULTS.windowMs,
-    exemptLoopback: false,
-    pruneIntervalMs: WEBHOOK_RATE_LIMIT_DEFAULTS.windowMs,
-  });
-  const webhookInFlightLimiter = createWebhookInFlightLimiter({
-    maxInFlightPerKey: PREAUTH_WEBHOOK_MAX_IN_FLIGHT,
-    maxTrackedKeys: 1,
-  });
+function createWebhookGuards() {
+  return {
+    authRateLimiter: createAuthRateLimiter({
+      maxAttempts: WEBHOOK_RATE_LIMIT_DEFAULTS.maxRequests,
+      windowMs: WEBHOOK_RATE_LIMIT_DEFAULTS.windowMs,
+      lockoutMs: WEBHOOK_RATE_LIMIT_DEFAULTS.windowMs,
+      exemptLoopback: false,
+      pruneIntervalMs: WEBHOOK_RATE_LIMIT_DEFAULTS.windowMs,
+    }),
+    inFlightLimiter: createWebhookInFlightLimiter({
+      maxInFlightPerKey: PREAUTH_WEBHOOK_MAX_IN_FLIGHT,
+      maxTrackedKeys: 1,
+    }),
+  };
+}
+
+function legacyListenerKey(listener: NonNullable<NextcloudTalkWebhookTarget["legacyListener"]>) {
+  return JSON.stringify([listener.port, listener.host]);
+}
+
+function createWebhookHandler(getTargets: () => readonly RegisteredNextcloudTalkWebhookTarget[]) {
+  const gatewayGuards = createWebhookGuards();
+  const legacyGuards = new Map<string, ReturnType<typeof createWebhookGuards>>();
+  const syncLegacyGuards = () => {
+    const endpoints = new Set<string>();
+    for (const { legacyListener } of getTargets()) {
+      if (!legacyListener) {
+        continue;
+      }
+      const key = legacyListenerKey(legacyListener);
+      endpoints.add(key);
+      if (!legacyGuards.has(key)) {
+        legacyGuards.set(key, createWebhookGuards());
+      }
+    }
+    for (const [key, guards] of legacyGuards) {
+      if (!endpoints.has(key)) {
+        guards.authRateLimiter.dispose();
+        legacyGuards.delete(key);
+      }
+    }
+  };
 
   const handleWebhookRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const requestTargets = getTargets().filter((entry) => entry.rawPath === req.url);
-    if (req.method !== "POST" || requestTargets.length === 0) {
+    const legacyListener = getWebhookLegacyListener(req);
+    const requestTargets = getTargets().filter(
+      (entry) =>
+        entry.rawPath === req.url &&
+        (!legacyListener ||
+          (entry.legacyListener?.port === legacyListener.port &&
+            entry.legacyListener.host === legacyListener.host)),
+    );
+    const firstTarget = requestTargets[0];
+    if (req.method !== "POST" || !firstTarget) {
       res.writeHead(404);
       res.end();
       return;
     }
-
+    const guards = legacyListener
+      ? legacyGuards.get(legacyListenerKey(legacyListener))
+      : gatewayGuards;
+    if (!guards) {
+      res.writeHead(503, { "Retry-After": "1" });
+      res.end();
+      return;
+    }
+    const { authRateLimiter: webhookAuthRateLimiter, inFlightLimiter: webhookInFlightLimiter } =
+      guards;
+    const { onError, trustedProxies, allowRealIpFallback } = firstTarget;
     const clientIp =
-      resolveRequestClientIp(req, opts.trustedProxies, opts.allowRealIpFallback) ??
+      resolveRequestClientIp(req, trustedProxies, allowRealIpFallback) ??
       req.socket.remoteAddress ??
       "unknown";
     if (!webhookAuthRateLimiter.check(clientIp, WEBHOOK_AUTH_RATE_LIMIT_SCOPE).allowed) {
@@ -127,13 +171,8 @@ function createWebhookHandler(
         writeWebhookError(res, 400, WEBHOOK_ERRORS.missingSignatureHeaders);
         return;
       }
-      const legacyListener = getWebhookLegacyListener(req);
       const targets = requestTargets.filter(
-        (entry) =>
-          (!legacyListener ||
-            (entry.legacyListener?.port === legacyListener.port &&
-              entry.legacyListener.host === legacyListener.host)) &&
-          (!entry.isBackendAllowed || entry.isBackendAllowed(headers.backend)),
+        (entry) => !entry.isBackendAllowed || entry.isBackendAllowed(headers.backend),
       );
       if (targets.length === 0) {
         writeWebhookError(res, 401, WEBHOOK_ERRORS.invalidBackend);
@@ -207,7 +246,14 @@ function createWebhookHandler(
 
   return {
     handler: handleWebhookRequest,
-    dispose: () => webhookAuthRateLimiter.dispose(),
+    syncLegacyGuards,
+    dispose: () => {
+      gatewayGuards.authRateLimiter.dispose();
+      for (const guards of legacyGuards.values()) {
+        guards.authRateLimiter.dispose();
+      }
+      legacyGuards.clear();
+    },
   };
 }
 
@@ -227,12 +273,15 @@ export function registerNextcloudTalkWebhook(target: NextcloudTalkWebhookTarget)
   const registration = registerWebhookTarget(targets, { ...target, path, rawPath: target.path });
   let handler = handlers.get(path);
   if (!handler) {
-    handler = createWebhookHandler(target, () => targets.get(path) ?? []);
+    handler = createWebhookHandler(() => targets.get(path) ?? []);
     handlers.set(path, handler);
   }
+  handler.syncLegacyGuards();
   const removeTarget = () => {
     registration.unregister();
-    if (!targets.has(path)) {
+    if (targets.has(path)) {
+      handlers.get(path)?.syncLegacyGuards();
+    } else {
       handlers.get(path)?.dispose();
       handlers.delete(path);
     }

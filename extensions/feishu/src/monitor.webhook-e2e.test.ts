@@ -1,8 +1,8 @@
 // Feishu tests cover monitor.webhook e2e plugin behavior.
 import crypto from "node:crypto";
-import { createConnection } from "node:net";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { expectDefined } from "@openclaw/normalization-core";
+import { getActivePluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { normalizeCompatibilityConfig } from "./doctor-contract.js";
@@ -10,6 +10,8 @@ import { createFeishuRuntimeMockModule } from "./monitor.test-mocks.js";
 import {
   createFeishuWebhookTestAccount,
   getGatewayPort,
+  postSignedPayload,
+  sendRawSignedFeishuRequest,
   signFeishuPayload,
   waitForWebhookRoute,
   withRunningWebhookMonitor,
@@ -57,44 +59,6 @@ function encryptFeishuPayload(encryptKey: string, payload: Record<string, unknow
   const plaintext = Buffer.from(JSON.stringify(payload), "utf8");
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return Buffer.concat([iv, encrypted]).toString("base64");
-}
-
-async function postSignedPayload(url: string, payload: Record<string, unknown>) {
-  const rawBody = JSON.stringify(payload);
-  return await fetch(url, {
-    method: "POST",
-    headers: signFeishuPayload({ encryptKey: "encrypt_key", rawBody }),
-    body: rawBody,
-  });
-}
-
-async function sendRawSignedFeishuRequest(params: {
-  port: number;
-  target: string;
-  method?: string;
-  rawBody: string;
-  headers: Record<string, string>;
-}): Promise<string> {
-  const rawHeaders = Object.entries(params.headers)
-    .map(([name, value]) => `${name}: ${value}`)
-    .join("\r\n");
-
-  return await new Promise<string>((resolve, reject) => {
-    let response = "";
-    const socket = createConnection({ host: "127.0.0.1", port: params.port }, () => {
-      socket.end(
-        `${params.method ?? "POST"} ${params.target} HTTP/1.1\r\nHost: localhost\r\n` +
-          `${rawHeaders}\r\nContent-Length: ${Buffer.byteLength(params.rawBody)}\r\n` +
-          `Connection: close\r\n\r\n${params.rawBody}`,
-      );
-    });
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk) => {
-      response += chunk.toString();
-    });
-    socket.on("end", () => resolve(response));
-    socket.on("error", reject);
-  });
 }
 
 afterEach(async () => {
@@ -156,6 +120,47 @@ describe("Feishu webhook signed-request e2e", () => {
       await monitor;
     }
   });
+
+  it.each([
+    { name: "omitted host", configured: { port: 3000 }, host: "127.0.0.1" },
+    { name: "explicit wildcard", configured: { port: 3000, host: "0.0.0.0" }, host: "0.0.0.0" },
+    { name: "explicit address", configured: { port: 3000, host: "127.0.0.2" }, host: "127.0.0.2" },
+  ])(
+    "prepares the legacy listener for $name and accepts its signed callback",
+    async ({ configured, host }) => {
+      const path = "/hook-legacy-bind-address";
+      const port = await getGatewayPort();
+      const account = createFeishuWebhookTestAccount("legacy-bind-address", path);
+      const abort = new AbortController();
+      const eventDispatcher = new Lark.EventDispatcher({ encryptKey: "encrypt_key" });
+      const invoke = vi.spyOn(eventDispatcher, "invoke").mockResolvedValue({ accepted: true });
+      const monitor = monitorWebhook({
+        account: { ...account, config: { ...account.config, legacyWebhook: configured } },
+        accountId: account.accountId,
+        abortSignal: abort.signal,
+        eventDispatcher,
+        runtime: createRuntimeSpies(),
+      });
+      const url = `http://127.0.0.1:${port}${path}`;
+      try {
+        await waitForWebhookRoute(url);
+        const endpoint = { port: 3000, host };
+        expect(
+          getActivePluginRegistry()?.httpRoutes.find((route) => route.path === path)
+            ?.legacyListeners,
+        ).toEqual([endpoint]);
+        legacyListener.value = endpoint;
+        const response = await postSignedPayload(url, { schema: "2.0", event: {} });
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toEqual({ accepted: true });
+        expect(invoke).toHaveBeenCalledOnce();
+      } finally {
+        legacyListener.value = undefined;
+        abort.abort();
+        await monitor;
+      }
+    },
+  );
 
   it("dispatches shared Gateway routes and honors trusted legacy-listener metadata", async () => {
     const path = "/hook-shared-accounts";

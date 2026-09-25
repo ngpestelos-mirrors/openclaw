@@ -18,6 +18,15 @@ describe("Nextcloud Talk shared webhook lifetime", () => {
     const second = registerNextcloudTalkWebhook({ ...target, secret: "other" });
     expect(registry.httpRoutes).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(baselineTimerCount + 1);
+    const legacyTarget = { ...target, legacyListener: { port: 8788, host: "127.0.0.1" } };
+    const firstLegacy = registerNextcloudTalkWebhook(legacyTarget);
+    const secondLegacy = registerNextcloudTalkWebhook({ ...legacyTarget, secret: "other" });
+    expect(vi.getTimerCount()).toBe(baselineTimerCount + 2);
+    firstLegacy();
+    expect(vi.getTimerCount()).toBe(baselineTimerCount + 2);
+    secondLegacy();
+    expect(registry.httpRoutes).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(baselineTimerCount + 1);
     first();
     expect(registry.httpRoutes).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(baselineTimerCount + 1);

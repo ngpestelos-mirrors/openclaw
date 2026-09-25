@@ -1,11 +1,18 @@
 import { createHash } from "node:crypto";
 import type { Update } from "grammy/types";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 
 export type TestTelegramMessageUpdate = Update & {
   message: NonNullable<Update["message"]> & { text: string };
 };
+
+export async function waitForWebhookState<T>(
+  assertion: () => T | Promise<T>,
+  options: { timeout?: number; interval?: number } = {},
+): Promise<T> {
+  return await vi.waitFor(assertion, { interval: 1, ...options });
+}
 
 export function telegramMessageUpdate(updateId: number, text: string): TestTelegramMessageUpdate {
   return {

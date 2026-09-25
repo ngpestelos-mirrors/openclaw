@@ -225,6 +225,9 @@ export async function startTelegramWebhook(opts: {
   }
   const { targets: webhookTargets, rateLimiter } = state;
   const readConfig = createRuntimeConfigReader(opts.config ?? {});
+  const legacyListener = opts.legacyWebhook
+    ? { ...opts.legacyWebhook, host: opts.legacyWebhook.host ?? "127.0.0.1" }
+    : undefined;
   const path = opts.path ?? "/telegram-webhook";
   const pathname = URL.parse(path, "http://localhost")?.pathname ?? path;
   const probe = classifyGatewayProbePath(pathname);
@@ -458,7 +461,7 @@ export async function startTelegramWebhook(opts: {
         path,
         requestPath: path,
         secret,
-        legacyListener: opts.legacyWebhook,
+        legacyListener,
         handle,
         diagnosticsEnabled: () => isDiagnosticsEnabled(readConfig()),
         isActive: () => !shutDown && !opts.abortSignal?.aborted,
@@ -480,7 +483,7 @@ export async function startTelegramWebhook(opts: {
       accountId: opts.accountId,
       reuseExistingSameOwner: true,
       throwOnFailure: true,
-      legacyListener: opts.legacyWebhook,
+      legacyListener,
       handler: (req, res) => handleTelegramWebhook(webhookTargets, rateLimiter, req, res),
       log,
     });

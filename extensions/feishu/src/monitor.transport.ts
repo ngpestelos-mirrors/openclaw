@@ -382,6 +382,7 @@ export async function monitorWebSocket({
 type FeishuWebhookTarget = MonitorTransportParams & {
   path: string;
   rawPath: string;
+  legacyListener?: ResolvedFeishuAccount["config"]["legacyWebhook"];
   encryptKey: string;
   preAuthInFlightLimiter: ReturnType<typeof createWebhookInFlightLimiter>;
 };
@@ -403,8 +404,8 @@ async function handleFeishuWebhook(
     (target) =>
       !target.abortSignal?.aborted &&
       (!legacyListener ||
-        (target.account.config.legacyWebhook?.port === legacyListener.port &&
-          target.account.config.legacyWebhook.host === legacyListener.host)) &&
+        (target.legacyListener?.port === legacyListener.port &&
+          target.legacyListener.host === legacyListener.host)) &&
       (target.rawPath.includes("?") ? requestUrl : requestPath) === target.rawPath,
   );
   const firstTarget = targets[0];
@@ -577,6 +578,9 @@ async function handleFeishuWebhook(
 
 export async function monitorWebhook(params: MonitorTransportParams): Promise<void> {
   const { account, accountId, runtime, abortSignal, statusSink } = params;
+  const legacyListener = account.config.legacyWebhook
+    ? { ...account.config.legacyWebhook, host: account.config.legacyWebhook.host ?? "127.0.0.1" }
+    : undefined;
   const encryptKey = account.encryptKey?.trim();
   if (!encryptKey) {
     throw new Error(`Feishu account "${accountId}" webhook mode requires encryptKey`);
@@ -610,6 +614,7 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
     ...params,
     path,
     rawPath,
+    legacyListener,
     encryptKey,
     preAuthInFlightLimiter,
   });
@@ -624,7 +629,7 @@ export async function monitorWebhook(params: MonitorTransportParams): Promise<vo
       handler: (req, res) => handleFeishuWebhook(req, res, webhookTargets),
       reuseExistingSameOwner: true,
       throwOnFailure: true,
-      legacyListener: account.config.legacyWebhook,
+      legacyListener,
       log: runtime?.log,
     });
     const connectedAt = Date.now();

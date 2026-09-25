@@ -521,6 +521,98 @@ describe("Nextcloud Talk accounts sharing a Gateway route", () => {
     },
   );
 
+  it("isolates legacy authentication failures while Gateway accounts share a quota", async () => {
+    const path = "/nextcloud-legacy-auth-budgets";
+    const firstEndpoint = { port: 8788, host: "127.0.0.1" };
+    const secondEndpoint = { port: 8789, host: "127.0.0.1" };
+    const first = vi.fn();
+    const second = vi.fn();
+    await startWebhookServer({ path, legacyListener: firstEndpoint, onMessage: first });
+    await startWebhookServer({
+      path,
+      secret: "second-secret",
+      legacyListener: secondEndpoint,
+      onMessage: second,
+    });
+    const listener = webhookRegistry.httpRoutes.find((route) => route.path === path)?.handler;
+    if (!listener) {
+      throw new Error("expected shared Gateway webhook route");
+    }
+    const { body, headers } = createSignedCreateMessageRequest();
+    const secondSignature = generateNextcloudTalkSignature({ body, secret: "second-secret" });
+    const secondHeaders = {
+      ...headers,
+      "x-nextcloud-talk-random": secondSignature.random,
+      "x-nextcloud-talk-signature": secondSignature.signature,
+    };
+    const invalidHeaders = { ...headers, "x-nextcloud-talk-signature": "invalid-signature" };
+    const invoke = (
+      requestHeaders: Record<string, string>,
+      legacyListener?: { port: number; host?: string },
+    ) =>
+      invokeWebhookRequestListener({
+        listener,
+        path,
+        body,
+        headers: requestHeaders,
+        remoteAddress: "198.51.100.20",
+        legacyListener,
+      });
+
+    expect((await invoke(invalidHeaders, firstEndpoint)).status).toBe(401);
+    expect((await invoke(headers, firstEndpoint)).status).toBe(429);
+    expect((await invoke(secondHeaders, secondEndpoint)).status).toBe(200);
+    expect(second).toHaveBeenCalledOnce();
+    expect((await invoke(headers)).status).toBe(200);
+    expect(first).toHaveBeenCalledOnce();
+    expect((await invoke(invalidHeaders)).status).toBe(401);
+    expect((await invoke(secondHeaders)).status).toBe(429);
+    expect((await invoke(secondHeaders, secondEndpoint)).status).toBe(200);
+    expect(second).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports body-reader failures through the selected legacy endpoint", async () => {
+    const path = "/nextcloud-legacy-body-error";
+    const firstEndpoint = { port: 8788, host: "127.0.0.1" };
+    const secondEndpoint = { port: 8789, host: "127.0.0.1" };
+    const firstError = vi.fn();
+    const secondError = vi.fn();
+    const onMessage = vi.fn();
+    await startWebhookServer({
+      path,
+      legacyListener: firstEndpoint,
+      onError: firstError,
+      onMessage,
+    });
+    await startWebhookServer({
+      path,
+      legacyListener: secondEndpoint,
+      onError: secondError,
+      onMessage,
+    });
+    const listener = webhookRegistry.httpRoutes.find((route) => route.path === path)?.handler;
+    if (!listener) {
+      throw new Error("expected shared Gateway webhook route");
+    }
+    const failure = new Error("legacy endpoint body read failed");
+    readBody.mockImplementationOnce(() => {
+      throw failure;
+    });
+    const { body, headers } = createSignedCreateMessageRequest();
+    const response = await invokeWebhookRequestListener({
+      listener,
+      path,
+      body,
+      headers,
+      remoteAddress: "198.51.100.20",
+      legacyListener: secondEndpoint,
+    });
+    expect(response.status).toBe(500);
+    expect(secondError).toHaveBeenCalledExactlyOnceWith(failure);
+    expect(firstError).not.toHaveBeenCalled();
+    expect(onMessage).not.toHaveBeenCalled();
+  });
+
   it("selects by backend and signature and rejects ambiguous credentials", async () => {
     const path = "/nextcloud-shared-route";
     const first = vi.fn();

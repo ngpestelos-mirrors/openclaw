@@ -25,6 +25,8 @@ Long polling is the default. Webhook mode is the alternative when an HTTPS ingre
 
     If no port was explicitly configured, OpenClaw no longer opens the old default port `8787`. Doctor and startup logs name the Gateway route to use. Update any reverse proxy still targeting `127.0.0.1:8787`. A host-only setting does not enable a legacy listener.
 
+    An omitted `legacyWebhook.host` binds to `127.0.0.1`. An explicitly configured host, including a wildcard address, is preserved.
+
     Accounts may share a Gateway route when their webhook secrets differ. Requests matching more than one account are rejected; assign distinct secrets or paths before moving traffic to the Gateway port. Migrated legacy endpoints preserve account selection for accounts that previously shared a secret and path on separate explicit ports.
 
     Webhook mode validates request guards, the Telegram secret token, and the JSON body, then commits the update to its durable ingress queue before returning an empty `200`. Successful durable adoption includes `x-openclaw-delivery-accepted: durable`; health, routing, authentication, validation, and storage-error responses omit this header. Reverse proxies and host controllers can require the header to distinguish OpenClaw adoption from a generic empty `200` without inferring acceptance from response timing.

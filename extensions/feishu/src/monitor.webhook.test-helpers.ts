@@ -1,7 +1,7 @@
 // Feishu helper module supports monitor.webhook helpers behavior.
 import crypto from "node:crypto";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createConnection, type AddressInfo } from "node:net";
 import {
   createEmptyPluginRegistry,
   setActivePluginRegistry,
@@ -123,6 +123,44 @@ export function signFeishuPayload(params: {
     "x-lark-request-nonce": nonce,
     "x-lark-signature": signature,
   };
+}
+
+export async function postSignedPayload(url: string, payload: Record<string, unknown>) {
+  const rawBody = JSON.stringify(payload);
+  return await fetch(url, {
+    method: "POST",
+    headers: signFeishuPayload({ encryptKey: "encrypt_key", rawBody }),
+    body: rawBody,
+  });
+}
+
+export async function sendRawSignedFeishuRequest(params: {
+  port: number;
+  target: string;
+  method?: string;
+  rawBody: string;
+  headers: Record<string, string>;
+}): Promise<string> {
+  const rawHeaders = Object.entries(params.headers)
+    .map(([name, value]) => `${name}: ${value}`)
+    .join("\r\n");
+
+  return await new Promise<string>((resolve, reject) => {
+    let response = "";
+    const socket = createConnection({ host: "127.0.0.1", port: params.port }, () => {
+      socket.end(
+        `${params.method ?? "POST"} ${params.target} HTTP/1.1\r\nHost: localhost\r\n` +
+          `${rawHeaders}\r\nContent-Length: ${Buffer.byteLength(params.rawBody)}\r\n` +
+          `Connection: close\r\n\r\n${params.rawBody}`,
+      );
+    });
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      response += chunk.toString();
+    });
+    socket.on("end", () => resolve(response));
+    socket.on("error", reject);
+  });
 }
 
 export function buildWebhookConfig(params: {
