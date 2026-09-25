@@ -21,8 +21,9 @@ transient runs are never restored from them.
 
 `openclaw doctor --fix` owns general persistent file-to-SQLite migrations. It validates and claims each recognized source, writes and verifies canonical rows, records a migration receipt, then removes the retired source. Gateway, node-host, and local CLI startup leave general legacy repair to Doctor. Normal versioned database opening, native initialization, and recovery of valid current config remain available. The narrow [restart-notice importer](/gateway/restart-recovery#agent-requested-restarts) also serves the late update notices written by shipped June updaters, through the same migration owner and receipts.
 
-Before starting a new container image against older state, run that image's
-`openclaw doctor --fix` against the same mounted state and config. Doctor performs
+The container image entrypoint automatically runs `openclaw doctor --fix --non-interactive`
+against the mounted state and config before starting the Gateway. If you override
+that entrypoint, run Doctor explicitly against the same mounts. Doctor performs
 the required legacy repairs under exclusive maintenance ownership and preserves
 verified SQLite copies before schema upgrades, along with its normal config
 backups and legacy-file archives. Gateway startup then checks runtime readiness.

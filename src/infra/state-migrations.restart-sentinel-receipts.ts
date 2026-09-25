@@ -8,12 +8,81 @@ import type { RestartSentinelPayload } from "./restart-sentinel-store.js";
 import {
   readLegacyMigrationReceiptFromDatabase,
   readLegacyMigrationRunFromDatabase,
+  type LegacyMigrationReceipt,
 } from "./state-migrations.receipts.js";
 import { isPendingControlPlaneUpdateRestartSentinel } from "./update-control-plane-sentinel.js";
 
 export const MIGRATION_KIND = "legacy-restart-sentinel-json";
 
+const MIGRATION_DECISIONS = [
+  "canonical-preserved",
+  "canonical-advanced",
+  "legacy-update-finalized",
+  "invalid-canonical-repaired",
+  "legacy-imported",
+  "malformed-legacy-discarded",
+  "receipt-authoritative",
+] as const;
+export type RestartSentinelMigrationDecision = (typeof MIGRATION_DECISIONS)[number];
+
 export type CanonicalImport = { sourceSha256: string; revision: number };
+
+function readReceiptReport(reportJson: string, expectedSha256?: string | null) {
+  const report = safeParseJson(reportJson);
+  if (
+    !isRecord(report) ||
+    report.source !== MIGRATION_KIND ||
+    report.target !== "gateway_restart_sentinel" ||
+    typeof report.sourceSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(report.sourceSha256) ||
+    (expectedSha256 !== undefined && report.sourceSha256 !== expectedSha256) ||
+    typeof report.sourceValid !== "boolean" ||
+    (report.importedRecordCount !== 0 && report.importedRecordCount !== 1) ||
+    (report.preservedSqliteRecordCount !== 0 && report.preservedSqliteRecordCount !== 1) ||
+    typeof report.decision !== "string" ||
+    !MIGRATION_DECISIONS.some((decision) => decision === report.decision)
+  ) {
+    throw new Error("Restart sentinel migration receipt is invalid; preserve it for recovery.");
+  }
+  return report;
+}
+
+/** Preserve the path-wide tombstone recorded by the published v2026.9.5 importer. */
+export function hasLegacyPathWideReceipt(receipt: LegacyMigrationReceipt): boolean {
+  const report = readReceiptReport(receipt.reportJson, receipt.sourceSha256);
+  if (
+    Object.hasOwn(report, "importedRevision") ||
+    Object.hasOwn(report, "pendingHandoffId") ||
+    Object.hasOwn(report, "canonicalImport")
+  ) {
+    return false;
+  }
+  switch (report.decision) {
+    case "canonical-preserved":
+      return (
+        report.sourceValid === true &&
+        report.importedRecordCount === 0 &&
+        report.preservedSqliteRecordCount === 1
+      );
+    case "malformed-legacy-discarded":
+      return (
+        report.sourceValid === false &&
+        report.importedRecordCount === 0 &&
+        report.preservedSqliteRecordCount === 0
+      );
+    case "receipt-authoritative":
+      return report.importedRecordCount === 0 && report.preservedSqliteRecordCount === 0;
+    case "legacy-imported":
+    case "invalid-canonical-repaired":
+      return (
+        report.sourceValid === true &&
+        report.importedRecordCount === 1 &&
+        report.preservedSqliteRecordCount === 0
+      );
+    default:
+      return false;
+  }
+}
 
 export function hasImportedPendingHandoff(
   db: DatabaseSync,
@@ -63,16 +132,12 @@ export function sourceRunId(sourceKey: string, sha256: string): string {
 export function readSourceDecision(db: DatabaseSync, sourceKey: string, sha256: string): boolean {
   const latest = readLegacyMigrationReceiptFromDatabase(db, sourceKey);
   if (latest?.sourceSha256 === sha256) {
+    readReceiptReport(latest.reportJson, sha256);
     return true;
   }
   const run = readLegacyMigrationRunFromDatabase(db, sourceRunId(sourceKey, sha256));
-  const report = run?.status === "completed" ? safeParseJson(run.reportJson) : undefined;
-  return (
-    isRecord(report) &&
-    report.source === MIGRATION_KIND &&
-    report.target === "gateway_restart_sentinel" &&
-    report.sourceSha256 === sha256
-  );
+  const report = run?.status === "completed" ? readReceiptReport(run.reportJson) : undefined;
+  return report?.sourceSha256 === sha256;
 }
 
 export function readCanonicalImport(

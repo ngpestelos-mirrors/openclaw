@@ -1,4 +1,5 @@
 // Covers safe startup/Doctor import of the retired restart-sentinel JSON file.
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +9,7 @@ import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import {
@@ -21,6 +23,10 @@ import {
   writeRestartSentinel,
   type RestartSentinelPayload,
 } from "./restart-sentinel.js";
+import {
+  markLegacyMigrationSourceRemoved,
+  recordLegacyMigrationReceipt,
+} from "./state-migrations.receipts.js";
 import {
   detectLegacyRestartSentinel,
   migrateLegacyRestartSentinel,
@@ -283,6 +289,17 @@ describe("legacy restart sentinel migration", () => {
     "consumed-newer-canonical",
     "consumed-pending",
     "consumed-newer-legacy",
+    "published-receipt-without-revision",
+    "consumed-published-receipt-without-revision",
+    "consumed-newer-canonical-published-receipt-without-revision",
+    "consumed-published-replay-receipt",
+    "consumed-published-repair-receipt",
+    "consumed-published-preserved-receipt",
+    "consumed-published-malformed-receipt",
+    "consumed-published-malformed-replay-receipt",
+    "consumed-published-unknown-receipt",
+    "consumed-published-unknown-identical-source",
+    "consumed-published-unknown-identical-claim",
   ] as const)(
     "imports a late final only over its own pending revision (%s)",
     async (replacement) => {
@@ -292,8 +309,70 @@ describe("legacy restart sentinel migration", () => {
         status: "skipped",
         stats: { ...payload(1).stats, reason: "restart-health-pending" },
       };
-      await writeLegacy(stateDir, { version: 1, payload: pending });
-      await migrate({ env, stateDir });
+      const pendingSource = await writeLegacy(stateDir, { version: 1, payload: pending });
+      const publishedReceipt = replacement.includes("published-");
+      const publishedReplay = replacement.endsWith("replay-receipt");
+      const publishedRepair = replacement === "consumed-published-repair-receipt";
+      const publishedPreserved = replacement === "consumed-published-preserved-receipt";
+      const publishedMalformed = replacement.includes("published-malformed-");
+      const unknownReceipt = replacement.startsWith("consumed-published-unknown-");
+      const identicalSource = replacement.startsWith("consumed-published-unknown-identical-");
+      const interruptedClaim = replacement === "consumed-published-unknown-identical-claim";
+      let publishedReportJson: string | undefined;
+      if (publishedReceipt) {
+        if (publishedMalformed) {
+          await fsp.writeFile(pendingSource, "{invalid-json");
+        }
+        const bytes = await fsp.readFile(pendingSource);
+        const sourceSha256 = createHash("sha256").update(bytes).digest("hex");
+        const sourceKey = `restart-sentinel-json:${createHash("sha256")
+          .update(path.resolve(pendingSource))
+          .digest("hex")}`;
+        await writeRestartSentinel(pending, env);
+        // v2026.9.5 recorded these fields without binding the imported SQLite revision.
+        publishedReportJson = JSON.stringify({
+          source: "legacy-restart-sentinel-json",
+          target: "gateway_restart_sentinel",
+          decision: publishedReplay
+            ? "receipt-authoritative"
+            : unknownReceipt
+              ? "unrecognized-decision"
+              : publishedPreserved
+                ? "canonical-preserved"
+                : publishedMalformed
+                  ? "malformed-legacy-discarded"
+                  : publishedRepair
+                    ? "invalid-canonical-repaired"
+                    : "legacy-imported",
+          sourceSha256,
+          sourceValid: !publishedMalformed,
+          importedRecordCount: publishedReplay || publishedPreserved || publishedMalformed ? 0 : 1,
+          preservedSqliteRecordCount: publishedPreserved ? 1 : 0,
+        });
+        const reportJson = publishedReportJson;
+        runOpenClawStateWriteTransaction(
+          ({ db }) => {
+            recordLegacyMigrationReceipt(db, {
+              sourceKey,
+              migrationKind: "legacy-restart-sentinel-json",
+              sourcePath: pendingSource,
+              targetTable: "gateway_restart_sentinel",
+              sourceSha256,
+              sourceSizeBytes: bytes.length,
+              sourceRecordCount: publishedMalformed ? 0 : 1,
+              runId: `${sourceKey}:${sourceSha256.slice(0, 16)}`,
+              now: Date.now(),
+              reportJson,
+            });
+          },
+          { env },
+        );
+        await fsp.unlink(pendingSource);
+        markLegacyMigrationSourceRemoved(sourceKey, env);
+        closeOpenClawStateDatabaseForTest();
+      } else {
+        await migrate({ env, stateDir });
+      }
       let preserved = await readRestartSentinel(env);
       if (replacement === "recreated-pending") {
         await writeLegacy(stateDir, { version: 1, payload: pending });
@@ -304,7 +383,10 @@ describe("legacy restart sentinel migration", () => {
           payload: { ...payload(2), stats: { handoffId: "unrelated-handoff" } },
         });
         await migrate({ env, stateDir });
-      } else if (replacement === "newer-canonical" || replacement === "consumed-newer-canonical") {
+      } else if (
+        replacement === "newer-canonical" ||
+        replacement.startsWith("consumed-newer-canonical")
+      ) {
         preserved = await writeRestartSentinel(pending, env);
       }
       if (replacement.startsWith("consumed-")) {
@@ -327,20 +409,61 @@ describe("legacy restart sentinel migration", () => {
         }
         preserved = null;
       }
-      await writeLegacy(stateDir, { version: 1, payload: payload(3) });
+      await writeLegacy(stateDir, {
+        version: 1,
+        payload: identicalSource ? pending : payload(3),
+      });
+      if (interruptedClaim) {
+        await fsp.copyFile(pendingSource, `${pendingSource}.doctor-importing`);
+      }
+      const sourceBefore = unknownReceipt ? await fsp.readFile(pendingSource) : undefined;
 
       const result = await migrate({ env, stateDir });
 
-      expect(result.warnings).toEqual([]);
+      if (unknownReceipt) {
+        expect(result.warnings).toHaveLength(1);
+        expect(result.warnings[0]).toContain("migration receipt is invalid");
+      } else {
+        expect(result.warnings).toEqual([]);
+      }
       const current = await readRestartSentinel(env);
-      if (replacement === "newer-canonical" || replacement.startsWith("consumed-")) {
+      if (
+        replacement === "newer-canonical" ||
+        replacement === "published-receipt-without-revision" ||
+        replacement.startsWith("consumed-")
+      ) {
         expect(current).toEqual(preserved);
       } else {
         expect(current?.payload).toEqual(payload(3));
         expect(current?.revision).not.toBe(preserved?.revision);
       }
+      if (publishedReceipt) {
+        expect(receipt(env)?.report_json).toBe(publishedReportJson);
+        expect(fs.existsSync(pendingSource)).toBe(unknownReceipt);
+        if (unknownReceipt) {
+          expect(await fsp.readFile(pendingSource)).toEqual(sourceBefore);
+        }
+        if (interruptedClaim) {
+          expect(await fsp.readFile(`${pendingSource}.doctor-importing`)).toEqual(sourceBefore);
+        }
+      }
     },
   );
+
+  it("admits a later unrelated handoff after preserving native canonical state", async () => {
+    const { env, stateDir } = useStateDir();
+    const native = await writeRestartSentinel(payload(1), env);
+    await writeLegacy(stateDir, { version: 1, payload: payload(2) });
+    expect((await migrate({ env, stateDir })).warnings).toEqual([]);
+    await expect(readRestartSentinel(env)).resolves.toEqual(native);
+    await clearRestartSentinelIfRevision(native.revision, env);
+    const next = { ...payload(3), stats: { ...payload(3).stats, handoffId: "next-handoff" } };
+    await writeLegacy(stateDir, { version: 1, payload: next });
+
+    expect((await migrate({ env, stateDir })).warnings).toEqual([]);
+
+    await expect(readRestartSentinel(env)).resolves.toMatchObject({ payload: next });
+  });
 
   it("does not use another source generation's receipt to delete an interrupted claim", async () => {
     const { env, stateDir } = useStateDir();

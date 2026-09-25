@@ -21,9 +21,11 @@ import {
   MIGRATION_KIND,
   canFinalizeImportedUpdate,
   hasImportedPendingHandoff,
+  hasLegacyPathWideReceipt,
   readCanonicalImport,
   readSourceDecision,
   sourceRunId,
+  type RestartSentinelMigrationDecision as MigrationDecision,
 } from "./state-migrations.restart-sentinel-receipts.js";
 import type { LegacyRestartSentinelDetection } from "./state-migrations.restart-sentinel.types.js";
 import {
@@ -40,15 +42,6 @@ const LEGACY_RESTART_SENTINEL_FILENAME = "restart-sentinel.json";
 const DOCTOR_CLAIM_SUFFIX = ".doctor-importing";
 const MAX_LEGACY_RESTART_SENTINEL_BYTES = 4 * 1024 * 1024;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
-
-type MigrationDecision =
-  | "canonical-preserved"
-  | "canonical-advanced"
-  | "legacy-update-finalized"
-  | "invalid-canonical-repaired"
-  | "legacy-imported"
-  | "malformed-legacy-discarded"
-  | "receipt-authoritative";
 
 export type RestartSentinelMigrationResult = MigrationMessages & {
   importedRevision?: number;
@@ -89,7 +82,10 @@ function decideAndRecordMigration(params: {
       params.assertCurrent?.();
       const receipt = readLegacyMigrationReceiptFromDatabase(db, sourceKey);
       // A path is reused for each update; retain each exact source decision across A -> B -> A.
-      if (readSourceDecision(db, sourceKey, params.snapshot.sha256)) {
+      if (
+        readSourceDecision(db, sourceKey, params.snapshot.sha256) ||
+        (receipt && hasLegacyPathWideReceipt(receipt))
+      ) {
         const decision: MigrationDecision = "receipt-authoritative";
         return { decision, sourceKey };
       }
@@ -152,7 +148,8 @@ function decideAndRecordMigration(params: {
         handoffId
           ? { pendingHandoffId: handoffId }
           : {}),
-        ...(importedRevision === undefined && canonicalImport ? { canonicalImport } : {}),
+        // Published path-wide receipts omitted this field; null records no generation pointer.
+        ...(importedRevision === undefined ? { canonicalImport: canonicalImport ?? null } : {}),
         importedRecordCount: importedRevision === undefined ? 0 : 1,
         preservedSqliteRecordCount: decision === "canonical-preserved" ? 1 : 0,
       });
