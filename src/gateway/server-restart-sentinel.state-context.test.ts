@@ -11,6 +11,10 @@ import { findDeliveryIntentOwner } from "../infra/outbound/delivery-queue-storag
 import * as restartSentinel from "../infra/restart-sentinel.js";
 import { readRestartSentinel, writeRestartSentinel } from "../infra/restart-sentinel.js";
 import * as stateCoordinator from "../infra/state-database-coordinator.js";
+import {
+  readLegacyMigrationReceipt,
+  resolveLegacyMigrationSourceKey,
+} from "../infra/state-migrations.receipts.js";
 import { importLegacyUpdateRestartSentinel } from "../infra/state-migrations.restart-sentinel-runtime.js";
 import * as legacySource from "../infra/state-migrations.source-snapshot.js";
 import { resetSystemEventsForTest } from "../infra/system-events.js";
@@ -171,6 +175,100 @@ beforeEach(() => {
       },
     ]),
   );
+});
+
+it("joins a paused import without publishing after canonical database close revokes admission", async () => {
+  const stateDir = tempDirs.make("openclaw-restart-import-close-");
+  const env = { OPENCLAW_STATE_DIR: stateDir };
+  setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+  const lock = await acquireGatewayLock({ env, allowInTests: true });
+  if (!lock) {
+    throw new Error("Expected Gateway lifecycle ownership");
+  }
+  gatewayLocks.push(lock);
+  const retained = await writeRestartSentinel(
+    { kind: "restart", status: "ok", ts: 123, message: "Retained canonical notice" },
+    env,
+  );
+  const context = captureDeliveryQueueStateContext();
+  const sourcePath = path.join(stateDir, "restart-sentinel.json");
+  const source = JSON.stringify({
+    version: 1,
+    payload: { kind: "update", status: "ok", ts: 124, stats: { mode: "npm" } },
+  });
+  await fs.writeFile(sourcePath, source);
+  const readStarted = createDeferred();
+  const releaseRead = createDeferred();
+  const readSource = legacySource.readLegacyMigrationSourceSnapshot;
+  vi.spyOn(legacySource, "readLegacyMigrationSourceSnapshot").mockImplementationOnce(
+    async (options) => {
+      const snapshot = await readSource(options);
+      readStarted.resolve();
+      await releaseRead.promise;
+      return snapshot;
+    },
+  );
+  let custody: ReturnType<typeof stateCoordinator.acquireGatewayMaintenanceCoordinator> | undefined;
+  const acquire = stateCoordinator.acquireGatewayMaintenanceCoordinator;
+  vi.spyOn(stateCoordinator, "acquireGatewayMaintenanceCoordinator").mockImplementation(
+    (options) => {
+      custody = acquire(options);
+      return custody;
+    },
+  );
+  const importing = importLegacyUpdateRestartSentinel({
+    context: context.workerContext,
+    shouldRun: () => true,
+  });
+  const importSettled = importing.then(
+    () => "settled" as const,
+    () => "settled" as const,
+  );
+  let closing: Promise<void> | undefined;
+  let closeSettled = false;
+  try {
+    expect(
+      await Promise.race([readStarted.promise.then(() => "held" as const), importSettled]),
+    ).toBe("held");
+    context.workerContext.admission.assertCurrent();
+    expect(custody?.closed).toBe(false);
+    closing = closeOpenClawStateDatabaseAsync();
+    void closing.then(
+      () => {
+        closeSettled = true;
+      },
+      () => {
+        closeSettled = true;
+      },
+    );
+    expect(context.workerContext.admission.assertCurrent).toThrow(/read admission is closed/);
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(closeSettled).toBe(false);
+    expect(custody?.closed).toBe(false);
+    releaseRead.resolve();
+    const result = await importing;
+    await closing;
+    expect(result.changes).toEqual([]);
+    expect(result.importedRevision).toBeUndefined();
+    expect(result.warnings).toEqual([expect.stringContaining("read admission is closed")]);
+    expect(custody?.closed).toBe(true);
+    expect(await fs.readFile(sourcePath, "utf8")).toBe(source);
+    await expect(fs.stat(`${sourcePath}.doctor-importing`)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readRestartSentinel(env)).toEqual(retained);
+    expect(
+      readLegacyMigrationReceipt(
+        resolveLegacyMigrationSourceKey("restart-sentinel-json", sourcePath),
+        env,
+      ),
+    ).toBeNull();
+  } finally {
+    releaseRead.resolve();
+    await Promise.allSettled([importing, ...(closing ? [closing] : [])]);
+  }
 });
 
 it("retains failed import cleanup until canonical database close retries its owner", async () => {
