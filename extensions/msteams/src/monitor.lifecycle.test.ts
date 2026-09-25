@@ -14,6 +14,7 @@ import {
 import {
   getMSTeamsMonitorTestState,
   getMSTeamsRouteBaseUrl,
+  holdMSTeamsWebhookBodies,
   requireRegisteredMSTeamsConfig,
   requireRegisteredMSTeamsMediaMaxBytes,
   waitForMSTeamsTestState,
@@ -32,6 +33,7 @@ const {
   runMSTeamsFileConsentInvokeHandler,
   processSdkActivity,
   nativeSdkState,
+  handleSdkRequest,
   loadMSTeamsSdkWithAuth,
   ssoTokenStore,
   resolveAllowlistMocks,
@@ -53,6 +55,9 @@ describe("monitorMSTeamsProvider lifecycle", () => {
     runMSTeamsFileConsentInvokeHandler.mockReset().mockResolvedValue(undefined);
     processSdkActivity.mockReset().mockResolvedValue({ status: 200 });
     nativeSdkState.app = undefined;
+    handleSdkRequest
+      .mockReset()
+      .mockImplementation(async ({ body }) => ({ status: 200, body: { body } }));
     getMSTeamsIngressMockState().instances.length = 0;
     ssoTokenStore.get.mockClear();
     ssoTokenStore.save.mockReset().mockResolvedValue(undefined);
@@ -199,6 +204,45 @@ describe("monitorMSTeamsProvider lifecycle", () => {
 
     abort.abort();
     await task;
+  });
+
+  it("bounds partial bodies across aliases and releases capacity after SDK failures", async () => {
+    const abort = new AbortController();
+    const cfg = createConfig();
+    updateMSTeamsConfig(cfg, { webhook: { path: "/teams/events" } });
+    const task = monitorMSTeamsProvider({
+      cfg,
+      runtime: createRuntime(),
+      abortSignal: abort.signal,
+      ...createStores(),
+    });
+    await monitorReady.current.promise;
+    const capacity = 8;
+    const held = await holdMSTeamsWebhookBodies("/teams/events", capacity);
+    const post = () =>
+      fetch(`${getMSTeamsRouteBaseUrl()}/api/messages`, {
+        method: "POST",
+        headers: { authorization: "Bearer x" },
+        body: "{}",
+      });
+    try {
+      const overflow = await post();
+      expect(overflow.status).toBe(429);
+      expect(await overflow.text()).toBe("Too Many Requests");
+      expect(await held.complete()).toEqual(Array<number>(capacity).fill(200));
+      for (let index = 0; index < capacity; index += 1) {
+        handleSdkRequest.mockRejectedValueOnce(new Error("synthetic SDK failure"));
+      }
+      const failures = await Promise.allSettled(Array.from({ length: capacity }, post));
+      expect(failures.every((result) => result.status === "rejected")).toBe(true);
+      const recovered = await post();
+      expect(recovered.status).toBe(200);
+      await recovered.text();
+    } finally {
+      await held.stop();
+      abort.abort();
+      await task;
+    }
   });
 
   it("keeps private QA skip-auth requests restricted to loopback", async () => {

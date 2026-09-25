@@ -1,6 +1,11 @@
 // Shared SDK mocks and one HTTP listener for the Teams monitor lifecycle suite.
 import { once } from "node:events";
-import { createServer } from "node:http";
+import {
+  createServer,
+  request as requestHttp,
+  type ClientRequest,
+  type IncomingMessage,
+} from "node:http";
 import type { App } from "@microsoft/teams.apps";
 import { acquireTestPortBlock } from "openclaw/plugin-sdk/test-env";
 import type { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
@@ -65,6 +70,9 @@ const isCardActionInvokeAuthorized = vi.hoisted(() => vi.fn(async () => true));
 const runMSTeamsFileConsentInvokeHandler = vi.hoisted(() => vi.fn(async () => {}));
 const processSdkActivity = vi.hoisted(() => vi.fn<App["process"]>(async () => ({ status: 200 })));
 const nativeSdkState = vi.hoisted((): { app?: App } => ({}));
+const handleSdkRequest = vi.hoisted(() =>
+  vi.fn(async ({ body }: { body: unknown }) => ({ status: 200, body: { body } })),
+);
 const loadMSTeamsSdkWithAuth = vi.hoisted(() =>
   vi.fn(async (_creds?: unknown, options?: Parameters<typeof LoadMSTeamsSdkWithAuth>[1]) => {
     const app = {
@@ -73,10 +81,7 @@ const loadMSTeamsSdkWithAuth = vi.hoisted(() =>
       process: processSdkActivity,
       initialize: vi.fn(async () => {
         const adapter = options!.httpServerAdapter!;
-        adapter.registerRoute("POST", String(options?.messagingEndpoint), async ({ body }) => ({
-          status: 200,
-          body: { body },
-        }));
+        adapter.registerRoute("POST", String(options?.messagingEndpoint), handleSdkRequest);
       }),
       tokenProvider: {
         getAppToken: vi.fn(async (scope: string) => ({
@@ -223,6 +228,7 @@ export function getMSTeamsMonitorTestState() {
     runMSTeamsFileConsentInvokeHandler,
     processSdkActivity,
     nativeSdkState,
+    handleSdkRequest,
     loadMSTeamsSdkWithAuth,
     ssoTokenStore,
     resolveAllowlistMocks,
@@ -231,4 +237,64 @@ export function getMSTeamsMonitorTestState() {
 
 export function getMSTeamsRouteBaseUrl(): string {
   return routeBaseUrl;
+}
+
+export async function holdMSTeamsWebhookBodies(path: string, count: number) {
+  const received = Promise.withResolvers<void>();
+  let requestCount = 0;
+  const onRequest = (req: IncomingMessage) => {
+    if (req.url === path && ++requestCount === count) {
+      received.resolve();
+    }
+  };
+  const requests: Array<{ request: ClientRequest; response: Promise<number> }> = [];
+  const stop = async () => {
+    for (const { request } of requests) {
+      request.destroy();
+    }
+    await Promise.allSettled(requests.map(({ response }) => response));
+  };
+  routeServer.on("request", onRequest);
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const response = Promise.withResolvers<number>();
+      const request = requestHttp(
+        new URL(path, routeBaseUrl),
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer x",
+            "content-type": "application/json",
+            "content-length": "2",
+            connection: "close",
+          },
+        },
+        (incoming) => {
+          incoming.resume();
+          incoming.once("end", () => response.resolve(incoming.statusCode ?? 0));
+        },
+      );
+      request.once("error", (error: Error) => {
+        response.reject(error);
+        received.reject(error);
+      });
+      requests.push({ request, response: response.promise });
+      request.write("{");
+    }
+    await received.promise;
+  } catch (error) {
+    await stop();
+    throw error;
+  } finally {
+    routeServer.off("request", onRequest);
+  }
+  return {
+    complete: async () => {
+      for (const { request } of requests) {
+        request.end("}");
+      }
+      return await Promise.all(requests.map(({ response }) => response));
+    },
+    stop,
+  };
 }

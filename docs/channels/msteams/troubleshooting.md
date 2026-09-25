@@ -17,7 +17,10 @@ What the Teams path does not support, the failures operators hit most often, and
 Teams delivers messages through the Gateway HTTP webhook route. Body reads are
 bounded to 1 MiB and five seconds before SDK JWT verification; Gateway HTTP
 lifecycle limits apply to the shared listener. Optional inbound media and context
-enrichment has a shared 10-second budget. The SDK returns after the raw activity is durably appended;
+enrichment has a shared 10-second budget. At most eight webhook requests are processed
+concurrently per Teams monitor, shared by its configured route and the
+`/api/messages` compatibility alias. Additional requests receive HTTP 429 and
+must be retried. The SDK returns after the raw activity is durably appended;
 the agent turn drains independently and replies proactively. If request
 handling or durable admission misses the transport window, Teams may retry the
 activity, and the ingress tombstone rejects a repeated event ID.

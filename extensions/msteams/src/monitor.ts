@@ -3,6 +3,7 @@ import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
 import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
 import {
   applyBasicWebhookRequestGuards,
+  createWebhookInFlightLimiter,
   registerPluginHttpRoute,
   WEBHOOK_BODY_READ_DEFAULTS,
 } from "openclaw/plugin-sdk/webhook-ingress";
@@ -222,6 +223,7 @@ export async function monitorMSTeamsProvider(
   const privateQaRuntime = resolveMSTeamsPrivateQaRuntime();
   const legacyListener = msteamsCfg.legacyWebhook;
   const unregisterRoutes: Array<() => void> = [];
+  const inFlightLimiter = createWebhookInFlightLimiter({ maxTrackedKeys: 1 });
   for (const warning of collectMSTeamsWebhookWarnings({ cfg })) {
     log.warn?.(warning);
   }
@@ -247,43 +249,51 @@ export async function monitorMSTeamsProvider(
             res.end(JSON.stringify({ error: "Unauthorized" }));
             return;
           }
-          const parsed = await readJsonBodyWithLimit(req, {
-            maxBytes: DEFAULT_WEBHOOK_MAX_BODY_BYTES,
-            timeoutMs: WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs,
-            destroyOnLimit: false,
-          });
-          if (!parsed.ok) {
-            const status =
-              parsed.code === "PAYLOAD_TOO_LARGE"
-                ? 413
-                : parsed.code === "REQUEST_BODY_TIMEOUT"
-                  ? 408
-                  : 400;
-            await sendHttpRequestRejection(
-              req,
-              res,
-              status,
-              JSON.stringify({
-                error:
-                  status === 413
-                    ? "Payload too large"
-                    : status === 408
-                      ? "Request body timeout"
-                      : "Invalid JSON",
-              }),
-              "application/json",
-            );
+          if (!inFlightLimiter.tryAcquire("msteams-webhook")) {
+            await sendHttpRequestRejection(req, res, 429, "Too Many Requests");
             return;
           }
-          const headers: Record<string, string | string[]> = {};
-          for (const [key, value] of Object.entries(req.headers)) {
-            if (value !== undefined) {
-              headers[key] = value;
+          try {
+            const parsed = await readJsonBodyWithLimit(req, {
+              maxBytes: DEFAULT_WEBHOOK_MAX_BODY_BYTES,
+              timeoutMs: WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs,
+              destroyOnLimit: false,
+            });
+            if (!parsed.ok) {
+              const status =
+                parsed.code === "PAYLOAD_TOO_LARGE"
+                  ? 413
+                  : parsed.code === "REQUEST_BODY_TIMEOUT"
+                    ? 408
+                    : 400;
+              await sendHttpRequestRejection(
+                req,
+                res,
+                status,
+                JSON.stringify({
+                  error:
+                    status === 413
+                      ? "Payload too large"
+                      : status === 408
+                        ? "Request body timeout"
+                        : "Invalid JSON",
+                }),
+                "application/json",
+              );
+              return;
             }
+            const headers: Record<string, string | string[]> = {};
+            for (const [key, value] of Object.entries(req.headers)) {
+              if (value !== undefined) {
+                headers[key] = value;
+              }
+            }
+            const response = await sdkHandler({ body: parsed.value, headers });
+            res.writeHead(response.status, { "Content-Type": "application/json" });
+            res.end(response.body === undefined ? undefined : JSON.stringify(response.body));
+          } finally {
+            inFlightLimiter.release("msteams-webhook");
           }
-          const response = await sdkHandler({ body: parsed.value, headers });
-          res.writeHead(response.status, { "Content-Type": "application/json" });
-          res.end(response.body === undefined ? undefined : JSON.stringify(response.body));
         };
         const register = (routePath: string, routeHandler = handler) => {
           unregisterRoutes.push(
