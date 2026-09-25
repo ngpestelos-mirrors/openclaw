@@ -4,6 +4,7 @@ import path from "node:path";
 import { threadId, Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createGatewayAgentModelCatalogProjector } from "../gateway/server-methods/models-list-result.js";
 import { sweepPluginSourceCaptureDirectories } from "../plugins/plugin-source-capture-directory.js";
 import { getPreparedModelCatalogWorkerPoolSnapshot } from "./prepared-model-catalog-worker.js";
 import {
@@ -28,6 +29,126 @@ const createFleetFixture = createCatalogFleetFixture(makeTempDir);
 
 describe("Gateway catalog worker captures", () => {
   beforeEach(() => vi.stubEnv("CODEX_HOME", makeTempDir("openclaw-worker-empty-codex-")));
+  it("keeps an enabled unselected native picker owner in the parent, not provider worker captures", async () => {
+    const harnessId = "unselected-native-fixture";
+    let observations = "";
+    const fixture = await createFleetFixture(
+      (seed) => {
+        const pluginDir = path.join(seed.root, "native-only-plugin");
+        fs.mkdirSync(pluginDir);
+        observations = path.join(seed.root, "native-owner-observations.jsonl");
+        fs.writeFileSync(observations, "");
+        fs.writeFileSync(
+          path.join(pluginDir, "openclaw.plugin.json"),
+          JSON.stringify({
+            id: harnessId,
+            activation: { onAgentHarnesses: [harnessId] },
+            configSchema: { type: "object", additionalProperties: false },
+          }),
+        );
+        const pluginFile = path.join(pluginDir, "index.cjs");
+        fs.writeFileSync(
+          pluginFile,
+          `const fs = require("node:fs");
+const { threadId } = require("node:worker_threads");
+const observe = (event, params = {}) => fs.appendFileSync(${JSON.stringify(observations)}, JSON.stringify({ event, threadId, filename: __filename, agentId: params.agentId, agentDir: params.agentDir, workspaceDir: params.workspaceDir }) + "\\n");
+module.exports = { id: ${JSON.stringify(harnessId)}, register(api) {
+  observe("register");
+  api.registerAgentHarness({
+    id: ${JSON.stringify(harnessId)}, label: "Unselected native picker owner",
+    authBootstrap: "harness", supports: () => ({ supported: true }),
+    runAttempt: async () => ({ ok: false, error: "unused" }),
+    loadModelCatalog: async (params) => {
+      observe("native-catalog", params);
+      return [{ provider: ${JSON.stringify(PROVIDER_ID)}, id: "unselected-native-model",
+        name: "Unselected native model", nativeRuntime: ${JSON.stringify(harnessId)} }];
+    },
+  });
+} };`,
+        );
+        seed.config.plugins.allow.push(harnessId);
+        seed.config.plugins.load.paths.push(pluginFile);
+        Object.assign(seed.config.plugins.entries, { [harnessId]: { enabled: true } });
+      },
+      true,
+      { agentCount: 1 },
+    );
+    const snapshot = fixture.snapshots[0]!;
+    // No configured model, primary, or picker runtime selects the enabled harness.
+    expect(fixture.config.agents.defaults.models).toEqual({});
+    expect(snapshot.pluginRegistry?.agentHarnesses.map(({ harness }) => harness.id)).toContain(
+      harnessId,
+    );
+    const catalog = await loadCompletedFullCatalog(snapshot);
+    expect(catalog.entries).toContainEqual(
+      expect.objectContaining({ provider: PROVIDER_ID, id: "plugin-generation-v1" }),
+    );
+    const native = catalog.entries.find(({ id }) => id === "unselected-native-model");
+    expect(native).toMatchObject({ provider: PROVIDER_ID, nativeRuntime: harnessId });
+    const auth = getPreparedModelFullCatalogAuth(catalog)!;
+    expect(auth.authStore.profiles[`${PROVIDER_ID}:default`]).toMatchObject({
+      key: `synthetic-catalog-${fixture.agentIds[0]}`,
+    });
+    const projector = createGatewayAgentModelCatalogProjector({
+      cfg: fixture.config,
+      agentId: snapshot.agentId!,
+      snapshot: catalog,
+      metadataSnapshot: snapshot.metadataSnapshot,
+      preparedAuthStore: auth.authStore,
+      preparedRuntimeAuthModes: auth.authModes,
+      pluginRegistry: snapshot.pluginRegistry,
+      isCurrent: snapshot.isCurrent,
+      observationConfig: snapshot.observationConfig,
+    });
+    expect(projector.evaluateNative(native!, await projector.evaluateEntry(native!))).toMatchObject(
+      {
+        availability: true,
+      },
+    );
+    const events = fs
+      .readFileSync(observations, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event: string; threadId: number; filename: string });
+    console.info("Unselected native catalog ownership", JSON.stringify(events));
+    expect(events.filter(({ event }) => event === "native-catalog")).toEqual([
+      expect.objectContaining({
+        threadId,
+        agentId: snapshot.agentId,
+        agentDir: snapshot.agentDir,
+        workspaceDir: fixture.entries[fixture.agentIds[0]!]!.workspace,
+      }),
+    ]);
+    expect(events.filter((event) => event.threadId !== threadId)).toEqual([]);
+    const parentSource = events[0]!.filename;
+    const captureRoot = parentSource.slice(
+      0,
+      parentSource.indexOf(`${path.sep}openclaw-plugin-build-`),
+    );
+    const workerRoots = fs
+      .readdirSync(captureRoot)
+      .filter((name) => name.startsWith("openclaw-model-catalog-"));
+    expect(workerRoots).toHaveLength(1);
+    const workerRoot = path.join(captureRoot, workerRoots[0]!);
+    const workerCaptures = fs
+      .readdirSync(workerRoot)
+      .filter((name) => name.startsWith("openclaw-plugin-build-"));
+    // The legacy external provider (no runtimeAugment declaration) keeps its one capture.
+    expect(workerCaptures).toHaveLength(1);
+    expect(
+      fs.existsSync(
+        path.join(
+          workerRoot,
+          workerCaptures[0]!,
+          "package-0",
+          "node_modules",
+          "native-only-plugin",
+        ),
+      ),
+    ).toBe(false);
+    expect(snapshot.isCurrent()).toBe(true);
+  });
+
   it("reuses one Gateway catalog worker and source graph across agent publications", async () => {
     const spawned: Worker[] = [];
     const workerChannel = channel("worker_threads");
