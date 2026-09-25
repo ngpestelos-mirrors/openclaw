@@ -112,7 +112,6 @@ import {
   type AgentEventHandlerOptions,
 } from "./server-chat.js";
 import { broadcastChatError, broadcastChatFinal } from "./server-methods/chat-broadcast.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
 import { loadSessionEntry } from "./session-utils.js";
 
 function waitForFast<T>(
