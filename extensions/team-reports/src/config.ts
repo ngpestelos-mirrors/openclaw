@@ -1,7 +1,6 @@
 import { open } from "node:fs/promises";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/plugin-entry";
 import { z } from "zod";
-import type { DiscordSourceConfig, GithubSourceConfig, Person } from "./types.js";
 
 const nonempty = z.string().min(1).regex(/\S/);
 const secretInputSchema = z.union([
@@ -140,7 +139,7 @@ export function parseTeamReportsConfig(
 const peopleFileSchema = z.strictObject({ people: z.array(personSchema) });
 const MAX_PEOPLE_FILE_BYTES = 2 * 1024 * 1024;
 
-async function readPeopleFile(filePath: string): Promise<Person[]> {
+async function readPeopleFile(filePath: string) {
   const handle = await open(filePath, "r");
   try {
     const stat = await handle.stat();
@@ -157,7 +156,7 @@ async function readPeopleFile(filePath: string): Promise<Person[]> {
 export async function resolveTeamReportsConfig(
   config: TeamReportsConfig,
   fullConfig: OpenClawConfig,
-): Promise<{ github: GithubSourceConfig; discord?: DiscordSourceConfig; people: Person[] }> {
+) {
   const people = config.peopleFile
     ? await readPeopleFile(config.peopleFile)
     : (config.people ?? []);
