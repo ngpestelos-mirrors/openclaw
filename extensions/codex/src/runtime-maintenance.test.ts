@@ -60,6 +60,9 @@ describe("selected Codex runtime maintenance", () => {
       env: { OPENCLAW_STATE_DIR: root },
     };
     const check = createCodexRuntimeMaintenanceChecks(operation, deps)[0];
+    if (!check) {
+      throw new Error("Expected a registered Codex runtime maintenance check");
+    }
     return { cfg, ctx, check, deps, operation, controller, root };
   }
 
@@ -70,14 +73,20 @@ describe("selected Codex runtime maintenance", () => {
     const result = await f.check.repair!({ ...f.ctx, mode: "fix" }, findings);
     expect(result.status).toBe("repaired");
     expect(result.changes[0]).toContain("Previous runtime retained: /rollback/ChatGPT.app");
-    expect(f.deps.probe.mock.calls[0][0]).toMatchObject({
-      appBundlePath: "/staged/ChatGPT.app",
-      agents: [expect.objectContaining({ model: "gpt-5.6-sol", requiresComputerUse: true })],
-    });
+    expect(f.deps.probe).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        appBundlePath: "/staged/ChatGPT.app",
+        agents: [expect.objectContaining({ model: "gpt-5.6-sol", requiresComputerUse: true })],
+      }),
+    );
     await expect(f.check.detect(f.ctx, { findings })).resolves.toEqual([]);
-    expect(f.deps.probe.mock.calls[1][0]).toMatchObject({
-      appBundlePath: "/Applications/ChatGPT.app",
-    });
+    expect(f.deps.probe).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        appBundlePath: "/Applications/ChatGPT.app",
+      }),
+    );
     expect(f.deps.resolveCommand).toHaveBeenCalledTimes(3);
   });
 
@@ -92,9 +101,12 @@ describe("selected Codex runtime maintenance", () => {
     );
     const findings = await f.check.detect(f.ctx);
     await f.check.repair!({ ...f.ctx, mode: "fix" }, findings);
-    expect(f.deps.probe.mock.calls[0][0]).toMatchObject({
-      agents: [expect.objectContaining({ requiresComputerUse: true, codexHome: home })],
-    });
+    expect(f.deps.probe).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        agents: [expect.objectContaining({ requiresComputerUse: true, codexHome: home })],
+      }),
+    );
   });
 
   it("preserves cleanup uncertainty instead of converting it to a repair warning", async () => {

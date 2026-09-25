@@ -27,6 +27,14 @@ vi.mock("./computer-use-node-repl.js", () => ({
 }));
 vi.mock("./computer-use.js", () => ({ readCodexComputerUseStatus: fake.readiness }));
 
+function probeHome(): string {
+  const home: unknown = fake.start.mock.calls[0]?.[0]?.env?.CODEX_HOME;
+  if (typeof home !== "string" || !home) {
+    throw new Error("Expected the probe to start with a disposable Codex home");
+  }
+  return home;
+}
+
 describe("disposable selected-runtime validation", () => {
   const dirs = useAutoCleanupTempDirTracker(afterEach);
   beforeEach(() => {
@@ -86,7 +94,7 @@ describe("disposable selected-runtime validation", () => {
     };
     return {
       appBundlePath,
-      agents: [agent],
+      agents: [agent] as const,
       signal: controller.signal,
       assertCurrent: vi.fn(),
       controller,
@@ -97,7 +105,7 @@ describe("disposable selected-runtime validation", () => {
   it("uses hidden metadata without credentials or inference and joins the client before cleanup", async () => {
     const f = await fixture();
     fake.closeAndWait.mockImplementation(async () => {
-      const home = fake.start.mock.calls[0][0].env.CODEX_HOME;
+      const home = probeHome();
       await expect(fs.stat(home)).resolves.toBeDefined();
       await expect(fs.stat(path.join(home, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
       return { exited: true, cleanup: "closed" };
@@ -109,8 +117,8 @@ describe("disposable selected-runtime validation", () => {
       expect.anything(),
     );
     expect(fake.request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
-    expect(fake.start.mock.calls[0][0].env.CODEX_HOME).not.toBe(f.agents[0].codexHome);
-    await expect(fs.stat(fake.start.mock.calls[0][0].env.CODEX_HOME)).rejects.toMatchObject({
+    expect(probeHome()).not.toBe(f.agents[0].codexHome);
+    await expect(fs.stat(probeHome())).rejects.toMatchObject({
       code: "ENOENT",
     });
     expect(fake.closeAndWait).toHaveBeenCalledOnce();
@@ -161,7 +169,8 @@ describe("disposable selected-runtime validation", () => {
         ],
       }),
     );
-    expect(fake.service.mock.calls[0][0].codexHome).not.toBe(f.agents[0].codexHome);
+    expect(fake.service).toHaveBeenCalledWith(expect.objectContaining({ codexHome: probeHome() }));
+    expect(probeHome()).not.toBe(f.agents[0].codexHome);
     expect(await fs.readFile(path.join(f.agents[0].codexHome, "config.toml"), "utf8")).toBe(config);
   });
 
@@ -216,7 +225,7 @@ describe("disposable selected-runtime validation", () => {
       await expect(probeCodexDesktopRuntime(f)).rejects.toMatchObject({
         code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN",
       });
-      const home = fake.start.mock.calls[0][0].env.CODEX_HOME;
+      const home = probeHome();
       try {
         await expect(fs.stat(home)).resolves.toBeDefined();
       } finally {

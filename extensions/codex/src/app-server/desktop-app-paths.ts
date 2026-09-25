@@ -83,8 +83,11 @@ export function resolveMacOSDesktopCodexAppPathCandidateForBundle(
       return undefined;
     }
   }
-  return isCodexManagedDesktopAppPath(appBundlePath, params.managedRoot)
-    ? candidateAtPath(path.basename(appBundlePath) as "ChatGPT.app" | "Codex.app", appBundlePath)
+  const template = MACOS_DESKTOP_CODEX_APP_PATH_CANDIDATES.find(
+    (candidate) => candidate.appName === path.basename(appBundlePath),
+  );
+  return template && isCodexManagedDesktopAppPath(appBundlePath, params.managedRoot)
+    ? candidateAtPath(template.appName, appBundlePath)
     : undefined;
 }
 

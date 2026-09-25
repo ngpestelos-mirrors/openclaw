@@ -28,13 +28,19 @@ describe("official Codex desktop update transaction", () => {
       if (command === "/usr/sbin/sysctl") {
         return { stdout: "0\n", stderr: "" };
       } else if (command === "/usr/bin/curl") {
-        await fs.writeFile(args[args.indexOf("--output") + 1], "installer");
+        await fs.writeFile(requiredArgument(args, args.indexOf("--output") + 1), "installer");
       } else if (command === "/usr/bin/hdiutil" && args[0] === "attach") {
         for (const mountedName of mountedNames) {
-          await writeApp(path.join(args[args.indexOf("-mountpoint") + 1], mountedName), candidate);
+          await writeApp(
+            path.join(requiredArgument(args, args.indexOf("-mountpoint") + 1), mountedName),
+            candidate,
+          );
         }
       } else if (command === "/usr/bin/ditto") {
-        await fs.cp(args[1], args[2], { recursive: true, preserveTimestamps: true });
+        await fs.cp(requiredArgument(args, 1), requiredArgument(args, 2), {
+          recursive: true,
+          preserveTimestamps: true,
+        });
       } else if (command === "/usr/bin/plutil") {
         return { stdout: await fs.readFile(args.at(-1)!, "utf8"), stderr: "" };
       } else if (command === "/usr/bin/codesign") {
@@ -82,6 +88,13 @@ describe("official Codex desktop update transaction", () => {
       events,
       execute,
       validateCandidate,
+      candidatePath: () => {
+        const firstCall = validateCandidate.mock.calls[0];
+        if (!firstCall) {
+          throw new Error("Expected a candidate compatibility probe");
+        }
+        return firstCall[0].appBundlePath;
+      },
       params,
       setCandidate: (next: FixtureIdentity) => {
         candidate = next;
@@ -147,7 +160,10 @@ describe("official Codex desktop update transaction", () => {
         backupPath: f.target,
       });
       expect(result.appBundlePath).not.toBe(f.target);
-      expect(f.validateCandidate.mock.calls[0][0].appBundlePath).toBe(result.appBundlePath);
+      expect(f.validateCandidate).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ appBundlePath: result.appBundlePath }),
+      );
       await expect(readIdentity(result.appBundlePath)).resolves.toEqual(OLD);
       await expect(readIdentity(f.target)).resolves.toEqual(OLD);
       if (candidate.build === "99") {
@@ -178,7 +194,10 @@ describe("official Codex desktop update transaction", () => {
       newVersion: "101",
       appBundlePath: first.appBundlePath,
     });
-    expect(f.validateCandidate.mock.calls[0][0].appBundlePath).toBe(first.appBundlePath);
+    expect(f.validateCandidate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ appBundlePath: first.appBundlePath }),
+    );
     expect(f.execute.mock.calls.some(([command]) => command === "/usr/bin/ditto")).toBe(false);
     expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toEqual(selection);
     await expect(readIdentity(first.appBundlePath)).resolves.toEqual(NEW);
@@ -321,7 +340,7 @@ describe("official Codex desktop update transaction", () => {
       expect(commandProcessCleanup.isUncertain(failure)).toBe(true);
       expect(failure).toBeInstanceOf(Error);
       expect((failure as Error).message).toContain("Unselected candidate retained at");
-      const candidate = f.validateCandidate.mock.calls[0][0].appBundlePath;
+      const candidate = f.candidatePath();
       await expect(readIdentity(candidate)).resolves.toEqual(NEW);
       expect(managedDesktop.readCodexManagedDesktopSelection(f.managedRoot)).toBeUndefined();
       expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
@@ -349,9 +368,11 @@ describe("official Codex desktop update transaction", () => {
       expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
       expect(f.events.some((event) => event.startsWith("hdiutil detach"))).toBe(false);
       if (failedCommand === "/usr/bin/ditto") {
-        const destination = f.execute.mock.calls.find(
-          ([command]) => command === failedCommand,
-        )![1][2];
+        const copy = f.execute.mock.calls.find(([command]) => command === failedCommand);
+        if (!copy) {
+          throw new Error("Expected the admitted copy command");
+        }
+        const destination = requiredArgument(copy[1], 2);
         await expect(readIdentity(destination)).resolves.toEqual(NEW);
       }
       await expect(readIdentity(f.target)).resolves.toEqual(OLD);
@@ -491,7 +512,7 @@ describe("official Codex desktop update transaction", () => {
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow(
       /Selection state is unconfirmed; candidate retained at/u,
     );
-    const candidate = f.validateCandidate.mock.calls[0][0].appBundlePath;
+    const candidate = f.candidatePath();
     await expect(readIdentity(candidate)).resolves.toEqual(NEW);
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
   });
@@ -561,6 +582,14 @@ describe("official Codex desktop update transaction", () => {
     },
   );
 });
+
+function requiredArgument(args: readonly string[], index: number): string {
+  const argument = args[index];
+  if (argument === undefined) {
+    throw new Error(`Missing fixture command argument at index ${index}`);
+  }
+  return argument;
+}
 
 async function writeApp(app: string, identity: FixtureIdentity): Promise<void> {
   await fs.mkdir(path.join(app, "Contents", "Resources"), { recursive: true });

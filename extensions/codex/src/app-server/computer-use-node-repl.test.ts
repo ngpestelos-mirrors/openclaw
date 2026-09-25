@@ -30,7 +30,7 @@ describe("desktop Computer Use node_repl process config", () => {
       [path.join(resources, "cua_node/lib/node_modules/@oai/sky/package.json"), "{}"],
       [path.join(service, "Contents/Info.plist"), "fixture"],
       [path.join(home, "config.toml"), '[plugins."computer-use@openai-bundled"]\nenabled = true\n'],
-    ]) {
+    ] as const) {
       await fs.mkdir(path.dirname(file), { recursive: true });
       await fs.writeFile(file, text, { mode: 0o700 });
     }

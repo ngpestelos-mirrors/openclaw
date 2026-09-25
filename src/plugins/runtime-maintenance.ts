@@ -96,6 +96,7 @@ export async function runPluginRuntimeMaintenance(
               continue;
             }
             const load = getPluginSetupModuleLoader(owner, artifact, owner.rootDir);
+            // SAFETY: The official owner's V1 factory signature is checked for callability below.
             const api = load(artifact) as Partial<PluginRuntimeMaintenanceApiV1>;
             const createChecks = api.createPluginRuntimeMaintenanceChecksV1;
             if (typeof createChecks !== "function") {

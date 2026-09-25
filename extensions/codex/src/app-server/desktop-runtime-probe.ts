@@ -1,12 +1,12 @@
 /** Candidate validation uses disposable native state: no credentials, inference, or desktop input. */
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import {
   commandProcessCleanup,
   withCommandProcessScope,
 } from "openclaw/plugin-sdk/process-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { parse as parseToml } from "smol-toml";
 import { CodexAppServerClient } from "./client.js";
 import { ensureCodexManagedBundledMarketplace } from "./computer-use-marketplace.js";
@@ -49,7 +49,9 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
     params.assertCurrent();
   };
   assertCurrent();
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-probe-"));
+  const root = await fs.mkdtemp(
+    path.join(resolvePreferredOpenClawTmpDir(), "openclaw-codex-probe-"),
+  );
   let cleanupConfirmed = true;
   try {
     for (const agent of params.agents) {
@@ -125,10 +127,11 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
             "No compatible signed Computer Use service is available for the selected policy.",
           );
         }
-        const manifest = JSON.parse(
+        const manifest: unknown = JSON.parse(
           await fs.readFile(path.join(pluginSource, ".codex-plugin", "plugin.json"), "utf8"),
-        ) as { version?: unknown };
+        );
         if (
+          !isRecord(manifest) ||
           typeof manifest.version !== "string" ||
           !/^[\w.-]+$/u.test(manifest.version) ||
           manifest.version === "." ||

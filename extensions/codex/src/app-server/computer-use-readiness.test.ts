@@ -88,15 +88,18 @@ describe("Codex Computer Use readiness", () => {
       pluginMcpServers: [],
     });
     let reloaded = false;
-    const request = vi.fn(async (method: string, params?: unknown) => {
+    const unavailable = createComputerUseRequest({ installed: false });
+    const request: CodexComputerUseRequest = async <T>(
+      ...[method, params, options]: Parameters<CodexComputerUseRequest>
+    ) => {
       if (method === "config/mcpServer/reload") {
         reloaded = true;
       }
       if (method === "mcpServerStatus/list" && !reloaded) {
-        return { data: [], nextCursor: null };
+        return unavailable<T>(method, params, options);
       }
-      return fixture(method, params);
-    });
+      return fixture<T>(method, params, options);
+    };
     const status = await ensureCodexComputerUse({
       request,
       pluginConfig: { computerUse: { enabled: true, strictReadiness: true, autoInstall: true } },

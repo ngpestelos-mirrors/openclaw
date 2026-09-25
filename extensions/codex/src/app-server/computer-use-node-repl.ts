@@ -2,6 +2,7 @@
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { parse as parseToml } from "smol-toml";
 import { resolveMacOSDesktopCodexAppPathCandidateForBundle } from "./desktop-app-paths.js";
 import { normalizeCodexAppServerArgs, readCodexAppServerConfigOptions } from "./launch-args.js";
@@ -125,10 +126,12 @@ async function readComputerUseOwnershipFailure(
         throw error;
       }));
   const config = parseToml(configText);
-  const plugin = asRecord(asRecord(config.plugins)?.["computer-use@openai-bundled"]);
+  const plugin = asOptionalRecord(
+    asOptionalRecord(config.plugins)?.["computer-use@openai-bundled"],
+  );
   if (
-    asRecord(config.features)?.plugins === false ||
-    asRecord(config.features)?.computer_use === false ||
+    asOptionalRecord(config.features)?.plugins === false ||
+    asOptionalRecord(config.features)?.computer_use === false ||
     plugin?.enabled === false
   ) {
     return "native Computer Use or plugin support is disabled";
@@ -136,7 +139,9 @@ async function readComputerUseOwnershipFailure(
   if (!params.enabled && !plugin) {
     return "the official native Computer Use plugin is not enabled";
   }
-  if (Object.hasOwn(asRecord(config.mcp_servers) ?? {}, CODEX_COMPUTER_USE_NODE_REPL_SERVER)) {
+  if (
+    Object.hasOwn(asOptionalRecord(config.mcp_servers) ?? {}, CODEX_COMPUTER_USE_NODE_REPL_SERVER)
+  ) {
     return "node_repl has explicit native MCP configuration";
   }
   // Native profiles and CLI overrides have higher authority than managed defaults.
@@ -152,7 +157,7 @@ async function readComputerUseOwnershipFailure(
   ) {
     return "a native profile or explicit launch override owns the integration";
   }
-  const marketplace = asRecord(asRecord(config.marketplaces)?.["openai-bundled"]);
+  const marketplace = asOptionalRecord(asOptionalRecord(config.marketplaces)?.["openai-bundled"]);
   if (!marketplace) {
     return undefined;
   }
@@ -189,12 +194,6 @@ async function readComputerUseOwnershipFailure(
     return "the native marketplace does not reference an owned desktop generation";
   }
   return undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 async function pathExists(filePath: string): Promise<boolean> {

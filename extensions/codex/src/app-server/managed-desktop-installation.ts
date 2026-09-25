@@ -5,6 +5,7 @@ import path from "node:path";
 import { withFileLock } from "openclaw/plugin-sdk/file-lock";
 import {
   assertNoSymlinkParentsSync,
+  extractErrorCode,
   readRegularFileSync,
   replaceFileAtomic,
 } from "openclaw/plugin-sdk/security-runtime";
@@ -199,7 +200,7 @@ function readReceipt(root: string): { contents: string; identity: string } | und
   try {
     before = fs.lstatSync(receiptPath, { bigint: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (extractErrorCode(error) === "ENOENT") {
       return undefined;
     }
     throw error;
