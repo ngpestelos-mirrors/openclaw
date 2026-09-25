@@ -71,7 +71,7 @@ async function selectView(page: Page, label: string, value: string) {
 const customizationOrigins = new WeakMap<Page, string>();
 
 async function openCustomizeUi(page: Page) {
-  const pluginsUrl = new URL("plugins", suite.server.baseUrl).href;
+  const pluginsUrl = new URL("settings/plugins?tab=advanced", suite.server.baseUrl).href;
   if (page.url() !== pluginsUrl) {
     customizationOrigins.set(page, page.url());
     await page.evaluate((url) => {
@@ -95,7 +95,7 @@ async function closeCustomizeUi(page: Page) {
 
 suite.define(() => {
   it.each([true, false])(
-    "keeps page-only reload on Plugins without an idle floating control (admin: %s)",
+    "keeps page-only reload in Plugins Advanced without an idle floating control (admin: %s)",
     async (admin) => {
       await suite.withPage(
         { viewport: { width: 1280, height: 900 }, serviceWorkers: "block" },
@@ -129,7 +129,12 @@ suite.define(() => {
           ).toBe(0);
           await page.getByRole("link", { name: "Plugins", exact: true }).click();
           await page.getByRole("heading", { name: "Plugins", exact: true }).waitFor();
+          expect(
+            await page.getByRole("button", { name: "Customize UI", exact: true }).count(),
+          ).toBe(0);
           if (!admin) {
+            await page.goto(`${suite.server.baseUrl}settings/plugins?tab=advanced`);
+            await page.getByRole("heading", { name: "Plugins", exact: true }).waitFor();
             expect(
               await page.getByRole("button", { name: "Customize UI", exact: true }).count(),
             ).toBe(0);
