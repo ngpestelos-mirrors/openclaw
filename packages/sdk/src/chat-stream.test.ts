@@ -238,6 +238,31 @@ describe("SDK chat streaming", () => {
     }
   });
 
+  it("releases baseline protection when a custom transport event stream ends", async () => {
+    const { transport, oc } = createClientFixture();
+    try {
+      await oc.connect();
+      const observedLast = observeGatewaySequence(oc, 101);
+      for (let seq = 1; seq <= 101; seq += 1) {
+        transport.emit(
+          createChatEvent(`run-${seq}`, `session-${seq}`, seq, "delta", "unfinished", seq, {
+            deltaText: "unfinished",
+          }),
+        );
+      }
+      await observedLast;
+      const exhausted = oc.events()[Symbol.asyncIterator]().next();
+      transport.close();
+      await expect(exhausted).resolves.toEqual({ done: true, value: undefined });
+      await expect(oc.runEvents("run-1")[Symbol.asyncIterator]().next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+    } finally {
+      await oc.close();
+    }
+  });
+
   it("retains an active chat baseline beyond the ordinary replay run limit", async () => {
     const { transport, oc } = createClientFixture();
     let iterator: AsyncIterator<OpenClawEvent> | undefined;

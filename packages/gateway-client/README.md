@@ -199,6 +199,12 @@ The high-level `@openclaw/sdk` retains reconstructed chat in its normalized
 run-event replay, so late readers can recover the text after the initial wire
 snapshot is evicted. Its `rawEvents()` and each normalized event's `raw` field
 still expose the original wire event, including omitted `message` fields.
+Active chat baselines remain protected while their connection is current. On the
+first event after reconnect, the SDK retires the previous connection's baseline
+protection and keeps only its bounded replay history. Ending the transport event
+stream also retires that protection. Custom `OpenClawTransport` implementations
+must deliver terminal outcomes or end a retired event stream; the generic
+transport interface does not expose a reconnect notification.
 
 ## Bundled internals
 

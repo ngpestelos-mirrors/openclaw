@@ -12,6 +12,12 @@ import type {
 type GatewayClientLike = Pick<GatewayClient, "request" | "stopAndWait">;
 
 const RAW_EVENT_REPLAY_LIMIT = 1000;
+const eventConnectionEpochs = new WeakMap<GatewayEvent, object>();
+
+/** Internal connection provenance; raw event objects and payloads remain unchanged. */
+export function readGatewayEventConnectionEpoch(event: GatewayEvent): object | undefined {
+  return eventConnectionEpochs.get(event);
+}
 
 /** Explicit SDK projection with its broader identity and callback contracts preserved. */
 type GatewayClientTransportOptions = Pick<
@@ -88,10 +94,12 @@ export class GatewayClientTransport implements ConnectableOpenClawTransport {
     }
     this.connectPromise = new Promise<void>((resolve, reject) => {
       this.rejectPendingConnect = reject;
+      let connectionEpoch = {};
       const client = new GatewayClient({
         ...this.options,
         onEvent: (event: unknown) => {
           const normalized = toGatewayEvent(event);
+          eventConnectionEpochs.set(normalized, connectionEpoch);
           this.eventsHub.publish(normalized);
           this.options.onEvent?.(normalized);
         },
@@ -132,7 +140,10 @@ export class GatewayClientTransport implements ConnectableOpenClawTransport {
             }
           }
         },
-        onClose: this.options.onClose,
+        onClose: (code: number, reason: string) => {
+          connectionEpoch = {};
+          this.options.onClose?.(code, reason);
+        },
         onGap: this.options.onGap,
       } as never);
 

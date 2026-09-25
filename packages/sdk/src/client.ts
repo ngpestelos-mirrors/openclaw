@@ -12,7 +12,11 @@ import {
 import { EventHub } from "./event-hub.js";
 import { normalizeGatewayEvent } from "./normalize.js";
 import { readSdkRunTimestamp, resolveSdkRunWaitStatus } from "./run-terminal.js";
-import { GatewayClientTransport, isConnectableTransport } from "./transport.js";
+import {
+  GatewayClientTransport,
+  isConnectableTransport,
+  readGatewayEventConnectionEpoch,
+} from "./transport.js";
 import type {
   AgentsCreateParams,
   AgentsDeleteParams,
@@ -188,6 +192,7 @@ export class OpenClaw {
     string,
     { events: OpenClawEvent[]; chatMessage?: unknown }
   >();
+  private replayConnectionEpoch: object | undefined;
   private connected = false;
   private closed = false;
   private eventPumpPromise: Promise<void> | null = null;
@@ -413,6 +418,11 @@ export class OpenClaw {
           if (result.done) {
             break;
           }
+          const connectionEpoch = readGatewayEventConnectionEpoch(result.value);
+          if (connectionEpoch && connectionEpoch !== this.replayConnectionEpoch) {
+            this.retireReplayBaselines();
+            this.replayConnectionEpoch = connectionEpoch;
+          }
           const normalized = this.recordReplayEvent(normalizeGatewayEvent(result.value));
           this.normalizedEvents.publish(normalized);
         }
@@ -429,6 +439,7 @@ export class OpenClaw {
             hasPumpError = true;
           }
         }
+        this.retireReplayBaselines();
       }
       if (hasPumpError) {
         this.normalizedEvents.close(pumpError);
@@ -471,16 +482,31 @@ export class OpenClaw {
     if (events.length > MAX_REPLAY_EVENTS_PER_RUN) {
       events.splice(0, events.length - MAX_REPLAY_EVENTS_PER_RUN);
     }
-    if (trimReplayRuns && this.replayByRunId.size > MAX_REPLAY_RUNS) {
-      let retained = 0;
-      // Active baselines cannot be evicted: later wire frames contain only suffixes.
-      for (const [runId, candidate] of [...this.replayByRunId].reverse()) {
-        if (candidate.chatMessage === undefined && ++retained > MAX_REPLAY_RUNS) {
-          this.replayByRunId.delete(runId);
-        }
-      }
+    if (trimReplayRuns) {
+      this.trimReplayRuns();
     }
     return event;
+  }
+
+  private retireReplayBaselines(): void {
+    this.replayConnectionEpoch = undefined;
+    for (const replay of this.replayByRunId.values()) {
+      delete replay.chatMessage;
+    }
+    this.trimReplayRuns();
+  }
+
+  private trimReplayRuns(): void {
+    if (this.replayByRunId.size <= MAX_REPLAY_RUNS) {
+      return;
+    }
+    let retained = 0;
+    // Active baselines cannot be evicted: later wire frames contain only suffixes.
+    for (const [runId, candidate] of [...this.replayByRunId].reverse()) {
+      if (candidate.chatMessage === undefined && ++retained > MAX_REPLAY_RUNS) {
+        this.replayByRunId.delete(runId);
+      }
+    }
   }
 
   private replaySnapshot(runId: string): OpenClawEvent[] {
