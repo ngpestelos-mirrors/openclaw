@@ -66,7 +66,7 @@ describe("dispatch retry after queued ingress abandonment", () => {
         });
         const queue = createTestIngressQueue(stateDir, { now: () => clock });
         const released = createDeferredCore<boolean>();
-        const release = queue.release;
+        const release = queue.release.bind(queue);
         vi.spyOn(queue, "release").mockImplementation((...args) => {
           const committed = release(...args);
           released.resolve(committed);

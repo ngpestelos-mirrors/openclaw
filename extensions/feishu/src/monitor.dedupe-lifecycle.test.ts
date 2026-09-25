@@ -174,7 +174,7 @@ describe("Feishu account replay work ownership", () => {
                   accountId: "test",
                   stateDir: state.stateDir,
                 });
-                const release = ingressQueue.release;
+                const release = ingressQueue.release.bind(ingressQueue);
                 vi.spyOn(ingressQueue, "release").mockImplementation((...args) => {
                   const committed = release(...args);
                   evicted.resolve(committed);
