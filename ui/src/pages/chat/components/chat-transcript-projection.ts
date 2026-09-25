@@ -206,7 +206,7 @@ export function projectChatTranscript(
       toolCardId,
       !(expanded ?? expandedToolCards.get(toolCardId) ?? false),
     );
-    requestUpdate();
+    state.transcriptRenderContext.onRequestUpdate?.();
   };
   const toggleAssistantMessageExpanded = (messageId: string) => {
     const key = recoveryKey(messageId);
@@ -628,8 +628,6 @@ export function projectChatTranscript(
     props.sessionKey,
     props.presented,
     props.transcriptVisible,
-    // Row callbacks belong to the current pane lifecycle even when content is unchanged.
-    props.onRequestUpdate,
     // Invalidate settled rows when spawn metadata arrives, not on activity/title patches.
     avatarPlacement,
     props.boardProvider,
@@ -685,6 +683,8 @@ export function projectChatTranscript(
     props.replyMessageAccess?.navigationId ?? "",
     turnRecap === null ? "" : `${turnRecap.runtimeMs}:${turnRecap.outputTokens ?? ""}`,
   ]);
+  // Rebind disclosures to the current pane without repainting unchanged rows.
+  state.transcriptRenderContext.onRequestUpdate = props.onRequestUpdate;
   state.transcriptRenderContext.onSetReply = props.onSetReply;
   state.transcriptRenderContext.onOpenReply = (replyToId) => {
     const loaded = loadedReplySources.get(replyToId);

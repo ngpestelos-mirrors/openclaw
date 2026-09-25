@@ -79,6 +79,7 @@ export type ChatThreadState = {
   searchReturnFocusOwner: HTMLElement | null;
   transcriptRenderDependencies: readonly unknown[];
   transcriptRenderContext: {
+    onRequestUpdate?: () => void;
     onSetReply?: (target: MessageReplyTarget) => void;
     onOpenReply?: (replyToId: string) => void;
     onAsyncQuestionDiscard?: (item: ChatQueueItem) => void;
