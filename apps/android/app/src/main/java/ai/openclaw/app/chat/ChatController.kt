@@ -813,6 +813,7 @@ class ChatController internal constructor(
   private val pendingRunProjectionsByRunId = ConcurrentHashMap<String, PendingRunProjection>()
   private val pendingRunTimeoutMs = 120_000L
   private val recoveryHistoryRetryDelayMs = 750L
+  private val transcriptHistoryRefresh = ChatTranscriptHistoryRefresh(scope, recoveryHistoryRetryDelayMs)
   private var recoveryHistoryReconciliationGeneration = -1L
   private var recoveryHistoryReconciliationJob: Job? = null
 
@@ -7676,7 +7677,8 @@ class ChatController internal constructor(
   ) {
     val sessionKey = _sessionKey.value
     val generation = historyLoadGeneration.get()
-    scope.launch {
+
+    suspend fun refresh() {
       val result =
         try {
           fetchAndApplyHistory(
@@ -7686,7 +7688,8 @@ class ChatController internal constructor(
             runIdsToReconcile = runIdsToReconcile,
             markCompletedTranscript = runIdsToReconcile.isNotEmpty(),
           )
-        } catch (_: Throwable) {
+        } catch (err: Throwable) {
+          if (purpose == HistoryRefreshPurpose.Transcript) throw err
           HistoryRefreshResult.Failed
         }
       val appliedPurpose = (result as? HistoryRefreshResult.Applied)?.purpose ?: purpose
@@ -7697,6 +7700,24 @@ class ChatController internal constructor(
         scheduleRecoveryHistoryReconciliation(sessionKey, generation, runIdsToReconcile)
       }
     }
+    if (purpose == HistoryRefreshPurpose.Transcript) {
+      synchronized(gatewayScopeApplyLock) {
+        if (!isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())) return
+        val owner = ChatTranscriptHistoryRefresh.Owner(sessionKey, generation, currentCacheScope(), resolveAgentIdForSessionKey(sessionKey))
+        transcriptHistoryRefresh.request(
+          owner,
+          isCurrent = {
+            synchronized(gatewayScopeApplyLock) {
+              isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get()) &&
+                owner.gatewayScope == currentCacheScope() && owner.agentId == resolveAgentIdForSessionKey(_sessionKey.value)
+            }
+          },
+          refresh = ::refresh,
+        )
+      }
+      return
+    }
+    scope.launch { refresh() }
   }
 
   private fun parseHistory(
