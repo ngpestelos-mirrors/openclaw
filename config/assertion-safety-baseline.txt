@@ -502,7 +502,6 @@ extensions/imessage/src/probe.ts	1
 extensions/imessage/src/remote-host.ts	1
 extensions/imessage/src/send.ts	2
 extensions/imessage/src/setup-core.ts	1
-extensions/imessage/src/shared.ts	1
 extensions/inworld/tts.ts	2
 extensions/irc/src/channel.ts	5
 extensions/irc/src/inbound.ts	6
@@ -628,7 +627,7 @@ extensions/matrix/src/setup-core.ts	5
 extensions/matrix/src/setup-dm-policy.ts	5
 extensions/matrix/src/test-runtime.ts	9
 extensions/matrix/src/tool-actions.ts	1
-extensions/mattermost/src/channel.ts	8
+extensions/mattermost/src/channel.ts	6
 extensions/mattermost/src/gateway-auth-bypass.ts	3
 extensions/mattermost/src/mattermost/client.ts	8
 extensions/mattermost/src/mattermost/directory.ts	2
@@ -744,7 +743,7 @@ extensions/msteams/src/qa/adapter.runtime.ts	2
 extensions/msteams/src/qa/bot-framework-server.ts	3
 extensions/msteams/src/qa/private-runtime.ts	1
 extensions/msteams/src/reply-stream-controller.ts	1
-extensions/msteams/src/sdk-proactive.ts	7
+extensions/msteams/src/sdk-proactive.ts	3
 extensions/msteams/src/sdk.ts	7
 extensions/msteams/src/setup-surface.ts	7
 extensions/msteams/src/sqlite-state.ts	1
@@ -933,7 +932,7 @@ extensions/qa-lab/src/runtime-tool-metadata.ts	5
 extensions/qa-lab/src/scenario-catalog.ts	1
 extensions/qa-lab/src/scenario-flow-runner.ts	5
 extensions/qa-lab/src/self-check-scenario.ts	2
-extensions/qa-lab/src/suite-launch.runtime.ts	2
+extensions/qa-lab/src/suite-launch.runtime.ts	1
 extensions/qa-lab/src/suite-planning.ts	2
 extensions/qa-lab/src/suite-run-standard.ts	1
 extensions/qa-lab/src/suite-runtime-agent-media.ts	3
@@ -982,7 +981,6 @@ extensions/signal/src/client.ts	4
 extensions/signal/src/monitor/event-handler.ts	1
 extensions/signal/src/probe.ts	1
 extensions/signal/src/send.ts	1
-extensions/signal/src/shared.ts	1
 extensions/signal/src/signal-ingress.ts	2
 extensions/slack/src/accounts.ts	6
 extensions/slack/src/action-runtime.ts	5
@@ -1196,8 +1194,7 @@ extensions/whatsapp/src/channel-outbound.ts	1
 extensions/whatsapp/src/connection-controller-runtime-context.ts	1
 extensions/whatsapp/src/connection-controller.ts	3
 extensions/whatsapp/src/connection-owner.ts	1
-extensions/whatsapp/src/group-config-path.ts	4
-extensions/whatsapp/src/inbound-policy.ts	1
+extensions/whatsapp/src/group-config-path.ts	3
 extensions/whatsapp/src/inbound/durable-payload.ts	2
 extensions/whatsapp/src/inbound/extract.ts	10
 extensions/whatsapp/src/inbound/group-metadata-cache.ts	4
@@ -1275,7 +1272,6 @@ extensions/zalouser/src/tool.ts	1
 extensions/zalouser/src/zalo-js.ts	14
 extensions/zalouser/src/zca-client.ts	2
 packages/acp-core/src/runtime/errors.ts	6
-packages/acp-core/src/runtime/session-identity.ts	2
 packages/acp-core/src/types.ts	2
 packages/agent-core/src/agent-loop.ts	3
 packages/agent-core/src/harness/compaction/branch-summarization.ts	1
@@ -1284,14 +1280,14 @@ packages/agent-core/src/harness/session/tool-result-pairing.ts	14
 packages/agent-core/src/harness/session/uuid.ts	1
 packages/agent-core/src/harness/utils/truncate.ts	1
 packages/agent-core/src/turn-interruption.ts	1
-packages/ai/src/api-registry.ts	3
+packages/ai/src/api-registry.ts	2
 packages/ai/src/env-api-keys.ts	10
 packages/ai/src/internal/anthropic-inline-images.ts	1
 packages/ai/src/internal/default-runtime.ts	2
 packages/ai/src/openai-completions-messages.ts	7
 packages/ai/src/provider-transcript-transform.ts	3
 packages/ai/src/provider-types.ts	1
-packages/ai/src/providers/agent-tools-parameter-schema.ts	15
+packages/ai/src/providers/agent-tools-parameter-schema.ts	13
 packages/ai/src/providers/anthropic-model-contract.ts	1
 packages/ai/src/providers/anthropic-refusal.ts	1
 packages/ai/src/providers/anthropic-server-fallback.ts	3
@@ -1300,7 +1296,7 @@ packages/ai/src/providers/anthropic-tool-projection.ts	2
 packages/ai/src/providers/anthropic-usage.ts	3
 packages/ai/src/providers/anthropic.ts	6
 packages/ai/src/providers/azure-openai-responses.ts	1
-packages/ai/src/providers/clean-for-gemini.ts	12
+packages/ai/src/providers/clean-for-gemini.ts	8
 packages/ai/src/providers/google-shared.ts	3
 packages/ai/src/providers/mistral.ts	5
 packages/ai/src/providers/openai-chatgpt-responses-protocol.ts	1
@@ -1311,7 +1307,7 @@ packages/ai/src/providers/openai-reasoning-effort.ts	6
 packages/ai/src/providers/openai-responses-shared.ts	6
 packages/ai/src/providers/openai-responses-tools.ts	2
 packages/ai/src/providers/openai-responses.ts	1
-packages/ai/src/providers/openai-tool-schema-compat.ts	6
+packages/ai/src/providers/openai-tool-schema-compat.ts	3
 packages/ai/src/providers/openai-tool-schema.ts	7
 packages/ai/src/providers/schema-keyword-strip.ts	2
 packages/ai/src/providers/simple-options.ts	1
@@ -1355,7 +1351,7 @@ packages/ai/src/utils/credential-redaction.ts	1
 packages/ai/src/utils/oauth/openai-chatgpt-jwt.ts	1
 packages/ai/src/utils/stream-first-event-timeout.ts	2
 packages/ai/src/utils/tls-certificate-errors.ts	1
-packages/gateway-client/src/client.ts	4
+packages/gateway-client/src/client.ts	3
 packages/gateway-client/src/gateway-origin-scope.ts	1
 packages/gateway-client/src/pending-request.ts	2
 packages/gateway-client/src/protocol-client.ts	1
@@ -1374,7 +1370,7 @@ packages/gateway-protocol/src/system-agent-error-details.ts	2
 packages/gateway-protocol/src/validator-registry.ts	1
 packages/llm-core/src/utils/diagnostics.ts	1
 packages/llm-core/src/utils/event-stream.ts	1
-packages/llm-core/src/validation.ts	2
+packages/llm-core/src/validation.ts	1
 packages/markdown-core/src/assistant-transcript.ts	1
 packages/markdown-core/src/format-capabilities.ts	1
 packages/markdown-core/src/frontmatter.ts	1
@@ -1397,15 +1393,14 @@ packages/memory-host-sdk/src/host/session-files.ts	8
 packages/memory-host-sdk/src/host/session-reset-recall.ts	3
 packages/memory-host-sdk/src/host/sqlite-vec.ts	3
 packages/memory-host-sdk/src/host/sqlite.ts	1
-packages/model-catalog-core/src/model-catalog-normalize.ts	6
+packages/model-catalog-core/src/model-catalog-normalize.ts	5
 packages/model-catalog-core/src/model-catalog-types.ts	1
 packages/model-catalog-core/src/remote-catalog-bundle.ts	2
 packages/net-policy/src/ip.ts	1
 packages/normalization-core/src/error-coercion.ts	1
 packages/normalization-core/src/json-schema.ts	2
-packages/normalization-core/src/number-coercion.ts	4
 packages/normalization-core/src/promise-like.ts	1
-packages/normalization-core/src/record-coerce.ts	3
+packages/normalization-core/src/record-coerce.ts	1
 packages/normalization-core/src/stable-stringify.ts	1
 packages/normalization-core/src/string-coerce.ts	1
 packages/retry/src/index.ts	6
@@ -2795,7 +2790,7 @@ src/logging/config.ts	2
 src/logging/console.ts	5
 src/logging/diagnostic-run-activity.ts	1
 src/logging/diagnostic-session-recovery-coordinator.ts	1
-src/logging/diagnostic-stability-bundle.ts	11
+src/logging/diagnostic-stability-bundle.ts	9
 src/logging/diagnostic-stability.ts	2
 src/logging/diagnostic-support-log-redaction.ts	1
 src/logging/diagnostic-support-redaction.ts	1
