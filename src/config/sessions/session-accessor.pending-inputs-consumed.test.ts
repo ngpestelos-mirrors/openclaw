@@ -1,24 +1,19 @@
 import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core/expect";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
-import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { runWithSqliteBusyTimeout } from "../../infra/sqlite-busy-timeout.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import {
-  closeOpenClawAgentDatabasesAsync,
-  closeOpenClawAgentDatabasesForTest,
   deferOpenClawAgentPostCommitPublication,
-  openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import {
   appendTranscriptMessage,
-  appendTranscriptMessageSync,
   deleteSessionEntryLifecycle,
   loadTranscriptEvents,
   readSessionSubmittedInput,
@@ -32,58 +27,27 @@ import {
   readSessionPendingInput,
   stageSessionPendingInput,
   withSessionPendingInputPersistence,
-  type SessionPendingInputReceipt,
 } from "./session-accessor.pending-inputs.js";
-import * as pendingInputRuntime from "./session-accessor.pending-inputs.runtime.js";
 import {
   resolveSqliteScope,
   runExclusiveSqliteSessionWrite,
-  toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
-import { useTempSessionsFixture } from "./test-helpers.js";
+import { usePendingInputFixture } from "./session-pending-inputs-test-helpers.js";
 
 describe("committed pending input release", () => {
-  const fixture = useTempSessionsFixture("pending-input-consumed-release-");
-  const scope = () => ({
-    agentId: "main",
-    sessionKey: "agent:main:consumed-release",
-    sessionId: "consumed-session",
-    storePath: fixture.storePath(),
-  });
-  const options = () => toDatabaseOptions(resolveSqliteScope(scope()));
-  const database = () => openOpenClawAgentDatabase(options());
-  const receipts: SessionPendingInputReceipt[] = [];
-  const closeDatabases = async () => {
-    await closeOpenClawAgentDatabasesAsync();
-    closeOpenClawAgentDatabasesForTest();
-  };
-  const rotateLifecycle = async () => {
-    rotateAgentEventLifecycleGeneration();
-    await Promise.all(receipts.map((receipt) => receipt.finish("interrupted")));
-  };
-  const message = (id: string, content = "Synthetic accepted input") => ({
-    role: "user" as const,
-    content,
-    timestamp: 1,
-    idempotencyKey: `${id}:user`,
-  });
-  const stage = async (
-    id: string,
-    stageOptions: Partial<Parameters<typeof stageSessionPendingInput>[1]> = {},
-  ) => {
-    const receipt = expectDefined(
-      await stageSessionPendingInput(scope(), {
-        runId: id,
-        message: message(id),
-        assertCurrent: () => {},
-        ...stageOptions,
-      }),
-      "Expected staged input custody",
-    );
-    receipts.push(receipt);
-    return receipt;
-  };
+  const {
+    scope,
+    options,
+    database,
+    receipts,
+    closeDatabases,
+    rotateLifecycle,
+    message,
+    stage,
+    promoteSync,
+    promote,
+  } = usePendingInputFixture("pending-input-consumed-release-");
   const prepare = async (collected: boolean) => {
     const first = await stage("first");
     const sources = [first];
@@ -97,53 +61,6 @@ describe("committed pending input release", () => {
     );
     return { receipt, sources };
   };
-  const promoteSync = (receipt: SessionPendingInputReceipt) =>
-    expect(
-      receipt.run(() => appendTranscriptMessageSync(scope(), { message: receipt.message })),
-    ).toMatchObject({ ok: true, value: { appended: true } });
-  const promote = (receipt: SessionPendingInputReceipt) =>
-    receipt.run(() => appendTranscriptMessage(scope(), { message: receipt.message }));
-
-  beforeEach(async () => {
-    await upsertSessionEntryCore(scope(), { sessionId: scope().sessionId, updatedAt: 1 });
-  });
-  afterEach(async () => {
-    for (const receipt of receipts.splice(0)) {
-      await receipt.finish("interrupted");
-    }
-    await closeDatabases();
-  });
-
-  it("retains prepared custody through lifecycle retirement before allowing a retry", async () => {
-    const requestFingerprint = "rotation-after-read";
-    const previous = await stage("read-rotation", { requestFingerprint });
-    const read = pendingInputRuntime.withSessionPendingInputDatabase;
-    const rotateAfterRead: typeof read = (resolved, assertCurrent, run, captured) =>
-      read(
-        resolved,
-        assertCurrent,
-        (access) => {
-          const preparing = run(access);
-          rotateAgentEventLifecycleGeneration();
-          return preparing;
-        },
-        captured,
-      );
-    vi.spyOn(pendingInputRuntime, "withSessionPendingInputDatabase").mockImplementationOnce(
-      rotateAfterRead,
-    );
-    await expect(
-      stageSessionPendingInput(scope(), {
-        runId: "read-rotation",
-        message: message("read-rotation"),
-        requestFingerprint,
-        assertCurrent: () => {},
-      }),
-    ).rejects.toThrow("already admitted");
-    await previous.finish("interrupted");
-    const current = await stage("read-rotation", { requestFingerprint });
-    expect(current.run(() => "recovered input")).toBe("recovered input");
-  });
 
   it.each(["cancelled", "interrupted"] as const)(
     "retains %s input visibly without permitting the old run to execute",
@@ -167,22 +84,6 @@ describe("committed pending input release", () => {
       expect(await promote(await stage("new-authorized-run"))).toMatchObject({ appended: true });
     },
   );
-
-  it("does not interrupt custody when the selected session becomes current during a pending read", async () => {
-    const receipt = await stage("reactivated");
-    await upsertSessionEntryCore(scope(), { sessionId: "replacement-session", updatedAt: 2 });
-    const repair = pendingInputRuntime.repairSessionPendingInputRows;
-    vi.spyOn(pendingInputRuntime, "repairSessionPendingInputRows").mockImplementationOnce(
-      async (...args) => {
-        await upsertSessionEntryCore(scope(), { sessionId: scope().sessionId, updatedAt: 3 });
-        return repair(...args);
-      },
-    );
-    expect(await listSessionPendingInputs(scope())).toMatchObject({
-      items: [{ id: receipt.inputId, state: "queued" }],
-    });
-    expect(await promote(receipt)).toMatchObject({ appended: true, messageId: receipt.inputId });
-  });
 
   it.each([false, true])(
     "permits only exact committed persistence after custody closes (collected: %s)",

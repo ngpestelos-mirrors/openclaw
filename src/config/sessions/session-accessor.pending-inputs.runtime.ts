@@ -30,7 +30,6 @@ import {
 } from "./session-accessor.sqlite-pending-inputs.js";
 import { withSessionEntryWorker } from "./session-accessor.sqlite-replacement-worker.js";
 import {
-  runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
   type ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope.js";
@@ -202,38 +201,40 @@ export async function repairSessionPendingInputRows(
   identity: { identity: string; birthtime?: string } | undefined,
   assertCurrent: () => void,
 ): Promise<string[]> {
-  const assertUnowned = () => {
-    assertCurrent();
-    if (
-      rows.some(
-        (row) => !row.requireRetiredSession && hasSessionPendingInputOwner(options.path, row),
-      )
-    ) {
-      throw new Error("Pending input acquired a live owner before interruption");
-    }
-  };
-  if (isIncognitoOpenClawAgentSqlitePath(options.path, options)) {
-    return runExclusiveSqliteSessionWrite(
-      options,
-      async () =>
-        runOpenClawAgentWriteTransaction((database) => {
-          assertUnowned();
-          const repaired = repairSessionPendingInputRowsInDatabase(database, rows);
-          assertUnowned();
-          return repaired;
-        }, options),
-      "session.pending-input.stage",
-    );
-  }
-  return withSessionEntryWorker(
+  return runOpenClawAgentWriteAdmission(
     options,
-    identity?.identity,
-    assertUnowned,
-    async (execution, source) => {
-      const result = await execution.runExisting(source, async (worker) => ({
-        rows: await worker.execute({ type: "session.pendingInput.repair", input: { rows } }),
-      }));
-      return result?.rows ?? [];
+    async () => {
+      assertCurrent();
+      // Staging publishes its live owner before releasing this same writer FIFO.
+      const unowned = rows.filter(
+        (row) => row.requireRetiredSession || !hasSessionPendingInputOwner(options.path, row),
+      );
+      if (!unowned.length) {
+        return [];
+      }
+      if (isIncognitoOpenClawAgentSqlitePath(options.path, options)) {
+        return runOpenClawAgentWriteTransaction((database) => {
+          assertCurrent();
+          const repaired = repairSessionPendingInputRowsInDatabase(database, unowned);
+          assertCurrent();
+          return repaired;
+        }, options);
+      }
+      return withSessionEntryWorker(
+        options,
+        identity?.identity,
+        assertCurrent,
+        async (execution, source) => {
+          const result = await execution.runExisting(source, async (worker) => ({
+            rows: await worker.execute({
+              type: "session.pendingInput.repair",
+              input: { rows: unowned },
+            }),
+          }));
+          return result?.rows ?? [];
+        },
+      );
     },
+    true,
   );
 }

@@ -9,6 +9,7 @@ import {
   upsertSessionEntryCore,
   loadTranscriptEvents,
 } from "../../config/sessions/session-accessor.js";
+import type { SessionPendingInputReceipt } from "../../config/sessions/session-accessor.pending-inputs.js";
 import { saveCronJobsStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
@@ -51,7 +52,7 @@ describe("pending input read boundary", () => {
       await saveCronJobsStore(state.statePath("cron", "jobs.json"), { version: 1, jobs: [job] });
       const cronStorePath = state.statePath("selected-cron", "jobs.json");
       const context = await createHistoryReadContext({ cronStorePath });
-      const receipts = [];
+      const receipts: SessionPendingInputReceipt[] = [];
       try {
         for (let index = 0; index < 20; index += 1) {
           receipts.push(
@@ -160,7 +161,7 @@ describe("pending input read boundary", () => {
         sessionId: "pending-display-time",
       };
       await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-      const receipts = [];
+      const receipts: SessionPendingInputReceipt[] = [];
       const readDisplay = vi.spyOn(userProfileList, "getUserProfileDisplay");
       try {
         for (let index = 0; index < 20; index += 1) {
