@@ -550,14 +550,25 @@ try {
   const receipt = consumedHistory.inputReceipts.find(
     (value) => value.runId === follow.params.idempotencyKey,
   );
-  assert(receipt?.state === "consumed");
-  assert.equal(typeof receipt.consumedByEventId, "string");
-  assert(receipt.consumedByEventId.length > 0);
-  proof.inputReceipt = receipt;
+  // Ordinary promotion atomically deletes its pending row; collected sources
+  // retain consumed_event_id correlations. Neither absence nor advice alone
+  // proves consumption: below, require the exact promoted ID and backend input.
+  assert.equal(receipt, undefined);
+  assert.equal(
+    consumedHistory.pendingInputs.items.some((input) => input.id === queued.id),
+    false,
+  );
   const consumedMessage = consumed[0];
   assert(consumedMessage);
   const consumedMetadata = asOptionalRecord(consumedMessage["__openclaw"]);
   assert(consumedMetadata);
+  assert.equal(consumedMetadata.id, queued.id);
+  assert.equal(consumedMessage.content, correction);
+  proof.canonicalPromotion = {
+    acceptedInputId: queued.id,
+    transcriptEntryId: consumedMetadata.id,
+    pendingRetired: true,
+  };
   assert.deepEqual(consumedMetadata.autoSteer, { choice: "steer", reason: "decision" });
   const targetRunId = consumedMetadata.steerTargetRunId;
   assert(typeof targetRunId === "string");
