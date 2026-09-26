@@ -169,8 +169,11 @@ it("preserves the caller's typed admission refusal through lease acquisition", a
     const capture = workerContext.captureOpenClawStateWorkerContext;
     vi.spyOn(workerContext, "captureOpenClawStateWorkerContext").mockImplementation((options) => {
       const context = capture(options);
-      context.admission.assertCurrent = () => {
-        throw refusal;
+      context.admission = {
+        ...context.admission,
+        assertCurrent() {
+          throw refusal;
+        },
       };
       return context;
     });
