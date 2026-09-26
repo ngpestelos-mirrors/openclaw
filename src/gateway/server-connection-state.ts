@@ -138,7 +138,6 @@ export function createGatewayConnectionState(params: {
       const now = Date.now();
       const ancestors = projection.ancestorRows(record);
       const cache = createSessionRowPresentationCache();
-      const reuseRows = !isProxy(base) && !("toJSON" in base);
       let projectedAgentRuns = cache.read(projection).state.rowContext.projectedAgentRuns;
       let registrations: (readonly [string, ChatAbortControllerEntry])[] = [];
       let projectRun: ReturnType<typeof createVisibleActiveSessionRunProjector> | undefined;
@@ -174,6 +173,7 @@ export function createGatewayConnectionState(params: {
             projectedAgentRuns,
           );
         }
+        const reuseRows = !isProxy(base) && !("toJSON" in base);
         const presentation = prepareProjectedSessionPresentation(
           read,
           client,

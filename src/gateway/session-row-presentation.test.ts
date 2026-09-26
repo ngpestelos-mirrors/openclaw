@@ -338,7 +338,14 @@ it("presents current recipient roles without SQLite while rejecting source overr
         const profile = index % 2 ? member : secondMember;
         const client: GatewayWsClient = {
           ...clients[1]!,
-          ...sharingPolicyClient({ user: profile.id }),
+          authenticatedUserId: profile.id,
+          authenticatedUserProfile: {
+            profileId: profile.id,
+            displayName: null,
+            avatarRevision: "1",
+            hasAvatar: false,
+            updatedAt: 1,
+          },
           connId: `same-view-${index}`,
           socket: { ...clients[1]!.socket, send: vi.fn() },
         };
@@ -366,24 +373,38 @@ it("presents current recipient roles without SQLite while rejecting source overr
       }
       rowPresentations.mockRestore();
       stateReads.mockRestore();
-      connection.broadcastToConnIds(
-        "sessions.changed",
-        {
+      const serializationHook = {
+        toJSON(this: { session: { label?: string } }) {
+          if (this.session.label) {
+            this.session.label += "!";
+          }
+          return this;
+        },
+      };
+      for (const installDuringSend of [false, true]) {
+        const payload = {
           sessionKey: query.key,
           agentId: query.agentId,
           session: { sessionId: entry.sessionId },
-          toJSON(this: { session: { label?: string } }) {
-            if (this.session.label) {
-              this.session.label += "!";
-            }
-            return this;
-          },
-        },
-        new Set(peers.slice(0, 2).map((peer) => peer.connId)),
-      );
-      for (const peer of peers.slice(0, 2)) {
-        const frame = JSON.parse(String(vi.mocked(peer.socket.send).mock.lastCall?.[0]));
-        expect(frame.payload.session.label).toBe("Parent!");
+        };
+        if (installDuringSend) {
+          vi.mocked(peers[0]!.socket.send).mockImplementationOnce(() => {
+            Object.assign(payload, serializationHook);
+          });
+        } else {
+          Object.assign(payload, serializationHook);
+        }
+        connection.broadcastToConnIds(
+          "sessions.changed",
+          payload,
+          new Set(peers.slice(0, 3).map((peer) => peer.connId)),
+        );
+        for (const [index, peer] of peers.slice(0, 3).entries()) {
+          const frame = JSON.parse(String(vi.mocked(peer.socket.send).mock.lastCall?.[0]));
+          expect(frame.payload.session.label).toBe(
+            installDuringSend && index === 0 ? "Parent" : "Parent!",
+          );
+        }
       }
       for (const peer of peers) {
         connection.clients.delete(peer);
