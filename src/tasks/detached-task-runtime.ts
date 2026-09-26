@@ -17,6 +17,7 @@ import {
   getRegisteredDetachedTaskLifecycleRuntime,
 } from "./detached-task-runtime-state.js";
 import { cancelTaskById as cancelDetachedTaskRunByIdInCore } from "./runtime-internal.js";
+import { isIncognitoTask, projectTaskContentForPersistence } from "./task-content.js";
 import { createRunningTaskRunCoreWithReceiptAsync } from "./task-executor-create.async.js";
 import {
   completeTaskRunByRunIdCore,
@@ -83,7 +84,7 @@ export function getDetachedTaskLifecycleRuntime(): DetachedTaskLifecycleRuntime 
 
 /** Exact settlement stays with the registered runtime; unsupported owners never fall through. */
 export function transitionTaskAssignment(params: DetachedTaskAssignmentTransition): TaskRecord[] {
-  const owner = captureDetachedTaskRuntimeOwner();
+  const owner = captureDetachedTaskRuntimeOwner({ settlement: true });
   const assertCurrent = () => {
     owner.assertCurrent();
     params.assertCurrent();
@@ -169,19 +170,21 @@ export function prepareRunningTaskRun(
       },
     };
   }
+  const incognito = isIncognitoTask(params);
   const { admission, close } = captureTaskCreationAdmission(owner.assertCurrent, assertCurrent);
   try {
     const finalize = runtime.finalizeTaskRunByRunId;
     const complete = runtime.completeTaskRunByRunId;
     const fail = runtime.failTaskRunByRunId;
     admission.assertCurrent();
-    const task = runtime.createRunningTaskRun(params);
+    const task = runtime.createRunningTaskRun(projectTaskContentForPersistence(incognito, params));
     return {
       kind: "legacy",
       task,
-      finalizeRun(terminal) {
+      finalizeRun(terminalInput) {
         // This is the shipped run-scoped operation, not an exact-task cleanup receipt.
         owner.assertCurrent();
+        const terminal = projectTaskContentForPersistence(incognito, terminalInput);
         if (finalize) {
           return finalize.call(runtime, terminal);
         }
@@ -263,7 +266,8 @@ export function findDetachedTaskRun(params: DetachedTaskFindParams): DetachedTas
 export async function findDetachedTaskRunAsync(
   params: DetachedTaskFindParams,
 ): Promise<DetachedTaskFindResult> {
-  const owner = captureDetachedTaskRuntimeOwner();
+  // Reads of existing task rows follow the same owner as their settlement.
+  const owner = captureDetachedTaskRuntimeOwner({ settlement: true });
   try {
     owner.assertCurrent();
     if (owner.runtime?.findTaskRun) {

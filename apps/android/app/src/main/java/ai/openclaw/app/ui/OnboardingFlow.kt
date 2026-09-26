@@ -1,6 +1,7 @@
 package ai.openclaw.app.ui
 
 import ai.openclaw.app.GatewayConnectionProblem
+import ai.openclaw.app.GatewayNodeApprovalActionState
 import ai.openclaw.app.GatewayNodeCapabilityApproval
 import ai.openclaw.app.LocationMode
 import ai.openclaw.app.MainViewModel
@@ -476,6 +477,7 @@ fun OnboardingFlow(
     val isConnected = gatewayConnectionDisplay.isConnected
     val isNodeConnected by viewModel.isNodeConnected.collectAsState()
     val nodeCapabilityApproval by viewModel.nodeCapabilityApproval.collectAsState()
+    val nodeApprovalAction by viewModel.nodeApprovalAction.collectAsState()
     val nodesDevicesRefreshing by viewModel.nodesDevicesRefreshing.collectAsState()
     val serverName by viewModel.serverName.collectAsState()
     val gateways by viewModel.gateways.collectAsState()
@@ -484,13 +486,6 @@ fun OnboardingFlow(
     val savedManualTls by viewModel.manualTls.collectAsState()
     val pendingTrust by viewModel.pendingGatewayTrust.collectAsState()
     val startAtGatewaySetup by viewModel.startOnboardingAtGatewaySetup.collectAsState()
-    val ready =
-      canFinishOnboarding(
-        isConnected = isConnected,
-        isNodeConnected = isNodeConnected,
-        nodeCapabilityApproval = nodeCapabilityApproval,
-      )
-
     var step by rememberSaveable { mutableStateOf(OnboardingStep.Welcome) }
     var setupCode by rememberSaveable { mutableStateOf("") }
     var manualHost by rememberSaveable { mutableStateOf("") }
@@ -500,7 +495,6 @@ fun OnboardingFlow(
     var password by rememberSaveable { mutableStateOf("") }
     var setupErrorCode by rememberSaveable(stateSaver = OnboardingErrorCodeSaver) { mutableStateOf(OnboardingErrorCode.None) }
     var setupScanErrorCode by rememberSaveable(stateSaver = OnboardingErrorCodeSaver) { mutableStateOf(OnboardingErrorCode.None) }
-    var attemptedConnect by rememberSaveable { mutableStateOf(false) }
     var attemptedGatewayName by rememberSaveable { mutableStateOf<String?>(null) }
     var lastGatewayInputSource by rememberSaveable { mutableStateOf(OnboardingGatewayInputSource.SetupScanner) }
     var inlineQrScannerActive by rememberSaveable { mutableStateOf(false) }
@@ -509,6 +503,18 @@ fun OnboardingFlow(
     var nodeApprovalCheckRequested by rememberSaveable { mutableStateOf(false) }
     var nodeApprovalCheckRefreshStarted by rememberSaveable { mutableStateOf(false) }
     var nodeApprovalAutoContinueEnabled by rememberSaveable { mutableStateOf(false) }
+    var nativeNodeApprovalRequested by rememberSaveable { mutableStateOf(false) }
+    val ready =
+      canFinishOnboarding(
+        isConnected = isConnected,
+        isNodeConnected = isNodeConnected,
+        nodeCapabilityApproval = nodeCapabilityApproval,
+      ) &&
+        (
+          accessStage != OnboardingAccessStage.PermissionReapproval ||
+            nodeCapabilityApproval == GatewayNodeCapabilityApproval.Unsupported ||
+            nodeApprovalAction.verified
+        )
 
     OpenClawSystemBarAppearance(lightAppearance = !onboardingDark)
 
@@ -572,6 +578,7 @@ fun OnboardingFlow(
     }
 
     fun advanceAfterNodeApproval() {
+      nativeNodeApprovalRequested = false
       nodeApprovalCheckRequested = false
       nodeApprovalCheckRefreshStarted = false
       nodeApprovalAutoContinueEnabled = false
@@ -584,6 +591,12 @@ fun OnboardingFlow(
         OnboardingNodeApprovalSuccess.CompleteOnboarding -> {
           viewModel.setOnboardingCompleted(true)
         }
+      }
+    }
+
+    LaunchedEffect(step, ready, nodeApprovalAction.verified, nativeNodeApprovalRequested) {
+      if (step == OnboardingStep.NodeApproval && nativeNodeApprovalRequested && nodeApprovalAction.verified && ready) {
+        advanceAfterNodeApproval()
       }
     }
 
@@ -631,13 +644,13 @@ fun OnboardingFlow(
       }
     }
 
-    LaunchedEffect(step, ready, nodeCapabilityApproval, nodeApprovalAutoContinueEnabled) {
+    LaunchedEffect(step, ready, nodeCapabilityApproval, nodeApprovalAutoContinueEnabled, nativeNodeApprovalRequested) {
       if (
         nodeApprovalShouldAutoContinue(
           step = step,
           ready = ready,
           nodeCapabilityApproval = nodeCapabilityApproval,
-          autoContinueEnabled = nodeApprovalAutoContinueEnabled,
+          autoContinueEnabled = nodeApprovalAutoContinueEnabled && !nativeNodeApprovalRequested,
         )
       ) {
         advanceAfterNodeApproval()
@@ -666,7 +679,6 @@ fun OnboardingFlow(
       setupErrorCode = OnboardingErrorCode.None
       setupScanErrorCode = OnboardingErrorCode.None
       attemptedGatewayName = attemptedName
-      attemptedConnect = true
       lastGatewayInputSource = inputSource
       viewModel.saveGatewayConfigAndConnect(plan)
       step = OnboardingStep.Recovery
@@ -685,6 +697,7 @@ fun OnboardingFlow(
         }
 
         OnboardingStep.NodeApproval -> {
+          nativeNodeApprovalRequested = false
           nodeApprovalCheckRequested = false
           nodeApprovalCheckRefreshStarted = false
           nodeApprovalAutoContinueEnabled = true
@@ -890,7 +903,6 @@ fun OnboardingFlow(
       OnboardingStep.Gateway -> {
         GatewaySetupScreen(
           modifier = modifier,
-          nearbyGateway = gateways.firstOrNull(),
           onBack = ::goBack,
           onSetupCode = {
             setupErrorCode = OnboardingErrorCode.None
@@ -1018,6 +1030,7 @@ fun OnboardingFlow(
         NodeApprovalScreen(
           modifier = modifier,
           approval = nodeCapabilityApproval,
+          action = nodeApprovalAction,
           checkingApproval =
             nodeApprovalCheckingInProgress(
               checkRequested = nodeApprovalCheckRequested,
@@ -1029,6 +1042,12 @@ fun OnboardingFlow(
           onBack = ::goBack,
           onCopyCommand = { command -> copyApprovalCommand(context, command) },
           onCheckApproval = ::checkNodeApproval,
+          onApprove = { requestId ->
+            nodeApprovalCheckRequested = false
+            nodeApprovalCheckRefreshStarted = false
+            nativeNodeApprovalRequested = true
+            viewModel.approveNodeCapabilities(requestId)
+          },
         )
       }
 
@@ -1048,6 +1067,7 @@ fun OnboardingFlow(
               )
             ) {
               accessStage = OnboardingAccessStage.PermissionReapproval
+              nativeNodeApprovalRequested = false
               nodeApprovalCheckRequested = false
               nodeApprovalCheckRefreshStarted = false
               nodeApprovalAutoContinueEnabled = false
@@ -1227,7 +1247,6 @@ private fun SoftPanel(
 
 @Composable
 internal fun GatewaySetupScreen(
-  nearbyGateway: GatewayEndpoint?,
   onBack: () -> Unit,
   onSetupCode: () -> Unit,
   onManualSetup: () -> Unit,
@@ -1359,13 +1378,11 @@ private fun SetupCodeInstructionsScreen(
               step = nativeString("Step 1"),
               title = nativeString("Start your Gateway."),
               body = "openclaw gateway",
-              monospaceBody = true,
             )
             SetupInstruction(
               step = nativeString("Step 2"),
               title = nativeString("Generate a QR code."),
               body = "openclaw qr",
-              monospaceBody = true,
             )
           }
         }
@@ -1924,22 +1941,17 @@ private fun SetupInstruction(
   title: String,
   body: String,
   modifier: Modifier = Modifier,
-  monospaceBody: Boolean = false,
 ) {
   Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
     Text(text = step, style = ClawTheme.type.caption, color = ClawTheme.colors.textSubtle)
     Text(text = title, style = ClawTheme.type.section, color = ClawTheme.colors.text)
-    if (monospaceBody) {
-      Surface(
-        modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
-        shape = RoundedCornerShape(ClawTheme.radii.control),
-        color = ClawTheme.colors.surfaceRaised,
-        border = BorderStroke(1.dp, ClawTheme.colors.border),
-      ) {
-        Text(text = body, modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp), style = ClawTheme.type.mono, color = ClawTheme.colors.text)
-      }
-    } else {
-      Text(text = body, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+    Surface(
+      modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+      shape = RoundedCornerShape(ClawTheme.radii.control),
+      color = ClawTheme.colors.surfaceRaised,
+      border = BorderStroke(1.dp, ClawTheme.colors.border),
+    ) {
+      Text(text = body, modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp), style = ClawTheme.type.mono, color = ClawTheme.colors.text)
     }
   }
 }
@@ -2191,18 +2203,23 @@ private fun copyGatewayDiagnostic(
 @Composable
 private fun NodeApprovalScreen(
   approval: GatewayNodeCapabilityApproval,
+  action: GatewayNodeApprovalActionState,
   checkingApproval: Boolean,
   checkRequested: Boolean,
   ready: Boolean,
   onBack: () -> Unit,
   onCopyCommand: (String) -> Unit,
   onCheckApproval: () -> Unit,
+  onApprove: (String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val approveCommand = recoveryNodeApprovalCommand(approvalRequestId(approval))
+  val pending = action.pending
+  val canApproveHere = pending != null || action.approving
   var waitingDialogDismissed by rememberSaveable { mutableStateOf(false) }
   val showWaitingDialog =
-    checkRequested &&
+    !canApproveHere &&
+      checkRequested &&
       !checkingApproval &&
       !ready &&
       nodeCapabilityApprovalNeedsUserAction(approval) &&
@@ -2238,36 +2255,69 @@ private fun NodeApprovalScreen(
           textAlign = TextAlign.Center,
         )
         Spacer(modifier = Modifier.height(18.dp))
-        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (canApproveHere) {
           Text(
-            text = nativeString("On the Gateway computer, run:"),
-            style = ClawTheme.type.caption,
+            text = nativeString("Allow your Gateway to use these capabilities on this phone. Android permissions and your settings still apply."),
+            style = ClawTheme.type.body,
             color = ClawTheme.colors.textMuted,
             textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
           )
-          ApprovalCommandBlock(command = "openclaw nodes pending", onCopy = { onCopyCommand("openclaw nodes pending") })
-          ApprovalCommandBlock(command = approveCommand, onCopy = { onCopyCommand(approveCommand) })
+          if (pending != null) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+              text =
+                (pending.capabilities + pending.commands.map { if (it.startsWith("mobile.ui.")) "mobileUI" else it.substringBefore('.') })
+                  .distinct()
+                  .sorted()
+                  .map { nodeApprovalCapabilityLabel(it).resolveNativeTextResource() }
+                  .joinToString(", "),
+              style = ClawTheme.type.label,
+              color = ClawTheme.colors.text,
+              textAlign = TextAlign.Center,
+            )
+          }
+        }
+        if (!canApproveHere || action.errorText != null) {
+          Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              text = nativeString("On the Gateway computer, run:"),
+              style = ClawTheme.type.caption,
+              color = ClawTheme.colors.textMuted,
+              textAlign = TextAlign.Center,
+              modifier = Modifier.fillMaxWidth(),
+            )
+            ApprovalCommandBlock(command = "openclaw nodes pending", onCopy = { onCopyCommand("openclaw nodes pending") })
+            ApprovalCommandBlock(command = approveCommand, onCopy = { onCopyCommand(approveCommand) })
+            Text(
+              text = nativeString("Use the requestId from the pending command in the approve command."),
+              style = ClawTheme.type.caption,
+              color = ClawTheme.colors.textSubtle,
+              textAlign = TextAlign.Center,
+              modifier = Modifier.fillMaxWidth(),
+            )
+          }
+        }
+        action.errorText?.let { error ->
+          Spacer(modifier = Modifier.height(12.dp))
           Text(
-            text = nativeString("Use the requestId from the pending command in the approve command."),
-            style = ClawTheme.type.caption,
-            color = ClawTheme.colors.textSubtle,
+            text = error.resolveNativeTextResource(),
+            style = ClawTheme.type.body,
+            color = ClawTheme.colors.danger,
             textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
           )
         }
       }
 
       OnboardingActions {
         OnboardingLoadingPrimaryButton(
-          text = nativeText("I have approved"),
-          loadingText = nativeText("Checking approval…"),
-          loading = checkingApproval,
+          text = if (canApproveHere) nativeText("Approve access and continue") else nativeText("I have approved"),
+          loadingText = if (canApproveHere) nativeText("Approving access…") else nativeText("Checking approval…"),
+          loading = action.approving || checkingApproval,
           modifier = Modifier.onboardingActionButton(),
           onClick = {
             // Only an explicit check may reopen feedback dismissed during background polling.
             waitingDialogDismissed = false
-            onCheckApproval()
+            if (pending != null) onApprove(pending.requestId) else onCheckApproval()
           },
         )
       }
@@ -2293,6 +2343,26 @@ private fun NodeApprovalScreen(
     )
   }
 }
+
+private fun nodeApprovalCapabilityLabel(capability: String): NativeText =
+  when (capability) {
+    "calendar" -> nativeText("Calendar")
+    "camera" -> nativeText("Camera")
+    "callLog" -> nativeText("Call Log")
+    "contacts" -> nativeText("Contacts")
+    "device" -> nativeText("Device information")
+    "debug" -> nativeText("Debug tools")
+    "location" -> nativeText("Location")
+    "mobileUI" -> nativeText("Screen control")
+    "motion" -> nativeText("Motion")
+    "notifications" -> nativeText("Notifications")
+    "photos" -> nativeText("Photos")
+    "sms" -> nativeText("SMS")
+    "system" -> nativeText("System tools")
+    "talk" -> nativeText("Talk")
+    "voiceWake" -> nativeText("Voice wake")
+    else -> verbatimText(capability)
+  }
 
 @Composable
 private fun OnboardingLoadingPrimaryButton(
@@ -2466,7 +2536,7 @@ private fun PermissionSetupScreen(
         verticalArrangement = Arrangement.spacedBy(6.dp),
       ) {
         item {
-          PermissionTopBar(onBack = onBack)
+          OnboardingHeader(title = nativeText("Permissions"), onBack = onBack)
         }
         item {
           Box(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
@@ -2507,25 +2577,21 @@ private fun PermissionSetupScreen(
 private fun OnboardingHeader(
   title: NativeText,
   modifier: Modifier = Modifier,
-  subtitle: NativeText? = null,
-  onBack: (() -> Unit)? = null,
-  action: (@Composable () -> Unit)? = null,
+  onBack: () -> Unit,
 ) {
   Surface(modifier = modifier.fillMaxWidth(), color = ClawTheme.colors.canvas, contentColor = ClawTheme.colors.text) {
     Box(modifier = Modifier.fillMaxWidth().height(ClawTheme.spacing.touchTarget), contentAlignment = Alignment.Center) {
-      onBack?.let {
-        Surface(
-          onClick = it,
-          modifier =
-            Modifier
-              .align(Alignment.CenterStart)
-              .size(ClawTheme.spacing.touchTarget),
-          color = Color.Transparent,
-          contentColor = ClawTheme.colors.text,
-        ) {
-          Box(contentAlignment = Alignment.CenterStart) {
-            Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = nativeString("Back"), modifier = Modifier.size(23.dp))
-          }
+      Surface(
+        onClick = onBack,
+        modifier =
+          Modifier
+            .align(Alignment.CenterStart)
+            .size(ClawTheme.spacing.touchTarget),
+        color = Color.Transparent,
+        contentColor = ClawTheme.colors.text,
+      ) {
+        Box(contentAlignment = Alignment.CenterStart) {
+          Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = nativeString("Back"), modifier = Modifier.size(23.dp))
         }
       }
       Column(
@@ -2536,14 +2602,6 @@ private fun OnboardingHeader(
         val resolvedTitle = title.resolveNativeTextResource()
         if (resolvedTitle.isNotBlank()) {
           Text(text = resolvedTitle, style = ClawTheme.type.title, color = ClawTheme.colors.text, textAlign = TextAlign.Center)
-        }
-        subtitle?.let {
-          Text(text = it.resolveNativeTextResource(), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted, textAlign = TextAlign.Center)
-        }
-      }
-      action?.let {
-        Box(modifier = Modifier.align(Alignment.CenterEnd), contentAlignment = Alignment.Center) {
-          it()
         }
       }
     }
@@ -2572,11 +2630,6 @@ private fun TogglePill(
       Text(text = text, style = ClawTheme.type.label)
     }
   }
-}
-
-@Composable
-private fun PermissionTopBar(onBack: () -> Unit) {
-  OnboardingHeader(title = nativeText("Permissions"), onBack = onBack)
 }
 
 @Composable
@@ -2800,7 +2853,6 @@ private fun finishingGatewayProgressItems(
   statusText: String,
 ): List<GatewayRecoveryProgressItem> {
   val gatewayAccessComplete = gatewayStatusLooksLikePartialConnect(statusText)
-  val nodeAccessCurrent = gatewayAccessComplete
   return listOf(
     GatewayRecoveryProgressItem(
       label = nativeText("Opening Gateway connection"),
@@ -2823,7 +2875,7 @@ private fun finishingGatewayProgressItems(
       label = nativeText("Checking node access"),
       status =
         when {
-          nodeAccessCurrent -> GatewayRecoveryProgressStatus.Current
+          gatewayAccessComplete -> GatewayRecoveryProgressStatus.Current
           else -> GatewayRecoveryProgressStatus.Pending
         },
     ),
