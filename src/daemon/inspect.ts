@@ -121,10 +121,11 @@ export function renderGatewayServiceCleanupHints(
           );
           break;
         }
+        // Discovery includes Node hosts; inspect the task before choosing a removal owner.
         // The hint can be pasted into cmd.exe or PowerShell, so exclude names
         // that either shell can expand rather than guessing a common escape.
         if (/^[A-Za-z0-9_. ()\\/-]+$/.test(service.label)) {
-          hints.push(`schtasks /Delete /TN "${service.label}" /F`);
+          hints.push(`schtasks /Query /TN "${service.label}" /V /FO LIST`);
         }
         break;
     }

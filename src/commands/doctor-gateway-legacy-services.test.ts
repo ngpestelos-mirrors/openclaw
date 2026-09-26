@@ -149,6 +149,34 @@ describe("maybeScanExtraGatewayServices", () => {
     },
   );
 
+  it("keeps Windows Node diagnostics with inspection advice", async () => {
+    mockProcessPlatform("win32");
+    const { renderGatewayServiceCleanupHints } =
+      await vi.importActual<typeof import("../daemon/inspect.js")>("../daemon/inspect.js");
+    mocks.renderGatewayServiceCleanupHints.mockImplementation(renderGatewayServiceCleanupHints);
+    mocks.findExtraGatewayServices.mockResolvedValue({
+      services: [
+        {
+          platform: "win32",
+          label: "\\OpenClaw Node",
+          detail: "task: \\OpenClaw Node, run: C:\\OpenClaw\\openclaw.exe node run",
+          scope: "system",
+          marker: "openclaw",
+          legacy: false,
+        },
+      ],
+      errors: [],
+    });
+
+    await maybeScanExtraGatewayServices({ deep: true }, makeDoctorIo(), makeDoctorPrompts());
+
+    expectNoteContaining("\\OpenClaw Node", "Other gateway-like services detected");
+    expectNoteContaining('schtasks /Query /TN "\\OpenClaw Node" /V /FO LIST', "Inspection hints");
+    expectNoNoteContaining("/Delete", "Cleanup hints");
+    expect(mocks.uninstallLegacySystemdUnits).not.toHaveBeenCalled();
+    expect(mocks.execLaunchctl).not.toHaveBeenCalled();
+  });
+
   it("renders cleanup hints only for the detected extra macOS gateway", async () => {
     mockProcessPlatform("darwin");
     const extraService = {

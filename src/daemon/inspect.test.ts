@@ -214,7 +214,7 @@ describe("renderGatewayServiceCleanupHints", () => {
     ).toEqual([firstHint, secondHint]);
   });
 
-  it("targets the detected Windows scheduled task", () => {
+  it("inspects the detected Windows scheduled task without suggesting removal", () => {
     expect(
       renderGatewayServiceCleanupHints([
         {
@@ -224,7 +224,7 @@ describe("renderGatewayServiceCleanupHints", () => {
           scope: "system",
         },
       ]),
-    ).toEqual(['schtasks /Delete /TN "\\OpenClaw Gateway Backup" /F']);
+    ).toEqual(['schtasks /Query /TN "\\OpenClaw Gateway Backup" /V /FO LIST']);
   });
 
   it.each(["$(Start-Process calc)", "%OPENCLAW_GATEWAY_TASK%", "unsafe&task", "task`name"])(

@@ -173,7 +173,7 @@ Strict maintenance inspection follows the task's registered CMD or VBS launcher,
 
 `openclaw gateway status --deep` and `openclaw doctor --deep` report sibling
 profiles from the current account's Startup folder. If its Scheduled Task is
-absent, the selected Startup fallback is omitted from the extra-service list. Each
+absent, the selected modern Gateway fallback is omitted from the extra-service list. Each
 Startup file remains a separate service definition even when a task has the same
 name. Inspection follows that exact file and its captured Gateway
 script. The complete inventory retains errors for unreadable or malformed Gateway
@@ -182,6 +182,8 @@ Startup inspection hints use the exact file path and do not grant Task Scheduler
 control over it.
 Local builds also check these definitions for a running Gateway using that
 installation's `dist`. Stop the matching Gateway before rebuilding its files.
+
+Doctor and deep status provide read-only `schtasks /Query` hints for extra Scheduled Tasks, including Node hosts. Review the registered command and purpose before choosing removal through the service's owner.
 
 The task probe allows Windows PowerShell to inherit or create a console because
 some PowerShell 5.1 hosts fail inspection when console creation is disabled.
