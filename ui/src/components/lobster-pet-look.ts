@@ -164,7 +164,10 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
-export function pickWeighted<T>(rng: () => number, entries: Array<[T, number]>): T {
+export function pickWeighted<T>(
+  rng: () => number,
+  entries: ReadonlyArray<readonly [T, number]>,
+): T {
   const total = entries.reduce((sum, [, weight]) => sum + weight, 0);
   let roll = rng() * total;
   for (const [value, weight] of entries) {
@@ -186,7 +189,7 @@ const GLINT_TINTS = ["#ffd166", "#ff8ac2", "#b79bff"] as const;
 
 export function createLobsterPetLook(seed: number, now: Date = new Date()): LobsterPetLook {
   const rng = mulberry32(seed);
-  const palette = pickWeighted(rng, LOBSTER_PALETTE_WEIGHTS);
+  const palette = pickWeighted<LobsterPetPalette>(rng, LOBSTER_PALETTE_WEIGHTS);
   const scale = pickWeighted(rng, SCALES);
   const accessory = pickWeighted(rng, [...ACCESSORIES, ...seasonalAccessories(now)]);
   const antennae: LobsterPetAntennae = rng() < 0.6 ? "perky" : "droopy";

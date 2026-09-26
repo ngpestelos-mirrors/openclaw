@@ -1,7 +1,3 @@
-// Multi-value combobox: the current values sit inside a full-width field as
-// removable chips, the dropdown lists the remaining options filtered by what
-// the operator types, and optional free-text entry appends values the option
-// list does not know. Light DOM so the shared stylesheet applies.
 import WaPopup from "@awesome.me/webawesome/dist/components/popup/popup.js";
 import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeCsvOrLooseStringList } from "@openclaw/normalization-core/string-normalization";
@@ -14,6 +10,7 @@ import { OpenClawLightDomElement } from "../lit/openclaw-element.ts";
 import { configureAnchoredPopup } from "./anchored-overlay.ts";
 import { icons } from "./icons.ts";
 import { renderProviderBrandIcon } from "./provider-icon.ts";
+import { revealInScrollRegion } from "./scroll-state.ts";
 import "../styles/multi-select.css";
 
 export type MultiSelectOption = {
@@ -27,11 +24,6 @@ export type MultiSelectOption = {
 type MultiSelectRow = MultiSelectOption & { custom?: boolean };
 
 let instanceCounter = 0;
-
-function nextListboxId(): string {
-  instanceCounter += 1;
-  return `openclaw-multi-select-${instanceCounter}`;
-}
 
 function providerFromValue(value: string): string | undefined {
   const separator = value.indexOf("/");
@@ -61,7 +53,7 @@ export class MultiSelect extends OpenClawLightDomElement {
   @state() private query = "";
   @state() private activeIndex = 0;
 
-  private readonly listboxId = nextListboxId();
+  private readonly listboxId = `openclaw-multi-select-${++instanceCounter}`;
   private field: HTMLElement | null = null;
   private input: HTMLInputElement | null = null;
 
@@ -91,16 +83,8 @@ export class MultiSelect extends OpenClawLightDomElement {
     }
     const menu = this.querySelector<HTMLElement>(".multi-select__menu");
     const option = menu?.querySelector<HTMLElement>('[aria-selected="true"]');
-    if (!menu || !option) {
-      return;
-    }
-    const menuBounds = menu.getBoundingClientRect();
-    const optionBounds = option.getBoundingClientRect();
-    // Keep keyboard navigation inside this popup without scrolling the settings page.
-    if (optionBounds.top < menuBounds.top) {
-      menu.scrollTop -= menuBounds.top - optionBounds.top;
-    } else if (optionBounds.bottom > menuBounds.bottom) {
-      menu.scrollTop += optionBounds.bottom - menuBounds.bottom;
+    if (menu && option) {
+      revealInScrollRegion(menu, option);
     }
   }
 

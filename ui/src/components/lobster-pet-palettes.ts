@@ -3,7 +3,7 @@ import type { LobsterPetLook, LobsterPetPalette } from "./lobster-pet-contract.t
 
 // Rarity ladder loosely mirrors real lobster genetics: blue and gold lead into
 // terminal fantasies whose geometry and styling key off each id.
-export const LOBSTER_PALETTE_WEIGHTS: Array<[LobsterPetPalette, number]> = [
+export const LOBSTER_PALETTE_WEIGHTS = [
   [{ id: "crimson", shell: "#ff4f40", claw: "#ff775f" }, 26],
   [{ id: "blue", shell: "#4a7dfc", claw: "#7fa4ff" }, 7],
   [{ id: "gold", shell: "#f4b840", claw: "#f9d47a" }, 5],
@@ -53,7 +53,7 @@ export const LOBSTER_PALETTE_WEIGHTS: Array<[LobsterPetPalette, number]> = [
   // The classic-logo grails stay the final, strictly rarest two entries.
   [{ id: "retro", shell: "#e8262c", claw: "#f04a3e" }, 0.5],
   [{ id: "goldenretro", shell: "#e8b422", claw: "#f6cf5a" }, 0.1],
-];
+] as const;
 
 export const LOBSTER_PET_PALETTES: readonly LobsterPetPalette[] = LOBSTER_PALETTE_WEIGHTS.map(
   ([palette]) => palette,
