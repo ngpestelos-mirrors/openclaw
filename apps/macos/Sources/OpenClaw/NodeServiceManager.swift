@@ -28,8 +28,7 @@ enum NodeServiceManager {
         return self.launchdProgramArguments(
             plistURL: self.launchdPlistURL,
             formerPlistURL: LaunchAgentPlist.homeDirectoryURL
-                .appendingPathComponent("Library/LaunchAgents/\(nodeLaunchdLabel).plist"),
-            fileManager: .default)
+                .appendingPathComponent("Library/LaunchAgents/\(nodeLaunchdLabel).plist"))
     }
 
     static func waitUntilRunning(profile: AppProfile = .current) async -> Bool {
@@ -197,33 +196,11 @@ extension NodeServiceManager {
             hints: hints)
     }
 
-    private static func launchdProgramArguments(
-        plistURL: URL,
-        formerPlistURL: URL? = nil,
-        fileManager: FileManager) -> [String]?
-    {
+    private static func launchdProgramArguments(plistURL: URL, formerPlistURL: URL? = nil) -> [String]? {
         #if DEBUG
         self.testingOwnershipReadCount += 1
         #endif
-        let candidates = [plistURL] + (formerPlistURL.map { $0 == plistURL ? [] : [$0] } ?? [])
-        for candidate in candidates {
-            do {
-                _ = try fileManager.attributesOfItem(atPath: candidate.path)
-            } catch {
-                let failure = error as NSError
-                guard failure.domain == NSCocoaErrorDomain,
-                      [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(failure.code)
-                else { return nil }
-                continue
-            }
-            // Only a missing canonical record permits migration fallback. Malformed,
-            // unreadable, or dangling canonical records continue to fail closed.
-            guard let arguments = LaunchAgentPlist.snapshot(url: candidate)?.programArguments,
-                  !arguments.isEmpty
-            else { return nil }
-            return arguments
-        }
-        return []
+        return LaunchAgentPlist.ownershipProgramArguments(url: plistURL, formerURL: formerPlistURL)
     }
 
     private static func runtimeIsRunning(in object: [String: Any]) -> Bool {
@@ -258,7 +235,7 @@ extension NodeServiceManager {
     }
 
     static func _testLaunchdProgramArguments(plistURL: URL, formerPlistURL: URL? = nil) -> [String]? {
-        self.launchdProgramArguments(plistURL: plistURL, formerPlistURL: formerPlistURL, fileManager: .default)
+        self.launchdProgramArguments(plistURL: plistURL, formerPlistURL: formerPlistURL)
     }
 
     static func _testRuntimeIsRunning(fromJSON json: String) -> Bool {

@@ -110,6 +110,44 @@ enum LaunchAgentPlist {
         self.fileSystemNumber(forPath: path)
     }
 
+    /// Only absence permits fallback; an unreadable canonical record still owns the service.
+    static func ownershipSnapshot(
+        url: URL,
+        formerURL: URL? = nil,
+        generatedEnvironmentFileURL: URL? = nil,
+        generatedEnvironmentWrapperURL: URL? = nil) throws -> LaunchAgentPlistSnapshot?
+    {
+        let candidates = [url] + (formerURL.map { $0 == url ? [] : [$0] } ?? [])
+        for candidate in candidates {
+            do {
+                _ = try FileManager.default.attributesOfItem(atPath: candidate.path)
+            } catch {
+                let failure = error as NSError
+                guard failure.domain == NSCocoaErrorDomain,
+                      [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(failure.code)
+                else { throw error }
+                continue
+            }
+            guard let snapshot = self.snapshot(
+                url: candidate,
+                generatedEnvironmentFileURL: generatedEnvironmentFileURL,
+                generatedEnvironmentWrapperURL: generatedEnvironmentWrapperURL),
+                !snapshot.programArguments.isEmpty
+            else { throw CocoaError(.fileReadCorruptFile) }
+            return snapshot
+        }
+        return nil
+    }
+
+    /// Empty means absent; nil means ownership exists but cannot be inspected.
+    static func ownershipProgramArguments(url: URL, formerURL: URL? = nil) -> [String]? {
+        do {
+            return try self.ownershipSnapshot(url: url, formerURL: formerURL)?.programArguments ?? []
+        } catch {
+            return nil
+        }
+    }
+
     static func snapshot(
         url: URL,
         generatedEnvironmentFileURL: URL? = nil,

@@ -32,6 +32,11 @@ enum GatewayLaunchAgentManager {
             profile: .current)
     }
 
+    private static var formerPlistURL: URL {
+        LaunchAgentPlist.homeDirectoryURL.appendingPathComponent(
+            "Library/LaunchAgents/\(AppProfile.current.gatewayLaunchAgentLabel).plist")
+    }
+
     static func plistURL(homeDirectory: URL, profile: AppProfile) -> URL {
         LaunchAgentPlist.launchAgentHomeDirectory(homeDirectory: homeDirectory).appendingPathComponent(
             "Library/LaunchAgents/\(profile.gatewayLaunchAgentLabel).plist")
@@ -259,8 +264,9 @@ enum GatewayLaunchAgentManager {
     static func launchdConfigSnapshot() -> LaunchAgentPlistSnapshot? {
         let directory = self.generatedEnvironmentDirectoryURL
         let artifacts = self.generatedEnvironmentArtifacts(directory: directory, profile: .current)
-        return LaunchAgentPlist.snapshot(
+        return try? LaunchAgentPlist.ownershipSnapshot(
             url: self.plistURL,
+            formerURL: self.formerPlistURL,
             generatedEnvironmentFileURL: artifacts.environment,
             generatedEnvironmentWrapperURL: artifacts.wrapper)
     }
@@ -277,9 +283,7 @@ enum GatewayLaunchAgentManager {
     /// Empty means no Gateway LaunchAgent. Nil preserves an unreadable
     /// ownership record so update callers fail closed instead of consuming it.
     static func launchdProgramArguments() -> [String]? {
-        guard FileManager.default.fileExists(atPath: self.plistURL.path) else { return [] }
-        guard let arguments = self.launchdConfigSnapshot()?.programArguments, !arguments.isEmpty else { return nil }
-        return arguments
+        LaunchAgentPlist.ownershipProgramArguments(url: self.plistURL, formerURL: self.formerPlistURL)
     }
 
     static func launchdGatewayLogPath() -> String {
@@ -520,9 +524,8 @@ extension GatewayLaunchAgentManager {
         return self.runningGatewayPID(from: service)
     }
 
-    static func _testLaunchdProgramArguments(plistURL: URL) -> [String]? {
-        guard FileManager.default.fileExists(atPath: plistURL.path) else { return [] }
-        return LaunchAgentPlist.snapshot(url: plistURL)?.programArguments
+    static func _testLaunchdProgramArguments(plistURL: URL, formerPlistURL: URL? = nil) -> [String]? {
+        LaunchAgentPlist.ownershipProgramArguments(url: plistURL, formerURL: formerPlistURL)
     }
     #endif
 }

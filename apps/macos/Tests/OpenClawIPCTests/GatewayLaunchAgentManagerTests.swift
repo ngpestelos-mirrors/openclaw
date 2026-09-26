@@ -245,26 +245,47 @@ struct GatewayLaunchAgentManagerTests {
             homeDirectory: home) == "installed profile Gateway claims cannot be inspected")
     }
 
-    @Test func `reads Gateway service ownership command directly from launchd`() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("openclaw-gateway-\(UUID().uuidString).plist")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let arguments = [
-            "/Users/Test/.openclaw/tools/node/bin/node",
-            "/Users/Test/.openclaw/lib/node_modules/openclaw/dist/index.js",
-            "gateway",
-        ]
+    @Test func `Gateway ownership follows relocation and refuses unreadable records`() throws {
+        let root = try makeTempDirForTests().resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let canonical = root.appendingPathComponent("canonical.plist")
+        let former = root.appendingPathComponent("former.plist")
+        let arguments = ["/fixture/node", "/fixture/openclaw/dist/index.js", "gateway"]
         let data = try PropertyListSerialization.data(
-            fromPropertyList: ["ProgramArguments": arguments],
-            format: .xml,
-            options: 0)
-        try data.write(to: url, options: .atomic)
+            fromPropertyList: ["ProgramArguments": arguments], format: .xml, options: 0)
+        let read = {
+            GatewayLaunchAgentManager._testLaunchdProgramArguments(plistURL: canonical, formerPlistURL: former)
+        }
 
-        #expect(GatewayLaunchAgentManager._testLaunchdProgramArguments(plistURL: url) == arguments)
-        try Data("not a plist".utf8).write(to: url, options: .atomic)
-        #expect(GatewayLaunchAgentManager._testLaunchdProgramArguments(plistURL: url) == nil)
-        try FileManager.default.removeItem(at: url)
-        #expect(GatewayLaunchAgentManager._testLaunchdProgramArguments(plistURL: url) == [])
+        #expect(read() == [])
+        try data.write(to: former, options: .atomic)
+        #expect(read() == arguments)
+        try Data("not a plist".utf8).write(to: canonical, options: .atomic)
+        #expect(read() == nil)
+        try PropertyListSerialization.data(
+            fromPropertyList: ["ProgramArguments": [String]()], format: .xml, options: 0)
+            .write(to: canonical, options: .atomic)
+        #expect(read() == nil)
+        try FileManager.default.removeItem(at: canonical)
+        try FileManager.default.createSymbolicLink(
+            at: canonical, withDestinationURL: root.appendingPathComponent("missing"))
+        #expect(read() == nil)
+        try FileManager.default.removeItem(at: canonical)
+        try FileManager.default.createDirectory(at: canonical, withIntermediateDirectories: false)
+        #expect(read() == nil)
+        try FileManager.default.removeItem(at: canonical)
+        let relocatedArguments = ["/candidate/node", "/candidate/openclaw/dist/index.js", "gateway"]
+        try PropertyListSerialization.data(
+            fromPropertyList: ["ProgramArguments": relocatedArguments], format: .xml, options: 0)
+            .write(to: canonical, options: .atomic)
+        #expect(read() == relocatedArguments)
+        #expect(try Data(contentsOf: former) == data)
+        try FileManager.default.removeItem(at: canonical)
+        #expect(read() == arguments)
+        try Data("not a plist".utf8).write(to: former, options: .atomic)
+        #expect(read() == nil)
+        try FileManager.default.removeItem(at: former)
+        #expect(read() == [])
     }
 
     @Test func `daemon status exposes only a loaded running gateway pid`() {
@@ -520,14 +541,22 @@ struct GatewayLaunchAgentManagerTests {
         try data.write(to: plistURL, options: [.atomic])
         defer { try? FileManager().removeItem(at: directory) }
 
-        let snapshot = try #require(LaunchAgentPlist.snapshot(
-            url: plistURL,
-            generatedEnvironmentFileURL: environmentFileURL,
-            generatedEnvironmentWrapperURL: wrapperURL))
-        #expect(snapshot.environment["CUSTOM_GATEWAY_TOKEN"] == "custom-token")
-        #expect(snapshot.token == "service-token")
-        #expect(snapshot.password == "service'pass")
-        #expect(snapshot.port == 18789)
+        let formerURL = directory.appendingPathComponent("former.plist")
+        for relocated in [true, false] {
+            if !relocated {
+                try FileManager.default.moveItem(at: plistURL, to: formerURL)
+            }
+            let result = try LaunchAgentPlist.ownershipSnapshot(
+                url: plistURL,
+                formerURL: formerURL,
+                generatedEnvironmentFileURL: environmentFileURL,
+                generatedEnvironmentWrapperURL: wrapperURL)
+            let snapshot = try #require(result)
+            #expect(snapshot.environment["CUSTOM_GATEWAY_TOKEN"] == "custom-token")
+            #expect(snapshot.token == "service-token")
+            #expect(snapshot.password == "service'pass")
+            #expect(snapshot.port == 18789)
+        }
     }
 
     @Test func `launch agent plist snapshot ignores unreferenced generated environment`() throws {
