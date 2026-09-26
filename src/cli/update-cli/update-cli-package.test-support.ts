@@ -3,6 +3,11 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, vi, type Mock } from "vitest";
 import { writePackageDistInventory } from "../../../scripts/lib/package-dist-inventory.ts";
+import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
+import {
+  POST_CORE_EXECUTOR_CAPABILITY,
+  POST_CORE_MUTATION_PROTOCOL,
+} from "../../infra/update-post-core-capability.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { runCommandWithTimeout as RunCommandWithTimeout } from "../../process/exec.js";
 import { createCommandResult as commandResult } from "../../test-utils/npm-spec-install-test-helpers.js";
@@ -104,11 +109,34 @@ export const writeNpmPackageInstall = async (
         "openclaw",
       )
     : packageRoot;
+  if (stagePrefix) {
+    await fs.mkdir(path.join(stagePrefix, "bin"), { recursive: true });
+  }
   await writeOpenClawPackageFixture(installedRoot, version, {
     entrySource: "export {};\n",
     inventory: true,
   });
+  return installedRoot;
 };
+
+/** Model a current package target whose real migrated worker advertises delegated execution. */
+export async function writePostCoreExecutorFixture(packageRoot: string): Promise<void> {
+  const worker = path.join(
+    packageRoot,
+    "dist",
+    runtimeProcessEntrypoints.updateMigratedFinalize.distWorkerPath,
+  );
+  await fs.mkdir(path.dirname(worker), { recursive: true });
+  await fs.writeFile(
+    worker,
+    `if (process.argv[2] === "--check") process.stdout.write(JSON.stringify(${JSON.stringify({
+      postCoreExecutor: POST_CORE_EXECUTOR_CAPABILITY,
+      mutationProtocol: POST_CORE_MUTATION_PROTOCOL,
+    })}));\n`,
+    "utf8",
+  );
+  await writePackageDistInventory(packageRoot);
+}
 
 export const packageTargetStatus = (
   overrides: Partial<{
@@ -427,6 +455,7 @@ export function createCurrentProcessFreshDoctorFixture(
   return (
     params: {
       postCoreResumeAttempt?: boolean;
+      postPluginDoctorAttempt?: boolean;
       packageRoot?: string;
       candidateAdmission?: boolean;
     } = {},
@@ -448,5 +477,8 @@ export function createCurrentProcessFreshDoctorFixture(
       vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(undefined);
     }
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(freshEntrypoint);
+    if (params.postPluginDoctorAttempt) {
+      vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(freshEntrypoint);
+    }
   };
 }

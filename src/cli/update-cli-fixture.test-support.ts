@@ -67,6 +67,7 @@ import {
   writeGitUpdateResultFixture,
   writeJsonFixture,
   writeNpmPackageInstall,
+  writePostCoreExecutorFixture,
 } from "./update-cli/update-cli-package.test-support.js";
 
 await vi.hoisted(() => import("./update-cli-mocks.test-support.js"));
@@ -152,12 +153,23 @@ export function createUpdateCliFixture() {
       createCaseDir(prefix),
       version,
     );
+    // A real global npm prefix always owns its launcher directory, even when
+    // this scenario has no launcher entries to publish.
+    await fs.mkdir(path.join(path.dirname(path.dirname(nodeModules)), "bin"), {
+      recursive: true,
+    });
     mockNpmGlobalCommands(nodeModules, async (argv) => {
       if (argv[0] === "npm" && argv[1] === "i") {
-        await writeNpmPackageInstall(argv, pkgRoot);
+        const installedRoot = await writeNpmPackageInstall(argv, pkgRoot);
+        await writePostCoreExecutorFixture(installedRoot);
       }
     });
-    mockCurrentProcessFreshDoctor({ packageRoot: pkgRoot });
+    mockCurrentProcessFreshDoctor({
+      packageRoot: pkgRoot,
+      candidateAdmission: true,
+      postCoreResumeAttempt: false,
+      postPluginDoctorAttempt: true,
+    });
     return pkgRoot;
   };
 
