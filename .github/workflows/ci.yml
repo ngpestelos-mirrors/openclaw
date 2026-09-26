@@ -5826,6 +5826,23 @@ jobs:
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
           install-bun: "false"
 
+      # PR133215 feasibility only: no production relocation or account mutation.
+      - name: Probe external-home LaunchAgent directory discovery
+        id: launchd-login-probe
+        if: github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'pr133215-login-registration-') && !inputs.release_gate && (matrix.task == 'test' || matrix.task == 'test-1')
+        env:
+          EXPECTED_TARGET_SHA: ${{ needs.preflight.outputs.checkout_revision }}
+        run: node scripts/e2e/qualify-launchd-login-registration.mjs "$EXPECTED_TARGET_SHA" "$RUNNER_TEMP/launchd-login-registration/result.json"
+
+      - name: Upload LaunchAgent directory-discovery observation
+        if: always() && steps.launchd-login-probe.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-launchd-login-registration
+          path: ${{ runner.temp }}/launchd-login-registration/result.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: TS tests (macOS)
         env:
           NODE_OPTIONS: --max-old-space-size=4096
