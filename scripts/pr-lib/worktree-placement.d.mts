@@ -5,4 +5,7 @@ export function getPrWorktreePaths(
   legacy: string;
   isolated: string;
 };
-export function requireIsolatedPrWorktreeParent(root: string): string;
+export function requireIsolatedPrWorktreeParent(
+  root: string,
+  options?: { writableFor?: string },
+): string;

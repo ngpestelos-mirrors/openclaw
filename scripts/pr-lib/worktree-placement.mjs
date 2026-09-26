@@ -33,7 +33,7 @@ export function getPrWorktreePaths(root, pr) {
   };
 }
 
-export function requireIsolatedPrWorktreeParent(root) {
+export function requireIsolatedPrWorktreeParent(root, { writableFor } = {}) {
   const parent = path.dirname(getPrWorktreePaths(root, "1").isolated);
   // A complete local installation still permits ancestor package probes.
   // Placement, not the declaration guard, must exclude those installations.
@@ -42,9 +42,30 @@ export function requireIsolatedPrWorktreeParent(root) {
       throw new Error(`Native PR placement has an ancestor installation: ${current}`);
     }
     if (path.dirname(current) === current) {
-      return parent;
+      break;
     }
   }
+  if (writableFor) {
+    // Mode bits/access() do not prove sandbox admission. Probe only the selected
+    // physical parent; legacy reuse and read-only placement never need this grant.
+    let probe;
+    try {
+      fs.mkdirSync(parent, { recursive: true });
+      if (!stat(parent)?.isDirectory() || fs.realpathSync(parent) !== parent) {
+        throw new Error("Native PR isolation parent must be a physical directory");
+      }
+      probe = fs.mkdtempSync(path.join(parent, ".pr-write-probe-"));
+      fs.rmdirSync(probe);
+    } catch (error) {
+      throw new Error(
+        `Cannot admit ${writableFor} at native PR parent ${parent}: ${error.code ? `${error.code}: ` : ""}${error.message}. ` +
+          "Provision and authorize this exact sibling directory in the approved maintainer environment; " +
+          `retain sandbox/approval policy and Git metadata authorization.${probe ? ` Retain failed probe ${probe}.` : ""}`,
+        { cause: error },
+      );
+    }
+  }
+  return parent;
 }
 
 function validatePrWorktreePath(root, requested) {
@@ -271,8 +292,15 @@ if (isDirectRunUrl(process.argv[1], import.meta.url)) {
       process.stdout.write(JSON.stringify(listPrWorktreePaths(root)) + "\n");
     } else if (operation === "state") {
       printPrWorktreeState(root, value, requested, previousAdmin, purpose);
+    } else if (operation === "admit") {
+      if (!value) {
+        throw new Error("Native PR parent admission requires the operation name");
+      }
+      requireIsolatedPrWorktreeParent(root, { writableFor: value });
     } else {
-      throw new Error("Usage: worktree-placement.mjs <resolve|list|state> <root> [arguments]");
+      throw new Error(
+        "Usage: worktree-placement.mjs <resolve|list|state|admit> <root> [arguments]",
+      );
     }
   } catch (error) {
     console.error(`Refusing native PR placement: ${error.message}`);

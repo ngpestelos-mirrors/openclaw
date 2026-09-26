@@ -87,7 +87,6 @@ function isolatePrWorktree({ root: requestedRoot, pr, expectedHead, lockRef, own
     throw new Error("Invalid native PR isolation identity");
   }
   const root = fs.realpathSync(requestedRoot);
-  const paths = getPrWorktreePaths(root, pr);
   const env = { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" };
   const binary = env.OPENCLAW_PR_GIT || "git";
   function git(args, { cwd = root, input } = {}) {
@@ -132,11 +131,36 @@ function isolatePrWorktree({ root: requestedRoot, pr, expectedHead, lockRef, own
     throw new Error("Native PR isolation requires the canonical repository owner");
   }
   const ref = `refs/openclaw/pr-worktree-isolations/${pr}`;
-  let retained = git(["for-each-ref", "--format=%(refname) %(objectname)", ref])
-    .split("\n")
-    .find((line) => line.startsWith(`${ref} `))
-    ?.slice(ref.length + 1);
+  function retainOperation() {
+    if (env.OPENCLAW_PR_LOCK_NOTIFY_FD === "3") {
+      fs.writeSync(3, "phase\tside-effects-started\n");
+    }
+  }
+  let retained;
+  try {
+    retained = git(["for-each-ref", "--format=%(refname) %(objectname)", ref])
+      .split("\n")
+      .find((line) => line.startsWith(`${ref} `))
+      ?.slice(ref.length + 1);
+  } catch (error) {
+    // A failed observation cannot establish absence of earlier move custody.
+    retainOperation();
+    throw error;
+  }
+  // A prior intent already owns uncertain effects. A recovery refusal must not
+  // release its new operation lock as though it were a fresh admission failure.
+  if (retained) {
+    retainOperation();
+  }
+  const paths = getPrWorktreePaths(root, pr);
   let record = retained ? JSON.parse(git(["cat-file", "blob", retained])) : undefined;
+  function assertIntent() {
+    same(
+      git(["for-each-ref", "--format=%(refname) %(objectname) %(symref)", ref]),
+      `${ref} ${retained}`,
+      "Retained native isolation intent",
+    );
+  }
   function writeRecord(next) {
     assertAuthority();
     const oid = git(["hash-object", "-w", "--stdin"], { input: JSON.stringify(next) + "\n" });
@@ -241,6 +265,17 @@ function isolatePrWorktree({ root: requestedRoot, pr, expectedHead, lockRef, own
       throw new Error("Native PR registration is ambiguous");
     }
   }
+  function originalStamps() {
+    return Object.fromEntries(
+      pathBoundStamps.map((name) => {
+        const file = path.join(paths.legacy, ".local", name);
+        if (stat(`${file}.before-isolation`)) {
+          throw new Error("An earlier path-bound stamp is already retained");
+        }
+        return [name, stat(file) ? sha(read(file)) : null];
+      }),
+    );
+  }
   assertAuthority();
   const parent = requireIsolatedPrWorktreeParent(root);
   if (record) {
@@ -256,61 +291,70 @@ function isolatePrWorktree({ root: requestedRoot, pr, expectedHead, lockRef, own
     ) {
       throw new Error("Retained native isolation intent does not match this checkout");
     }
-    if (stat(paths.legacy) || !stat(paths.isolated)) {
-      throw new Error(
-        "Retained isolation did not establish its sole destination; preserve it for recovery",
-      );
+    const originalPresent = Boolean(stat(paths.legacy));
+    const destinationPresent = Boolean(stat(paths.isolated));
+    if (
+      originalPresent === destinationPresent ||
+      (record.phase === "complete" && originalPresent)
+    ) {
+      throw new Error("Retained isolation has ambiguous placement; preserve it for recovery");
     }
     // A crash after rename may leave stale backlinks. Do not sweep or repair
     // other worktrees, and never replay the directory move under a new owner.
-    requireRegistration(paths.isolated, record.snapshot.admin);
-    same(snapshot(paths.isolated), record.snapshot, "Original isolated worktree");
-    if (record.phase === "complete") {
-      return paths.isolated;
+    if (destinationPresent) {
+      requireRegistration(paths.isolated, record.snapshot.admin);
+      same(snapshot(paths.isolated), record.snapshot, "Original isolated worktree");
+      assertIntent();
+      if (record.phase === "complete") {
+        return paths.isolated;
+      }
     }
-  } else {
+  }
+  if (!record || stat(paths.legacy)) {
     if (!stat(paths.legacy) || stat(paths.isolated)) {
       throw new Error("Isolation requires one existing legacy checkout and an absent destination");
     }
-    const before = snapshot(paths.legacy);
+    // Resumption consumes the original receipt, never a new snapshot accepted
+    // after interruption. Fresh and retained-original moves share every guard.
+    const before = record ? record.snapshot : snapshot(paths.legacy);
+    same(snapshot(paths.legacy), before, "Original native worktree");
     requireRegistration(paths.legacy, before.admin);
+    const stamps = record ? record.stamps : originalStamps();
+    same(originalStamps(), stamps, "Original path-bound preparation stamps");
     requireNoHolders(paths.legacy);
     requireNoHolders(before.admin);
     const parentIdentity = identity(path.dirname(parent));
-    fs.mkdirSync(parent, { recursive: true });
+    requireIsolatedPrWorktreeParent(root, { writableFor: "native PR isolation" });
     same(identity(path.dirname(parent)), parentIdentity, "Isolation parent");
     const destinationParent = identity(parent);
     if (destinationParent.dev !== before.directory.dev) {
       throw new Error("Native PR isolation requires a same-filesystem move");
     }
     requireIsolatedPrWorktreeParent(root);
-    const stamps = Object.fromEntries(
-      pathBoundStamps.map((name) => {
-        const file = path.join(paths.legacy, ".local", name);
-        if (stat(`${file}.before-isolation`)) {
-          throw new Error("An earlier path-bound stamp is already retained");
-        }
-        return [name, stat(file) ? sha(read(file)) : null];
-      }),
-    );
     same(snapshot(paths.legacy), before, "Original native worktree");
-    writeRecord({
-      version: 1,
-      phase: "intent",
-      root,
-      common,
-      pr,
-      head: expectedHead,
-      from: paths.legacy,
-      to: paths.isolated,
-      snapshot: before,
-      stamps,
-    });
-    assertAuthority();
+    same(originalStamps(), stamps, "Original path-bound preparation stamps");
+    if (!record) {
+      retainOperation();
+      writeRecord({
+        version: 1,
+        phase: "intent",
+        root,
+        common,
+        pr,
+        head: expectedHead,
+        from: paths.legacy,
+        to: paths.isolated,
+        snapshot: before,
+        stamps,
+      });
+    }
     same(identity(parent), destinationParent, "Isolation destination parent");
     if (stat(paths.isolated)) {
       throw new Error("Isolation destination appeared before the move");
     }
+    requireRegistration(paths.legacy, before.admin);
+    assertAuthority();
+    assertIntent();
     git(["worktree", "move", "--", paths.legacy, paths.isolated]);
     requireRegistration(paths.isolated, before.admin);
     same(snapshot(paths.isolated), before, "Moved native worktree");
@@ -318,6 +362,7 @@ function isolatePrWorktree({ root: requestedRoot, pr, expectedHead, lockRef, own
   requireNoHolders(paths.isolated);
   requireNoHolders(record.snapshot.admin);
   assertAuthority();
+  assertIntent();
   // Preserve old bytes as evidence without letting a path-bound stamp qualify
   // the new location. Review and incoming-review authority remain untouched.
   for (const name of pathBoundStamps) {

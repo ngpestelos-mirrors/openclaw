@@ -332,7 +332,6 @@ isolate_pr_worktree() {
   root=$(repo_root) || return 1
   helper=$(cd "${BASH_SOURCE[0]%/*}" && pwd -P)/worktree-isolate.mjs || return 1
   cd "$root" || return 1
-  mark_pr_operation_side_effects_started || return 1
   node "$helper" "$root" "$1" "$2" "$PR_OPERATION_LOCK_REF" "$PR_OPERATION_LOCK_OWNER_OID"
 }
 
@@ -366,18 +365,38 @@ enter_worktree() {
 
   cd "$root" || return 1
   ensure_gh_api_auth || { PR_MAIN_SHA=""; return 1; }
-  # Fetch can launch helpers and mutate Git state even when it fails; leave validation first.
-  mark_pr_operation_side_effects_started || return 1
-
-  local dir
-  dir=$(pr_worktree_path "$pr") || return 1
+  local dir placement_status
+  # Unresolved placement can carry a retained isolation intent. Do not turn
+  # that refusal into successful validation cleanup while adding cold admission.
+  dir=$(pr_worktree_path "$pr") || {
+    placement_status=$?
+    mark_pr_operation_side_effects_started || return 1
+    return "$placement_status"
+  }
   local resolved_parent resolved_dir state registration initialized_sha=""
-  state=$(pr_worktree_state "$dir" "" entry) || return $?
+  state=$(pr_worktree_state "$dir" "" entry) || {
+    placement_status=$?
+    mark_pr_operation_side_effects_started || return 1
+    return "$placement_status"
+  }
   resolved_dir=$(printf '%s\n' "$state" | jq -r '.path') || return $?
-  registration=$(worktree_registration_state "$resolved_dir") || return $?
+  registration=$(worktree_registration_state "$resolved_dir") || {
+    placement_status=$?
+    mark_pr_operation_side_effects_started || return 1
+    return "$placement_status"
+  }
 
   if [ "$registration" != registered ] ||
     ! printf '%s\n' "$state" | jq -e '.present' >/dev/null; then
+    if [ "$registration" = registered ] ||
+      printf '%s\n' "$state" | jq -e '.present or .admin != ""' >/dev/null; then
+      mark_pr_operation_side_effects_started || return 1
+    fi
+    # Refuse an unwritable cold destination before retiring stale state or fetching.
+    local placement_helper
+    placement_helper=$(cd "${BASH_SOURCE[0]%/*}" && pwd -P)/worktree-placement.mjs || return 1
+    node "$placement_helper" admit "$root" "cold PR creation" || return 1
+    mark_pr_operation_side_effects_started || return 1
     if [ "$registration" = registered ] ||
       printf '%s\n' "$state" | jq -e '.present or .admin != ""' >/dev/null; then
       echo "Removing exact stale PR worktree $dir"
@@ -401,6 +420,8 @@ enter_worktree() {
     [ "$registration" = registered ] || return 1
   fi
 
+  # Warm entry needs no sibling write grant. Fetch still leaves validation first.
+  mark_pr_operation_side_effects_started || return 1
   cd "$resolved_dir" || return 1
 
   # Containment, not repair: every mutation below runs against ambient cwd, so
