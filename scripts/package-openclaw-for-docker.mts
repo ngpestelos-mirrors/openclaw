@@ -979,12 +979,16 @@ export async function packOpenClawPackageForDocker(
         outputPath,
         ...(packTool === "npm" ? ["--json=false"] : []),
       ];
-      packOutput = await runCaptureImpl(packTool, packArgs, sourcePath, {
-        timeoutMs: resolveTimeoutMs(
-          "OPENCLAW_DOCKER_PACKAGE_PACK_TIMEOUT_MS",
-          DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
-        ),
-      });
+      const { withMaterializedBundledDependencies } =
+        await import("./lib/package-bundled-links.mts");
+      packOutput = await withMaterializedBundledDependencies(sourcePath, () =>
+        runCaptureImpl(packTool, packArgs, sourcePath, {
+          timeoutMs: resolveTimeoutMs(
+            "OPENCLAW_DOCKER_PACKAGE_PACK_TIMEOUT_MS",
+            DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
+          ),
+        }),
+      );
     } finally {
       try {
         await cleanupBundledAiRuntime();
