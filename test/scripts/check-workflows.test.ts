@@ -585,7 +585,7 @@ describe("check-workflows", () => {
     expect(proof.env).toMatchObject({
       EXPECTED_HEAD: "${{ inputs.target_ref }}",
       CI_WINDOWS_SCHTASKS_ROOT:
-        "${{ runner.temp }}\\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}",
+        "${{ runner.temp }}\\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}",
       CI_WINDOWS_SCHTASKS_TEST_ID: "${{ github.run_id }}-${{ github.run_attempt }}",
       CI_WINDOWS_SCHTASKS_PROOF_PATH:
         "${{ github.workspace }}\\.artifacts\\windows-schtasks\\proof.json",
