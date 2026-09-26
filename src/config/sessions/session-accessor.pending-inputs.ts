@@ -189,11 +189,26 @@ export async function stageSessionPendingInput(
       options.assertCurrent,
       async (access) => {
         options.assertCurrent();
-        const snapshot = await access.read({
+        let snapshot = await access.read({
           idempotencyKey,
           trackCompletion: options.trackCompletion,
+          runId: preparedRequest.runId,
+          // Frozen-cohort replay validates provenance before it may reject existing custody.
+          requestHash: preparedRequest.replaySourceSessionKeys
+            ? undefined
+            : preparedRequest.requestHash,
         });
         options.assertCurrent();
+        if (snapshot && "kind" in snapshot) {
+          if (hasSessionPendingInputOwner(snapshot.source.path, snapshot.identity)) {
+            throw new Error("Pending input is already admitted; wait for its current turn");
+          }
+          snapshot = await access.read(
+            { idempotencyKey, trackCompletion: options.trackCompletion },
+            snapshot.source,
+          );
+          options.assertCurrent();
+        }
         if (!snapshot) {
           return undefined;
         }

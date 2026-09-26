@@ -1,3 +1,6 @@
+import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
@@ -7,18 +10,24 @@ import type { AgentDatabaseExecutionScope } from "../../state/openclaw-agent-exe
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import {
   readSessionPendingInputStage,
+  pendingInputStageNeedsWorker,
   commitSessionPendingInputStage,
   completeSessionPendingInputInDatabase,
   finishSessionPendingInputInDatabase,
   repairSessionPendingInputRowsInDatabase,
   type PendingInputStageRead,
+  type PendingInputStageSnapshot,
+  type PendingInputAlreadyAdmitted,
   type PendingInputStageCommit,
   type PendingInputCompletion,
   type PendingInputFinish,
 } from "./session-accessor.pending-inputs.kernel.js";
 import type { PendingInputIdentity } from "./session-accessor.pending-inputs.read.js";
 import { assertCapturedSessionEntryReadSource } from "./session-accessor.sqlite-exact-read.js";
-import { hasSessionPendingInputOwner } from "./session-accessor.sqlite-pending-inputs.js";
+import {
+  hasSessionPendingInputOwner,
+  MAX_INLINE_PENDING_INPUT_BYTES,
+} from "./session-accessor.sqlite-pending-inputs.js";
 import { withSessionEntryWorker } from "./session-accessor.sqlite-replacement-worker.js";
 import {
   runExclusiveSqliteSessionWrite,
@@ -28,7 +37,14 @@ import {
 import type { CapturedSessionEntryReadSource } from "./session-accessor.types.js";
 
 type PendingInputAccess = {
-  read(request: PendingInputStageRead): Promise<ReturnType<typeof readSessionPendingInputStage>>;
+  read(
+    request: PendingInputStageRead & { requestHash?: undefined },
+    source?: CapturedSessionEntryReadSource,
+  ): Promise<PendingInputStageSnapshot | undefined>;
+  read(
+    request: PendingInputStageRead,
+    source?: CapturedSessionEntryReadSource,
+  ): Promise<PendingInputStageSnapshot | PendingInputAlreadyAdmitted | undefined>;
   stage(request: PendingInputStageCommit): Promise<boolean>;
   complete(
     request: PendingInputCompletion,
@@ -36,7 +52,7 @@ type PendingInputAccess = {
   finish(request: PendingInputFinish): Promise<void>;
 };
 
-/** Keep preparation and commit in the same physical writer FIFO; authority stays on the host. */
+/** Staging retains its outer writer FIFO; each native operation joins it under live authority. */
 export async function withSessionPendingInputDatabase<T>(
   resolved: ResolvedTranscriptScope & { path: string },
   assertCurrent: () => void,
@@ -81,38 +97,103 @@ export async function withSessionPendingInputDatabase<T>(
     );
   }
   const { env: _env, ...workerScope } = resolved;
-  const access = (worker: AgentDatabaseExecutionScope): PendingInputAccess => ({
-    read: (request) =>
-      worker.execute({
-        type: "session.pendingInput.read",
-        input: { resolved: workerScope, ...request },
-      }),
-    stage: (request) =>
-      worker.execute({
-        type: "session.pendingInput.stage",
-        input: { resolved: workerScope, ...request },
-      }),
-    complete: (request) =>
-      worker.execute({
-        type: "session.pendingInput.complete",
-        input: { resolved: workerScope, ...request },
-      }),
-    finish: (request) => worker.execute({ type: "session.pendingInput.finish", input: request }),
-  });
-  return withSessionEntryWorker(
-    options,
-    typeof captured?.databaseIdentity === "string" ? captured.databaseIdentity : undefined,
-    assertCurrent,
-    async (execution, source) => {
-      const result = await execution.runExisting(source, async (worker) => ({
-        value: await run(access(worker)),
-      }));
-      if (!result) {
-        throw new Error("Pending input database disappeared before custody settlement");
+  const assertHeld = (source = captured) => {
+    assertCurrent();
+    if (source) {
+      assertCapturedSessionEntryReadSource(source);
+    }
+  };
+  const runWorker = <TValue>(
+    operation: (worker: AgentDatabaseExecutionScope) => Promise<TValue>,
+    expectedSource = captured,
+  ): Promise<TValue> => {
+    const assertSource = () => assertHeld(expectedSource);
+    assertSource();
+    return withSessionEntryWorker(
+      options,
+      typeof expectedSource?.databaseIdentity === "string"
+        ? expectedSource.databaseIdentity
+        : undefined,
+      assertSource,
+      async (execution, source) => {
+        const result = await execution.runExisting(source, async (worker) => ({
+          value: await operation(worker),
+        }));
+        if (!result) {
+          throw new Error("Pending input database disappeared before custody settlement");
+        }
+        source.assertCurrent();
+        return result.value;
+      },
+    );
+  };
+  function read(
+    request: PendingInputStageRead & { requestHash?: undefined },
+    expectedSource?: CapturedSessionEntryReadSource,
+  ): Promise<PendingInputStageSnapshot | undefined>;
+  function read(
+    request: PendingInputStageRead,
+    expectedSource?: CapturedSessionEntryReadSource,
+  ): Promise<PendingInputStageSnapshot | PendingInputAlreadyAdmitted | undefined>;
+  function read(
+    request: PendingInputStageRead,
+    expectedSource = captured,
+  ): Promise<PendingInputStageSnapshot | PendingInputAlreadyAdmitted | undefined> {
+    assertHeld(expectedSource);
+    let readSource = expectedSource;
+    if (!request.trackCompletion) {
+      const result = withOpenClawAgentDatabaseReadOnly((database) => {
+        if (expectedSource) {
+          assertCapturedSessionEntryReadSource(expectedSource, database);
+        }
+        const physical = readOpenClawAgentDatabaseIdentity(database);
+        readSource = {
+          agentId: database.agentId,
+          path: database.path,
+          databaseIdentity: physical.identity,
+          databaseBirthtime: physical.birthtime,
+        };
+        return runSqliteDeferredTransactionSync(database.db, () =>
+          readSessionPendingInputStage(database, resolved, request, MAX_INLINE_PENDING_INPUT_BYTES),
+        );
+      }, options);
+      assertHeld(readSource);
+      if (result.found && result.value !== pendingInputStageNeedsWorker) {
+        return Promise.resolve(result.value);
       }
-      return result.value;
-    },
-  );
+    }
+    return runWorker(
+      (worker) =>
+        worker.execute({
+          type: "session.pendingInput.read",
+          input: { resolved: workerScope, ...request },
+        }),
+      readSource,
+    );
+  }
+  return run({
+    read,
+    stage: (request) =>
+      runWorker(
+        (worker) =>
+          worker.execute({
+            type: "session.pendingInput.stage",
+            input: { resolved: workerScope, ...request },
+          }),
+        request.snapshot.source,
+      ),
+    complete: (request) =>
+      runWorker((worker) =>
+        worker.execute({
+          type: "session.pendingInput.complete",
+          input: { resolved: workerScope, ...request },
+        }),
+      ),
+    finish: (request) =>
+      runWorker((worker) =>
+        worker.execute({ type: "session.pendingInput.finish", input: request }),
+      ),
+  });
 }
 
 export async function repairSessionPendingInputRows(

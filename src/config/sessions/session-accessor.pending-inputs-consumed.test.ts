@@ -463,7 +463,7 @@ describe("committed pending input release", () => {
     expect(pendingCount()).toBe(0);
   });
 
-  it("settles durable custody and private completion without host data SQL", async () => {
+  it("settles durable custody and private completion without host writes", async () => {
     const hostSql = observeHostDataSql();
     try {
       const ordinary = await stage("worker-custody");
@@ -482,7 +482,13 @@ describe("committed pending input release", () => {
       const privateInput = await stagePrivate();
       await privateInput.complete!(buildAgentRunTerminalOutcome({ status: "ok" }));
       await privateInput.finish("interrupted");
-      expect(hostSql.queries).toEqual([]);
+      expect(
+        hostSql.queries.filter((query) =>
+          /(?:^|;)\s*(?:insert|update|delete|replace|create|alter|drop|begin\s+immediate)\b/iu.test(
+            query,
+          ),
+        ),
+      ).toEqual([]);
     } finally {
       hostSql.restore();
     }

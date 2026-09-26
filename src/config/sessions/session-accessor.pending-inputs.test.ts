@@ -34,6 +34,7 @@ import {
   withSessionPendingInputPersistence,
   type SessionPendingInputReceipt,
 } from "./session-accessor.pending-inputs.js";
+import * as pendingInputRuntime from "./session-accessor.pending-inputs.runtime.js";
 import { copySessionNodeArtifactsForRepair } from "./session-accessor.sqlite-node-artifacts.js";
 import { withSessionPendingInputRelocation } from "./session-accessor.sqlite-pending-inputs.js";
 import {
@@ -633,6 +634,38 @@ describe("accepted input custody", () => {
     });
   });
 
+  it("rechecks prepared live custody after lifecycle rotation before rejecting a retry", async () => {
+    const requestFingerprint = "rotation-after-read";
+    const previous = await stage("read-rotation", { requestFingerprint });
+    const read = pendingInputRuntime.withSessionPendingInputDatabase;
+    const rotateAfterRead: typeof read = (resolved, assertCurrent, run, captured) =>
+      read(
+        resolved,
+        assertCurrent,
+        (access) => {
+          const preparing = run(access);
+          rotateAgentEventLifecycleGeneration();
+          return preparing;
+        },
+        captured,
+      );
+    vi.spyOn(pendingInputRuntime, "withSessionPendingInputDatabase").mockImplementationOnce(
+      rotateAfterRead,
+    );
+    const recovered = await stageSessionPendingInput(scope(), {
+      runId: "read-rotation",
+      message: message("read-rotation"),
+      requestFingerprint,
+      assertCurrent: () => {},
+    });
+    await previous.finish("interrupted");
+    if (recovered) {
+      receipts.push(recovered);
+    }
+    const current = recovered ?? (await stage("read-rotation", { requestFingerprint }));
+    expect(current.run(() => "recovered input")).toBe("recovered input");
+  });
+
   it.each(["receipt-entry", "persistence-only"] as const)(
     "retires current-process custody on lifecycle rotation and fences %s after reopening",
     async (entry) => {
@@ -879,7 +912,13 @@ describe("accepted input custody", () => {
           { id: second.inputId, state: "interrupted", message: second.message },
         ],
       });
-      expect(hostSql.queries).toEqual([]);
+      expect(
+        hostSql.queries.filter((query) =>
+          /(?:^|;)\s*(?:insert|update|delete|replace|create|alter|drop|begin\s+immediate)\b/iu.test(
+            query,
+          ),
+        ),
+      ).toEqual([]);
     } finally {
       hostSql.restore();
     }

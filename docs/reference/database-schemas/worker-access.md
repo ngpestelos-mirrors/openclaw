@@ -184,7 +184,8 @@ budgets, and fresh sharing checks against the originally admitted sources. A
 failed visibility lookup joins worker retirement before its partial facts return;
 the host observes that failure only if projection reaches the lookup before a
 history reset. Retained transcript-session keys and SSE inline subagent visibility reads remain
-migration debt. Pending-input pages and receipts use the custody reader worker. Process-held incognito databases and the existing
+migration debt. Pending-input reads use bounded inline snapshots and move larger
+payloads to the custody reader worker. Process-held incognito databases and the existing
 CLI-import history path still need their owner/lifetime migration; they are not
 new synchronous exceptions or fallbacks for a failed durable worker read.
 
@@ -421,14 +422,19 @@ Process-held incognito databases, custom-message writes, and
 the shipped synchronous SessionManager SDK remain separate migration work.
 Schemas, stored bytes, retention, and update behavior are unchanged.
 
-Durable pending-input custody uses the canonical agent executor for staging,
+Durable pending-input custody uses the canonical agent executor for staging writes,
 user-message promotion, completion, terminal disposition, and stale-input repair.
 Staging still commits before `chat.send` acknowledges acceptance. Live host owners
 revalidate transaction and commit grants; cancellation joins terminal persistence
 before releasing the controller or session admission. Promotion adopts the committed
 input identity and consumption facts before updating the session manager view.
-Reconnect pages and receipt lookups use the existing history reader worker, including
-bounded accepted-message decoding. Repair rechecks exact unconsumed row identities
+Tiny preparation, page, and receipt reads stay inline: the read owner measures
+stored JSON bytes before materializing up to 1 MiB in one admitted snapshot;
+page counts also stop after 256 indexed rows before handing larger scans to the worker.
+Larger payloads use the existing execution or history reader worker. Completion
+schema preparation remains a worker write. Staging carries prepared source facts
+through its existing FIFO and revalidates them at the authoritative writer barrier.
+Repair rechecks exact unconsumed row identities
 under writer admission. Synchronous SessionManager SDK calls and process-held
 incognito databases retain their native kernels. No schema, durability, retention,
 configuration, or update migration changes are required.

@@ -18,6 +18,7 @@ import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-wo
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import {
   hasSessionPendingInputOwner,
+  MAX_INLINE_PENDING_INPUT_BYTES,
   parseSessionPendingInputMessage,
   projectSessionPendingInput,
   readSessionPendingInputByKey,
@@ -42,6 +43,7 @@ import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
 type PendingInputScope = SessionAccessScope & { agentId: string; sessionId: string };
+const MAX_INLINE_PENDING_INPUT_ROWS = 256;
 type PendingInputReadOptions = { limit?: number; before?: number; id?: string };
 export type PendingInputIdentity = Pick<
   SessionPendingInputRow,
@@ -71,12 +73,20 @@ export type PendingInputReadResult =
       databaseIdentity?: PendingInputReadSnapshot["databaseIdentity"];
     };
 
-/** The retained history reader owns SQL, byte bounding and accepted-message decoding. */
+/** Byte admission selects inline reads or the retained history reader before materialization. */
 export function readPendingInputsInDatabase(
   request: PendingInputReadRequest,
-): PendingInputReadResult {
+  maxInlineBytes: number,
+): PendingInputReadResult | undefined;
+export function readPendingInputsInDatabase(
+  request: PendingInputReadRequest,
+): PendingInputReadResult;
+export function readPendingInputsInDatabase(
+  request: PendingInputReadRequest,
+  maxInlineBytes?: number,
+): PendingInputReadResult | undefined {
   const result = withOpenClawAgentDatabaseReadOnly(
-    (database): PendingInputReadResult =>
+    (database): PendingInputReadResult | undefined =>
       runSqliteDeferredTransactionSync(database.db, () => {
         const { identity, birthtime } = readOpenClawAgentDatabaseIdentity(database);
         const databaseIdentity = typeof identity === "string" ? { identity, birthtime } : undefined;
@@ -131,9 +141,25 @@ export function readPendingInputsInDatabase(
           options.id === undefined
             ? (executeSqliteQueryTakeFirstSync(
                 database.db,
-                base.select(db.fn.count<number>("input_id").as("total")),
+                maxInlineBytes === undefined
+                  ? base.select(db.fn.count<number>("input_id").as("total"))
+                  : db
+                      .selectFrom(
+                        base
+                          .select("input_id")
+                          .limit(MAX_INLINE_PENDING_INPUT_ROWS + 1)
+                          .as("bounded"),
+                      )
+                      .select((eb) => eb.fn.countAll<number>().as("total")),
               )?.total ?? 0)
             : undefined;
+        if (
+          maxInlineBytes !== undefined &&
+          total !== undefined &&
+          total > MAX_INLINE_PENDING_INPUT_ROWS
+        ) {
+          return undefined;
+        }
         let query = base.orderBy("seq", "desc").limit(limit + 1);
         if (options.before !== undefined) {
           query = query.where("seq", "<", options.before);
@@ -160,6 +186,9 @@ export function readPendingInputsInDatabase(
         }
         if (metadata.length && !selected.length) {
           throw new Error("Stored pending input exceeds the Gateway payload limit");
+        }
+        if (maxInlineBytes !== undefined && bytes > maxInlineBytes) {
+          return undefined;
         }
         const rows = selected.length
           ? executeSqliteQuerySync(
@@ -274,8 +303,11 @@ async function readPendingInputData(
     }
     return result;
   };
-  if (isIncognitoOpenClawAgentSqlitePath(resolved.path, options)) {
-    return await consume(readPendingInputsInDatabase(request), () => {});
+  const inline = isIncognitoOpenClawAgentSqlitePath(resolved.path, options)
+    ? readPendingInputsInDatabase(request)
+    : readPendingInputsInDatabase(request, MAX_INLINE_PENDING_INPUT_BYTES);
+  if (inline !== undefined) {
+    return await consume(inline, () => {});
   }
   return await withSessionHistoryWorkerDatabase(
     options,
