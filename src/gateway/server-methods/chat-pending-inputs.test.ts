@@ -11,6 +11,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { saveCronJobsStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
+import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as userProfileList from "../../state/user-profile-list.js";
 import { ensureProfileForEmail, setAvatar } from "../../state/user-profiles.js";
@@ -163,7 +164,6 @@ describe("pending input read boundary", () => {
       const readDisplay = vi.spyOn(userProfileList, "getUserProfileDisplay");
       try {
         for (let index = 0; index < 20; index += 1) {
-          now.mockReturnValue(2_000 + index);
           receipts.push(
             expectDefined(
               await stageSessionPendingInput(scope, {
@@ -184,6 +184,17 @@ describe("pending input read boundary", () => {
             ),
           );
         }
+        runOpenClawAgentWriteTransaction(
+          ({ db }) => {
+            const updateAcceptance = db.prepare(
+              "UPDATE session_pending_inputs SET accepted_at = ? WHERE session_key = ? AND input_id = ?",
+            );
+            for (const [index, receipt] of receipts.entries()) {
+              updateAcceptance.run(2_000 + index, scope.sessionKey, receipt.inputId);
+            }
+          },
+          { agentId: scope.agentId },
+        );
         const context = await createHistoryReadContext();
         for (const [index, overrides] of [
           {},
@@ -258,6 +269,7 @@ describe("pending input read boundary", () => {
         );
         const initialBytes = JSON.stringify(initial);
         expect(initialBytes).not.toContain("idempotencyKey");
+        now.mockReturnValue(3_000);
         expect(setAvatar(profile.id, Buffer.from("updated avatar"), "image/png").ok).toBe(true);
         const updated = await readPage();
         const initialMessage = asOptionalRecord(initial[0]?.message);
