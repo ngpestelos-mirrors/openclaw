@@ -2272,10 +2272,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       includeReleaseOnlyRuntimeTests: false,
     };
     const originalShards = fullSuiteVitestShards.slice();
-    const configs = [
+    const configs = new Set([
       "test/vitest/vitest.gateway-server-isolated.config.ts",
       "test/vitest/vitest.gateway-database-workers.config.ts",
-    ];
+    ]);
     try {
       // The following "bundles split shards" case retains full-inventory composition coverage.
       fullSuiteVitestShards.splice(
@@ -2284,7 +2284,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         ...originalShards
           .map((shard) => ({
             ...shard,
-            projects: shard.projects.filter((config) => configs.includes(config)),
+            projects: shard.projects.filter((config) => configs.has(config)),
           }))
           .filter((shard) => shard.projects.length > 0),
       );
