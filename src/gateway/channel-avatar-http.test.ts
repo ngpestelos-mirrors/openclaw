@@ -201,9 +201,11 @@ describe("handleChannelAvatarHttpRequest", () => {
     await arrived.promise;
     release.resolve();
     const responses = await Promise.all(requests);
+    const etag = responses[0]?.headers.get("etag");
+    expect(etag).toBeTruthy();
     for (const [index, response] of responses.entries()) {
       expect(response.status).toBe(200);
-      expect(response.headers.get("etag")).toBe(responses[0].headers.get("etag"));
+      expect(response.headers.get("etag")).toBe(etag);
       expect(Buffer.from(await response.arrayBuffer())).toEqual(
         index % 2 ? Buffer.alloc(0) : PNG_BYTES,
       );
