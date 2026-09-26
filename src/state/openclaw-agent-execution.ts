@@ -116,47 +116,70 @@ export function captureOpenClawAgentDatabaseExecution(
   if (!supportsOpenClawAgentDatabaseExecution(options)) {
     throw new Error("This agent database scope still requires its existing native owner");
   }
-  const identity = readDatabasePathIdentitySync(pathname);
-  const existing = executions.get(pathname) ?? executions.get(identity.canonicalPath);
+  let existing = executions.get(pathname);
   const expectedCreationIdentity = constraints.expectedCreationIdentity
     ? Object.freeze({ ...constraints.expectedCreationIdentity })
     : undefined;
-  if (expectedCreationIdentity) {
-    const capturesAbsence = expectedCreationIdentity.key.startsWith("path:");
-    if (
-      constraints.expectedIdentity ||
-      (capturesAbsence &&
-        (existing ||
-          agentDatabaseLifecycle.databases.has(pathname) ||
-          agentDatabaseLifecycle.pending.has(pathname))) ||
-      (!capturesAbsence &&
-        (!expectedCreationIdentity.key.startsWith("file:") ||
-          typeof expectedCreationIdentity.birthtime !== "string")) ||
-      identity.key !== expectedCreationIdentity.key ||
-      identity.canonicalPath !== expectedCreationIdentity.canonicalPath ||
-      identity.birthtime !== expectedCreationIdentity.birthtime
-    ) {
-      throw new Error("Agent creation no longer owns its originally observed target");
+  if (!existing || expectedCreationIdentity) {
+    const identity = readDatabasePathIdentitySync(pathname);
+    existing ??= executions.get(identity.canonicalPath);
+    if (expectedCreationIdentity) {
+      const capturesAbsence = expectedCreationIdentity.key.startsWith("path:");
+      if (
+        constraints.expectedIdentity ||
+        (capturesAbsence &&
+          (existing ||
+            agentDatabaseLifecycle.databases.has(pathname) ||
+            agentDatabaseLifecycle.pending.has(pathname))) ||
+        (!capturesAbsence &&
+          (!expectedCreationIdentity.key.startsWith("file:") ||
+            typeof expectedCreationIdentity.birthtime !== "string")) ||
+        identity.key !== expectedCreationIdentity.key ||
+        identity.canonicalPath !== expectedCreationIdentity.canonicalPath ||
+        identity.birthtime !== expectedCreationIdentity.birthtime
+      ) {
+        throw new Error("Agent creation no longer owns its originally observed target");
+      }
+    }
+    if (!existing) {
+      return createAgentDatabaseExecution(options, {
+        agentId,
+        pathname,
+        identity,
+        initialIdentity: constraints.expectedIdentity,
+        expectedCreationIdentity,
+      });
     }
   }
-  if (existing) {
-    if (existing.agentId !== agentId) {
-      throw new Error(
-        `OpenClaw agent database ${pathname} is already open for agent ${existing.agentId}; requested agent ${agentId}.`,
-      );
-    }
-    const env =
-      process.platform === "win32"
-        ? cloneEnvWithPlatformSemantics(options.env ?? process.env)
-        : options.env;
-    const state = captureOpenClawStateReadContext(resolveOpenClawStateSqlitePath(env));
-    if (existing.sharedDatabaseKey !== state.admission.identity.key) {
-      throw new Error(
-        "Agent database execution belongs to another shared-state database; drain its existing resources before changing the state directory.",
-      );
-    }
-    return existing.borrow(pathname, constraints.expectedIdentity, expectedCreationIdentity);
+  if (existing.agentId !== agentId) {
+    throw new Error(
+      `OpenClaw agent database ${pathname} is already open for agent ${existing.agentId}; requested agent ${agentId}.`,
+    );
   }
+  const env =
+    process.platform === "win32"
+      ? cloneEnvWithPlatformSemantics(options.env ?? process.env)
+      : options.env;
+  const state = captureOpenClawStateReadContext(resolveOpenClawStateSqlitePath(env));
+  if (existing.sharedDatabaseKey !== state.admission.identity.key) {
+    throw new Error(
+      "Agent database execution belongs to another shared-state database; drain its existing resources before changing the state directory.",
+    );
+  }
+  return existing.borrow(pathname, constraints.expectedIdentity, expectedCreationIdentity);
+}
+
+function createAgentDatabaseExecution(
+  options: OpenClawAgentDatabaseOptions,
+  prepared: {
+    agentId: string;
+    pathname: string;
+    identity: DatabasePathIdentity;
+    initialIdentity?: AgentDatabaseExecutionFileIdentity;
+    expectedCreationIdentity?: DatabasePathIdentity;
+  },
+): OpenClawAgentDatabaseExecution {
+  const { agentId, pathname, identity, initialIdentity, expectedCreationIdentity } = prepared;
   const context = captureOpenClawStateWorkerContext({ env: options.env });
   const executionOptions = { agentId, path: pathname, env: context.environment };
   const aliases = new Map<string, () => void>();
@@ -578,7 +601,7 @@ export function captureOpenClawAgentDatabaseExecution(
         }
       },
     });
-    return owner.borrow(pathname, constraints.expectedIdentity, expectedCreationIdentity);
+    return owner.borrow(pathname, initialIdentity, expectedCreationIdentity);
   } catch (error) {
     unregisterAgent();
     unregisterShared?.();

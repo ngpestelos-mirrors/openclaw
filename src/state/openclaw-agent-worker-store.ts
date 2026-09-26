@@ -6,6 +6,7 @@ import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { resolveStateDir } from "../config/state-dir.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import {
   reserveSqliteWorkerInputPreparation,
@@ -127,8 +128,12 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
     }
   };
   assertHeld();
-  if (identity) {
-    assertExistingDatabaseIdentity(options.path, identity, prepared?.birthtime);
+  if (expectedIdentity) {
+    assertExistingDatabaseIdentity(
+      options.path,
+      `file:${expectedIdentity.physicalIdentity}`,
+      expectedIdentity.birthtime,
+    );
   }
   const close = (): Promise<void> => {
     revoked = true;
