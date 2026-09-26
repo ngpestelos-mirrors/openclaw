@@ -16,6 +16,7 @@ import {
   type MainSessionRecoveryOwnerLease,
 } from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import { withPreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
+import { resolveAgentRunErrorLifecycleFields } from "../../agents/run-termination.js";
 import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
 import {
@@ -231,7 +232,11 @@ export async function startAgentRunExecution(params: {
       const finishFailure = async (err: unknown, recordCompletion = true) => {
         const error = errorShapeFromError(ErrorCodes.UNAVAILABLE, err);
         const renderedErr = error.message;
-        const outcome = buildAgentRunTerminalOutcome({ status: "error", error: renderedErr });
+        const outcome = buildAgentRunTerminalOutcome({
+          status: "error",
+          error: renderedErr,
+          ...resolveAgentRunErrorLifecycleFields(err, prepared.activeRunAbort.controller.signal),
+        });
         if (recordCompletion) {
           try {
             await prepared.userTurn.recorder?.completeProcessing?.(outcome);
@@ -242,7 +247,12 @@ export async function startAgentRunExecution(params: {
           }
         }
         await settleUnstartedTask(outcome);
-        const payload = { runId: params.runId, status: "error" as const, summary: renderedErr };
+        const payload = {
+          runId: params.runId,
+          status: "error" as const,
+          summary: renderedErr,
+          ...(outcome.stopReason ? { stopReason: outcome.stopReason } : {}),
+        };
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.agentDedupeKeys,

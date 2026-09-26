@@ -368,7 +368,7 @@ it("fences a cancelled successor after adoption before queued input consumption"
     expect(terminal).toHaveBeenCalledWith(
       [
         false,
-        expect.objectContaining({ status: "error" }),
+        expect.objectContaining({ status: "error", stopReason: "superseded" }),
         expect.objectContaining({
           message: expect.stringContaining("Resumed task no longer owns this execution"),
         }),

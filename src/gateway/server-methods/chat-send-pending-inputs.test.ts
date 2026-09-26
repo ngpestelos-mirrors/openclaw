@@ -430,7 +430,12 @@ describe("ordinary chat input admission", () => {
         sessionId: fixture.scope.sessionId,
       }),
       () => {},
-      (access) => access.read({ idempotencyKey: `${fixture.params.idempotencyKey}:user` }),
+      (access) =>
+        access.finish({
+          inputId: "writer-admission-fixture",
+          lifecycleGeneration: "writer-admission-fixture",
+          disposition: "interrupted",
+        }),
     );
     database.exec(
       "CREATE TRIGGER reject_browser_custody BEFORE INSERT ON session_pending_inputs BEGIN SELECT RAISE(ABORT, 'custody unavailable'); END",

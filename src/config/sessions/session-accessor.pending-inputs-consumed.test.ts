@@ -114,6 +114,37 @@ describe("committed pending input release", () => {
     await closeDatabases();
   });
 
+  it("retains prepared custody through lifecycle retirement before allowing a retry", async () => {
+    const requestFingerprint = "rotation-after-read";
+    const previous = await stage("read-rotation", { requestFingerprint });
+    const read = pendingInputRuntime.withSessionPendingInputDatabase;
+    const rotateAfterRead: typeof read = (resolved, assertCurrent, run, captured) =>
+      read(
+        resolved,
+        assertCurrent,
+        (access) => {
+          const preparing = run(access);
+          rotateAgentEventLifecycleGeneration();
+          return preparing;
+        },
+        captured,
+      );
+    vi.spyOn(pendingInputRuntime, "withSessionPendingInputDatabase").mockImplementationOnce(
+      rotateAfterRead,
+    );
+    await expect(
+      stageSessionPendingInput(scope(), {
+        runId: "read-rotation",
+        message: message("read-rotation"),
+        requestFingerprint,
+        assertCurrent: () => {},
+      }),
+    ).rejects.toThrow("already admitted");
+    await previous.finish("interrupted");
+    const current = await stage("read-rotation", { requestFingerprint });
+    expect(current.run(() => "recovered input")).toBe("recovered input");
+  });
+
   it.each(["cancelled", "interrupted"] as const)(
     "retains %s input visibly without permitting the old run to execute",
     async (disposition) => {

@@ -1,4 +1,5 @@
 /** Exact parent-owned paused-task binding for explicit model-tool resume admission. */
+import { createAgentRunSupersededAbortError } from "../agents/run-termination.js";
 import {
   ensureSubagentControllerOwnsRun,
   resolveSubagentController,
@@ -141,7 +142,9 @@ export function assertParentSubagentResumeSuccessorCurrent(
     current.killReconciliation ||
     typeof current.execution.endedAt === "number"
   ) {
-    throw new Error("Resumed task no longer owns this execution.");
+    throw new Error("Resumed task no longer owns this execution.", {
+      cause: createAgentRunSupersededAbortError(),
+    });
   }
 }
 
