@@ -47,10 +47,8 @@ import { createDirectChatContext } from "./server-chat.agent-events.test-helpers
 import { sessionActivitySummaryHandlers } from "./server-methods/session-activity-summary.js";
 import { sessionByKeyReadHandlers } from "./server-methods/sessions-read-by-key.js";
 import type { RespondFn } from "./server-methods/types.js";
-import {
-  createSessionActivitySummaries,
-  type SessionActivitySummaryService,
-} from "./session-activity-summaries.js";
+import type { SessionActivitySummaryService } from "./session-activity-summaries.js";
+import { createActivitySummaryTestProgress } from "./session-activity-summaries.test-support.js";
 import { projectSessionActivitySummary } from "./session-activity-summary-state.js";
 import { listSessionFixture } from "./session-list.test-support.js";
 import type { defaultCompleteModel } from "./session-observer-model.js";
@@ -129,6 +127,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
   let testState: OpenClawTestState;
   let cfg: OpenClawConfig;
   let service: SessionActivitySummaryService;
+  let progress: ReturnType<typeof createActivitySummaryTestProgress>;
   let residentProjection: SessionRowProjection;
   let releaseForeground: (() => void) | undefined;
   const complete = vi.fn(async (_params: Parameters<typeof defaultCompleteModel>[0]) =>
@@ -140,6 +139,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
   const view = () => projectSessionActivitySummary({ ...target, cfg, entry: read() });
 
   beforeEach(async () => {
+    progress = createActivitySummaryTestProgress();
     testState = await createOpenClawTestState({ scenario: "minimal" });
     cfg = { agents: { defaults: { utilityModel: "test/utility" } } };
     complete.mockReset().mockImplementation(async () => result("Completed the requested work."));
@@ -151,7 +151,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       updatedAt: 1,
     });
     residentProjection = await createSessionRowProjection({ cfg, getConfig: () => cfg });
-    service = createSessionActivitySummaries({
+    service = progress.create({
       getConfig: () => cfg,
       getSessionRowProjection: () => residentProjection,
       onChanged: changed,
@@ -165,6 +165,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     archiveMaterializationHook.beforeMaterialize = undefined;
     clearAgentRunContext("recap-context-run");
     await service.dispose();
+    progress.dispose();
     residentProjection.dispose();
     vi.restoreAllMocks();
     await testState.cleanup();
@@ -188,6 +189,8 @@ describe("Activity recap lifecycle with the canonical session store", () => {
 
   it("keeps source work outside a publisher's expired database preparation", async () => {
     await messages(2);
+    await residentProjection.prepareMembership();
+    expect(residentProjection.sharingTarget(target)).not.toBeNull();
     const watermark = readSessionTranscriptWatermark(scope);
     const settled = createDeferred<ReturnType<typeof view>>();
     changed.mockImplementation(() => {
@@ -302,7 +305,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     for (let index = 0; index < 12; index += 1) {
       service.ensure(target);
     }
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     expect(complete).toHaveBeenCalledTimes(3);
     const first = complete.mock.calls[0]?.[0];
     const second = complete.mock.calls[1]?.[0];
@@ -324,7 +327,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     });
     expect(read()?.updatedAt).toBe(originalActivity);
     await service.dispose();
-    service = createSessionActivitySummaries({
+    service = progress.create({
       getConfig: () => cfg,
       getSessionRowProjection: () => residentProjection,
       onChanged: changed,
@@ -332,7 +335,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       completeModel: complete,
     });
     service.ensure(target);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     expect(complete).toHaveBeenCalledTimes(3);
   });
 
@@ -340,7 +343,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     await messages(1);
     complete.mockResolvedValueOnce(result("Only the request is recorded."));
     service.ensure(target);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     const previousWatermark = readSessionTranscriptWatermark(scope);
     const projection = await createSessionRowProjection({ cfg, getConfig: () => cfg });
     const context = bindSessionRowProjection(
@@ -391,7 +394,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       expect(await describeSession()).toMatchObject(updating);
 
       terminal(service);
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+      await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
       // No model result can commit while this exact completion is held.
       expect(await describeSession()).toMatchObject(updating);
       expect(read()?.activitySummary).toMatchObject({
@@ -448,7 +451,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     const parse = vi.spyOn(JSON, "parse");
     try {
       service.ensure(target);
-      await vi.waitFor(() => expect(view()?.state).toBe("current"));
+      await progress.waitFor(() => expect(view()?.state).toBe("current"));
       expect(read()?.activitySummary?.coveredMessages).toBe(2);
       expect(parse.mock.calls.some(([json]) => json.includes(unrelatedLabel))).toBe(false);
     } finally {
@@ -464,7 +467,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     const completion = createDeferred<ReturnType<typeof result>>();
     complete.mockImplementationOnce(() => completion.promise);
     service.ensure(target);
-    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+    await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
     const database = openOpenClawAgentDatabase({ agentId: "main" });
     const queries = trackSqliteStatementExecutions(database.db, ["entries"], (sql) =>
       /from\s+"session_nodes"/i.test(sql) ? "entries" : null,
@@ -488,7 +491,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     // the terminal event requests its immediate completion without another model call.
     expect(view()?.state).toBe("updating");
     terminal(service);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     expect(read()).toMatchObject({
       sessionId: before.sessionId,
       lifecycleRevision: before.lifecycleRevision,
@@ -502,17 +505,17 @@ describe("Activity recap lifecycle with the canonical session store", () => {
   it("refreshes new work, catches up after archiving, and makes no calls for idle metadata changes", async () => {
     await messages(2);
     terminal(service);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     await patchSessionEntryCore(scope, () => ({ archivedAt: Date.now(), label: "Archived work" }));
     service.handleLifecycle({ sessionKey: target.key, agentId: target.agentId, reason: "archive" });
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     expect(complete).toHaveBeenCalledTimes(1);
     await messages(2, 2);
     service.handleTranscript({ target: { ...scope }, lifecycleRevision: "lifecycle-1" });
     expect(view()?.state).toBe("updating");
     expect(complete).toHaveBeenCalledTimes(1);
     terminal(service);
-    await vi.waitFor(() => expect(read()?.activitySummary?.coveredMessages).toBe(4));
+    await progress.waitFor(() => expect(read()?.activitySummary?.coveredMessages).toBe(4));
     expect(complete).toHaveBeenCalledTimes(2);
     expect(read()?.archivedAt).toBeDefined();
   });
@@ -529,7 +532,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
           }),
       );
       service.ensure(target);
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+      await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
       if (kind === "delete") {
         await deleteSessionEntryLifecycle({
           agentId: "main",
@@ -544,7 +547,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
         }));
       }
       finish(result("Stale outcome must never be published."));
-      await vi.waitFor(() => expect(view()?.state).not.toBe("updating"));
+      await progress.waitFor(() => expect(view()?.state).not.toBe("updating"));
       expect(read()?.activitySummary).toBeUndefined();
     },
   );
@@ -556,7 +559,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       const completion = createDeferred<ReturnType<typeof result>>();
       complete.mockImplementationOnce(() => completion.promise);
       service.ensure(target);
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+      await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
 
       const database = openOpenClawAgentDatabase({ agentId: scope.agentId });
       const before = read()!;
@@ -591,7 +594,9 @@ describe("Activity recap lifecycle with the canonical session store", () => {
         const beforeSettlement = changed.mock.calls.length;
         releaseWriter.resolve();
         await blocker;
-        await vi.waitFor(() => expect(changed.mock.calls.length).toBeGreaterThan(beforeSettlement));
+        await progress.waitFor(() =>
+          expect(changed.mock.calls.length).toBeGreaterThan(beforeSettlement),
+        );
         expect(read()?.activitySummary).toBeUndefined();
         expect(view()?.state).not.toBe("current");
         expect(complete).toHaveBeenCalledTimes(1);
@@ -600,7 +605,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
             await patchSessionEntryCore(scope, () => ({ initializationPending: undefined }));
           }
           service.ensure(target);
-          await vi.waitFor(() => expect(view()?.state).toBe("current"));
+          await progress.waitFor(() => expect(view()?.state).toBe("current"));
           expect(complete).toHaveBeenCalledTimes(2);
         }
       } finally {
@@ -614,12 +619,12 @@ describe("Activity recap lifecycle with the canonical session store", () => {
   it("keeps a delayed recap from invalidating deletion while its archive is prepared", async () => {
     await messages(2);
     service.ensure(target);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     await messages(2, 2);
     const completion = createDeferred<ReturnType<typeof result>>();
     complete.mockImplementationOnce(() => completion.promise);
     service.ensure(target);
-    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+    await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
 
     const materializationStarted = createDeferred();
     const materializationReleased = createDeferred();
@@ -645,7 +650,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     try {
       await materializationStarted.promise;
       completion.resolve(result("This later recap must not interrupt deletion."));
-      await vi.waitFor(() => expect(view()?.state).not.toBe("updating"));
+      await progress.waitFor(() => expect(view()?.state).not.toBe("updating"));
       entryDuringDeletion = read();
     } finally {
       completion.resolve(result("This later recap must not interrupt deletion."));
@@ -661,7 +666,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
   it("invalidates cached projection after an offline branch change without changing activity ordering", async () => {
     await messages(3);
     service.ensure(target);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     await service.dispose();
     const oldActivity = read()?.updatedAt;
     const oldWatermark = readSessionTranscriptWatermark(scope);
@@ -676,7 +681,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     expect(view()?.state).toBe("stale");
     // Offline edits rebuild asynchronously; finish the fixture before restarting its observer.
     await waitForSessionTranscriptProjection(scope);
-    service = createSessionActivitySummaries({
+    service = progress.create({
       getConfig: () => cfg,
       getSessionRowProjection: () => residentProjection,
       onChanged: changed,
@@ -684,7 +689,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       completeModel: complete,
     });
     service.ensure(target);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     expect(complete).toHaveBeenCalledTimes(2);
     expect(JSON.parse(complete.mock.calls[1]![0].prompt)).toMatchObject({
       previousRecap: "",
@@ -738,14 +743,14 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       service.ensure(target);
       service.ensure(secondTarget);
       service.ensure(thirdTarget);
-      await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+      await progress.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
       await vi.advanceTimersByTimeAsync(20_000);
       expect(view()?.state).toBe("updating");
       expect(prepare).toHaveBeenCalledTimes(2);
       for (const resolve of preparations) {
         resolve(prepared);
       }
-      await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(3));
+      await progress.waitFor(() => expect(prepare).toHaveBeenCalledTimes(3));
       expect(complete).not.toHaveBeenCalled();
       const disposal = service.dispose();
       preparations[2]!(prepared);
@@ -767,9 +772,9 @@ describe("Activity recap lifecycle with the canonical session store", () => {
         }),
     );
     service.ensure(target);
-    await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+    await progress.waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
     const oldService = service;
-    service = createSessionActivitySummaries({
+    service = progress.create({
       getConfig: () => cfg,
       getSessionRowProjection: () => residentProjection,
       onChanged: changed,
@@ -781,7 +786,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     expect(view()?.state).toBe("updating");
     finish(prepared);
     await oldDisposal;
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     expect(complete).toHaveBeenCalledTimes(1);
   });
 
@@ -814,7 +819,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     expect(respond).toHaveBeenLastCalledWith(true, {
       sessions: [{ ...target, activitySummary: { state: "updating", canEnsure: true } }],
     });
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     expect(complete).toHaveBeenCalledTimes(1);
   });
 
@@ -847,7 +852,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     expect((await getSessionColdStorageStatus(maintenance))[0]?.coldTranscripts).toBe(1);
     const before = read()?.updatedAt;
     service.ensure(target);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"), { timeout: 5_000 });
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     expect(read()?.activitySummary?.coveredMessages).toBe(2);
     expect(read()?.updatedAt).toBe(before);
     expect(read()?.archivedAt).toBe(1);
@@ -877,7 +882,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       sessionId: aliasScope.sessionId,
     });
     service.ensure(aliasTarget);
-    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+    await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
     const row = await listSessionFixture({
       cfg,
       storePath: openOpenClawAgentDatabase({ agentId: "main" }).path,
@@ -887,7 +892,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     });
     expect(row.sessions[0]?.activitySummary?.state).toBe("updating");
     finish(result("Prepared the deployment."));
-    await vi.waitFor(() =>
+    await progress.waitFor(() =>
       expect(loadSessionEntryReadOnly(aliasScope)?.activitySummary).toBeDefined(),
     );
     await persistSessionTranscriptTurn(aliasScope, {
@@ -924,7 +929,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       stream: "lifecycle",
       data: { phase: "end" },
     });
-    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+    await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
     expect(complete.mock.calls[1]![0].prompt).toContain("Waiting for Alex to approve deployment.");
     expect(complete.mock.calls[1]![0].prompt.length).toBeLessThan(2_000);
   });
@@ -958,7 +963,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
   it("readmits a relocated store and fences a delayed result from its previous owner", async () => {
     await messages(2);
     service.ensure(target);
-    await vi.waitFor(() => expect(view()?.state).toBe("current"));
+    await progress.waitFor(() => expect(view()?.state).toBe("current"));
     await messages(1, 2);
     let finishOld!: (value: ReturnType<typeof result>) => void;
     complete.mockImplementationOnce(
@@ -969,7 +974,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     );
     complete.mockImplementationOnce(async () => result("Recap from the relocated store."));
     service.ensure(target);
-    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+    await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
     const relocatedDirectory = testState.path("relocated");
     await mkdir(relocatedDirectory);
     const relocatedPath = testState.path("relocated", "openclaw-agent.sqlite");
@@ -988,7 +993,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       const projected = projectSessionActivitySummary({ ...target, cfg, entry: relocatedEntry });
       expect.soft(projected?.state).toBe("stale");
       service.ensure(target);
-      await vi.waitFor(() =>
+      await progress.waitFor(() =>
         expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.coveredMessages).toBe(3),
       );
       expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.text).toBe(

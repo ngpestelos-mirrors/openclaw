@@ -22,6 +22,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { PreparedSessionHistoryReadTarget } from "./session-history-read.types.js";
 import { createReadonlySessionHistoryReader } from "./session-history-readonly-reader.js";
 import { readChatHistoryMessageId } from "./session-history-tail.js";
+import { sqliteMessageEventWithSeq } from "./session-transcript-entry-message.js";
 
 async function withHistory(
   read: (fixture: {
@@ -65,9 +66,15 @@ async function withHistory(
   });
 }
 
-it.each(["cold", "warm", "policy", "receipt"] as const)(
-  "keeps canonical admission and history materialization on one retained snapshot (%s)",
-  async (admission) => {
+it.each([
+  { admission: "cold", recap: false },
+  { admission: "warm", recap: false },
+  { admission: "policy", recap: false },
+  { admission: "receipt", recap: false },
+  { admission: "cold", recap: true },
+] as const)(
+  "keeps canonical admission and history materialization on one retained snapshot ($admission, recap: $recap)",
+  async ({ admission, recap }) => {
     await withHistory(async ({ target, database }) => {
       const scope = new OpenClawAgentDatabaseReadOnlyScope();
       const retained = scope.run(target.database, () =>
@@ -79,8 +86,17 @@ it.each(["cold", "warm", "policy", "receipt"] as const)(
       const connection = retained.value;
       const reader = createReadonlySessionHistoryReader(target);
       const read = () =>
-        scope.run(target.database, () =>
-          reader.readRecentSessionMessagesWithStatsAsync(target.transcript, { maxMessages: 10 }),
+        scope.run(target.database, async () =>
+          recap
+            ? {
+                messages:
+                  (await reader.readActivitySummarySource())?.page.events.map(
+                    sqliteMessageEventWithSeq,
+                  ) ?? [],
+              }
+            : reader.readRecentSessionMessagesWithStatsAsync(target.transcript, {
+                maxMessages: 10,
+              }),
         );
       const external = new DatabaseSync(target.database.path);
       try {

@@ -288,8 +288,10 @@ export {
   readRecentSessionTranscriptActiveEvents,
   readSessionTranscriptActiveStats,
   readSessionTranscriptBoundedMessageTailPage,
+  readSessionTranscriptBoundedMessageTailPageFromProjection,
   readRecentSessionTranscriptMessageEvents,
   readSessionTranscriptActivePathEntryRelation,
+  readSessionTranscriptActivePathEntryRelationFromProjection,
   readSessionTranscriptMessageEventPage,
   readSessionTranscriptMessageEvents,
   readSessionTranscriptVisibleMessageDeltaCore,
@@ -304,7 +306,11 @@ export type {
   SessionTranscriptMessageEventPage,
 } from "./session-accessor.sqlite-active-events.js";
 export type { SessionTranscriptWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
-export { readSessionTranscriptWatermark } from "./session-accessor.sqlite-transcript-watermark.js";
+export {
+  readSessionTranscriptWatermark,
+  readSessionTranscriptWatermarkInDatabase,
+} from "./session-accessor.sqlite-transcript-watermark.js";
+export type { CurrentTranscriptProjection } from "./session-accessor.sqlite-projection-read.js";
 export {
   bindSessionTranscriptStoreScope,
   resolveSessionTranscriptDatabasePath,

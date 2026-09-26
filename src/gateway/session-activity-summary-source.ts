@@ -2,11 +2,13 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { SessionActivitySummary } from "../config/sessions/activity-summary.js";
 import {
-  readSessionTranscriptActivePathEntryRelation,
-  readSessionTranscriptBoundedMessageTailPage,
-  readSessionTranscriptWatermark,
+  readSessionTranscriptActivePathEntryRelationFromProjection,
+  readSessionTranscriptBoundedMessageTailPageFromProjection,
+  readSessionTranscriptWatermarkInDatabase,
   SessionTranscriptProjectionUnavailableError,
   waitForSessionTranscriptProjection,
+  type CurrentTranscriptProjection,
+  type SessionTranscriptReadScope,
 } from "../config/sessions/session-accessor.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { redactToolPayloadText } from "../logging/redact.js";
@@ -30,46 +32,47 @@ export const ACTIVITY_SUMMARY_SYSTEM_PROMPT = [
 ].join(" ");
 
 /** Read one chronological, byte-bounded batch inside the history worker's admitted snapshot. */
-export function readActivitySummarySourceBatch(params: {
-  scope: Parameters<typeof readSessionTranscriptBoundedMessageTailPage>[0];
-  previous?: SessionActivitySummary;
-}) {
-  const snapshot = readSessionTranscriptBoundedMessageTailPage(params.scope, {
+export function readActivitySummarySourceBatch(
+  projection: CurrentTranscriptProjection,
+  previousSummary?: SessionActivitySummary,
+) {
+  let previous = previousSummary;
+  const snapshot = readSessionTranscriptBoundedMessageTailPageFromProjection(projection, {
     maxBytes: 0,
     maxMessages: 0,
     offset: 0,
-    readOnly: true,
   });
-  let previous = params.previous;
   if (
     previous &&
     (previous.generation !== (snapshot.snapshot.generation ?? null) ||
       previous.coveredMessages > snapshot.totalMessages ||
       (previous.leafEntryId &&
         !["exact", "ancestor"].includes(
-          readSessionTranscriptActivePathEntryRelation(params.scope, previous.leafEntryId, {
-            readOnly: true,
-          }),
+          readSessionTranscriptActivePathEntryRelationFromProjection(
+            projection,
+            previous.leafEntryId,
+          ),
         )))
   ) {
     previous = undefined;
   }
-  const watermark = readSessionTranscriptWatermark(params.scope);
+  const watermark = readSessionTranscriptWatermarkInDatabase(
+    projection.database,
+    projection.resolved.sessionId,
+  );
   const covered = previous?.coveredMessages ?? 0;
   let batchSize = Math.min(64, snapshot.totalMessages - covered);
-  let page = readSessionTranscriptBoundedMessageTailPage(params.scope, {
+  let page = readSessionTranscriptBoundedMessageTailPageFromProjection(projection, {
     maxBytes: 128 * 1024,
     maxMessages: batchSize,
     offset: snapshot.totalMessages - covered - batchSize,
-    readOnly: true,
   });
   while (batchSize > 1 && page.events.length < page.scannedMessages) {
     batchSize = Math.max(1, Math.floor(batchSize / 2));
-    page = readSessionTranscriptBoundedMessageTailPage(params.scope, {
+    page = readSessionTranscriptBoundedMessageTailPageFromProjection(projection, {
       maxBytes: 128 * 1024,
       maxMessages: batchSize,
       offset: snapshot.totalMessages - covered - batchSize,
-      readOnly: true,
     });
   }
   if (
@@ -87,7 +90,7 @@ export type ActivitySummarySourceBatch = ReturnType<typeof readActivitySummarySo
 
 /** Restore only this transcript; redaction retains the host's registered secret values. */
 export async function readActivitySummarySource(params: {
-  scope: Parameters<typeof readSessionTranscriptBoundedMessageTailPage>[0];
+  scope: SessionTranscriptReadScope;
   previous?: SessionActivitySummary;
   signal?: AbortSignal;
   assertCurrent: () => void;

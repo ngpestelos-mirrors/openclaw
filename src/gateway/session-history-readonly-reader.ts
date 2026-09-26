@@ -116,9 +116,7 @@ export function createReadonlySessionHistoryReader(target: PreparedSessionHistor
     async readActivitySummarySource(previous?: SessionActivitySummary) {
       const { readActivitySummarySourceBatch } =
         await import("./session-activity-summary-source.js");
-      return readSnapshot(() =>
-        readActivitySummarySourceBatch({ scope: target.transcript, previous }),
-      );
+      return readSnapshot((projection) => readActivitySummarySourceBatch(projection, previous));
     },
     readTranscriptBinding: (run?: { id: string; maxBytes: number }) =>
       readSnapshot((projection) => readSessionTranscriptBindingFromProjection(projection, run)),

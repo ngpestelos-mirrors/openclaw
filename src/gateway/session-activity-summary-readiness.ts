@@ -9,6 +9,7 @@ export type ActivitySummaryRequest = ActivitySummaryTarget & {
   immediate: boolean;
   sessionId?: string;
   lifecycleRevision?: string;
+  rowGeneration?: string | symbol;
 };
 
 export type ActivitySummaryRows = Pick<

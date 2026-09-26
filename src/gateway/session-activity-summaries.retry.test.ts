@@ -16,10 +16,8 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { sessionActivitySummaryHandlers } from "./server-methods/session-activity-summary.js";
-import {
-  createSessionActivitySummaries,
-  type SessionActivitySummaryService,
-} from "./session-activity-summaries.js";
+import type { SessionActivitySummaryService } from "./session-activity-summaries.js";
+import { createActivitySummaryTestProgress } from "./session-activity-summaries.test-support.js";
 import {
   projectSessionActivitySummary,
   type ActivitySummaryTarget,
@@ -42,6 +40,7 @@ const scope = (target: ActivitySummaryTarget) => ({
 describe("Activity recap admission, refresh, and provider recovery", () => {
   let testState: OpenClawTestState;
   let service: SessionActivitySummaryService;
+  let progress: ReturnType<typeof createActivitySummaryTestProgress>;
   let cfg: OpenClawConfig;
   let projection: SessionRowProjection;
   const complete = vi.fn<typeof defaultCompleteModel>();
@@ -82,7 +81,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
 
   let projectionAttached = true;
   const createService = () =>
-    createSessionActivitySummaries({
+    progress.create({
       getConfig: () => cfg,
       getSessionRowProjection: () => (projectionAttached ? projection : undefined),
       onChanged: changed,
@@ -99,6 +98,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     });
 
   beforeEach(async () => {
+    progress = createActivitySummaryTestProgress();
     testState = await createOpenClawTestState({ scenario: "minimal" });
     cfg = { agents: { defaults: { utilityModel: "test/utility" } } };
     complete.mockReset().mockResolvedValue(result);
@@ -109,6 +109,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
   });
   afterEach(async () => {
     await service.dispose();
+    progress.dispose();
     projection.dispose();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -146,12 +147,31 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     },
   );
 
+  it("resumes recap work after a temporary topology refresh", async () => {
+    const target = await addSession(1);
+    const committed = createDeferred();
+    changed.mockImplementation(() => {
+      if (projection.sharingTarget(target)?.entry.activitySummary) {
+        committed.resolve();
+      }
+    });
+    complete.mockImplementationOnce(async () => {
+      sessionChanges.emit({ all: true, scope: "config" });
+      expect(projection.sharingTarget(target)).toBeNull();
+      return result;
+    });
+    service.ensure(target);
+    await committed.promise;
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(view(target)?.state).toBe("current");
+  });
+
   it.each([false, true])(
     "restyles old cached text once while retaining coverage (new work: %s)",
     async (newWork) => {
       const target = await addSession(1);
       service.ensure(target);
-      await vi.waitFor(() => expect(view(target)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(target)?.state).toBe("current"));
       const oldText = "Ran internal_tool and checked the result. Waiting for review.";
       await patchSessionEntryCore(
         scope(target),
@@ -168,13 +188,13 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       complete.mockImplementationOnce(() => restyled.promise);
       try {
         expect(service.ensure(target)).toMatchObject({ state: "updating", text: oldText });
-        await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+        await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
         expect(JSON.parse(complete.mock.calls[1]![0].prompt)).toMatchObject({
           previousRecap: oldText,
           messages: newWork ? ["assistant: Verified additional work."] : [],
         });
         restyled.resolve({ ...result, text: "Verified the change. Waiting for review." });
-        await vi.waitFor(() => expect(view(target)?.state).toBe("current"));
+        await progress.waitFor(() => expect(view(target)?.state).toBe("current"));
         expect(loadSessionEntryReadOnly(scope(target))?.activitySummary).toMatchObject({
           version: 1,
           formatRevision: 2,
@@ -188,7 +208,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       await service.dispose();
       service = createService();
       service.ensure(target);
-      await vi.waitFor(() => expect(view(target)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(target)?.state).toBe("current"));
       service.ensure(target);
       await service.dispose();
       expect(complete).toHaveBeenCalledTimes(2);
@@ -200,7 +220,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     async (trigger) => {
       const target = await addSession(1);
       service.ensure(target);
-      await vi.waitFor(() => expect(view(target)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(target)?.state).toBe("current"));
       if (trigger === "new transcript") {
         await appendWork(target);
       } else {
@@ -214,7 +234,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       }
       complete.mockRejectedValue(new Error("temporary failure"));
       service.ensure(target);
-      await vi.waitFor(() => expect(view(target)?.state).toBe("unavailable"));
+      await progress.waitFor(() => expect(view(target)?.state).toBe("unavailable"));
       for (let index = 0; index < 20; index += 1) {
         service.ensure(target);
       }
@@ -230,7 +250,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     }
     const overflow = targets[256]!;
     service.ensure(overflow);
-    await vi.waitFor(() => expect(view(overflow)?.state).toBe("current"));
+    await progress.waitFor(() => expect(view(overflow)?.state).toBe("current"));
     await service.dispose();
     service = createService();
     complete.mockClear();
@@ -270,7 +290,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       for (let index = 0; index < 100; index += 20) {
         await ensure(targets.slice(index, index + 20));
       }
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+      await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
       expect(targets.slice(0, 100).map((target) => view(target)?.state)).toEqual(
         Array.from({ length: 100 }, () => "updating"),
       );
@@ -311,7 +331,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       });
       expect(complete).toHaveBeenCalledTimes(2);
       first.resolve(result);
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(3));
+      await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(3));
       await ensure([overflow]);
       expect(respond.mock.calls.at(-1)?.[1]).toMatchObject({
         sessions: [
@@ -362,12 +382,12 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     async ({ error, delay }) => {
       const target = await addSession(1);
       service.ensure(target);
-      await vi.waitFor(() => expect(view(target)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(target)?.state).toBe("current"));
       await appendWork(target);
       fakeTime();
       complete.mockRejectedValueOnce(error);
       service.ensure(target);
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+      await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
       await vi.advanceTimersByTimeAsync(0);
       const failedAt = Date.now();
       for (let index = 0; index < 20; index += 1) {
@@ -377,7 +397,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       await vi.advanceTimersByTimeAsync(delay - 1_000);
       expect(complete).toHaveBeenCalledTimes(2);
       await vi.advanceTimersByTimeAsync(1_000);
-      await vi.waitFor(() => expect(view(target)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(target)?.state).toBe("current"));
       expect(Date.now() - failedAt).toBeGreaterThanOrEqual(delay);
       expect(complete).toHaveBeenCalledTimes(3);
     },
@@ -399,18 +419,18 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     try {
       service.ensure(first);
       service.ensure(blocker);
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+      await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
       service.ensure(next);
       service.ensure(healthy);
       failure.reject(Object.assign(new Error("Overloaded"), { status: 529 }));
-      await vi.waitFor(() => expect(view(healthy)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(healthy)?.state).toBe("current"));
       expect(complete).toHaveBeenCalledTimes(3);
       expect(view(first)?.state).toBe("updating");
       expect(view(next)?.state).toBe("updating");
       release.resolve(result);
       await vi.advanceTimersByTimeAsync(30_000);
-      await vi.waitFor(() => expect(view(first)?.state).toBe("current"));
-      await vi.waitFor(() => expect(view(next)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(first)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(next)?.state).toBe("current"));
       expect(
         complete.mock.calls.map(([request]) => JSON.parse(request.prompt).messages[0]),
       ).toEqual([
@@ -434,7 +454,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       complete.mockRejectedValue(Object.assign(new Error("Overloaded"), { status: 529 }));
       service.ensure(target);
       for (let attempt = 1; attempt <= 4; attempt += 1) {
-        await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(attempt));
+        await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(attempt));
         await vi.advanceTimersByTimeAsync(attempt < 4 ? 30_000 * 2 ** (attempt - 1) : 0);
       }
       expect(view(target)?.state).toBe("unavailable");
@@ -449,9 +469,9 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
         await appendWork(target);
         service.handleTranscript({ target: scope(target) });
       }
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(5));
+      await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(5));
       await vi.advanceTimersByTimeAsync(120_000);
-      await vi.waitFor(() => expect(view(target)?.state).toBe("current"));
+      await progress.waitFor(() => expect(view(target)?.state).toBe("current"));
       expect(complete).toHaveBeenCalledTimes(6);
     },
   );
@@ -470,7 +490,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     fakeTime();
     complete.mockRejectedValue(error);
     service.ensure(target);
-    await vi.waitFor(() => expect(view(target)?.state).toBe("unavailable"));
+    await progress.waitFor(() => expect(view(target)?.state).toBe("unavailable"));
     await vi.advanceTimersByTimeAsync(3_600_000);
     expect(complete).toHaveBeenCalledTimes(1);
   });
@@ -480,7 +500,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     fakeTime();
     complete.mockRejectedValueOnce(Object.assign(new Error("Overloaded"), { status: 529 }));
     service.ensure(target);
-    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+    await progress.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
     await vi.advanceTimersByTimeAsync(0);
     if (action === "delete") {
       await deleteSessionEntryLifecycle({

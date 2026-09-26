@@ -222,20 +222,20 @@ export function readActiveTranscriptEntryIdentityInSnapshot(
 export function readSessionTranscriptActivePathEntryRelation(
   scope: SessionTranscriptReadScope,
   entryId: string | null,
-  options?: { readOnly?: boolean },
 ): "exact" | "ancestor" | "off-path" {
-  return withCurrentProjectionSnapshot(
-    scope,
-    (projection) => {
-      if (projection.state.leafEventId === entryId || entryId === null) {
-        return projection.state.leafEventId === entryId ? "exact" : "off-path";
-      }
-      return readActiveTranscriptEntryIdentityInSnapshot(projection, entryId)
-        ? "ancestor"
-        : "off-path";
-    },
-    options,
+  return withCurrentProjectionSnapshot(scope, (projection) =>
+    readSessionTranscriptActivePathEntryRelationFromProjection(projection, entryId),
   );
+}
+
+export function readSessionTranscriptActivePathEntryRelationFromProjection(
+  projection: CurrentTranscriptProjection,
+  entryId: string | null,
+): "exact" | "ancestor" | "off-path" {
+  if (projection.state.leafEventId === entryId || entryId === null) {
+    return projection.state.leafEventId === entryId ? "exact" : "off-path";
+  }
+  return readActiveTranscriptEntryIdentityInSnapshot(projection, entryId) ? "ancestor" : "off-path";
 }
 
 /** Reads a bounded context tail, preserving control facts but excluding display-only messages. */
@@ -563,78 +563,83 @@ export function readSessionTranscriptBoundedMessageTailPage(
 ): SessionTranscriptBoundedMessageTailPage {
   return withCurrentProjectionSnapshot(
     scope,
-    (projection) => {
-      const visible = resolveVisibleMessagePositions(projection);
-      const snapshot = {
-        boundarySeq: resolveTranscriptBoundaryWindow(projection)?.boundarySeq,
-        generation: projection.generation,
-        indexedSeq: projection.state.indexedSeq,
-      };
-      const totalMessages = visible.total;
-      const offset = Math.min(
-        Math.max(0, Math.floor(Number.isFinite(options.offset) ? options.offset : 0)),
-        totalMessages,
-      );
-      const maxMessages = Math.min(
-        MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
-        Math.max(0, Math.floor(Number.isFinite(options.maxMessages) ? options.maxMessages : 0)),
-      );
-      const maxBytes = Math.max(
-        0,
-        Math.floor(Number.isFinite(options.maxBytes) ? options.maxBytes : 0),
-      );
-      const endExclusive = Math.max(0, totalMessages - offset);
-      const start = Math.max(0, endExclusive - maxMessages);
-      const scannedMessages = endExclusive - start;
-      if (scannedMessages === 0 || maxBytes === 0) {
-        return {
-          activeLeafEntryId: projection.state.leafEventId,
-          events: [],
-          newestContiguousEventCount: 0,
-          scannedMessages,
-          serializedBytes: 0,
-          snapshot,
-          totalMessages,
-        };
-      }
-      const metadata = Array.from(iterateVisibleMessageMetadata(projection, start, endExclusive));
-      if (metadata.length !== scannedMessages) {
-        throw new Error("Active transcript bounded message page is incomplete");
-      }
-      const selectedPositions: number[] = [];
-      let newestContiguousEventCount: number | undefined;
-      let serializedBytes = 0;
-      for (let index = metadata.length - 1; index >= 0; index -= 1) {
-        const row = metadata[index]!;
-        if (serializedBytes + row.serialized_bytes > maxBytes) {
-          newestContiguousEventCount ??= selectedPositions.length;
-          continue;
-        }
-        selectedPositions.push(row.message_position);
-        serializedBytes += row.serialized_bytes;
-      }
-      const events =
-        selectedPositions.length === 0
-          ? []
-          : executeSqliteQuerySync(
-              projection.database.db,
-              selectMessagePayload(
-                projection.database,
-                selectMessageRows(projection.database, projection.resolved.sessionId, {
-                  positions: selectedPositions,
-                }),
-              ),
-            ).rows.map(parseActiveTranscriptMessageRow);
-      return {
-        activeLeafEntryId: projection.state.leafEventId,
-        events,
-        newestContiguousEventCount: newestContiguousEventCount ?? selectedPositions.length,
-        scannedMessages,
-        serializedBytes,
-        snapshot,
-        totalMessages,
-      };
-    },
+    (projection) => readSessionTranscriptBoundedMessageTailPageFromProjection(projection, options),
     options,
   );
+}
+
+export function readSessionTranscriptBoundedMessageTailPageFromProjection(
+  projection: CurrentTranscriptProjection,
+  options: { maxBytes: number; maxMessages: number; offset: number },
+): SessionTranscriptBoundedMessageTailPage {
+  const visible = resolveVisibleMessagePositions(projection);
+  const snapshot = {
+    boundarySeq: resolveTranscriptBoundaryWindow(projection)?.boundarySeq,
+    generation: projection.generation,
+    indexedSeq: projection.state.indexedSeq,
+  };
+  const totalMessages = visible.total;
+  const offset = Math.min(
+    Math.max(0, Math.floor(Number.isFinite(options.offset) ? options.offset : 0)),
+    totalMessages,
+  );
+  const maxMessages = Math.min(
+    MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
+    Math.max(0, Math.floor(Number.isFinite(options.maxMessages) ? options.maxMessages : 0)),
+  );
+  const maxBytes = Math.max(
+    0,
+    Math.floor(Number.isFinite(options.maxBytes) ? options.maxBytes : 0),
+  );
+  const endExclusive = Math.max(0, totalMessages - offset);
+  const start = Math.max(0, endExclusive - maxMessages);
+  const scannedMessages = endExclusive - start;
+  if (scannedMessages === 0 || maxBytes === 0) {
+    return {
+      activeLeafEntryId: projection.state.leafEventId,
+      events: [],
+      newestContiguousEventCount: 0,
+      scannedMessages,
+      serializedBytes: 0,
+      snapshot,
+      totalMessages,
+    };
+  }
+  const metadata = Array.from(iterateVisibleMessageMetadata(projection, start, endExclusive));
+  if (metadata.length !== scannedMessages) {
+    throw new Error("Active transcript bounded message page is incomplete");
+  }
+  const selectedPositions: number[] = [];
+  let newestContiguousEventCount: number | undefined;
+  let serializedBytes = 0;
+  for (let index = metadata.length - 1; index >= 0; index -= 1) {
+    const row = metadata[index]!;
+    if (serializedBytes + row.serialized_bytes > maxBytes) {
+      newestContiguousEventCount ??= selectedPositions.length;
+      continue;
+    }
+    selectedPositions.push(row.message_position);
+    serializedBytes += row.serialized_bytes;
+  }
+  const events =
+    selectedPositions.length === 0
+      ? []
+      : executeSqliteQuerySync(
+          projection.database.db,
+          selectMessagePayload(
+            projection.database,
+            selectMessageRows(projection.database, projection.resolved.sessionId, {
+              positions: selectedPositions,
+            }),
+          ),
+        ).rows.map(parseActiveTranscriptMessageRow);
+  return {
+    activeLeafEntryId: projection.state.leafEventId,
+    events,
+    newestContiguousEventCount: newestContiguousEventCount ?? selectedPositions.length,
+    scannedMessages,
+    serializedBytes,
+    snapshot,
+    totalMessages,
+  };
 }

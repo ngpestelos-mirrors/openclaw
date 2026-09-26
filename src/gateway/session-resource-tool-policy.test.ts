@@ -49,6 +49,7 @@ function fixture(
         client,
         current: {
           agentId: "main",
+          storeAgentId: "main",
           canonicalKey: key,
           entry: entries.get(key)!,
           generation: Symbol("database"),

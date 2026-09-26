@@ -32,7 +32,6 @@ import {
   isCronSessionKey,
   isIncognitoSessionKey,
   isSubagentSessionKey,
-  parseAgentSessionKey,
 } from "../routing/session-key.js";
 import { isSessionLifecycleMutationActive } from "../sessions/session-lifecycle-admission.js";
 import {
@@ -50,8 +49,13 @@ import {
   readActivitySummarySource,
 } from "./session-activity-summary-source.js";
 import {
+  ActivitySummaryCancelledError,
   activitySummaryScope,
+  assertSessionActivitySummaryEntry,
+  createSessionActivitySummaryWork,
   projectSessionActivitySummary,
+  refreshSessionActivitySummaryWindow,
+  activitySummaryTarget,
   sessionActivitySummaryOwnerIsCurrent,
   setSessionActivitySummaryState,
   type ActivitySummaryTarget,
@@ -59,7 +63,6 @@ import {
 } from "./session-activity-summary-state.js";
 import type { SessionObserverEvent } from "./session-observer-contract.js";
 import { defaultCompleteModel, defaultPrepareModel } from "./session-observer-model.js";
-import { resolveSessionStoreKey } from "./session-store-key.js";
 
 const log = createSubsystemLogger("gateway/activity-summary");
 const REFRESH_MS = 90_000;
@@ -70,12 +73,6 @@ const RETRY_BACKOFF = { initialMs: 30_000, maxMs: RETRY_MS, factor: 2, jitter: 0
 const MAX_CALLS_PER_HOUR = 40;
 const HOUR_MS = 3_600_000;
 const MODEL_TIMEOUT_MS = 20_000;
-
-class ActivitySummaryCancelledError extends Error {
-  constructor() {
-    super("Activity recap lifecycle or utility model changed");
-  }
-}
 
 export type SessionActivitySummaryService = {
   ensure: (target: ActivitySummaryTarget) => ActivitySummaryView;
@@ -164,6 +161,29 @@ export function createSessionActivitySummaries(deps: {
     }
     setSessionActivitySummaryState(state, owner);
   };
+  const retire = (state: Tracked) => {
+    if (states.get(activitySummaryScope(state)) !== state) {
+      return;
+    }
+    if (
+      !disposed &&
+      sessionActivitySummaryOwnerIsCurrent(state, owner) &&
+      configuredStorePath(state) === state.storePath &&
+      deps.getSessionRowProjection()?.needsMembershipPreparation() &&
+      readiness.enqueue({
+        key: state.key,
+        agentId: state.agentId,
+        sessionId: state.sessionId,
+        lifecycleRevision: state.lifecycleRevision,
+        rowGeneration: state.rowGeneration,
+        immediate: state.inFlight || state.immediate || state.retryPending,
+      })
+    ) {
+      state.dirty = true;
+      return;
+    }
+    drop(state);
+  };
   const admit = (
     target: ActivitySummaryTarget,
     row: NonNullable<ReturnType<typeof read>>,
@@ -196,33 +216,25 @@ export function createSessionActivitySummaries(deps: {
     }
     if (states.size >= MAX_TRACKED) {
       const evictable = [...states.values()].find(
-        (candidate) => !candidate.inFlight && !candidate.queued,
+        (candidate) => !candidate.inFlight && !candidate.queued && !readiness.has(candidate),
       );
       if (!evictable) {
         return undefined;
       }
       drop(evictable);
     }
-    state = {
-      ...target,
-      sessionId: entry.sessionId,
-      lifecycleRevision: entry.lifecycleRevision,
-      storePath,
-      sourceStorePath: row.storePath,
-      storeAgentId: row.storeAgentId,
-      rowGeneration: row.generation,
-      readyAt: 0,
-      retryPending: false,
-      failures: 0,
-      inFlight: false,
-      queued: false,
-      dirty: false,
-      immediate: false,
-      lastStartedAt: 0,
-      retryAt: 0,
-      windowStart: now(),
-      calls: 0,
-    };
+    state = createSessionActivitySummaryWork(
+      {
+        ...target,
+        sessionId: entry.sessionId,
+        lifecycleRevision: entry.lifecycleRevision,
+        storePath,
+        sourceStorePath: row.storePath,
+        storeAgentId: row.storeAgentId,
+        rowGeneration: row.generation,
+      },
+      now(),
+    );
     states.set(key, state);
     setSessionActivitySummaryState(state, owner, {
       sessionId: state.sessionId,
@@ -243,23 +255,9 @@ export function createSessionActivitySummaries(deps: {
       throw new ActivitySummaryCancelledError();
     }
   };
-  const assertCurrentEntry = (
-    state: Tracked,
-    entry: NonNullable<ReturnType<typeof read>>["entry"] | undefined,
-  ) => {
-    if (
-      !entry ||
-      entry.initializationPending ||
-      entry.sessionId !== state.sessionId ||
-      entry.lifecycleRevision !== state.lifecycleRevision
-    ) {
-      throw new ActivitySummaryCancelledError();
-    }
-    return entry;
-  };
   const assertCurrent = (state: Tracked, expectedModel: string) => {
     assertCurrentOwner(state, expectedModel);
-    return assertCurrentEntry(state, read(state)?.entry);
+    return assertSessionActivitySummaryEntry(state, read(state)?.entry);
   };
   const schedule = (state: Tracked, immediate: boolean) => {
     if (!current(state)) {
@@ -278,10 +276,7 @@ export function createSessionActivitySummaries(deps: {
       publish(state, "unavailable");
       return;
     }
-    if (now() - state.windowStart >= HOUR_MS) {
-      state.windowStart = now();
-      state.calls = 0;
-    }
+    refreshSessionActivitySummaryWindow(state, now(), HOUR_MS);
     state.readyAt = Math.max(
       now(),
       state.retryAt,
@@ -305,10 +300,7 @@ export function createSessionActivitySummaries(deps: {
     state.immediate = false;
     state.retryPending = false;
     state.retryAt = 0;
-    if (now() - state.windowStart >= HOUR_MS) {
-      state.windowStart = now();
-      state.calls = 0;
-    }
+    refreshSessionActivitySummaryWindow(state, now(), HOUR_MS);
     const ref = modelRef(state);
     const priorBackoff = ref ? modelBackoffs.get(ref) : undefined;
     let partial = false;
@@ -427,7 +419,7 @@ export function createSessionActivitySummaries(deps: {
       const committed = await patchSessionEntryCore(
         scope(state),
         (fresh) => {
-          assertCurrentEntry(state, fresh);
+          assertSessionActivitySummaryEntry(state, fresh);
           return { activitySummary: summary };
         },
         {
@@ -467,7 +459,10 @@ export function createSessionActivitySummaries(deps: {
       state.dirty ||= latest.generation !== summary.generation || latest.maxSeq !== summary.maxSeq;
       publish(state, partial || state.dirty ? "updating" : "current", true);
     } catch (error) {
-      if (current(state)) {
+      if (!current(state)) {
+        state.dirty = true;
+        state.immediate = true;
+      } else {
         if (error instanceof ActivitySummaryCancelledError) {
           state.dirty = false;
           publish(state, "stale");
@@ -520,10 +515,12 @@ export function createSessionActivitySummaries(deps: {
       // until owned work settles so a timed-out prepare cannot escape the concurrency bound.
       await ownedWork?.catch(() => undefined);
       state.controller = undefined;
+      const isCurrent = current(state);
+      if (!isCurrent) {
+        retire(state);
+      }
       state.inFlight = false;
-      if (!current(state)) {
-        drop(state);
-      } else if (state.retryPending || (!state.retryAt && (partial || state.dirty))) {
+      if (isCurrent && (state.retryPending || (!state.retryAt && (partial || state.dirty)))) {
         schedule(state, state.retryPending || partial || state.immediate);
       }
     }
@@ -556,7 +553,7 @@ export function createSessionActivitySummaries(deps: {
       const state = queue.splice(index, 1)[0]!;
       state.queued = false;
       if (!current(state)) {
-        drop(state);
+        retire(state);
         continue;
       }
       active += 1;
@@ -598,9 +595,19 @@ export function createSessionActivitySummaries(deps: {
     readiness.forget(intent);
     if (
       !row ||
+      (intent.rowGeneration !== undefined && intent.rowGeneration !== row.generation) ||
       (intent.sessionId && intent.sessionId !== row.entry.sessionId) ||
       (intent.lifecycleRevision && intent.lifecycleRevision !== row.entry.lifecycleRevision)
     ) {
+      const retained = states.get(activitySummaryScope(intent));
+      if (
+        retained &&
+        retained.rowGeneration === intent.rowGeneration &&
+        retained.sessionId === intent.sessionId &&
+        retained.lifecycleRevision === intent.lifecycleRevision
+      ) {
+        drop(retained);
+      }
       return undefined;
     }
     const state = admit(intent, row);
@@ -608,19 +615,6 @@ export function createSessionActivitySummaries(deps: {
       schedule(state, intent.immediate);
     }
     return state;
-  };
-  const eventTarget = (key?: string, agentId?: string): ActivitySummaryTarget | undefined => {
-    const agentOwner = agentId ?? (key ? parseAgentSessionKey(key)?.agentId : undefined);
-    return key && agentOwner
-      ? {
-          key: resolveSessionStoreKey({
-            cfg: deps.getConfig(),
-            sessionKey: key,
-            storeAgentId: agentOwner,
-          }),
-          agentId: agentOwner,
-        }
-      : undefined;
   };
   const unsubscribeIdentity = onSessionIdentityMutation((mutation) => {
     for (const key of mutation.previous.sessionKeys) {
@@ -634,7 +628,7 @@ export function createSessionActivitySummaries(deps: {
   return {
     resume: readiness.resume,
     ensure(requested) {
-      const target = eventTarget(requested.key, requested.agentId)!;
+      const target = activitySummaryTarget(deps.getConfig(), requested.key, requested.agentId)!;
       if (isCronSessionKey(target.key)) {
         return { state: "unavailable" };
       }
@@ -655,7 +649,8 @@ export function createSessionActivitySummaries(deps: {
       return projected ?? { state: "updating" };
     },
     handleTranscript(event) {
-      const target = eventTarget(
+      const target = activitySummaryTarget(
+        deps.getConfig(),
         event.target?.sessionKey ?? event.sessionKey,
         event.target?.agentId ?? event.agentId,
       );
@@ -678,7 +673,8 @@ export function createSessionActivitySummaries(deps: {
       ) {
         return;
       }
-      const target = eventTarget(
+      const target = activitySummaryTarget(
+        deps.getConfig(),
         event.sessionKey ?? runContext?.sessionKey,
         event.agentId ?? runContext?.agentId,
       );
@@ -690,7 +686,7 @@ export function createSessionActivitySummaries(deps: {
       if (event.reason !== "archive" && event.reason !== "unarchive") {
         return;
       }
-      const target = eventTarget(event.sessionKey, event.agentId);
+      const target = activitySummaryTarget(deps.getConfig(), event.sessionKey, event.agentId);
       if (target) {
         request({ ...target, immediate: true });
       }

@@ -11,17 +11,35 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { resolveSessionStoreKey } from "./session-store-key.js";
 
 export type ActivitySummaryTarget = { key: string; agentId: string };
-export type SessionActivitySummaryWork = ActivitySummaryTarget & {
+export function activitySummaryTarget(
+  cfg: OpenClawConfig,
+  key?: string,
+  agentId?: string,
+): ActivitySummaryTarget | undefined {
+  const agentOwner = agentId ?? (key ? parseAgentSessionKey(key)?.agentId : undefined);
+  return key && agentOwner
+    ? {
+        key: resolveSessionStoreKey({ cfg, sessionKey: key, storeAgentId: agentOwner }),
+        agentId: agentOwner,
+      }
+    : undefined;
+}
+
+type SessionActivitySummaryIdentity = ActivitySummaryTarget & {
   sessionId: string;
   lifecycleRevision?: string;
   storePath: string;
   sourceStorePath: string;
   storeAgentId: string;
   rowGeneration: string | symbol;
+};
+
+export type SessionActivitySummaryWork = SessionActivitySummaryIdentity & {
   readyAt: number;
   retryPending: boolean;
   failures: number;
@@ -35,6 +53,58 @@ export type SessionActivitySummaryWork = ActivitySummaryTarget & {
   windowStart: number;
   calls: number;
 };
+
+export class ActivitySummaryCancelledError extends Error {
+  constructor() {
+    super("Activity recap lifecycle or utility model changed");
+  }
+}
+
+export function assertSessionActivitySummaryEntry(
+  state: Pick<SessionActivitySummaryWork, "sessionId" | "lifecycleRevision">,
+  entry: SessionEntry | undefined,
+) {
+  if (
+    !entry ||
+    entry.initializationPending ||
+    entry.sessionId !== state.sessionId ||
+    entry.lifecycleRevision !== state.lifecycleRevision
+  ) {
+    throw new ActivitySummaryCancelledError();
+  }
+  return entry;
+}
+
+export function createSessionActivitySummaryWork(
+  identity: SessionActivitySummaryIdentity,
+  now: number,
+): SessionActivitySummaryWork {
+  return {
+    ...identity,
+    readyAt: 0,
+    retryPending: false,
+    failures: 0,
+    inFlight: false,
+    queued: false,
+    dirty: false,
+    immediate: false,
+    lastStartedAt: 0,
+    retryAt: 0,
+    windowStart: now,
+    calls: 0,
+  };
+}
+
+export function refreshSessionActivitySummaryWindow(
+  state: Pick<SessionActivitySummaryWork, "windowStart" | "calls">,
+  now: number,
+  windowMs: number,
+): void {
+  if (now - state.windowStart >= windowMs) {
+    state.windowStart = now;
+    state.calls = 0;
+  }
+}
 
 type PendingState = {
   sessionId: string;
