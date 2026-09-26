@@ -195,10 +195,12 @@ a baseline returns `undefined`; recover the connection instead of displaying
 an incomplete answer. `reduceSessionProjectionRunEvent` uses the same merge
 operation for clients using the shared session projection.
 
-The high-level `@openclaw/sdk` retains reconstructed chat in its normalized
-run-event replay, so late readers can recover the text after the initial wire
+The high-level `@openclaw/sdk` retains reconstructed chat and assistant-item text
+in its normalized run-event replay, so late readers can recover the text after the initial wire
 snapshot is evicted. Its `rawEvents()` and each normalized event's `raw` field
 still expose the original wire event, including omitted `message` fields.
+Normalized assistant events retain cumulative `data.text` for their current item;
+`data.delta` keeps its wire meaning, and the raw event can omit `data.text`.
 Active chat baselines remain protected while their connection is current. On the
 first event after reconnect, the SDK retires the previous connection's baseline
 protection and keeps only its bounded replay history. Ending the transport event

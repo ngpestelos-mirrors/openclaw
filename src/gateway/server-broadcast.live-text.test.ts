@@ -232,7 +232,8 @@ describe("connection live-text delivery", () => {
   });
 
   it("serializes only selected wire projections and shares them across recipients", () => {
-    const peers = [createPeer("one", true), createPeer("two", true)];
+    const first = createPeer("one", true);
+    const peers = [first, createPeer("two", true)];
     const { broadcast } = createGatewayBroadcaster({
       clients: new GatewayClientRegistry(peers.map((peer) => peer.client)),
     });
@@ -248,7 +249,7 @@ describe("connection live-text delivery", () => {
     broadcast("chat", { message: { toJSON: snapshotJSON }, deltaText: " suffix" }, opts);
     expect(snapshotJSON).toHaveBeenCalledTimes(1);
     expect(delta).toHaveBeenCalledTimes(1);
-    expect(peers[0].frames[1]?.payload).toEqual({ deltaText: " suffix" });
+    expect(first.frames[1]?.payload).toEqual({ deltaText: " suffix" });
     owner.abort();
   });
 

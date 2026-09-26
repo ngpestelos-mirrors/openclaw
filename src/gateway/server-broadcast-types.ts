@@ -22,6 +22,8 @@ export type GatewayBroadcastOpts = {
   /** Private live-text ownership; omitting coalesce flushes this group's progress. */
   liveText?: {
     group: AbortSignal;
+    /** Accepted terminal barrier; drain current queued text before retiring its group. */
+    settle?: true;
     isCurrent?: () => boolean;
     coalesce?: { key: string; merge: (previous: unknown, next: unknown) => unknown };
     /** Full internal payloads become append-only only after this socket has a baseline. */

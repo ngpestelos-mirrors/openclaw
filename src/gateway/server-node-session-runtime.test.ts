@@ -1,14 +1,17 @@
 import { describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../infra/node-runner-inventory.js";
 import { GATEWAY_EVENT_NODE_RUNNER_INVENTORY_CHANGED } from "./events.js";
 import { updateNodeRunnerInventory } from "./node-registry-private.js";
 import type { GatewayBroadcastOpts } from "./server-broadcast-types.js";
 import {
+  createChatRunState,
   createSessionEventSubscriberRegistry,
   createSessionMessageSubscriberRegistry,
 } from "./server-chat-state.js";
+import { broadcastChatTerminal } from "./server-methods/chat-broadcast.js";
 import { createGatewayNodeSessionRuntime } from "./server-node-session-runtime.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 
@@ -81,7 +84,11 @@ function registerNode(
   return socket;
 }
 
-function liveTextPublisher(runtime: ReturnType<typeof createRuntime>, event: "chat" | "agent") {
+function liveTextPublisher(
+  runtime: ReturnType<typeof createRuntime>,
+  event: "chat" | "agent",
+  sessionKey = "main",
+) {
   const group = new AbortController();
   return {
     group,
@@ -115,7 +122,7 @@ function liveTextPublisher(runtime: ReturnType<typeof createRuntime>, event: "ch
           },
         },
       };
-      return runtime.nodeSendToSession("main", event, payload, opts);
+      return runtime.nodeSendToSession(sessionKey, event, payload, opts);
     },
   };
 }
@@ -194,8 +201,8 @@ describe("gateway node session runtime", () => {
   });
 
   test("does not inherit receipts when a connection is replaced during pairing verification", async () => {
-    const entered = Promise.withResolvers<void>();
-    const pairing = Promise.withResolvers<string>();
+    const entered = createDeferred();
+    const pairing = createDeferred<string>();
     let delayed = false;
     const runtime = createRuntime(() => {
       if (delayed) {
@@ -230,6 +237,81 @@ describe("gateway node session runtime", () => {
       },
       { runId: "run-a", state: "delta", deltaText: " four" },
     ]);
+  });
+
+  test.each([
+    { boundary: "final", state: "final", drain: true },
+    { boundary: "error", state: "error", drain: true },
+    { boundary: "revoked source", state: "final", drain: false },
+    { boundary: "cancel", state: "aborted", drain: false },
+    { boundary: "unsubscribe", state: "final", drain: false },
+    { boundary: "resubscribe", state: "final", drain: false },
+  ] as const)("settles queued node text at $boundary", async ({ boundary, state, drain }) => {
+    const entered = createDeferred();
+    const pairing = createDeferred<string>();
+    let delayed = false;
+    let current = true;
+    const runtime = createRuntime(() => {
+      if (delayed) {
+        entered.resolve();
+        return pairing.promise;
+      }
+      return Promise.resolve("generation-a");
+    });
+    const frames: string[] = [];
+    registerNode(runtime, "conn-original", "generation-a", frames);
+    const sessionKey = "agent:main:main";
+    runtime.nodeSubscribe("node-a", sessionKey, "conn-original");
+    const publisher = liveTextPublisher(runtime, "agent", sessionKey);
+    const chatRunState = createChatRunState();
+    chatRunState.getOrCreate("run-a").liveTextGroup = publisher.group;
+    await publisher.send("one", "one", { isCurrent: () => current });
+    delayed = true;
+    const firstTail = publisher.send("one two", " two", { isCurrent: () => current });
+    const secondTail = publisher.send("one two three", " three", { isCurrent: () => current });
+    await entered.promise;
+    if (boundary === "revoked source") {
+      current = false;
+    }
+    if (boundary === "cancel") {
+      chatRunState.clearRun("run-a");
+    }
+    const terminals: Promise<void>[] = [];
+    broadcastChatTerminal({
+      context: {
+        broadcast: vi.fn(),
+        agentRunSeq: new Map(),
+        chatRunState,
+        nodeSendToSession: (...args) => {
+          terminals.push(runtime.nodeSendToSession(...args));
+        },
+      },
+      runId: "run-a",
+      sessionKey,
+      state,
+    });
+    // Normal terminal cleanup releases the producer while authenticated writes wait.
+    current = false;
+    chatRunState.clearRun("run-a");
+    if (boundary === "unsubscribe" || boundary === "resubscribe") {
+      runtime.nodeUnsubscribe("node-a", sessionKey, "conn-original");
+      if (boundary === "resubscribe") {
+        runtime.nodeSubscribe("node-a", sessionKey, "conn-original");
+      }
+    }
+    pairing.resolve("generation-a");
+    await Promise.all([firstTail, secondTail, ...terminals]);
+
+    const events = frames.map((frame) => JSON.parse(frame));
+    expect(
+      events.filter((frame) => frame.event === "agent").map((frame) => frame.payload.data),
+    ).toEqual([
+      { text: "one", delta: "one" },
+      ...(drain ? [{ delta: " two" }, { delta: " three" }] : []),
+    ]);
+    expect(events.some((frame) => frame.payload.state === state)).toBe(
+      boundary !== "unsubscribe" && boundary !== "resubscribe",
+    );
   });
 
   test("publishes pairing-generation transitions to lifecycle consumers", () => {

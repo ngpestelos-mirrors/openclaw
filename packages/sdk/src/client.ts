@@ -6,8 +6,10 @@ import {
   isAssistantRunEvent,
   isTerminalRunEvent,
   normalizeChatProjectionEvent,
+  projectAssistantRunEvent,
   readChatProjection,
   readChatProjectionText,
+  type AssistantProjection,
 } from "./chat-projection.js";
 import { EventHub } from "./event-hub.js";
 import { normalizeGatewayEvent } from "./normalize.js";
@@ -190,7 +192,7 @@ export class OpenClaw {
   private readonly normalizedEvents = new EventHub<OpenClawEvent>();
   private readonly replayByRunId = new Map<
     string,
-    { events: OpenClawEvent[]; chatMessage?: unknown }
+    { events: OpenClawEvent[]; chatMessage?: unknown; assistant?: AssistantProjection }
   >();
   private replayConnectionEpoch: object | undefined;
   private connected = false;
@@ -464,6 +466,11 @@ export class OpenClaw {
       this.replayByRunId.set(event.runId, replay);
     }
     const projection = readChatProjection(event);
+    const assistant = projectAssistantRunEvent(event, replay.assistant);
+    if (assistant) {
+      replay.assistant = assistant.assistant;
+      event = assistant.event;
+    }
     if (projection?.state === "delta") {
       replay.chatMessage = mergeChatStreamMessage(replay.chatMessage, projection.payload);
       if (replay.chatMessage !== undefined) {
@@ -473,6 +480,7 @@ export class OpenClaw {
       }
     } else if (projection || isTerminalRunEvent(event)) {
       delete replay.chatMessage;
+      delete replay.assistant;
       this.replayByRunId.delete(event.runId);
       this.replayByRunId.set(event.runId, replay);
       trimReplayRuns = true;
@@ -492,6 +500,7 @@ export class OpenClaw {
     this.replayConnectionEpoch = undefined;
     for (const replay of this.replayByRunId.values()) {
       delete replay.chatMessage;
+      delete replay.assistant;
     }
     this.trimReplayRuns();
   }
@@ -503,7 +512,11 @@ export class OpenClaw {
     let retained = 0;
     // Active baselines cannot be evicted: later wire frames contain only suffixes.
     for (const [runId, candidate] of [...this.replayByRunId].reverse()) {
-      if (candidate.chatMessage === undefined && ++retained > MAX_REPLAY_RUNS) {
+      if (
+        candidate.chatMessage === undefined &&
+        candidate.assistant === undefined &&
+        ++retained > MAX_REPLAY_RUNS
+      ) {
         this.replayByRunId.delete(runId);
       }
     }

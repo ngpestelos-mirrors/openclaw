@@ -535,18 +535,6 @@ export function createAgentEventHandler({
       ? resolveSessionSubscriptionKeys(sessionKey, deliveryAgentId, compatibilityOwnerAgentId)
       : [];
   };
-  const sendNodeSessionPayloadForAgent = (
-    sessionKey: string,
-    event: string,
-    payload: unknown,
-    agentId?: string,
-    opts?: GatewayBroadcastOpts,
-  ) => {
-    for (const deliverySessionKey of resolveSessionDeliveryKeys(sessionKey, agentId)) {
-      nodeSendToSession(deliverySessionKey, event, payload, opts);
-    }
-  };
-
   const emitFirstAssistantChatSendTiming = (chatLink: ChatRunEntry | undefined) => {
     const timing = chatLink?.chatSendTiming;
     if (!timing || timing.firstAssistantEventSent) {
@@ -1078,15 +1066,22 @@ export function createAgentEventHandler({
     const deliverySessionKeys = sessionKey
       ? resolveSessionDeliveryKeys(sessionKey, opts?.agentId)
       : undefined;
-    const broadcastOpts = {
+    const liveText = opts?.liveText ?? liveTextDelivery(chatRunState, payload.runId);
+    const broadcastOpts: GatewayBroadcastOpts = {
       dropIfSlow: event === "agent" && visible ? undefined : opts?.dropIfSlow,
       sessionKeys: deliverySessionKeys,
-      liveText: opts?.liveText ?? liveTextDelivery(chatRunState, payload.runId),
+      liveText:
+        liveText &&
+        event === "chat" &&
+        "state" in payload &&
+        (payload.state === "final" || payload.state === "error")
+          ? { ...liveText, settle: true }
+          : liveText,
     };
     if (visible) {
       broadcast(event, payload, broadcastOpts);
-      if (sessionKey) {
-        sendNodeSessionPayloadForAgent(sessionKey, event, payload, opts?.agentId, broadcastOpts);
+      if (deliverySessionKeys?.[0]) {
+        nodeSendToSession(deliverySessionKeys[0], event, payload, broadcastOpts);
       }
       return;
     }
@@ -1217,7 +1212,7 @@ export function createAgentEventHandler({
   const sendAgentPayload = (
     sessionKey: string | undefined,
     payload: AgentEventPayload & { spawnedBy?: string },
-    opts?: LivePayloadOptions & { coalesce?: boolean; isCurrent?: () => boolean },
+    opts?: LivePayloadOptions & { coalesce?: boolean; isCurrent?: () => boolean; settle?: true },
   ) => {
     const stream = resolveAgentTextThrottleStream(payload);
     const deliveryKey = JSON.stringify([
@@ -1240,6 +1235,9 @@ export function createAgentEventHandler({
       opts?.isCurrent,
       assistantWireProjection(payload, sessionKey, opts?.agentId, opts?.controlUiVisible ?? true),
     );
+    if (liveText && opts?.settle) {
+      liveText.settle = true;
+    }
     sendLivePayload("agent", sessionKey, payload, { ...opts, liveText });
   };
 
@@ -1300,7 +1298,11 @@ export function createAgentEventHandler({
         evt.data.delta.length > 0 &&
         (evt.stream !== "assistant" || !shouldSuppressAssistantEventForLiveChat(evt.data))));
 
-  const sendOrBufferAgentTextEvent = (clientRunId: string, next: BufferedAgentEvent) => {
+  const sendOrBufferAgentTextEvent = (
+    clientRunId: string,
+    next: BufferedAgentEvent,
+    settle?: true,
+  ) => {
     const { payload } = next;
     const stream = resolveAgentTextThrottleStream(payload);
     const now = Date.now();
@@ -1337,6 +1339,8 @@ export function createAgentEventHandler({
       agentId: next.agentId,
       controlUiVisible: next.controlUiVisible,
       dropIfSlow: next.controlUiVisible === false,
+      isCurrent: next.isCurrent,
+      settle,
     });
     if (state) {
       state.lastSentAt = now;
@@ -1381,7 +1385,8 @@ export function createAgentEventHandler({
     const deliveryKeys = resolveSessionDeliveryKeys(sessionKey, agentId).filter(
       nodeHasSessionSubscribers,
     );
-    if (deliveryKeys.length === 0) {
+    const firstDeliveryKey = deliveryKeys[0];
+    if (!firstDeliveryKey) {
       return;
     }
     const verbose = resolveToolVerboseLevel(event, sessionKey, agentId);
@@ -1400,9 +1405,7 @@ export function createAgentEventHandler({
       ...buildSessionEventSnapshot(sessionKey, undefined, agentId),
     });
     // Registration is demand only; each send still validates its pairing generation.
-    for (const key of deliveryKeys) {
-      nodeSendToSession(key, "agent", nodePayload);
-    }
+    nodeSendToSession(firstDeliveryKey, "agent", nodePayload, { sessionKeys: deliveryKeys });
   };
 
   const handleEvent = (event: AgentEventPayload) => {
@@ -1701,15 +1704,19 @@ export function createAgentEventHandler({
               evt.stream === "assistant" &&
               shouldMirrorAssistantEventToHiddenSessionMessages(evt.data))))
       ) {
-        sendOrBufferAgentTextEvent(clientRunId, {
-          sessionKey,
-          agentId: sessionAgentId,
-          controlUiVisible: isControlUiVisible,
-          payload: agentPayload,
-          // The client payload loses non-enumerable ownership on spread.
-          // Delayed sends must still belong to the original run claim.
-          isCurrent,
-        });
+        sendOrBufferAgentTextEvent(
+          clientRunId,
+          {
+            sessionKey,
+            agentId: sessionAgentId,
+            controlUiVisible: isControlUiVisible,
+            payload: agentPayload,
+            // The client payload loses non-enumerable ownership on spread.
+            // Delayed sends must still belong to the original run claim.
+            isCurrent,
+          },
+          lifecyclePhase === "end" && !isAborted && evt.data.aborted !== true ? true : undefined,
+        );
       }
     }
 

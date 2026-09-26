@@ -90,7 +90,7 @@ export type { SerializedEventPayload } from "./node-event-payload.js";
 export type NodeEventPayloadPreparation = (connId: string) =>
   | {
       payloadJSON: SerializedEventPayload | null;
-      onSent: () => void;
+      onSent?: () => void;
     }
   | undefined;
 
@@ -1395,7 +1395,7 @@ export class NodeRegistry {
       this.sendEventRawInternal(node, event, prepared ? prepared.payloadJSON : payloadJSON),
     );
     if (sent && this.nodesById.get(nodeId) === node) {
-      prepared?.onSent();
+      prepared?.onSent?.();
     }
     return sent;
   }

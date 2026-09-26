@@ -45,7 +45,13 @@ type NodeSubscriptionManager = {
 /** Manages node subscriptions to gateway session events. */
 export function createNodeSubscriptionManager(): NodeSubscriptionManager {
   type Subscription = { pairingGeneration: string };
-  type Publication = { version: unknown };
+  type Recipient = { pairingGeneration: string; subscriptions: Map<string, Subscription> };
+  type Publication = {
+    version: unknown;
+    sessionKeys: string[];
+    isCurrent?: () => boolean;
+    settled: boolean;
+  };
   type Receipt = { connId: string; publication: Publication };
   const nodeSubscriptions = new Map<
     string,
@@ -57,8 +63,29 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
     {
       publications: Map<string, Publication>;
       receipts: WeakMap<Subscription, Map<string, Receipt>>;
+      pending: Set<Publication>;
     }
   >();
+
+  const isPublicationCurrent = (publication: Publication) => {
+    try {
+      return publication.isCurrent?.() !== false;
+    } catch {
+      return false;
+    }
+  };
+
+  const currentSubscription = (nodeId: string, recipient: Recipient) => {
+    for (const [key, subscription] of recipient.subscriptions) {
+      if (
+        sessionSubscribers.get(key)?.get(nodeId) === subscription &&
+        subscription.pairingGeneration === recipient.pairingGeneration
+      ) {
+        return subscription;
+      }
+    }
+    return undefined;
+  };
 
   const toPayloadJSON = (payload: unknown): SerializedEventPayload | null | undefined => {
     try {
@@ -200,95 +227,141 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
     if (!normalizedSessionKey || !sendEvent) {
       return;
     }
-    const subscribers = sessionSubscribers.get(normalizedSessionKey);
-    const liveText = opts?.liveText;
-    if (!liveText?.projection) {
-      if (!subscribers?.size) {
-        return;
+    const sessionKeys = [
+      ...new Set(
+        (opts?.sessionKeys ?? [normalizedSessionKey]).map((key) => key.trim()).filter(Boolean),
+      ),
+    ];
+    const subscribers = new Map<string, Recipient>();
+    for (const key of sessionKeys) {
+      for (const [nodeId, subscription] of sessionSubscribers.get(key) ?? []) {
+        let recipient = subscribers.get(nodeId);
+        if (!recipient) {
+          recipient = {
+            pairingGeneration: subscription.pairingGeneration,
+            subscriptions: new Map(),
+          };
+          subscribers.set(nodeId, recipient);
+        }
+        recipient.subscriptions.set(key, subscription);
       }
+    }
+    const liveText = opts?.liveText;
+    if (liveText?.settle && !liveText.group.aborted) {
+      for (const publication of liveTextGroups.get(liveText.group)?.pending ?? []) {
+        if (
+          sessionKeys.some((key) => publication.sessionKeys.includes(key)) &&
+          isPublicationCurrent(publication)
+        ) {
+          publication.settled = true;
+        }
+      }
+    }
+    if (!subscribers.size) {
+      return;
+    }
+    if (!liveText?.projection) {
       const payloadJSON = toPayloadJSON(payload);
       if (payloadJSON === undefined) {
         return;
       }
-      return settleFanout(subscribers, ([nodeId, subscription]) => {
-        const pairingGeneration = subscription.pairingGeneration;
-        return () => sendEvent({ nodeId, pairingGeneration, event, payloadJSON });
+      return settleFanout(subscribers, ([nodeId, recipient]) => {
+        return () =>
+          sendEvent({
+            nodeId,
+            pairingGeneration: recipient.pairingGeneration,
+            event,
+            payloadJSON,
+            preparePayload: () =>
+              currentSubscription(nodeId, recipient) ? { payloadJSON } : undefined,
+          });
       });
     }
     if (liveText.group.aborted) {
       return;
     }
     const projection = liveText.projection;
-    const streamKey = `${normalizedSessionKey}\0${projection.key}`;
+    const streamKey = projection.key;
     let group = liveTextGroups.get(liveText.group);
     if (!group) {
-      group = { publications: new Map(), receipts: new WeakMap() };
+      group = { publications: new Map(), receipts: new WeakMap(), pending: new Set() };
       liveTextGroups.set(liveText.group, group);
       const retiredGroup = group;
       liveText.group.addEventListener(
         "abort",
         () => {
           retiredGroup.publications.clear();
-          retiredGroup.receipts = new WeakMap();
+          if (retiredGroup.pending.size === 0) {
+            retiredGroup.receipts = new WeakMap();
+          }
           liveTextGroups.delete(liveText.group);
         },
         { once: true },
       );
     }
     const previousPublication = group.publications.get(streamKey);
-    const publication = { version: projection.version };
+    const publication: Publication = {
+      version: projection.version,
+      sessionKeys,
+      isCurrent: liveText.isCurrent,
+      settled: false,
+    };
     group.publications.set(streamKey, publication);
-    if (!subscribers?.size) {
-      return;
-    }
 
     // Each representation is serialized only if a current recipient needs it.
     let snapshotJSON: SerializedEventPayload | null | undefined;
     let deltaJSON: SerializedEventPayload | null | undefined;
-    await settleFanout(subscribers, ([nodeId, subscription]) => {
-      const pairingGeneration = subscription.pairingGeneration;
-      return () =>
-        sendEvent({
-          nodeId,
-          pairingGeneration,
-          event,
-          preparePayload: (connId) => {
-            if (
-              sessionSubscribers.get(normalizedSessionKey)?.get(nodeId) !== subscription ||
-              subscription.pairingGeneration !== pairingGeneration ||
-              liveText.group.aborted ||
-              liveText.isCurrent?.() === false
-            ) {
-              return undefined;
-            }
-            const receipt = group.receipts.get(subscription)?.get(streamKey);
-            const append =
-              !projection.snapshot &&
-              receipt?.connId === connId &&
-              receipt.publication === previousPublication &&
-              Object.is(previousPublication?.version, publication.version);
-            const payloadJSON = append
-              ? (deltaJSON ??= toPayloadJSON(projection.delta(payload)))
-              : (snapshotJSON ??= toPayloadJSON(payload));
-            if (payloadJSON === undefined) {
-              return undefined;
-            }
-            return {
-              payloadJSON,
-              onSent: () => {
-                if (!liveText.group.aborted) {
-                  let receipts = group.receipts.get(subscription);
-                  if (!receipts) {
-                    receipts = new Map();
-                    group.receipts.set(subscription, receipts);
+    group.pending.add(publication);
+    try {
+      await settleFanout(subscribers, ([nodeId, recipient]) => {
+        return () =>
+          sendEvent({
+            nodeId,
+            pairingGeneration: recipient.pairingGeneration,
+            event,
+            preparePayload: (connId) => {
+              const subscription = currentSubscription(nodeId, recipient);
+              if (
+                !subscription ||
+                (!publication.settled &&
+                  (liveText.group.aborted || !isPublicationCurrent(publication)))
+              ) {
+                return undefined;
+              }
+              const receipt = group.receipts.get(subscription)?.get(streamKey);
+              const append =
+                !projection.snapshot &&
+                receipt?.connId === connId &&
+                receipt.publication === previousPublication &&
+                Object.is(previousPublication?.version, publication.version);
+              const payloadJSON = append
+                ? (deltaJSON ??= toPayloadJSON(projection.delta(payload)))
+                : (snapshotJSON ??= toPayloadJSON(payload));
+              if (payloadJSON === undefined) {
+                return undefined;
+              }
+              return {
+                payloadJSON,
+                onSent: () => {
+                  if (!liveText.group.aborted || publication.settled) {
+                    let receipts = group.receipts.get(subscription);
+                    if (!receipts) {
+                      receipts = new Map();
+                      group.receipts.set(subscription, receipts);
+                    }
+                    receipts.set(streamKey, { connId, publication });
                   }
-                  receipts.set(streamKey, { connId, publication });
-                }
-              },
-            };
-          },
-        });
-    });
+                },
+              };
+            },
+          });
+      });
+    } finally {
+      group.pending.delete(publication);
+      if (liveText.group.aborted && group.pending.size === 0) {
+        group.receipts = new WeakMap();
+      }
+    }
   };
 
   const sendToAllSubscribed = async (
