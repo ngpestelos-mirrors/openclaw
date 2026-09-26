@@ -50,7 +50,7 @@ import type { SessionEntryCommitContext } from "./session-accessor.types.js";
 
 it("does not probe archive recovery during ordinary replacements", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const maintenance = createOpenClawDatabaseMaintenanceScope(() => undefined);
+    const maintenance = createOpenClawDatabaseMaintenanceScope();
     try {
       // The native maintenance path exposes SQL from the same replacement kernel.
       await maintenance.run(async () => {
