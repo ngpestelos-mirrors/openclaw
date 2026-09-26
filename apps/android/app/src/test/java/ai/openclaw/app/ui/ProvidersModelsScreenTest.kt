@@ -151,11 +151,11 @@ class ProvidersModelsScreenTest {
 
     composeRule.onNodeWithText("OpenAI").performClick()
     composeRule.onNodeWithText("GPT-4.1").assertIsDisplayed().assertHasNoClickAction()
-    composeRule.onNodeWithText("In use").assertIsDisplayed()
+    capture("providers-expanded-dark")
+    composeRule.onNodeWithText("Gateway default").assertIsDisplayed()
     composeRule.onNodeWithText("o3").assertIsDisplayed()
     composeRule.onNodeWithText("GPT-4o").assertDoesNotExist()
     composeRule.onNodeWithText("Manage sign-in").assertIsDisplayed()
-    capture("providers-expanded-dark")
 
     composeRule.onNodeWithText("5 more models").performClick()
     composeRule
@@ -182,11 +182,11 @@ class ProvidersModelsScreenTest {
     composeRule.onNodeWithText("GPT-4.1").assertDoesNotExist()
     composeRule.onNodeWithText("GPT-4o").assertDoesNotExist()
     composeRule.onNodeWithText("OpenAI").performClick()
-    composeRule.onNodeWithText("In use").assertIsDisplayed()
+    composeRule.onNodeWithText("Gateway default").assertIsDisplayed()
     composeRule.runOnIdle {
       ReflectionHelpers.getField<MutableStateFlow<Boolean>>(runtime, "_providerModelTagsDescribeDefaults").value = false
     }
-    composeRule.onNodeWithText("In use").assertDoesNotExist()
+    composeRule.onNodeWithText("Gateway default").assertDoesNotExist()
     composeRule.onNodeWithText("GPT-4.1").assertIsDisplayed()
   }
 

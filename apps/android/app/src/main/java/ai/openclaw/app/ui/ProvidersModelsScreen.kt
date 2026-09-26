@@ -468,7 +468,7 @@ private fun ProviderModelRow(
   Column(Modifier.fillMaxWidth().padding(horizontal = ClawTheme.spacing.xs, vertical = ClawTheme.spacing.xxs)) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
       Text(model.name, modifier = Modifier.weight(1f), style = ClawTheme.type.body, color = ClawTheme.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      if (tagsDescribeDefaults && "default" in model.tags) ModelTag(nativeString("In use"), emphasized = true)
+      if (tagsDescribeDefaults && "default" in model.tags) ModelTag(nativeString("Gateway default"), emphasized = true)
       if (tagsDescribeDefaults && model.tags.any { it.startsWith("fallback#") }) ModelTag(nativeString("Fallback"))
       model.contextTokens?.let { ModelTag(formatContextTokens(it)) }
     }

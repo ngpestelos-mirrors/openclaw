@@ -25,7 +25,7 @@ OpenClaw Android is the officially released Google Play app. It connects to an O
 ## Providers and models
 
 Open **Settings → Providers and models** to expand a provider's configured models
-or manage its sign-in. **In use** and **Fallback** identify the Gateway's shared
+or manage its sign-in. **Gateway default** and **Fallback** identify the Gateway's shared
 default model and fallbacks, not every agent's overrides or active requests.
 Gateways that do not identify this shared tag scope omit those badges.
 Other configured models stay visible; **More models** expands the remaining
