@@ -35,8 +35,8 @@ type InboundDecisionParams = Parameters<typeof resolveIMessageInboundDecision>[0
 
 const cfg = {} as OpenClawConfig;
 
-beforeEach(() => {
-  installIMessageStateRuntimeForTest();
+beforeEach(async () => {
+  await installIMessageStateRuntimeForTest();
 });
 
 function createParams(

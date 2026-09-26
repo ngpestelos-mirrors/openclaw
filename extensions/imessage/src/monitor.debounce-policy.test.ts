@@ -30,7 +30,7 @@ vi.mock("./monitor/inbound-processing.js", async (importOriginal) => ({
 }));
 
 it("changes iMessage batching delay without replacing the attached RPC client", async () => {
-  installIMessageStateRuntimeForTest();
+  await installIMessageStateRuntimeForTest();
   const cfg: OpenClawConfig = {
     channels: {
       imessage: {
