@@ -26,6 +26,91 @@ import * as nodeSqlite from "./node-sqlite.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 
 describe("Gateway state ownership", () => {
+  it.skipIf(process.platform === "win32")(
+    "acquires Gateway ownership on healthy state storage when system tmp is exhausted",
+    async () => {
+      await withTempDir("openclaw-owner-tmp-pressure-", async (root) => {
+        const systemTmp = fs.realpathSync("/tmp");
+        const open = fs.openSync.bind(fs);
+        const pressure = vi.spyOn(fs, "openSync").mockImplementation((pathname, flags, mode) => {
+          if (
+            typeof pathname === "string" &&
+            path.dirname(path.dirname(pathname)) === systemTmp &&
+            path.basename(path.dirname(pathname)).startsWith("openclaw-state-owners") &&
+            typeof flags === "number" &&
+            (flags & fs.constants.O_CREAT) !== 0
+          ) {
+            throw Object.assign(new Error("No space left on device"), { code: "ENOSPC" });
+          }
+          return open(pathname, flags, mode);
+        });
+        let owner: Awaited<ReturnType<typeof acquireGatewayLock>> = null;
+        try {
+          owner = await acquireGatewayLock({
+            allowInTests: true,
+            env: { OPENCLAW_STATE_DIR: root },
+            timeoutMs: 0,
+          });
+          if (!owner) {
+            throw new Error("Expected Gateway ownership");
+          }
+          owner.assertCurrent();
+          expect(path.relative(fs.realpathSync(root), owner.lockPath)).not.toMatch(/^\.\./u);
+          expect(
+            tryAcquireGatewayStateOwner(path.join(root, "state", "openclaw.sqlite")),
+          ).toBeNull();
+        } finally {
+          await owner?.release();
+          pressure.mockRestore();
+        }
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32").each(["process", "schema"] as const)(
+    "recovers a removed empty parent before %s ownership without replaying protected work",
+    async (kind) => {
+      await withTempDir("openclaw-owner-parent-race-", async (root) => {
+        const stateDir = path.join(fs.realpathSync(root), "absent");
+        const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
+        const pathname = resolveGatewayStateOwnerPath(databasePath);
+        const open = fs.openSync.bind(fs);
+        let removed = false;
+        const admission = vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) => {
+          if (
+            file === pathname &&
+            typeof flags === "number" &&
+            (flags & fs.constants.O_CREAT) !== 0 &&
+            !removed
+          ) {
+            fs.rmdirSync(path.dirname(pathname));
+            removed = true;
+          }
+          return open(file, flags, mode);
+        });
+        let owner: ReturnType<typeof acquireGatewayStateOwner> | undefined;
+        try {
+          owner =
+            kind === "schema"
+              ? acquireStateDatabaseSchemaLease(databasePath)
+              : acquireGatewayStateOwner({ databasePath });
+          expect(removed).toBe(true);
+          const operation = vi.fn(() => assertStateDatabaseAccessAllowed(databasePath));
+          owner.run(operation);
+          expect(operation).toHaveBeenCalledOnce();
+          expect(tryAcquireGatewayStateOwner(databasePath)).toBeNull();
+        } finally {
+          admission.mockRestore();
+          owner?.release();
+        }
+        expect(fs.existsSync(pathname)).toBe(false);
+        if (kind === "schema") {
+          expect(fs.existsSync(stateDir)).toBe(false);
+        }
+      });
+    },
+  );
+
   it.each([
     "already held",
     "after native open",

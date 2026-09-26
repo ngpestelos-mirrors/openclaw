@@ -40,7 +40,6 @@ struct OpenClawNativeStateAdmission {
         }
         self.ownerURL = sandboxed ? nil : try Self.processOwnerURL(
             databaseURL: databaseURL,
-            runtimeDirectory: URL(fileURLWithPath: "/tmp", isDirectory: true),
             uid: getuid())
         #else
         // Sandboxed native profiles cannot share state with a Node maintenance process.
@@ -49,12 +48,17 @@ struct OpenClawNativeStateAdmission {
         try self.assertAvailable()
     }
 
-    static func processOwnerURL(databaseURL: URL, runtimeDirectory: URL, uid: uid_t) throws -> URL {
+    static func processOwnerURL(databaseURL: URL, uid: uid_t) throws -> URL {
         let canonicalDatabase = try self.canonicalExistingAncestorPath(databaseURL)
+        let databaseDirectory = URL(fileURLWithPath: canonicalDatabase).deletingLastPathComponent()
+        let stateRoot = databaseDirectory.lastPathComponent == "state"
+            ? databaseDirectory.deletingLastPathComponent()
+            : databaseDirectory
         let digest = SHA256.hash(data: Data(canonicalDatabase.utf8))
         let hash = digest.prefix(8).map { String(format: "%02x", $0) }.joined()
-        return try URL(fileURLWithPath: self.canonicalExistingAncestorPath(runtimeDirectory), isDirectory: true)
-            .appendingPathComponent("openclaw-state-owners-\(uid)", isDirectory: true)
+        return stateRoot
+            .appendingPathComponent("tmp", isDirectory: true)
+            .appendingPathComponent("openclaw-\(uid)", isDirectory: true)
             .appendingPathComponent("state.\(hash).lock", isDirectory: false)
     }
 

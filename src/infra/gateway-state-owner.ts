@@ -141,17 +141,23 @@ export function withStateDatabaseColdAdmission<T>(
   }
 }
 
-/** Startup and state removal must meet outside the state tree, independent of TMPDIR. */
+/** State cleanup preserves this owner until destructive work and native handles settle. */
 export function resolveGatewayStateOwnerPath(databasePath: string): string {
   const canonical = resolveIdentityPathViaExistingAncestorSync(databasePath);
-  const runtime =
-    process.platform === "win32"
-      ? path.join(os.homedir(), "AppData", "Local", "OpenClaw", "locks")
-      : "/tmp";
   const uid = process.getuid?.();
+  const directory =
+    process.platform === "win32"
+      ? path.join(
+          os.homedir(),
+          "AppData",
+          "Local",
+          "OpenClaw",
+          "locks",
+          uid === undefined ? "openclaw-state-owners" : `openclaw-state-owners-${uid}`,
+        )
+      : resolveGatewayLockDir(resolveOpenClawStateDirForDatabasePath(canonical));
   return path.join(
-    resolveIdentityPathViaExistingAncestorSync(runtime),
-    uid === undefined ? "openclaw-state-owners" : `openclaw-state-owners-${uid}`,
+    resolveIdentityPathViaExistingAncestorSync(directory),
     `state.${sha256HexPrefixCore(canonical, 16)}.lock`,
   );
 }
@@ -177,7 +183,14 @@ function ensureOwnerDirectory(
       }
       current = parent;
     }
-    created.push(...directories);
+    for (const entry of directories) {
+      const previous = created.findIndex((candidate) => candidate.path === entry.path);
+      if (previous < 0) {
+        created.push(entry);
+      } else {
+        created[previous] = entry;
+      }
+    }
   }
   const observed = fs.lstatSync(directory);
   const uid = process.getuid?.();
@@ -241,6 +254,7 @@ function acquireOwnerFile(
   busyTimeoutMs = 0,
   createdDirectories?: ProcessOwner["projectionDirectories"],
 ) {
+  const deadline = performance.now() + busyTimeoutMs;
   ensureOwnerDirectory(path.dirname(pathname), createdDirectories);
   const stale = ({ payload: value }: { payload: unknown }) => {
     return isLockOwnerDefinitelyStale({
@@ -266,28 +280,37 @@ function acquireOwnerFile(
       }
     }
   }
-  try {
-    return acquireFileLockSync(pathname, {
-      lockPath: pathname,
-      retry:
-        busyTimeoutMs > 0
-          ? { factor: 1.25, minTimeout: 10, maxTimeout: 25, randomize: false }
-          : { retries: 0 },
-      timeoutMs: busyTimeoutMs,
-      staleMs: Infinity,
-      staleRecovery: "remove-if-unchanged",
-      reentrantOwner: payload.ownerId,
-      payload: () => payload,
-      parsePayload: parseGatewayLockPayload,
-      shouldReclaim: stale,
-      shouldRemoveStaleLock: stale,
-    });
-  } catch (error) {
-    const code = extractErrorCode(error);
-    if (code === "file_lock_timeout" || code === "file_lock_stale") {
-      throw new GatewayStateOwnerContentionError(databasePath, error);
+  for (let retriedMissingParent = false; ;) {
+    try {
+      return acquireFileLockSync(pathname, {
+        lockPath: pathname,
+        retry:
+          busyTimeoutMs > 0
+            ? { factor: 1.25, minTimeout: 10, maxTimeout: 25, randomize: false }
+            : { retries: 0 },
+        timeoutMs: Math.max(0, Math.ceil(deadline - performance.now())),
+        staleMs: Infinity,
+        staleRecovery: "remove-if-unchanged",
+        reentrantOwner: payload.ownerId,
+        payload: () => payload,
+        parsePayload: parseGatewayLockPayload,
+        shouldReclaim: stale,
+        shouldRemoveStaleLock: stale,
+      });
+    } catch (error) {
+      const code = extractErrorCode(error);
+      if (code === "ENOENT" && !retriedMissingParent) {
+        // A finished reset may remove an empty parent before exclusive create.
+        // No lock or protected operation exists yet; keep the original wait budget.
+        retriedMissingParent = true;
+        ensureOwnerDirectory(path.dirname(pathname), createdDirectories);
+        continue;
+      }
+      if (code === "file_lock_timeout" || code === "file_lock_stale") {
+        throw new GatewayStateOwnerContentionError(databasePath, error);
+      }
+      throw error;
     }
-    throw error;
   }
 }
 
@@ -406,12 +429,14 @@ export function acquireStateDatabaseSchemaLease(
     stateOwnerKind: "schema" as const,
   };
   let lock: ReturnType<typeof acquireFileLockSync>;
+  const projectionDirectories: ProcessOwner["projectionDirectories"] = [];
   try {
     lock = acquireOwnerFile(
       databasePath,
       pathname,
       payload,
       owner ? 0 : (options.busyTimeoutMs ?? OPENCLAW_SQLITE_BUSY_TIMEOUT_MS),
+      projectionDirectories,
     );
   } catch (error) {
     if (error instanceof GatewayStateOwnerContentionError) {
@@ -436,7 +461,6 @@ export function acquireStateDatabaseSchemaLease(
       "gateway.state.lock",
     );
   let projection: ReturnType<typeof acquireFileLockSync>;
-  const projectionDirectories: ProcessOwner["projectionDirectories"] = [];
   try {
     // Published Gateways know this sidecar, not the external owner. Retain the
     // same fs-safe reference as the root until this accepted schema work settles.

@@ -8,9 +8,8 @@ struct OpenClawNativeStateAdmissionTests {
     @Test func `matches the Node process owner path`() throws {
         let url = try OpenClawNativeStateAdmission.processOwnerURL(
             databaseURL: URL(fileURLWithPath: "/openclaw-device-identity-contract/state/openclaw.sqlite"),
-            runtimeDirectory: URL(fileURLWithPath: "/openclaw-state-runtime"),
             uid: 501)
-        #expect(url.path == "/openclaw-state-runtime/openclaw-state-owners-501/state.e5c82e32e2531bdd.lock")
+        #expect(url.path == "/openclaw-device-identity-contract/tmp/openclaw-501/state.e5c82e32e2531bdd.lock")
     }
 
     @Test func `aliases and missing descendants use one physical owner key`() throws {
@@ -21,11 +20,9 @@ struct OpenClawNativeStateAdmissionTests {
             try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
             let direct = try OpenClawNativeStateAdmission.processOwnerURL(
                 databaseURL: real.appendingPathComponent("missing/openclaw.sqlite"),
-                runtimeDirectory: directory,
                 uid: getuid())
             let indirect = try OpenClawNativeStateAdmission.processOwnerURL(
                 databaseURL: alias.appendingPathComponent("missing/openclaw.sqlite"),
-                runtimeDirectory: directory,
                 uid: getuid())
             #expect(direct == indirect)
         }
@@ -37,11 +34,11 @@ struct OpenClawNativeStateAdmissionTests {
         deniedRole: String) throws
     {
         try self.withDirectory { directory in
-            let parent = directory.appendingPathComponent("not-created", isDirectory: true)
+            let stateRoot = directory.appendingPathComponent("not-created", isDirectory: true)
+            let parent = stateRoot.appendingPathComponent("state", isDirectory: true)
             let source = parent.appendingPathComponent("openclaw.sqlite")
             let ownerURL = try OpenClawNativeStateAdmission.processOwnerURL(
                 databaseURL: source,
-                runtimeDirectory: URL(fileURLWithPath: "/tmp", isDirectory: true),
                 uid: getuid())
             defer { try? FileManager.default.removeItem(at: ownerURL) }
             try self.writeOwner(ownerURL, role: deniedRole)

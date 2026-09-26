@@ -24,8 +24,9 @@ During startup or restart, the Gateway waits up to five minutes for another Open
 
 ### State and config locks
 
-- On Linux and macOS, the process owner lives at `/tmp/openclaw-state-owners-<uid>/state.<hash>.lock`. On Windows it lives beneath the user's `AppData/Local/OpenClaw/locks/openclaw-state-owners` directory. The hash identifies the canonical shared-state database path. `TMPDIR` does not change this namespace.
-- The owner stays outside the state directory so maintenance can remove or replace that directory while continuing to block new startup. Normal release removes the sidecar; no SQLite coordinator database accompanies it.
+- On Linux and macOS, the process owner lives at `$OPENCLAW_STATE_DIR/tmp/openclaw-<uid>/state.<hash>.lock`. It uses the selected state storage without requiring write access to its parent or depending on the system temporary directory. On Windows it lives beneath the user's `AppData/Local/OpenClaw/locks/openclaw-state-owners` directory. The hash identifies the canonical shared-state database path. `TMPDIR` does not change this namespace.
+- Destructive cleanup preserves the process owner and compatibility projection while removing state contents, so new startup remains blocked until native database resources and destructive operations settle. Normal release removes the sidecars; no SQLite coordinator database accompanies them.
+- Cleanup refuses redirected database or runtime-lock paths before deleting state: removing an internal symlink could select a new owner while the original files remain locked. Select the actual state root and real internal directories before retrying. An alias for the entire state root remains supported.
 - Ownership uses exclusive file creation and fs-safe's existing checked release and stale-recovery protocol. A dead process or a verified changed process start identity permits recovery. Age alone never revokes a live owner, and unreadable ownership remains a refusal.
 - Schema/bootstrap work borrows retained authority from a live local Gateway or maintenance owner. Without one, it briefly acquires the same process gate and historical projection, so a new CLI cannot migrate state beneath a supported older Gateway. Accepted work retains both until it settles, even after its root stops lending authority.
 - The compatibility projection is `$OPENCLAW_STATE_DIR/tmp/openclaw-<uid>/gateway.state.lock` (`openclaw` on platforms without a user ID). New runtimes do not create the historical per-config lock or any `.sqlite` lock companions. Discovery still reads historical config and state locks for supported older runtimes.
@@ -50,11 +51,11 @@ During startup or restart, the Gateway waits up to five minutes for another Open
   GatewayLockError("failed to bind gateway socket on ws://127.0.0.1:<port>: <cause>")
   ```
 
-On shutdown, the Gateway closes its server and settles owned work before releasing its process owner and compatibility projection. Offline maintenance closes admission, drains its database resources, and retains the external owner through state-tree removal and cleanup.
+On shutdown, the Gateway closes its server and settles owned work before releasing its process owner and compatibility projection. Offline maintenance closes admission and retains both sidecars through state, linked config/credential, and alias removal, then drains its remaining database resources before releasing ownership.
 
 On Unix, destructive cleanup retains SQLite's native exclusion until the database is removed. On Windows, SQLite's open file handles prevent unlink; the cleanup command closes its own probe before removal. Native cleanup must finish before process ownership is released.
 
-Normal upgrades preserve mutual exclusion with older state-local-lock runtimes through the compatibility projection and historical-owner checks. Destructive cleanup retains the projection through state, linked config/credential, and alias removal. After releasing it, cleanup removes only empty directories, preserving a new owner’s files if another process starts. The managed update path stops the old service before mutation. Binaries predating state-local ownership retain their existing supported-upgrade stop checks.
+Normal upgrades preserve mutual exclusion with older state-local-lock runtimes through the compatibility projection and historical-owner checks. After releasing both sidecars, destructive cleanup removes only empty directories whose filesystem identities still match the directories it owned. A replacement directory or a new owner's files remain intact, and cleanup reports an interrupted removal. The managed update path stops the old service before mutation. Binaries predating state-local ownership retain their existing supported-upgrade stop checks.
 
 ## Operational notes
 
