@@ -455,6 +455,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
       packageOwner: URL;
     },
     lifetime: ReturnType<typeof createFixtureLifetime>,
+    signal: AbortSignal,
     releasedBindingPath?: string,
   ): Promise<proof.NativeScheduledTaskProof | undefined> {
     const startedAt = performance.now();
@@ -574,6 +575,8 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
           env,
           rootDir,
           runtimeModuleUrl: moduleUrls.startupFallback,
+          lifetime,
+          signal,
         });
         const service = resolveGatewayService();
         const readRuntime = () => service.readRuntime(env);
@@ -982,7 +985,7 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
     );
   }
 
-  it("isolates and completes the native Scheduled Task lifecycle", () => {
+  it("isolates and completes the native Scheduled Task lifecycle", ({ signal }) => {
     if (!nativeEntrypoints) {
       throw new Error("Native Scheduled Task integration requires compiled subprocess entrypoints");
     }
@@ -1005,10 +1008,10 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
     const lifetime = createFixtureLifetime(generationOwner.root);
     nativeLifetime = lifetime;
     return lifetime.run(async () => {
-      const current = await runNativeLifecycle(moduleUrls, lifetime);
+      const current = await runNativeLifecycle(moduleUrls, lifetime, signal);
       const binding = process.env.CI_WINDOWS_SCHTASKS_RELEASED_BINDING?.trim();
       const released = binding
-        ? await runNativeLifecycle(moduleUrls, lifetime, binding)
+        ? await runNativeLifecycle(moduleUrls, lifetime, signal, binding)
         : undefined;
       // Publish one result only after every selected lifecycle and its cleanup succeeds.
       if (current) {
