@@ -13,6 +13,7 @@ export type ManagedServiceBoundaryOptions = ManagedServiceManagerBoundaryOptions
   validationResult?: "failed" | "skipped";
   validationClockAdvanceMs?: number;
   cancelDuringValidation?: boolean;
+  systemScope?: true;
   cancelAtActivation?: "requester" | "inspection";
   runnerFallback?: boolean;
   selectedDriver?: "2026.9.3";
