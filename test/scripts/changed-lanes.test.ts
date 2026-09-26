@@ -3070,6 +3070,13 @@ describe("scripts/changed-lanes", () => {
       writeRepoFile(dir, file, "// old\nexport const x = 1;\n");
     }
     symlinkSync("kept.ts", path.join(dir, "was-link.ts"));
+    const invalidUtf8 = (byte: number) =>
+      Buffer.concat([
+        Buffer.from("// "),
+        Buffer.from([byte]),
+        Buffer.from("\nexport const x = 1;\n"),
+      ]);
+    writeFileSync(path.join(dir, "bytes.ts"), invalidUtf8(0xff));
     commitAll(dir, "base");
     const base = git(dir, ["rev-parse", "HEAD"]);
     writeRepoFile(dir, "kept.ts", "// branch\nexport const x = 1;\n");
@@ -3081,6 +3088,7 @@ describe("scripts/changed-lanes", () => {
     symlinkSync("kept.ts", path.join(dir, "linked.ts"));
     unlinkSync(path.join(dir, "was-link.ts"));
     writeRepoFile(dir, "was-link.ts", "// old\nexport const x = 1;\n");
+    writeFileSync(path.join(dir, "bytes.ts"), invalidUtf8(0xfe));
     writeRepoFile(dir, "added.ts", "// old\nexport const x = 1;\n");
     const paths = listChangedPathsFromGit({ base, cwd: dir });
     expect(findTypecheckInertPaths({ paths, base, cwd: dir })).toEqual(["kept.ts"]);

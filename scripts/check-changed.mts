@@ -1454,7 +1454,7 @@ function printPlan(
     const inert = result.paths.filter((file) => !retained.has(file));
     if (inert.length) {
       console.error(
-        `[check:changed] comment/whitespace-only TypeScript changes; typecheck lanes skip: ${inert.slice(0, 8).join(", ")}${inert.length > 8 ? ` (+${inert.length - 8} more)` : ""}`,
+        `${prefix} comment/whitespace-only TypeScript changes; typecheck lanes skip: ${inert.slice(0, 8).join(", ")}${inert.length > 8 ? ` (+${inert.length - 8} more)` : ""}`,
       );
     }
   }

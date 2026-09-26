@@ -91,27 +91,28 @@ export function findTypecheckInertPaths({
   const git = (args: string[]) =>
     execFileSync("git", args, {
       cwd,
-      encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 64 * 1024 * 1024,
     });
+  // Lossy decoding would map different invalid bytes to the same replacement text.
+  const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   try {
     const resolvedBase = resolveMergeHeadDiffBase({ base, head: "HEAD", cwd });
-    const mergeBase = git(["merge-base", resolvedBase, "HEAD"]).trim();
+    const mergeBase = git(["merge-base", resolvedBase, "HEAD"]).toString().trim();
     const changes: SourceChange[] = [];
     for (const file of paths.filter((candidate) => TYPESCRIPT_PATH.test(candidate))) {
       try {
         if (!lstatSync(path.resolve(cwd, file)).isFile()) {
           continue;
         }
-        const entry = git(["ls-tree", "-z", mergeBase, "--", `:(literal)${file}`]);
+        const entry = git(["ls-tree", "-z", mergeBase, "--", `:(literal)${file}`]).toString();
         if (!/^100(?:644|755) blob [0-9a-f]+\t/u.test(entry)) {
           continue;
         }
         changes.push({
           path: file,
-          before: git(["show", `${mergeBase}:${file}`]),
-          after: readFileSync(path.resolve(cwd, file), "utf8"),
+          before: utf8.decode(git(["show", `${mergeBase}:${file}`])),
+          after: utf8.decode(readFileSync(path.resolve(cwd, file))),
         });
       } catch {
         // Missing/deleted paths and unreadable blobs retain their normal lanes.
