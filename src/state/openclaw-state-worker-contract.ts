@@ -66,6 +66,7 @@ import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-w
 import type { PluginBindingApprovalEntry } from "../plugins/conversation-binding-state.types.js";
 import type { PluginMetadataStateSelector } from "../plugins/installed-plugin-index-row.js";
 import type { HostedCatalogSnapshotWorkerOperations } from "../plugins/official-external-plugin-catalog-snapshot-store.worker-contract.js";
+import type { PluginSourceAdmissionPublication } from "../plugins/plugin-source-admission.types.js";
 import type { ProjectRegistryWorkerOperations } from "../projects/project-registry.worker-contract.js";
 import type { SecretStoreExpiryCutoffs } from "../secrets/store/secret-store-expiry.kernel.js";
 import type { SessionStateWorkerOperations } from "../sessions/session-state-events.worker.js";
@@ -240,6 +241,10 @@ export type OpenClawStateWorkerOperations = WorktreeRetirementOperations &
     "plugins.metadata.read": {
       input: { selector: PluginMetadataStateSelector; artifactPreservingReadOnly?: boolean };
       output: { value_json: string } | undefined;
+    };
+    "plugins.metadata.sourceAdmission.publish": {
+      input: PluginSourceAdmissionPublication;
+      output: boolean;
     };
     "plugins.deferredMigrations.read": {
       input: { artifactPreservingReadOnly: boolean };
