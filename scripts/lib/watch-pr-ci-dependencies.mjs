@@ -3,9 +3,14 @@ import { realpathSync, statSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveConfiguredModulesDir } from "./tsx-cli-shim.mjs";
 
 export function watchPrCiDependencyOptions(checkout) {
-  if (statSync(join(checkout, "node_modules"), { throwIfNoEntry: false })?.isDirectory()) {
+  // A configured pnpm modules directory keeps the shim's existing link contract.
+  if (
+    statSync(join(checkout, "node_modules"), { throwIfNoEntry: false })?.isDirectory() ||
+    resolveConfiguredModulesDir(checkout)
+  ) {
     return {};
   }
   let root = checkout;
@@ -43,7 +48,7 @@ export function watchPrCiDependencyOptions(checkout) {
   hook.searchParams.set("root", root);
   console.error(`[watch-pr-ci] resolving missing packages from scripts/pr tooling root ${root}`);
   // A node_modules link would change scripts/pr's wrapper selection in this checkout.
-  return { execArgv: ["--import", hook.href], linkNodeModules: false };
+  return { execArgv: ["--import", hook.href] };
 }
 
 const root = new URL(import.meta.url).searchParams.get("root");

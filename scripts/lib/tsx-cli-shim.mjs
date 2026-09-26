@@ -22,7 +22,7 @@ export function resolveForwardedNodeCompilerArgs(execArgv = process.execArgv) {
   return execArgv.filter((arg) => FORWARDED_COMPILER_FLAGS.has(arg));
 }
 
-function resolveConfiguredModulesDir(checkoutRoot) {
+export function resolveConfiguredModulesDir(checkoutRoot) {
   const modulesDir =
     (process.env.PNPM_CONFIG_MODULES_DIR ?? process.env.pnpm_config_modules_dir) ||
     process.env.npm_config_modules_dir;
@@ -128,7 +128,7 @@ async function runCliShimInner(moduleUrl, options, nodeArgs) {
 
   try {
     // Native entrypoints need the explicit dependency link without loading TSX.
-    if (nodeArgs.length === 0 && options.linkNodeModules !== false) {
+    if (nodeArgs.length === 0) {
       const modulesDir = resolveConfiguredModulesDir(SHIM_CHECKOUT_ROOT);
       if (modulesDir) {
         ensureRepoNodeModulesLink(modulesDir, { cwd: SHIM_CHECKOUT_ROOT });

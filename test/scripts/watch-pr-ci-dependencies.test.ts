@@ -26,7 +26,7 @@ function writePackage(root: string, name: string, value: string) {
   writeFileSync(join(directory, "index.mjs"), `export default ${JSON.stringify(value)};\n`);
 }
 
-it.each(["env", "config", "canonical", "installed", "missing"])(
+it.each(["env", "config", "canonical", "installed", "configured", "missing"])(
   "selects the %s dependency context without changing the checkout",
   (source) => {
     const root = tempDirs.make("openclaw-watch-root-");
@@ -63,8 +63,12 @@ it.each(["env", "config", "canonical", "installed", "missing"])(
       source === "env" ? "alias" : source === "missing" || source === "installed" ? root : "",
     );
     try {
-      if (source === "installed") {
-        mkdirSync(join(checkout, "node_modules"));
+      if (source === "installed" || source === "configured") {
+        if (source === "installed") {
+          mkdirSync(join(checkout, "node_modules"));
+        } else {
+          vi.stubEnv("PNPM_CONFIG_MODULES_DIR", join(tooling, "node_modules"));
+        }
         expect(watchPrCiDependencyOptions(checkout)).toEqual({});
         expect(notice).not.toHaveBeenCalled();
       } else if (source === "missing") {
@@ -125,17 +129,25 @@ await assert.rejects(import("local-pkg/private"), { code: "ERR_PACKAGE_PATH_NOT_
 console.log("fallback and local resolution OK");
 `,
   );
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    NODE_OPTIONS: "",
+    OPENCLAW_PR_TOOLING_ROOT: tooling,
+    OPENCLAW_PR_LOCK_NOTIFY_FD: "",
+  };
+  // A configured modules directory selects the shim's link path instead of the fallback.
+  for (const name of [
+    "PNPM_CONFIG_MODULES_DIR",
+    "pnpm_config_modules_dir",
+    "npm_config_modules_dir",
+  ]) {
+    delete env[name];
+  }
   const result = spawnSync(process.execPath, [join(checkout, "scripts/watch-pr-ci.mjs")], {
     cwd: root,
     encoding: "utf8",
     timeout: 10_000,
-    env: {
-      ...process.env,
-      NODE_OPTIONS: "",
-      OPENCLAW_PR_TOOLING_ROOT: tooling,
-      OPENCLAW_PR_LOCK_NOTIFY_FD: "",
-      PNPM_CONFIG_MODULES_DIR: join(tooling, "node_modules"),
-    },
+    env,
   });
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toBe("fallback and local resolution OK\n");
