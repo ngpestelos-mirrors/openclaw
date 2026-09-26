@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Result } from "@openclaw/normalization-core/result";
 import type { SessionTranscriptInitializationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
@@ -326,6 +327,7 @@ function openAgentDatabaseBackend(
   let entryPatch:
     | typeof import("../config/sessions/session-accessor.sqlite-entry-mutation.js")
     | undefined;
+  let patchWorker: typeof import("../config/sessions/session-entry-patch.worker.js") | undefined;
   let trajectory: typeof import("../trajectory/runtime-store.sqlite.js") | undefined;
   const domain = createAgentDatabaseDomainOwner({
     databasePath: input.databasePath,
@@ -356,39 +358,25 @@ function openAgentDatabaseBackend(
       openWriter();
       return undefined;
     }
+    if (command.type === "database.walMaintenance") {
+      return (
+        openWriter().walMaintenance.maintainPeriodic?.(command.input, admit) ?? {
+          reclaimedPages: 0,
+        }
+      );
+    }
     if (command.type === "session.entry.read" && entryReader) {
       return entryReader.readSessionEntryRow(openWriter(), command.input.sessionKey)?.entry;
     }
     if (command.type === "session.entry.patchSnapshot" && entryPatch) {
       return entryPatch.readSessionEntryPatchSnapshot(openWriter(), command.input);
     }
-    if (command.type === "session.entry.patch" && entryPatch && replacements) {
-      const opened = openWriter();
-      const patch = entryPatch.applySessionEntryPatchInDatabase;
-      const preparePublication = replacements.prepareSessionEntryReplacementPublication;
-      return runOpenClawAgentWriteTransaction(
-        (current) => {
-          if (current.db !== opened.db) {
-            throw new Error("Session patch lost its canonical database owner");
-          }
-          admit("transaction");
-          const result = patch(current, command.input, () => admit("transaction"));
-          const publication = result.identity
-            ? preparePublication({
-                ...result.identity,
-                pendingArchiveRecovery: false,
-                maintenancePlans: [],
-                membershipInvalidatedKeys: [],
-              })
-            : undefined;
-          if (publication) {
-            deferSqliteWorkerCommitReceipt(current.db, publication);
-          }
-          admit("commit", publication, result.entry);
-          return { entry: result.entry, publication };
-        },
+    if (command.type === "session.entry.patch" && patchWorker) {
+      return patchWorker.applySessionEntryPatchInWorker(
+        openWriter(),
         options,
-        { operationLabel: command.input.operationLabel },
+        command.input,
+        admit,
       );
     }
     if (command.type === "trajectory.events.append" && trajectory) {
@@ -480,7 +468,29 @@ function openAgentDatabaseBackend(
             throw new Error("Session replacement lost its canonical database owner");
           }
           admit("transaction");
-          const result = replace(current, command.input, () => {});
+          const result = replace(current, command.input, () => {
+            const initialization = command.input.initializeTranscript;
+            if (!initialization) {
+              return;
+            }
+            try {
+              if (!transcript) {
+                throw new Error("Session transcript initialization was not prepared");
+              }
+              const assertIdentity: typeof import("../config/sessions/session-accessor.sqlite-scope.js").assertSqliteTranscriptWriteIdentity =
+                transcript.assertIdentity;
+              assertIdentity(initialization);
+              transcript.initialize(
+                current,
+                { agentId: input.agentId, path: input.databasePath, ...initialization },
+                initialization.cwd,
+              );
+            } catch (error) {
+              throw Object.assign(new Error(formatErrorMessage(error), { cause: error }), {
+                name: "SessionTranscriptInitializationError",
+              });
+            }
+          });
           const publication = preparePublication(result);
           deferSqliteWorkerCommitReceipt(current.db, publication);
           admit("commit", publication);
@@ -531,10 +541,10 @@ function openAgentDatabaseBackend(
       ) {
         return Promise.all([
           import("../config/sessions/session-accessor.sqlite-entry-mutation.js"),
-          import("../config/sessions/session-accessor.sqlite-replacement-state.js"),
-        ]).then(([patch, replacement]) => {
+          import("../config/sessions/session-entry-patch.worker.js"),
+        ]).then(([patch, worker]) => {
           entryPatch = patch;
-          replacements = replacement;
+          patchWorker = worker;
         });
       }
       if (command.type === "session.entry.read") {
@@ -568,11 +578,18 @@ function openAgentDatabaseBackend(
           },
         );
       }
-      if (command.type === "session.transcript.initialize") {
+      if (
+        command.type === "session.transcript.initialize" ||
+        (command.type === "session.entries.replace" && command.input.initializeTranscript)
+      ) {
         return Promise.all([
           import("../config/sessions/session-accessor.sqlite-transcript-header.js"),
           import("../config/sessions/session-accessor.sqlite-scope.js"),
-        ]).then(([header, scope]) => {
+          command.type === "session.entries.replace"
+            ? import("../config/sessions/session-accessor.sqlite-replacement-state.js")
+            : undefined,
+        ]).then(([header, scope, replacement]) => {
+          replacements = replacement ?? replacements;
           transcript = {
             initialize: header.ensureTranscriptHeader,
             assertIdentity: scope.assertSqliteTranscriptWriteIdentity,

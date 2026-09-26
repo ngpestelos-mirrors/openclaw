@@ -11,7 +11,10 @@ import {
 import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
-import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-contract.js";
+import type {
+  AgentDatabaseOperations,
+  AgentDatabaseRequestExecutionSource,
+} from "../../state/openclaw-agent-execution-contract.js";
 import {
   captureOpenClawAgentDatabaseExecution,
   type OpenClawAgentDatabaseExecution,
@@ -24,7 +27,6 @@ import {
 } from "./session-accessor.sqlite-entry-cache.js";
 import { publishCommittedSessionIdentity } from "./session-accessor.sqlite-identity.js";
 import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-state.js";
-import type { SessionEntryReplacementCommit } from "./session-accessor.sqlite-replacement-types.js";
 import type { SessionEntryCommitContext } from "./session-accessor.types.js";
 
 type ReplacementDatabaseOptions = OpenClawAgentDatabaseOptions & { path: string };
@@ -307,7 +309,7 @@ export function createSessionEntryWorkerCommitPublication(
 export async function commitSessionEntryReplacementsInWorker(
   options: ReplacementDatabaseOptions,
   databaseIdentity: string,
-  input: SessionEntryReplacementCommit,
+  input: AgentDatabaseOperations["session.entries.replace"]["input"],
   assertCurrent: () => void,
   lifecycle: {
     identityAgentId: string;
