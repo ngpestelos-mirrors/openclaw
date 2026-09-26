@@ -128,7 +128,7 @@ async function runCliShimInner(moduleUrl, options, nodeArgs) {
 
   try {
     // Native entrypoints need the explicit dependency link without loading TSX.
-    if (nodeArgs.length === 0) {
+    if (nodeArgs.length === 0 && options.linkNodeModules !== false) {
       const modulesDir = resolveConfiguredModulesDir(SHIM_CHECKOUT_ROOT);
       if (modulesDir) {
         ensureRepoNodeModulesLink(modulesDir, { cwd: SHIM_CHECKOUT_ROOT });
