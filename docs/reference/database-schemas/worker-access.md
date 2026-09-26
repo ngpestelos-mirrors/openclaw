@@ -174,6 +174,13 @@ pass until a newer completed checkpoint. Exact lifecycle removal and logical
 maintenance planning limit reference results to the generations they might
 delete. No new cache, index, schema, retention policy, or update step is required.
 
+TUI remembered-session reads and retired-pointer scans use the shared-state
+read worker; writes and per-pointer compare-and-delete transactions use the
+shared-state writer. Normal terminal exit closes persistence admission and joins
+accepted writes. A newer conversation choice or reset invalidates a pending
+remembered-session restore. The existing scope keys, heartbeat filtering,
+SQLite rows, missing-store behavior, and update behavior are unchanged.
+
 ## Migrate a caller
 
 1. Trace the registered request, event, or timer through the store owner. Check
