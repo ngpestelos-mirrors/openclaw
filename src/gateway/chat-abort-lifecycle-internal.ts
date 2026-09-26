@@ -1,3 +1,41 @@
+import { emitAgentEvent } from "../infra/agent-events.js";
+import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
+
+/** Synchronous dispatch lets listeners adopt terminal persistence before abort cleanup. */
+export function emitChatAbortLifecycleEvent(params: {
+  runId: string;
+  sessionKey: string;
+  active: ChatAbortControllerEntry;
+  stopReason?: string;
+}): void {
+  const { runId, sessionKey, active, stopReason } = params;
+  emitAgentEvent({
+    runId,
+    ...(active.lifecycleGeneration ? { lifecycleGeneration: active.lifecycleGeneration } : {}),
+    sessionKey,
+    sessionId: active.sessionId,
+    agentId: active.agentId,
+    stream: "lifecycle",
+    data: {
+      phase: "end",
+      status: "cancelled",
+      aborted: true,
+      stopReason,
+      ...(active.toolErrorSummary ? { toolErrorSummary: active.toolErrorSummary } : {}),
+      // Pre-execution admission time is not an execution start.
+      startedAt: active.executionStarted === false ? undefined : active.startedAtMs,
+      ...(active.executionStarted === false
+        ? {
+            executionStarted: false,
+            providerStarted: false,
+            ...(stopReason === "timeout" ? { timeoutPhase: "queue" } : {}),
+          }
+        : {}),
+      endedAt: Date.now(),
+    },
+  });
+}
+
 const terminalPersistenceErrorByEntry = new WeakMap<object, unknown>();
 export type ChatAbortTerminalDispatch = {
   settled: Promise<void>;

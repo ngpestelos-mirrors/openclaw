@@ -47,6 +47,7 @@ type LifecycleEventLike = Pick<AgentEventPayload, "ts" | "sessionId"> & {
     aborted?: unknown;
     stopReason?: unknown;
     error?: unknown;
+    executionStarted?: unknown;
     livenessState?: unknown;
     timeoutPhase?: unknown;
     providerStarted?: unknown;
@@ -227,6 +228,11 @@ function derivePersistedSessionLifecyclePatch(params: {
   entry?: Partial<PersistedLifecycleSessionShape> | null;
   event: LifecycleEventLike;
 }): Partial<PersistedLifecycleSessionShape> {
+  const phase = resolveLifecyclePhase(params.event);
+  // Queued request settlement cannot end the turn that owns this session.
+  if ((phase === "end" || phase === "error") && params.event.data?.executionStarted === false) {
+    return {};
+  }
   const snapshot = deriveGatewaySessionLifecycleSnapshot({
     session: params.entry
       ? {
@@ -252,7 +258,6 @@ function derivePersistedSessionLifecyclePatch(params: {
   if (projection.action === "suppress") {
     return {};
   }
-  const phase = resolveLifecyclePhase(params.event);
   const runId = normalizeLifecycleRunId(params.event.runId);
   const clientRunId = normalizeLifecycleRunId(params.event.clientRunId) ?? runId;
   // Run ownership follows the durable running projection. Terminal settlement

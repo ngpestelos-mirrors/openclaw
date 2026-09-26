@@ -13,17 +13,16 @@ import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js"
 import { isAbortRequestText } from "../auto-reply/reply/abort-primitives.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  emitAgentEvent,
-  getAgentEventLifecycleGeneration,
-  type AgentEventPayload,
-} from "../infra/agent-events.js";
+import { getAgentEventLifecycleGeneration, type AgentEventPayload } from "../infra/agent-events.js";
 import {
   releaseAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import { jsonUtf8Bytes } from "../infra/json-utf8-bytes.js";
-import { notifyChatAbortControllerRemoved } from "./chat-abort-lifecycle-internal.js";
+import {
+  emitChatAbortLifecycleEvent,
+  notifyChatAbortControllerRemoved,
+} from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
 import { resolveChatRunOwnerAgentId } from "./chat-run-owner.js";
@@ -686,24 +685,7 @@ export function abortChatRunById(
       liveTextGroup,
     });
   }
-  emitAgentEvent({
-    runId,
-    ...(active.lifecycleGeneration ? { lifecycleGeneration: active.lifecycleGeneration } : {}),
-    sessionKey,
-    sessionId: active.sessionId,
-    agentId: active.agentId,
-    stream: "lifecycle",
-    data: {
-      phase: "end",
-      status: "cancelled",
-      aborted: true,
-      stopReason,
-      ...(active.toolErrorSummary ? { toolErrorSummary: active.toolErrorSummary } : {}),
-      // Pre-execution admission time is not an execution start.
-      startedAt: active.executionStarted === false ? undefined : active.startedAtMs,
-      endedAt: Date.now(),
-    },
-  });
+  emitChatAbortLifecycleEvent({ runId, sessionKey, active, stopReason });
   // Gateway listeners synchronously stamp the terminal observation. Keep the
   // entry as suspension-visible ownership until its persistence write settles.
   if (
