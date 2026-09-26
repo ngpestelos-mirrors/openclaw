@@ -74,6 +74,7 @@ function resolveAgentRuntimePluginRegistryLoad(
 ): PluginLoadOptions {
   const loadOptions: PluginLoadOptions = {
     config: params.config,
+    metadataSnapshot: params.metadataSnapshot,
     activationSourceConfig: params.config && projectConfigOntoRuntimeSourceSnapshot(params.config),
     env: params.env,
     workspaceDir:
@@ -135,6 +136,7 @@ function resolveAgentRuntimePluginRegistryLoad(
     config: plan.config,
     activationSourceConfig,
     workspaceDir,
+    metadataSnapshot,
     discovery: metadataSnapshot.discovery,
     installRecords: extractPluginInstallRecordsFromInstalledPluginIndex(metadataSnapshot.index),
     manifestRegistry: metadataSnapshot.manifestRegistry,

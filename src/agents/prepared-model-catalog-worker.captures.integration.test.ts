@@ -6,6 +6,11 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createGatewayAgentModelCatalogProjector } from "../gateway/server-methods/models-list-result.js";
 import { sweepPluginSourceCaptureDirectories } from "../plugins/plugin-source-capture-directory.js";
+import { resolvePluginRuntimeLoadContext } from "../plugins/runtime/load-context.resolve.js";
+import {
+  loadAuthProfileStoreWithoutExternalProfiles,
+  saveAuthProfileStore,
+} from "./auth-profiles/store-runtime.js";
 import { getPreparedModelCatalogWorkerPoolSnapshot } from "./prepared-model-catalog-worker.js";
 import {
   EXTERNAL_AUTH_PROFILE_ID,
@@ -147,6 +152,163 @@ module.exports = { id: ${JSON.stringify(harnessId)}, register(api) {
       ),
     ).toBe(false);
     expect(snapshot.isCurrent()).toBe(true);
+  });
+
+  it("binds provider-worker load facts without probing an unrelated external setup entry", async () => {
+    const setupId = "catalog-setup-only";
+    const addedId = "catalog-request-provider";
+    let observations = "";
+    const fixture = await createFleetFixture(
+      (seed) => {
+        observations = path.join(seed.root, "activation-observations.jsonl");
+        fs.writeFileSync(observations, "");
+        const observe = (event: string) =>
+          `require("node:fs").appendFileSync(${JSON.stringify(observations)}, JSON.stringify({ event: ${JSON.stringify(event)}, threadId: require("node:worker_threads").threadId, filename: __filename }) + "\\n");`;
+        const setupDir = path.join(seed.root, "setup-plugin");
+        fs.mkdirSync(setupDir);
+        fs.writeFileSync(
+          path.join(setupDir, "package.json"),
+          JSON.stringify({
+            name: setupId,
+            version: "1.0.0",
+            type: "commonjs",
+            openclaw: { extensions: ["./index.cjs"], setupEntry: "./setup-api.cjs" },
+          }),
+        );
+        fs.writeFileSync(
+          path.join(setupDir, "openclaw.plugin.json"),
+          JSON.stringify({
+            id: setupId,
+            setup: { requiresRuntime: true },
+            configSchema: {
+              type: "object",
+              properties: { configured: { type: "boolean" } },
+              additionalProperties: false,
+            },
+          }),
+        );
+        fs.writeFileSync(
+          path.join(setupDir, "index.cjs"),
+          `${observe("parent-runtime")} module.exports = { id: ${JSON.stringify(setupId)}, register() {} };`,
+        );
+        fs.writeFileSync(
+          path.join(setupDir, "setup-api.cjs"),
+          `${observe("setup-import")} module.exports = { id: ${JSON.stringify(setupId)}, register(api) {
+          api.registerAutoEnableProbe(({ config }) => { ${observe("setup-probe")} return config.acp?.enabled ? "fixture setup configured" : null; });
+        } };`,
+        );
+        seed.config.plugins.load.paths.push(setupDir);
+        Object.assign(seed.config.plugins.entries, {
+          [setupId]: { enabled: true, config: { configured: true } },
+          [addedId]: { enabled: true },
+        });
+        // An open authored policy becomes a provider-only allowlist in the worker plan.
+        seed.config.plugins.allow.length = 0;
+        const providerFile = path.join(seed.root, "plugin", "index.cjs");
+        fs.writeFileSync(
+          providerFile,
+          observe("legacy-runtime") + fs.readFileSync(providerFile, "utf8"),
+        );
+        const bundled = path.join(seed.root, "bundled");
+        const addedDir = path.join(bundled, addedId);
+        fs.mkdirSync(addedDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(addedDir, "package.json"),
+          JSON.stringify({
+            name: addedId,
+            version: "1.0.0",
+            type: "commonjs",
+            openclaw: { extensions: ["./index.cjs"] },
+          }),
+        );
+        fs.writeFileSync(
+          path.join(addedDir, "openclaw.plugin.json"),
+          JSON.stringify({
+            id: addedId,
+            providers: [addedId],
+            activation: { onStartup: false },
+            enabledByDefault: true,
+            modelCatalog: { discovery: { [addedId]: "runtime" } },
+            configSchema: { type: "object", additionalProperties: false },
+          }),
+        );
+        fs.writeFileSync(
+          path.join(addedDir, "index.cjs"),
+          `${observe("added-runtime")}
+        module.exports = { id: ${JSON.stringify(addedId)}, register(api) {
+          api.registerProvider({ id: ${JSON.stringify(addedId)}, label: "Requested provider", auth: [],
+            catalog: { run() { ${observe("added-catalog")} return { provider: { api: "openai-completions", baseUrl: "https://request.example.test/v1",
+              models: [{ id: "added-model", name: "Added model" }] } }; } },
+          });
+        } };`,
+        );
+        const agentDir = path.join(seed.env.OPENCLAW_STATE_DIR!, "agents", "fleet-a", "agent");
+        const store = loadAuthProfileStoreWithoutExternalProfiles(agentDir);
+        saveAuthProfileStore(
+          {
+            ...store,
+            profiles: {
+              ...store.profiles,
+              [addedId + ":default"]: {
+                type: "api_key",
+                provider: addedId,
+                key: "synthetic-request-provider-key",
+              },
+            },
+          },
+          agentDir,
+        );
+        vi.stubEnv("OPENCLAW_BUNDLED_PLUGINS_DIR", bundled);
+        vi.stubEnv("OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR", "1");
+        vi.stubEnv("OPENCLAW_DISABLE_BUNDLED_PLUGINS", undefined);
+      },
+      true,
+      { agentCount: 1 },
+    );
+    const snapshot = fixture.snapshots[0]!;
+    expect(snapshot.pluginRegistry?.plugins).toContainEqual(
+      expect.objectContaining({ id: setupId, status: "loaded" }),
+    );
+    const catalog = await loadCompletedFullCatalog(snapshot);
+    expect(catalog.entries).toContainEqual(
+      expect.objectContaining({ provider: PROVIDER_ID, id: "plugin-generation-v1" }),
+    );
+    const events = fs
+      .readFileSync(observations, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event: string; threadId: number; filename: string });
+    console.info("Worker activation ownership", JSON.stringify(events));
+    const workerEvents = events.filter((event) => event.threadId !== threadId);
+    expect(workerEvents.filter(({ event }) => event.startsWith("setup-"))).toEqual([]);
+    expect(catalog.entries).toContainEqual(
+      expect.objectContaining({ provider: addedId, id: "added-model" }),
+    );
+    expect(workerEvents.map(({ event }) => event)).toEqual([
+      "legacy-runtime",
+      "legacy-runtime",
+      "added-runtime",
+      "added-catalog",
+    ]);
+    // Real setup ownership still probes and repairs an enabled entry missing from an allowlist.
+    const required = resolvePluginRuntimeLoadContext({
+      config: {
+        ...fixture.config,
+        acp: { enabled: true },
+        plugins: { ...fixture.config.plugins, allow: [PROVIDER_ID] },
+      },
+      env: process.env,
+      workspaceDir: fixture.workspaceDir,
+      metadataSnapshot: snapshot.metadataSnapshot,
+    });
+    expect(required.config.plugins?.allow).toContain(setupId);
+    expect(required.autoEnabledReasons[setupId]).toContain("fixture setup configured");
+    expect(snapshot.isCurrent()).toBe(true);
+    const source = workerEvents[0]!.filename;
+    const captureRoot = source.slice(0, source.indexOf(`${path.sep}openclaw-plugin-build-`));
+    await closePreparedModelRuntimeSnapshots();
+    expect(snapshot.isCurrent()).toBe(false);
+    expect(fs.existsSync(captureRoot)).toBe(false);
   });
 
   it("reuses one Gateway catalog worker and source graph across agent publications", async () => {
