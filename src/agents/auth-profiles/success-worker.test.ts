@@ -19,7 +19,10 @@ import { AUTH_STORE_VERSION } from "./constants.js";
 import * as publication from "./inline-usage-publication.js";
 import * as usageReader from "./inline-usage-reader.js";
 import { persistInlineAuthFailure } from "./inline-usage.js";
-import { noteCommittedSharedAuthStoreOwnership } from "./path-resolve.js";
+import {
+  noteCommittedSharedAuthStoreOwnership,
+  resolveSharedAuthStorePath,
+} from "./path-resolve.js";
 import { loadPersistedAuthProfileStore } from "./persisted.js";
 import { withAuthProfileTestState } from "./profile-mutations.test-support.js";
 import {
@@ -35,10 +38,12 @@ import {
   setRuntimeAuthProfileStoreSnapshot,
 } from "./runtime-snapshots.js";
 import { SHARED_AUTH_STORE_STATE_KEY } from "./sqlite-json.js";
+import * as sharedRows from "./sqlite-read.js";
 import { resolveAuthProfileDatabasePath } from "./sqlite.js";
 import { saveAuthProfileStore, loadAuthProfileStoreForRuntime } from "./store-runtime.js";
 import { withAuthProfileStoreAgentDir } from "./store.js";
 import type { AuthProfileStore } from "./types.js";
+import { persistAuthProfileBatch } from "./upsert-with-lock.js";
 import { markAuthProfileFailure } from "./usage.js";
 
 vi.mock("../provider-auth-aliases.js", () => ({
@@ -79,6 +84,16 @@ function holdOwnerRead(databasePath: string) {
         return rows;
       },
     };
+  });
+  const readShared = sharedRows.readSharedAuthProfileRows;
+  vi.spyOn(sharedRows, "readSharedAuthProfileRows").mockImplementation(async (context) => {
+    const rows = await readShared(context);
+    if (!held && context.admission.databasePath === databasePath) {
+      held = true;
+      entered.resolve();
+      await release.promise;
+    }
+    return rows;
   });
   return { entered, release };
 }
@@ -216,13 +231,59 @@ it.each(["current", "closed"] as const)(
   },
 );
 
+it("keeps a later credential reset after a failure waiting behind success preparation", async () => {
+  await withOpenClawTestState(
+    { label: "auth-success-credential-order", scenario: "minimal" },
+    async (state) => {
+      const agentDir = state.agentDir("voice");
+      const store = createStore();
+      saveAuthProfileStore(store, agentDir, saveOptions);
+      const { entered, release } = holdOwnerRead(resolveAuthProfileDatabasePath(agentDir));
+      const success = markAuthProfileSuccess({ store, provider, profileId, agentDir });
+      let failure: Promise<void> | undefined;
+      let replacement: ReturnType<typeof persistAuthProfileBatch> | undefined;
+      try {
+        await Promise.race([
+          entered.promise,
+          success.then(() => {
+            throw new Error("Success bypassed the owner read");
+          }),
+        ]);
+        failure = markAuthProfileFailure({ store, profileId, reason: "auth", agentDir });
+        replacement = persistAuthProfileBatch({
+          agentDir,
+          profiles: [
+            {
+              profileId,
+              credential: {
+                type: "api_key",
+                provider,
+                key: "synthetic-replacement-key",
+              },
+            },
+          ],
+          resetFailureState: true,
+        });
+      } finally {
+        release.resolve();
+        await Promise.allSettled([success, failure, replacement]);
+      }
+      await Promise.all([success, failure, replacement]);
+      const persisted = loadPersistedAuthProfileStore(agentDir);
+      expect(persisted?.profiles[profileId]).toMatchObject({ key: "synthetic-replacement-key" });
+      expect(persisted?.usageStats?.[profileId]).toMatchObject({ errorCount: 0 });
+      expect(persisted?.usageStats?.[profileId]?.cooldownUntil).toBeUndefined();
+    },
+  );
+});
+
 it("keeps queued failure on its original state root after ambient selectors change", async () => {
   await withOpenClawTestState(
     { label: "auth-success-captured-root", scenario: "minimal" },
     async (state) => {
       const store = createStore();
       saveAuthProfileStore(store, undefined, saveOptions);
-      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const databasePath = resolveSharedAuthStorePath(state.env);
       await withOpenClawTestState(
         { label: "auth-success-replacement-root", scenario: "minimal", applyEnv: false },
         async (replacement) => {
@@ -233,7 +294,7 @@ it("keeps queued failure on its original state root after ambient selectors chan
           await withEnvAsync(replacement.env, async () => {
             saveAuthProfileStore(replacementStore, undefined, saveOptions);
           });
-          const { entered, release } = holdOwnerRead(database.path);
+          const { entered, release } = holdOwnerRead(databasePath);
           const success = markAuthProfileSuccess({ store, provider, profileId });
           void success.catch(() => {});
           let failure: Promise<void> | undefined;
@@ -319,32 +380,47 @@ it.each(["removed", "relocated", "closed"] as const)(
   },
 );
 
-it("keeps a known commit when success publication fails", async () => {
-  await withOpenClawTestState(
-    { label: "auth-success-publication", scenario: "minimal" },
-    async (state) => {
-      const agentDir = state.agentDir("voice");
-      const store = createStore();
-      saveAuthProfileStore(store, agentDir, saveOptions);
-      setRuntimeAuthProfileStoreSnapshot(store, agentDir);
-      const publish = vi
-        .spyOn(publication, "publishAuthProfileUsage")
-        .mockRejectedValue(new Error("synthetic publication failure"));
-      await expect(
-        markAuthProfileSuccess({ store, provider, profileId, agentDir }),
-      ).resolves.toBeUndefined();
-      expect(publish).toHaveBeenCalledTimes(1);
-      expect(getRuntimeAuthProfileStoreSnapshotCore(agentDir)).toBeUndefined();
-      const persisted = loadPersistedAuthProfileStore(agentDir);
-      expect(persisted?.usageStats?.[profileId]).toMatchObject({
-        errorCount: 0,
-        lastUsed: expect.any(Number),
-      });
-      expect(store.usageStats?.[profileId]).toEqual(persisted?.usageStats?.[profileId]);
-      expect(store.lastGood?.[provider]).toBe(profileId);
-    },
-  );
-});
+it.each(["local", "shared"] as const)(
+  "keeps a known %s commit when success publication fails",
+  async (owner) => {
+    await withOpenClawTestState(
+      { label: "auth-success-publication", scenario: "minimal" },
+      async (state) => {
+        const agentDir = owner === "local" ? state.agentDir("voice") : undefined;
+        const derivedAgentDir = state.agentDir("derived");
+        const store = createStore();
+        saveAuthProfileStore(store, agentDir, saveOptions);
+        setRuntimeAuthProfileStoreSnapshot(store, agentDir);
+        if (owner === "shared") {
+          const derived = loadAuthProfileStoreForRuntime(derivedAgentDir, {
+            readOnly: true,
+            syncExternalCli: false,
+          });
+          expect(derived.profiles[profileId]).toBeDefined();
+          setRuntimeAuthProfileStoreSnapshot(derived, derivedAgentDir);
+        }
+        const publish = vi
+          .spyOn(publication, "publishAuthProfileUsage")
+          .mockRejectedValue(new Error("synthetic publication failure"));
+        await expect(
+          markAuthProfileSuccess({ store, provider, profileId, agentDir }),
+        ).resolves.toBeUndefined();
+        expect(publish).toHaveBeenCalledTimes(1);
+        expect(getRuntimeAuthProfileStoreSnapshotCore(agentDir)).toBeUndefined();
+        if (owner === "shared") {
+          expect(getRuntimeAuthProfileStoreSnapshotCore(derivedAgentDir)).toBeUndefined();
+        }
+        const persisted = loadPersistedAuthProfileStore(agentDir);
+        expect(persisted?.usageStats?.[profileId]).toMatchObject({
+          errorCount: 0,
+          lastUsed: expect.any(Number),
+        });
+        expect(store.usageStats?.[profileId]).toEqual(persisted?.usageStats?.[profileId]);
+        expect(store.lastGood?.[provider]).toBe(profileId);
+      },
+    );
+  },
+);
 
 it("canonicalizes every alias-equivalent provider state mutation", async () => {
   await withAuthProfileTestState("openclaw-auth-alias-state-", async ({ agentDir }) => {
@@ -461,9 +537,8 @@ it.each(["success", "failure"] as const)(
       { label: "auth-scoped-usage-first-use", scenario: "minimal" },
       async (state) => {
         const shared = createStore();
-        const mainAgentDir = state.agentDir("main");
-        saveAuthProfileStore(shared, mainAgentDir, saveOptions);
-        const sharedBefore = loadPersistedAuthProfileStore(mainAgentDir);
+        saveAuthProfileStore(shared, undefined, saveOptions);
+        const sharedBefore = loadPersistedAuthProfileStore();
         const agentDir = state.agentDir("isolated");
         const databasePath = resolveAuthProfileDatabasePath(agentDir);
 
@@ -499,7 +574,41 @@ it.each(["success", "failure"] as const)(
         expect(local?.usageStats?.[profileId]).toBeUndefined();
         expect(local?.lastGood?.[provider]).toBeUndefined();
         expect(local?.order?.[provider]).toBeUndefined();
-        expect(loadPersistedAuthProfileStore(mainAgentDir)).toEqual(sharedBefore);
+        expect(loadPersistedAuthProfileStore()).toEqual(sharedBefore);
+      },
+    );
+  },
+);
+
+it.each(["success-first", "failure-first"] as const)(
+  "keeps scoped first-use creation in %s admission order",
+  async (order) => {
+    await withOpenClawTestState(
+      { label: "auth-scoped-first-use-order", scenario: "minimal" },
+      async (state) => {
+        const shared = createStore();
+        saveAuthProfileStore(shared, undefined, saveOptions);
+        const agentDir = state.agentDir("isolated");
+        await withAuthProfileStoreAgentDir(agentDir, state.stateDir, async () => {
+          const store = loadAuthProfileStoreForRuntime(undefined, {
+            readOnly: true,
+            externalCli: { mode: "none" },
+          });
+          expect(fs.existsSync(resolveAuthProfileDatabasePath(agentDir))).toBe(false);
+          const success = () => markAuthProfileSuccess({ store, provider, profileId });
+          const failure = () => markAuthProfileFailure({ store, profileId, reason: "auth" });
+          const operations =
+            order === "success-first" ? [success(), failure()] : [failure(), success()];
+          try {
+            await Promise.all(operations);
+          } finally {
+            await Promise.allSettled(operations);
+          }
+          expect(store.usageStats?.[profileId]?.errorCount).toBe(order === "success-first" ? 3 : 0);
+        });
+        expect(loadPersistedAuthProfileStore(agentDir)?.profiles).toEqual({});
+        expect(loadPersistedAuthProfileStore(agentDir)?.usageStats?.[profileId]).toBeUndefined();
+        expect(loadPersistedAuthProfileStore()?.usageStats?.[profileId]?.errorCount).toBe(2);
       },
     );
   },

@@ -30,7 +30,7 @@ import {
   loadAuthProfileStoreWithoutExternalProfiles,
   updateAuthProfileStoreWithLock,
 } from "./store-runtime.js";
-import { applyScopedAuthReadThrough } from "./store.js";
+import { applyScopedAuthReadThrough, resolvePersistedAuthProfileOwnerAgentDir } from "./store.js";
 import type {
   AuthProfileBlockedSource,
   AuthProfileCooldownClassification,
@@ -41,7 +41,6 @@ import type {
   ProfileUsageStats,
 } from "./types.js";
 import { computeNextProfileUsageStats, resolveUsageWindowUntil } from "./usage-failure-state.js";
-import { authProfileUsageDeps, updateOwnedAuthProfileUsage } from "./usage-persistence.js";
 import {
   isActiveUnusableWindow,
   isAuthCooldownBypassedForProvider,
@@ -60,6 +59,8 @@ export {
   resolveProfileUnusableUntilForDisplay,
 } from "./usage-state.js";
 
+const authProfileUsageDeps = { updateAuthProfileStoreWithLock };
+
 /** Test-only dependency injection for usage persistence hooks. */
 const testing = {
   setDepsForTest(
@@ -77,6 +78,28 @@ const testing = {
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.authProfileUsageTestApi")] =
     testing;
+}
+
+async function updateOwnedAuthProfileUsage(
+  store: AuthProfileStore,
+  profileId: string,
+  update: Parameters<typeof updateAuthProfileStoreWithLock>[0],
+) {
+  let changed = false;
+  const updated = await authProfileUsageDeps.updateAuthProfileStoreWithLock({
+    ...update,
+    profileId,
+    agentDir: resolvePersistedAuthProfileOwnerAgentDir({ agentDir: update.agentDir, profileId }),
+    updater: (freshStore) => {
+      changed = update.updater(freshStore);
+      return changed;
+    },
+  });
+  const usage = changed ? updated?.usageStats?.[profileId] : undefined;
+  if (usage) {
+    store.usageStats = { ...store.usageStats, [profileId]: usage };
+  }
+  return updated;
 }
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";

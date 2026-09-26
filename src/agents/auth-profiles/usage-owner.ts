@@ -50,6 +50,7 @@ export type PreparedAuthProfileUsageOwner = {
 
 /** Capture lifecycle custody before queueing; discover the current credential owner when admitted. */
 export function captureAuthProfileUsageOwner(params: { agentDir?: string; profileId: string }): {
+  env: NodeJS.ProcessEnv;
   prepare: () => Promise<PreparedAuthProfileUsageOwner | undefined>;
   dispose: () => Promise<void>;
 } {
@@ -57,12 +58,12 @@ export function captureAuthProfileUsageOwner(params: { agentDir?: string; profil
   if (personal) {
     assertPersonalAuthProfileStoreAccess();
   }
-  if (isEnvOnlyAuthProfileRuntime()) {
-    return { prepare: async () => undefined, dispose: async () => undefined };
-  }
   const scopedEnv = getScopedAuthProfileEnv();
   const env = cloneEnvWithPlatformSemantics(scopedEnv ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  if (isEnvOnlyAuthProfileRuntime()) {
+    return { env, prepare: async () => undefined, dispose: async () => undefined };
+  }
   const requestedAgentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
   const agentDir = requestedAgentDir ? resolveUserPath(requestedAgentDir, env) : undefined;
   const scopedSharedStore = structuredClone(getScopedSharedAuthStore());
@@ -125,6 +126,7 @@ export function captureAuthProfileUsageOwner(params: { agentDir?: string; profil
     return loadPersistedAuthProfileStoreFromRows(rows, target.path);
   };
   return {
+    env,
     async prepare() {
       assertContext();
       if (personal) {

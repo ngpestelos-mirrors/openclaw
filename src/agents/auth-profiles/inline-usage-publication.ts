@@ -31,6 +31,34 @@ import {
 import { resolveAuthProfileDatabaseOwnerId, type PreparedAuthProfileStoreOwner } from "./sqlite.js";
 import type { AuthProfileRowRead, AuthProfileStore } from "./types.js";
 
+/** Unknown outcomes fence the physical store and every view derived from its shared owner. */
+export function invalidateAuthProfileUsageSnapshots(owner: PreparedAuthProfileStoreOwner): void {
+  const shared = owner.databasePath === owner.sharedDatabasePath;
+  const targets: Array<{ databasePath: string; agentDir?: string }> = [
+    {
+      databasePath: owner.databasePath,
+      agentDir: shared ? undefined : path.dirname(owner.databasePath),
+    },
+  ];
+  if (shared) {
+    try {
+      targets.push(...listRuntimeAuthProfileStoreSnapshotsForSharedOwner(owner));
+    } catch (error) {
+      reportCommittedAuthProfileUsage("auth usage derived snapshot discovery failed", error);
+    }
+  }
+  for (const target of targets) {
+    try {
+      const latest = getOwnedRuntimeAuthProfileStoreSnapshotAtDatabasePath(target.databasePath);
+      if (!latest || runtimeAuthProfileSnapshotSharesOwner(latest.owner, owner)) {
+        clearRuntimeAuthProfileStoreSnapshotAtDatabasePath(target.databasePath, target.agentDir);
+      }
+    } catch (error) {
+      reportCommittedAuthProfileUsage("auth usage snapshot invalidation failed", error);
+    }
+  }
+}
+
 /** Reconcile committed facts through the existing snapshot owner, without native host rereads. */
 export async function publishAuthProfileUsage(
   owner: PreparedAuthProfileStoreOwner,
@@ -140,17 +168,7 @@ export async function publishAuthProfileUsage(
         { candidates },
       );
     } catch (error) {
-      try {
-        const latest = getOwnedRuntimeAuthProfileStoreSnapshotAtDatabasePath(entry.databasePath);
-        if (latest && runtimeAuthProfileSnapshotSharesOwner(latest.owner, targetOwner)) {
-          clearRuntimeAuthProfileStoreSnapshotAtDatabasePath(entry.databasePath, entry.agentDir);
-        }
-      } catch (invalidationError) {
-        reportCommittedAuthProfileUsage(
-          "auth usage snapshot invalidation failed",
-          invalidationError,
-        );
-      }
+      invalidateAuthProfileUsageSnapshots(targetOwner);
       reportCommittedAuthProfileUsage(
         "auth usage committed but runtime snapshot publication failed",
         error,

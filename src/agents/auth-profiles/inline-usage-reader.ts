@@ -12,6 +12,7 @@ import {
   type OpenClawAgentSqliteWorkerStore,
 } from "../../state/openclaw-agent-worker-store.js";
 import type { AuthProfileUsageOperations } from "./inline-usage-kernel.js";
+import { captureAuthProfileMutationSource } from "./mutation-admission.js";
 import { prepareAgentAuthProfileRowsRead } from "./sqlite-read.js";
 import type { AuthProfileRowRead } from "./types.js";
 
@@ -33,7 +34,31 @@ export function captureAgentAuthProfileUsageRead(options: {
   };
   const identity = readDatabasePathIdentitySync(target.path);
   if (!identity.key.startsWith("file:")) {
-    return { ...prepareAgentAuthProfileRowsRead(options), identity };
+    const source = captureAuthProfileMutationSource({ env: target.env, agent: target });
+    let reader: ReturnType<typeof captureAgentAuthProfileUsageRead> | undefined;
+    return {
+      get identity() {
+        return reader?.identity ?? identity;
+      },
+      read() {
+        source.admit();
+        if (!reader) {
+          const current = readDatabasePathIdentitySync(target.path);
+          reader = current.key.startsWith("file:")
+            ? captureAgentAuthProfileUsageRead(options)
+            : { ...prepareAgentAuthProfileRowsRead(options), identity: current };
+        }
+        return reader.read();
+      },
+      assertCurrent() {
+        source.assertCurrent();
+        reader?.assertCurrent();
+      },
+      async dispose() {
+        source.dispose();
+        await reader?.dispose();
+      },
+    };
   }
   const execution = captureOpenClawAgentDatabaseExecution(target, {
     expectedIdentity: {

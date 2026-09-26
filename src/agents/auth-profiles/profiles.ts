@@ -15,6 +15,7 @@ import { loadCandidateAuthProfileStore } from "./candidate-stores.js";
 import { logDroppedAuthProfileBookkeeping, reportCommittedAuthProfileUsage } from "./constants.js";
 import { normalizeAuthProfileCredential } from "./credential-normalize.js";
 import { persistAuthProfileSuccess } from "./inline-usage.js";
+import { runAuthProfileMutationAdmission } from "./mutation-admission.js";
 import { withOAuthProfileLocks, type OAuthProfileLockKey } from "./oauth-profile-lock.js";
 import {
   listOAuthRefreshGenerationPeers,
@@ -38,7 +39,6 @@ import {
   resolveRuntimeAuthProfileAgentDir,
 } from "./store.js";
 import type { AuthProfileCredential, AuthProfileStore } from "./types.js";
-import { runAuthProfileUsageAdmission } from "./usage-admission.js";
 import { captureAuthProfileUsageOwner } from "./usage-owner.js";
 export {
   dedupeProfileIds,
@@ -591,7 +591,7 @@ export async function markAuthProfileSuccess(params: {
   const captured = captureAuthProfileUsageOwner({ agentDir, profileId });
   let committed = false;
   try {
-    await runAuthProfileUsageAdmission(profileId, async () => {
+    await runAuthProfileMutationAdmission(captured.env, async () => {
       const prepared = await captured.prepare();
       if (!prepared) {
         return;

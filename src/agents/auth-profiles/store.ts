@@ -10,7 +10,6 @@ import { normalizeUniqueStringEntries } from "@openclaw/normalization-core/strin
 import { projectModelProviderConfig } from "../../config/model-provider-config.js";
 import { resolveStateDir } from "../../config/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import { deferSqlitePostCommitPublication } from "../../infra/sqlite-post-commit.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { readUserModelAuthProfile } from "../../state/user-model-accounts.js";
@@ -124,6 +123,7 @@ import {
   type PreparedAuthProfileStoreOwner,
 } from "./sqlite.js";
 import { loadPersistedAuthProfileState } from "./state.js";
+import { runAuthProfileStoreMutation } from "./store-mutation-admission.js";
 import { prepareAuthProfileStoreMutation } from "./store-mutation.js";
 import type {
   AuthProfileCredentialSource,
@@ -1284,19 +1284,27 @@ export function createAuthProfileStoreRuntime(
     saveOptions?: SaveAuthProfileStoreOptions;
     updater: (store: AuthProfileStore, owner?: PreparedAuthProfileStoreOwner) => boolean;
   }): Promise<AuthProfileStore | null> {
-    const agentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
-    try {
+    const requestedAgentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
+    const env = params.env ?? (params.stateDir ? undefined : getScopedAuthProfileEnv());
+    const agentDir = requestedAgentDir ? resolveUserPath(requestedAgentDir, env) : undefined;
+    return runAuthProfileStoreMutation({ ...params, agentDir, env }, async (capturedEnv, admit) => {
       if (params.profileId && isUserModelAuthProfileId(params.profileId)) {
         assertPersonalAuthProfileStoreAccess();
         return updatePersonalAuthProfileStore({
           profileId: params.profileId,
-          updater: params.updater,
-          stateDir: params.env ? resolveStateDir(params.env) : params.stateDir,
+          updater: (store) => {
+            admit();
+            const changed = params.updater(store);
+            admit();
+            return changed;
+          },
+          stateDir: resolveStateDir(capturedEnv),
         });
       }
       return await runAuthProfileWriteTransactionAsync(
         agentDir,
         (database, owner) => {
+          admit();
           const loadedStore = loadAuthProfileStoreForAgent(
             agentDir,
             {
@@ -1307,6 +1315,7 @@ export function createAuthProfileStoreRuntime(
             owner.env,
           );
           const shouldSave = params.updater(loadedStore, owner);
+          admit();
           if (shouldSave) {
             const publication = saveAuthProfileStoreInTransaction(
               loadedStore,
@@ -1324,20 +1333,10 @@ export function createAuthProfileStoreRuntime(
         {
           sharedStoreWrite: params.sharedStoreWrite,
           stateDir: params.stateDir,
-          env: params.env ?? (params.stateDir ? undefined : getScopedAuthProfileEnv()),
+          env: capturedEnv,
         },
       );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      authProfilesLog.warn(`auth profile store update failed: ${message}`, {
-        agentDir,
-        error: message,
-      });
-      if (!isSqliteLockError(error)) {
-        throw error;
-      }
-      return null;
-    }
+    });
   }
 
   /** Load the main auth profile store with runtime external profiles overlaid. */

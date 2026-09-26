@@ -25,14 +25,20 @@ import type {
   AuthProfileUsageReceipt,
   AuthProfileUsageResult,
 } from "./inline-usage-kernel.js";
-import { publishAuthProfileUsage } from "./inline-usage-publication.js";
+import {
+  invalidateAuthProfileUsageSnapshots,
+  publishAuthProfileUsage,
+} from "./inline-usage-publication.js";
 import {
   assertAuthProfileMigrationCandidates,
   assertAuthProfileMigrationStateAtDatabasePath,
 } from "./legacy-source-diagnostic.js";
 import { resolveLegacyAuthProfileSourceCandidates } from "./legacy-source-files.js";
+import {
+  captureAuthProfileMutationSource,
+  runAuthProfileMutationAdmission,
+} from "./mutation-admission.js";
 import { resolveSharedAuthStoreOwnership, resolveSharedAuthStorePath } from "./path-resolve.js";
-import { clearRuntimeAuthProfileStoreSnapshotAtDatabasePath } from "./runtime-snapshots.js";
 import { loadPersistedAuthProfileStoreFromRows } from "./sqlite-read.js";
 import {
   type PreparedAuthProfileStoreOwner,
@@ -63,12 +69,24 @@ export async function persistInlineAuthFailure(
   const prepared = prepareAuthProfileWriteTransaction(effectiveAgentDir, {
     env: getScopedAuthProfileEnv(),
   });
-  return persistAgentAuthProfileUsage(effectiveAgentDir, prepared, {
-    ...input,
-    kind: "inline-failure",
-    expectedCredentials: undefined,
-    inheritedUsageStats: structuredClone(getScopedSharedAuthStore()?.usageStats),
+  const source = captureAuthProfileMutationSource({
+    env: prepared.sharedOwner.env,
+    agent: prepared.databaseTarget.kind === "agent" ? prepared.databaseTarget : undefined,
   });
+  const inheritedUsageStats = structuredClone(getScopedSharedAuthStore()?.usageStats);
+  try {
+    return await runAuthProfileMutationAdmission(prepared.sharedOwner.env, () => {
+      source.admit();
+      return persistAgentAuthProfileUsage(
+        effectiveAgentDir,
+        prepared,
+        { ...input, kind: "inline-failure", expectedCredentials: undefined, inheritedUsageStats },
+        source.assertCurrent,
+      );
+    });
+  } finally {
+    source.dispose();
+  }
 }
 
 export async function persistAuthProfileSuccess(
@@ -94,15 +112,15 @@ export async function persistAuthProfileSuccess(
     const result = await runOpenClawStateWorkerOperation(
       target.context,
       async (scope) => {
-        const result = await scope.execute({
+        const written = await scope.execute({
           type:
             target.kind === "personal"
               ? "authProfiles.personalSuccess"
               : "authProfiles.sharedSuccess",
           input,
         });
-        if (result.ok) {
-          receipt = result.receipt;
+        if (written.ok) {
+          receipt = written.receipt;
           if (receipt.applied && target.kind !== "personal") {
             await publishCommittedUsage(
               owner,
@@ -113,7 +131,7 @@ export async function persistAuthProfileSuccess(
             );
           }
         }
-        return result;
+        return written;
       },
       {
         existingOnly: true,
@@ -131,7 +149,7 @@ export async function persistAuthProfileSuccess(
       return receipt;
     }
     if (target.kind !== "personal") {
-      clearRuntimeAuthProfileStoreSnapshotAtDatabasePath(owner.databasePath, prepared.agentDir);
+      invalidateAuthProfileUsageSnapshots(owner);
     }
     throw error;
   }
@@ -148,7 +166,7 @@ async function publishCommittedUsage(
       publishAuthProfileUsage(owner, receipt, readTarget, assertCurrent),
     );
   } catch (error) {
-    clearRuntimeAuthProfileStoreSnapshotAtDatabasePath(owner.databasePath);
+    invalidateAuthProfileUsageSnapshots(owner);
     reportCommittedAuthProfileUsage("auth usage committed but publication failed", error);
   }
 }
@@ -299,21 +317,14 @@ async function persistAgentAuthProfileUsage(
       );
     } catch (error) {
       if (durableReceipt) {
-        try {
-          clearRuntimeAuthProfileStoreSnapshotAtDatabasePath(owner.databasePath, effectiveAgentDir);
-        } catch (invalidationError) {
-          reportCommittedAuthProfileUsage(
-            "auth usage snapshot invalidation failed",
-            invalidationError,
-          );
-        }
+        invalidateAuthProfileUsageSnapshots(owner);
         reportCommittedAuthProfileUsage(
           "auth usage committed before publication or cleanup failed",
           error,
         );
         return durableReceipt;
       }
-      clearRuntimeAuthProfileStoreSnapshotAtDatabasePath(owner.databasePath, effectiveAgentDir);
+      invalidateAuthProfileUsageSnapshots(owner);
       failure = { error };
       const message = error instanceof Error ? error.message : String(error);
       authProfilesLog.warn(`auth profile store update failed: ${message}`, {
