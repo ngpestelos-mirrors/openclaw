@@ -6,12 +6,11 @@ import {
 import { assertFutureConfigActionAllowed } from "./future-config-guard.js";
 import { withGatewayServiceOperationLock } from "./service-operation-lock.js";
 import { captureGatewayServiceRebind } from "./service-rebind.js";
-import type { GatewayServiceEnv } from "./service-types.js";
+import type { GatewayService, GatewayServiceEnv } from "./service-types.js";
 import {
   getGatewayServiceUpdateNativeCommand,
   withGatewayServiceUpdateAuthority,
 } from "./service-update-authority.js";
-import type { GatewayService } from "./service.js";
 
 export function guardGatewayServiceMutation<
   TArgs extends {
