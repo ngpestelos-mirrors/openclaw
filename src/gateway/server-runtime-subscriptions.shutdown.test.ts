@@ -8,6 +8,7 @@ import {
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   createChatRunState,
@@ -35,6 +36,7 @@ vi.mock("../audit/audit-recorder.js", () => ({
 function createParams(signal: AbortSignal): Parameters<typeof startGatewayEventSubscriptions>[0] {
   const chatRunState = createChatRunState();
   return {
+    scheduler: createTestGatewayScheduler(),
     signal,
     log: createSubsystemLogger("test/subscriptions-shutdown"),
     broadcast: vi.fn(),

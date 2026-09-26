@@ -53,6 +53,16 @@ behavior.
 
 ## Carry facts, publish after commit
 
+Placement turn claims and releases execute through the shared-state writer,
+including their coordinator acquisition. Local turns retain durable claims:
+cloud dispatch closes admission and joins their settlement before preparing the
+workspace. Claim admission rechecks the live caller before mutation and commit;
+conditional release compares the exact claim inside the transaction. Commit
+receipts publish claim authority and release observers before callers continue,
+including when ordinary reply delivery fails. Local forced completion and final
+cleanup join the same pending release. Restart recovery, schemas, persisted
+fields, and update behavior are unchanged.
+
 Memory session preparation retains only export text, provenance, timestamps, and
 classification/reset facts from each decoded SQLite event. Full-message observers
 retain their original snapshot, and callbacks run after its read transaction closes.
@@ -188,6 +198,15 @@ transcript-session keys, and SSE inline subagent visibility reads remain migrati
 debt. Process-held incognito databases and the existing
 CLI-import history path still need their owner/lifetime migration; they are not
 new synchronous exceptions or fallbacks for a failed durable worker read.
+
+Artifact lists, image pages, and exact transcript-image selection use that same
+history worker. The worker scans and decodes transcript payloads and returns
+selected artifacts; connection-owned cursors and current access checks stay on
+the Gateway. General transcript pages, anchored visibility reads, and public
+share pages also use the worker facade. Read-only image discovery does not
+restore cold history, while ordinary reads retain their existing restoration
+owner. Process-held incognito data and native callback visitors retain their
+current owners. Schemas, stored bytes, retention, and update behavior are unchanged.
 
 Exact message membership reads for managed attachments also use the history
 worker. The worker validates the entire visible JSON range on every lookup,

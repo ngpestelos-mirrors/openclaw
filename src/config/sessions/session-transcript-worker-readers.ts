@@ -114,6 +114,11 @@ export function createSessionHistoryWorkerReaders(
           Array.isArray(value) ||
           (value.kind !== "activity-summary" &&
             value.kind !== "transcript-binding" &&
+            value.kind !== "artifacts" &&
+            value.kind !== "message-page" &&
+            value.kind !== "around-id" &&
+            value.kind !== "source-messages" &&
+            value.kind !== "recent-page" &&
             value.kind !== "rpc" &&
             value.kind !== "http" &&
             value.kind !== "delta" &&
@@ -272,6 +277,15 @@ export function createSessionHistoryWorkerReaders(
           return value.readError
             ? err(decodeSessionTranscriptWorkerReadError(value.readError))
             : ok(value.entry);
+        },
+      ),
+    readDiagnosticText: async (input) =>
+      await runRequest(
+        () => ({ kind: "session-diagnostic-text", ...input }),
+        JSON.stringify(input).length * 2,
+        (value) => {
+          assertResultKind(value, "session-diagnostic-text", "diagnostic text");
+          return value.text;
         },
       ),
     readEntries: async (scope) =>

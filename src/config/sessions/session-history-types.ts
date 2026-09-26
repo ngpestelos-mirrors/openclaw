@@ -1,3 +1,14 @@
+import type {
+  SessionArtifactReadQuery,
+  SessionArtifactReadResult,
+} from "../../gateway/session-artifact-read.js";
+import type {
+  ReadRecentSessionMessagesResult,
+  ReadSessionMessageByIdResult,
+  ReadSessionMessagesAroundIdResult,
+  ReadSessionMessagesResult,
+  SessionTranscriptReader,
+} from "../../gateway/session-transcript-read-kernel.js";
 import type { AgentHistoryActivity } from "../../infra/agent-activity-events.js";
 import type { SessionActivitySummary } from "./activity-summary.js";
 import type { SessionTranscriptBoundedMessageTailPage } from "./session-accessor.sqlite-active-events.js";
@@ -101,14 +112,6 @@ export type SessionHistoryDelta = {
   subagentCoordination: SessionHistorySubagentFacts;
 };
 
-export type ReadSessionMessageByIdResult = {
-  message?: unknown;
-  seq?: number;
-  oversized: boolean;
-  found: boolean;
-  serializedBytes?: number;
-};
-
 export type SessionHistoryTranscriptBinding = { sessionKey: string; sessionId: string };
 
 export type ActivitySummarySourceBatch =
@@ -126,6 +129,40 @@ export type SessionHistoryWorkerRequest =
   | {
       kind: "activity-summary";
       params: { target: SessionTranscriptReadScope; previous?: SessionActivitySummary };
+    }
+  | {
+      kind: "artifacts";
+      params: { target: SessionTranscriptReadScope; query: SessionArtifactReadQuery };
+    }
+  | {
+      kind: "message-page";
+      params: {
+        target: SessionTranscriptReadScope;
+        options: Parameters<SessionTranscriptReader["readSessionMessagesPageWithStatsAsync"]>[1];
+      };
+    }
+  | {
+      kind: "around-id";
+      params: {
+        target: SessionTranscriptReadScope;
+        options: Parameters<
+          SessionTranscriptReader["readSessionMessagesAroundIdWithStatsAsync"]
+        >[1];
+      };
+    }
+  | {
+      kind: "source-messages";
+      params: {
+        target: SessionTranscriptReadScope;
+        options: Parameters<SessionTranscriptReader["readSessionMessagesWithSourceAsync"]>[1];
+      };
+    }
+  | {
+      kind: "recent-page";
+      params: {
+        target: SessionTranscriptReadScope;
+        options: Parameters<SessionTranscriptReader["readRecentSessionMessagesWithStatsAsync"]>[1];
+      };
     }
   | {
       kind: "transcript-binding";
@@ -159,6 +196,10 @@ export type SessionHistoryWorkerRequest =
 
 export type SessionHistoryWorkerResult =
   | { kind: "activity-summary"; source: ActivitySummarySourceBatch }
+  | { kind: "artifacts"; result: SessionArtifactReadResult }
+  | { kind: "message-page" | "recent-page"; result: ReadRecentSessionMessagesResult }
+  | { kind: "around-id"; result: ReadSessionMessagesAroundIdResult }
+  | { kind: "source-messages"; result: ReadSessionMessagesResult }
   | { kind: "transcript-binding"; binding: SessionHistoryTranscriptBinding | undefined }
   | { kind: "rpc"; page: ChatHistoryPage }
   | { kind: "message-lookup"; messages: unknown[] }
