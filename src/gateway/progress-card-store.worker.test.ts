@@ -116,7 +116,7 @@ it.each(["transaction", "commit"] as const)(
     const create = admission.createSqliteWorkerOperationAdmission;
     let current = true;
     let revoked = false;
-    using interception = vi
+    using _interception = vi
       .spyOn(admission, "createSqliteWorkerOperationAdmission")
       .mockImplementation((admit, attachment) =>
         create((request, grant) => {
