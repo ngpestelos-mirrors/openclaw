@@ -73,6 +73,13 @@ is required.
                 "/tmp/proxy.sock": "allow",
                 "/tmp/blocked.sock": "none",
               },
+              privateEndpoints: [
+                {
+                  host: "git.openclaw-system.svc",
+                  port: 443,
+                  allowMethods: ["POST"],
+                },
+              ],
               allowUpstreamProxy: true,
               proxyUrl: "http://127.0.0.1:3128",
             },
@@ -110,4 +117,6 @@ If the normal app-server runtime would be `danger-full-access`, enabling
 permission profile: Codex managed network enforcement is sandboxed
 networking, so a full-access profile would not protect outbound traffic.
 Domain entries use `allow` or `deny`. Unix socket entries use `allow` or `none`;
-OpenClaw translates `none` to Codex's native `deny` permission.
+OpenClaw translates `none` to Codex's native `deny` permission. Private
+endpoint entries are exact host exceptions for repository broker traffic; they
+reject wildcards, URLs, non-443 ports, and methods other than `POST`.

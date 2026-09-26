@@ -147,6 +147,13 @@ describe("Codex app-server config", () => {
               " /tmp/mock-proxy.sock ": "allow",
               "/tmp/blocked.sock": "none",
             },
+            privateEndpoints: [
+              {
+                host: " git.openclaw-system.svc ",
+                port: 443,
+                allowMethods: ["POST"],
+              },
+            ],
             proxyUrl: "http://127.0.0.1:3128",
             socksUrl: "socks5h://127.0.0.1:8081",
             enableSocks5: true,
@@ -187,6 +194,13 @@ describe("Codex app-server config", () => {
                 "/tmp/mock-proxy.sock": "allow",
                 "/tmp/blocked.sock": "deny",
               },
+              private_endpoints: [
+                {
+                  host: "git.openclaw-system.svc",
+                  port: 443,
+                  allow_methods: ["POST"],
+                },
+              ],
               proxy_url: "http://127.0.0.1:3128",
               socks_url: "socks5h://127.0.0.1:8081",
               enable_socks5: true,

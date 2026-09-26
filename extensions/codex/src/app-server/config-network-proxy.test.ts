@@ -88,6 +88,45 @@ describe("Codex network proxy config admission", () => {
     );
   });
 
+  it.each([
+    {
+      name: "wildcard host",
+      privateEndpoints: [{ host: "*.svc.cluster.local", port: 443, allowMethods: ["POST"] }],
+    },
+    {
+      name: "URL host",
+      privateEndpoints: [
+        { host: "https://git.openclaw-system.svc", port: 443, allowMethods: ["POST"] },
+      ],
+    },
+    {
+      name: "non-broker port",
+      privateEndpoints: [{ host: "git.openclaw-system.svc", port: 8443, allowMethods: ["POST"] }],
+    },
+    {
+      name: "non-Git method",
+      privateEndpoints: [{ host: "git.openclaw-system.svc", port: 443, allowMethods: ["GET"] }],
+    },
+  ])("rejects private endpoint $name without broadening the proxy", ({ privateEndpoints }) => {
+    expect(() =>
+      resolveRuntimeForTest({
+        pluginConfig: {
+          appServer: {
+            networkProxy: {
+              enabled: true,
+              domains: { "api.openai.com": "allow" },
+              privateEndpoints,
+            },
+          },
+        },
+      }),
+    ).toThrow(
+      new Error(
+        'Invalid plugins.entries.codex.config.appServer.networkProxy.privateEndpoints; fix this field before starting Codex with network restrictions. Run "openclaw doctor --fix" for supported repairs.',
+      ),
+    );
+  });
+
   it("preserves blank-field admission and fallback without an enabled proxy", () => {
     for (const appServer of [
       {

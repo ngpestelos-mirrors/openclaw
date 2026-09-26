@@ -167,6 +167,13 @@ required.
                 "api.openai.com": "allow",
                 "blocked.example.com": "deny",
               },
+              privateEndpoints: [
+                {
+                  host: "git.openclaw-system.svc",
+                  port: 443,
+                  allowMethods: ["POST"],
+                },
+              ],
             },
           },
         },
@@ -181,6 +188,9 @@ Hosts absent from the effective native allowlist are denied. The example's
 requirements can still contribute allowed domains. These restrictions apply to
 Codex sandbox commands. See the [network proxy configuration reference](/plugins/codex-harness/config-fields)
 for matching, policy inheritance, scope, and explicit Doctor repair of blank optional fields after updates.
+Private endpoint entries are exact host exceptions for repository broker
+traffic; they reject wildcards, URLs, non-443 ports, and methods other than
+`POST`.
 
 If the normal app-server runtime would be `danger-full-access`, enabling
 `networkProxy` uses workspace-style filesystem access for the generated
