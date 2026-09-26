@@ -160,7 +160,8 @@ export async function proveReleasedScheduledTask(params: {
     );
     expect(verified.sha256).toBe(digest);
   }
-  expect(params.rootDir).toContain("réseau %% ^!");
+  // The released renderer cannot launch the literal-caret fixture used by the candidate.
+  expect(params.rootDir).not.toMatch(/[%^!]/u);
   const codePage = resolveWindowsOemCodePage();
   expect(codePage).not.toBeNull();
   const marker = randomUUID();

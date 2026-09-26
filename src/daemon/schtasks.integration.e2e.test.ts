@@ -459,7 +459,9 @@ describe.runIf(nativeSchtasksIntegrationEnabled)("schtasks Windows integration",
   ): Promise<proof.NativeScheduledTaskProof | undefined> {
     const startedAt = performance.now();
     const id = proof.resolveTestId();
-    const configuredRoot = process.env.CI_WINDOWS_SCHTASKS_ROOT?.trim();
+    const configuredRoot = releasedBindingPath
+      ? process.env.CI_WINDOWS_SCHTASKS_RELEASED_ROOT?.trim()
+      : process.env.CI_WINDOWS_SCHTASKS_ROOT?.trim();
     const rootDir = await proof.createIntegrationRoot(configuredRoot, id);
     const accountHome = os.userInfo().homedir;
     const profile = `schtasks-int-${id}`;
