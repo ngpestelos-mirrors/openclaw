@@ -355,6 +355,7 @@ export async function inspectInstalledStartupAliasBuildRefusal(params: {
   admissions: Array<Record<string, unknown>>;
   admissionPath: string;
   waitForLoopbackPortRelease: (port: number) => Promise<void>;
+  recordProgress: (phase: string, error?: Error) => Promise<void>;
 }) {
   const {
     toolingEntry,
@@ -369,6 +370,7 @@ export async function inspectInstalledStartupAliasBuildRefusal(params: {
     admissions,
     admissionPath,
     waitForLoopbackPortRelease,
+    recordProgress,
   } = params;
   const { execSchtasks } = await import("./schtasks-exec.js");
   const { readStartupEntryCommand, resolveStartupEntryPaths } =
@@ -429,6 +431,7 @@ export async function inspectInstalledStartupAliasBuildRefusal(params: {
         commands,
         signal,
         verifyContinuity,
+        recordProgress,
       });
       return {
         ...refusal,
@@ -463,6 +466,7 @@ export async function inspectInstalledStartupAliasBuildRefusal(params: {
           peer.rootDir,
           commands,
         );
+        await recordProgress("startup-alias-cleanup:command-result");
       } catch (error) {
         cleanupErrors.push(error);
       }

@@ -355,13 +355,17 @@ export async function assertInstalledSiblingBuildRefusal(params: {
   commands: CommandRecord[];
   signal: AbortSignal;
   verifyContinuity: () => Promise<void>;
+  recordProgress: (phase: string, error?: Error) => Promise<void>;
 }) {
-  const { toolingEntry, selected, peer, commands, signal, verifyContinuity } = params;
+  const { toolingEntry, selected, peer, commands, signal, verifyContinuity, recordProgress } =
+    params;
+  const phase = params.startupEntry ? "startup-alias-refusal" : "task-sibling-refusal";
   const buildRoot = await fs.realpath(packageRoot(peer.installRoot));
   const dist = path.join(buildRoot, "dist");
   assert.equal((await fs.lstat(dist)).isDirectory(), true);
   assert.notEqual(await fs.realpath(packageRoot(selected.installRoot)), buildRoot);
   const before = await hashInstall(peer.installRoot);
+  await recordProgress(`${phase}:initial-hash`);
   const toolingEntrySha256 = await hashFile(toolingEntry);
   await run(
     [toolingEntry, "models", "status"],
@@ -379,8 +383,11 @@ export async function assertInstalledSiblingBuildRefusal(params: {
       ],
     },
   );
+  await recordProgress(`${phase}:command-result`);
   await verifyContinuity();
+  await recordProgress(`${phase}:continuity-verified`);
   assert.deepEqual(await hashInstall(peer.installRoot), before);
+  await recordProgress(`${phase}:final-hash`);
   return {
     kind: "native-installed-peer-build-admission",
     toolingEntry,

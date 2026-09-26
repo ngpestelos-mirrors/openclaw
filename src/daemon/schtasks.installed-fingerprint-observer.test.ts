@@ -54,6 +54,7 @@ describe("installed fingerprint source qualification", () => {
     const repo = createRepository();
     const changed = [
       "src/daemon/schtasks.integration-observation.test-support.ts",
+      "src/daemon/schtasks.integration.e2e.test.ts",
       fixturePath,
       "src/daemon/schtasks.installed-diagnostics.test-support.ts",
       "src/daemon/schtasks.installed-authority.test-support.ts",
