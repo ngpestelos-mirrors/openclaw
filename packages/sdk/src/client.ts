@@ -456,14 +456,15 @@ export class OpenClaw {
   }
 
   private recordReplayEvent(event: OpenClawEvent): OpenClawEvent {
-    if (!event.runId) {
+    const runId = event.runId;
+    if (!runId) {
       return event;
     }
-    let replay = this.replayByRunId.get(event.runId);
+    let replay = this.replayByRunId.get(runId);
     let trimReplayRuns = !replay;
     if (!replay) {
       replay = { events: [] };
-      this.replayByRunId.set(event.runId, replay);
+      this.replayByRunId.set(runId, replay);
     }
     const projection = readChatProjection(event);
     const assistant = projectAssistantRunEvent(event, replay.assistant);
@@ -481,8 +482,8 @@ export class OpenClaw {
     } else if (projection || isTerminalRunEvent(event)) {
       delete replay.chatMessage;
       delete replay.assistant;
-      this.replayByRunId.delete(event.runId);
-      this.replayByRunId.set(event.runId, replay);
+      this.replayByRunId.delete(runId);
+      this.replayByRunId.set(runId, replay);
       trimReplayRuns = true;
     }
     const { events } = replay;
