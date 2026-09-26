@@ -236,6 +236,38 @@ describe("GatewayProtocolClient lifecycle and event delivery", () => {
     client.stop();
   });
 
+  test.each(["final", "aborted", "error"])(
+    "delivers a gap-revealing chat %s before recovery retires its socket",
+    (state) => {
+      const calls: string[] = [];
+      const { client, connections } = createSyntheticGatewayProtocol({
+        onEvent: () => calls.push("event"),
+        onGap: () => {
+          calls.push("gap");
+          client.stop();
+        },
+      });
+      client.addEventListener(() => calls.push("listener"));
+      client.start();
+      const connection = connections[0];
+      if (!connection) throw new Error("Expected a protocol connection");
+      connection.handlers.message(
+        JSON.stringify({ type: "event", event: "board.changed", seq: 1, payload: {} }),
+      );
+      calls.length = 0;
+      connection.handlers.message(
+        JSON.stringify({
+          type: "event",
+          event: "chat",
+          seq: 3,
+          payload: { runId: "run", state, message: { role: "assistant", content: "complete" } },
+        }),
+      );
+      expect(calls).toEqual(["event", "listener", "gap"]);
+      expect(connection.close).toHaveBeenCalledOnce();
+    },
+  );
+
   test("reconnects and rejects append frames when gap recovery leaves the socket active", async () => {
     vi.useFakeTimers();
     const onEvent = vi.fn();

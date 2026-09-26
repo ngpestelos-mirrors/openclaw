@@ -1,6 +1,13 @@
 import { EventEmitter } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
-import type { AgentEventRuntimePayload } from "../infra/agent-events.js";
+import { buildPreparedCliRunContext } from "../agents/cli-runner.test-helpers.js";
+import { createCliEventHandlers } from "../agents/cli-runner/execute-events.js";
+import { createCliToolTracking } from "../agents/cli-runner/execute-tool-tracking.js";
+import {
+  type AgentEventRuntimePayload,
+  onAgentRuntimeEvent,
+  resetAgentEventsForTest,
+} from "../infra/agent-events.js";
 import { abortChatRunById, registerChatAbortController } from "./chat-abort.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { emitAgentEvent, registerChatRun } from "./server-chat.agent-events.test-helpers.js";
@@ -51,7 +58,11 @@ function answerCandidate(itemId: string, progressText: string, status = "candida
     hideFromChannelProgress: true,
   };
 }
-function connect(clients: GatewayClientRegistry, connId: string) {
+function connect(
+  clients: GatewayClientRegistry,
+  connId: string,
+  completeWrite: (callback?: () => void) => void = (callback) => callback?.(),
+) {
   const frames: Array<{
     event: string;
     payload: { message?: unknown; data?: { text?: string; delta?: string }; state?: string };
@@ -61,7 +72,7 @@ function connect(clients: GatewayClientRegistry, connId: string) {
     bufferedAmount: 0,
     send: (wire: string, callback?: () => void) => {
       frames.push(JSON.parse(wire));
-      callback?.();
+      completeWrite(callback);
     },
     close: vi.fn(),
     terminate: vi.fn(),
@@ -153,6 +164,75 @@ it("sends append-only wire text while retaining snapshots for observers and late
     chatRunState.clear();
   }
 });
+
+it.each(
+  ["immediate", "paced", "slow"].flatMap((mode) =>
+    ["X", "foobaz"].map((replacement) => ({ mode, replacement })),
+  ),
+)(
+  "preserves real CLI output transforms through $mode wire delivery ($replacement)",
+  ({ mode, replacement }) => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    const clients = new GatewayClientRegistry();
+    const callbacks: Array<() => void> = [];
+    let hold = false;
+    const frames = connect(clients, "cli-reader", (callback) => {
+      if (callback && hold) {
+        callbacks.push(callback);
+      } else {
+        callback?.();
+      }
+    });
+    const broadcaster = createGatewayBroadcaster({ clients });
+    harness.broadcast.mockImplementation(broadcaster.broadcast);
+    const { handler, chatRunState } = harness;
+    const runId = `cli-transform-${mode}`;
+    registerChatRun(chatRunState, runId, `agent:main:${runId}`, runId);
+    const context = buildPreparedCliRunContext({ runId });
+    context.backendResolved.textTransforms = { output: [{ from: /foobar/g, to: replacement }] };
+    const cli = createCliEventHandlers({
+      context,
+      toolTracking: createCliToolTracking(context),
+      getRunState: () => ({ failed: false, error: undefined }),
+    });
+    const dispose = onAgentRuntimeEvent((event) => {
+      if (event.runId === runId) {
+        handler(event);
+      }
+    });
+    try {
+      cli.emitCliAssistantDelta({ text: "foo", delta: "foo" });
+      chatRunState.flushPendingText(runId);
+      if (mode === "slow") {
+        hold = true;
+        broadcaster.broadcast("tick", {});
+      }
+      cli.emitCliAssistantDelta({ text: "foobar", delta: "bar" });
+      if (mode !== "paced") {
+        chatRunState.flushPendingText(runId);
+      }
+      cli.emitCliAssistantDelta({ text: "foobarbaz", delta: "baz" });
+      chatRunState.flushPendingText(runId);
+      hold = false;
+      while (callbacks.length) {
+        callbacks.shift()?.();
+      }
+      const assistant = frames.filter((frame) => frame.event === "agent");
+      expect(assistant.map((frame) => frame.payload.data)).toEqual([
+        { text: "foo", delta: "foo" },
+        ...(mode === "immediate"
+          ? [{ text: replacement, delta: "bar" }, { delta: "baz" }]
+          : [{ text: `${replacement}baz`, delta: "barbaz" }]),
+      ]);
+    } finally {
+      dispose();
+      handler.dispose();
+      chatRunState.clear();
+      resetAgentEventsForTest({ preserveListeners: true });
+    }
+  },
+);
 
 it.each([true, false])("re-baselines after an upstream sequence gap (visible=%s)", (visible) => {
   vi.useFakeTimers();

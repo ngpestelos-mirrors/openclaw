@@ -1,5 +1,6 @@
 // Gateway node subscription manager.
 // Maintains bidirectional node/session fanout indexes.
+import { isLiveTextAppend } from "./live-text-continuity.js";
 import {
   serializeEventPayload,
   type NodeEventPayloadPreparation,
@@ -48,6 +49,7 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
   type Recipient = { pairingGeneration: string; subscriptions: Map<string, Subscription> };
   type Publication = {
     sourceEpoch?: object;
+    text?: string;
     version: unknown;
     sessionKeys: string[];
     isCurrent?: () => boolean;
@@ -304,12 +306,17 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
     const previousPublication = latest?.sourceEpoch === liveText.sourceEpoch ? latest : undefined;
     const publication: Publication = {
       sourceEpoch: liveText.sourceEpoch,
+      text: projection.text?.snapshot,
       version: projection.version,
       sessionKeys,
       isCurrent: liveText.isCurrent,
       settled: false,
     };
     group.publications.set(streamKey, publication);
+    const snapshot =
+      projection.snapshot ||
+      (projection.text !== undefined &&
+        !isLiveTextAppend(previousPublication?.text, projection.text));
 
     // Each representation is serialized only if a current recipient needs it.
     let snapshotJSON: SerializedEventPayload | null | undefined;
@@ -333,7 +340,7 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
               }
               const receipt = group.receipts.get(subscription)?.get(streamKey);
               const append =
-                !projection.snapshot &&
+                !snapshot &&
                 receipt?.connId === connId &&
                 receipt.publication === previousPublication &&
                 Object.is(previousPublication?.version, publication.version);

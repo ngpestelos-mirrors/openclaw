@@ -119,6 +119,7 @@ function liveTextPublisher(
           projection: {
             key: event,
             delta: () => deltaPayload,
+            text: event === "agent" ? { snapshot: text, delta } : undefined,
             version: boundary.version,
             snapshot: boundary.snapshot,
           },
@@ -199,6 +200,36 @@ describe("gateway node session runtime", () => {
       "one",
       "one two three",
       "one two three four five",
+    ]);
+  });
+
+  test("preserves transformed assistant snapshots before resuming queued appends", async () => {
+    const entered = createDeferred();
+    const pairing = createDeferred<string>();
+    let delayed = false;
+    const runtime = createRuntime(() => {
+      if (delayed) {
+        entered.resolve();
+        return pairing.promise;
+      }
+      return Promise.resolve("generation-a");
+    });
+    const frames: string[] = [];
+    registerNode(runtime, "conn-original", "generation-a", frames);
+    runtime.nodeSubscribe("node-a", "main", "conn-original");
+    const publisher = liveTextPublisher(runtime, "agent");
+    await publisher.send("foo", "foo");
+    delayed = true;
+    const transformed = publisher.send("X", "bar");
+    const append = publisher.send("Xbaz", "baz");
+    await entered.promise;
+    pairing.resolve("generation-a");
+    await Promise.all([transformed, append]);
+
+    expect(frames.map((frame) => JSON.parse(frame).payload.data)).toEqual([
+      { text: "foo", delta: "foo" },
+      { text: "X", delta: "bar" },
+      { delta: "baz" },
     ]);
   });
 

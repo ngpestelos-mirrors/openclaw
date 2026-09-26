@@ -1,5 +1,4 @@
-// Gateway broadcast types are shared by websocket fanout helpers and request
-// contexts so event delivery can carry optional state-version hints.
+import type { LiveTextProjectionText } from "./live-text-continuity.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
 
 type GatewayBroadcastStateVersion = {
@@ -36,6 +35,8 @@ export type GatewayBroadcastOpts = {
       snapshotBytes?: (payload: unknown, deltaPayloadBytes: number) => number;
       version?: unknown;
       snapshot?: boolean;
+      /** Verify transformed snapshots against the prior publication before omitting them. */
+      text?: LiveTextProjectionText;
     };
   };
 };

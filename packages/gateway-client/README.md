@@ -168,8 +168,9 @@ seconds with a multiplier of 2. Server-provided startup retry hints may override
 the next delay.
 
 A sequence gap calls `onGap` and retires the socket unless the callback already
-replaced it. The gapped frame and subsequent frames from that socket are not
-delivered. Reconnect restores a fresh live-text baseline; applications should
+replaced it. A gap-revealing `chat` final, aborted, or error event is delivered
+first so its authoritative outcome can settle the run. Other gapped frames and
+subsequent frames from that socket are not delivered. Reconnect restores a fresh live-text baseline; applications should
 also refresh durable state and restore their session subscriptions.
 
 The canonical defaults table and the server policy fields that can replace
@@ -207,6 +208,10 @@ protection and keeps only its bounded replay history. Ending the transport event
 stream also retires that protection. Custom `OpenClawTransport` implementations
 must deliver terminal outcomes or end a retired event stream; the generic
 transport interface does not expose a reconnect notification.
+Confirmed session unsubscribe also releases that session's baseline protection;
+the acknowledgment cannot retire a newer subscription's snapshot. The concrete
+Gateway transport preserves acknowledgment and event order. Custom transports
+must preserve that ordering or end their retired event stream.
 
 ## Bundled internals
 

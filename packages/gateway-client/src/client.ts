@@ -43,6 +43,8 @@ import {
 } from "./connect-auth.js";
 import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
 import { resolveModelCatalogConnect } from "./model-catalog-connect.js";
+import type { GatewayProtocolRequestTiming } from "./pending-request.js";
+import type { GatewayClientConnectionMetadata } from "./protocol-client-contract.js";
 import type { GatewayProtocolConnectAuthority } from "./protocol-client-contract.js";
 import {
   GatewayProtocolClient,
@@ -218,14 +220,10 @@ export type GatewayClientOptions = {
   notifyOnStartupRetry?: boolean;
   onClose?: (code: number, reason: string, info?: GatewayClientCloseInfo) => void;
   onGap?: (info: { expected: number; received: number }) => void;
+  onRequestTiming?: (timing: GatewayProtocolRequestTiming) => void;
 };
 
-export type GatewayClientConnectionMetadata = {
-  clientName?: GatewayClientName;
-  hasDeviceIdentity: boolean;
-  mode?: GatewayClientMode;
-  preauthHandshakeTimeoutMs?: number;
-};
+export type { GatewayClientConnectionMetadata } from "./protocol-client-contract.js";
 
 const FORCE_STOP_TERMINATE_GRACE_MS = 250;
 const STOP_AND_WAIT_TIMEOUT_MS = 1_000;
@@ -366,6 +364,7 @@ export class GatewayClient {
         this.logDebug(`gateway client parse error: ${formatGatewayClientErrorForLog(error)}`),
       onEvent: (event) => this.opts.onEvent?.(event),
       onGap: (info) => this.opts.onGap?.(info),
+      onRequestTiming: (timing) => this.opts.onRequestTiming?.(timing),
       onActivity: () => {
         this.lastTick = Date.now();
       },

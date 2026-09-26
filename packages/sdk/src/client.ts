@@ -1,24 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mergeChatStreamMessage } from "@openclaw/gateway-client";
 import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonEmptyStringPreservingWhitespace as readNonEmptyString } from "@openclaw/normalization-core/string-coerce";
-import {
-  isAssistantRunEvent,
-  isTerminalRunEvent,
-  normalizeChatProjectionEvent,
-  projectAssistantRunEvent,
-  readChatProjection,
-  readChatProjectionText,
-  type AssistantProjection,
-} from "./chat-projection.js";
-import { EventHub } from "./event-hub.js";
-import { normalizeGatewayEvent } from "./normalize.js";
+import { SdkRunReplay } from "./run-event-replay.js";
+import { iterateSdkRunEvents } from "./run-event-stream.js";
 import { readSdkRunTimestamp, resolveSdkRunWaitStatus } from "./run-terminal.js";
-import {
-  GatewayClientTransport,
-  isConnectableTransport,
-  readGatewayEventConnectionEpoch,
-} from "./transport.js";
+import { GatewayClientTransport, isConnectableTransport } from "./transport.js";
 import type {
   AgentsCreateParams,
   AgentsDeleteParams,
@@ -52,8 +38,6 @@ import type {
 
 // High-level OpenClaw SDK client. Namespaces below translate friendly SDK calls
 // into current Gateway RPC methods and normalize event streams for consumers.
-const MAX_REPLAY_RUNS = 100;
-const MAX_REPLAY_EVENTS_PER_RUN = 500;
 
 /** Connection and transport options for the OpenClaw SDK client. */
 export type OpenClawOptions = {
@@ -148,8 +132,6 @@ function unsupportedGatewayApi(api: string): never {
   throw new Error(`${api} is not supported by the current OpenClaw Gateway yet`);
 }
 
-type RunTerminalSource = { kind: "canonical" } | { kind: "chat"; eventType: OpenClawEvent["type"] };
-
 function hasArtifactQueryScope(params: unknown): params is ArtifactQuery {
   const record = asRecord(params);
   return [record.sessionKey, record.runId, record.taskId].some(
@@ -189,12 +171,7 @@ export class OpenClaw {
   readonly environments: EnvironmentsNamespace;
 
   private readonly transport: OpenClawTransport;
-  private readonly normalizedEvents = new EventHub<OpenClawEvent>();
-  private readonly replayByRunId = new Map<
-    string,
-    { events: OpenClawEvent[]; chatMessage?: unknown; assistant?: AssistantProjection }
-  >();
-  private replayConnectionEpoch: object | undefined;
+  private readonly replay = new SdkRunReplay();
   private connected = false;
   private closed = false;
   private eventPumpPromise: Promise<void> | null = null;
@@ -250,8 +227,7 @@ export class OpenClaw {
         await this.transport.close?.();
         await this.eventPumpPromise?.catch(() => {});
       } finally {
-        this.normalizedEvents.close();
-        this.replayByRunId.clear();
+        this.replay.close();
         this.eventPumpPromise = null;
         this.eventPumpReady = null;
         this.connected = false;
@@ -271,7 +247,11 @@ export class OpenClaw {
   ): Promise<T> {
     await this.connect();
     this.assertOpen();
-    return await this.transport.request<T>(method, params, options);
+    const result = await this.transport.request<T>(method, params, options);
+    if (method === "sessions.messages.unsubscribe") {
+      await this.replay.retireUnsubscribedSession(params, result);
+    }
+    return result;
   }
 
   events(filter?: (event: OpenClawEvent) => boolean): AsyncIterable<OpenClawEvent> {
@@ -302,7 +282,7 @@ export class OpenClaw {
   ): AsyncIterable<OpenClawEvent> {
     await this.connect();
     this.assertOpen();
-    for await (const event of this.normalizedEvents.stream(filter)) {
+    for await (const event of this.replay.events.stream(filter)) {
       yield event;
     }
   }
@@ -313,82 +293,7 @@ export class OpenClaw {
   ): AsyncIterable<OpenClawEvent> {
     await this.connect();
     this.assertOpen();
-    const replayEvents = this.replaySnapshot(runId);
-    let hasCanonicalAssistantRunEvent = replayEvents.some(isAssistantRunEvent);
-    let terminalSource: RunTerminalSource | undefined = replayEvents.some(isTerminalRunEvent)
-      ? { kind: "canonical" }
-      : undefined;
-    let previousChatProjectionText: string | undefined;
-    const toRunStreamEvent = (event: OpenClawEvent): OpenClawEvent | undefined => {
-      const chatProjection = readChatProjection(event);
-      if (chatProjection?.state === "delta") {
-        if (hasCanonicalAssistantRunEvent) {
-          return undefined;
-        }
-        const runEvent = normalizeChatProjectionEvent(
-          event,
-          chatProjection,
-          previousChatProjectionText,
-        );
-        const text = readChatProjectionText(chatProjection.payload);
-        if (text !== undefined) {
-          previousChatProjectionText = text;
-        }
-        return runEvent;
-      }
-      if (chatProjection) {
-        if (terminalSource) {
-          return undefined;
-        }
-        const runEvent = normalizeChatProjectionEvent(
-          event,
-          chatProjection,
-          previousChatProjectionText,
-        );
-        terminalSource = { kind: "chat", eventType: runEvent.type };
-        return runEvent;
-      }
-      if (isAssistantRunEvent(event)) {
-        hasCanonicalAssistantRunEvent = true;
-      }
-      if (isTerminalRunEvent(event)) {
-        // Abort broadcasts can arrive chat-first. Collapse matching carriers,
-        // while preserving a later authoritative outcome that differs.
-        const duplicate =
-          terminalSource?.kind === "chat" && terminalSource.eventType === event.type;
-        terminalSource = { kind: "canonical" };
-        if (duplicate) {
-          return undefined;
-        }
-      }
-      return event;
-    };
-    const matches = (event: OpenClawEvent) => event.runId === runId;
-    const liveSource = this.normalizedEvents.stream(matches);
-    // Iterator creation subscribes before replay yields, so live events queue behind the snapshot.
-    const live = liveSource[Symbol.asyncIterator]();
-    try {
-      for (const event of replayEvents) {
-        const runEvent = toRunStreamEvent(event);
-        if (!runEvent || (filter && !filter(runEvent))) {
-          continue;
-        }
-        yield runEvent;
-      }
-      while (true) {
-        const next = await live.next();
-        if (next.done) {
-          break;
-        }
-        const runEvent = toRunStreamEvent(next.value);
-        if (!runEvent || (filter && !filter(runEvent))) {
-          continue;
-        }
-        yield runEvent;
-      }
-    } finally {
-      await live.return?.();
-    }
+    yield* iterateSdkRunEvents(runId, this.replay.snapshot(runId), this.replay.events, filter);
   }
 
   private startEventPump(): Promise<void> {
@@ -420,13 +325,7 @@ export class OpenClaw {
           if (result.done) {
             break;
           }
-          const connectionEpoch = readGatewayEventConnectionEpoch(result.value);
-          if (connectionEpoch && connectionEpoch !== this.replayConnectionEpoch) {
-            this.retireReplayBaselines();
-            this.replayConnectionEpoch = connectionEpoch;
-          }
-          const normalized = this.recordReplayEvent(normalizeGatewayEvent(result.value));
-          this.normalizedEvents.publish(normalized);
+          this.replay.publish(result.value);
         }
       } catch (error) {
         pumpError = error;
@@ -441,90 +340,18 @@ export class OpenClaw {
             hasPumpError = true;
           }
         }
-        this.retireReplayBaselines();
+        this.replay.retireBaselines();
       }
       if (hasPumpError) {
-        this.normalizedEvents.close(pumpError);
+        this.replay.events.close(pumpError);
         return;
       }
-      this.normalizedEvents.close();
+      this.replay.events.close();
     })().catch((error: unknown) => {
       markReady();
-      this.normalizedEvents.close(error);
+      this.replay.events.close(error);
     });
     return this.eventPumpReady;
-  }
-
-  private recordReplayEvent(event: OpenClawEvent): OpenClawEvent {
-    const runId = event.runId;
-    if (!runId) {
-      return event;
-    }
-    let replay = this.replayByRunId.get(runId);
-    let trimReplayRuns = !replay;
-    if (!replay) {
-      replay = { events: [] };
-      this.replayByRunId.set(runId, replay);
-    }
-    const projection = readChatProjection(event);
-    const assistant = projectAssistantRunEvent(event, replay.assistant);
-    if (assistant) {
-      replay.assistant = assistant.assistant;
-      event = assistant.event;
-    }
-    if (projection?.state === "delta") {
-      replay.chatMessage = mergeChatStreamMessage(replay.chatMessage, projection.payload);
-      if (replay.chatMessage !== undefined) {
-        // Retained normalized events keep a baseline even when the raw prefix is
-        // evicted. `raw` and rawEvents() still describe the received wire frame.
-        event = { ...event, data: { ...projection.payload, message: replay.chatMessage } };
-      }
-    } else if (projection || isTerminalRunEvent(event)) {
-      delete replay.chatMessage;
-      delete replay.assistant;
-      this.replayByRunId.delete(runId);
-      this.replayByRunId.set(runId, replay);
-      trimReplayRuns = true;
-    }
-    const { events } = replay;
-    events.push(event);
-    if (events.length > MAX_REPLAY_EVENTS_PER_RUN) {
-      events.splice(0, events.length - MAX_REPLAY_EVENTS_PER_RUN);
-    }
-    if (trimReplayRuns) {
-      this.trimReplayRuns();
-    }
-    return event;
-  }
-
-  private retireReplayBaselines(): void {
-    this.replayConnectionEpoch = undefined;
-    for (const replay of this.replayByRunId.values()) {
-      delete replay.chatMessage;
-      delete replay.assistant;
-    }
-    this.trimReplayRuns();
-  }
-
-  private trimReplayRuns(): void {
-    if (this.replayByRunId.size <= MAX_REPLAY_RUNS) {
-      return;
-    }
-    let retained = 0;
-    // Active baselines cannot be evicted: later wire frames contain only suffixes.
-    for (const [runId, candidate] of [...this.replayByRunId].reverse()) {
-      if (
-        candidate.chatMessage === undefined &&
-        candidate.assistant === undefined &&
-        ++retained > MAX_REPLAY_RUNS
-      ) {
-        this.replayByRunId.delete(runId);
-      }
-    }
-  }
-
-  private replaySnapshot(runId: string): OpenClawEvent[] {
-    return [...(this.replayByRunId.get(runId)?.events ?? [])];
   }
 }
 

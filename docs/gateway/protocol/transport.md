@@ -57,7 +57,11 @@ Frame shapes:
 
 Live text uses append deltas after an initial recipient snapshot. An outer event
 sequence gap means a client may have lost part of that baseline: retire the
-connection and reconnect before applying more deltas. Renew session subscriptions
+connection and reconnect before applying more deltas. If the frame revealing the
+gap is a `chat` final, aborted, or error event, deliver its authoritative terminal
+outcome and supplied complete snapshot before gap callbacks retire the connection.
+This lets completed runs settle even when there will be no more live text to replay.
+Renew session subscriptions
 after reconnect; the Gateway sends a complete snapshot with the next text frame
 for each observed run. Run-local payload sequences can skip numbers because text
 is paced and coalesced; they are not the outer connection sequence.

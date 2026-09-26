@@ -91,6 +91,10 @@ export function assistantWireProjection(
     key: JSON.stringify(["agent", "assistant", sessionKey, agentId, controlUiVisible]),
     version: payload.data.itemId,
     delta: projectAssistantWireDelta,
+    text: {
+      snapshot: text,
+      delta: typeof payload.data.delta === "string" ? payload.data.delta : "",
+    },
     snapshot:
       payload.data.replace === true ||
       typeof payload.data.delta !== "string" ||

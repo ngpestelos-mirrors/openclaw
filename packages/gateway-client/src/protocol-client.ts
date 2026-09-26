@@ -3,6 +3,7 @@ import {
   isGatewayEventFrame,
   isGatewayResponseFrame,
 } from "@openclaw/gateway-protocol/frame-guards";
+import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { RetrySupervisor, sleepWithAbort } from "@openclaw/retry";
 import { GatewayEventListeners } from "./event-listeners.js";
 import { GatewayPendingRequests, type GatewayProtocolRequestTiming } from "./pending-request.js";
@@ -458,6 +459,17 @@ export class GatewayProtocolClient<TPlan> {
       if (seq !== null) {
         if (this.lastSeq !== null && seq > this.lastSeq + 1) {
           const expected = this.lastSeq + 1;
+          const state = asRecord(parsed.payload).state;
+          if (
+            parsed.event === "chat" &&
+            (state === "final" || state === "error" || state === "aborted")
+          ) {
+            // Terminal snapshots settle runs even when an earlier append was lost.
+            this.dispatchEvent(socket, generation, parsed);
+          }
+          if (!this.isActive(socket, generation) || this.connectionAbort?.signal.aborted) {
+            return;
+          }
           this.invoke("gap", () => this.opts.onGap?.({ expected, received: seq }));
           // An adapter may already have replaced the socket. Otherwise reconnect
           // here: a lost append cannot be repaired by the next append-only frame.
@@ -468,18 +480,7 @@ export class GatewayProtocolClient<TPlan> {
         }
         this.lastSeq = seq;
       }
-      // An owner may replace the socket while handling this frame. Snapshot
-      // first so replacement listeners cannot inherit a retired event.
-      const listeners = this.listeners.snapshot();
-      this.invoke("event", () => this.opts.onEvent?.(parsed));
-      for (const [listener, subscription] of listeners) {
-        if (!this.isActive(socket, generation) || this.connectionAbort?.signal.aborted) {
-          return;
-        }
-        if (this.listeners.isCurrent(listener, subscription)) {
-          this.invoke("event listener", () => listener(parsed));
-        }
-      }
+      this.dispatchEvent(socket, generation, parsed);
       return;
     }
     if (!isGatewayResponseFrame(parsed)) {
@@ -487,6 +488,24 @@ export class GatewayProtocolClient<TPlan> {
     }
     this.opts.onActivity?.();
     this.requests.handleResponse(parsed);
+  }
+
+  private dispatchEvent(
+    socket: GatewayProtocolSocket,
+    generation: number,
+    event: EventFrame,
+  ): void {
+    // Snapshot before callbacks so replacement listeners cannot inherit a retired event.
+    const listeners = this.listeners.snapshot();
+    this.invoke("event", () => this.opts.onEvent?.(event));
+    for (const [listener, subscription] of listeners) {
+      if (!this.isActive(socket, generation) || this.connectionAbort?.signal.aborted) {
+        return;
+      }
+      if (this.listeners.isCurrent(listener, subscription)) {
+        this.invoke("event listener", () => listener(event));
+      }
+    }
   }
 
   private handleClose(

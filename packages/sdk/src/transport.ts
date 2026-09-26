@@ -1,4 +1,5 @@
 import { GatewayClient, type GatewayClientOptions } from "@openclaw/gateway-client";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { EventHub } from "./event-hub.js";
 import type {
   ConnectableOpenClawTransport,
@@ -12,11 +13,28 @@ import type {
 type GatewayClientLike = Pick<GatewayClient, "request" | "stopAndWait">;
 
 const RAW_EVENT_REPLAY_LIMIT = 1000;
-const eventConnectionEpochs = new WeakMap<GatewayEvent, object>();
+type GatewayConnectionEpoch = { current: boolean };
+export type GatewayEventReceipt = { epoch: GatewayConnectionEpoch; order: number };
+type GatewayResponseReceipt = GatewayEventReceipt & { event?: GatewayEvent };
+const eventReceipts = new WeakMap<GatewayEvent, GatewayEventReceipt>();
+const responseReceipts = new WeakMap<object, GatewayResponseReceipt>();
 
 /** Internal connection provenance; raw event objects and payloads remain unchanged. */
 export function readGatewayEventConnectionEpoch(event: GatewayEvent): object | undefined {
-  return eventConnectionEpochs.get(event);
+  return eventReceipts.get(event)?.epoch;
+}
+
+export function readGatewayEventReceipt(event: GatewayEvent): GatewayEventReceipt | undefined {
+  return eventReceipts.get(event);
+}
+
+export function takeGatewayResponseReceipt(response: unknown): GatewayResponseReceipt | undefined {
+  if (!isRecord(response)) {
+    return undefined;
+  }
+  const receipt = responseReceipts.get(response);
+  responseReceipts.delete(response);
+  return receipt;
 }
 
 /** Explicit SDK projection with its broader identity and callback contracts preserved. */
@@ -47,6 +65,7 @@ type GatewayClientTransportOptions = Pick<
   | "tlsFingerprint"
   | "onConnectError"
   | "onGap"
+  | "onRequestTiming"
 > & {
   clientName?: string;
   mode?: string;
@@ -80,6 +99,7 @@ export class GatewayClientTransport implements ConnectableOpenClawTransport {
   private rejectPendingConnect: ((error: Error) => void) | null = null;
   private closePromise: Promise<void> | null = null;
   private closed = false;
+  private readonly responseObservers = new Map<string, (receipt: GatewayResponseReceipt) => void>();
 
   constructor(options: GatewayClientTransportOptions = {}) {
     this.options = options;
@@ -94,12 +114,15 @@ export class GatewayClientTransport implements ConnectableOpenClawTransport {
     }
     this.connectPromise = new Promise<void>((resolve, reject) => {
       this.rejectPendingConnect = reject;
-      let connectionEpoch = {};
+      let connectionEpoch: GatewayConnectionEpoch = { current: true };
+      let eventOrder = 0;
+      let lastEvent: GatewayEvent | undefined;
       const client = new GatewayClient({
         ...this.options,
         onEvent: (event: unknown) => {
           const normalized = toGatewayEvent(event);
-          eventConnectionEpochs.set(normalized, connectionEpoch);
+          eventReceipts.set(normalized, { epoch: connectionEpoch, order: ++eventOrder });
+          lastEvent = normalized;
           this.eventsHub.publish(normalized);
           this.options.onEvent?.(normalized);
         },
@@ -141,8 +164,23 @@ export class GatewayClientTransport implements ConnectableOpenClawTransport {
           }
         },
         onClose: (code: number, reason: string) => {
-          connectionEpoch = {};
+          connectionEpoch.current = false;
+          connectionEpoch = { current: true };
+          eventOrder = 0;
+          lastEvent = undefined;
           this.options.onClose?.(code, reason);
+        },
+        onRequestTiming: (
+          timing: Parameters<NonNullable<GatewayClientOptions["onRequestTiming"]>>[0],
+        ) => {
+          if (timing.ok) {
+            this.responseObservers.get(timing.id)?.({
+              epoch: connectionEpoch,
+              order: eventOrder,
+              event: lastEvent,
+            });
+          }
+          this.options.onRequestTiming?.(timing);
         },
         onGap: this.options.onGap,
       } as never);
@@ -162,7 +200,30 @@ export class GatewayClientTransport implements ConnectableOpenClawTransport {
     if (!this.client) {
       throw new Error("gateway transport is not connected");
     }
-    return await this.client.request<T>(method, params, options);
+    if (method !== "sessions.messages.unsubscribe") {
+      return await this.client.request<T>(method, params, options);
+    }
+    let requestId: string | undefined;
+    let receipt: GatewayResponseReceipt | undefined;
+    try {
+      const result = await this.client.request<T>(method, params, {
+        ...options,
+        onSent: (id) => {
+          requestId = id;
+          this.responseObservers.set(id, (observed) => {
+            receipt = observed;
+          });
+        },
+      });
+      if (receipt && isRecord(result)) {
+        responseReceipts.set(result, receipt);
+      }
+      return result;
+    } finally {
+      if (requestId) {
+        this.responseObservers.delete(requestId);
+      }
+    }
   }
 
   events(filter?: (event: GatewayEvent) => boolean): AsyncIterable<GatewayEvent> {

@@ -1,5 +1,6 @@
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { isLiveTextAppend } from "./live-text-continuity.js";
 import type { GatewayBroadcastOpts } from "./server-broadcast-types.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
 import type { GatewayClientRegistry } from "./server/client-registry.js";
@@ -16,6 +17,7 @@ export type LiveTextPublication = {
   revision: object;
   version?: unknown;
   snapshot?: boolean;
+  text?: string;
 };
 export type PendingLiveText = {
   group: AbortSignal;
@@ -175,7 +177,12 @@ export function createGatewayLiveTextDelivery(params: {
       previous: previous?.revision,
       revision: {},
       version: live.projection.version,
-      snapshot: live.projection.snapshot || !Object.is(previous?.version, live.projection.version),
+      text: live.projection.text?.snapshot,
+      snapshot:
+        live.projection.snapshot ||
+        !Object.is(previous?.version, live.projection.version) ||
+        (live.projection.text !== undefined &&
+          !isLiveTextAppend(previous?.text, live.projection.text)),
     };
     streams.set(publication.key, publication);
     return publication;
