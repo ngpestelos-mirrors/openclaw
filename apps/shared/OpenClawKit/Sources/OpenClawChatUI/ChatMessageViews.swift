@@ -1124,7 +1124,7 @@ struct ChatStreamingAssistantText {
     }
 }
 
-// Temporary investigation-only observation. No view, model, or snapshot is retained here.
+/// Temporary investigation-only observation. No view, model, or snapshot is retained here.
 @MainActor
 enum ChatStreamingEqualityDiagnostic {
     struct Input: Codable, Equatable {
@@ -1156,6 +1156,30 @@ enum ChatStreamingEqualityDiagnostic {
     static func input(source: String, thinking: Bool) -> Input? {
         guard self.arm != nil, let name = self.inputs[source] else { return nil }
         return Input(name: name, thinking: thinking)
+    }
+
+    static func prepare(
+        sourceText: String,
+        includesThinking: Bool,
+        viewModel: OpenClawChatViewModel) -> ChatStreamingAssistantText
+    {
+        let diagnostic = self.input(source: sourceText, thinking: includesThinking)
+        let started = diagnostic.map { _ in DispatchTime.now().uptimeNanoseconds }
+        let preparedText = ChatStreamingAssistantText(
+            sourceText: sourceText, includesThinking: includesThinking)
+        let ended = started.map { _ in DispatchTime.now().uptimeNanoseconds }
+        if let diagnostic, let started, let ended {
+            let tools = viewModel.toolActivities.map { call in
+                call.toolCallId + ":" + (call.diffStat.map { "\($0.added),\($0.removed)" } ?? "none")
+            }.joined(separator: ";")
+            self.record(
+                kind: "segments",
+                input: diagnostic,
+                nanoseconds: ended - started,
+                result: preparedText.segments.map { "\($0.kind):\($0.text)" },
+                parent: "\(viewModel.pendingRunCount)|\(tools)")
+        }
+        return preparedText
     }
 
     static func begin(_ stage: String) {
@@ -1236,6 +1260,45 @@ struct ChatStreamingAssistantBubble: View {
             .accessibilityIdentifier("chat-streaming-assistant-body")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The baseline bubble has no new conformance or fields. This candidate adds a view node.
+@MainActor
+private struct ChatStreamingEqualityCandidate: View {
+    let bubble: ChatStreamingAssistantBubble
+
+    var body: some View {
+        self.bubble
+    }
+}
+
+extension ChatStreamingEqualityCandidate: @MainActor Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.bubble.text.sourceText == rhs.bubble.text.sourceText &&
+            lhs.bubble.text.includesThinking == rhs.bubble.text.includesThinking &&
+            lhs.bubble.markdownVariant == rhs.bubble.markdownVariant &&
+            lhs.bubble.assistantName == rhs.bubble.assistantName &&
+            lhs.bubble.assistantAvatarText == rhs.bubble.assistantAvatarText &&
+            lhs.bubble.assistantAvatarTint == rhs.bubble.assistantAvatarTint &&
+            lhs.bubble.showsAssistantAvatar == rhs.bubble.showsAssistantAvatar &&
+            lhs.bubble.isClean == rhs.bubble.isClean
+    }
+}
+
+extension ChatStreamingAssistantBubble {
+    @ViewBuilder
+    func equalityDiagnostic() -> some View {
+        Group {
+            if ChatStreamingEqualityDiagnostic.input(
+                source: self.text.sourceText, thinking: self.text.includesThinking) != nil,
+                ChatStreamingEqualityDiagnostic.arm == "candidate"
+            {
+                ChatStreamingEqualityCandidate(bubble: self).equatable()
+            } else {
+                self
+            }
+        }
     }
 }
 

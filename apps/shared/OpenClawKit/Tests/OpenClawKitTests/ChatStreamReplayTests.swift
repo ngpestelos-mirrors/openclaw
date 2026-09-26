@@ -457,7 +457,7 @@ struct ChatStreamReplayTests {
                 let checkpoints: [Diagnostic.Checkpoint]
                 let recordingFailure: String?
                 let limitation =
-                    "Candidate adds a view node; arms use distinct equal-length fixture namespaces; math geometry does not prove color or reveal opacity."
+                    "Candidate adds a view node; arms use distinct equal-length fixture namespaces; math geometry does not prove color or reveal opacity; reduce-motion is not exercised or proved."
             }
             if let data = try? JSONEncoder().encode(Report(
                 checkpoints: Diagnostic.checkpoints, recordingFailure: Diagnostic.failure))
@@ -511,12 +511,11 @@ struct ChatStreamReplayTests {
                 contentRect: NSRect(x: 0, y: 0, width: 960, height: 900),
                 styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            func content(reasoning: Bool = false, darkAndReducedMotion: Bool = false) -> some View {
+            func content(reasoning: Bool = false, dark: Bool = false) -> some View {
                 OpenClawChatView(
                     viewModel: vm, displayOptions: reasoning ? [.toolActivity, .reasoning] : [.toolActivity],
                     assistantAvatarTint: .blue, showsAssistantAvatars: false, showsComposer: false)
-                    .environment(\.colorScheme, darkAndReducedMotion ? .dark : .light)
-                    .environment(\.accessibilityReduceMotion, darkAndReducedMotion)
+                    .environment(\.colorScheme, dark ? .dark : .light)
             }
             let host = NSHostingView(rootView: content())
             window.contentView = host
@@ -599,10 +598,10 @@ struct ChatStreamReplayTests {
             Diagnostic.begin("reasoning-on")
             host.rootView = content(reasoning: true)
             try inspect(["r = 4", "z = 3"], prepared: .init(name: "replacement", thinking: true))
-            Diagnostic.begin("dark-reduced-motion")
-            host.rootView = content(reasoning: true, darkAndReducedMotion: true)
+            Diagnostic.begin("dark")
+            host.rootView = content(reasoning: true, dark: true)
             try inspect(["r = 4", "z = 3"])
-            Diagnostic.begin("light-motion")
+            Diagnostic.begin("light")
             host.rootView = content(reasoning: true)
             try inspect(["r = 4", "z = 3"])
             Diagnostic.begin("reasoning-off")

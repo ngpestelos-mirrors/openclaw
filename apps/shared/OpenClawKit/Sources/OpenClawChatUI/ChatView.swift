@@ -613,26 +613,12 @@ public struct OpenClawChatView: View {
         }
 
         if let text = viewModel.streamingAssistantText {
-            let diagnostic = ChatStreamingEqualityDiagnostic.input(
-                source: text, thinking: self.displayOptions.contains(.reasoning))
-            let started = diagnostic.map { _ in DispatchTime.now().uptimeNanoseconds }
-            let preparedText = ChatStreamingAssistantText(
+            let preparedText = ChatStreamingEqualityDiagnostic.prepare(
                 sourceText: text,
-                includesThinking: self.displayOptions.contains(.reasoning))
-            let ended = started.map { _ in DispatchTime.now().uptimeNanoseconds }
-            let _ = {
-                if let diagnostic, let started, let ended {
-                    let tools = self.viewModel.toolActivities.map { call in
-                        call.toolCallId + ":" + (call.diffStat.map { "\($0.added),\($0.removed)" } ?? "none")
-                    }.joined(separator: ";")
-                    ChatStreamingEqualityDiagnostic.record(
-                        kind: "segments", input: diagnostic, nanoseconds: ended - started,
-                        result: preparedText.segments.map { "\($0.kind):\($0.text)" },
-                        parent: "\(self.viewModel.pendingRunCount)|\(tools)")
-                }
-            }()
+                includesThinking: self.displayOptions.contains(.reasoning),
+                viewModel: self.viewModel)
             if !preparedText.segments.isEmpty {
-                let bubble = ChatStreamingAssistantBubble(
+                ChatStreamingAssistantBubble(
                     text: preparedText,
                     markdownVariant: self.markdownVariant,
                     assistantName: self.assistantName,
@@ -640,14 +626,8 @@ public struct OpenClawChatView: View {
                     assistantAvatarTint: self.assistantAvatarTint,
                     showsAssistantAvatar: self.showsAssistantAvatars,
                     isClean: self.composerChrome == .clean)
-                Group {
-                    if diagnostic != nil, ChatStreamingEqualityDiagnostic.arm == "candidate" {
-                        ChatStreamingEqualityCandidate(bubble: bubble).equatable()
-                    } else {
-                        bubble
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                    .equalityDiagnostic()
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -1087,27 +1067,6 @@ public struct OpenClawChatView: View {
         #else
         "Type a message below to start."
         #endif
-    }
-}
-
-// The baseline bubble has no new conformance or fields. This candidate adds a view node.
-@MainActor
-private struct ChatStreamingEqualityCandidate: View {
-    let bubble: ChatStreamingAssistantBubble
-
-    var body: some View { self.bubble }
-}
-
-extension ChatStreamingEqualityCandidate: @MainActor Equatable {
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.bubble.text.sourceText == rhs.bubble.text.sourceText &&
-            lhs.bubble.text.includesThinking == rhs.bubble.text.includesThinking &&
-            lhs.bubble.markdownVariant == rhs.bubble.markdownVariant &&
-            lhs.bubble.assistantName == rhs.bubble.assistantName &&
-            lhs.bubble.assistantAvatarText == rhs.bubble.assistantAvatarText &&
-            lhs.bubble.assistantAvatarTint == rhs.bubble.assistantAvatarTint &&
-            lhs.bubble.showsAssistantAvatar == rhs.bubble.showsAssistantAvatar &&
-            lhs.bubble.isClean == rhs.bubble.isClean
     }
 }
 
