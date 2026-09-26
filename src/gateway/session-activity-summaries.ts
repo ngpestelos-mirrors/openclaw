@@ -247,7 +247,8 @@ export function createSessionActivitySummaries(deps: {
   const assertCurrentOwner = (state: Tracked, expectedModel: string) => {
     if (
       !current(state) ||
-      // Deletion and reset retain exact-row snapshots across awaited preparation.
+      // Lifecycle callers hold configured selectors as well as physical store identities.
+      isSessionLifecycleMutationActive(state.sourceStorePath, [state.key, state.sessionId]) ||
       isSessionLifecycleMutationActive(state.storePath, [state.key, state.sessionId]) ||
       modelRef(state) !== expectedModel ||
       state.controller?.signal.aborted
