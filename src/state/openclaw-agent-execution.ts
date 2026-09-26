@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { retainSqliteWorkerErrorCode } from "../infra/sqlite-worker-contract.js";
 import {
@@ -33,7 +34,11 @@ import {
   observeOpenClawDatabaseMaintenanceResource,
 } from "./openclaw-state-db-async-lifecycle.js";
 import { registerOpenClawStateDatabaseAsyncResource } from "./openclaw-state-db-cache.js";
-import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
+import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
+import {
+  captureOpenClawStateReadContext,
+  captureOpenClawStateWorkerContext,
+} from "./openclaw-state-worker-context.js";
 
 export type OpenClawAgentDatabaseExecution = {
   readonly agentId: string;
@@ -105,7 +110,6 @@ export function captureOpenClawAgentDatabaseExecution(
   if (!supportsOpenClawAgentDatabaseExecution(options)) {
     throw new Error("This agent database scope still requires its existing native owner");
   }
-  const context = captureOpenClawStateWorkerContext({ env: options.env });
   const identity = readDatabasePathIdentitySync(pathname);
   const existing = executions.get(pathname) ?? executions.get(identity.canonicalPath);
   const expectedCreationIdentity = constraints.expectedCreationIdentity
@@ -135,13 +139,19 @@ export function captureOpenClawAgentDatabaseExecution(
         `OpenClaw agent database ${pathname} is already open for agent ${existing.agentId}; requested agent ${agentId}.`,
       );
     }
-    if (existing.sharedDatabaseKey !== context.admission.identity.key) {
+    const env =
+      process.platform === "win32"
+        ? cloneEnvWithPlatformSemantics(options.env ?? process.env)
+        : options.env;
+    const state = captureOpenClawStateReadContext(resolveOpenClawStateSqlitePath(env));
+    if (existing.sharedDatabaseKey !== state.admission.identity.key) {
       throw new Error(
         "Agent database execution belongs to another shared-state database; drain its existing resources before changing the state directory.",
       );
     }
     return existing.borrow(pathname, constraints.expectedIdentity, expectedCreationIdentity);
   }
+  const context = captureOpenClawStateWorkerContext({ env: options.env });
   const executionOptions = { agentId, path: pathname, env: context.environment };
   const aliases = new Map<string, () => void>();
   let retired = false;
@@ -233,8 +243,6 @@ export function captureOpenClawAgentDatabaseExecution(
     createIfMissing = false,
     creatingTarget?: DatabasePathIdentity,
   ): Promise<T | undefined> {
-    assertCurrent();
-    assertCallerCurrent?.();
     const pending = agentDatabaseLifecycle.pending.get(pathname);
     if (pending) {
       if (creatingTarget && !fileIdentity) {
@@ -341,14 +349,23 @@ export function captureOpenClawAgentDatabaseExecution(
             throw new Error("Agent database borrower changed its originally observed target");
           }
         }
-        for (const file of [expectedIdentity, fileIdentity]) {
-          if (file) {
-            assertExistingDatabaseIdentity(
-              borrowedPath,
-              `file:${file.physicalIdentity}`,
-              file.birthtime,
-            );
-          }
+        if (
+          fileIdentity &&
+          expectedIdentity &&
+          (fileIdentity.physicalIdentity !== expectedIdentity.physicalIdentity ||
+            (fileIdentity.birthtime !== undefined &&
+              expectedIdentity.birthtime !== undefined &&
+              fileIdentity.birthtime !== expectedIdentity.birthtime))
+        ) {
+          throw new Error("Agent database borrower belongs to another physical file");
+        }
+        const file = fileIdentity ?? expectedIdentity;
+        if (file) {
+          assertExistingDatabaseIdentity(
+            borrowedPath,
+            `file:${file.physicalIdentity}`,
+            fileIdentity?.birthtime ?? expectedIdentity?.birthtime,
+          );
         }
       };
       assertReferenceCurrent();
