@@ -1,5 +1,5 @@
 import type { EventFrame } from "@openclaw/gateway-protocol";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { GatewayProtocolClient, type GatewayProtocolSocketHandlers } from "./protocol-client.js";
 
 type SyntheticGatewayProtocolConnection = {
@@ -76,6 +76,9 @@ function completeSyntheticGatewayProtocolHandshake(
 }
 
 describe("GatewayProtocolClient lifecycle and event delivery", () => {
+  beforeEach(() => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+  });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();

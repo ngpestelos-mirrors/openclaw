@@ -188,6 +188,7 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
   });
 
   it("settles a gap-revealing final snapshot before reconnecting", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     const disconnected = createDeferred<void>();
     const reconnected = createDeferred<void>();
@@ -242,6 +243,7 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
       expect(hellos).toBe(2);
     } finally {
       await oc.close();
+      random.mockRestore();
       vi.useRealTimers();
     }
   });

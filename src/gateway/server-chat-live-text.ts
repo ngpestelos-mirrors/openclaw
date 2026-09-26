@@ -12,7 +12,6 @@ import type { ChatRunState } from "./server-chat-state.js";
 type ChatRunRecord = ReturnType<ChatRunState["getOrCreate"]>;
 type LiveTextStream = "chat" | "agent";
 
-type BroadcastDelta = { deltaText: string; replace?: true };
 type LiveTextDelivery = NonNullable<GatewayBroadcastOpts["liveText"]>;
 
 function projectChatWireDelta(value: unknown): ChatEvent {
@@ -150,21 +149,6 @@ export function mergeChatTextPayload(previous: unknown, next: unknown): ChatEven
   const payload = next as Delta;
   // SAFETY: both values share the same chat-delta delivery key and buffering generation.
   return { ...payload, deltaText: `${(previous as Delta).deltaText}${payload.deltaText}` };
-}
-
-export function resolveBroadcastDelta(params: {
-  text: string;
-  previousBroadcastText: string | undefined;
-}): BroadcastDelta | undefined {
-  const previous = params.previousBroadcastText;
-  if (previous === undefined) {
-    return params.text ? { deltaText: params.text } : undefined;
-  }
-  if (!params.text.startsWith(previous)) {
-    return { deltaText: params.text, replace: true };
-  }
-  const deltaText = params.text.slice(previous.length);
-  return deltaText ? { deltaText } : undefined;
 }
 
 export function cancelPendingLiveTextFlush(run: ChatRunRecord, stream: LiveTextStream): void {
