@@ -1,5 +1,6 @@
 // Workboard plugin module implements gateway behavior.
 import type { WorkboardCard } from "@openclaw/workboard-contract";
+import { ErrorCodes, errorShape } from "openclaw/plugin-sdk/gateway-runtime";
 import type { OpenClawPluginApi } from "../api.js";
 import { redactClaimToken } from "./card-redaction.js";
 import {
@@ -68,7 +69,26 @@ export function registerWorkboardGatewayMethods(params: {
         method,
         async (request) => {
           try {
-            return await store.runOperation(() => handler(request));
+            return await store.runOperation(() => {
+              if (
+                method === "workboard.cards.attachments.add" &&
+                !request.client?.internal?.syntheticClient &&
+                !request.client?.internal?.agentRuntimeIdentity &&
+                hostApi.runtime.config.current().gateway?.uploads?.enabled === false
+              ) {
+                request.respond(
+                  false,
+                  undefined,
+                  errorShape(
+                    ErrorCodes.FORBIDDEN,
+                    "File and image uploads are disabled by gateway.uploads.enabled",
+                    { details: { code: "UPLOADS_DISABLED" } },
+                  ),
+                );
+                return;
+              }
+              return handler(request);
+            });
           } catch (error) {
             respondError(request.respond, error);
           }

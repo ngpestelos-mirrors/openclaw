@@ -5,6 +5,7 @@ import { render } from "lit";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { createChatAttachmentHandoff } from "../../app/chat-attachment-handoff.ts";
+import { createApplicationConfigCapability } from "../../app/config.ts";
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import { createApplicationGateway } from "../../test-helpers/application-context.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
@@ -31,6 +32,7 @@ afterEach(() => {
   resetChatViewState();
   resetTranscriptTestDom();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function renderChatView(overrides: Partial<Parameters<typeof renderChat>[0]>) {
@@ -58,6 +60,41 @@ function getComposerTextarea(container: Element) {
 }
 
 describe("chat attachment paste", () => {
+  it("removes upload controls and rejects file paste/drop while preserving plain text paste", async () => {
+    const uploadConfig = createApplicationConfigCapability({ resourceBasePath: "" });
+    const onAttachmentsChange = vi.fn();
+    const container = renderChatView({ uploadConfig, onAttachmentsChange });
+    expect(container.querySelector("input[type=file]")).not.toBeNull();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ uploadsEnabled: false })),
+    );
+    await uploadConfig.refresh();
+    const disabled = renderChatView({ uploadConfig, onAttachmentsChange });
+    expect(disabled.querySelector("input[type=file]")).toBeNull();
+    expect(disabled.querySelector(".agent-chat__attach-menu-option")).toBeNull();
+    const textarea = getComposerTextarea(disabled);
+    const textPaste = createPasteEvent("ordinary text ".repeat(200));
+    textarea.dispatchEvent(textPaste);
+    expect(textPaste.defaultPrevented).toBe(false);
+    const imagePaste = createPasteEvent("data:image/png;base64,YWJj");
+    textarea.dispatchEvent(imagePaste);
+    expect(imagePaste.defaultPrevented).toBe(true);
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", {
+      value: {
+        types: ["Files"],
+        files: [new File(["proof"], "proof.txt")],
+      },
+    });
+    disabled.querySelector("section.chat")!.dispatchEvent(drop);
+    expect(drop.defaultPrevented).toBe(true);
+    expect(onAttachmentsChange).not.toHaveBeenCalled();
+    // Retained enabled render handlers also consume the current policy.
+    getComposerTextarea(container).dispatchEvent(createPasteEvent("data:image/png;base64,YWJj"));
+    expect(onAttachmentsChange).not.toHaveBeenCalled();
+  });
+
   it("preserves pasted-text presentation and restore behavior across handoff", async () => {
     let attachments: ChatAttachment[] = [];
     const producer = renderAttachmentHarness(

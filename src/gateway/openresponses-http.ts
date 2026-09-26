@@ -8,7 +8,6 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
 import type { ClientToolDefinition } from "../agents/command/shared-types.js";
 import type { ImageContent } from "../agents/command/types.js";
@@ -24,16 +23,8 @@ import {
 } from "../media-understanding/file-attachment-outcomes.js";
 import { renderFileContextBlock } from "../media/file-context.js";
 import {
-  DEFAULT_INPUT_IMAGE_MAX_BYTES,
-  DEFAULT_INPUT_IMAGE_MIMES,
-  DEFAULT_INPUT_MAX_REDIRECTS,
-  DEFAULT_INPUT_TIMEOUT_MS,
   extractFileContentFromSource,
   extractImageContentFromSource,
-  normalizeMimeList,
-  resolveInputFileLimits,
-  type InputFileLimits,
-  type InputImageLimits,
 } from "../media/input-files.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../process/gateway-work-admission.js";
 import {
@@ -59,6 +50,7 @@ import {
 } from "./http-common.js";
 import { handleGatewayPostJsonEndpoint } from "./http-endpoint-helpers.js";
 import { assertGatewayHttpRequestCurrent } from "./http-request-authority.js";
+import { rejectDisabledGatewayUpload } from "./http-upload-policy.js";
 import {
   type AuthorizedGatewayHttpRequest,
   authorizeOpenAiCompatibleHttpModelOverride,
@@ -75,7 +67,6 @@ import {
   resolveSharedSecretHttpOperatorScopes,
   resolveOpenAiCompatibleHttpSenderIsOwner,
 } from "./http-utils.js";
-import { normalizeInputHostnameAllowlist } from "./input-allowlist.js";
 import {
   CreateResponseBodySchema,
   type CreateResponseBody,
@@ -92,6 +83,7 @@ import {
   runOpenAiCompatibleAgentCommand,
   type OpenAiCompatibleHttpOptions,
 } from "./openai-compatible-agent-run.js";
+import { resolveResponsesLimits } from "./openai-compatible-input-limits.js";
 import {
   applyToolChoice,
   isToolChoiceConstraintSatisfied,
@@ -102,9 +94,6 @@ import {
 import { buildAgentPrompt } from "./openresponses-prompt.js";
 import { createAssistantOutputItem, createFunctionCallOutputItem } from "./openresponses-shape.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
-
-const DEFAULT_BODY_BYTES = 20 * 1024 * 1024;
-const DEFAULT_MAX_URL_PARTS = 8;
 
 // In-memory map from responseId -> sessionKey for previous_response_id continuity.
 // Entries are evicted after 30 minutes to bound memory usage.
@@ -246,37 +235,6 @@ function writeSseEvent(res: ServerResponse, event: StreamingEvent) {
   res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 }
 
-type ResolvedResponsesLimits = {
-  maxBodyBytes: number;
-  maxUrlParts: number;
-  files: InputFileLimits;
-  images: InputImageLimits;
-};
-
-function resolveResponsesLimits(
-  config: GatewayHttpResponsesConfig | undefined,
-): ResolvedResponsesLimits {
-  const files = config?.files;
-  const images = config?.images;
-  const fileLimits = resolveInputFileLimits(files);
-  return {
-    maxBodyBytes: DEFAULT_BODY_BYTES,
-    maxUrlParts: resolveIntegerOption(config?.maxUrlParts, DEFAULT_MAX_URL_PARTS, { min: 0 }),
-    files: {
-      ...fileLimits,
-      urlAllowlist: normalizeInputHostnameAllowlist(files?.urlAllowlist),
-    },
-    images: {
-      allowUrl: images?.allowUrl ?? true,
-      urlAllowlist: normalizeInputHostnameAllowlist(images?.urlAllowlist),
-      allowedMimes: normalizeMimeList(images?.allowedMimes, DEFAULT_INPUT_IMAGE_MIMES),
-      maxBytes: images?.maxBytes ?? DEFAULT_INPUT_IMAGE_MAX_BYTES,
-      maxRedirects: images?.maxRedirects ?? DEFAULT_INPUT_MAX_REDIRECTS,
-      timeoutMs: images?.timeoutMs ?? DEFAULT_INPUT_TIMEOUT_MS,
-    },
-  };
-}
-
 function extractClientTools(body: CreateResponseBody): ClientToolDefinition[] {
   // Normalize from Responses API flat format to the internal wrapped format.
   return (body.tools ?? []).map((tool) => ({
@@ -360,6 +318,17 @@ export async function handleOpenResponsesHttpRequest(
   if (!payload) {
     return true;
   }
+  const hasMedia =
+    Array.isArray(payload.input) &&
+    payload.input.some(
+      (item) =>
+        item.type === "message" &&
+        Array.isArray(item.content) &&
+        item.content.some((part) => part.type === "input_image" || part.type === "input_file"),
+    );
+  if (rejectDisabledGatewayUpload(res, hasMedia)) {
+    return true;
+  }
   const stream = Boolean(payload.stream);
   const model = payload.model;
   const user = payload.user;
@@ -424,6 +393,9 @@ export async function handleOpenResponsesHttpRequest(
               continue;
             }
             assertGatewayHttpRequestCurrent(handled.requestAuth);
+            if (rejectDisabledGatewayUpload(res, hasMedia)) {
+              return true;
+            }
             if (part.source.type === "url") {
               markUrlPart();
             }
@@ -481,11 +453,18 @@ export async function handleOpenResponsesHttpRequest(
       sendUnauthorized(res);
       return true;
     }
+    if (rejectDisabledGatewayUpload(res, hasMedia)) {
+      return true;
+    }
     logWarn(`openresponses: request parsing failed: ${String(err)}`);
     sendInvalidRequest(res, "invalid request");
     return true;
   }
 
+  // Preparation can yield across a runtime policy publication, including the last file.
+  if (rejectDisabledGatewayUpload(res, hasMedia)) {
+    return true;
+  }
   const clientTools = extractClientTools(payload);
   let toolChoicePrompt: string | undefined;
   let toolChoiceConstraint: ToolChoiceConstraint | undefined;

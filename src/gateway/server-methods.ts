@@ -85,6 +85,7 @@ import {
   SessionMutationAuthorizationChangedError,
 } from "./session-sharing.js";
 import { classifyGatewayStaleInstall } from "./stale-install.js";
+import { gatewayClientUploadPolicyError } from "./upload-policy.js";
 
 export { coreGatewayHandlers };
 
@@ -242,6 +243,10 @@ export async function authorizeGatewayRequestPreDispatch(params: {
     const scopeAuthorization = authorizeMethod();
     if (scopeAuthorization.error) {
       return { error: scopeAuthorization.error };
+    }
+    const uploadError = gatewayClientUploadPolicyError(params);
+    if (uploadError) {
+      return { error: uploadError };
     }
     // GitHub-backed connections receive hello before remote account resolution. Profile-owned
     // methods must cross this single router fence before session authorization or handler work.
@@ -658,6 +663,18 @@ export async function handleGatewayRequest(
         : respond;
     const invokeHandler = async () => {
       const preparedHandler = await prepareGatewayRequestHandler(handler, entry);
+      // Lazy preparation may yield across a hot config change. Never hand a now-disabled
+      // upload to its owner, even when admission used the previously enabled snapshot.
+      const uploadError = gatewayClientUploadPolicyError({
+        method: req.method,
+        requestParams: req.params,
+        client,
+        context,
+      });
+      if (uploadError) {
+        respond(false, undefined, uploadError);
+        return;
+      }
       const handlerOptions = bindGatewayRequestHandlerMutationAuthority(
         opts,
         {

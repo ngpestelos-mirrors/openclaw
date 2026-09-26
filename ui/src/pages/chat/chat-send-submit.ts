@@ -18,6 +18,7 @@ import { trimHumanMentions } from "../../lib/chat/human-mentions.ts";
 import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
 import { scopedAgentIdForSession, visibleSessionMatches } from "../../lib/sessions/index.ts";
 import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
+import { uploadsEnabled, uploadsDisabledMessage } from "../../lib/uploads.ts";
 import { composeBrowserAnnotationContext } from "./browser-annotation-context.ts";
 import {
   dispatchChatSlashCommand,
@@ -150,6 +151,10 @@ export async function handleSendChat(
     messageOverride == null ? host.chatAttachments : (opts?.attachmentsOverride ?? []),
   );
   const hasAttachments = attachmentsToSend.length > 0;
+  if (hasAttachments && !uploadsEnabled(host.uploadConfig)) {
+    setChatError(host, uploadsDisabledMessage());
+    return undefined;
+  }
   if (intent) {
     if (draftMentions?.length) {
       setChatError(host, t("chat.mentions.unsupported"));

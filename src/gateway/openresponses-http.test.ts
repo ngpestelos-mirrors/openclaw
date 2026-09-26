@@ -22,12 +22,15 @@ import {
 } from "../process/gateway-work-admission.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../test-utils/port-claims.js";
-import { IMAGE_ONLY_USER_MESSAGE } from "./agent-prompt.js";
 import {
   expectDeclaredHttpOwnerIdentity,
   expectHttpForeignSessionAuthority,
   expectSharedSecretHttpOwnerIdentity,
 } from "./http-authority.test-support.js";
+import {
+  registerOpenResponsesHttpUploadTests,
+  registerOpenResponsesHttpMediaInputTests,
+} from "./http-input-media.test-support.js";
 import {
   assistantSnapshotCases,
   streamingFailureCases,
@@ -283,6 +286,14 @@ async function expectInvalidRequest(
 }
 
 describe("OpenResponses HTTP API (e2e)", () => {
+  registerOpenResponsesHttpUploadTests({
+    getPort: () => enabledPort,
+    postResponses,
+    firstAgentOpts,
+    agentCommandMock,
+    fetchWithSsrFGuardMock,
+  });
+
   it("binds the Gateway lifecycle resolver to response runs", async () => {
     let resolveGatewayContext: ReturnType<typeof getGatewayContextResolver>;
     agentCommandMock.mockClear();
@@ -3275,160 +3286,14 @@ describe("OpenResponses HTTP API (e2e)", () => {
     ).toBeUndefined();
   });
 
-  it("blocks unsafe URL-based file/image inputs", async () => {
-    const port = enabledPort;
-    agentCommandMock.mockClear();
-
-    const blockedPrivate = await postResponses(port, {
-      model: "openclaw",
-      input: buildUrlInputMessage({
-        kind: "input_file",
-        url: "http://127.0.0.1:6379/info",
-      }),
-    });
-    await expectInvalidRequest(blockedPrivate, /invalid request|private|internal|blocked/i);
-
-    const blockedMetadata = await postResponses(port, {
-      model: "openclaw",
-      input: buildUrlInputMessage({
-        kind: "input_image",
-        url: "http://metadata.google.internal/computeMetadata/v1",
-      }),
-    });
-    await expectInvalidRequest(blockedMetadata, /invalid request|blocked|metadata|internal/i);
-
-    const blockedScheme = await postResponses(port, {
-      model: "openclaw",
-      input: buildUrlInputMessage({
-        kind: "input_file",
-        url: "file:///etc/passwd",
-      }),
-    });
-    await expectInvalidRequest(blockedScheme, /invalid request|http or https/i);
-    expect(agentCommandMock).not.toHaveBeenCalled();
-  });
-
-  it("accepts image-only input without text, matching /v1/chat/completions", async () => {
-    const port = enabledPort;
-    // 1x1 PNG; same fixture used by the parity schema tests.
-    const pngBase64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-
-    agentCommandMock.mockClear();
-    agentCommandMock.mockResolvedValueOnce({ payloads: [{ text: "ok" }] } as never);
-
-    const res = await postResponses(port, {
-      model: "openclaw",
-      input: [
-        {
-          type: "message",
-          role: "user",
-          content: [
-            {
-              type: "input_image",
-              source: { type: "base64", media_type: "image/png", data: pngBase64 },
-            },
-          ],
-        },
-      ],
-    });
-
-    expect(res.status).toBe(200);
-    expect(agentCommandMock).toHaveBeenCalledTimes(1);
-    const opts = firstAgentOpts();
-    // Image-only turn carries a non-empty placeholder so the agent command runs,
-    // with the real image attached via `images` (parity with /v1/chat/completions).
-    expect((opts as { message?: string }).message ?? "").toBe(IMAGE_ONLY_USER_MESSAGE);
-    expect((opts as { images?: unknown[] }).images?.length).toBe(1);
-    await ensureResponseConsumed(res);
-  });
-
-  it("accepts file-only input without text, matching image-only", async () => {
-    const port = enabledPort;
-    agentCommandMock.mockClear();
-    agentCommandMock.mockResolvedValueOnce({ payloads: [{ text: "ok" }] } as never);
-
-    const res = await postResponses(port, {
-      model: "openclaw",
-      instructions: "Summarize the attached document.",
-      input: [
-        {
-          type: "message",
-          role: "user",
-          content: [
-            {
-              type: "input_file",
-              source: {
-                type: "base64",
-                media_type: "text/plain",
-                data: Buffer.from("the quick brown fox").toString("base64"),
-                filename: "doc.txt",
-              },
-            },
-          ],
-        },
-      ],
-    });
-
-    expect(res.status).toBe(200);
-    expect(agentCommandMock).toHaveBeenCalledTimes(1);
-    const opts = firstAgentOpts();
-    expect((opts as { message?: string }).message ?? "").not.toBe("");
-    const extraSystemPrompt = (opts as { extraSystemPrompt?: string }).extraSystemPrompt ?? "";
-    expect(extraSystemPrompt).toContain('<file name="doc.txt">');
-    expect(extraSystemPrompt).toContain("the quick brown fox");
-    await ensureResponseConsumed(res);
-  });
-
-  it("keeps base64 input_file text truncation UTF-16 safe", async () => {
-    const port = enabledPort;
-    const text = `${"a".repeat(59_999)}😀tail`;
-    agentCommandMock.mockClear();
-    agentCommandMock.mockResolvedValueOnce({ payloads: [{ text: "ok" }] } as never);
-
-    const res = await postResponses(port, {
-      model: "openclaw",
-      input: [
-        {
-          type: "message",
-          role: "user",
-          content: [
-            {
-              type: "input_file",
-              source: {
-                type: "base64",
-                media_type: "text/plain",
-                data: Buffer.from(text).toString("base64"),
-                filename: "emoji-boundary.txt",
-              },
-            },
-          ],
-        },
-      ],
-    });
-
-    expect(res.status).toBe(200);
-    expect(agentCommandMock).toHaveBeenCalledTimes(1);
-    const opts = firstAgentOpts();
-    const extraSystemPrompt = (opts as { extraSystemPrompt?: string }).extraSystemPrompt ?? "";
-    expect(extraSystemPrompt).toContain('<file name="emoji-boundary.txt">');
-    expect(extraSystemPrompt).toContain("a".repeat(59_999));
-    expect(extraSystemPrompt).not.toContain("😀");
-    expect(extraSystemPrompt).not.toMatch(/[\uD800-\uDFFF]/u);
-    await ensureResponseConsumed(res);
-  });
-
-  it("still rejects input with neither text nor image", async () => {
-    const port = enabledPort;
-    agentCommandMock.mockClear();
-
-    const res = await postResponses(port, {
-      model: "openclaw",
-      input: [{ type: "message", role: "user", content: [] }],
-    });
-
-    await expectInvalidRequest(res, /Missing user message/i);
-    expect(agentCommandMock).not.toHaveBeenCalled();
+  registerOpenResponsesHttpMediaInputTests({
+    getPort: () => enabledPort,
+    postResponses,
+    firstAgentOpts,
+    agentCommandMock,
+    ensureResponseConsumed,
+    expectInvalidRequest,
+    buildUrlInputMessage,
   });
 
   it("enforces URL allowlist and URL part cap for responses inputs", async () => {

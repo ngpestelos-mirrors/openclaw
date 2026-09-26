@@ -12,15 +12,21 @@ import {
   AUTOMATIONS_TOOL_NAME,
   isAutomationsToolName,
 } from "../agents/tools/automations-tool-name.js";
-import { ToolInputError, type AnyAgentTool } from "../agents/tools/common.js";
+import {
+  ToolAuthorizationError,
+  ToolInputError,
+  type AnyAgentTool,
+} from "../agents/tools/common.js";
 import {
   normalizeConversationReadInvocationOrigin,
   type ConversationReadInvocationOrigin,
 } from "../channels/plugins/conversation-read-origin.js";
+import { getRuntimeConfig } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { logWarn } from "../logger.js";
 import { isTestDefaultMemorySlotDisabled } from "../plugins/config-state.js";
+import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { defaultSlotIdForKey } from "../plugins/slots.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import {
@@ -42,6 +48,8 @@ import {
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 import { resolveGatewayScopedTools } from "./tool-resolution.js";
+import { isToolUploadRequest } from "./tool-upload-policy.js";
+import { areGatewayUploadsEnabled, GATEWAY_UPLOADS_DISABLED_MESSAGE } from "./upload-policy.js";
 
 const MEMORY_TOOL_NAMES = new Set(["memory_search", "memory_get"]);
 
@@ -239,6 +247,20 @@ async function invokeGatewayToolWithSignal(
     argsRaw && typeof argsRaw === "object" && !Array.isArray(argsRaw)
       ? (argsRaw as Record<string, unknown>)
       : {};
+  // HTTP wraps operators in synthetic clients too. Only an RPC's host-owned
+  // runtime identity exempts it; requested conversation origin is wire data.
+  const sourceClient = getPluginRuntimeGatewayRequestScope()?.client;
+  const internalRpc =
+    params.toolCallIdPrefix === "rpc" &&
+    (sourceClient?.internal?.syntheticClient === true ||
+      sourceClient?.internal?.agentRuntimeIdentity !== undefined);
+  if (
+    !internalRpc &&
+    !areGatewayUploadsEnabled(params.cfg) &&
+    isToolUploadRequest(toolName, args)
+  ) {
+    return failure(403, "tool_call_blocked", GATEWAY_UPLOADS_DISABLED_MESSAGE);
+  }
   const sessionTarget = resolveSessionTarget({ cfg: params.cfg, input: params.input });
   if (!sessionTarget.ok) {
     return failure(400, "invalid_request", sessionTarget.error.message);
@@ -395,6 +417,13 @@ async function invokeGatewayToolWithSignal(
       },
       async () => {
         assertInvocationCurrent();
+        if (
+          !internalRpc &&
+          !areGatewayUploadsEnabled(getRuntimeConfig()) &&
+          (isToolUploadRequest(toolName, args) || isToolUploadRequest(toolName, hookResult.params))
+        ) {
+          throw new ToolAuthorizationError(GATEWAY_UPLOADS_DISABLED_MESSAGE);
+        }
         return await tool.execute?.(toolCallId, hookResult.params, params.signal);
       },
     );

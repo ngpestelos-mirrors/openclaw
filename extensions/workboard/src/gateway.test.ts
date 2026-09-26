@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi } from "../api.js";
 import { registerWorkboardGatewayMethods } from "./gateway.js";
 import { createWorkboardSqliteTestStore } from "./test/sqlite-store.js";
+import { createWorkboardTools } from "./tools.js";
 
 function createGatewayMethodCapture() {
   type RegisteredMethod = {
@@ -27,6 +28,61 @@ function createGatewayMethodCapture() {
 }
 
 describe("workboard gateway methods", () => {
+  it("rejects new client attachment bytes after disabling uploads without blocking agent output or reads", async () => {
+    const { api, methods } = createGatewayMethodCapture();
+    let config: OpenClawPluginApi["config"] = {};
+    api.runtime.config = { current: () => config } as OpenClawPluginApi["runtime"]["config"];
+    const store = createWorkboardSqliteTestStore();
+    registerWorkboardGatewayMethods({ api, store });
+    const card = await store.create({ title: "Upload policy" });
+    const add = methods.get("workboard.cards.attachments.add")!.handler;
+    const input = { id: card.id, fileName: "proof.txt", contentBase64: "cHJvb2Y=" };
+    const enabled = vi.fn();
+    await add({ params: input, respond: enabled } as never);
+    expect(enabled.mock.calls[0]?.[0]).toBe(true);
+    const initial = await store.listAttachments(card.id);
+    expect(initial.attachments).toHaveLength(1);
+
+    config = { gateway: { uploads: { enabled: false } } };
+    const disabled = vi.fn();
+    await add({
+      params: { ...input, internal: { syntheticClient: true } },
+      respond: disabled,
+    } as never);
+    expect(disabled).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "FORBIDDEN",
+        details: { code: "UPLOADS_DISABLED" },
+      }),
+    );
+    expect((await store.listAttachments(card.id)).attachments).toHaveLength(1);
+
+    const synthetic = vi.fn();
+    await add({
+      params: { ...input, fileName: "internal.txt" },
+      respond: synthetic,
+      client: { internal: { syntheticClient: true } },
+    } as never);
+    expect(synthetic.mock.calls[0]?.[0]).toBe(true);
+
+    const tool = createWorkboardTools({ store }).find(
+      (candidate) => candidate.name === "workboard_attachment_add",
+    )!;
+    await tool.execute("generated-output", { ...input, fileName: "generated.txt" });
+    const read = vi.fn();
+    await methods
+      .get("workboard.cards.attachments.list")!
+      .handler({ params: { id: card.id }, respond: read } as never);
+    expect(read.mock.calls[0]?.[1]?.attachments).toHaveLength(3);
+
+    config = { gateway: { uploads: { enabled: true } } };
+    const reenabled = vi.fn();
+    await add({ params: { ...input, fileName: "reenabled.txt" }, respond: reenabled } as never);
+    expect(reenabled.mock.calls[0]?.[0]).toBe(true);
+  });
+
   it.each(["move", "archive", "delete"] as const)(
     "returns a redacted conflict for stale %s requests",
     async (action) => {

@@ -24,16 +24,7 @@ import type { GatewayHttpChatCompletionsConfig } from "../config/types.gateway.j
 import { emitAgentEvent, onAgentEventForRun } from "../infra/agent-events.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { logWarn } from "../logger.js";
-import {
-  DEFAULT_INPUT_IMAGE_MAX_BYTES,
-  DEFAULT_INPUT_IMAGE_MIMES,
-  DEFAULT_INPUT_MAX_REDIRECTS,
-  DEFAULT_INPUT_TIMEOUT_MS,
-  extractImageContentFromSource,
-  normalizeMimeList,
-  type InputImageLimits,
-  type InputImageSource,
-} from "../media/input-files.js";
+import { extractImageContentFromSource, type InputImageSource } from "../media/input-files.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../process/gateway-work-admission.js";
 import {
   mergeAssistantText,
@@ -64,6 +55,7 @@ import {
 } from "./http-common.js";
 import { handleGatewayPostJsonEndpoint } from "./http-endpoint-helpers.js";
 import { assertGatewayHttpRequestCurrent } from "./http-request-authority.js";
+import { rejectDisabledGatewayUpload } from "./http-upload-policy.js";
 import {
   authorizeOpenAiCompatibleHttpModelOverride,
   authorizeOpenAiCompatibleHttpSession,
@@ -76,7 +68,6 @@ import {
   resolveSharedSecretHttpOperatorScopes,
   resolveOpenAiCompatibleHttpSenderIsOwner,
 } from "./http-utils.js";
-import { normalizeInputHostnameAllowlist } from "./input-allowlist.js";
 import { resolveAgentRunUsage } from "./openai-agent-run-usage.js";
 import { resolveOpenAiCompatError, validateOpenAiSamplingParams } from "./openai-compat-errors.js";
 import {
@@ -85,6 +76,10 @@ import {
   type OpenAiCompatibleHttpOptions,
 } from "./openai-compatible-agent-run.js";
 import {
+  resolveOpenAiChatCompletionsLimits,
+  type ResolvedOpenAiChatCompletionsLimits,
+} from "./openai-compatible-input-limits.js";
+import {
   applyToolChoice,
   isToolChoiceConstraintSatisfied,
   resolveChatToolChoice,
@@ -92,6 +87,7 @@ import {
   type ToolChoiceConstraint,
 } from "./openai-tool-choice.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
+import { areGatewayUploadsEnabled, GATEWAY_UPLOADS_DISABLED_MESSAGE } from "./upload-policy.js";
 
 const OpenAiChatCompletionRequestSchema = z.object({
   model: z.string().optional(),
@@ -113,36 +109,6 @@ const OpenAiChatCompletionRequestSchema = z.object({
 });
 
 type OpenAiChatCompletionRequest = z.infer<typeof OpenAiChatCompletionRequestSchema>;
-
-const DEFAULT_OPENAI_CHAT_COMPLETIONS_BODY_BYTES = 20 * 1024 * 1024;
-const DEFAULT_OPENAI_MAX_IMAGE_PARTS = 8;
-const DEFAULT_OPENAI_MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
-
-type ResolvedOpenAiChatCompletionsLimits = {
-  maxBodyBytes: number;
-  maxImageParts: number;
-  maxTotalImageBytes: number;
-  images: InputImageLimits;
-};
-
-function resolveOpenAiChatCompletionsLimits(
-  config: GatewayHttpChatCompletionsConfig | undefined,
-): ResolvedOpenAiChatCompletionsLimits {
-  const imageConfig = config?.images;
-  return {
-    maxBodyBytes: DEFAULT_OPENAI_CHAT_COMPLETIONS_BODY_BYTES,
-    maxImageParts: DEFAULT_OPENAI_MAX_IMAGE_PARTS,
-    maxTotalImageBytes: DEFAULT_OPENAI_MAX_TOTAL_IMAGE_BYTES,
-    images: {
-      allowUrl: imageConfig?.allowUrl ?? false,
-      urlAllowlist: normalizeInputHostnameAllowlist(imageConfig?.urlAllowlist),
-      allowedMimes: normalizeMimeList(imageConfig?.allowedMimes, DEFAULT_INPUT_IMAGE_MIMES),
-      maxBytes: imageConfig?.maxBytes ?? DEFAULT_INPUT_IMAGE_MAX_BYTES,
-      maxRedirects: imageConfig?.maxRedirects ?? DEFAULT_INPUT_MAX_REDIRECTS,
-      timeoutMs: imageConfig?.timeoutMs ?? DEFAULT_INPUT_TIMEOUT_MS,
-    },
-  };
-}
 
 function writeSse(res: ServerResponse, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -598,6 +564,19 @@ export async function handleOpenAiHttpRequest(
   if (!payload) {
     return true;
   }
+  const hasMedia = (payload.messages ?? []).some((message) => {
+    const content = asOptionalObjectRecord(message)?.content;
+    return (
+      Array.isArray(content) &&
+      content.some((part) => {
+        const type = asOptionalObjectRecord(part)?.type;
+        return type === "image_url" || type === "file";
+      })
+    );
+  });
+  if (rejectDisabledGatewayUpload(res, hasMedia)) {
+    return true;
+  }
   const stream = payload.stream === true;
   const streamIncludeUsage = stream && payload.stream_options?.include_usage === true;
   const model = payload.model ?? "openclaw";
@@ -731,8 +710,16 @@ export async function handleOpenAiHttpRequest(
   let images: ImageContent[];
   try {
     assertGatewayHttpRequestCurrent(handled.requestAuth);
-    images = await resolveImagesForRequest(activeTurnContext, limits, abortController.signal, () =>
-      assertGatewayHttpRequestCurrent(handled.requestAuth),
+    images = await resolveImagesForRequest(
+      activeTurnContext,
+      limits,
+      abortController.signal,
+      () => {
+        assertGatewayHttpRequestCurrent(handled.requestAuth);
+        if (hasMedia && !areGatewayUploadsEnabled(getRuntimeConfig())) {
+          throw new Error(GATEWAY_UPLOADS_DISABLED_MESSAGE);
+        }
+      },
     );
   } catch (err) {
     if (abortController.signal.aborted) {
@@ -742,11 +729,18 @@ export async function handleOpenAiHttpRequest(
       sendUnauthorized(res);
       return true;
     }
+    if (rejectDisabledGatewayUpload(res, hasMedia)) {
+      return true;
+    }
     logWarn(`openai-compat: invalid image_url content: ${String(err)}`);
     sendInvalidRequest(res, "Invalid image_url content in `messages`.");
     return true;
   }
 
+  // Preparation can yield across a runtime policy publication, including the last image.
+  if (rejectDisabledGatewayUpload(res, hasMedia)) {
+    return true;
+  }
   if (!prompt.message && images.length === 0) {
     sendInvalidRequest(res, "Missing user message in `messages`.");
     return true;

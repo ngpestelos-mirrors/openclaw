@@ -9,8 +9,6 @@ import { registerMcpEnglish } from "../../../i18n/locales/en-mcp.ts";
 import type { McpServerSummary } from "../../../lib/config/mcp-servers.ts";
 import { formatUiExternalText } from "../../../lib/format-error.ts";
 import type { SessionToolOverrides } from "../../../lib/sessions/patch.ts";
-import "../../../components/tooltip.ts";
-import "../../../components/web-awesome.ts";
 import {
   countSessionToolOverrides,
   nextBooleanToolOverrides,
@@ -20,6 +18,9 @@ import {
   resolveToolOverrideState,
   resolveWebSearchToolOverrideState,
 } from "../../../lib/sessions/tool-overrides.ts";
+import "../../../components/tooltip.ts";
+import "../../../components/web-awesome.ts";
+import { uploadsEnabled } from "../../../lib/uploads.ts";
 import type { ComposerLibraryProps } from "../composer-library-session.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import {
@@ -148,7 +149,8 @@ function renderRootView(props: ChatComposerPlusMenuProps) {
       : !props.webSearchBaseEnabled
         ? t("chat.composer.menu.webSearchGloballyDisabled")
         : "");
-  const attachments = renderChatAttachmentMenuOptions(icons.paperclip);
+  const canUpload = uploadsEnabled(props.attachments.uploadConfig);
+  const attachments = canUpload ? renderChatAttachmentMenuOptions(icons.paperclip) : nothing;
   const rootToggles = props.rootToggles ?? [];
   if (!props.showCapabilities && rootToggles.length === 0) {
     return attachments;
@@ -156,7 +158,7 @@ function renderRootView(props: ChatComposerPlusMenuProps) {
   // Core gates managed and Codex-native search. Config sniffing misses env/native providers;
   // without a provider, this session override is a harmless no-op.
   return html`
-    ${attachments} ${menuDivider()}
+    ${attachments} ${canUpload ? menuDivider() : nothing}
     ${rootToggles.map((toggle) =>
       renderCapabilityToggleRow({
         value: toggle.value,
@@ -450,7 +452,7 @@ function handleMenuSelection(
   props: ChatComposerPlusMenuProps,
 ) {
   const value = event.detail.item.value ?? "";
-  if (handleChatAttachmentMenuSelection(event)) {
+  if (uploadsEnabled(props.attachments.uploadConfig) && handleChatAttachmentMenuSelection(event)) {
     return;
   }
   const rootToggle = props.rootToggles?.find((toggle) => toggle.value === value);
@@ -646,6 +648,13 @@ export function renderChatComposerPlusMenu(props: {
   onViewChange: (view: ChatComposerPlusMenuView) => void;
 }) {
   const capabilityMenu = props.capabilityMenu;
+  if (
+    !capabilityMenu &&
+    !props.rootToggles?.length &&
+    !uploadsEnabled(props.attachments.uploadConfig)
+  ) {
+    return nothing;
+  }
   return renderChatComposerPlusMenuContent({
     attachments: props.attachments,
     showCapabilities: capabilityMenu !== undefined,

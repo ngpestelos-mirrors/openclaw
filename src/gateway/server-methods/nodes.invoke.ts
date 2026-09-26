@@ -20,6 +20,12 @@ import { sanitizeNodeInvokeParamsForForwarding } from "../node-invoke-sanitize.j
 import { enqueuePendingNodeAction, removePendingNodeAction } from "../node-runtime-state.js";
 import { captureNodeWakeLifecycle, releaseNodeWakeLifecycle } from "../node-wake-state.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
+import { isNodeUploadRequest } from "../tool-upload-policy.js";
+import {
+  areGatewayUploadsEnabled,
+  GATEWAY_UPLOADS_DISABLED_CODE,
+  GATEWAY_UPLOADS_DISABLED_MESSAGE,
+} from "../upload-policy.js";
 import { buildNodeCommandRejectionHint } from "./node-command-rejection-hint.js";
 import { nodeInvokePolicy } from "./nodes-policy.js";
 import { handleNodeInvokeProgress } from "./nodes.handlers.invoke-progress.js";
@@ -55,6 +61,27 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
     const nodeId = normalizeOptionalString(p.nodeId) ?? "";
     const command = normalizeOptionalString(p.command) ?? "";
     const sessionKey = normalizeOptionalString(p.sessionKey);
+    const isUploadAllowed = () =>
+      client?.internal?.syntheticClient === true ||
+      client?.internal?.agentRuntimeIdentity !== undefined ||
+      !isNodeUploadRequest(command, p.params) ||
+      areGatewayUploadsEnabled(context.getRuntimeConfig());
+    const rejectDisabledUpload = () => {
+      if (isUploadAllowed()) {
+        return false;
+      }
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.FORBIDDEN, GATEWAY_UPLOADS_DISABLED_MESSAGE, {
+          details: { code: GATEWAY_UPLOADS_DISABLED_CODE },
+        }),
+      );
+      return true;
+    };
+    if (rejectDisabledUpload()) {
+      return;
+    }
     const nodeInvokeStream =
       client?.internal?.syntheticClient === true && client.internal.pluginRuntimeOwnerId
         ? client.internal.nodeInvokeStream
@@ -335,10 +362,14 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
           }
         }
         const isForwardedApprovalAuthorityActive = () =>
+          isUploadAllowed() &&
           isForwardedNodeInvokeApprovalAuthorityActive({
             manager: context.execApprovalManager,
             authority: forwardedParams.approvalAuthority,
           });
+        if (rejectDisabledUpload()) {
+          return;
+        }
         const policyResult = await awaitWithinDeadline(
           () =>
             applyPluginNodeInvokePolicy({
@@ -364,8 +395,12 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
                 nodeCommandDispatched = true;
               },
               idempotencyKey: p.idempotencyKey,
-              isInvocationCurrent: () =>
-                isNodePairingWorkCurrent({ nodeId, generation, lifecycle: wakeLifecycle }),
+              isInvocationCurrent: async () =>
+                (await isNodePairingWorkCurrent({
+                  nodeId,
+                  generation,
+                  lifecycle: wakeLifecycle,
+                })) && isUploadAllowed(),
               isApprovalAuthorityActive: isForwardedApprovalAuthorityActive,
               ...(nodeInvokeStream ? { nodeInvokeStream } : {}),
             }),
@@ -484,6 +519,9 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
           );
           return;
         }
+        if (rejectDisabledUpload()) {
+          return;
+        }
         const res = await invokeNodeWithReadinessRetry(context.nodeRegistry, {
           nodeId,
           expectedConnId: nodeSession.connId,
@@ -500,6 +538,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             idleTimeoutMs: nodeInvokeStream.idleTimeoutMs,
           }),
           isDispatchAuthorized: () =>
+            isUploadAllowed() &&
             (nodeInvokeStream?.isRuntimeCurrent() ?? true) &&
             resolveNodeInvokeRuntimeAuthorityError({
               context,

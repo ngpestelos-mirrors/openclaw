@@ -25,6 +25,8 @@ import {
   areUiSessionKeysEquivalent,
   scopedSessionArtifactKey,
 } from "../../lib/sessions/session-key.ts";
+import { showToast } from "../../lib/toast.ts";
+import { uploadsEnabled, uploadsDisabledMessage } from "../../lib/uploads.ts";
 import { renderPluginSurface } from "../../plugins/control-ui-view.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
 import {
@@ -40,9 +42,9 @@ import {
   renderChatComposerNotices,
   renderChatTopbarNotices,
 } from "./chat-view-notices.ts";
+import "./components/chat-comment-controller.ts";
 import { createAsyncQuestionPresentation } from "./components/chat-async-question.ts";
 import { createChatAttachmentDropHandlers } from "./components/chat-attachments.ts";
-import "./components/chat-comment-controller.ts";
 import { resolveChatCommentAnchor } from "./components/chat-comment-anchor.ts";
 import {
   renderComposerQuestionDock,
@@ -242,7 +244,7 @@ export function renderChat(props: ChatProps) {
           props.canSend && !props.suggestionComposer ? props.onCompanionPrefill : undefined,
         commentAttachments: props.suggestionComposer ? undefined : props,
         onAddToChat:
-          props.canSend && !props.suggestionComposer
+          props.canSend && !props.suggestionComposer && uploadsEnabled(props.uploadConfig)
             ? (selection, anchorRect) => {
                 const focusComposer = () =>
                   props.transcript.scrollElement
@@ -261,6 +263,10 @@ export function renderChat(props: ChatProps) {
                   onSave: (comment): boolean => {
                     if (props.readSignal?.aborted || !props.onAttachmentsChange) {
                       return true;
+                    }
+                    if (!uploadsEnabled(props.uploadConfig)) {
+                      showToast({ message: uploadsDisabledMessage() });
+                      return false;
                     }
                     const attachment = createChatSelectionAttachment(
                       {
