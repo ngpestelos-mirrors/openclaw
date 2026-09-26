@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -19,6 +20,11 @@ import {
 } from "../../scripts/crabbox-source-capsule.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { createNestedGitEnv } from "../helpers/temp-repo.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, lstatSync: vi.fn(fs.lstatSync) };
+});
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
@@ -127,8 +133,9 @@ function fileIdentity(path: string) {
 
 describe.skipIf(process.platform === "win32")("persistent Crabbox source capsules", () => {
   it("keeps unchanged files and a warm index while updating eligibility and raw source bytes", () => {
-    const f = fixture();
+    const f = fixture({ "rename.txt": "renamed source\n" });
     writeFileSync(join(f.repository, "future.txt"), "initial untracked bytes\n");
+    writeFileSync(join(f.repository, "promoted.ignored"), "initially ignored bytes\n");
     writeFileSync(join(f.repository, "staged.ignored"), "staged ignored bytes\r\n");
     writeFileSync(join(f.repository, "credentials.secret"), "synthetic secret\n");
     f.git(f.repository, "add", "--force", "staged.ignored");
@@ -141,11 +148,16 @@ describe.skipIf(process.platform === "win32")("persistent Crabbox source capsule
     first.cleanup();
 
     const arrivingSecret = join(f.repository, "arriving.secret");
+    vi.mocked(lstatSync).mockClear();
     const unchanged = f.prepare(
       true,
       `require("node:fs").writeFileSync(${JSON.stringify(arrivingSecret)},"synthetic secret");`,
     );
     try {
+      // One pre-Git integrity check and one shared final seal per retained file.
+      expect(
+        vi.mocked(lstatSync).mock.calls.filter(([path]) => path === join(directory, "stable.txt")),
+      ).toHaveLength(2);
       expect(unchanged.directory).toBe(directory);
       for (const [path, identity] of before) {
         expect(fileIdentity(join(directory, path)), path).toEqual(identity);
@@ -161,6 +173,8 @@ describe.skipIf(process.platform === "win32")("persistent Crabbox source capsule
     writeFileSync(join(f.repository, "change.txt"), "updated raw bytes\r\n");
     writeFileSync(join(f.repository, ".gitignore"), "*.secret\n*.ignored\nfuture.txt\n");
     writeFileSync(join(f.repository, "new.txt"), "new untracked bytes\n");
+    renameSync(join(f.repository, "rename.txt"), join(f.repository, "renamed.txt"));
+    f.git(f.repository, "add", "--force", "promoted.ignored");
     rmSync(join(f.repository, "deleted.txt"));
     const warm = f.prepare();
     try {
@@ -176,10 +190,12 @@ describe.skipIf(process.platform === "win32")("persistent Crabbox source capsule
         ".gitignore",
         "change.txt",
         "new.txt",
+        "promoted.ignored",
+        "renamed.txt",
         "stable.txt",
         "staged.ignored",
       ]);
-      for (const path of ["credentials.secret", "deleted.txt", "future.txt"]) {
+      for (const path of ["credentials.secret", "deleted.txt", "future.txt", "rename.txt"]) {
         expect(existsSync(join(directory, path)), path).toBe(false);
       }
       f.expectColdEquivalent(warm);
@@ -291,6 +307,9 @@ describe.skipIf(process.platform === "win32")("persistent Crabbox source capsule
   it.each([
     "missing file",
     "corrupt file",
+    "extra file",
+    "corrupt Git config",
+    "corrupt Git object",
     "corrupt metadata",
     "missing metadata",
     "hardlink metadata",
@@ -308,6 +327,22 @@ describe.skipIf(process.platform === "win32")("persistent Crabbox source capsule
       rmSync(join(first.directory, "stable.txt"));
     } else if (damage === "corrupt file") {
       writeFileSync(join(first.directory, "stable.txt"), "corrupted cached bytes\n");
+    } else if (damage === "extra file") {
+      writeFileSync(join(first.directory, "unexpected.txt"), "outside-owner bytes\n");
+    } else if (damage === "corrupt Git config") {
+      writeFileSync(join(first.directory, ".git", "config"), "invalid Git configuration\n");
+    } else if (damage === "corrupt Git object") {
+      const object = join(
+        first.directory,
+        ".git",
+        "objects",
+        first.carrier.slice(0, 2),
+        first.carrier.slice(2),
+      );
+      const mode = lstatSync(object).mode & 0o777;
+      chmodSync(object, 0o600);
+      writeFileSync(object, "corrupted private Git object\n");
+      chmodSync(object, mode);
     } else if (damage === "missing index") {
       rmSync(join(first.directory, ".git", "mirror-candidate-index"));
     } else if (damage === "symlink index" || damage === "hardlink index") {

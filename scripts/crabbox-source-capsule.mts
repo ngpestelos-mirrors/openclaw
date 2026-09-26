@@ -23,7 +23,12 @@ import { copyFileDescriptorSync } from "@openclaw/fs-safe/advanced";
 import { sha256FileSync } from "@openclaw/fs-safe/durability";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { z } from "zod";
-import { mirrorStatStamp, openSourceMirror, type MirrorFile } from "./crabbox-source-mirror.mts";
+import {
+  mirrorStatStamp,
+  openSourceMirror,
+  recordMirrorEntry,
+  type MirrorFile,
+} from "./crabbox-source-mirror.mts";
 import { captureSourceWitness } from "./crabbox-staging-witness.mts";
 import { createMirrorStaging, createStaging, type StagingHandle } from "./crabbox-staging.mts";
 
@@ -1124,6 +1129,7 @@ export function prepareCrabboxSourceCapsule(options: {
     rmSync(linkBlobs, { recursive: true, force: true });
     rmSync(join(temporary, "sparse-blobs"), { force: true });
     rmSync(shallow, { force: true });
+    const mirrorInventory = cache ? new Map<string, string>() : undefined;
     if (staging.recorded) {
       checkPreparation(sourceEnv);
       checkPreparation(nativeGitEnv);
@@ -1137,9 +1143,16 @@ export function prepareCrabboxSourceCapsule(options: {
           deleted,
         },
         witness,
+        mirrorInventory
+          ? (path, stat) => {
+              if (path.startsWith("source/")) {
+                recordMirrorEntry(mirrorInventory, path.slice("source/".length), stat);
+              }
+            }
+          : undefined,
       );
     }
-    if (cache) {
+    if (cache && mirrorInventory) {
       const next = new Map<string, MirrorFile>();
       for (const path of paths) {
         const entry = frozen.get(path)!;
@@ -1156,7 +1169,7 @@ export function prepareCrabboxSourceCapsule(options: {
           blob: entry.blob!,
         });
       }
-      cache.save(next, trackedRecords);
+      cache.save(next, trackedRecords, mirrorInventory);
       console.error(
         `[crabbox] source mirror ${warm ? "warm" : "cold"}: copied ${copiedFiles} files, reused ${reusedFiles} files; preparation ${Date.now() - startedAt}ms`,
       );
