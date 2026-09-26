@@ -13,6 +13,7 @@ const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789";
 
 describe("GatewayBrowserClient chat delivery", () => {
   beforeEach(() => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
     useNodeFakeTimers();
     wsInstances.length = 0;
     stubWindowGlobals();
@@ -20,6 +21,7 @@ describe("GatewayBrowserClient chat delivery", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
