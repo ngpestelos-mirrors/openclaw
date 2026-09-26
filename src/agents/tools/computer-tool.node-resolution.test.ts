@@ -486,7 +486,7 @@ describe("createComputerTool node resolution", () => {
         // Each preparation has its own service owner, even when target selection
         // keeps an earlier binding. Run cleanup must release all of those owners.
         expect
-          .soft(closeAttempts.mock.calls.map(([index]) => index).toSorted())
+          .soft(closeAttempts.mock.calls.map(([index]) => index).toSorted((a, b) => a - b))
           .toEqual(preparations.map((_prepared, index) => index));
         expect(operations()).toEqual(nextAction === "screenshot" ? ["snapshot", "close"] : []);
         if (nextAction === "screenshot") {
