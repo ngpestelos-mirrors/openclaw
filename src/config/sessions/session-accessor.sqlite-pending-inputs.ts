@@ -261,7 +261,7 @@ export function withSessionPendingInputRelocation<T>(
 }
 
 /** Registration owns disposition; execution and promotion check the private operational predicates. */
-export function readSessionPendingInputOwnerIds(
+function readSessionPendingInputOwnerIds(
   database: PendingInputDatabase,
   rows: readonly Pick<
     SessionPendingInputRow,

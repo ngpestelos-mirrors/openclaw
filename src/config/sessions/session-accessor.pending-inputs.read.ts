@@ -42,7 +42,7 @@ import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
 type PendingInputScope = SessionAccessScope & { agentId: string; sessionId: string };
-export type PendingInputReadOptions = { limit?: number; before?: number; id?: string };
+type PendingInputReadOptions = { limit?: number; before?: number; id?: string };
 export type PendingInputIdentity = Pick<
   SessionPendingInputRow,
   "input_id" | "session_key" | "session_id" | "lifecycle_generation"
@@ -50,7 +50,7 @@ export type PendingInputIdentity = Pick<
   /** A registered old owner can be interrupted only if the writer proves its session retired. */
   requireRetiredSession?: true;
 };
-export type PendingInputReadSnapshot = {
+type PendingInputReadSnapshot = {
   rows: Array<{ identity: PendingInputIdentity; input: SessionPendingInput }>;
   total?: number;
   nextBefore?: number;
