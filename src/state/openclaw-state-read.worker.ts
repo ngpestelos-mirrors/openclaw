@@ -59,7 +59,9 @@ import {
   selectSkillLibraryRevisionMetadataBatch,
   selectSkillLibraryRevisionManifestsBatch,
 } from "../skills/library/selection-read.kernel.js";
+import { captureTaskRetentionSource } from "../tasks/task-registry-retention-source.js";
 import {
+  readTaskRecord,
   readTaskRegistryMutationSnapshotInDatabase,
   readTaskRegistrySnapshot,
 } from "../tasks/task-registry.store.kernel.js";
@@ -90,6 +92,7 @@ import {
   resolveUserChannelIdentityInDatabase,
 } from "./user-channel-identities.js";
 import { readUserChannelIdentityResult } from "./user-channel-identities.worker.js";
+import { selectUserPreferenceValues } from "./user-preferences.store.js";
 import { readUserProfileGitHubCommand } from "./user-profile-github-identity.js";
 import {
   readUserProfileEmailBindings,
@@ -97,6 +100,7 @@ import {
 } from "./user-profile-identity.read.js";
 import { projectUserProfileDisplay } from "./user-profile-list.js";
 import {
+  readUserProfileAvatarCommand,
   selectProfileDisplayEntries,
   selectResolvedUserProfileMetadataById,
   userProfilesDb,
@@ -343,6 +347,15 @@ serveOwnedWorkerTasks(
                   command.input === undefined
                     ? readTaskRegistrySnapshot({ db, path: input.databasePath })
                     : readTaskRegistryMutationSnapshotInDatabase(db, command.input),
+              };
+            }
+            if (command.type === "tasks.retentionSource") {
+              const task = readTaskRecord(db, command.taskId);
+              return {
+                ok: true,
+                type: command.type,
+                sourceAdmitted,
+                source: task ? captureTaskRetentionSource(task) : undefined,
               };
             }
             if (command.type === "subagents.forChildSession") {
@@ -600,12 +613,26 @@ serveOwnedWorkerTasks(
               }));
               return { ok: true, type: command.type, sourceAdmitted, ...facts };
             }
+            if (
+              command.type === "userProfiles.avatar.inspect" ||
+              command.type === "userProfiles.avatar.read"
+            ) {
+              return { ok: true, ...readUserProfileAvatarCommand(db, command), sourceAdmitted };
+            }
             if (command.type === "userProfiles.catalog") {
               const facts = runSqliteDeferredTransactionSync(db, () => ({
                 profiles: tableExists(db, "user_profiles") ? selectProfileDisplayEntries(db) : [],
                 emailBindings: readUserProfileEmailBindings(db),
               }));
               return { ok: true, type: command.type, sourceAdmitted, ...facts };
+            }
+            if (command.type === "userPreferences.values") {
+              return {
+                ok: true,
+                type: command.type,
+                sourceAdmitted,
+                values: selectUserPreferenceValues(db, command.profileIds, command.key),
+              };
             }
             if (command.type === "userProfiles.email.resolve") {
               return {
