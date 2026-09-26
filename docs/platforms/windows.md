@@ -173,6 +173,11 @@ Strict maintenance inspection follows the task's registered CMD or VBS launcher,
 
 Doctor and deep status provide read-only `schtasks /Query` hints for extra Scheduled Tasks, including Node hosts. Review the registered command and purpose before choosing removal through the service's owner.
 
+Doctor compares task definitions using Task Scheduler's defaults. An omitted
+`Enabled` element means `true` for both the task and its logon trigger, so XML
+export differences do not cause drift warnings or failed refresh verification.
+Explicitly disabled tasks and triggers are still reported.
+
 The task probe allows Windows PowerShell to inherit or create a console because
 some PowerShell 5.1 hosts fail inspection when console creation is disabled.
 Invoking it from an app without a console can briefly display a console window.
