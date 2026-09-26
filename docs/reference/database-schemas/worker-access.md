@@ -34,15 +34,6 @@ asynchronous planning first, then reread authoritative rows inside the admitted
 transaction. Preserve FIFO order, coordinator custody, transaction/commit grants,
 and settlement of accepted write-capable work.
 
-Agent publication adapters use `openOpenClawAgentSqliteWorkerStore().execute`
-for a single command. It captures the command before waiting and keeps binding,
-preparation, execution, and cleanup in one broker request. The factory receives
-synchronous admission; asynchronous preparation does not retain that authority.
-Transaction and commit grants still check the live source. A settled result
-survives cleanup failure while the failed native owner retires. Use `run` when
-dependent commands share a binding or host publication must stay inside the
-same FIFO interval.
-
 Worker authority requests wait for the retained host owner's grant or refusal;
 host scheduling delays do not expire that authority. The host still checks current
 authority before granting, and broker failure joins worker exit before releasing
@@ -59,6 +50,15 @@ reserve a 32 MiB transport window; they never wait in the input queue. These are
 internal resource bounds, not configuration settings. These scheduling and budget
 changes preserve database ownership, transaction authority, schemas, and update
 behavior.
+
+Agent publication adapters use `openOpenClawAgentSqliteWorkerStore().execute`
+for a single command. It captures the command before waiting and keeps binding,
+preparation, execution, and cleanup in one broker request. The factory receives
+synchronous admission; asynchronous preparation does not retain that authority.
+Transaction and commit grants still check the live source. A settled result
+survives cleanup failure while the failed native owner retires. Use `run` when
+dependent commands share a binding or host publication must stay inside the
+same FIFO interval.
 
 ## Carry facts, publish after commit
 
