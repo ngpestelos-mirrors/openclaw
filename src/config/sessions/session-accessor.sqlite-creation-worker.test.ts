@@ -52,6 +52,7 @@ it("creates with prepared label facts, header and atomic owner without host data
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const database = openOpenClawAgentDatabase({ agentId: "main" });
     const key = "agent:main:creation-worker";
+    using post = vi.spyOn(Worker.prototype, "postMessage");
     const alias = state.path("agent-alias");
     await fs.symlink(path.dirname(database.path), alias, "junction");
     const storePath = path.join(alias, path.basename(database.path));
@@ -126,7 +127,7 @@ it("creates with prepared label facts, header and atomic owner without host data
             order.push("committed");
           },
           afterCommitted: async (entry, source) => {
-            expect(order).toEqual(["header", "committed", "published"]);
+            expect(order).toEqual(["committed", "published"]);
             expect(source.env.OPENCLAW_STATE_DIR).toBe(originalStateDir);
             source.assertCurrent();
             assertCreation();
@@ -137,6 +138,22 @@ it("creates with prepared label facts, header and atomic owner without host data
         },
       );
       expect(result).toMatchObject({ ok: true, entry: { sessionId: "created" } });
+      const writes = post.mock.calls.flatMap(([request]) => {
+        if (
+          !isRecord(request) ||
+          request.type !== "execute" ||
+          !(request.input instanceof Uint8Array)
+        ) {
+          return [];
+        }
+        const command: unknown = deserialize(request.input);
+        return isRecord(command) &&
+          typeof command.type === "string" &&
+          command.type.startsWith("session.")
+          ? [command.type]
+          : [];
+      });
+      expect(writes).toEqual(["session.entries.replace"]);
       expect(assertCreation).toThrow("Session creation publication owner is no longer current");
       const firstUse = await createSessionEntryWithTranscript(
         {
@@ -153,7 +170,7 @@ it("creates with prepared label facts, header and atomic owner without host data
       sql.restore();
       stop();
     }
-    expect(order).toEqual(["header", "committed", "published", "registered"]);
+    expect(order).toEqual(["committed", "published", "registered"]);
     expect(readExactSessionEntryRow(database, key)?.entry).toMatchObject({
       sessionId: "created",
       owner,
@@ -652,6 +669,11 @@ it.each([false, true])(
   async (unknown) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const key = "agent:main:signal:group:Cleanup";
+      writeSessionEntry(database, key.toLowerCase(), {
+        sessionId: "alias-cleanup-header",
+        updatedAt: 1,
+      });
       const replacements = await import("./session-accessor.sqlite-replacement-worker.js");
       const { SqliteWorkerError } = await import("../../infra/sqlite-worker-contract.js");
       const failure = new AggregateError([
@@ -674,7 +696,7 @@ it.each([false, true])(
       const committed = vi.fn();
       try {
         const work = createSessionEntryWithTranscript(
-          { agentId: "main", storePath: database.path, sessionKey: "agent:main:cleanup-header" },
+          { agentId: "main", storePath: database.path, sessionKey: key },
           create,
           { onLifecycleCommitted: committed },
         );
@@ -687,10 +709,70 @@ it.each([false, true])(
         expect(interception).toHaveBeenCalledOnce();
         expect(committed).not.toHaveBeenCalled();
         expect(readTranscriptStorageRows(database, "cleanup-header")).toHaveLength(1);
-        expect(readExactSessionEntryRow(database, "agent:main:cleanup-header")).toBeUndefined();
+        expect(readExactSessionEntryRow(database, key)).toBeUndefined();
       } finally {
         interception.mockRestore();
       }
     });
   },
 );
+
+it("rolls back a failed fresh entry and recovers a previously committed standalone header", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const database = openOpenClawAgentDatabase({ agentId: "main" });
+    const sessionKey = "agent:main:failed-create";
+    const committed = vi.fn();
+    const published = vi.fn();
+    const stop = sessionChanges.subscribe(published);
+    try {
+      await expect(
+        createSessionEntryWithTranscript(
+          { agentId: "main", storePath: database.path, sessionKey },
+          () => ({
+            ok: true,
+            entry: {
+              sessionId: "failed-create",
+              updatedAt: 1,
+              parentSessionKey: "AGENT:main:parent",
+            },
+          }),
+          {
+            onLifecycleCommitted: committed,
+            afterCommitted: async () => {
+              committed();
+            },
+          },
+        ),
+      ).rejects.toThrow("non-canonical session key");
+      expect(committed).not.toHaveBeenCalled();
+      expect(published).not.toHaveBeenCalled();
+      expect(readTranscriptStorageRows(database, "failed-create")).toEqual([]);
+      expect(
+        database.db
+          .prepare("SELECT session_key FROM session_nodes WHERE session_key = ?")
+          .get(sessionKey),
+      ).toBeUndefined();
+    } finally {
+      stop();
+    }
+    ensureTranscriptHeader(
+      database,
+      { agentId: "main", sessionKey, sessionId: "failed-create" },
+      "/old-process",
+    );
+    const header = readTranscriptStorageRows(database, "failed-create");
+    expect(header).toHaveLength(1);
+    await closeOpenClawAgentDatabaseByPathAsync(database.path);
+    expect(
+      (
+        await createSessionEntryWithTranscript(
+          { agentId: "main", storePath: database.path, sessionKey },
+          () => ({ ok: true, entry: { sessionId: "failed-create", updatedAt: 2 } }),
+        )
+      ).ok,
+    ).toBe(true);
+    const reopened = openOpenClawAgentDatabase({ agentId: "main", path: database.path });
+    expect(readTranscriptStorageRows(reopened, "failed-create")).toEqual(header);
+    expect(readExactSessionEntryRow(reopened, sessionKey)?.entry.sessionId).toBe("failed-create");
+  });
+});

@@ -12,6 +12,7 @@ import { stopChildProcess } from "../../../test/helpers/stop-child-process.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { buildBackupArchivePath } from "../../commands/backup-shared.js";
 import { createConfigIO } from "../../config/io.js";
+import * as serviceMembership from "../../daemon/service-process-membership.js";
 import { swapStagedPackageInstall } from "../../infra/package-update-swap.js";
 import { createPackageSwapFixture } from "../../infra/package-update-swap.test-support.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
@@ -87,7 +88,6 @@ vi.doMock("./update-command-service.js", async () => ({
   maybeRestartService: restart,
   maybeStopManagedServiceBeforeMutableUpdate: mocks.maybeStopService,
   maybeRestartServiceAfterFailedMutableUpdate: mocks.maybeRestartService,
-  shouldBlockMutableUpdateFromGatewayServiceEnv: mocks.shouldBlockServiceUpdate,
   resolveUpdatedGatewayRestartPort: async () => port,
 }));
 vi.doMock("./update-command-service-plan.js", async () => ({
@@ -352,6 +352,12 @@ it.each([
     portClaim = await acquireTestPortBlock({ offsets: [0] });
     port = portClaim.port;
     await startService();
+    // The fixture owns this live child, but it is not a native launchd/systemd job.
+    vi.spyOn(serviceMembership, "inspectServiceProcessMembershipSync").mockImplementation((pid) =>
+      service && service.pid === pid && service.exitCode === null && service.signalCode === null
+        ? "outside"
+        : "unknown",
+    );
     const readServing = async () => {
       const response = await fetch(`http://127.0.0.1:${port}/readyz`);
       expect(response.status).toBe(200);
@@ -387,6 +393,7 @@ it.each([
     });
     mocks.maybeStopService.mockImplementation(async ({ phase, shouldRestart }) => {
       const running = service !== undefined;
+      const servicePid = service?.pid;
       if (phase !== "inspect" && shouldRestart && service) {
         await stopChildProcess(service, 5_000);
         service = undefined;
@@ -396,6 +403,7 @@ it.each([
         inspected: true,
         runtimeInspected: true,
         running,
+        servicePid,
         serviceEnv,
         servicePort: port,
         serviceNodeRunner: process.execPath,

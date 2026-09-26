@@ -19,6 +19,7 @@ import { acquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import * as packageJson from "../infra/package-json.js";
 import * as portsInspect from "../infra/ports-inspect.js";
+import * as ancestry from "../infra/restart-stale-pids.js";
 import * as sqliteSnapshotSource from "../infra/sqlite-snapshot-source.js";
 import * as updateGitRuntime from "../infra/update-git-runtime.js";
 import * as updateRunDriver from "../infra/update-run-driver.js";
@@ -48,8 +49,14 @@ import {
 
 const mocks = vi.hoisted(() => ({
   resolveService: vi.fn<() => GatewayService>(),
+  gatewayPid: process.pid + 100_000,
   nativeRuntimeDir: "",
   stops: 0,
+}));
+vi.mock("../daemon/service-process-membership.js", () => ({
+  // This in-memory service places Doctor outside its synthetic process scope.
+  inspectServiceProcessMembershipSync: (pid: number) =>
+    pid === mocks.gatewayPid ? "outside" : "unknown",
 }));
 
 vi.mock("../daemon/service.js", async (importOriginal) => ({
@@ -89,6 +96,10 @@ afterAll(async () => {
 });
 beforeEach(() => {
   mockSystemAccountHome();
+  vi.spyOn(ancestry, "inspectSelfAndAncestorPidsSync").mockReturnValue({
+    pids: new Set([1, process.ppid, process.pid]),
+    complete: true,
+  });
   mocks.stops = 0;
   vi.mocked(waitForGatewayHealthyRestart).mockClear();
   // Exercise the real owner-lease reader without depending on a host listener or dist build.
@@ -365,10 +376,9 @@ async function runDoctorFinishForStoppedUnit(
       let competingUpdateStarted = false;
       let otherOwner: ReturnType<typeof acquireGatewayStateOwner> | undefined;
       let releaseDuringInspection: (() => Promise<void>) | undefined;
-      const legacyGatewayPid = process.pid + 100_000;
       if (scenario === "legacy-gateway-lifecycle-contended") {
         vi.spyOn(gatewayLock, "readActiveGatewayLockIdentity").mockResolvedValue({
-          pid: legacyGatewayPid,
+          pid: mocks.gatewayPid,
           createdAt: new Date().toISOString(),
           port: gatewayPort.port,
         });
@@ -488,9 +498,7 @@ async function runDoctorFinishForStoppedUnit(
             if (running) {
               return {
                 status: "running",
-                ...(scenario === "legacy-gateway-lifecycle-contended"
-                  ? { pid: legacyGatewayPid }
-                  : {}),
+                pid: mocks.gatewayPid,
                 systemd: { managerUid: 2001 },
               };
             }

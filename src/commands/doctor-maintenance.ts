@@ -210,12 +210,11 @@ export async function beginDoctorMaintenance(
     });
   };
   const finish = async (
-    initialConfig: OpenClawConfig,
+    cfg: OpenClawConfig,
     assertCustody?: () => void,
     writeConfig?: DoctorConfigWriter,
     assertRestoreAdmission = assertUpdateAdmissionCurrent,
   ) => {
-    let cfg = initialConfig;
     await release(assertCustody);
     assertCustody?.();
     const before = stopped;
@@ -289,12 +288,11 @@ export async function beginDoctorMaintenance(
         assertRestoreAdmission,
         assertInstallationAdmission: assertUpdateAdmissionCurrent,
       });
-      cfg = restoredConfig;
       if (!state) {
         return;
       }
       const port = await resolveUpdatedGatewayRestartPort({
-        config: cfg,
+        config: restoredConfig,
         serviceEnv: state.env,
         serviceCommand: state.command,
       });
