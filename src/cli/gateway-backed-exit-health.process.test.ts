@@ -1,5 +1,7 @@
 // Process coverage for health failures and unreachable Gateway commands.
+import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -116,6 +118,8 @@ describe("gateway-backed CLI process exit", () => {
       });
       closeOpenClawStateDatabaseForTest();
       const before = await snapshotDirectoryContents(stateDir);
+      const expectedAfter = { ...before };
+      const canonicalStateDir = await fs.realpath(stateDir);
       const eventLoop = {
         degraded: false,
         degradedSinceMs: null,
@@ -166,6 +170,22 @@ describe("gateway-backed CLI process exit", () => {
             stateOwner ??= acquireGatewayStateOwner({
               databasePath: resolveOpenClawStateSqlitePath(env),
             });
+            const ownerPath = path.relative(canonicalStateDir, stateOwner.path);
+            if (
+              ownerPath &&
+              ownerPath !== ".." &&
+              !ownerPath.startsWith(`..${path.sep}`) &&
+              !path.isAbsolute(ownerPath)
+            ) {
+              // Preserve the pre-CLI snapshot; add only the parent's actual custody artifacts.
+              expectedAfter[ownerPath] = `file:${createHash("sha256")
+                .update(readFileSync(stateOwner.path))
+                .digest("hex")}`;
+              for (let directory = path.dirname(ownerPath); directory !== ".";) {
+                expectedAfter[directory] ??= "directory";
+                directory = path.dirname(directory);
+              }
+            }
             recordPhase("custody-acquired");
             sendMinimalGatewayResponse(
               ws,
@@ -214,6 +234,7 @@ describe("gateway-backed CLI process exit", () => {
         phases,
         stateOwnerPath: stateOwner?.path,
         stateBefore: before,
+        stateExpected: expectedAfter,
         stateAfter: after,
       });
       expect(JSON.parse(result.stdout), evidence).toEqual(payload);
@@ -235,7 +256,7 @@ describe("gateway-backed CLI process exit", () => {
       ]);
       expect(stateOwner, evidence).toBeDefined();
       stateOwner!.assertCurrent();
-      expect(after).toEqual(before);
+      expect(after).toEqual(expectedAfter);
     } finally {
       try {
         stateOwner?.release();
