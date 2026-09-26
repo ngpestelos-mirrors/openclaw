@@ -36,10 +36,19 @@ export const EXTERNAL_CLI_SYNC_TTL_MS = 15 * 60 * 1000;
 export const authProfilesLog = createSubsystemLogger("agents/auth-profiles");
 
 /** Post-commit diagnostics cannot replace an acknowledged durable result. */
-export function reportCommittedInlineAuthFailure(message: string, error: unknown): void {
+export function reportCommittedAuthProfileUsage(message: string, error: unknown): void {
   try {
     authProfilesLog.warn(message, { error });
   } catch {
     // The write is already authoritative even when a diagnostic sink fails.
   }
+}
+
+export function logDroppedAuthProfileBookkeeping(kind: string, profileId: string): void {
+  authProfilesLog.warn("auth profile bookkeeping could not be persisted", {
+    event: "auth_profile_bookkeeping_dropped",
+    kind,
+    profileId,
+    tags: ["auth_profiles", "persistence"],
+  });
 }

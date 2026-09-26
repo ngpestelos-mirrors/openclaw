@@ -84,6 +84,15 @@ export function inspectAuthProfileJsonCell(
   if (tableInspection) {
     return tableInspection;
   }
+  return readAdmittedAuthProfileJsonCell(db, target, databaseKind);
+}
+
+/** Writer admission has already established these tables for the captured database. */
+export function readAdmittedAuthProfileJsonCell(
+  db: DatabaseSync,
+  target: "store" | "state",
+  databaseKind: "agent" | "shared-state",
+): PersistedAuthProfileStoreInspection {
   let raw: string;
   if (databaseKind === "shared-state") {
     const cell = readSharedAuthKvCell(

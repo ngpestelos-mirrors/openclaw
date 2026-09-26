@@ -9,11 +9,12 @@ import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
-import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
+import { resolveProviderAuthAliasMap, resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import { loadCandidateAuthProfileStore } from "./candidate-stores.js";
+import { logDroppedAuthProfileBookkeeping, reportCommittedAuthProfileUsage } from "./constants.js";
 import { normalizeAuthProfileCredential } from "./credential-normalize.js";
+import { persistAuthProfileSuccess } from "./inline-usage.js";
 import { withOAuthProfileLocks, type OAuthProfileLockKey } from "./oauth-profile-lock.js";
 import {
   listOAuthRefreshGenerationPeers,
@@ -37,7 +38,8 @@ import {
   resolveRuntimeAuthProfileAgentDir,
 } from "./store.js";
 import type { AuthProfileCredential, AuthProfileStore } from "./types.js";
-import { resetAuthProfileFailureState } from "./usage-state.js";
+import { runAuthProfileUsageAdmission } from "./usage-admission.js";
+import { captureAuthProfileUsageOwner } from "./usage-owner.js";
 export {
   dedupeProfileIds,
   listProfilesForProvider,
@@ -45,7 +47,6 @@ export {
 } from "./profile-list.js";
 export { upsertAuthProfileWithLock, upsertAuthProfileWithLockOrThrow } from "./upsert-with-lock.js";
 
-const authProfileProfilesLog = createSubsystemLogger("agent/embedded");
 const OAUTH_REMOVAL_MAX_ATTEMPTS = 3;
 
 function listProviderAuthStateEntries<T>(
@@ -585,58 +586,46 @@ export async function markAuthProfileSuccess(params: {
   ) {
     return;
   }
-  const ownerAgentDir = resolvePersistedAuthProfileOwnerAgentDir({ agentDir, profileId });
-  const personal = isUserModelAuthProfileId(profileId);
-  const inherited =
-    !personal && ownerAgentDir === undefined && !isSharedMainAuthProfileAgentDir(agentDir);
-  const updatesSelection = !inherited && !personal;
   const lastUsed = Date.now();
-  let applied = false;
-  const updated = await updateAuthProfileStoreWithLock({
-    agentDir: ownerAgentDir,
-    profileId,
-    updater: (freshStore) => {
-      const freshProfile = freshStore.profiles[profileId];
-      if (
-        !freshProfile ||
-        freshProfile.setup?.replacement ||
-        resolveProviderIdForAuth(freshProfile.provider) !== providerKey
-      ) {
-        return false;
+  const providerAliases = resolveProviderAuthAliasMap();
+  const captured = captureAuthProfileUsageOwner({ agentDir, profileId });
+  let committed = false;
+  try {
+    await runAuthProfileUsageAdmission(profileId, async () => {
+      const prepared = await captured.prepare();
+      if (!prepared) {
+        return;
       }
-      // Inherited selection ownership is not defined. Clear shared health in
-      // the credential owner without changing its last-good or rotation state.
-      if (updatesSelection) {
-        freshStore.lastGood = replaceProviderAuthState(freshStore.lastGood, providerKey, profileId);
-      }
-      freshStore.usageStats ??= {};
-      freshStore.usageStats[profileId] = resetAuthProfileFailureState(
-        freshStore.usageStats[profileId] ?? {},
-        { lastProbeAt: Date.now(), ...(inherited ? {} : { lastUsed }) },
-      );
-      applied = true;
-      return true;
-    },
-  });
-  if (updated && applied) {
-    const usage = updated.usageStats?.[profileId];
-    if (usage) {
-      store.usageStats = { ...store.usageStats, [profileId]: usage };
-    }
-    if (updatesSelection) {
-      store.lastGood = replaceProviderAuthState(store.lastGood, providerKey, profileId);
-    }
-    return;
-  }
-  if (updated === null) {
-    authProfileProfilesLog.warn(
-      "dropped auth profile bookkeeping after locked store update failed",
-      {
-        event: "auth_profile_bookkeeping_dropped",
+      const receipt = await persistAuthProfileSuccess(prepared, {
         kind: "success",
         profileId,
-        tags: ["auth_profiles", "persistence"],
-      },
-    );
+        provider: providerKey,
+        providerAliases,
+        lastUsed,
+        inherited: prepared.inherited,
+        scopedSharedStore: prepared.scopedSharedStore,
+      });
+      if (receipt?.applied) {
+        committed = true;
+        const usage = receipt.store.usageStats?.[profileId];
+        if (usage) {
+          store.usageStats = { ...store.usageStats, [profileId]: usage };
+        }
+        if (!prepared.inherited && !isUserModelAuthProfileId(profileId)) {
+          store.lastGood = replaceProviderAuthState(store.lastGood, providerKey, profileId);
+        }
+      } else if (receipt === null) {
+        logDroppedAuthProfileBookkeeping("success", profileId);
+      }
+    });
+  } finally {
+    try {
+      await captured.dispose();
+    } catch (error) {
+      if (!committed) {
+        throw error;
+      }
+      reportCommittedAuthProfileUsage("auth usage committed before reader cleanup failed", error);
+    }
   }
 }

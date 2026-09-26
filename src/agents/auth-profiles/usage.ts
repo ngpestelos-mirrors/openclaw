@@ -19,6 +19,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveProviderModelAuthPolicy } from "../model-auth-policy.js";
 import { readProviderJsonResponse } from "../provider-http-errors.js";
 import { resolveProviderRequestHeaders } from "../provider-request-config.js";
+import { logDroppedAuthProfileBookkeeping } from "./constants.js";
 import { persistInlineAuthFailure } from "./inline-usage.js";
 import { isSettledOAuthRefreshFailure } from "./oauth-refresh-failure.js";
 import { resolveAuthProfileOrder } from "./order.js";
@@ -29,7 +30,7 @@ import {
   loadAuthProfileStoreWithoutExternalProfiles,
   updateAuthProfileStoreWithLock,
 } from "./store-runtime.js";
-import { applyScopedAuthReadThrough, resolvePersistedAuthProfileOwnerAgentDir } from "./store.js";
+import { applyScopedAuthReadThrough } from "./store.js";
 import type {
   AuthProfileBlockedSource,
   AuthProfileCooldownClassification,
@@ -40,6 +41,7 @@ import type {
   ProfileUsageStats,
 } from "./types.js";
 import { computeNextProfileUsageStats, resolveUsageWindowUntil } from "./usage-failure-state.js";
+import { authProfileUsageDeps, updateOwnedAuthProfileUsage } from "./usage-persistence.js";
 import {
   isActiveUnusableWindow,
   isAuthCooldownBypassedForProvider,
@@ -58,10 +60,6 @@ export {
   resolveProfileUnusableUntilForDisplay,
 } from "./usage-state.js";
 
-const authProfileUsageDeps = {
-  updateAuthProfileStoreWithLock,
-};
-
 /** Test-only dependency injection for usage persistence hooks. */
 const testing = {
   setDepsForTest(
@@ -79,42 +77,6 @@ const testing = {
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.authProfileUsageTestApi")] =
     testing;
-}
-
-function logDroppedAuthProfileBookkeeping(kind: string, profileId: string): void {
-  authProfileUsageLog.warn("dropped auth profile bookkeeping after locked store update failed", {
-    event: "auth_profile_bookkeeping_dropped",
-    kind,
-    profileId,
-    tags: ["auth_profiles", "persistence"],
-  });
-}
-
-async function updateOwnedAuthProfileUsage(
-  store: AuthProfileStore,
-  profileId: string,
-  update: Parameters<typeof updateAuthProfileStoreWithLock>[0],
-) {
-  // Inherited credentials exist only in the owner's SQLite store. A child lock
-  // cannot persist their health state, so resolve the owner before the write.
-  let changed = false;
-  const updated = await authProfileUsageDeps.updateAuthProfileStoreWithLock({
-    ...update,
-    profileId,
-    agentDir: resolvePersistedAuthProfileOwnerAgentDir({
-      agentDir: update.agentDir,
-      profileId,
-    }),
-    updater: (freshStore) => {
-      changed = update.updater(freshStore);
-      return changed;
-    },
-  });
-  const usage = changed ? updated?.usageStats?.[profileId] : undefined;
-  if (usage) {
-    store.usageStats = { ...store.usageStats, [profileId]: usage };
-  }
-  return updated;
 }
 
 const WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -928,7 +890,7 @@ export async function markInlineProviderApiKeyFailure(params: {
   const usageId = resolveInlineProviderApiKeyUsageId(provider);
 
   const receipt = await persistInlineAuthFailure(agentDir, { provider, reason, modelId });
-  if (receipt) {
+  if (receipt?.nextStats) {
     store.usageStats = applyScopedAuthReadThrough(receipt.store).usageStats;
     logAuthProfileFailureStateChange({
       runId,

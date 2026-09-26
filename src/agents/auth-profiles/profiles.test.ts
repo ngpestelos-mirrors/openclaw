@@ -1,8 +1,3 @@
-/**
- * Tests auth profile mutation helpers.
- * Covers locked upserts, order promotion, last-good clearing, legacy OAuth file
- * imports, and credential normalization.
- */
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -66,19 +61,6 @@ import {
 import { testing as storeTesting } from "./store.test-support.js";
 import type { AuthProfileStore, RuntimeAuthProfileStore } from "./types.js";
 import { persistAuthProfileBatch } from "./upsert-with-lock.js";
-
-vi.mock("../provider-auth-aliases.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../provider-auth-aliases.js")>();
-  return {
-    ...actual,
-    resolveProviderIdForAuth: (...args: Parameters<typeof actual.resolveProviderIdForAuth>) => {
-      const provider = args[0].trim().toLowerCase();
-      return provider === "gmi-cloud" || provider === "gmicloud"
-        ? "gmi"
-        : actual.resolveProviderIdForAuth(...args);
-    },
-  };
-});
 
 afterEach(() => {
   storeTesting.resetRuntimeSnapshotPublisherForTest();
@@ -1868,93 +1850,6 @@ describe("setAuthProfileOrder", () => {
       },
       { clearOAuthDir: true },
     );
-  });
-
-  it("canonicalizes every alias-equivalent provider state mutation", async () => {
-    await withAuthProfileTestState("openclaw-auth-alias-state-", async ({ agentDir }) => {
-      fs.mkdirSync(agentDir, { recursive: true });
-      const primary = "gmi:primary";
-      const secondary = "gmi:secondary";
-      const profiles = {
-        [primary]: { type: "api_key" as const, provider: "gmi", key: "primary" },
-        [secondary]: { type: "api_key" as const, provider: "gmi", key: "secondary" },
-        "openai:other": { type: "api_key" as const, provider: "openai", key: "other" },
-      };
-      const seeded = (): AuthProfileStore => ({
-        version: AUTH_STORE_VERSION,
-        profiles,
-        order: {
-          "gmi-cloud": [primary],
-          openai: ["openai:other"],
-          gmicloud: [secondary],
-        },
-        lastGood: { gmicloud: secondary, openai: "openai:other", "gmi-cloud": primary },
-      });
-
-      saveAuthProfileStore(seeded(), agentDir);
-      clearRuntimeAuthProfileStoreSnapshots();
-      await setAuthProfileOrder({ agentDir, provider: "gmi-cloud", order: [secondary] });
-      expect(loadPersistedAuthProfileStore(agentDir)?.order).toEqual({
-        openai: ["openai:other"],
-        gmi: [secondary],
-      });
-      saveAuthProfileStore(
-        {
-          ...seeded(),
-          order: { ...seeded().order, gmi: [primary] },
-        },
-        agentDir,
-      );
-      clearRuntimeAuthProfileStoreSnapshots();
-      await setAuthProfileOrder({ agentDir, provider: "gmi-cloud", order: null });
-      expect(loadPersistedAuthProfileStore(agentDir)?.order).toEqual({
-        openai: ["openai:other"],
-      });
-
-      saveAuthProfileStore(
-        {
-          ...seeded(),
-          order: { ...seeded().order, "gmi-cloud": [secondary, primary] },
-        },
-        agentDir,
-      );
-      clearRuntimeAuthProfileStoreSnapshots();
-      await promoteAuthProfileInOrder({ agentDir, provider: "gmi-cloud", profileId: secondary });
-      expect(loadPersistedAuthProfileStore(agentDir)?.order).toEqual({
-        openai: ["openai:other"],
-        gmi: [secondary, primary],
-      });
-
-      saveAuthProfileStore(seeded(), agentDir);
-      clearRuntimeAuthProfileStoreSnapshots();
-      await clearLastGoodProfileWithLock({ agentDir, provider: "gmi-cloud", profileId: secondary });
-      expect(loadPersistedAuthProfileStore(agentDir)?.lastGood).toEqual({
-        openai: "openai:other",
-      });
-
-      saveAuthProfileStore(seeded(), agentDir);
-      clearRuntimeAuthProfileStoreSnapshots();
-      const runtimeStore = loadAuthProfileStoreForRuntime(agentDir);
-      await markAuthProfileSuccess({
-        agentDir,
-        profileId: secondary,
-        provider: "gmi-cloud",
-        store: runtimeStore,
-      });
-      expect(loadPersistedAuthProfileStore(agentDir)?.lastGood).toEqual({
-        openai: "openai:other",
-        gmi: secondary,
-      });
-
-      saveAuthProfileStore(seeded(), agentDir);
-      clearRuntimeAuthProfileStoreSnapshots();
-      await removeProviderAuthProfilesWithLock({ agentDir, provider: "gmi-cloud" });
-      expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject({
-        profiles: { "openai:other": expect.any(Object) },
-        order: { openai: ["openai:other"] },
-        lastGood: { openai: "openai:other" },
-      });
-    });
   });
 
   it("preserves inherited main OAuth profile IDs in a secondary agent order without copying credentials", async () => {

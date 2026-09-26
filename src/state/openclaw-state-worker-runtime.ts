@@ -1,3 +1,4 @@
+import { executeAuthProfileStateSuccess } from "../agents/auth-profiles/inline-usage-state.worker.js";
 import {
   readAuthProfileRows,
   SHARED_AUTH_STORE_STATE_KEY,
@@ -193,6 +194,16 @@ export function executeSharedStateCommand(
       { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
       open,
     );
+  }
+  if (
+    command.type === "authProfiles.sharedSuccess" ||
+    command.type === "authProfiles.personalSuccess"
+  ) {
+    return executeAuthProfileStateSuccess(command, {
+      database: open(),
+      path: context.databasePath,
+      env: getSqliteWorkerStateContext().environment,
+    });
   }
   if (
     command.type === "authProfiles.read" ||

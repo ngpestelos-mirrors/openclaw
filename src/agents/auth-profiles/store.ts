@@ -206,8 +206,14 @@ export function applyScopedAuthReadThrough(store: AuthProfileStore): AuthProfile
   );
 }
 
-function isEnvOnlyAuthProfileRuntime(): boolean {
+export function isEnvOnlyAuthProfileRuntime(): boolean {
   return authProfileRuntimeMode.getStore()?.kind === "env-only";
+}
+
+export function assertPersonalAuthProfileStoreAccess(): void {
+  if (authProfileRuntimeMode.getStore()) {
+    throw new Error("Personal model accounts are unavailable in an isolated auth-store scope.");
+  }
 }
 
 export function resolveRuntimeAuthProfileAgentDir(agentDir?: string): string | undefined {
@@ -505,7 +511,6 @@ function mergeRuntimeExternalProfileState(params: {
   return merged;
 }
 
-/** Whether an agent dir resolves to the shared main auth-profile owner. */
 export function isSharedMainAuthProfileAgentDir(agentDir?: string): boolean {
   const effectiveAgentDir = resolveRuntimeAuthProfileAgentDir(agentDir);
   if (!effectiveAgentDir) {
@@ -588,12 +593,7 @@ export {
   hasLocalAuthProfileStoreSource,
 } from "./source-check.js";
 
-/** Return the current runtime auth-profile snapshot for an agent dir. */
-export function getRuntimeAuthProfileStoreSnapshot(
-  agentDir?: string,
-): AuthProfileStore | undefined {
-  return getRuntimeAuthProfileStoreSnapshotCore(agentDir);
-}
+export { getRuntimeAuthProfileStoreSnapshotCore as getRuntimeAuthProfileStoreSnapshot };
 
 /** Return the lifecycle-published effective auth store without persisted fallback reads. */
 export function getPreparedRuntimeAuthProfileStoreSnapshot(
@@ -1280,21 +1280,18 @@ export function createAuthProfileStoreRuntime(
     profileId?: string;
     sharedStoreWrite?: boolean;
     stateDir?: string;
+    env?: NodeJS.ProcessEnv;
     saveOptions?: SaveAuthProfileStoreOptions;
     updater: (store: AuthProfileStore, owner?: PreparedAuthProfileStoreOwner) => boolean;
   }): Promise<AuthProfileStore | null> {
     const agentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
     try {
       if (params.profileId && isUserModelAuthProfileId(params.profileId)) {
-        if (authProfileRuntimeMode.getStore()) {
-          throw new Error(
-            "Personal model accounts are unavailable in an isolated auth-store scope.",
-          );
-        }
+        assertPersonalAuthProfileStoreAccess();
         return updatePersonalAuthProfileStore({
           profileId: params.profileId,
           updater: params.updater,
-          stateDir: params.stateDir,
+          stateDir: params.env ? resolveStateDir(params.env) : params.stateDir,
         });
       }
       return await runAuthProfileWriteTransactionAsync(
@@ -1327,7 +1324,7 @@ export function createAuthProfileStoreRuntime(
         {
           sharedStoreWrite: params.sharedStoreWrite,
           stateDir: params.stateDir,
-          env: params.stateDir ? undefined : getScopedAuthProfileEnv(),
+          env: params.env ?? (params.stateDir ? undefined : getScopedAuthProfileEnv()),
         },
       );
     } catch (error) {

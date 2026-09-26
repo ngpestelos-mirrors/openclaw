@@ -1,7 +1,7 @@
 import path from "node:path";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
-import { reportCommittedInlineAuthFailure } from "./constants.js";
-import type { InlineAuthFailureReceipt } from "./inline-usage-kernel.js";
+import { reportCommittedAuthProfileUsage } from "./constants.js";
+import type { AuthProfileUsageReceipt } from "./inline-usage-kernel.js";
 import {
   assertAuthProfileMigrationCandidates,
   assertAuthProfileMigrationStateAtDatabasePath,
@@ -32,9 +32,9 @@ import { resolveAuthProfileDatabaseOwnerId, type PreparedAuthProfileStoreOwner }
 import type { AuthProfileRowRead, AuthProfileStore } from "./types.js";
 
 /** Reconcile committed facts through the existing snapshot owner, without native host rereads. */
-export async function publishInlineAuthFailure(
+export async function publishAuthProfileUsage(
   owner: PreparedAuthProfileStoreOwner,
-  receipt: InlineAuthFailureReceipt,
+  receipt: AuthProfileUsageReceipt,
   readTarget: () => Promise<AuthProfileRowRead>,
   assertOwner: () => void,
 ): Promise<void> {
@@ -146,12 +146,12 @@ export async function publishInlineAuthFailure(
           clearRuntimeAuthProfileStoreSnapshotAtDatabasePath(entry.databasePath, entry.agentDir);
         }
       } catch (invalidationError) {
-        reportCommittedInlineAuthFailure(
+        reportCommittedAuthProfileUsage(
           "auth usage snapshot invalidation failed",
           invalidationError,
         );
       }
-      reportCommittedInlineAuthFailure(
+      reportCommittedAuthProfileUsage(
         "auth usage committed but runtime snapshot publication failed",
         error,
       );
@@ -162,7 +162,7 @@ export async function publishInlineAuthFailure(
         result.status === "rejected" ? [result.reason] : [],
       );
       if (errors.length > 0) {
-        reportCommittedInlineAuthFailure(
+        reportCommittedAuthProfileUsage(
           "auth snapshot publication finished before reader cleanup failed",
           errors,
         );

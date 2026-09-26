@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resetFileLockStateForTest } from "../../infra/file-lock.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -82,7 +82,7 @@ describe("inherited auth-profile usage persistence", () => {
 
   afterEach(async () => {
     clearRuntimeAuthProfileStoreSnapshots();
-    closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawAgentDatabasesAsync(rootDir);
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     resetFileLockStateForTest();
