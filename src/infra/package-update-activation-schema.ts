@@ -13,10 +13,10 @@ const absolutePath = z
   .min(1)
   .max(4096)
   .refine((value) => path.resolve(value) === value);
-export const identity = z.string().regex(/^\d+:\d+$/u);
+export const packageActivationIdentitySchema = z.string().regex(/^\d+:\d+$/u);
 const fingerprint = z.strictObject({
   digest: z.string().regex(/^[a-f0-9]{64}$/u),
-  identity,
+  identity: packageActivationIdentitySchema,
   version: z.string().min(1).max(256),
 });
 export const basename = z
@@ -40,30 +40,30 @@ export const PackageActivationDescriptorSchema = z.strictObject({
   reverse: packageActivationReverseBindingSchema.optional(),
   authority: z.strictObject({
     databasePath: absolutePath,
-    databaseIdentity: identity,
-    parentIdentity: identity,
+    databaseIdentity: packageActivationIdentitySchema,
+    parentIdentity: packageActivationIdentitySchema,
     installKey: absolutePath,
     owner: z.string().min(1).max(4096),
   }),
-  anchorIdentity: identity,
-  journalIdentity: identity,
-  journalParentIdentity: identity,
-  parentIdentity: identity,
+  anchorIdentity: packageActivationIdentitySchema,
+  journalIdentity: packageActivationIdentitySchema,
+  journalParentIdentity: packageActivationIdentitySchema,
+  parentIdentity: packageActivationIdentitySchema,
   binDir: absolutePath,
-  binIdentity: identity,
+  binIdentity: packageActivationIdentitySchema,
   originalStageRoot: absolutePath,
   previous: fingerprint,
   candidate: fingerprint,
-  launcherRootIdentity: identity,
-  previousLauncherRootIdentity: identity.nullable(),
-  helperIdentity: identity,
+  launcherRootIdentity: packageActivationIdentitySchema,
+  previousLauncherRootIdentity: packageActivationIdentitySchema.nullable(),
+  helperIdentity: packageActivationIdentitySchema,
   preparation: z
     .array(
       z.strictObject({
         name: transferName,
         source: absolutePath,
-        sourceParentIdentity: identity,
-        identity,
+        sourceParentIdentity: packageActivationIdentitySchema,
+        identity: packageActivationIdentitySchema,
       }),
     )
     .min(4)
@@ -75,8 +75,8 @@ export const PackageActivationDescriptorSchema = z.strictObject({
         name: basename,
         previous: z.string().max(4096).nullable(),
         candidate: z.string().max(4096),
-        previousIdentity: identity.nullable(),
-        candidateIdentity: identity,
+        previousIdentity: packageActivationIdentitySchema.nullable(),
+        candidateIdentity: packageActivationIdentitySchema,
       }),
     )
     .max(64),
@@ -108,11 +108,15 @@ export const intentSchema = z
     }),
     z.strictObject({
       kind: z.enum(["remove-anchor", "unlink-helper"]),
-      identity,
+      identity: packageActivationIdentitySchema,
       selected: z.enum(["previous", "candidate"]),
     }),
     z.strictObject({ kind: z.enum(["displace", "publish"]) }),
-    z.strictObject({ kind: z.literal("launcher"), name: basename, identity }),
+    z.strictObject({
+      kind: z.literal("launcher"),
+      name: basename,
+      identity: packageActivationIdentitySchema,
+    }),
     z.strictObject({ kind: z.literal("retire"), selected: z.enum(["previous", "candidate"]) }),
     z.strictObject({
       kind: z.literal("remove"),
@@ -123,7 +127,7 @@ export const intentSchema = z
         "launchers",
         "previous-launchers",
       ]),
-      identity,
+      identity: packageActivationIdentitySchema,
       selected: z.enum(["previous", "candidate"]),
     }),
   ])

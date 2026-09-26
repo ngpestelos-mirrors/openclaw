@@ -22,8 +22,8 @@ import type {
   PackageActivationReversePreparation,
 } from "./package-update-activation-reverse-schema.js";
 import {
-  identity,
   basename,
+  packageActivationIdentitySchema,
   PackageActivationDescriptorSchema,
   PackageActivationPhaseSchema,
   intentSchema,
@@ -177,7 +177,7 @@ export function openPackageActivationJournal(anchor: string) {
       throw new Error("Preparation custody does not match the recorded objects.");
     }
     const publications = z
-      .array(z.strictObject({ name: basename, identity }))
+      .array(z.strictObject({ name: basename, identity: packageActivationIdentitySchema }))
       .max(64)
       .parse(JSON.parse(row.publications_json));
     const intent = intentSchema.parse(JSON.parse(row.intent_json));
