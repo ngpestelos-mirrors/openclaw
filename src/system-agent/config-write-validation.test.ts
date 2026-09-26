@@ -170,6 +170,122 @@ describe("executeSystemAgentOperation approved config writes", () => {
 });
 
 describe("delegated config proposal evaluation", () => {
+  it.each([
+    ["tools.subagents.tools", '{"deny":["exec"]}'],
+    ["tools.sandbox.tools", '{"deny":["exec"]}'],
+    ["agents.entries.research.tools.sandbox.tools", '{"deny":["exec"]}'],
+    ["channels.telegram.groups.-100.tools", '{"deny":["exec"]}'],
+    ["channels.telegram.groups.-100.tools", "{}"],
+    ["channels.telegram.direct.42.toolsBySender", '{"id:42":{}}'],
+    ["channels.telegram.accounts.ops.groups.-100.toolsBySender", '{"id:42":{"allow":["read"]}}'],
+    ["channels.telegram.direct.42.tools", '{"allow":["read"]}'],
+    ["channels.telegram.accounts.ops.direct.42.toolsBySender", '{"id:42":{"deny":["exec"]}}'],
+    ["channels.discord.accounts.ops.guilds.123.channels.456.tools", '{"deny":["exec"]}'],
+    ["channels.slack.accounts.ops.channels.C123.toolsBySender", '{"id:U123":{"allow":["read"]}}'],
+    ["gateway.controlUi.allowedOrigins", '["https://fixture.example"]'],
+    ["gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback", "true"],
+  ])(
+    "protects validated channel/browser authority at %s, including removal",
+    async (configKey, value) => {
+      const configPath = await prepareConfig();
+      const change = await evaluateSystemAgentConfigChange({
+        kind: "config-set",
+        path: configKey,
+        value,
+      });
+      expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
+      expect(changesPermissionPolicy(change.after, change.before)).toBe(true);
+      expect(changesPermissionPolicy(change.after, structuredClone(change.after))).toBe(false);
+      expect(await fs.readFile(configPath, "utf8")).toBe("{}\n");
+    },
+  );
+
+  it.each([
+    [
+      "channels.telegram.accounts.ops.groups.-100",
+      '{"tools":{"deny":["exec"]},"topics":{"7":{"systemPrompt":"new topic guidance"}}}',
+    ],
+    [
+      "channels.telegram.accounts.ops.direct.42",
+      '{"toolsBySender":{"id:42":{"allow":["read"]}},"systemPrompt":"new DM guidance"}',
+    ],
+    ["channels.telegram.accounts.ops.name", "Renamed account"],
+    ["gateway.controlUi", '{"allowedOrigins":["https://fixture.example"],"communityInvite":false}'],
+  ])(
+    "keeps policy-preserving parent and sibling changes automatic: %s",
+    async (configKey, value) => {
+      const raw = JSON.stringify({
+        channels: {
+          telegram: {
+            accounts: {
+              ops: {
+                groups: { "-100": { tools: { deny: ["exec"] } } },
+                direct: { "42": { toolsBySender: { "id:42": { allow: ["read"] } } } },
+              },
+            },
+          },
+        },
+        gateway: { controlUi: { allowedOrigins: ["https://fixture.example"] } },
+      });
+      const configPath = await prepareConfig(raw);
+      const change = await evaluateSystemAgentConfigChange({
+        kind: "config-set",
+        path: configKey,
+        value,
+      });
+      expect(changesPermissionPolicy(change.before, change.after)).toBe(false);
+      expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+    },
+  );
+
+  it("detects an exact DM entry hiding wildcard tool policy, not ordinary topic edits", async () => {
+    const raw = JSON.stringify({
+      channels: {
+        telegram: {
+          accounts: {
+            ops: {
+              direct: { "*": { tools: { deny: ["exec"] } } },
+            },
+          },
+        },
+      },
+    });
+    await prepareConfig(raw);
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: "channels.telegram.accounts.ops.direct.42",
+      value: '{"systemPrompt":"specific DM"}',
+    });
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
+    expect(changesPermissionPolicy(change.after, change.before)).toBe(true);
+  });
+
+  it("normalizes browser-origin defaults without gating operational Control UI settings", async () => {
+    await prepareConfig();
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: "gateway.controlUi",
+      value:
+        '{"allowedOrigins":[],"dangerouslyAllowHostHeaderOriginFallback":false,"communityInvite":false}',
+    });
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(false);
+  });
+
+  it.each(["groups.-100", "direct.42"])(
+    "rejects unsupported Telegram topic tool policy under %s",
+    async (scope) => {
+      const configPath = await prepareConfig();
+      await expect(
+        evaluateSystemAgentConfigChange({
+          kind: "config-set",
+          path: "channels.telegram.accounts.ops." + scope + ".topics.7.tools",
+          value: '{"deny":["exec"]}',
+        }),
+      ).rejects.toThrow();
+      expect(await fs.readFile(configPath, "utf8")).toBe("{}\n");
+    },
+  );
+
   it.each(["gateway.auth.token", "gateway.remote.token"])(
     "evaluates SecretRef effects at %s without resolving or writing credentials",
     async (configKey) => {

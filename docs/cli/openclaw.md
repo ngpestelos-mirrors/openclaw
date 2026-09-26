@@ -121,9 +121,10 @@ follow the requesting run's effective [session permission policy](/gateway/permi
 Full Access applies the exact proposed operation automatically, including when
 Full Access comes from the configured default rather than an explicit session
 mode. Permission policy is the exception: actual changes to tool and exec policy,
-sandboxing, approvals, commands' owner/sender allowlists, channel exec approvers,
-security policy, Workshop approval policy, and Gateway authorization wait for a
-human decision. This includes tightening, removals that change inherited policy,
+sandboxing, approvals, commands' owner/sender allowlists, channel exec approvers
+and group/direct-message tool policies, security policy, Workshop approval policy,
+and Gateway authorization (including browser origins and Host-header origin
+fallback) wait for an authorized human decision. This includes tightening, removals that change inherited policy,
 and inbound Gateway credential rotation—not just privilege expansion.
 
 OpenClaw compares the canonical validated config before and after the proposal.
@@ -142,8 +143,11 @@ made the request: channels with native approval cards show **Allow once** and
 Control UI or the OpenClaw apps, which can also decide any chat's approval.
 Replying "yes" in the delegated chat cannot authorize a change; the button or
 `/approve` command does.
-Channels with their own approver settings decide who may approve; elsewhere only
-a current owner (`commands.ownerAllowFrom`) can approve an OpenClaw change.
+Channels with their own approver settings decide who may approve, including
+explicitly configured delegates who are not owners. Other channels require a
+current owner (`commands.ownerAllowFrom`). Authorized Control UI/app clients
+retain their existing approval scopes and reviewer-device binding. This is a
+human-approval floor, not a new owner-only restriction.
 Independent filesystem and sandbox boundaries,
 tool policy, and the operation restrictions below still apply. The host also checks
 that the requesting run and verified inference route remain valid. Interactive

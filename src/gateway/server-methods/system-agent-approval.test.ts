@@ -36,6 +36,10 @@ import { ExecApprovalManager } from "../exec-approval-manager.js";
 import { installTestApprovalClock } from "../exec-approval-manager.test-support.js";
 import { getOperatorApprovalDetailed } from "../operator-approval-store.js";
 import { runSystemAgentGatewayTask } from "./system-agent-execution.js";
+import {
+  reviewerConfig,
+  verifySystemAgentReviewerBoundary,
+} from "./system-agent-reviewer.test-support.js";
 import { systemAgentHandlers, type SystemAgentChatSession } from "./system-agent.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
@@ -422,6 +426,20 @@ describe("Full Access delegated chat", () => {
     },
   );
 
+  it.each([
+    "configured-delegate",
+    "unauthorized",
+    "revoked-reviewer",
+    "revoked-requester",
+    "unattended",
+  ] as const)("checks real reviewer custody and final config effect: %s", async (outcome) => {
+    const fixture = await createDelegatedChatFixture("typed", "live", {
+      config: reviewerConfig,
+      realWriter: true,
+    });
+    await verifySystemAgentReviewerBoundary({ ...fixture, outcome });
+  });
+
   const policyConfig: OpenClawConfig = {
     tools: { exec: { mode: "ask", notifyOnExit: true } },
     agents: { entries: { research: { name: "Research", tools: { exec: { mode: "deny" } } } } },
@@ -430,6 +448,18 @@ describe("Full Access delegated chat", () => {
   };
 
   it.each([
+    ["tools.subagents.tools", '{"deny":["exec"]}', true],
+    ["tools.sandbox.tools", '{"deny":["exec"]}', true],
+    ["agents.entries.research.tools.sandbox.tools", '{"deny":["exec"]}', true],
+    ["gateway.controlUi.communityInvite", "false", false],
+    ["gateway.controlUi.allowedOrigins", '["https://fixture.example"]', true],
+    ["gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback", "true", true],
+    ["channels.telegram.accounts.ops.groups.-100.tools", '{"deny":["exec"]}', true],
+    [
+      "channels.telegram.accounts.ops.direct.42.toolsBySender",
+      '{"id:42":{"allow":["read"]}}',
+      true,
+    ],
     ["tools.exec.notifyOnExit", "false", false],
     ["tools.exec.mode", "ask", false],
     ["tools", '{exec:{mode:"ask",notifyOnExit:false}}', false],

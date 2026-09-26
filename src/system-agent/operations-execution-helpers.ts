@@ -2,8 +2,8 @@
 
 import { parseConfigSetPath } from "../cli/config-cli-path.js";
 import type { ConfigMutationAdmission } from "../cli/config-cli-runner.js";
-import type { OpenClawConfig } from "../config/config.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
+import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -23,11 +23,6 @@ import type {
 import { formatSystemAgentPersistentPlan } from "./operations-parse.js";
 import type { SystemAgentOverview } from "./overview.js";
 import type { SystemAgentVerifiedInferenceBinding } from "./verified-inference.js";
-
-type ConfigModule = typeof import("../config/config.js");
-type ConfigFileSnapshot = Awaited<ReturnType<ConfigModule["readConfigFileSnapshot"]>>;
-const loadConfigModule = async () => await import("../config/config.js");
-const loadOverviewModule = async () => await import("./overview.js");
 
 export const CONFIG_GET_OUTPUT_MAX_CHARS = 2_000;
 export const CONFIG_SCHEMA_CHILDREN_MAX = 40;
@@ -84,7 +79,7 @@ export async function runGatewayLifecycle(
 }
 
 export async function readConfigFileSnapshotLazy(): Promise<ConfigFileSnapshot> {
-  const { readConfigFileSnapshot } = await loadConfigModule();
+  const { readConfigFileSnapshot } = await import("../config/config.js");
   return await readConfigFileSnapshot();
 }
 
@@ -94,7 +89,7 @@ export async function loadOverviewForOperation(
   if (deps?.loadOverview) {
     return await deps.loadOverview();
   }
-  const { loadSystemAgentOverview } = await loadOverviewModule();
+  const { loadSystemAgentOverview } = await import("./overview.js");
   return await loadSystemAgentOverview();
 }
 
@@ -265,7 +260,7 @@ export async function applyPersistentOperation(params: {
     return { applied: false, message };
   }
   runtime.log(`[openclaw] running: ${auditOperation}`);
-  const { readConfigFileSnapshot } = await loadConfigModule();
+  const { readConfigFileSnapshot } = await import("../config/config.js");
   const before = await readConfigFileSnapshot();
   const assertPersistentApply = opts.beforePersistentApply;
   const commit: PersistentApplyContext["commit"] = async (effect) => {
@@ -381,7 +376,7 @@ async function verifyCurrentSetupInference(
   route: DefaultInferenceRouteProjection;
   latencyMs: number;
 }> {
-  const { readConfigFileSnapshot } = await loadConfigModule();
+  const { readConfigFileSnapshot } = await import("../config/config.js");
   const before = await readConfigFileSnapshot();
   if (!before.exists || !before.valid) {
     throw new Error(
@@ -533,7 +528,7 @@ export async function executeSetDefaultModel(
     runtime,
     opts,
     run: async (ctx) => {
-      const { mutateConfigFile, readConfigFileSnapshot } = await loadConfigModule();
+      const { mutateConfigFile, readConfigFileSnapshot } = await import("../config/config.js");
       const { applySystemAgentModelSelection, createSystemAgentModelSelectionUpdater } =
         await import("./setup-model-selection.js");
       const targetAgentId = operation.agentId;
@@ -683,7 +678,7 @@ export async function executeSetDefaultModel(
  * standard approval gate — matching what the operator can do from the UI/CLI.
  */
 export async function isPluginBackingDefaultInferenceRoute(pluginId: string): Promise<boolean> {
-  const { readConfigFileSnapshot } = await loadConfigModule();
+  const { readConfigFileSnapshot } = await import("../config/config.js");
   const snapshot = await readConfigFileSnapshot();
   if (!snapshot.exists || !snapshot.valid) {
     return true;

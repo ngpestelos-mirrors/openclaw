@@ -90,6 +90,30 @@ describe("changesPermissionPolicy", () => {
     expect(changesPermissionPolicy({ tools: { exec: { mode: "full" } } }, {})).toBe(true);
   });
 
+  it("uses canonical advertised-origin fallback and preserves an explicit empty override", () => {
+    const inherited: OpenClawConfig = { gateway: { publicOrigin: "https://fixture.example" } };
+    expect(changesPermissionPolicy({}, inherited)).toBe(true);
+    expect(
+      changesPermissionPolicy(inherited, {
+        gateway: { ...inherited.gateway, controlUi: { allowedOrigins: [] } },
+      }),
+    ).toBe(true);
+    expect(
+      changesPermissionPolicy(inherited, {
+        gateway: {
+          ...inherited.gateway,
+          controlUi: { allowedOrigins: ["https://fixture.example"] },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      changesPermissionPolicy(
+        { gateway: { ...inherited.gateway, controlUi: { allowedOrigins: [] } } },
+        { gateway: { publicOrigin: "https://other.example", controlUi: { allowedOrigins: [] } } },
+      ),
+    ).toBe(false);
+  });
+
   it("does not confuse outgoing credential rotation with inbound authentication", () => {
     const ref = { source: "env", provider: "default", id: "FIXTURE_API_KEY" } as const;
     expect(changesPermissionPolicy({}, { gateway: { remote: { token: ref } } })).toBe(false);

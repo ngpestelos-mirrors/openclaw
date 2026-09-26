@@ -1,4 +1,4 @@
-title: A Full Access permission-policy change waits for the owner
+title: A Full Access permission-policy change waits for an authorized human
 
 scenario:
   id: system-agent-permission-floor
@@ -8,17 +8,17 @@ scenario:
       - agent-runtime.delegated-tool-access
     secondary:
       - channels.qa-channel-outbound
-  objective: Verify a Full Access delegated change to approval policy posts an approval prompt instead of applying, and applies only after the owner approves.
+  objective: Verify a Full Access delegated change to approval policy posts an approval prompt instead of applying, and applies only after an authorized human approves.
   gatewayConfigPatch:
     commands:
-      ownerAllowFrom: [qa-channel:alice]
+      ownerAllowFrom: [qa-channel:alice, qa-channel:bob]
     agents:
       entries:
         qa:
           tools:
             alsoAllow: [openclaw]
   successCriteria:
-    - A Full Access change to approval policy posts an approval prompt instead of applying, and applies only after the owner approves.
+    - A Full Access change to approval policy posts an approval prompt instead of applying, and applies only after an authorized human approves.
   docsRefs:
     - docs/cli/openclaw.md
     - docs/gateway/permission-modes.md
@@ -37,7 +37,7 @@ scenario:
 
 flow:
   steps:
-    - name: holds a Full Access permission-policy change for the owner
+    - name: holds a Full Access permission-policy change for an authorized human
       actions:
         - assert:
             expr: "env.providerMode === 'mock-openai'"
@@ -89,6 +89,45 @@ flow:
         - set: approvalId
           value:
             expr: "String(policyPrompt.text).split('/approve ')[1].split(' ')[0]"
+        - set: unauthorizedResult
+          value:
+            expr: "await env.gateway.call('approval.resolve', { id: approvalId, kind: 'system-agent', decision: 'allow-once', reviewer: { channel: 'qa-channel', accountId: 'default', senderId: 'eve' } }).then(() => 'unexpected-allow', error => String(error))"
+        - assert:
+            expr: "unauthorizedResult.includes('not found') || unauthorizedResult.includes('unknown')"
+            message:
+              expr: "'unauthorized reviewer was not refused: ' + unauthorizedResult"
+        - set: afterUnauthorized
+          value:
+            expr: "(await env.gateway.call('config.get', {})).config?.approvals?.exec?.enabled ?? null"
+        - assert:
+            expr: "afterUnauthorized === approvalsExecBefore"
+            message: unauthorized reviewer changed permission policy
+        - set: configBeforeRevocation
+          value:
+            expr: "await env.gateway.call('config.get', {})"
+        - set: revocation
+          value:
+            expr: "await env.gateway.call('config.patch', { raw: JSON.stringify({ commands: { ownerAllowFrom: ['qa-channel:alice'] } }), baseHash: configBeforeRevocation.hash })"
+        - call: waitForCondition
+          args:
+            - lambda:
+                async: true
+                expr: "await env.gateway.call('config.get', {}).then(value => value.hash === revocation.hash && typeof value.appliedConfigHash === 'string' && value.appliedConfigHash === value.configRevisionHash ? true : undefined)"
+            - 30000
+            - 100
+        - set: revokedResult
+          value:
+            expr: "await env.gateway.call('approval.resolve', { id: approvalId, kind: 'system-agent', decision: 'allow-once', reviewer: { channel: 'qa-channel', accountId: 'default', senderId: 'bob' } }).then(() => 'unexpected-allow', error => String(error))"
+        - assert:
+            expr: "revokedResult.includes('not found')"
+            message:
+              expr: "'revoked reviewer was not refused: ' + revokedResult"
+        - set: afterRevokedOnDisk
+          value:
+            expr: "JSON.parse(await fs.readFile(configBeforeRevocation.path, 'utf8')).approvals?.exec?.enabled ?? null"
+        - assert:
+            expr: "afterRevokedOnDisk === approvalsExecBefore"
+            message: revoked reviewer changed permission policy on disk
         - sendInbound:
             conversation:
               ref: policyConversation
@@ -107,8 +146,11 @@ flow:
         - set: approvalsExecAfter
           value:
             expr: "(await env.gateway.call('config.get', {}, { timeoutMs: 60000 })).config?.approvals?.exec?.enabled ?? null"
+        - set: appliedOnDisk
+          value:
+            expr: "JSON.parse(await fs.readFile(configBeforeRevocation.path, 'utf8')).approvals?.exec?.enabled ?? null"
         - assert:
-            expr: "approvalsExecAfter === true"
+            expr: "approvalsExecAfter === true && appliedOnDisk === true"
             message:
               expr: "`approved policy change did not apply: ${approvalsExecAfter}`"
-      detailsExpr: "JSON.stringify({ approvalsExecBefore, approvalsExecPending, approvalsExecAfter, prompt: policyPrompt.text }, null, 2)"
+      detailsExpr: "JSON.stringify({ approvalsExecBefore, approvalsExecPending, afterUnauthorized, unauthorizedResult, revokedResult, afterRevokedOnDisk, appliedOnDisk, approvalsExecAfter, prompt: policyPrompt.text }, null, 2)"

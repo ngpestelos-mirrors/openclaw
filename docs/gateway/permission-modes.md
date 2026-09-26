@@ -48,9 +48,10 @@ proposed operation. Full Access applies it automatically without an approval
 prompt, including when Full Access comes from the configured default rather than
 an explicit session mode. Actual permission changes are the exception: tool and
 exec policy, sandboxing, approvals, owners and command allowlists, channel exec
-approvers, security policy, Workshop approval policy, and Gateway authorization
-(auth, roles, HTTP tools, trusted proxies including Real-IP fallback, and nodes)
-wait for a human decision, even in Full Access.
+approvers, channel group/direct-message tool policies, security policy, Workshop
+approval policy, and Gateway authorization (auth, roles, HTTP tools, browser
+origins and Host-header origin fallback, trusted proxies including Real-IP
+fallback, and nodes) wait for an authorized human decision, even in Full Access.
 
 The host compares the canonical validated config before and after the change,
 not just its path. No-op policy writes, parent replacements preserving policy,
@@ -71,9 +72,22 @@ Restricted runs from messaging channels ask the
 requesting chat for approval: native approval cards where the channel supports
 them, otherwise a `/approve <id> allow-once|deny` reply. Webchat and terminal runs
 decide in the Control UI or apps, which can also decide any chat's approval.
+Approval uses the existing human-reviewer contract, not an owner-only rule:
+configured channel approvers may decide; channels without that capability fall
+back to current `commands.ownerAllowFrom` owners. Authorized Control UI/app
+clients may also decide under their `operator.approvals` or `operator.admin`
+scopes and reviewer-device binding. See
+[Exec approval permissions](/tools/exec-approvals-advanced).
 Free-text replies such as "yes" never authorize the change.
 The requesting tool waits for the human decision and application outcome. Stopping
 the run cancels its pending approval; approving later cannot revive that run.
+With no reachable approver, the request remains pending until it expires or the
+run is stopped; no permission change is saved. Approval is for that exact
+proposal, not a permanent exemption or a repeated confirmation after approval.
+
+Existing Full Access configurations and saved session modes require no schema
+migration for this approval floor. Their ordinary operations remain automatic;
+only a new proposal that changes permission policy takes the human-review path.
 
 Independent filesystem and sandbox boundaries, tool policy, and system-agent
 operation restrictions still apply. The host also checks that the requesting run

@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveSandboxConfigForAgent } from "../agents/sandbox/config.js";
 import type { ConfigMutationAdmission } from "../cli/config-cli-runner.js";
+import { resolveControlUiAllowedOrigins } from "../config/gateway-control-ui-origins.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { coerceSecretRef } from "../config/types.secrets.js";
 import type { ExecToolConfig } from "../config/types.tools.js";
@@ -23,12 +24,34 @@ const TOOL_POLICY_KEYS = [
   "elevated",
 ] as const;
 const ANY = "*";
+// Channel schemas own these conversation maps (including account overrides).
+// Project only their tool-policy fields, not prompts, delivery settings or tokens.
+// Telegram topics do not accept tools; validation rejects those paths upstream.
+const CHANNEL_TOOL_SCOPES = [
+  ["groups", ANY],
+  ["direct", ANY],
+  ["channels", ANY],
+  ["rooms", ANY],
+  ["guilds", ANY],
+  ["guilds", ANY, "channels", ANY],
+  ["teams", ANY],
+  ["teams", ANY, "channels", ANY],
+] as const;
+const CHANNEL_TOOL_POLICY_PATHS = [[], ["accounts", ANY]].flatMap((account) =>
+  CHANNEL_TOOL_SCOPES.flatMap((scope) =>
+    ["tools", "toolsBySender"].map((key) => ["channels", ANY].concat(account, scope, key)),
+  ),
+);
 const PERMISSION_POLICY_PATHS: readonly (readonly string[])[] = [
+  ...CHANNEL_TOOL_POLICY_PATHS,
+  ["channels", "telegram", "direct"],
+  ["channels", "telegram", "accounts", ANY, "direct"],
   ["approvals"],
   ["security"],
   ["commands", "ownerAllowFrom"],
   ["commands", "allowFrom"],
   ...TOOL_POLICY_KEYS.map((key) => ["tools", key]),
+  ["tools", "subagents", "tools"],
   ...TOOL_POLICY_KEYS.map((key) => ["agents", "entries", ANY, "tools", key]),
   ["channels", ANY, "execApprovals"],
   ["channels", ANY, "accounts", ANY, "execApprovals"],
@@ -42,19 +65,23 @@ const PERMISSION_POLICY_PATHS: readonly (readonly string[])[] = [
   ["gateway", "nodes"],
 ];
 
-function projectPath(value: unknown, path: readonly string[]): unknown {
+function projectPath(
+  value: unknown,
+  path: readonly string[],
+  projectLeaf: (leaf: unknown) => unknown = (leaf) => leaf,
+): unknown {
   const [key, ...rest] = path;
   if (key === undefined) {
-    return value;
+    return projectLeaf(value);
   }
   if (!isRecord(value)) {
     return undefined;
   }
   if (key !== ANY) {
-    return projectPath(value[key], rest);
+    return projectPath(value[key], rest, projectLeaf);
   }
   const entries = Object.entries(value).flatMap(([id, child]) => {
-    const projected = projectPath(child, rest);
+    const projected = projectPath(child, rest, projectLeaf);
     return projected === undefined ? [] : [[id, projected]];
   });
   return entries.length ? Object.fromEntries(entries) : undefined;
@@ -71,6 +98,38 @@ function compactPolicy(value: unknown): unknown {
     return compact === undefined ? [] : [[key, compact]];
   });
   return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+// An explicit empty tool override can shadow a restrictive group or wildcard
+// sender policy. Preserve it as a comparison sentinel, not an empty container.
+function projectToolOverride(value: unknown): unknown {
+  return value === undefined ? undefined : (compactPolicy(value) ?? null);
+}
+
+function projectPermissionPath(config: OpenClawConfig, path: readonly string[]) {
+  return compactPolicy(
+    projectPath(config, path, (value) => {
+      if (path[0] === "channels" && path.at(-1) === "tools") {
+        return projectToolOverride(value);
+      }
+      if (path.at(-1) === "toolsBySender" && isRecord(value)) {
+        return Object.fromEntries(
+          Object.entries(value).map(([sender, policy]) => [sender, projectToolOverride(policy)]),
+        );
+      }
+      if (path.at(-1) === "direct" && isRecord(value)) {
+        // Telegram selects a whole exact DM entry before resolving tools. Even a
+        // prompt-only entry can hide the wildcard's tool restrictions.
+        const wildcard = value["*"];
+        const hasWildcardPolicy =
+          isRecord(wildcard) &&
+          (wildcard.tools !== undefined ||
+            (isRecord(wildcard.toolsBySender) && Object.keys(wildcard.toolsBySender).length > 0));
+        return hasWildcardPolicy ? Object.keys(value).toSorted() : undefined;
+      }
+      return value;
+    }),
+  );
 }
 
 function projectExec(global?: ExecToolConfig, local?: ExecToolConfig) {
@@ -158,9 +217,14 @@ function projectCredentialDependencies(config: OpenClawConfig) {
 function projectPermissionPolicy(config: OpenClawConfig) {
   const defaults = projectScopedPolicy(config);
   return {
-    paths: PERMISSION_POLICY_PATHS.map((path) => compactPolicy(projectPath(config, path))),
+    paths: PERMISSION_POLICY_PATHS.map((path) => projectPermissionPath(config, path)),
     defaults,
     allowRealIpFallback: config.gateway?.allowRealIpFallback ?? false,
+    browserOrigins: {
+      allowedOrigins: resolveControlUiAllowedOrigins(config),
+      hostHeaderFallback:
+        config.gateway?.controlUi?.dangerouslyAllowHostHeaderOriginFallback ?? false,
+    },
     // A protected reference can change meaning without changing its path/ref id.
     // Compare only its configured provider/env inputs, never resolve a secret or
     // execute a provider just to decide whether human approval is necessary.
