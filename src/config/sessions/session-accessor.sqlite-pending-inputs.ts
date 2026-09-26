@@ -301,8 +301,7 @@ export function hasSessionPendingInputOwner(
     owner?.databasePath === databasePath &&
     owner.sessionId === row.session_id &&
     owner.sessionKey === row.session_key &&
-    owner.lifecycleGeneration === row.lifecycle_generation &&
-    isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration)
+    owner.lifecycleGeneration === row.lifecycle_generation
   );
 }
 

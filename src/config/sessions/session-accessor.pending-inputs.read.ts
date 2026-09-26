@@ -14,7 +14,8 @@ import {
   hasPendingInputConsumptionColumn,
   hasSessionPendingInputsSchema,
 } from "../../state/openclaw-agent-pending-inputs-schema.js";
-import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
+import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { captureOpenClawStateReadContext } from "../../state/openclaw-state-worker-context.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import {
   hasSessionPendingInputOwner,
@@ -241,7 +242,7 @@ async function readPendingInputData(
     ...scope,
     env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
   };
-  const context = captureOpenClawStateWorkerContext({ env: captured.env });
+  const context = captureOpenClawStateReadContext(resolveOpenClawStateSqlitePath(captured.env));
   const assertStateCurrent = () => {
     context.maintenanceScope?.assertAdmission();
     context.admission.assertCurrent();

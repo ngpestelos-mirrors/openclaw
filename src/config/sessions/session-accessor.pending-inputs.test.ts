@@ -634,7 +634,7 @@ describe("accepted input custody", () => {
     });
   });
 
-  it("rechecks prepared live custody after lifecycle rotation before rejecting a retry", async () => {
+  it("retains prepared custody through lifecycle retirement before allowing a retry", async () => {
     const requestFingerprint = "rotation-after-read";
     const previous = await stage("read-rotation", { requestFingerprint });
     const read = pendingInputRuntime.withSessionPendingInputDatabase;
@@ -652,17 +652,16 @@ describe("accepted input custody", () => {
     vi.spyOn(pendingInputRuntime, "withSessionPendingInputDatabase").mockImplementationOnce(
       rotateAfterRead,
     );
-    const recovered = await stageSessionPendingInput(scope(), {
-      runId: "read-rotation",
-      message: message("read-rotation"),
-      requestFingerprint,
-      assertCurrent: () => {},
-    });
+    await expect(
+      stageSessionPendingInput(scope(), {
+        runId: "read-rotation",
+        message: message("read-rotation"),
+        requestFingerprint,
+        assertCurrent: () => {},
+      }),
+    ).rejects.toThrow("already admitted");
     await previous.finish("interrupted");
-    if (recovered) {
-      receipts.push(recovered);
-    }
-    const current = recovered ?? (await stage("read-rotation", { requestFingerprint }));
+    const current = await stage("read-rotation", { requestFingerprint });
     expect(current.run(() => "recovered input")).toBe("recovered input");
   });
 
