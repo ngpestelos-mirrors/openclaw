@@ -47,6 +47,7 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
   type Subscription = { pairingGeneration: string };
   type Recipient = { pairingGeneration: string; subscriptions: Map<string, Subscription> };
   type Publication = {
+    sourceEpoch?: object;
     version: unknown;
     sessionKeys: string[];
     isCurrent?: () => boolean;
@@ -299,8 +300,10 @@ export function createNodeSubscriptionManager(): NodeSubscriptionManager {
         { once: true },
       );
     }
-    const previousPublication = group.publications.get(streamKey);
+    const latest = group.publications.get(streamKey);
+    const previousPublication = latest?.sourceEpoch === liveText.sourceEpoch ? latest : undefined;
     const publication: Publication = {
+      sourceEpoch: liveText.sourceEpoch,
       version: projection.version,
       sessionKeys,
       isCurrent: liveText.isCurrent,

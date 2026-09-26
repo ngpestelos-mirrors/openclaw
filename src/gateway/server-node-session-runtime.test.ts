@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
 import { createDeferred } from "../../test/helpers/promise.js";
+import type { AgentEventRuntimePayload } from "../infra/agent-events.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../infra/node-runner-inventory.js";
 import { GATEWAY_EVENT_NODE_RUNNER_INVENTORY_CHANGED } from "./events.js";
 import { updateNodeRunnerInventory } from "./node-registry-private.js";
@@ -11,6 +12,7 @@ import {
   createSessionEventSubscriberRegistry,
   createSessionMessageSubscriberRegistry,
 } from "./server-chat-state.js";
+import { createAgentEventHandler } from "./server-chat.js";
 import { broadcastChatTerminal } from "./server-methods/chat-broadcast.js";
 import { createGatewayNodeSessionRuntime } from "./server-node-session-runtime.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
@@ -313,6 +315,102 @@ describe("gateway node session runtime", () => {
       boundary !== "unsubscribe" && boundary !== "resubscribe",
     );
   });
+
+  test.each(["tool", "lifecycle"] as const)(
+    "drains the queued assistant tail when the source gap arrives on %s",
+    async (stream) => {
+      vi.useFakeTimers();
+      const entered = createDeferred();
+      const pairing = createDeferred<string>();
+      let delayed = false;
+      const runtime = createRuntime(() => {
+        if (delayed) {
+          entered.resolve();
+          return pairing.promise;
+        }
+        return Promise.resolve("generation-a");
+      });
+      const frames: string[] = [];
+      registerNode(runtime, "conn-original", "generation-a", frames);
+      const sessionKey = "agent:main:node-source-gap";
+      const runId = "run-source-gap";
+      runtime.nodeSubscribe("node-a", sessionKey, "conn-original");
+      const chatRunState = createChatRunState();
+      const sends: Promise<void>[] = [];
+      const handler = createAgentEventHandler({
+        broadcast: vi.fn(),
+        broadcastToConnIds: vi.fn(),
+        nodeSendToSession: (...args) => {
+          sends.push(runtime.nodeSendToSession(...args));
+        },
+        nodeHasSessionSubscribers: runtime.nodeHasSessionSubscribers,
+        agentRunSeq: new Map(),
+        chatRunState,
+        resolveSessionKeyForRun: () => sessionKey,
+        clearAgentRunContext: vi.fn(),
+        toolEventRecipients: chatRunState.toolEventRecipients,
+        sessionEventSubscribers: runtime.sessionEventSubscribers,
+        sessionMessageSubscribers: runtime.sessionMessageSubscribers,
+        persistGatewaySessionLifecycleEventForEvent: vi.fn(async () => undefined),
+      });
+      const emit = (
+        seq: number,
+        stream: AgentEventRuntimePayload["stream"],
+        data: Record<string, unknown>,
+      ) => {
+        const event: AgentEventRuntimePayload = {
+          runId,
+          sessionKey,
+          seq,
+          ts: seq,
+          stream,
+          data,
+          projectSessionLifecycle: false,
+          verboseLevel: "full",
+        };
+        handler(event);
+      };
+      try {
+        emit(1, "assistant", { text: "A", delta: "A" });
+        await Promise.all(sends);
+        delayed = true;
+        emit(2, "assistant", { text: "AB", delta: "B" });
+        emit(
+          4,
+          stream,
+          stream === "tool"
+            ? { phase: "start", toolCallId: "gap-tool", name: "read" }
+            : { phase: "end" },
+        );
+        await entered.promise;
+        pairing.resolve("generation-a");
+        await Promise.all(sends);
+
+        const events = frames.map((frame) => JSON.parse(frame));
+        const assistant = events.filter(
+          (frame) => frame.event === "agent" && frame.payload.stream === "assistant",
+        );
+        expect(assistant.map((frame) => frame.payload.data.delta)).toEqual(["A", "B"]);
+        expect(
+          assistant.reduce(
+            (text, frame) => frame.payload.data.text ?? text + frame.payload.data.delta,
+            "",
+          ),
+        ).toBe("AB");
+        const tailIndex = events.findIndex(
+          (frame) => frame.payload.stream === "assistant" && frame.payload.data.delta === "B",
+        );
+        expect(
+          events.findIndex((frame) => frame.event === "agent" && frame.payload.stream === stream),
+        ).toBeGreaterThan(tailIndex);
+      } finally {
+        pairing.resolve("generation-a");
+        handler.dispose();
+        chatRunState.clear();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   test("publishes pairing-generation transitions to lifecycle consumers", () => {
     const onPairingGenerationChanged = vi.fn();

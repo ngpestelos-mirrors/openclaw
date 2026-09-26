@@ -101,6 +101,7 @@ type ChatRunRecord = {
   bufferIsCurrent?: () => boolean;
   /** Retire queued connection snapshots when this buffering generation is cleared. */
   liveTextGroup?: AbortController;
+  liveTextEpoch?: object;
   /** Projection stays valid only while source and managed-media facts match the run state. */
   bufferProjection?: { source: string; suppress: boolean };
   planSnapshot?: ChatRunPlanSnapshot;
@@ -249,6 +250,7 @@ export function createChatRunState(): ChatRunState {
     delete record.bufferIsCurrent;
     record.liveTextGroup?.abort();
     delete record.liveTextGroup;
+    delete record.liveTextEpoch;
     delete record.bufferProjection;
     delete record.planSnapshot;
     delete record.progressSnapshot;

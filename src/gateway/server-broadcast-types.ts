@@ -22,6 +22,8 @@ export type GatewayBroadcastOpts = {
   /** Private live-text ownership; omitting coalesce flushes this group's progress. */
   liveText?: {
     group: AbortSignal;
+    /** Source continuity changes without revoking already queued publications. */
+    sourceEpoch?: object;
     /** Accepted terminal barrier; drain current queued text before retiring its group. */
     settle?: true;
     isCurrent?: () => boolean;

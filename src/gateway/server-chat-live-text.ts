@@ -42,6 +42,7 @@ export function liveTextDelivery(
   return group
     ? {
         group: group.signal,
+        sourceEpoch: run?.liveTextEpoch,
         coalesce,
         projection,
         isCurrent: coalesce || projection ? isCurrent : undefined,

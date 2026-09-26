@@ -1524,8 +1524,7 @@ export function createAgentEventHandler({
       }
       const run = chatRunState.runs.get(clientRunId);
       if (run) {
-        run.liveTextGroup?.abort();
-        delete run.liveTextGroup;
+        run.liveTextEpoch = {};
       }
     }
     agentRunSeq.set(evt.runId, evt.seq);

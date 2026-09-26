@@ -11,6 +11,7 @@ type LiveText = NonNullable<GatewayBroadcastOpts["liveText"]>;
 
 export type LiveTextPublication = {
   key: string;
+  sourceEpoch?: object;
   previous?: object;
   revision: object;
   version?: unknown;
@@ -166,9 +167,11 @@ export function createGatewayLiveTextDelivery(params: {
       publications.set(live.group, streams);
       live.group.addEventListener("abort", () => publications.delete(live.group), { once: true });
     }
-    const previous = streams.get(live.projection.key);
+    const latest = streams.get(live.projection.key);
+    const previous = latest?.sourceEpoch === live.sourceEpoch ? latest : undefined;
     const publication: LiveTextPublication = {
       key: live.projection.key,
+      sourceEpoch: live.sourceEpoch,
       previous: previous?.revision,
       revision: {},
       version: live.projection.version,
