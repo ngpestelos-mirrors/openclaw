@@ -253,7 +253,9 @@ describe("GatewayProtocolClient lifecycle and event delivery", () => {
       client.addEventListener(() => calls.push("listener"));
       client.start();
       const connection = connections[0];
-      if (!connection) throw new Error("Expected a protocol connection");
+      if (!connection) {
+        throw new Error("Expected a protocol connection");
+      }
       connection.handlers.message(
         JSON.stringify({ type: "event", event: "board.changed", seq: 1, payload: {} }),
       );

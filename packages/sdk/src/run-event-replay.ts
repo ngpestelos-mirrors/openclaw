@@ -56,11 +56,12 @@ export class SdkRunReplay {
     this.replayConnectionEpoch = undefined;
   }
 
-  private recordReplayEvent(event: OpenClawEvent): OpenClawEvent {
-    const runId = event.runId;
+  private recordReplayEvent(input: OpenClawEvent): OpenClawEvent {
+    const runId = input.runId;
     if (!runId) {
-      return event;
+      return input;
     }
+    let event = input;
     let replay = this.replayByRunId.get(runId);
     let trimReplayRuns = !replay;
     if (!replay) {
@@ -161,7 +162,7 @@ export class SdkRunReplay {
     }
     let retained = 0;
     // Active baselines cannot be evicted: later wire frames contain only suffixes.
-    for (const [runId, candidate] of [...this.replayByRunId].reverse()) {
+    for (const [runId, candidate] of [...this.replayByRunId].toReversed()) {
       if (
         candidate.chatMessage === undefined &&
         candidate.assistant === undefined &&

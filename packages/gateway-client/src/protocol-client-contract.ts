@@ -4,6 +4,15 @@ import type { GatewayClientMode, GatewayClientName } from "@openclaw/gateway-pro
 import type { GatewayProtocolRequestTiming } from "./pending-request.js";
 import type { GatewayProtocolRequestError } from "./protocol-request.js";
 
+export type GatewayClientCloseInfo = {
+  phase: "pre-hello" | "post-hello";
+  socketOpened: boolean;
+  transportValidated: boolean;
+  connectRequestSent?: boolean;
+  transientPreHelloCleanClose: boolean;
+  connectError?: Error;
+};
+
 export type GatewayClientConnectionMetadata = {
   clientName?: GatewayClientName;
   hasDeviceIdentity: boolean;

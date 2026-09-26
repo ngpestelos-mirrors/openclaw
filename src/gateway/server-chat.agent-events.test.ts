@@ -81,7 +81,6 @@ vi.mock("./session-utils.js", () => {
 
 import { getRuntimeConfig } from "../config/io.js";
 import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
-import { abortChatRunById, registerChatAbortController } from "./chat-abort.js";
 import { makeClient, registerNodeSession } from "./node-registry.test-helpers.js";
 import type { GatewayBroadcastOpts } from "./server-broadcast-types.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";

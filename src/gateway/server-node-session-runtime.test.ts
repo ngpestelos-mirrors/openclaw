@@ -386,7 +386,7 @@ describe("gateway node session runtime", () => {
       });
       const emit = (
         seq: number,
-        stream: AgentEventRuntimePayload["stream"],
+        eventStream: AgentEventRuntimePayload["stream"],
         data: Record<string, unknown>,
       ) => {
         const event: AgentEventRuntimePayload = {
@@ -394,7 +394,7 @@ describe("gateway node session runtime", () => {
           sessionKey,
           seq,
           ts: seq,
-          stream,
+          stream: eventStream,
           data,
           projectSessionLifecycle: false,
           verboseLevel: "full",
@@ -593,8 +593,8 @@ describe("gateway node session runtime", () => {
 
     const parseSpy = vi.spyOn(JSON, "parse");
     try {
-      runtime.nodeSendToSession("main", "chat", { ok: true });
-      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      await runtime.nodeSendToSession("main", "chat", { ok: true });
+      expect(frames).toHaveLength(1);
       expect(parseSpy).not.toHaveBeenCalled();
     } finally {
       parseSpy.mockRestore();
@@ -697,12 +697,12 @@ describe("gateway node session runtime", () => {
     registerNode(runtime, "conn-original", "generation-a", originalFrames);
     runtime.nodeSubscribe("node-a", "main", "conn-original");
     expect(runtime.nodeHasSessionSubscribers("main")).toBe(true);
-    runtime.nodeSendToSession("main", "chat", { seq: 1 });
-    await vi.waitFor(() => expect(originalFrames).toHaveLength(1));
+    await runtime.nodeSendToSession("main", "chat", { seq: 1 });
+    expect(originalFrames).toHaveLength(1);
 
     currentPairingGeneration = "generation-b";
-    runtime.nodeSendToSession("main", "chat", { seq: 2 });
-    await vi.waitFor(() => expect(runtime.nodeRegistry.get("node-a")).toBeUndefined());
+    await runtime.nodeSendToSession("main", "chat", { seq: 2 });
+    expect(runtime.nodeRegistry.get("node-a")).toBeUndefined();
     expect(originalFrames).toHaveLength(1);
 
     const replacementFrames: string[] = [];
@@ -710,19 +710,19 @@ describe("gateway node session runtime", () => {
     expect(runtime.nodeHasSessionSubscribers("main")).toBe(false);
     runtime.nodeSubscribe("node-a", "retired", "conn-original");
     expect(runtime.nodeHasSessionSubscribers("retired")).toBe(false);
-    runtime.nodeSendToSession("retired", "chat", { seq: 3 });
+    await runtime.nodeSendToSession("retired", "chat", { seq: 3 });
     expect(replacementFrames).toHaveLength(0);
 
     runtime.nodeSubscribe("node-a", "main", "conn-replacement");
     expect(runtime.nodeHasSessionSubscribers("main")).toBe(true);
-    runtime.nodeSendToSession("main", "chat", { seq: 4 });
-    await vi.waitFor(() => expect(replacementFrames).toHaveLength(1));
+    await runtime.nodeSendToSession("main", "chat", { seq: 4 });
+    expect(replacementFrames).toHaveLength(1);
 
     const reconnectFrames: string[] = [];
     registerNode(runtime, "conn-reconnect", "generation-b", reconnectFrames);
     expect(runtime.nodeHasSessionSubscribers("main")).toBe(true);
-    runtime.nodeSendToSession("main", "chat", { seq: 5 });
-    await vi.waitFor(() => expect(reconnectFrames).toHaveLength(1));
+    await runtime.nodeSendToSession("main", "chat", { seq: 5 });
+    expect(reconnectFrames).toHaveLength(1);
 
     runtime.nodeUnsubscribeAll("node-a");
     expect(runtime.nodeHasSessionSubscribers("main")).toBe(false);
@@ -753,7 +753,7 @@ describe("gateway node session runtime", () => {
       ),
     ).not.toBeNull();
     expect(runtime.nodeHasSessionSubscribers("main")).toBe(true);
-    runtime.nodeSendToSession("main", "chat", { ok: true });
-    await vi.waitFor(() => expect(frames).toHaveLength(1));
+    await runtime.nodeSendToSession("main", "chat", { ok: true });
+    expect(frames).toHaveLength(1);
   });
 });

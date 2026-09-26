@@ -126,7 +126,7 @@ it("sends append-only wire text while retaining snapshots for observers and late
       expect.objectContaining({ message: expect.any(Object), deltaText: "Hello" }),
       expect.not.objectContaining({ message: expect.anything() }),
     ]);
-    expect(frames.filter((frame) => frame.event === "agent").at(-1)?.payload.data).toEqual({
+    expect(frames.findLast((frame) => frame.event === "agent")?.payload.data).toEqual({
       itemId: "answer",
       delta: " world",
     });
@@ -135,10 +135,10 @@ it("sends append-only wire text while retaining snapshots for observers and late
     });
     expect(late.find((frame) => frame.event === "agent")?.payload.data?.text).toBe("Hello world");
     expect(
-      harness.broadcast.mock.calls.filter(([event]) => event === "agent").at(-1)?.[1].data.text,
+      harness.broadcast.mock.calls.findLast(([event]) => event === "agent")?.[1].data.text,
     ).toBe("Hello world");
     emit(3, "Rewritten", "", true);
-    expect(frames.filter((frame) => frame.event === "chat").at(-1)?.payload).toMatchObject({
+    expect(frames.findLast((frame) => frame.event === "chat")?.payload).toMatchObject({
       replace: true,
       message: { content: [{ type: "text", text: "Rewritten" }] },
     });
@@ -146,12 +146,10 @@ it("sends append-only wire text while retaining snapshots for observers and late
     emit(4, "Reset", undefined);
     visible = true;
     emit(5, "Reset!", "!");
-    expect(frames.filter((frame) => frame.event === "agent").at(-1)?.payload.data?.text).toBe(
-      "Reset!",
-    );
+    expect(frames.findLast((frame) => frame.event === "agent")?.payload.data?.text).toBe("Reset!");
     emit(6, "Other", "Other", undefined, "other");
     emit(7, "Reset! again", " again");
-    expect(frames.filter((frame) => frame.event === "agent").at(-1)?.payload.data?.text).toBe(
+    expect(frames.findLast((frame) => frame.event === "agent")?.payload.data?.text).toBe(
       "Reset! again",
     );
     emitLifecycleEnd(handler, "wire-run", 8);
@@ -269,7 +267,7 @@ it.each([true, false])("re-baselines after an upstream sequence gap (visible=%s)
     expect(assistant.at(-1)?.payload.data).toMatchObject({ text: "ABCD", delta: "D" });
     emit(5, "ABCDE", "E");
     chatRunState.flushPendingText(runId);
-    expect(frames.filter((frame) => frame.event === "agent").at(-1)?.payload.data).toEqual({
+    expect(frames.findLast((frame) => frame.event === "agent")?.payload.data).toEqual({
       itemId: "reply",
       phase: "commentary",
       delta: "E",

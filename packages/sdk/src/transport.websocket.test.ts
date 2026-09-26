@@ -25,7 +25,9 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
     let runIndex = 0;
     gateway.setRequestHandler((socket, request) => {
       const key = request.params.key;
-      if (typeof key !== "string") throw new Error("Expected a session key");
+      if (typeof key !== "string") {
+        throw new Error("Expected a session key");
+      }
       const canonicalKey = key === "global" ? key : `agent:main:${key}`;
       if (request.method === "sessions.messages.subscribe") {
         const scope = {
@@ -49,7 +51,9 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
         gateway.reply(socket, request.id, { subscribed: true, key: canonicalKey });
       } else if (request.method === "sessions.messages.unsubscribe") {
         const scope = subscriptions.get(key);
-        if (!scope) throw new Error("Expected a live subscription");
+        if (!scope) {
+          throw new Error("Expected a live subscription");
+        }
         gateway.sendEvent(socket, "chat", {
           ...scope,
           agentId: "main",
@@ -124,8 +128,8 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
         gateway.reply(socket, request.id, { subscribed: false, key: "global" });
       }
     });
-    const acknowledged = createDeferred<void>();
-    const releaseAck = createDeferred<void>();
+    const acknowledged = createDeferred();
+    const releaseAck = createDeferred();
     const underlying = new GatewayClientTransport({ url: gateway.url, deviceIdentity: null });
     const transport: ConnectableOpenClawTransport = {
       connect: () => underlying.connect(),
@@ -190,15 +194,17 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
   it("settles a gap-revealing final snapshot before reconnecting", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-    const disconnected = createDeferred<void>();
-    const reconnected = createDeferred<void>();
+    const disconnected = createDeferred();
+    const reconnected = createDeferred();
     let hellos = 0;
     const transport = new GatewayClientTransport({
       url: gateway.url,
       deviceIdentity: null,
       onClose: () => disconnected.resolve(),
       onHelloOk: () => {
-        if (++hellos === 2) reconnected.resolve();
+        if (++hellos === 2) {
+          reconnected.resolve();
+        }
       },
     });
     const oc = new OpenClaw({ transport });

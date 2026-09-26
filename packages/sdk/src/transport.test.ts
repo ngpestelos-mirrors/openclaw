@@ -86,9 +86,8 @@ describe("GatewayClientTransport", () => {
             deltaText: "prefix",
           },
         );
-        rawIterator = oc
-          .rawEvents((event) => event.payload === freshWire.payload)
-          [Symbol.asyncIterator]();
+        const freshEvents = oc.rawEvents((event) => event.payload === freshWire.payload);
+        rawIterator = freshEvents[Symbol.asyncIterator]();
         freshIterator = oc.runEvents("fresh")[Symbol.asyncIterator]();
         const rawRead = rawIterator.next();
         const freshRead = freshIterator.next();

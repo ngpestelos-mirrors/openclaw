@@ -44,8 +44,11 @@ import {
 import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
 import { resolveModelCatalogConnect } from "./model-catalog-connect.js";
 import type { GatewayProtocolRequestTiming } from "./pending-request.js";
-import type { GatewayClientConnectionMetadata } from "./protocol-client-contract.js";
-import type { GatewayProtocolConnectAuthority } from "./protocol-client-contract.js";
+import type {
+  GatewayClientCloseInfo,
+  GatewayClientConnectionMetadata,
+  GatewayProtocolConnectAuthority,
+} from "./protocol-client-contract.js";
 import {
   GatewayProtocolClient,
   type GatewayProtocolCloseContext,
@@ -144,15 +147,6 @@ export type GatewayReconnectPausedInfo = {
   detailCode: string | null;
 };
 
-export type GatewayClientCloseInfo = {
-  phase: "pre-hello" | "post-hello";
-  socketOpened: boolean;
-  transportValidated: boolean;
-  connectRequestSent?: boolean;
-  transientPreHelloCleanClose: boolean;
-  connectError?: Error;
-};
-
 export { GatewayClientRequestError, isGatewayConnectAssemblyError } from "./request-error.js";
 export { isGatewayProtocolResponseError } from "./protocol-request.js";
 
@@ -223,7 +217,10 @@ export type GatewayClientOptions = {
   onRequestTiming?: (timing: GatewayProtocolRequestTiming) => void;
 };
 
-export type { GatewayClientConnectionMetadata } from "./protocol-client-contract.js";
+export type {
+  GatewayClientCloseInfo,
+  GatewayClientConnectionMetadata,
+} from "./protocol-client-contract.js";
 
 const FORCE_STOP_TERMINATE_GRACE_MS = 250;
 const STOP_AND_WAIT_TIMEOUT_MS = 1_000;
