@@ -203,7 +203,7 @@ describe("committed pending input release", () => {
       message("collect-c", "First approved input\nSecond approved input"),
     )!;
     receipts.push(aggregate);
-    expect(listSessionPendingInputs(scope()).total).toBe(2);
+    expect((await listSessionPendingInputs(scope())).total).toBe(2);
     const appended = await promote(aggregate);
     expect(appended).toMatchObject({ appended: true, messageId: aggregate.inputId });
     expect(readSessionSubmittedInput(scope(), "collect-c:user")?.["__openclaw"]).toMatchObject({
@@ -214,8 +214,8 @@ describe("committed pending input release", () => {
         ],
       },
     });
-    expect(listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
-    expect(readSessionPendingInput(scope(), first.inputId)).toBeUndefined();
+    expect(await listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
+    expect(await readSessionPendingInput(scope(), first.inputId)).toBeUndefined();
     expect(
       listSessionPendingInputReceipts(scope(), {
         runIds: ["collect-a", "collect-b", "unknown"],
@@ -243,7 +243,7 @@ describe("committed pending input release", () => {
       stage("collect-a", { message: message("collect-a", "Changed input") }),
     ).rejects.toThrow("conflicts");
     expect(await loadTranscriptEvents(scope())).toEqual([]);
-    expect(listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
+    expect(await listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
     expect(
       database()
         .db.prepare(

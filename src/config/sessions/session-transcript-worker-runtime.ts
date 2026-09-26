@@ -204,7 +204,9 @@ export function retainSessionHistoryWorkerDatabase(
         if (
           typeof received !== "boolean" &&
           !Array.isArray(received) &&
-          (received.kind === "session-entry-read" || received.kind === "session-diagnostic-text") &&
+          (received.kind === "session-entry-read" ||
+            received.kind === "session-diagnostic-text" ||
+            received.kind === "session-pending-inputs") &&
           received.source
         ) {
           const source = received.source;

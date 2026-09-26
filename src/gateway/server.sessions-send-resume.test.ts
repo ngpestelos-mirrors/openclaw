@@ -188,7 +188,7 @@ it("rejects an unrelated visible controller without consuming input or producing
       error: "Task resume is limited to children controlled by the calling session.",
     });
     proof.expectUnadopted();
-    expect(listSessionPendingInputs(proof.scope)).toEqual({ items: [], total: 0 });
+    expect(await listSessionPendingInputs(proof.scope)).toEqual({ items: [], total: 0 });
     expect(listSessionPendingInputReceipts(proof.scope, { runIds: [proof.runId] })).toEqual([]);
     expect(agentCommandMock).not.toHaveBeenCalled();
     expect(proof.finalEffect).not.toHaveBeenCalled();
@@ -216,7 +216,7 @@ it("rejects a child without task-owned completion before input or execution", as
       error: "Task resume requires a child with task-owned completion.",
     });
     proof.expectUnadopted();
-    expect(listSessionPendingInputs(proof.scope)).toEqual({ items: [], total: 0 });
+    expect(await listSessionPendingInputs(proof.scope)).toEqual({ items: [], total: 0 });
     expect(listSessionPendingInputReceipts(proof.scope, { runIds: [proof.runId] })).toEqual([]);
     expect(agentCommandMock).not.toHaveBeenCalled();
     expect(proof.finalEffect).not.toHaveBeenCalled();
@@ -256,7 +256,7 @@ it("rejects parent authority revoked while durable input preparation awaits", as
     sending = proof.send(proof.parent, parentAuthority.signal);
     await prepared.promise;
     expect(preparation).toHaveBeenCalledTimes(1);
-    expect(listSessionPendingInputs(proof.scope)).toMatchObject({
+    expect(await listSessionPendingInputs(proof.scope)).toMatchObject({
       total: 1,
       items: [{ runId: proof.runId, state: "queued" }],
     });
@@ -269,7 +269,7 @@ it("rejects parent authority revoked while durable input preparation awaits", as
       error: expect.stringContaining("agent tool caller authority is no longer active"),
     });
     proof.expectUnadopted();
-    expect(listSessionPendingInputs(proof.scope)).toMatchObject({
+    expect(await listSessionPendingInputs(proof.scope)).toMatchObject({
       total: 1,
       items: [{ runId: proof.runId, state: "cancelled" }],
     });
@@ -341,7 +341,7 @@ it("fences a cancelled successor after adoption before queued input consumption"
       taskId: proof.task.taskId,
       status: "running",
     });
-    expect(listSessionPendingInputs(proof.scope)).toMatchObject({
+    expect(await listSessionPendingInputs(proof.scope)).toMatchObject({
       total: 1,
       items: [{ runId: proof.runId, state: "queued" }],
     });
@@ -371,7 +371,7 @@ it("fences a cancelled successor after adoption before queued input consumption"
       status: "cancelled",
     });
     // Custody remains unconsumed even though execution cleanup records interruption.
-    expect(listSessionPendingInputs(proof.scope)).toMatchObject({
+    expect(await listSessionPendingInputs(proof.scope)).toMatchObject({
       total: 1,
       items: [{ runId: proof.runId, state: "interrupted" }],
     });

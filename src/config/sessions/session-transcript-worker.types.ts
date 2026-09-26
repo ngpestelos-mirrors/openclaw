@@ -76,6 +76,13 @@ import type {
 import type { SessionTranscriptWorkerReadError } from "./session-transcript-worker-error.types.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
+type SessionPendingInputsWorkerInput = {
+  kind: "session-pending-inputs";
+  database: { agentId: string; path: string };
+  request: import("./session-accessor.pending-inputs.read.js").SessionPendingInputReadRequest;
+  env: NodeJS.ProcessEnv;
+};
+
 type SessionTranscriptMatchWorkerInput = {
   kind: "transcript-match";
   database: { agentId: string; path: string };
@@ -435,6 +442,7 @@ type SessionHistoricalEvictionCandidatesWorkerInput = {
 };
 
 export type SessionHistoryWorkerInput =
+  | SessionPendingInputsWorkerInput
   | SessionHistoricalEvictionCandidatesWorkerInput
   | SessionArchivePruningWorkerInput
   | SessionPendingArchivesWorkerInput
@@ -477,6 +485,11 @@ export type SessionHistoryWorkerPreparedInput = {
 }[SessionHistoryDatabaseWorkerInput["kind"]];
 
 export type SessionTranscriptWorkerValues = {
+  "session-pending-inputs": {
+    kind: "session-pending-inputs";
+    source?: CapturedSessionEntryReadSource & { databaseIdentity: string };
+    result: import("./session-accessor.pending-inputs.read.js").SessionPendingInputReadResult;
+  };
   "session-pending-archives": { kind: "session-pending-archives"; pending: boolean };
   "historical-eviction-candidates": {
     kind: "historical-eviction-candidates";
@@ -546,6 +559,9 @@ export type SessionTranscriptWorkerReply<Kind extends keyof SessionTranscriptWor
     };
 
 export type SessionHistoryWorkerDatabase = {
+  readPendingInputs: (
+    input: Omit<SessionPendingInputsWorkerInput, "kind" | "database">,
+  ) => Promise<import("./session-accessor.pending-inputs.read.js").SessionPendingInputReadResult>;
   readPendingArchives: (
     input: Omit<SessionPendingArchivesWorkerInput, "kind" | "database">,
     signal?: AbortSignal,

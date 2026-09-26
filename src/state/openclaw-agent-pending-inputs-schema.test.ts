@@ -42,7 +42,7 @@ describe("pending input additive schema", () => {
       .prepare("SELECT schema_version, updated_at FROM schema_meta WHERE meta_key = 'primary'")
       .get();
     previous.close();
-    expect(listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
+    expect(await listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
     const candidate = openOpenClawAgentDatabase(options);
     expect(
       candidate.db
@@ -78,7 +78,7 @@ describe("pending input additive schema", () => {
         .get(),
     ).toEqual(metadata);
     older.close();
-    expect(listSessionPendingInputs(scope)).toMatchObject({
+    expect(await listSessionPendingInputs(scope)).toMatchObject({
       total: 1,
       items: [{ state: "interrupted", message: { content: "Retain this accepted input" } }],
     });
@@ -130,7 +130,7 @@ describe("pending input additive schema", () => {
       const metadata = old.prepare("SELECT * FROM schema_meta").all();
       const original = old.prepare("SELECT message_json FROM session_pending_inputs").get();
       old.close();
-      expect(listSessionPendingInputs(scope)).toMatchObject({
+      expect(await listSessionPendingInputs(scope)).toMatchObject({
         total: 1,
         items: [{ state: "interrupted", message: receipt!.message }],
       });

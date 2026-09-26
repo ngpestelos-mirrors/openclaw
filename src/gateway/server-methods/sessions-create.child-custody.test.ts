@@ -518,7 +518,7 @@ describe("hosted creation transfers accepted child input", () => {
         const scope = fixture.scope();
         expect(accepted.sessionId).toBe(scope.sessionId);
         await fixture.dispatchEntered;
-        expect(listSessionPendingInputs(scope)).toMatchObject({
+        expect(await listSessionPendingInputs(scope)).toMatchObject({
           total: 1,
           items: [{ state: "queued" }],
         });
@@ -529,7 +529,7 @@ describe("hosted creation transfers accepted child input", () => {
         await fixture.finish();
         expect(fixture.provider).toHaveBeenCalledOnce();
         expect(userMessages(scope)).toHaveLength(1);
-        expect(listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
+        expect(await listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
         expect(fixture.context.chatAbortControllers.has(accepted.runId)).toBe(false);
       } finally {
         await fixture.cleanup();
@@ -552,7 +552,7 @@ describe("hosted creation transfers accepted child input", () => {
           },
         });
         expect(fixture.beforeInputCommit).toHaveBeenCalledOnce();
-        expect(listSessionPendingInputs(fixture.scope())).toEqual({ items: [], total: 0 });
+        expect(await listSessionPendingInputs(fixture.scope())).toEqual({ items: [], total: 0 });
         expect(userMessages(fixture.scope())).toEqual([]);
         expect(fixture.provider).not.toHaveBeenCalled();
         expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
@@ -572,14 +572,14 @@ describe("hosted creation transfers accepted child input", () => {
         const scope = fixture.scope();
         expect(accepted.sessionId).toBe(scope.sessionId);
         await fixture.dispatchEntered;
-        const pending = listSessionPendingInputs(scope);
+        const pending = await listSessionPendingInputs(scope);
         expect(pending).toMatchObject({ total: 1, items: [{ state: "queued" }] });
         expect(userMessages(scope)).toEqual([]);
         fixture.closeParent();
         await fixture.finish();
         expect(fixture.provider).toHaveBeenCalledOnce();
         expect(userMessages(scope)).toHaveLength(1);
-        expect(listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
+        expect(await listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
         expect(fixture.context.chatAbortControllers.has(accepted.runId)).toBe(false);
       } finally {
         await fixture.cleanup();
@@ -605,7 +605,7 @@ describe("hosted creation transfers accepted child input", () => {
         expect(accepted.runStarted).toBe(true);
         await fixture.dispatchEntered;
         const scope = fixture.scope();
-        const pending = listSessionPendingInputs(scope);
+        const pending = await listSessionPendingInputs(scope);
         expect(pending).toMatchObject({ total: 1, items: [{ state: "queued" }] });
         fixture.closeParent();
         if (change === "source") {
@@ -628,7 +628,7 @@ describe("hosted creation transfers accepted child input", () => {
         await fixture.finish();
         expect(fixture.provider).not.toHaveBeenCalled();
         expect(userMessages(scope)).toEqual([]);
-        expect(listSessionPendingInputs(scope)).toMatchObject({
+        expect(await listSessionPendingInputs(scope)).toMatchObject({
           total: 1,
           items: [{ id: pending.items[0]?.id, state: "interrupted" }],
         });
@@ -655,7 +655,7 @@ describe("hosted creation transfers accepted child input", () => {
             : "operator execution authority is no longer active",
         );
         expect(fixture.beforeInputCommit).toHaveBeenCalledOnce();
-        expect(listSessionPendingInputs(fixture.scope())).toEqual({ items: [], total: 0 });
+        expect(await listSessionPendingInputs(fixture.scope())).toEqual({ items: [], total: 0 });
         expect(userMessages(fixture.scope())).toEqual([]);
         expect(fixture.provider).not.toHaveBeenCalled();
         expect(dispatchInboundMessageMock).not.toHaveBeenCalled();

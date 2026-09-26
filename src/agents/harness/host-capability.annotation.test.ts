@@ -241,7 +241,7 @@ describe("host-owned current admission annotation", () => {
                 }),
               ).toBe(true);
             }
-            const accepted = listSessionPendingInputs(f.target);
+            const accepted = await listSessionPendingInputs(f.target);
             const before = await loadTranscriptEvents(f.target);
             const content = kind === "collected" ? "prompt\nsecond prompt" : "prompt";
             const recorder =
@@ -267,7 +267,7 @@ describe("host-owned current admission annotation", () => {
                   }))
                 : [],
             );
-            expect(listSessionPendingInputs(f.target)).toEqual({ items: [], total: 0 });
+            expect(await listSessionPendingInputs(f.target)).toEqual({ items: [], total: 0 });
             host = createAgentHarnessHostCapabilities({
               attempt: {
                 ...f.attempt,

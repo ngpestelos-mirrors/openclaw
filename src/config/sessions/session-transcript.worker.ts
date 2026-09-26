@@ -183,6 +183,41 @@ serveOwnedWorkerTasks(
           result: readSessionArchivePruningInWorker(request),
         }));
       }
+      if (request.kind === "session-pending-inputs") {
+        const { readSessionPendingInputPage } =
+          await import("./session-accessor.pending-inputs.read.js");
+        const { readOpenClawAgentDatabaseIdentity } =
+          await import("../../state/openclaw-agent-db-identity.js");
+        const { runSqliteDeferredTransactionSync } =
+          await import("../../infra/sqlite-transaction.js");
+        const { withOpenClawAgentDatabaseReadOnly } =
+          await import("../../state/openclaw-agent-db-readonly.js");
+        return await withHistoryDatabase(request.database, request.kind, () => {
+          const opened = withOpenClawAgentDatabaseReadOnly(
+            (database) => {
+              const { identity, birthtime } = readOpenClawAgentDatabaseIdentity(database);
+              return {
+                result: runSqliteDeferredTransactionSync(database.db, () =>
+                  readSessionPendingInputPage(database, request.request)!,
+                ),
+                source:
+                  typeof identity === "string"
+                    ? {
+                        ...request.database,
+                        databaseIdentity: identity,
+                        databaseBirthtime: birthtime,
+                      }
+                    : undefined,
+              };
+            },
+            { ...request.database, env: cloneEnvWithPlatformSemantics(request.env) },
+          );
+          return {
+            kind: "session-pending-inputs" as const,
+            ...(opened.found ? opened.value : { result: { rows: [], total: 0 } }),
+          };
+        });
+      }
       if (request.kind === "cold-metadata") {
         const { withOpenClawAgentDatabaseReadOnly } =
           await import("../../state/openclaw-agent-db-readonly.js");

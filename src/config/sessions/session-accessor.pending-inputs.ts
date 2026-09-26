@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { sql } from "kysely";
 import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.types.js";
 import {
   normalizeMessageClientSources,
@@ -16,6 +15,7 @@ import {
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
@@ -36,15 +36,19 @@ import {
   matchesSessionPendingInputRequest,
   type PendingInputRequest,
 } from "./session-accessor.pending-input-request.js";
+import {
+  readSessionPendingInputPage,
+  type SessionPendingInputReadResult,
+} from "./session-accessor.pending-inputs.read.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
+import { assertCapturedSessionEntryReadSource } from "./session-accessor.sqlite-exact-read.js";
 import {
   claimCurrentSessionPendingInputDedupeRecovery,
   isFinalInputCompletion,
   readSessionInputCompletion,
   writeSessionInputCompletion,
   parseSessionPendingInputMessage,
-  projectSessionPendingInput,
   readSessionPendingInputByKey,
   readSessionPendingInputOwnerIds,
   registerSessionPendingInputOwner,
@@ -55,7 +59,6 @@ import {
   type SessionPendingInput,
   type SessionPendingInputOwner,
   type SessionPendingInputPage,
-  type SessionPendingInputRow,
   type SessionPendingInputState,
 } from "./session-accessor.sqlite-pending-inputs.js";
 import {
@@ -70,7 +73,9 @@ import {
 } from "./session-accessor.sqlite-transcript-store.js";
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
+import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
+import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
 export { withSessionPendingInputRelocation };
 export type { SessionPendingInput, SessionPendingInputPage };
@@ -437,136 +442,115 @@ export async function stageSessionPendingInput(
 }
 
 /** Record lost custody at its read boundary without resuming a pre-restart execution. */
-function readPendingInputRows(
+async function readPendingInputRows(
   scope: PendingInputScope,
   options: { limit?: number; before?: number; id?: string },
-): { rows: SessionPendingInputRow[]; total: number | undefined; nextBefore?: number } {
+): Promise<SessionPendingInputReadResult> {
   const resolved = resolveSqliteTranscriptScope(scope);
   const databaseOptions = toDatabaseOptions(resolved);
-  const limit = Math.max(1, Math.min(20, Math.trunc(options.limit ?? 20)));
+  const request = { ...options, sessionKey: resolved.sessionKey, sessionId: resolved.sessionId };
   const result = withOpenClawAgentDatabaseReadOnly((database) => {
-    if (!hasSessionPendingInputsSchema(database.db)) {
-      return { rows: [], total: 0, staleIds: [], nextBefore: undefined };
-    }
-    const db = getSessionKysely(database.db);
-    let base = db
-      .selectFrom("session_pending_inputs")
-      .where("session_key", "=", resolved.sessionKey)
-      .where("session_id", "=", scope.sessionId);
-    if (hasPendingInputConsumptionColumn(database.db)) {
-      base = base.where("consumed_event_id", "is", null);
-    }
-    const total =
-      options.id === undefined
-        ? (executeSqliteQueryTakeFirstSync(
-            database.db,
-            base.select(db.fn.count<number>("input_id").as("total")),
-          )?.total ?? 0)
-        : undefined;
-    let query = base.orderBy("seq", "desc").limit(limit + 1);
-    if (options.before !== undefined) {
-      query = query.where("seq", "<", options.before);
-    }
-    if (options.id !== undefined) {
-      query = query.where("input_id", "=", options.id);
-    }
-    const metadata = executeSqliteQuerySync(
-      database.db,
-      query.select([
-        "seq",
-        /* kysely-allow-raw: Bound the page before fetching accepted message JSON. */
-        sql<number>`OCTET_LENGTH(message_json)`.as("serialized_bytes"),
-      ]),
-    ).rows;
-    const selected: number[] = [];
-    let bytes = 0;
-    for (const row of metadata) {
-      if (selected.length === limit || bytes + row.serialized_bytes > MAX_PAYLOAD_BYTES) {
-        break;
-      }
-      selected.push(row.seq);
-      bytes += row.serialized_bytes;
-    }
-    if (metadata.length && !selected.length) {
-      throw new Error("Stored pending input exceeds the Gateway payload limit");
-    }
-    // Sort the bounded page in memory instead of spilling full message bodies to a temp B-tree.
-    const rows = selected.length
-      ? executeSqliteQuerySync(
-          database.db,
-          base.selectAll().where("seq", "in", selected),
-        ).rows.toSorted((left, right) => right.seq - left.seq)
-      : [];
-    // An aborted but registered owner still owns the terminal disposition. Reads
-    // must not race its finish(cancelled) by recording an inferred interruption.
-    const ownedIds = readSessionPendingInputOwnerIds(database, rows);
-    const staleIds = rows
-      .filter((row) => row.state === "queued" && !ownedIds.has(row.input_id))
-      .map((row) => row.input_id);
+    const identity = readOpenClawAgentDatabaseIdentity(database);
+    const snapshot = readSessionPendingInputPage(
+      database,
+      request,
+      typeof identity.identity === "symbol" ? undefined : { bytes: 1024 * 1024, rows: 1024 },
+    );
     return {
-      rows,
-      total,
-      staleIds,
-      nextBefore: selected.length < metadata.length ? selected.at(-1) : undefined,
+      snapshot,
+      identity,
+      path: database.path,
+      ownedIds: readSessionPendingInputOwnerIds(database, snapshot?.rows ?? []),
     };
   }, databaseOptions);
   if (!result.found) {
     return { rows: [], total: 0 };
   }
-  const snapshot = result.value;
-  if (snapshot.staleIds.length) {
-    const interrupted = runOpenClawAgentWriteTransaction((database) => {
-      const db = getSessionKysely(database.db);
-      const candidates = executeSqliteQuerySync(
-        database.db,
-        db
-          .selectFrom("session_pending_inputs")
-          .select(["input_id", "session_key", "session_id", "lifecycle_generation"])
-          .where("input_id", "in", snapshot.staleIds)
-          .where("state", "=", "queued")
-          .where("consumed_event_id", "is", null),
-      ).rows;
-      const ownedIds = readSessionPendingInputOwnerIds(database, candidates);
-      const ids = candidates.flatMap((row) => (ownedIds.has(row.input_id) ? [] : [row.input_id]));
-      if (ids.length) {
-        executeSqliteQuerySync(
+  const readOptions = { ...databaseOptions, path: result.value.path };
+  const finish = (snapshot: SessionPendingInputReadResult, ownedIds: Set<string>) => {
+    // Registered owners retain disposition, including an aborted turn awaiting finish(cancelled).
+    const staleIds = snapshot.rows
+      .filter((row) => row.input.state === "queued" && !ownedIds.has(row.input_id))
+      .map((row) => row.input_id);
+    if (staleIds.length) {
+      const interrupted = runOpenClawAgentWriteTransaction((database) => {
+        assertCapturedSessionEntryReadSource(
+          {
+            agentId: readOptions.agentId,
+            path: readOptions.path,
+            databaseIdentity: result.value.identity.identity,
+            databaseBirthtime: result.value.identity.birthtime,
+          },
+          database,
+        );
+        const db = getSessionKysely(database.db);
+        const candidates = executeSqliteQuerySync(
           database.db,
           db
-            .updateTable("session_pending_inputs")
-            .set({ state: "interrupted" })
-            .where("input_id", "in", ids)
+            .selectFrom("session_pending_inputs")
+            .select(["input_id", "session_key", "session_id", "lifecycle_generation"])
+            .where("input_id", "in", staleIds)
+            .where("state", "=", "queued")
             .where("consumed_event_id", "is", null),
-        );
-      }
-      return new Set(ids);
-    }, databaseOptions);
-    for (const row of snapshot.rows) {
-      if (interrupted.has(row.input_id)) {
-        row.state = "interrupted";
+        ).rows;
+        const ownedIds = readSessionPendingInputOwnerIds(database, candidates);
+        const ids = candidates.flatMap((row) => (ownedIds.has(row.input_id) ? [] : [row.input_id]));
+        if (ids.length) {
+          executeSqliteQuerySync(
+            database.db,
+            db
+              .updateTable("session_pending_inputs")
+              .set({ state: "interrupted" })
+              .where("input_id", "in", ids)
+              .where("consumed_event_id", "is", null),
+          );
+        }
+        return new Set(ids);
+      }, readOptions);
+      for (const row of snapshot.rows) {
+        if (interrupted.has(row.input_id)) {
+          row.input.state = "interrupted";
+        }
       }
     }
+    return { rows: snapshot.rows, total: snapshot.total, nextBefore: snapshot.nextBefore };
+  };
+  if (result.value.snapshot) {
+    return finish(result.value.snapshot, result.value.ownedIds);
   }
-  return { rows: snapshot.rows, total: snapshot.total, nextBefore: snapshot.nextBefore };
+  const { identity, path } = result.value;
+  const env = captureSessionTranscriptStorageEnvironment(resolved.env ?? process.env);
+  readOptions.env = env;
+  return withSessionHistoryWorkerDatabase(readOptions, async (owner) => {
+    const snapshot = await owner.readPendingInputs({ request, env });
+    owner.assertCurrent();
+    // A delayed read must never repair a replacement database at the same locator.
+    assertExistingDatabaseIdentity(path, `file:${String(identity.identity)}`, identity.birthtime);
+    const ownership = withOpenClawAgentDatabaseReadOnly(
+      (database) => readSessionPendingInputOwnerIds(database, snapshot.rows),
+      readOptions,
+    );
+    return finish(snapshot, ownership.found ? ownership.value : new Set());
+  });
 }
 
-export function listSessionPendingInputs(
+export async function listSessionPendingInputs(
   scope: PendingInputScope,
   options: { limit?: number; before?: number } = {},
-): SessionPendingInputPage {
-  const { rows, total, nextBefore } = readPendingInputRows(scope, options);
+): Promise<SessionPendingInputPage> {
+  const { rows, total, nextBefore } = await readPendingInputRows(scope, options);
   return {
-    items: rows.toReversed().map(projectSessionPendingInput),
+    items: rows.toReversed().map((row) => row.input),
     total: total ?? 0,
     ...(nextBefore !== undefined ? { nextBefore } : {}),
   };
 }
 
-export function readSessionPendingInput(
+export async function readSessionPendingInput(
   scope: PendingInputScope,
   id: string,
-): SessionPendingInput | undefined {
-  const row = readPendingInputRows(scope, { id, limit: 1 }).rows[0];
-  return row ? projectSessionPendingInput(row) : undefined;
+): Promise<SessionPendingInput | undefined> {
+  return (await readPendingInputRows(scope, { id, limit: 1 })).rows[0]?.input;
 }
 
 /** Verify source custody before replacing a stale process-local completed receipt. */
