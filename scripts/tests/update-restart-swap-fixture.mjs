@@ -27,7 +27,7 @@ export async function createDiskSwap(sourceRoot, base) {
     formatErrorMessage: String,
     hasErrnoCode: (error, code) => error?.code === code,
     isErrno: (error) => typeof error?.code === "string",
-    createSubsystemLogger: () => ({ debug() {} }),
+    createSubsystemLogger: () => ({ debug() {}, warn() {} }),
     readPackageVersion: async (root) =>
       JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")).version,
     UPDATE_RUNNER_TIMEOUT_MS: 30_000,
@@ -57,6 +57,14 @@ export async function createDiskSwap(sourceRoot, base) {
     "infra/update-npm-prefix",
     "utils/absolute-deadline",
   ];
+  // Historical candidates do not import the newer pinned filesystem owners.
+  // Admit those real bodies only when the selected candidate references them.
+  const filesystemOwners = new Map(
+    ["fs-safe-remove", "fs-safe-defaults", "mutation-authority", "errno"].map((name) => [
+      name + ".js",
+      "infra/" + name,
+    ]),
+  );
   const modules = new Map(),
     external = new Map();
   for (const name of files) {
@@ -73,23 +81,37 @@ export async function createDiskSwap(sourceRoot, base) {
       path.basename(name) + ".js",
       new vm.SourceTextModule(code, { context, identifier: filename }),
     );
-    for (const match of code.matchAll(
-      /(?:import|export)\s*\{([^}]+)\}\s*from\s*["']([^"']+)["']/gs,
-    )) {
-      if (!external.has(match[2])) {
-        external.set(match[2], new Set());
+    const parsed = ts.createSourceFile(filename, code, ts.ScriptTarget.Latest, true);
+    for (const statement of parsed.statements) {
+      if (
+        (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) ||
+        !statement.moduleSpecifier ||
+        !ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
+        continue;
       }
-      match[1]
-        .split(",")
-        .map((s) => s.trim().split(/\s+as\s+/)[0])
-        .filter(Boolean)
-        .forEach((exportName) => external.get(match[2]).add(exportName));
-    }
-    for (const match of code.matchAll(/import\s+(\w+)\s+from\s*["']([^"']+)["']/g)) {
-      if (!external.has(match[2])) {
-        external.set(match[2], new Set());
+      const specifier = statement.moduleSpecifier.text;
+      const owner = specifier.startsWith(".") && filesystemOwners.get(path.basename(specifier));
+      if (owner && !files.includes(owner)) {
+        files.push(owner);
       }
-      external.get(match[2]).add("default");
+      const names = external.get(specifier) ?? new Set();
+      external.set(specifier, names);
+      if (ts.isImportDeclaration(statement)) {
+        if (statement.importClause?.name) {
+          names.add("default");
+        }
+        const bindings = statement.importClause?.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          for (const element of bindings.elements) {
+            names.add((element.propertyName ?? element.name).text);
+          }
+        }
+      } else if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          names.add((element.propertyName ?? element.name).text);
+        }
+      }
     }
   }
   const stubs = new Map();
@@ -97,8 +119,21 @@ export async function createDiskSwap(sourceRoot, base) {
     if (modules.has(path.basename(specifier))) {
       continue;
     }
-    const names = [...namesSet];
-    const builtin = specifier.startsWith("node:") ? await import(specifier) : undefined;
+    const builtin = specifier.startsWith("node:")
+      ? await import(specifier)
+      : specifier.startsWith("@openclaw/fs-safe/")
+        ? await import(pathToFileURL(require.resolve(specifier)).href)
+        : undefined;
+    const names = namesSet.size ? [...namesSet] : builtin ? Object.keys(builtin) : [];
+    assert.ok(names.length > 0, "Unexpected side-effect dependency: " + specifier);
+    if (builtin) {
+      for (const name of names) {
+        assert.ok(
+          Object.hasOwn(builtin, name),
+          "Missing real dependency export: " + specifier + ":" + name,
+        );
+      }
+    }
     stubs.set(
       specifier,
       new vm.SyntheticModule(
