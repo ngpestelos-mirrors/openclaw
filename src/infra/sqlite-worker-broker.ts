@@ -34,6 +34,7 @@ import type {
   StoreClient,
   SqliteWorkerOpenCustody,
   SqliteWorkerInputPreparation,
+  SqliteWorkerInputRetention,
 } from "./sqlite-worker-broker.types.js";
 import {
   createSqliteWorkerClient,
@@ -90,8 +91,11 @@ export class SqliteWorkerBroker {
   });
   private draining?: Promise<void>;
 
-  reserveInputPreparation(inputBytes: number): SqliteWorkerInputPreparation {
-    return this.inputAdmission.reserveInputPreparation(inputBytes);
+  reserveInputPreparation(
+    inputBytes: number,
+    retention: SqliteWorkerInputRetention = "stream",
+  ): SqliteWorkerInputPreparation {
+    return this.inputAdmission.reserveInputPreparation(inputBytes, retention);
   }
 
   open<Operations extends SqliteWorkerOperations>(
