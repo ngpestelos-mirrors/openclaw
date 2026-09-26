@@ -147,8 +147,9 @@ export async function resumeFollowupTaskProjection(
 export async function projectFollowupTaskTerminal(
   owner: FollowupCompletionOwner,
   reply: FollowupReply,
-  assertExecutionCurrent?: () => void,
+  assertExecutionCurrent: () => void,
 ): Promise<void> {
+  owner.assertCurrent();
   const { projection } = readProjection(owner);
   const outcome = buildAgentRunTerminalOutcomeFromWaitResult(reply);
   if (!outcome) {
@@ -163,11 +164,13 @@ export async function projectFollowupTaskTerminal(
       terminalSummary: reply.error ?? "completed",
     },
     () => {
+      owner.assertCurrent();
       readProjection(owner);
-      assertExecutionCurrent?.();
+      assertExecutionCurrent();
       return true;
     },
   );
+  owner.assertCurrent();
   const committed = readProjection(owner).task;
   if (committed.status !== status) {
     throw new Error("Followup terminal projection was not committed.");
