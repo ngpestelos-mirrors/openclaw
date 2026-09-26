@@ -194,24 +194,26 @@ export async function runInstalledLifecycle(
     await recordProgress(`${phase}:ready`);
   };
   const doctor = async (task: Task, expectedExit = 1) =>
-    doctorReportSchema.parse(
-      JSON.parse(
-        await cli(
-          task,
-          [
-            "doctor",
-            "--lint",
-            "--deep",
-            "--only",
-            "core/doctor/gateway-services/extra",
-            "--severity-min",
-            "info",
-            "--json",
-          ],
-          expectedExit,
+    doctorReportSchema
+      .extend({ ok: z.literal(expectedExit === 0) })
+      .parse(
+        JSON.parse(
+          await cli(
+            task,
+            [
+              "doctor",
+              "--lint",
+              "--deep",
+              "--only",
+              "core/doctor/gateway-services/extra",
+              "--severity-min",
+              "info",
+              "--json",
+            ],
+            expectedExit,
+          ),
         ),
-      ),
-    );
+      );
   const cleanupTask = (
     task: Pick<Task, "rootDir" | "stateDir" | "scriptPath" | "taskName">,
     probePath: string,
@@ -535,7 +537,7 @@ export async function runInstalledLifecycle(
         : {}),
       selected,
       expectedCommand: candidateStatus.service.command.programArguments,
-      doctor: (task) => doctor(task, 0),
+      doctor,
       deepStatus: async (task) =>
         JSON.parse(await cli(task, ["gateway", "status", "--deep", "--json"])),
       canBindLoopbackPort: owners.canBindLoopbackPort,
