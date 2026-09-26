@@ -72,20 +72,9 @@ import type { TelegramSendChatActionHandler } from "./sendchataction-401-backoff
 import { createTelegramSequentializer } from "./sequentialize.js";
 import { createTelegramThreadBindingManager } from "./thread-bindings.js";
 
-type TelegramBotRuntime = {
-  Bot: typeof Bot;
-  apiThrottler: typeof apiThrottler;
-};
-type TelegramBotInstance = InstanceType<TelegramBotRuntime["Bot"]>;
-
-const DEFAULT_TELEGRAM_BOT_RUNTIME: TelegramBotRuntime = {
-  Bot,
-  apiThrottler,
-};
 export async function createTelegramBotCore(
   opts: TelegramBotOptions & { telegramDeps: TelegramBotDeps },
-): Promise<TelegramBotInstance> {
-  const botRuntime = DEFAULT_TELEGRAM_BOT_RUNTIME;
+): Promise<InstanceType<typeof Bot>> {
   const runtime: RuntimeEnv = opts.runtime ?? createNonExitingRuntime();
   const telegramDeps = opts.telegramDeps;
   const cfg = opts.config ?? telegramDeps.getRuntimeConfig();
@@ -138,8 +127,8 @@ export async function createTelegramBotCore(
     client || opts.botInfo
       ? { ...(client ? { client } : {}), ...(opts.botInfo ? { botInfo: opts.botInfo } : {}) }
       : undefined;
-  const bot = new botRuntime.Bot(opts.token, botConfig);
-  const accountThrottler = getOrCreateAccountThrottler(opts.token, botRuntime.apiThrottler);
+  const bot = new Bot(opts.token, botConfig);
+  const accountThrottler = getOrCreateAccountThrottler(opts.token, apiThrottler);
   bot.api.config.use(accountThrottler.transformer);
   const sendChatActionHandler: TelegramSendChatActionHandler = {
     sendChatAction: (chatId, action, threadParams) =>
@@ -149,7 +138,6 @@ export async function createTelegramBotCore(
     isSuspended: accountThrottler.chatActions.isSuspended,
     reset: accountThrottler.chatActions.reset,
   };
-  // Catch all errors from bot middleware to prevent unhandled rejections
   bot.catch((err) => {
     runtime.error?.(danger(`telegram bot error: ${formatUncaughtError(err)}`));
   });
