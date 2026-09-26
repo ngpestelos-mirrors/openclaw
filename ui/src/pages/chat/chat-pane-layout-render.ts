@@ -286,12 +286,15 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
             chatProps.placementStartup,
             sidebarLayout,
             panelDefinitions,
-          )}<openclaw-plugin-contributions
-            .kind=${"session-header"}
-            .sessionKey=${state.sessionKey}
-            .agentId=${currentAgentId}
-            .presented=${this.visuallyPresented}
-          ></openclaw-plugin-contributions>`;
+          )}
+          <div class="chat-session-accessories">
+            <openclaw-plugin-contributions
+              .kind=${"session-header"}
+              .sessionKey=${state.sessionKey}
+              .agentId=${currentAgentId}
+              .presented=${this.visuallyPresented}
+            ></openclaw-plugin-contributions>
+          </div>`;
     const content = renderSidebarRegion({
       presentationId: this.presentationId,
       availableWidth: this.paneWidth,

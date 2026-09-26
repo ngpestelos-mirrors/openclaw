@@ -580,6 +580,12 @@ openclaw-chat-sidebar-region,
   min-width: 0;
 }
 
+.chat-session-accessories {
+  display: flow-root;
+  /* An inset separator takes no space when plugins render nothing or hide their content. */
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
 .sidebar-region__primary {
   display: flex;
   flex: 1 1 0;
