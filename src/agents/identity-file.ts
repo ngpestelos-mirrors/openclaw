@@ -345,11 +345,15 @@ export function loadAgentIdentityFromWorkspace(workspace: string): AgentIdentity
   return result.kind === "loaded" ? result.identity : null;
 }
 
-/** Workspace presentation treats missing, unreadable, and oversized identity files as absent. */
+/** Workspace presentation treats unavailable or unreadable identity files as absent. */
 export async function loadAgentIdentityFromWorkspaceAsync(
   workspace: string,
 ): Promise<AgentIdentityFile | null> {
-  const { prepareIdentityFile } = await import("./identity-file-runtime.js");
-  const result = await prepareIdentityFile(path.join(workspace, DEFAULT_IDENTITY_FILENAME));
-  return result.kind === "loaded" ? result.identity : null;
+  try {
+    const { prepareIdentityFile } = await import("./identity-file-runtime.js");
+    const result = await prepareIdentityFile(path.join(workspace, DEFAULT_IDENTITY_FILENAME));
+    return result.kind === "loaded" ? result.identity : null;
+  } catch {
+    return null;
+  }
 }

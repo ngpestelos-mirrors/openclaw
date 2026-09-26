@@ -192,8 +192,8 @@ describe("local agent avatar files", () => {
     const prepare = (source: string) =>
       prepareLocalAgentAvatarFile({ cfg, agentId: "main", source, readBody: true });
     await prepare(sources[0]!);
-    const started = createDeferred<void>();
-    const release = createDeferred<void>();
+    const started = createDeferred();
+    const release = createDeferred();
     pool.run.mockImplementationOnce(async (input: LocalAgentAvatarRead) => {
       const result = structuredClone(readLocalAgentAvatarSnapshot(input));
       started.resolve();

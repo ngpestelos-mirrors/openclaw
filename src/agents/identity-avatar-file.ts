@@ -184,12 +184,16 @@ export async function prepareLocalAgentAvatarFile(params: {
   source: string;
   readBody: boolean;
 }): Promise<LocalAgentAvatarResult> {
-  const { prepareLocalAgentAvatar } = await import("./identity-avatar-file-runtime.js");
-  return prepareLocalAgentAvatar({
-    workspaceDir: resolveAgentWorkspaceDir(params.cfg, params.agentId),
-    source: params.source,
-    readBody: params.readBody,
-  });
+  try {
+    const { prepareLocalAgentAvatar } = await import("./identity-avatar-file-runtime.js");
+    return await prepareLocalAgentAvatar({
+      workspaceDir: resolveAgentWorkspaceDir(params.cfg, params.agentId),
+      source: params.source,
+      readBody: params.readBody,
+    });
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
 }
 
 /** Resolve one configured avatar source for agent-list projections. */

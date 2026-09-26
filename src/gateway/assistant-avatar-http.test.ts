@@ -40,7 +40,7 @@ it("bounds decoded data bytes independently of the encoded URL limit", async () 
 });
 
 it("keeps pending thumbnails coalesced beyond the completed-cache capacity", async () => {
-  const gate = createDeferred<void>();
+  const gate = createDeferred();
   const decode = globalThis.fetch;
   const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (...args) => {
     await gate.promise;

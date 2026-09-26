@@ -1628,6 +1628,46 @@ describe("handleControlUiHttpRequest", () => {
     },
   );
 
+  it.each(["identity", "avatar"] as const)(
+    "serves authenticated bootstrap when the %s file worker rejects",
+    async (worker) => {
+      const failure = new Error("file worker unavailable");
+      if (worker === "identity") {
+        const runtime = await import("../agents/identity-file-runtime.js");
+        vi.spyOn(runtime, "prepareIdentityFile").mockRejectedValue(failure);
+      } else {
+        const runtime = await import("../agents/identity-avatar-file-runtime.js");
+        vi.spyOn(runtime, "prepareLocalAgentAvatar").mockRejectedValue(failure);
+      }
+      const workspace = testTempDirs.make("openclaw-bootstrap-worker-failure-");
+      const response = await runBootstrapConfigRequest({
+        rootPath: workspace,
+        auth: { mode: "token", token: "test-token", allowTailscale: false },
+        headers: { authorization: "Bearer test-token" },
+        config: {
+          agents: {
+            entries: {
+              main: {
+                workspace,
+                identity: worker === "avatar" ? { avatar: "avatar.png" } : undefined,
+              },
+            },
+          },
+        },
+      });
+      expect(response.handled).toBe(true);
+      expect(response.res.statusCode).toBe(200);
+      expect(parseBootstrapPayload(response.end)).toMatchObject({
+        assistantName: "Assistant",
+        assistantAvatar: "A",
+        assistantAgentId: "main",
+        ...(worker === "avatar"
+          ? { assistantAvatarStatus: "none", assistantAvatarReason: "unreadable" }
+          : {}),
+      });
+    },
+  );
+
   it.each(["automaticallyFetchFavicons", "communityInvite"] as const)(
     "projects an explicit %s opt-out into bootstrap config",
     async (key) => {
