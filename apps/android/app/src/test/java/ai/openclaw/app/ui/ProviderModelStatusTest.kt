@@ -33,7 +33,6 @@ class ProviderModelStatusTest {
               id = "openai",
               displayName = "OpenAI",
               status = "ok",
-              profileCount = 1,
             ),
           ),
         models =
@@ -62,7 +61,6 @@ class ProviderModelStatusTest {
               id = "openai",
               displayName = "OpenAI",
               status = "ok",
-              profileCount = 1,
             ),
           ),
         models = emptyList(),
@@ -83,7 +81,6 @@ class ProviderModelStatusTest {
               id = "openai",
               displayName = "OpenAI",
               status = "ok",
-              profileCount = 1,
             ),
           ),
         models = listOf(model(provider = "openai", id = "gpt-5.5")),
@@ -104,7 +101,6 @@ class ProviderModelStatusTest {
               id = "custom",
               displayName = "Custom",
               status = "ok",
-              profileCount = 1,
             ),
           ),
         models = listOf(model(provider = "custom", id = "offline-model", available = false)),
@@ -119,7 +115,7 @@ class ProviderModelStatusTest {
   fun oneAvailableRouteMakesProviderReadyAndModelsSortByName() {
     val rows =
       providerRows(
-        providers = listOf(GatewayModelProviderSummary("custom", "Custom", "expired", 2, authType = "oauth", renewalFailed = true)),
+        providers = listOf(GatewayModelProviderSummary("custom", "Custom", "expired", authType = "oauth", renewalFailed = true)),
         models =
           listOf(
             model(provider = "custom", id = "zeta", name = "Zeta", available = null),
@@ -141,7 +137,6 @@ class ProviderModelStatusTest {
           id = "openai",
           displayName = "OpenAI",
           status = "ok",
-          profileCount = 1,
         ),
       )
 
@@ -160,23 +155,17 @@ class ProviderModelStatusTest {
     id: String,
     name: String = id,
     available: Boolean? = null,
-    supportsReasoning: Boolean = false,
-    supportsVision: Boolean = false,
-    supportsAudio: Boolean = false,
-    supportsVideo: Boolean = false,
-    supportsDocuments: Boolean = false,
-    contextTokens: Long? = null,
   ): GatewayModelSummary =
     GatewayModelSummary(
       id = id,
       name = name,
       provider = provider,
-      supportsVision = supportsVision,
-      supportsAudio = supportsAudio,
-      supportsVideo = supportsVideo,
-      supportsDocuments = supportsDocuments,
-      supportsReasoning = supportsReasoning,
-      contextTokens = contextTokens,
+      supportsVision = false,
+      supportsAudio = false,
+      supportsVideo = false,
+      supportsDocuments = false,
+      supportsReasoning = false,
+      contextTokens = null,
       available = available,
     )
 }

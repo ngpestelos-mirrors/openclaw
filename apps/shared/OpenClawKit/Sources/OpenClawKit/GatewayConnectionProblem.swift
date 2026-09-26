@@ -1,10 +1,8 @@
 import Foundation
 
 /// Ingress authorization belongs to the app, independently from Gateway device credentials.
-public struct GatewayExternalAuthorizationError: Error, LocalizedError, Sendable {
-    public init() {}
-
-    public var errorDescription: String? {
+struct GatewayExternalAuthorizationError: Error, LocalizedError, Sendable {
+    var errorDescription: String? {
         "This gateway requires browser sign-in. Open Gateway settings to continue."
     }
 }

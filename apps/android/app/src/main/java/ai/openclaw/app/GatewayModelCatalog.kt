@@ -107,7 +107,6 @@ data class GatewayModelProviderSummary(
   val id: String,
   val displayName: String,
   val status: String,
-  val profileCount: Int,
   val authType: String? = null,
   val renewalFailed: Boolean = false,
   val authProviderId: String = id,
@@ -141,7 +140,6 @@ internal fun parseGatewayModelProviders(providers: JsonArray?): List<GatewayMode
           ?.trim()
           ?.takeIf(String::isNotEmpty) ?: providerDisplayName(id),
       status = status,
-      profileCount = profiles.size,
       authType =
         if ("oauth" in types) {
           "oauth"

@@ -38,7 +38,7 @@ export function requestModelsList(params: {
   preparedAuthModes?: PreparedModelRuntimeAuth["authModes"];
 }) {
   const respond = params.respond ?? vi.fn();
-  const runtimeConfig = params.runtimeConfig ?? ({} as OpenClawConfig);
+  const runtimeConfig = params.runtimeConfig ?? {};
   const getRuntimeConfig = params.getRuntimeConfig ?? (() => runtimeConfig);
   const resolveOwnerFacts = () => {
     const config = getRuntimeConfig();
@@ -58,9 +58,12 @@ export function requestModelsList(params: {
       metadataSnapshot: loadManifestMetadataSnapshot({ config, env: process.env }),
     };
   };
-  const loadSnapshot = async (loadParams: Parameters<typeof params.loadGatewayModelCatalog>[0]) => {
+  const loadGatewayModelCatalogSnapshot = async (
+    loadParams: Parameters<typeof params.loadGatewayModelCatalog>[0],
+  ): Promise<PreparedGatewayModelCatalogSnapshot> => {
     const entries = await params.loadGatewayModelCatalog(loadParams);
     const owner = resolveOwnerFacts();
+    // The public-projection tests deliberately inject malformed catalog fields.
     return {
       ...owner,
       ...(loadParams?.agentId ? { agentId: loadParams.agentId } : {}),
@@ -70,13 +73,10 @@ export function requestModelsList(params: {
       authMaterializations: [],
     } as unknown as PreparedGatewayModelCatalogSnapshot;
   };
-  const loadGatewayModelCatalogSnapshot = async (
-    loadParams: Parameters<typeof params.loadGatewayModelCatalog>[0],
-  ) => loadSnapshot(loadParams);
   let published: PreparedGatewayModelCatalogSnapshot | undefined;
   registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
     loadDeferred: async (loadParams) => {
-      const snapshot = await loadSnapshot(loadParams);
+      const snapshot = await loadGatewayModelCatalogSnapshot(loadParams);
       published = snapshot;
       if (!params.deferredAuth) {
         return snapshot;
@@ -100,7 +100,7 @@ export function requestModelsList(params: {
             routeVariants: params.publishedCatalog,
             authMaterializations: [],
           }
-        : await loadSnapshot({ agentId: params.agentId, readOnly: true });
+        : await loadGatewayModelCatalogSnapshot({ agentId: params.agentId, readOnly: true });
       return published;
     },
   });

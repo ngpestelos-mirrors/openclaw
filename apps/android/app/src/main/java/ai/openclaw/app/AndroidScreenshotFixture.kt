@@ -430,7 +430,6 @@ internal object AndroidScreenshotFixture {
         id = "openai",
         displayName = "OpenAI",
         status = "ready",
-        profileCount = 1,
       ),
     )
 
