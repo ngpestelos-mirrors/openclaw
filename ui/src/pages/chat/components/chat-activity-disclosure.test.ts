@@ -258,3 +258,137 @@ it("counts a raw call and its separate result once", () => {
   expect(text).toContain("1 failed");
   expect(text).not.toContain("2 tool calls");
 });
+
+function workSummaryText(messages: Record<string, unknown>[]) {
+  const groups = [
+    createToolGroup(
+      "history",
+      messages.map((message, index) => createMessageEntry(`message-${index}`, message)),
+    ),
+  ];
+  const container = document.createElement("div");
+  render(
+    renderWorkGroupSummary(
+      { key: "work", durationMs: null, groups },
+      { expanded: false, onToggle: () => {} },
+    ),
+    container,
+  );
+  return container
+    .querySelector(".chat-activity-group__summary")
+    ?.textContent?.replace(/\s+/gu, " ")
+    .trim();
+}
+
+it.each([
+  [true, false],
+  [false, true],
+  [true, true],
+])("keeps anonymous calls and their failures distinct (%s, %s)", (firstFailed, secondFailed) => {
+  const messages = [firstFailed, secondFailed].map((isError) => ({
+    role: "toolResult",
+    toolName: "exec",
+    content: isError ? "Command failed" : "Command completed",
+    isError,
+  }));
+  const failures = Number(firstFailed) + Number(secondFailed);
+  expect(workSummaryText(messages)).toBe(`Worked · 2 tool calls · ${failures} failed`);
+});
+
+it.each([false, true])("counts mixed prepared and raw history (reverse=%s)", (reverse) => {
+  const prepared = createToolResultMessage("prepared", "read", "Stale raw failure", {
+    isError: true,
+    activity: [
+      {
+        itemId: "tool:prepared",
+        toolCallId: "prepared",
+        kind: "tool",
+        phase: "end",
+        name: "read",
+        title: "Read",
+        status: "completed",
+      },
+    ],
+  });
+  const messages = [
+    createAssistantMessage([createToolCall("prepared", "read", {})]),
+    prepared,
+    createAssistantMessage([createToolCall("raw", "read", {})]),
+    createToolResultMessage("raw", "read", "Permission denied", { isError: true }),
+  ];
+  if (reverse) {
+    messages.splice(0, 2, prepared, messages[0]!);
+  }
+  expect(workSummaryText(messages)).toBe("Worked · 2 tool calls · 1 failed");
+});
+
+it.each(["empty", "hidden", "suppressed"] as const)(
+  "does not resurrect %s prepared calls from raw history",
+  (kind) => {
+    const activity =
+      kind === "empty"
+        ? []
+        : [
+            {
+              itemId: "tool:quiet",
+              toolCallId: "quiet",
+              kind: "tool",
+              phase: "end",
+              name: "read",
+              title: "Read",
+              status: "failed",
+              ...(kind === "hidden"
+                ? { hideFromChannelProgress: true }
+                : { suppressChannelProgress: true }),
+            },
+          ];
+    expect(
+      workSummaryText([
+        createAssistantMessage([createToolCall("quiet", "read", {})]),
+        createToolResultMessage("quiet", "read", "Hidden failure", { isError: true, activity }),
+        createToolResultMessage("visible", "read", "Visible failure", { isError: true }),
+      ]),
+    ).toBe("Worked · 1 tool call · 1 failed");
+  },
+);
+
+it.each(["raw", "empty", "hidden", "suppressed", "completed", "blocked"] as const)(
+  "keeps steering skips consistent with %s activity",
+  (kind) => {
+    const activity =
+      kind === "empty"
+        ? []
+        : [
+            {
+              itemId: "tool:skip",
+              toolCallId: "skip",
+              kind: "tool",
+              phase: "end",
+              name: "exec",
+              title: "Command",
+              status: kind === "completed" ? "completed" : "blocked",
+              ...(kind === "hidden" ? { hideFromChannelProgress: true } : {}),
+              ...(kind === "suppressed" ? { suppressChannelProgress: true } : {}),
+            },
+          ];
+    const message = createToolResultMessage("skip", "exec", "Skipped", {
+      details: { status: "skipped", deniedReason: "steering" },
+      ...(kind === "raw" ? {} : { activity }),
+    });
+    const expected =
+      kind === "raw" || kind === "blocked"
+        ? "Worked · 1 tool call · 1 skipped"
+        : kind === "completed"
+          ? "Worked · 1 tool call"
+          : "Worked";
+    expect(workSummaryText([message])).toBe(expected);
+  },
+);
+
+it("keeps an unresolved anonymous raw call unknown", () => {
+  expect(
+    workSummaryText([
+      createAssistantMessage([{ type: "toolCall", name: "exec", arguments: { command: "pwd" } }]),
+    ]),
+  ).toBe("Worked · 1 tool call · 1 unknown");
+});

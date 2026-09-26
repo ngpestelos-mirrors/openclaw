@@ -1,3 +1,4 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { html, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import type { ThemeBranding } from "../../../../../packages/gateway-protocol/src/theme.ts";
@@ -6,7 +7,11 @@ import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import type { ChatItem, MessageGroup } from "../../../lib/chat/chat-types.ts";
 import { describeToolGroup, readPreparedActivity } from "../../../lib/chat/tool-call-grouping.ts";
-import { extractToolCardsCached } from "../../../lib/chat/tool-cards.ts";
+import {
+  extractToolCardsCached,
+  isToolCardSkipped,
+  resolveToolCardOutcome,
+} from "../../../lib/chat/tool-cards.ts";
 import { formatDurationCompact } from "../../../lib/format-duration.ts";
 import { renderChatAvatar } from "../chat-avatar.ts";
 import { renderGroupedMessage } from "./chat-message-bubble.ts";
@@ -172,7 +177,7 @@ export function renderStreamGroup(parts: StreamGroupPart[], opts: StreamGroupOpt
 
 /** Completed work keeps elapsed time and outcomes above the expandable narration. */
 export function renderWorkGroupSummary(
-  item: { key: string; durationMs: number | null; groups: readonly MessageGroup[] },
+  work: { key: string; durationMs: number | null; groups: readonly MessageGroup[] },
   opts: {
     expanded: boolean;
     onToggle: () => void;
@@ -180,28 +185,80 @@ export function renderWorkGroupSummary(
     browserTabPreviews?: unknown;
   },
 ) {
-  const duration = formatDurationCompact(item.durationMs);
-  const cards = [
-    ...new Map(
-      item.groups
-        .flatMap((group) =>
-          group.messages.flatMap(({ message }) => extractToolCardsCached(message)),
-        )
-        .map((card) => [card.callId ?? card.id, card]),
-    ).values(),
-  ];
-  const activity = item.groups.flatMap((group) =>
-    group.messages.flatMap(({ message }) => readPreparedActivity(message)),
+  const duration = formatDurationCompact(work.durationMs);
+  const entries = work.groups.flatMap((group) =>
+    group.messages.map(({ message }) => ({
+      cards: extractToolCardsCached(message),
+      // An explicit empty projection also owns the message: its calls were hidden.
+      activity: Array.isArray(asOptionalRecord(message)?.activity)
+        ? readPreparedActivity(message)
+        : undefined,
+    })),
   );
+  const prepared = entries.flatMap(({ cards, activity }) =>
+    activity === undefined ? [] : [{ cards, activity }],
+  );
+  const preparedCallIds = new Set(
+    prepared.flatMap(({ cards, activity }) => [
+      ...cards.flatMap((card) => (card.callId ? [card.callId] : [])),
+      ...activity.map((item) => item.toolCallId ?? item.itemId),
+    ]),
+  );
+  const cardsById = new Map(
+    entries.flatMap((entry) => entry.cards).map((card) => [card.callId ?? card, card]),
+  );
+  const cards = [...cardsById.values()];
+  const rawCards = new Set(
+    entries.filter((entry) => entry.activity === undefined).flatMap((entry) => entry.cards),
+  );
+  const fallback = new Set(
+    cards.filter(
+      (card) => rawCards.has(card) && (!card.callId || !preparedCallIds.has(card.callId)),
+    ),
+  );
+  const activity: Array<Parameters<typeof describeToolGroup>[0][number]> = [];
+  for (const entry of prepared) {
+    for (const item of entry.activity) {
+      const card = cardsById.get(item.toolCallId ?? item.itemId);
+      // Copy only adjusted outcomes; the cached message projection stays untouched.
+      activity.push(
+        item.status === "blocked" && card && isToolCardSkipped(card)
+          ? { ...item, status: "skipped" }
+          : item,
+      );
+    }
+  }
+  for (const [index, card] of [...fallback].entries()) {
+    const outcome = resolveToolCardOutcome(card, false);
+    activity.push({
+      itemId: `work-summary-raw:${index}`,
+      toolCallId: card.callId,
+      title: card.name,
+      name: card.name,
+      status: outcome === "succeeded" ? "completed" : outcome === "unknown" ? undefined : outcome,
+    });
+  }
   const label = duration ? t("chat.workRun.workedFor", { duration }) : t("chat.workRun.worked");
   const summary = describeToolGroup(activity);
-  const total = activity.length ? summary.total : cards.length;
+  const total = summary.total;
   const outcomes = summary.outcomes.filter(({ kind }) => kind !== "failed");
-  const toolOutcomes = renderToolOutcomeSummary(
-    cards,
-    true,
-    activity.length ? activity : undefined,
+  const currentActivity = new Map(
+    activity
+      .filter((item) => !item.suppressChannelProgress)
+      .map((item) => [item.toolCallId ?? item.itemId, item]),
   );
+  const visibleCards = cards.filter((card) => {
+    const item = card.callId ? currentActivity.get(card.callId) : undefined;
+    return (
+      fallback.has(card) ||
+      Boolean(
+        item &&
+        !item.hideFromChannelProgress &&
+        (!isToolCardSkipped(card) || item.status === "skipped"),
+      )
+    );
+  });
+  const toolOutcomes = renderToolOutcomeSummary(visibleCards, true, activity);
   const content = html`
     <div class="chat-activity-group chat-work-group ${opts.expanded ? "is-open" : ""}">
       <button
@@ -242,7 +299,7 @@ export function renderWorkGroupSummary(
   return opts.presentation === "continuation"
     ? content
     : html`
-        <div class="chat-group tool chat-group--work" data-chat-row-key=${item.key}>
+        <div class="chat-group tool chat-group--work" data-chat-row-key=${work.key}>
           <div class="chat-group-messages">${content}</div>
         </div>
       `;
