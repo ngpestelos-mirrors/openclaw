@@ -284,7 +284,9 @@ describe("QA runtime parity scenario retry isolation", () => {
       const result = await run;
       expect(runScenario).toHaveBeenCalledOnce();
       expect(result.startedScenarioIds).toEqual([context.selectedScenarios[0]!.id]);
-      expect(result.scenarios.map(({ status }) => status)).toEqual(["fail"]);
+      expect(result.scenarios.map(({ status }) => status)).toEqual(["fail", "fail"]);
+      expect(result.scenarios[1]?.details).toContain("stop during first attempt");
+      expect(result.startedScenarioInstanceIds).toHaveLength(1);
     } finally {
       release.resolve();
       await run.catch(() => {});

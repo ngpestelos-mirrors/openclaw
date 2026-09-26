@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +18,10 @@ import type { writeQaSuiteArtifacts } from "./suite-artifacts.js";
 import * as suiteEvidence from "./suite-evidence.js";
 import { runQaFlowSuiteFromRuntime } from "./suite-run.runtime.js";
 import { runQaRuntimeParitySuite } from "./suite-runtime-parity-runner.js";
-import { findQaSuiteSummaryAccountingError } from "./suite-summary.js";
+import {
+  findQaSuiteSummaryAccountingError,
+  readQaSuiteFailedScenarioCountFromFile,
+} from "./suite-summary.js";
 import { makeQaSuiteTestScenario } from "./suite-test-helpers.js";
 import type { QaSuiteRunner, QaSuiteScenarioRunner } from "./suite-types.js";
 import * as suite from "./suite.js";
@@ -340,6 +344,7 @@ describe("runtime parity suite transport cleanup", () => {
       const releaseDiagnostic = createDeferred<void>();
       const healthyRecorded = createDeferred<void>();
       const children: string[] = [];
+      const started = vi.fn();
       const originalCreate = suiteEvidence.createQaSuiteEvidenceInvocation;
       vi.spyOn(suiteEvidence, "createQaSuiteEvidenceInvocation").mockImplementation(
         async (...params) => {
@@ -367,6 +372,7 @@ describe("runtime parity suite transport cleanup", () => {
       const runChild = vi.fn<QaSuiteRunner>(async (params) => {
         if (params?.scenarioIds?.[0] === "fatal") {
           await entered.promise;
+          await runQaFlowSuiteFromRuntime(params);
           throw fatal;
         }
         if (params?.scenarioIds?.[0] === "healthy" && params?.forcedRuntime === heldRuntime) {
@@ -385,6 +391,7 @@ describe("runtime parity suite transport cleanup", () => {
           outputDir,
           concurrency: 2,
           selectedScenarios: scenarios,
+          onScenarioStarted: started,
           lab,
           startLab: async () => createCleanupTestLab(),
         },
@@ -420,10 +427,209 @@ describe("runtime parity suite transport cleanup", () => {
       expect(progress?.scenarios.map(({ status }) => status)).toEqual([
         "fail",
         heldRuntime === "openclaw" ? "fail" : "pass",
-        "pending",
+        "fail",
       ]);
       expect(progress?.status).toBe("completed");
       expect(lab.setLatestReport).toHaveBeenCalledOnce();
+      expect(new Set(started.mock.calls.flat()).size).toBe(2);
+    },
+  );
+
+  it.each(["standard", "isolated", "parity"] as const)(
+    "publishes every %s instance after cancellation without counting unstarted work",
+    async (mode) => {
+      const controller = new AbortController();
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      const first = makeQaSuiteTestScenario("first", {
+        suiteIsolation: mode === "isolated" ? "isolated" : undefined,
+      });
+      const tail = makeQaSuiteTestScenario("tail");
+      vi.spyOn(scenarioCatalog, "readQaBootstrapScenarioCatalog").mockReturnValue({
+        agentIdentityMarkdown: "test",
+        kickoffTask: "test",
+        scenarios: [first, tail],
+      });
+      const expectedCalls = mode === "parity" ? 2 : 1;
+      let calls = 0;
+      const runScenario = vi
+        .spyOn(suite, "runQaSuiteScenarioDefinitionForRuntime")
+        .mockImplementation(async (_env, scenario) => {
+          if (++calls === expectedCalls) {
+            entered.resolve();
+            await release.promise;
+          }
+          return { name: scenario.title, status: "pass", steps: [] };
+        });
+      const repoRoot = await tempDirs.makeTempDir("qa-cancelled-flow-report-");
+      const lab = createCleanupTestLab();
+      const run = runQaFlowSuiteFromRuntime({
+        repoRoot,
+        outputDir: path.join(repoRoot, "output"),
+        scenarioIds: [first.id, tail.id, first.id],
+        concurrency: 1,
+        signal: controller.signal,
+        providerMode: "mock-openai",
+        lab,
+        startLab: async () => createCleanupTestLab(),
+        runtimePair: mode === "parity" ? ["openclaw", "codex"] : undefined,
+      });
+      try {
+        await entered.promise;
+        controller.abort(new Error("operator stopped suite"));
+        release.resolve();
+        const result = await run;
+        expect(runScenario).toHaveBeenCalledTimes(expectedCalls);
+        expect(result.startedScenarioIds).toEqual([first.id]);
+        const evidence = result.evidence;
+        if (evidence?.schemaVersion !== 3) {
+          throw new Error("expected recorded flow evidence");
+        }
+        const outcomes = projectQaEvidenceScenarioOutcomes(evidence);
+        expect(outcomes.map(({ status }) => status)).toEqual(["pass", "fail", "fail"]);
+        expect(result.scenarios.map(({ status }) => status)).toEqual(["pass", "fail", "fail"]);
+        expect(result.startedScenarioInstanceIds).toEqual([outcomes[0]!.scenarioInstanceId]);
+        expect(
+          result.scenarios
+            .slice(1)
+            .every(({ details }) => details?.includes("operator stopped suite")),
+        ).toBe(true);
+        const written = mocks.writeQaSuiteArtifacts.mock.calls.at(-1)![0];
+        expect(written.scenarios).toEqual(result.scenarios);
+        expect(written.recordedEvidence).toEqual(evidence);
+        const { buildQaSuiteSummaryJson } =
+          await vi.importActual<typeof import("./suite-artifacts.js")>("./suite-artifacts.js");
+        const report = buildQaSuiteSummaryJson({ ...written, evidence });
+        expect(report.run.status).toBe("completed");
+        expect(report.counts).toEqual({ total: 3, passed: 1, failed: 2, skipped: 0 });
+        expect(findQaSuiteSummaryAccountingError(report)).toBeUndefined();
+        expect(lab.setScenarioRun).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            status: "completed",
+            scenarios: [
+              expect.objectContaining({ id: first.id, status: "pass" }),
+              expect.objectContaining({ id: tail.id, status: "fail" }),
+              expect.objectContaining({ id: first.id, status: "fail" }),
+            ],
+          }),
+        );
+      } finally {
+        release.resolve();
+        await run.catch(() => {});
+      }
+    },
+  );
+
+  it.each([
+    ["standard", 1],
+    ["isolated", 1],
+    ["parity", 2],
+  ] as const)(
+    "restores %s with %i continued results when startup is cancelled",
+    async (mode, retainedCount) => {
+      const controller = new AbortController();
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      const repoRoot = await tempDirs.makeTempDir("qa-continued-startup-");
+      const scenario = makeQaSuiteTestScenario("same", {
+        channel: "leased",
+        suiteIsolation: mode === "isolated" ? "isolated" : undefined,
+      });
+      const options = {
+        repoRoot,
+        outputDir: path.join(repoRoot, "output"),
+        providerMode: "mock-openai" as const,
+        primaryModel: "mock-openai/test-model",
+        channelDriver: "live" as const,
+        channelId: "leased",
+        scenarioDefinitions: [scenario],
+        scenarioIds: [scenario.id, scenario.id],
+      };
+      const original = await suiteEvidence.createQaSuiteEvidenceInvocation(options, {
+        ...options,
+        selectedScenarios: [scenario, scenario],
+        transportId: "qa-channel",
+      });
+      const retained = [];
+      for (let index = 0; index < retainedCount; index++) {
+        retained.push(
+          await original.record(index, original.invocation.begin(index), {
+            name: scenario.title,
+            status: "pass",
+            details: `retained result ${index}`,
+            steps: [],
+          }),
+        );
+      }
+      const before = original.snapshot();
+      const lab = createCleanupTestLab();
+      const factory = createCleanupTestFactory(lab, async () => {
+        entered.resolve();
+        await release.promise;
+        return {};
+      });
+      const runScenario = vi.spyOn(suite, "runQaSuiteScenarioDefinitionForRuntime");
+      const actual =
+        await vi.importActual<typeof import("./suite-artifacts.js")>("./suite-artifacts.js");
+      const defaultWrite = mocks.writeQaSuiteArtifacts.getMockImplementation()!;
+      mocks.writeQaSuiteArtifacts.mockImplementation(actual.writeQaSuiteArtifacts);
+      const reason = new Error("stop during continued startup");
+      const run = runQaFlowSuiteFromRuntime({
+        ...options,
+        signal: controller.signal,
+        lab,
+        startLab: async () => createCleanupTestLab(),
+        adapterFactories: [factory],
+        concurrency: 1,
+        runtimePair: mode === "parity" ? ["openclaw", "codex"] : undefined,
+        evidenceAnchors: original.invocation.anchors,
+        evidenceContinuation: before,
+      }).catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        controller.abort(reason);
+        release.resolve();
+        const result = await run;
+        if (mode === "standard") {
+          expect(result).toBe(reason);
+        } else {
+          expect(result).toMatchObject({
+            startedScenarioIds: [],
+            startedScenarioInstanceIds: [],
+          });
+        }
+        expect(runScenario).not.toHaveBeenCalled();
+        expect(mocks.startQaGatewayChild).not.toHaveBeenCalled();
+        const written = mocks.writeQaSuiteArtifacts.mock.calls.at(-1)![0];
+        expect(written.scenarios).toHaveLength(2);
+        expect(written.scenarios.slice(0, retainedCount)).toEqual(retained);
+        if (retainedCount === 1) {
+          expect(written.scenarios[1]).toMatchObject({
+            status: "fail",
+            details: expect.stringContaining(reason.message),
+          });
+        }
+        expect(written.recordedEvidence?.entries.slice(0, before.entries.length)).toEqual(
+          before.entries,
+        );
+        const summaryPath = path.join(options.outputDir, "qa-suite-summary.json");
+        const summary = JSON.parse(await fs.readFile(summaryPath, "utf8"));
+        const failed = 2 - retainedCount;
+        expect(summary.counts).toEqual({ total: 2, passed: retainedCount, failed, skipped: 0 });
+        await expect(readQaSuiteFailedScenarioCountFromFile(summaryPath)).resolves.toBe(failed);
+        expect(lab.setScenarioRun).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            status: "completed",
+            scenarios: written.scenarios.map(({ status }) =>
+              expect.objectContaining({ id: scenario.id, status }),
+            ),
+          }),
+        );
+      } finally {
+        release.resolve();
+        await run;
+        mocks.writeQaSuiteArtifacts.mockReset().mockImplementation(defaultWrite);
+      }
     },
   );
 

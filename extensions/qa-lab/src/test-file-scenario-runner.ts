@@ -62,6 +62,8 @@ type QaTestFileScenarioRunParams = {
   evidenceAnchors?: readonly QaEvidenceOccurrence[];
   evidenceContinuation?: QaEvidenceSummaryV3Json;
   onEvidence?: (summary: QaEvidenceSummaryV3Json) => void;
+  onScenarioStarted?: (instanceId: string) => void;
+  onResultCommitted?: (result: QaTestFileScenarioResult) => void;
   preparedDockerEvidence?: QaPreparedDockerEvidence;
   env?: NodeJS.ProcessEnv;
   envMode?: "replace";
@@ -328,16 +330,6 @@ export async function runQaTestFileScenarios(
   }
   await fs.mkdir(params.outputDir, { recursive: true });
   const executeCommand = params.runCommand ?? runQaScenarioCommandLifecycle;
-  const runCommand: QaScenarioCommandRunner = (command) => {
-    params.signal?.throwIfAborted();
-    return executeCommand({
-      ...command,
-      ...(params.signal ? { signal: params.signal } : {}),
-      ...(params.forwardParentSignals === undefined
-        ? {}
-        : { forwardParentSignals: params.forwardParentSignals }),
-    });
-  };
   const commandTimeoutMs = resolvePositiveTimerTimeoutMs(
     params.commandTimeoutMs,
     DEFAULT_QA_TEST_FILE_COMMAND_TIMEOUT_MS,
@@ -395,10 +387,32 @@ export async function runQaTestFileScenarios(
   publish();
   const attemptsDir = path.join(params.outputDir, "occurrences");
   await fs.mkdir(attemptsDir, { recursive: true });
-  const start = (scenario: QaTestFileScenario) => {
-    const id = invocation.begin(scenarioOrder.get(scenario)!);
+  const beginObservation = (scenario: QaTestFileScenario) => {
+    const index = scenarioOrder.get(scenario)!;
+    const id = invocation.begin(index);
     observationIds.set(scenario, id);
     return id;
+  };
+  const runCommandFor = (instances: readonly QaTestFileScenario[]): QaScenarioCommandRunner => {
+    let started = false;
+    return (command) => {
+      params.signal?.throwIfAborted();
+      // Setup may fail or be cancelled before a command is dispatched. A
+      // multi-step scenario or Docker batch admits each instance only once.
+      if (!started) {
+        started = true;
+        for (const scenario of instances) {
+          params.onScenarioStarted?.(invocation.anchors[scenarioOrder.get(scenario)!]!.id);
+        }
+      }
+      return executeCommand({
+        ...command,
+        ...(params.signal ? { signal: params.signal } : {}),
+        ...(params.forwardParentSignals === undefined
+          ? {}
+          : { forwardParentSignals: params.forwardParentSignals }),
+      });
+    };
   };
   const record = async (result: QaTestFileScenarioResult) => {
     if (result.cleanupFailure) {
@@ -544,6 +558,7 @@ export async function runQaTestFileScenarios(
       delete result.producerArtifact;
       delete result.includeFallbackEvidence;
     }
+    params.onResultCommitted?.(result);
     publish();
   };
   const results: QaTestFileScenarioResult[] = [];
@@ -562,7 +577,7 @@ export async function runQaTestFileScenarios(
           `native docker-batch start scenarios=${unit.scenarios.length} timeoutMs=${unit.timeoutMs}`,
         );
         const startedAt = Date.now();
-        const ids = unit.scenarios.map(start);
+        const ids = unit.scenarios.map(beginObservation);
         const batchDir = path.join(attemptsDir, ids[0]!);
         await fs.mkdir(batchDir);
         const batchResults = await runDockerE2eBatch({
@@ -571,7 +586,7 @@ export async function runQaTestFileScenarios(
           onCommandOutput: params.onCommandOutput,
           outputDir: batchDir,
           repoRoot: params.repoRoot,
-          runCommand,
+          runCommand: runCommandFor(unit.scenarios),
           scenarios: unit.scenarios,
         });
         for (const result of batchResults) {
@@ -584,7 +599,7 @@ export async function runQaTestFileScenarios(
         continue;
       }
       const scenarioId = sanitizeQaProgressValue(unit.scenario.id);
-      const id = start(unit.scenario);
+      const id = beginObservation(unit.scenario);
       const attemptDir = path.join(attemptsDir, id);
       await fs.mkdir(attemptDir);
       params.progress?.(`native ${kind} start scenario=${scenarioId} timeoutMs=${unit.timeoutMs}`);
@@ -594,7 +609,7 @@ export async function runQaTestFileScenarios(
         onCommandOutput: params.onCommandOutput,
         outputDir: attemptDir,
         repoRoot: params.repoRoot,
-        runCommand,
+        runCommand: runCommandFor([unit.scenario]),
         scenario: unit.scenario,
       });
       await record(result);

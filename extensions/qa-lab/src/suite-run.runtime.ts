@@ -186,6 +186,7 @@ export async function runQaFlowSuiteFromRuntime(params?: QaSuiteRunParams): Prom
       evidenceAnchors: params.evidenceAnchors,
       evidenceContinuation: params.evidenceContinuation,
       onEvidence: params.onEvidence,
+      onScenarioStarted: params.onScenarioStarted,
     });
   }
   return useIsolatedScenarioWorkers

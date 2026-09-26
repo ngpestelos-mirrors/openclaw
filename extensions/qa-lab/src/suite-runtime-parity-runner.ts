@@ -18,7 +18,11 @@ import {
 import { readQaBootstrapScenarioCatalog } from "./scenario-catalog.js";
 import type { QaScorecardChannelDriver, QaScorecardEvidenceMode } from "./scorecard-taxonomy.js";
 import { writeQaSuiteArtifacts } from "./suite-artifacts.js";
-import { createQaSuiteEvidenceInvocation, rebaseQaSuiteEvidence } from "./suite-evidence.js";
+import {
+  createQaSuiteEvidenceInvocation,
+  describeQaSuiteInterruption,
+  rebaseQaSuiteEvidence,
+} from "./suite-evidence.js";
 import {
   collectQaSuiteTransportPolicy,
   mapQaSuiteWithConcurrency,
@@ -78,12 +82,14 @@ export async function runQaRuntimeParitySuite(params: {
   evidenceAnchors?: QaSuiteRunParams["evidenceAnchors"];
   evidenceContinuation?: QaSuiteRunParams["evidenceContinuation"];
   onEvidence?: QaSuiteRunParams["onEvidence"];
+  onScenarioStarted?: QaSuiteRunParams["onScenarioStarted"];
 }) {
   const recording = await createQaSuiteEvidenceInvocation(
     {
       evidenceAnchors: params.evidenceAnchors,
       evidenceContinuation: params.evidenceContinuation,
       onEvidence: params.onEvidence,
+      onScenarioStarted: params.onScenarioStarted,
       evidenceMode: params.evidenceMode,
       channelId: params.channelId,
       channelDriver: params.channelDriver ?? undefined,
@@ -131,9 +137,11 @@ export async function runQaRuntimeParitySuite(params: {
   let terminalResult: QaSuiteResult | undefined;
   const completedScenarioResults: Array<QaSuiteScenarioResult | undefined> = [];
   const childCleanupFailures: QaSuiteCleanupError[] = [];
-  const startedScenarioIndexes = new Set<number>();
-  const publishTerminalResult = async () => {
-    const scenarios = terminalScenarios!;
+  const publishTerminalResult = async (interruption?: string) => {
+    await recording.finalizeInterrupted(interruption);
+    const scenarios = completedScenarioResults.filter(
+      (result): result is QaSuiteScenarioResult => result !== undefined,
+    );
     const finishedAt = new Date();
     const { evidence, evidencePath, report, reportPath, summaryPath } = await writeQaSuiteArtifacts(
       {
@@ -176,9 +184,7 @@ export async function runQaRuntimeParitySuite(params: {
       summaryPath,
       report,
       scenarios,
-      startedScenarioIds: params.selectedScenarios
-        .filter((_scenario, index) => startedScenarioIndexes.has(index))
-        .map((scenario) => scenario.id),
+      ...recording.startedScenarios(),
       watchUrl: lab.baseUrl,
     } satisfies QaSuiteResult;
   };
@@ -301,6 +307,7 @@ export async function runQaRuntimeParitySuite(params: {
                       childEvidence = structuredClone(summary);
                       importChild();
                     },
+                    onScenarioStarted: () => recording.markStarted(index),
                   }),
                 );
               } catch (error) {
@@ -325,7 +332,7 @@ export async function runQaRuntimeParitySuite(params: {
               }
               const childSelectedId = importChild();
               if (cellResult.startedScenarioIds.includes(scenario.id)) {
-                startedScenarioIndexes.add(index);
+                recording.markStarted(index);
               }
               let scenarioResult =
                 cellResult.scenarios[0] ??
@@ -450,6 +457,10 @@ export async function runQaRuntimeParitySuite(params: {
         : []),
       ...(ownsLab ? [{ phase: "lab stop", run: () => lab.stop() }] : []),
     ]);
+    const interruption = describeQaSuiteInterruption(
+      params.signal,
+      childCleanupFailures[0] ?? runError,
+    );
     terminalResult = await publishQaSuiteTerminalResult({
       cleanupFailures: [
         ...childCleanupFailures
@@ -460,7 +471,8 @@ export async function runQaRuntimeParitySuite(params: {
       runFailed,
       runError,
       scenarios: terminalScenarios,
-      publish: terminalScenarios ? publishTerminalResult : undefined,
+      publish:
+        terminalScenarios || interruption ? () => publishTerminalResult(interruption) : undefined,
     });
   }
   if (!terminalResult) {

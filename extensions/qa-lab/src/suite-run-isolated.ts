@@ -10,7 +10,11 @@ import {
   sanitizeQaProgressValue as sanitizeQaSuiteProgressValue,
 } from "./progress-format.js";
 import { writeQaSuiteArtifacts } from "./suite-artifacts.js";
-import { createQaSuiteEvidenceInvocation, rebaseQaSuiteEvidence } from "./suite-evidence.js";
+import {
+  createQaSuiteEvidenceInvocation,
+  describeQaSuiteInterruption,
+  rebaseQaSuiteEvidence,
+} from "./suite-evidence.js";
 import { mapQaSuiteWithConcurrency, resolveQaSuiteWorkerStartStaggerMs } from "./suite-planning.js";
 import { createQaSuiteProgressController } from "./suite-progress.js";
 import { buildQaIsolatedScenarioWorkerParams } from "./suite-support.js";
@@ -84,7 +88,6 @@ export async function runQaFlowSuiteIsolated(
   const completedScenarioResults: Array<QaSuiteScenarioResult | undefined> = Array.from({
     length: selectedScenarios.length,
   });
-  const startedScenarioIndexes = new Set<number>();
   let artifactWriteQueue = Promise.resolve();
   const writePartialArtifacts = () => {
     const partialScenarios = completedScenarioResults.filter(
@@ -152,10 +155,11 @@ export async function runQaFlowSuiteIsolated(
   let terminalResult: QaSuiteResult | undefined;
   const childCleanupFailures: Array<{ phase: string; error: unknown }> = [];
   let transportArtifacts: QaRunnerTransportArtifacts | undefined;
-  const publishTerminalResult = async () => {
-    if (!terminalScenarios) {
-      throw new Error("QA suite completed without terminal result metadata");
-    }
+  const publishTerminalResult = async (interruption?: string) => {
+    await recording.finalizeInterrupted(interruption);
+    terminalScenarios = completedScenarioResults.filter(
+      (result): result is QaSuiteScenarioResult => result !== undefined,
+    );
     const terminalFinishedAt = new Date();
     const { evidence, evidencePath, report, reportPath, summaryPath } = await writeQaSuiteArtifacts(
       {
@@ -198,9 +202,7 @@ export async function runQaFlowSuiteIsolated(
       summaryPath,
       report,
       scenarios: terminalScenarios,
-      startedScenarioIds: selectedScenarios
-        .filter((_scenario, index) => startedScenarioIndexes.has(index))
-        .map((scenario) => scenario.id),
+      ...recording.startedScenarios(),
       watchUrl: lab.baseUrl,
     } satisfies QaSuiteResult;
   };
@@ -274,8 +276,11 @@ export async function runQaFlowSuiteIsolated(
           workerParams.onEvidence = (summary) => {
             childEvidence = structuredClone(summary);
           };
-          startedScenarioIndexes.add(index);
+          workerParams.onScenarioStarted = () => recording.markStarted(index);
           const childSuiteResult: QaSuiteResult = await runQaFlowSuite(workerParams);
+          if (childSuiteResult.startedScenarioIds.includes(scenario.id)) {
+            recording.markStarted(index);
+          }
           if (childSuiteResult.evidence?.schemaVersion === 3) {
             childEvidence = childSuiteResult.evidence;
           }
@@ -388,12 +393,17 @@ export async function runQaFlowSuiteIsolated(
       cleanupSteps.push({ phase: "lab stop", run: () => lab.stop() });
     }
     const cleanupFailures = await runQaSuiteCleanupSteps(cleanupSteps);
+    const interruption = describeQaSuiteInterruption(
+      params?.signal,
+      childCleanupFailures[0]?.error ?? isolatedRunError,
+    );
     terminalResult = await publishQaSuiteTerminalResult({
       cleanupFailures: [...childCleanupFailures, ...cleanupFailures],
       runFailed: isolatedRunFailed,
       runError: isolatedRunError,
       scenarios: terminalScenarios,
-      publish: terminalScenarios ? publishTerminalResult : undefined,
+      publish:
+        terminalScenarios || interruption ? () => publishTerminalResult(interruption) : undefined,
     });
   }
   if (!terminalResult || !completionProgress) {

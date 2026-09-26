@@ -2,6 +2,7 @@ import path from "node:path";
 import { disposeRegisteredAgentHarnesses } from "openclaw/plugin-sdk/agent-harness";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { QaRunnerTransportArtifacts } from "openclaw/plugin-sdk/qa-runner-runtime";
+import { QaSuiteCleanupError } from "./errors.js";
 import { createQaGatewayChild } from "./gateway-child.js";
 import type { QaLabLatestReport } from "./lab-server.types.js";
 import {
@@ -19,7 +20,7 @@ import {
   type QaSuiteGatewayRssSample,
   writeQaSuiteArtifacts,
 } from "./suite-artifacts.js";
-import { createQaSuiteEvidenceInvocation } from "./suite-evidence.js";
+import { createQaSuiteEvidenceInvocation, describeQaSuiteInterruption } from "./suite-evidence.js";
 import {
   applyQaSuiteGatewayConfigPatches,
   collectQaSuiteTransportPolicy,
@@ -130,13 +131,13 @@ export async function runQaFlowSuiteStandard(
   let metrics: ReturnType<typeof buildQaSuiteRuntimeMetrics> | undefined;
   let runtimeParityCell: QaSuiteResult["runtimeParityCell"];
   const scenarios: QaSuiteScenarioResult[] = [];
-  const startedScenarioIds: string[] = [];
   const progress = createQaSuiteProgressController({
     lab,
     scenarios: selectedScenarios,
     startedAt: startedAt.toISOString(),
   });
-  const publishTerminalResult = async () => {
+  const publishTerminalResult = async (interruption?: string) => {
+    await recording.finalizeInterrupted(interruption);
     const finishedAt = new Date();
     const { evidence, evidencePath, report, reportPath, summaryPath } = await writeQaSuiteArtifacts(
       {
@@ -172,6 +173,9 @@ export async function runQaFlowSuiteStandard(
       generatedAt: finishedAt.toISOString(),
     } satisfies QaLabLatestReport);
     progress.complete([], finishedAt.toISOString());
+    const failedCount = scenarios.filter((scenario) => scenario.status === "fail").length;
+    const skippedCount = scenarios.filter((scenario) => scenario.status === "skip").length;
+    completionProgress = `run complete: passed=${scenarios.length - failedCount - skippedCount} failed=${failedCount} skipped=${skippedCount} total=${scenarios.length}`;
     return {
       outputDir,
       evidence,
@@ -180,7 +184,7 @@ export async function runQaFlowSuiteStandard(
       summaryPath,
       report,
       scenarios,
-      startedScenarioIds,
+      ...recording.startedScenarios(),
       watchUrl: lab.baseUrl,
       ...(runtimeParityCell ? { runtimeParityCell } : {}),
     } satisfies QaSuiteResult;
@@ -315,7 +319,6 @@ export async function runQaFlowSuiteStandard(
     await captureGatewayHeapCheckpoint("suite-start");
     for (const [index, scenario] of selectedScenarios.entries()) {
       params?.signal?.throwIfAborted();
-      startedScenarioIds.push(scenario.id);
       const scenarioIdForLog = sanitizeQaSuiteProgressValue(scenario.id);
       writeQaSuiteProgress(
         progressEnabled,
@@ -336,6 +339,7 @@ export async function runQaFlowSuiteStandard(
         const id = recording.invocation.begin(index, previousAttempt);
         let result: QaSuiteScenarioResult;
         try {
+          recording.markStarted(index);
           result = await runScenarioDefinition(activeEnv, scenario);
         } catch (error) {
           await recording.record(
@@ -482,8 +486,6 @@ export async function runQaFlowSuiteStandard(
       gatewayProcessRssSamples,
       gatewayHeapSnapshots,
     });
-    const failedCount = scenarios.filter((scenario) => scenario.status === "fail").length;
-    const skippedCount = scenarios.filter((scenario) => scenario.status === "skip").length;
     if (
       scenarios.some((scenario) => scenario.status === "fail") ||
       gatewayRuntimeOptions?.preserveDebugArtifacts === true
@@ -493,7 +495,6 @@ export async function runQaFlowSuiteStandard(
     if (!isQaSuiteNestedRun(params)) {
       transportArtifacts = await transport.captureArtifacts?.({ outputDir });
     }
-    completionProgress = `run complete: passed=${scenarios.length - failedCount - skippedCount} failed=${failedCount} skipped=${skippedCount} total=${scenarios.length}`;
   } catch (error) {
     runFailed = true;
     runError = error;
@@ -527,12 +528,17 @@ export async function runQaFlowSuiteStandard(
             }
           },
     });
+    const interruption = describeQaSuiteInterruption(
+      params?.signal,
+      cleanupFailures.find(({ error }) => error instanceof QaSuiteCleanupError)?.error ?? runError,
+    );
     terminalResult = await publishQaSuiteTerminalResult({
       cleanupFailures,
       runFailed,
       runError,
       scenarios: terminalScenarios,
-      publish: terminalScenarios ? publishTerminalResult : undefined,
+      publish:
+        terminalScenarios || interruption ? () => publishTerminalResult(interruption) : undefined,
     });
   }
   if (!terminalResult || !completionProgress) {

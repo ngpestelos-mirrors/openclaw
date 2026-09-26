@@ -29,7 +29,7 @@ const launch: QaEvidenceIdentity = {
 };
 
 async function setup(
-  params: Pick<QaSuiteRunParams, "onEvidence"> = {},
+  params: Pick<QaSuiteRunParams, "onEvidence" | "onScenarioStarted"> = {},
   onResultCommitted?: Parameters<typeof createQaSuiteEvidenceInvocation>[2],
 ) {
   const outputDir = await tempDirs.makeTempDir("qa-flow-occurrences-");
@@ -40,19 +40,20 @@ async function setup(
     channel: "qa-channel",
     launch,
   });
+  const context = {
+    outputDir,
+    repoRoot: outputDir,
+    selectedScenarios,
+    primaryModel: "mock-openai/test",
+    providerMode: "mock-openai" as const,
+    transportId: "qa-channel" as const,
+  };
   const evidence = await createQaSuiteEvidenceInvocation(
     { ...params, evidenceAnchors: parent.anchors },
-    {
-      outputDir,
-      repoRoot: outputDir,
-      selectedScenarios,
-      primaryModel: "mock-openai/test",
-      providerMode: "mock-openai",
-      transportId: "qa-channel",
-    },
+    context,
     onResultCommitted,
   );
-  return { outputDir, evidence };
+  return { outputDir, evidence, context };
 }
 
 describe("flow occurrence artifacts", () => {
@@ -89,6 +90,138 @@ describe("flow occurrence artifacts", () => {
       });
     },
   );
+
+  it("finalizes only an interrupted unresolved instance without rewriting retry history", async () => {
+    const committed = vi.fn();
+    const started = vi.fn();
+    const { evidence } = await setup({ onScenarioStarted: started }, committed);
+    evidence.markStarted(0);
+    const first = evidence.invocation.begin(0);
+    await evidence.record(0, first, { name: "first", status: "fail", steps: [] });
+    evidence.markStarted(0);
+    const retry = evidence.invocation.begin(0);
+    await evidence.record(0, retry, { name: "retry", status: "pass", steps: [] });
+    const before = evidence.snapshot();
+    committed.mockClear();
+
+    await evidence.finalizeInterrupted("suite cancelled: interrupted");
+
+    const after = evidence.snapshot();
+    expect(after.entries.slice(0, before.entries.length)).toEqual(before.entries);
+    for (const occurrence of before.occurrences.filter(
+      (item) => item.id !== evidence.invocation.anchors[1]!.id,
+    )) {
+      expect(after.occurrences.find(({ id }) => id === occurrence.id)).toEqual(occurrence);
+    }
+    const outcomes = projectQaEvidenceScenarioOutcomes(after);
+    expect(outcomes.map(({ status }) => status)).toEqual(["pass", "fail"]);
+    expect(outcomes[0]?.occurrenceId).toBe(retry);
+    expect(committed).toHaveBeenCalledExactlyOnceWith(
+      1,
+      expect.objectContaining({
+        status: "fail",
+        details: "suite cancelled: interrupted",
+      }),
+    );
+    expect(after.entries.at(-1)).toMatchObject({
+      coverage: [],
+      binding: { occurrenceId: outcomes[1]?.occurrenceId, assertionId: null },
+      result: { status: "fail" },
+    });
+    expect(
+      after.occurrences.find(({ id }) => id === outcomes[1]?.occurrenceId)?.assertions,
+    ).toBeNull();
+    await evidence.finalizeInterrupted("suite cancelled: repeated publication");
+    expect(evidence.snapshot().occurrences).toEqual(after.occurrences);
+    expect(committed).toHaveBeenCalledOnce();
+    expect(started).toHaveBeenCalledExactlyOnceWith(evidence.invocation.anchors[0]!.id);
+    expect(evidence.startedScenarios()).toEqual({
+      startedScenarioIds: ["same-label"],
+      startedScenarioInstanceIds: [evidence.invocation.anchors[0]!.id],
+    });
+  });
+
+  it.each([1, 2])(
+    "restores %i continued same-label results before finalizing an interruption",
+    async (retainedCount) => {
+      const { outputDir, evidence, context } = await setup();
+      const retained = [];
+      for (let index = 0; index < retainedCount; index++) {
+        const id = evidence.invocation.begin(index);
+        retained.push(
+          await evidence.record(index, id, {
+            name: "same-label",
+            status: index === 0 ? "pass" : "fail",
+            details: `retained result ${index}`,
+            steps: [],
+          }),
+        );
+      }
+      const before = evidence.snapshot();
+      const artifacts = before.occurrences.flatMap(({ receipts }) =>
+        receipts.map(({ artifact }) => path.join(outputDir, artifact.path)),
+      );
+      const bytes = await Promise.all(artifacts.map((file) => fs.readFile(file)));
+      const committed = vi.fn();
+      const started = vi.fn();
+      const continued = await createQaSuiteEvidenceInvocation(
+        {
+          evidenceAnchors: evidence.invocation.anchors,
+          evidenceContinuation: before,
+          onScenarioStarted: started,
+        },
+        context,
+        committed,
+      );
+      expect(committed).not.toHaveBeenCalled();
+
+      await continued.finalizeInterrupted("suite cancelled during continuation startup");
+
+      expect(committed).toHaveBeenCalledTimes(2);
+      for (const [index, result] of retained.entries()) {
+        expect(committed).toHaveBeenNthCalledWith(index + 1, index, result);
+      }
+      const after = continued.snapshot();
+      expect(after.entries.slice(0, before.entries.length)).toEqual(before.entries);
+      expect(
+        projectQaEvidenceScenarioOutcomes(after)
+          .slice(0, retainedCount)
+          .map(({ occurrenceId }) => occurrenceId),
+      ).toEqual(retained.map(({ evidenceOccurrenceId }) => evidenceOccurrenceId));
+      expect(await Promise.all(artifacts.map((file) => fs.readFile(file)))).toEqual(bytes);
+      await continued.finalizeInterrupted("repeated finalization");
+      expect(continued.snapshot().occurrences).toEqual(after.occurrences);
+      expect(committed).toHaveBeenCalledTimes(2);
+      expect(started).not.toHaveBeenCalled();
+      expect(continued.startedScenarios()).toEqual({
+        startedScenarioIds: [],
+        startedScenarioInstanceIds: [],
+      });
+    },
+  );
+
+  it("rejects a changed continued artifact before handing its result to reporting", async () => {
+    const { outputDir, evidence, context } = await setup();
+    const id = evidence.invocation.begin(0);
+    await evidence.record(0, id, { name: "original", status: "pass", steps: [] });
+    const before = evidence.snapshot();
+    const artifact = before.occurrences.find((item) => item.id === id)!.receipts[0]!.artifact;
+    await fs.appendFile(path.join(outputDir, artifact.path), "changed");
+    const committed = vi.fn();
+    const continued = await createQaSuiteEvidenceInvocation(
+      { evidenceAnchors: evidence.invocation.anchors, evidenceContinuation: before },
+      context,
+      committed,
+    );
+
+    await expect(continued.finalizeInterrupted("suite cancelled")).rejects.toThrow(
+      "selected flow result artifact changed",
+    );
+
+    expect(committed).not.toHaveBeenCalled();
+    expect(continued.snapshot().occurrences).toEqual(before.occurrences);
+    expect(continued.snapshot().entries).toEqual(before.entries);
+  });
 
   it("carries simulated Bun capture into prepared receipts and preserves explicit anchors", async () => {
     using _ = mockBunVersion("1.3.14");

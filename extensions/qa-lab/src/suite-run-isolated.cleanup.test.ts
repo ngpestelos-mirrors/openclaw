@@ -35,8 +35,14 @@ describe("isolated QA suite transport cleanup", () => {
     ];
     const original = new Error("child failed before its first result");
     const snapshots: QaEvidenceSummaryV3Json[] = [];
+    const started = vi.fn();
     const result = await runQaFlowSuiteIsolated(
-      { lab, startLab: async () => lab, onEvidence: (summary) => snapshots.push(summary) },
+      {
+        lab,
+        startLab: async () => lab,
+        onEvidence: (summary) => snapshots.push(summary),
+        onScenarioStarted: started,
+      },
       context,
       async (params) => {
         await createQaSuiteEvidenceInvocation(params, {
@@ -46,6 +52,9 @@ describe("isolated QA suite transport cleanup", () => {
         throw original;
       },
     );
+    expect(started).not.toHaveBeenCalled();
+    expect(result.startedScenarioIds).toEqual([]);
+    expect(result.startedScenarioInstanceIds).toEqual([]);
     expect(result.scenarios[0]).toMatchObject({ status: "fail", details: original.message });
     expect(snapshots.at(-1)!.entries).toMatchObject([
       {
@@ -75,6 +84,7 @@ describe("isolated QA suite transport cleanup", () => {
           outputDir: params!.outputDir!,
         });
         const id = child.invocation.begin(0);
+        params?.onScenarioStarted?.(child.invocation.anchors[0]!.id);
         await child.record(0, id, { name: "child passed", status: "pass", steps: [] });
         if (failure === "cleanup failure") {
           throw new Error("child cleanup failed");
@@ -98,6 +108,7 @@ describe("isolated QA suite transport cleanup", () => {
       );
       expect(result.scenarios[0]?.status).toBe("fail");
       const final = snapshots.at(-1)!;
+      expect(result.startedScenarioInstanceIds).toEqual([final.occurrences[0]!.id]);
       expect(final.entries.map((entry) => entry.result.status)).toEqual(["pass", "fail"]);
       expect(final.entries[1]?.coverage).toEqual([]);
       const childId = final.entries[0]!.binding.occurrenceId;
@@ -615,9 +626,10 @@ describe("isolated QA suite transport cleanup", () => {
     context.progressEnabled = true;
     context.selectedScenarios.push(makeQaSuiteTestScenario("never-started"));
     const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const runChild = vi
-      .fn<QaSuiteRunner>()
-      .mockRejectedValueOnce(new Error("isolated worker gateway failed"));
+    const runChild = vi.fn<QaSuiteRunner>().mockImplementationOnce(async (params) => {
+      params?.onScenarioStarted?.(params.evidenceAnchors![0]!.id);
+      throw new Error("isolated worker failed after dispatch");
+    });
 
     let result: Awaited<ReturnType<typeof runQaFlowSuiteIsolated>>;
     try {
@@ -627,7 +639,7 @@ describe("isolated QA suite transport cleanup", () => {
         runChild,
       );
       expect(stderrWrite.mock.calls.flat().join("")).toContain(
-        "scenario fail (1/2): leased-channel-scenario — isolated scenario worker: isolated worker gateway failed",
+        "scenario fail (1/2): leased-channel-scenario — isolated scenario worker: isolated worker failed after dispatch",
       );
     } finally {
       stderrWrite.mockRestore();
@@ -639,7 +651,7 @@ describe("isolated QA suite transport cleanup", () => {
       expect.objectContaining({
         name: "leased-channel-scenario",
         status: "fail",
-        details: "isolated worker gateway failed",
+        details: "isolated worker failed after dispatch",
       }),
     ]);
     expect(lab.setScenarioRun).toHaveBeenLastCalledWith(
