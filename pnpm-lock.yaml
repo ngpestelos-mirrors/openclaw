@@ -1983,6 +1983,9 @@ importers:
       '@openclaw/crabline':
         specifier: 0.1.27
         version: 0.1.27
+      json5:
+        specifier: 2.2.3
+        version: 2.2.3
       playwright-core:
         specifier: 1.63.0
         version: 1.63.0
