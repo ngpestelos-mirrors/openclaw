@@ -3,7 +3,6 @@ import { constants as fsConstants } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isNotFoundPathError } from "@openclaw/fs-safe/path";
 import { sha256File } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   resolveMacOSDesktopCodexAppPathCandidates,
@@ -99,7 +98,7 @@ export async function readCodexDesktopArtifactTreeFingerprint(root: string): Pro
   try {
     rootStat = await fs.lstat(root, { bigint: true });
   } catch (error) {
-    if (isNotFoundPathError(error)) {
+    if (isNodeError(error, "ENOENT") || isNodeError(error, "ENOTDIR")) {
       return "missing";
     }
     throw error;
@@ -162,7 +161,7 @@ async function statFingerprint(filePath: string): Promise<string> {
     const content = target.isFile() ? await readFileFingerprint(filePath, target, true) : "";
     return `${type}:${own}:${link}:${realPath}:${statTuple(target)}:${content}`;
   } catch (error) {
-    if (isNotFoundPathError(error)) {
+    if (isNodeError(error, "ENOENT") || isNodeError(error, "ENOTDIR")) {
       return "missing";
     }
     throw error;
@@ -200,4 +199,8 @@ function sameStat(left: BigIntStats, right: BigIntStats): boolean {
 
 function statTuple(stat: BigIntStats): string {
   return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+}
+
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === code);
 }

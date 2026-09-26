@@ -2,7 +2,6 @@
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { hasNodeErrorCode } from "@openclaw/fs-safe/path";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveCodexAppServerHomeDir } from "./auth-start-options.js";
 import {
@@ -333,6 +332,10 @@ async function wrapperMatchesAnySource(
     }
   }
   return false;
+}
+
+function hasNodeErrorCode(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === code);
 }
 
 export async function resolveClientManagedBundledMarketplacePath(
