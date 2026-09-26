@@ -1063,6 +1063,7 @@ jobs:
           path: |
             .artifacts/windows-schtasks/proof.json
             .artifacts/windows-schtasks/released-package.json
+            .artifacts/windows-schtasks/released-package-lock.json
             ${{ runner.temp }}\windows-schtasks-isolation.json
             ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\runs.txt.hosted-stop
             ${{ runner.temp }}\openclaw-schtasks-réseau %% ^!-${{ github.run_id }}-${{ github.run_attempt }}\failure-diagnostics.json
