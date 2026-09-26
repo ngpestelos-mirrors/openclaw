@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
+import type { AgentEventRuntimePayload } from "../infra/agent-events.js";
 import { abortChatRunById, registerChatAbortController } from "./chat-abort.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { emitAgentEvent, registerChatRun } from "./server-chat.agent-events.test-helpers.js";
@@ -50,42 +51,43 @@ function answerCandidate(itemId: string, progressText: string, status = "candida
     hideFromChannelProgress: true,
   };
 }
+function connect(clients: GatewayClientRegistry, connId: string) {
+  const frames: Array<{
+    event: string;
+    payload: { message?: unknown; data?: { text?: string; delta?: string }; state?: string };
+  }> = [];
+  const socket = Object.assign(new EventEmitter(), {
+    readyState: 1,
+    bufferedAmount: 0,
+    send: (wire: string, callback?: () => void) => {
+      frames.push(JSON.parse(wire));
+      callback?.();
+    },
+    close: vi.fn(),
+    terminate: vi.fn(),
+  });
+  clients.add({
+    connId,
+    socket,
+    usesSharedGatewayAuth: false,
+    connect: {
+      minProtocol: 4,
+      maxProtocol: 4,
+      client: { id: "test", version: "test", platform: "test", mode: "test" },
+      role: "operator",
+      scopes: ["operator.read"],
+    },
+  } satisfies GatewayWsClient);
+  return frames;
+}
+
 afterEach(() => vi.useRealTimers());
 
 it("sends append-only wire text while retaining snapshots for observers and late recipients", () => {
   vi.useFakeTimers();
   const harness = createHarness();
   const clients = new GatewayClientRegistry();
-  const connect = (connId: string) => {
-    const frames: Array<{
-      event: string;
-      payload: { message?: unknown; data?: { text?: string; delta?: string }; state?: string };
-    }> = [];
-    const socket = Object.assign(new EventEmitter(), {
-      readyState: 1,
-      bufferedAmount: 0,
-      send: (wire: string, callback?: () => void) => {
-        frames.push(JSON.parse(wire));
-        callback?.();
-      },
-      close: vi.fn(),
-      terminate: vi.fn(),
-    });
-    clients.add({
-      connId,
-      socket,
-      usesSharedGatewayAuth: false,
-      connect: {
-        minProtocol: 4,
-        maxProtocol: 4,
-        client: { id: "test", version: "test", platform: "test", mode: "test" },
-        role: "operator",
-        scopes: ["operator.read"],
-      },
-    } satisfies GatewayWsClient);
-    return frames;
-  };
-  const frames = connect("first");
+  const frames = connect(clients, "first");
   let visible = true;
   const broadcaster = createGatewayBroadcaster({
     clients,
@@ -107,7 +109,7 @@ it("sends append-only wire text while retaining snapshots for observers and late
   };
   try {
     emit(1, undefined, "Hello");
-    const late = connect("late");
+    const late = connect(clients, "late");
     emit(2, undefined, " world");
     expect(frames.filter((frame) => frame.event === "chat").map((frame) => frame.payload)).toEqual([
       expect.objectContaining({ message: expect.any(Object), deltaText: "Hello" }),
@@ -145,6 +147,52 @@ it("sends append-only wire text while retaining snapshots for observers and late
     expect(frames.at(-1)?.payload).toMatchObject({
       state: "final",
       message: { content: [{ type: "text", text: "Reset!\n\nOther\n\nReset! again" }] },
+    });
+  } finally {
+    handler.dispose();
+    chatRunState.clear();
+  }
+});
+
+it.each([true, false])("re-baselines after an upstream sequence gap (visible=%s)", (visible) => {
+  vi.useFakeTimers();
+  const harness = createHarness();
+  const clients = new GatewayClientRegistry();
+  const frames = connect(clients, "gap-reader");
+  const broadcaster = createGatewayBroadcaster({ clients });
+  harness.broadcast.mockImplementation(broadcaster.broadcast);
+  harness.broadcastToConnIds.mockImplementation(broadcaster.broadcastToConnIds);
+  const { handler, chatRunState } = harness;
+  const runId = "gap-run";
+  const sessionKey = "agent:main:gap-proof";
+  harness.sessionMessageSubscribers.subscribe("gap-reader", sessionKey);
+  const emit = (seq: number, text: string, delta: string) => {
+    const event: AgentEventRuntimePayload = {
+      runId,
+      sessionKey,
+      seq,
+      ts: seq,
+      stream: "assistant",
+      controlUiVisible: visible,
+      projectSessionLifecycle: false,
+      data: { itemId: "reply", phase: "commentary", text, delta },
+    };
+    handler(event);
+  };
+  try {
+    emit(1, "A", "A");
+    emit(2, "AB", "B");
+    // Keep B paced when the source skips C. The next known snapshot must repair both.
+    emit(4, "ABCD", "D");
+    chatRunState.flushPendingText(runId);
+    const assistant = frames.filter((frame) => frame.event === "agent");
+    expect(assistant.at(-1)?.payload.data).toMatchObject({ text: "ABCD", delta: "D" });
+    emit(5, "ABCDE", "E");
+    chatRunState.flushPendingText(runId);
+    expect(frames.filter((frame) => frame.event === "agent").at(-1)?.payload.data).toEqual({
+      itemId: "reply",
+      phase: "commentary",
+      delta: "E",
     });
   } finally {
     handler.dispose();

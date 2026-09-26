@@ -1496,30 +1496,37 @@ export function createAgentEventHandler({
     const isToolEvent = evt.stream === "tool";
     const isItemEvent = evt.stream === "item";
     const suppressHeartbeatToolEvents = isToolEvent && heartbeatPolicy === true;
-    if (last > 0 && evt.seq !== last + 1 && isControlUiVisible) {
+    if (last > 0 && evt.seq !== last + 1) {
       flushBufferedAgentDeltaIfNeeded(clientRunId);
-      broadcast(
-        "agent",
-        {
-          runId: eventRunId,
-          stream: "error",
-          ts: Date.now(),
-          sessionKey,
-          ...(spawnedBy && { spawnedBy }),
-          ...(isHeartbeat !== undefined && { isHeartbeat }),
-          data: {
-            reason: "seq gap",
-            expected: last + 1,
-            received: evt.seq,
+      if (isControlUiVisible) {
+        broadcast(
+          "agent",
+          {
+            runId: eventRunId,
+            stream: "error",
+            ts: Date.now(),
+            sessionKey,
+            ...(spawnedBy && { spawnedBy }),
+            ...(isHeartbeat !== undefined && { isHeartbeat }),
+            data: {
+              reason: "seq gap",
+              expected: last + 1,
+              received: evt.seq,
+            },
           },
-        },
-        {
-          sessionKeys: sessionKey
-            ? resolveSessionDeliveryKeys(sessionKey, sessionAgentId)
-            : undefined,
-          liveText: liveTextDelivery(chatRunState, clientRunId),
-        },
-      );
+          {
+            sessionKeys: sessionKey
+              ? resolveSessionDeliveryKeys(sessionKey, sessionAgentId)
+              : undefined,
+            liveText: liveTextDelivery(chatRunState, clientRunId),
+          },
+        );
+      }
+      const run = chatRunState.runs.get(clientRunId);
+      if (run) {
+        run.liveTextGroup?.abort();
+        delete run.liveTextGroup;
+      }
     }
     agentRunSeq.set(evt.runId, evt.seq);
     if (evt.stream === "assistant") {
