@@ -413,10 +413,9 @@ it.each(["discord", "local-alias"])(
       expect(routeConfigs).toHaveLength(1);
       expect(routeConfigs[0]).toBe(result.cfg);
       // Route preparation owns the first (and for aliases, second) full root.
-      // The model lease may register one more runtime root, but the route hook
-      // must receive only the selected materialized config above.
-      expect(registrationTokens).toHaveLength(channel === "local-alias" ? 3 : 2);
-      expect(registrationTokens.slice(0, channel === "local-alias" ? 2 : 1)).toEqual(
+      // The alias first reveals its owner. Model admission must then reuse the
+      // materialized root rather than registering the same config again.
+      expect(registrationTokens).toEqual(
         channel === "local-alias"
           ? [source.channels.discord.accounts.selected.token, "synthetic-materialized-token"]
           : ["synthetic-materialized-token"],

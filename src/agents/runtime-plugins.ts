@@ -1,4 +1,7 @@
-import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
+import {
+  captureRuntimeConfig,
+  projectConfigOntoRuntimeSourceSnapshot,
+} from "../config/runtime-source-projection.js";
 import { projectRuntimeChangesOntoSource } from "../config/source-value-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { adoptRuntimeContextEngineRegistrations } from "../context-engine/registry.js";
@@ -45,7 +48,10 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeRegistryScope,
 } from "../plugins/runtime/gateway-request-scope.js";
-import { getPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js";
+import {
+  getPluginRuntimeLoadContext,
+  setPluginRuntimeLoadContext,
+} from "../plugins/runtime/load-context.js";
 import { adoptRuntimeWidgetPresenterRegistrations } from "../plugins/widget-presenters.js";
 import { resolveUserPath } from "../utils.js";
 import {
@@ -358,6 +364,7 @@ export async function withLocalAgentPluginRegistry<T>(
       return await params.run(compatible);
     }
   }
+  const rootInputConfig = captureRuntimeConfig(params.config);
   const [
     { resolvePluginRuntimeLoadContext },
     { buildPluginRuntimeLoadOptions },
@@ -370,8 +377,8 @@ export async function withLocalAgentPluginRegistry<T>(
     import("../cli/runtime-cleanup-scope.js"),
   ]);
   const context = resolvePluginRuntimeLoadContext({
-    config: params.config,
-    activationSourceConfig: projectConfigOntoRuntimeSourceSnapshot(params.config),
+    config: rootInputConfig,
+    activationSourceConfig: projectConfigOntoRuntimeSourceSnapshot(rootInputConfig),
     env: params.env,
     workspaceDir: params.workspaceDir,
   });
@@ -429,6 +436,10 @@ export async function withLocalAgentPluginRegistry<T>(
     if (!registered?.metadataSnapshot) {
       throw new Error("Local plugin root has no prepared metadata generation");
     }
+    // The loader registered the auto-enabled config; preparation receives the
+    // admitted runtime input. Preserve that immutable input as the root's raw
+    // activation fact without changing its registered callbacks or result.
+    setPluginRuntimeLoadContext(registry, { ...registered, rawConfig: rootInputConfig });
     const invocation = new PluginInvocationScope(
       registry,
       collectRegistryInvocationInstances(registry),
@@ -439,7 +450,7 @@ export async function withLocalAgentPluginRegistry<T>(
       registered.metadataSnapshot,
       () =>
         withPluginRuntimeRegistryScope(registry, () => invocation.run(() => params.run(registry))),
-      { config: params.config, env: context.env, workspaceDir: context.workspaceDir },
+      { config: rootInputConfig, env: context.env, workspaceDir: context.workspaceDir },
     );
   } finally {
     invocations?.release();
@@ -456,10 +467,8 @@ export async function withAgentPluginRegistry<T>(params: AgentPluginRegistryPara
     return await params.run(requestPluginRegistry);
   }
   // Borrowed Gateway registries must not load direct-host context dependencies.
-  const [{ setPluginRuntimeLoadContext }, { resolvePluginRuntimeLoadContext }] = await Promise.all([
-    import("../plugins/runtime/load-context.js"),
-    import("../plugins/runtime/load-context.resolve.js"),
-  ]);
+  const { resolvePluginRuntimeLoadContext } =
+    await import("../plugins/runtime/load-context.resolve.js");
   // Direct hosts resolve one policy generation; disabled plugins never reopen discovery.
   const context = resolvePluginRuntimeLoadContext({
     config: params.config,

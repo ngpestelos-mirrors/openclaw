@@ -8,6 +8,10 @@ import { withCliPluginInvocation } from "../cli/run-main-plugin-cache.js";
 import { withCliProcessScope } from "../cli/runtime-cleanup-scope.js";
 import { captureRuntimeConfigWithSource } from "../config/runtime-config-capture-state.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+import {
+  captureRuntimeConfig,
+  projectConfigOntoRuntimeSourceSnapshot,
+} from "../config/runtime-source-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withLocalGatewayRequestScope } from "../gateway/local-request-context.js";
 import { createHookRunner } from "../plugins/hooks.js";
@@ -30,7 +34,10 @@ import type { PluginRegistry } from "../plugins/registry-types.js";
 import { clearActivePluginRegistry, getActivePluginRegistry } from "../plugins/runtime.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { getPluginRuntimeGenerationRegistry } from "../plugins/runtime/generation-scope.js";
-import { getPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js";
+import {
+  getPluginRuntimeLoadContext,
+  getReusablePluginRuntimeActivation,
+} from "../plugins/runtime/load-context.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -43,6 +50,7 @@ import {
 import { runLocalAgentCommand } from "./agent-command-local.js";
 import { bindActiveOperatorTurnAuthority } from "./cron-creator-authority-context.js";
 import { prepareWorkspacePluginRegistries } from "./prepared-model-runtime.inbound-registry.js";
+import { prepareOwnedPluginLoadContext } from "./prepared-model-runtime.plugin-context.js";
 import { retainPreparedPluginRegistry } from "./prepared-model-runtime.plugin-lifetime.js";
 import { PreparedModelRuntimeBuildResources } from "./prepared-model-runtime.resources.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
@@ -197,25 +205,48 @@ async function withExecutableCli<T>(run: () => Promise<T>): Promise<T> {
   );
 }
 
-it.each(["unchanged JSON", "admitted workspace/config text"])(
+it.each(["unchanged JSON", "admitted workspace/config text", "materialized provider SecretRef"])(
   "captures once from preaction through model admission and the run callback: %s",
   async (scenario) => {
     using fixture = localFixture();
     const { config, captures, plugin } = fixture;
     const changed = scenario === "admitted workspace/config text";
+    const materializedSecret = scenario === "materialized provider SecretRef";
     const workspaceDir = changed ? state.path("ops-workspace") : state.workspaceDir;
     fs.mkdirSync(workspaceDir, { recursive: true });
-    const admitted = changed ? structuredClone(config) : config;
+    const admitted = changed || materializedSecret ? structuredClone(config) : config;
     if (changed) {
       admitted.agents!.defaults!.workspace = workspaceDir;
       admitted.plugins!.entries![plugin.id]!.config = { label: "resolved local secret" };
+    }
+    const authored = materializedSecret ? structuredClone(admitted) : admitted;
+    if (materializedSecret) {
+      admitted.agents!.defaults!.model = "openai/mock";
+      admitted.agents!.defaults!.models!["openai/mock"] = { agentRuntime: { id: "openclaw" } };
+      admitted.models = {
+        providers: {
+          openai: {
+            baseUrl: "http://127.0.0.1:12345/v1",
+            api: "openai-responses",
+            apiKey: "synthetic-resolved-key",
+            models: [],
+          },
+        },
+      };
+      authored.agents = structuredClone(admitted.agents);
+      authored.models = structuredClone(admitted.models);
+      authored.models!.providers!.openai!.apiKey = {
+        source: "env",
+        provider: "default",
+        id: "OPENAI_API_KEY",
+      };
     }
     setRuntimeConfigSnapshot(config, config);
     mocks.prepare.mockImplementation(async () => {
       if (changed) {
         vi.stubEnv("LOCAL_CAPTURE_TEST", "admitted environment");
       }
-      setRuntimeConfigSnapshot(admitted, admitted);
+      setRuntimeConfigSnapshot(admitted, authored);
       return {
         cfg: admitted,
         opts: { runId: "local-root", senderIsOwner: true },
@@ -430,6 +461,117 @@ it.each([
   } finally {
     await retirePluginCache(metadataCache);
   }
+});
+
+it("diagnoses local materialized provider SecretRef admission through the prepared workspace", async () => {
+  using fixture = localFixture();
+  const source: OpenClawConfig = structuredClone(fixture.config);
+  source.agents!.defaults!.model = "openai/mock";
+  source.models = {
+    providers: {
+      openai: {
+        baseUrl: "http://127.0.0.1:12345/v1",
+        api: "openai-responses",
+        apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+        models: [],
+      },
+    },
+  };
+  const materialized: OpenClawConfig = structuredClone(source);
+  materialized.models!.providers!.openai!.apiKey = "synthetic-resolved-key";
+  setRuntimeConfigSnapshot(materialized, source);
+  await withExecutableCli(() =>
+    withLocalGatewayRequestScope({ deps: {}, getRuntimeConfig: () => materialized }, () =>
+      withLocalAgentPluginRegistry({
+        config: materialized,
+        workspaceDir: state.workspaceDir,
+        run: async (root) => {
+          const input: PreparedModelRuntimeInput = {
+            config: captureRuntimeConfig(materialized),
+            agentId: "main",
+            agentDir: state.agentDir(),
+            workspaceDir: state.workspaceDir,
+          };
+          const metadata = prepareOwnedPluginLoadContext(input, process.env, undefined);
+          const context = getPluginRuntimeLoadContext(root)!;
+          expect(context.rawConfig).toEqual(input.config);
+          expect(Object.isFrozen(context.rawConfig)).toBe(true);
+          expect(Object.isFrozen(context.rawConfig.models?.providers?.openai)).toBe(true);
+          expect(projectConfigOntoRuntimeSourceSnapshot(input.config)).toEqual(
+            context.activationSourceConfig,
+          );
+          expect(metadata).toBe(context.metadataSnapshot);
+          expect(
+            getReusablePluginRuntimeActivation(root, {
+              config: input.config,
+              env: process.env,
+              workspaceDir: input.workspaceDir,
+              metadataSnapshot: metadata,
+            }),
+          ).toBeDefined();
+          expect(resolveLocalAgentPluginRegistry(input, metadata)).toBe(root);
+          expect(
+            resolveLocalAgentPluginRegistry(
+              {
+                ...input,
+                config: captureRuntimeConfigWithSource(
+                  { ...materialized, gateway: { port: 19099 } },
+                  source,
+                ),
+              },
+              metadata,
+            ),
+          ).toBeUndefined();
+          expect(
+            resolveLocalAgentPluginRegistry(
+              {
+                ...input,
+                config: captureRuntimeConfigWithSource(materialized, {
+                  ...source,
+                  gateway: { port: 19098 },
+                }),
+              },
+              metadata,
+            ),
+          ).toBeUndefined();
+          expect(
+            resolveLocalAgentPluginRegistry(
+              {
+                ...input,
+                env: { ...process.env, LOCAL_CAPTURE_TEST: "changed" },
+              },
+              metadata,
+            ),
+          ).toBeUndefined();
+          expect(
+            resolveLocalAgentPluginRegistry(
+              {
+                ...input,
+                workspaceDir: state.path("other-workspace"),
+              },
+              metadata,
+            ),
+          ).toBeUndefined();
+          await using resources = new PreparedModelRuntimeBuildResources(
+            retainPreparedPluginRegistry,
+          );
+          const prepared = await prepareWorkspacePluginRegistries(
+            input,
+            metadata,
+            (registry) => resources.retainRegistry(registry),
+            undefined,
+            false,
+            undefined,
+            () => [],
+            undefined,
+            resources.load.bind(resources),
+          );
+          expect(prepared.runtimePluginRegistry).toBe(root);
+          expect(fixture.captures.map(({ mode }) => mode)).toEqual(["full"]);
+        },
+      }),
+    ),
+  );
 });
 
 it.each([false, true])(
