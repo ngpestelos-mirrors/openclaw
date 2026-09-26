@@ -116,17 +116,16 @@ it.each(["transaction", "commit"] as const)(
     const create = admission.createSqliteWorkerOperationAdmission;
     let current = true;
     let revoked = false;
-    using _interception = vi
-      .spyOn(admission, "createSqliteWorkerOperationAdmission")
-      .mockImplementation((admit, attachment) =>
-        create((request, grant) => {
-          if (request.stage === stage && !revoked) {
-            revoked = true;
-            current = false;
-          }
-          admit(request, grant);
-        }, attachment),
-      );
+    using interception = vi.spyOn(admission, "createSqliteWorkerOperationAdmission");
+    interception.mockImplementation((admit, attachment) =>
+      create((request, grant) => {
+        if (request.stage === stage && !revoked) {
+          revoked = true;
+          current = false;
+        }
+        admit(request, grant);
+      }, attachment),
+    );
     await expect(
       progressCardStore.put(
         sessionKey,
