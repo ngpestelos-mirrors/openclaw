@@ -189,6 +189,7 @@ export async function registerRunningSubagent(params: {
     }
     const assertRollbackCurrent = () => {
       assertRegistryCurrent();
+      ownership.assertCurrent();
       if (!exactEntry() || !isDeepStrictEqual(entry, registered)) {
         throw new Error("Subagent registration rollback lost its original run owner");
       }
@@ -211,6 +212,9 @@ export async function registerRunningSubagent(params: {
             if (runIds.includes(runId) && exactEntry() && isDeepStrictEqual(entry, registered)) {
               manager.runs.delete(runId);
               subagentRuns.releaseCompletionAuthority(entry);
+            }
+            if (ownership.superseded) {
+              return;
             }
             for (const [candidate, current] of retained) {
               if (
