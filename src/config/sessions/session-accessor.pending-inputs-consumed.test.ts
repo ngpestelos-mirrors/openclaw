@@ -260,7 +260,7 @@ describe("committed pending input release", () => {
     ).toEqual([]);
     await deleteSessionEntryLifecycle({
       archiveTranscript: false,
-      storePath: fixture.storePath(),
+      storePath: scope().storePath,
       target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
     });
     expect(database().db.prepare("SELECT count(*) AS n FROM session_pending_inputs").get()).toEqual(
