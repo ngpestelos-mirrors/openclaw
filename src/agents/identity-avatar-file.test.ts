@@ -175,7 +175,7 @@ describe("local agent avatar files", () => {
       ["large.png", "too_large"],
       ["missing.png", "missing"],
       ["avatar.txt", "unsupported_extension"],
-    ]) {
+    ] as const) {
       expect(
         readLocalAgentAvatarSnapshot({ workspaceDir: workspace, source, readBody: true }),
       ).toEqual({ ok: false, reason });
