@@ -184,6 +184,24 @@ describe("delegated config proposal evaluation", () => {
     ["channels.slack.accounts.ops.channels.C123.toolsBySender", '{"id:U123":{"allow":["read"]}}'],
     ["gateway.controlUi.allowedOrigins", '["https://fixture.example"]'],
     ["gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback", "true"],
+    ["gateway.controlUi.embedSandbox", "trusted"],
+    ["gateway.controlUi.allowExternalEmbedUrls", "true"],
+    ["channels.matrix.dm.enabled", "false"],
+    ["channels.discord.dm.groupEnabled", "true"],
+    ["channels.slack.allowBots", "true"],
+    ["channels.discord.dangerouslyAllowNameMatching", "true"],
+    ["channels.discord.guilds.123.roles", '["345678901234567890"]'],
+    ["channels.discord.guilds.123", '{"slug":"fixture-guild"}'],
+    ["channels.telegram.allowFrom", '["42"]'],
+    ["channels.telegram.dmPolicy", "disabled"],
+    ["channels.telegram.groupPolicy", "open"],
+    ["channels.telegram.groupAllowFrom", '["42"]'],
+    ["channels.telegram.groups.*", '{"systemPrompt":"Every group"}'],
+    ["channels.telegram.accounts.ops.groups.-100", '{"systemPrompt":"One group"}'],
+    ["channels.telegram.accounts.ops.allowFrom", '["42"]'],
+    ["channels.telegram.accounts.ops.dmPolicy", "disabled"],
+    ["channels.telegram.accounts.ops.groupPolicy", "open"],
+    ["channels.telegram.accounts.ops.groupAllowFrom", '["42"]'],
   ])(
     "protects validated channel/browser authority at %s, including removal",
     async (configKey, value) => {
@@ -260,15 +278,122 @@ describe("delegated config proposal evaluation", () => {
     expect(changesPermissionPolicy(change.after, change.before)).toBe(true);
   });
 
-  it("normalizes browser-origin defaults without gating operational Control UI settings", async () => {
+  it.each([
+    ["channels.telegram.botToken", "fixture-bot-token"],
+    ["channels.telegram.accounts.ops.botToken", "fixture-bot-token"],
+    ["gateway.controlUi.embedSandbox", "scripts"],
+    ["gateway.controlUi.allowExternalEmbedUrls", "false"],
+  ])("does not invent a policy change for setup/default %s", async (configKey, value) => {
     await prepareConfig();
     const change = await evaluateSystemAgentConfigChange({
       kind: "config-set",
-      path: "gateway.controlUi",
-      value:
-        '{"allowedOrigins":[],"dangerouslyAllowHostHeaderOriginFallback":false,"communityInvite":false}',
+      path: configKey,
+      value,
     });
     expect(changesPermissionPolicy(change.before, change.after)).toBe(false);
+  });
+
+  it("protects canonical nested DM admission despite a conflicting legacy account field", async () => {
+    const raw = JSON.stringify({
+      channels: {
+        matrix: {
+          accounts: {
+            ops: {
+              dmPolicy: "disabled",
+              allowFrom: ["@legacy:example.invalid"],
+              dm: { policy: "allowlist", allowFrom: ["@allowed:example.invalid"] },
+            },
+          },
+        },
+      },
+    });
+    const configPath = await prepareConfig(raw);
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: "channels.matrix.accounts.ops.dm",
+      value: '{"policy":"open","allowFrom":["*"]}',
+    });
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
+    expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+  });
+
+  it.each([
+    ["channels.matrix.allowlistOnly", "false"],
+    ['channels.matrix.groups["!fixture:example.invalid"].enabled', "true"],
+    [
+      'channels.matrix.groups["!fixture:example.invalid"].users',
+      '["@allowed:example.invalid","@new:example.invalid"]',
+    ],
+  ])("protects existing Matrix admission at %s", async (configKey, value) => {
+    const raw = JSON.stringify({
+      channels: {
+        matrix: {
+          allowlistOnly: true,
+          groupPolicy: "open",
+          groupAllowFrom: ["@allowed:example.invalid"],
+          groups: {
+            "!fixture:example.invalid": { enabled: false, users: ["@allowed:example.invalid"] },
+          },
+        },
+      },
+    });
+    const configPath = await prepareConfig(raw);
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: configKey,
+      value,
+    });
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
+    expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+  });
+
+  it("protects Matrix room alias membership", async () => {
+    await prepareConfig();
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: "channels.matrix.rooms",
+      value: '{"!fixture:example.invalid":{"systemPrompt":"Room guidance"}}',
+    });
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
+  });
+
+  it("retains the shipped Matrix room allow alias at account scope", async () => {
+    const raw = JSON.stringify({
+      channels: {
+        matrix: {
+          accounts: {
+            ops: {
+              groups: { "!fixture:example.invalid": { allow: false } },
+            },
+          },
+        },
+      },
+    });
+    await prepareConfig(raw);
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: 'channels.matrix.accounts.ops.groups["!fixture:example.invalid"].allow',
+      value: "true",
+    });
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
+  });
+
+  it("protects removing a Discord group-DM channel restriction", async () => {
+    await prepareConfig(
+      JSON.stringify({
+        channels: {
+          discord: {
+            dm: { groupEnabled: true, groupChannels: ["345678901234567890"] },
+          },
+        },
+      }),
+    );
+    const change = await evaluateSystemAgentConfigChange({
+      kind: "config-set",
+      path: "channels.discord.dm.groupChannels",
+      value: "[]",
+    });
+    expect(changesPermissionPolicy(change.before, change.after)).toBe(true);
   });
 
   it.each(["groups.-100", "direct.42"])(

@@ -114,6 +114,170 @@ describe("changesPermissionPolicy", () => {
     ).toBe(false);
   });
 
+  it("normalizes inherited admission while preserving empty account allowlists", () => {
+    const root = {
+      channels: {
+        telegram: {
+          dmPolicy: "pairing",
+          groupPolicy: "allowlist",
+          allowFrom: ["42"],
+        },
+      },
+    } satisfies OpenClawConfig;
+    const inherited = {
+      channels: {
+        telegram: {
+          ...root.channels.telegram,
+          accounts: {
+            ops: { name: "Ops", dmPolicy: "pairing", groupPolicy: "allowlist", allowFrom: ["42"] },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    expect(changesPermissionPolicy(root, inherited)).toBe(false);
+    inherited.channels.telegram.accounts.ops.allowFrom = [];
+    expect(changesPermissionPolicy(root, inherited)).toBe(true);
+  });
+
+  it.each(["groups", "direct"] as const)("retains wildcard %s admission selection", (scope) => {
+    const scopedBefore: OpenClawConfig = {
+      channels: {
+        telegram: {
+          [scope]: {
+            "*": { allowFrom: ["42"] },
+          },
+        },
+      },
+    };
+    const after: OpenClawConfig = {
+      channels: {
+        telegram: {
+          [scope]: {
+            "*": { allowFrom: ["42"] },
+            "42": { systemPrompt: "Specific chat" },
+          },
+        },
+      },
+    };
+    expect(changesPermissionPolicy(scopedBefore, after)).toBe(true);
+  });
+
+  it.each(["groups", "direct"] as const)("preserves disabled wildcard %s admission", (scope) => {
+    const scopedBefore: OpenClawConfig = {
+      channels: {
+        telegram: {
+          [scope]: {
+            "*": { enabled: false },
+          },
+        },
+      },
+    };
+    const after: OpenClawConfig = {
+      channels: {
+        telegram: {
+          [scope]: {
+            "*": { enabled: false },
+            "42": { systemPrompt: "Specific chat" },
+          },
+        },
+      },
+    };
+    expect(changesPermissionPolicy(scopedBefore, after)).toBe(true);
+  });
+
+  it("keeps prompt-only group edits automatic when wildcard admission already applies", () => {
+    const scopedBefore: OpenClawConfig = {
+      channels: {
+        telegram: {
+          groups: {
+            "*": { tools: { deny: ["exec"] } },
+          },
+        },
+      },
+    };
+    const after: OpenClawConfig = {
+      channels: {
+        telegram: {
+          groups: {
+            "*": { tools: { deny: ["exec"] } },
+            "-100": { systemPrompt: "Group guidance" },
+          },
+        },
+      },
+    };
+    expect(changesPermissionPolicy(scopedBefore, after)).toBe(false);
+  });
+
+  it.each([
+    {
+      channel: "discord",
+      map: "guilds",
+      wildcard: { roles: ["345678901234567890"] },
+      exact: { slug: "fixture" },
+      changed: true,
+    },
+    {
+      channel: "matrix",
+      map: "rooms",
+      wildcard: { users: ["@allowed:example.invalid"] },
+      exact: { systemPrompt: "Room guidance" },
+      changed: true,
+    },
+    {
+      channel: "matrix",
+      map: "groups",
+      wildcard: { tools: { deny: ["exec"] } },
+      exact: { systemPrompt: "Room guidance" },
+      changed: true,
+    },
+    {
+      channel: "slack",
+      map: "channels",
+      wildcard: { users: ["U123"] },
+      exact: { systemPrompt: "Channel guidance" },
+      changed: false,
+    },
+  ])(
+    "honors $channel wildcard policy inheritance",
+    ({ channel, map, wildcard, exact, changed }) => {
+      const scopedBefore: OpenClawConfig = {
+        channels: { [channel]: { [map]: { "*": wildcard } } },
+      };
+      const after: OpenClawConfig = {
+        channels: { [channel]: { [map]: { "*": wildcard, fixture: exact } } },
+      };
+      expect(changesPermissionPolicy(scopedBefore, after)).toBe(changed);
+    },
+  );
+
+  it("normalizes browser defaults without gating operational presentation settings", () => {
+    expect(
+      changesPermissionPolicy(
+        {},
+        {
+          gateway: {
+            controlUi: {
+              allowedOrigins: [],
+              dangerouslyAllowHostHeaderOriginFallback: false,
+              communityInvite: false,
+            },
+          },
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("does not interpret model-routing metadata as an admission map", () => {
+    expect(
+      changesPermissionPolicy(
+        {},
+        {
+          channels: { modelByChannel: { rooms: { fixture: "fixture/model" } } },
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("does not confuse outgoing credential rotation with inbound authentication", () => {
     const ref = { source: "env", provider: "default", id: "FIXTURE_API_KEY" } as const;
     expect(changesPermissionPolicy({}, { gateway: { remote: { token: ref } } })).toBe(false);

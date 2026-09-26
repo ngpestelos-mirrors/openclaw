@@ -48,9 +48,10 @@ proposed operation. Full Access applies it automatically without an approval
 prompt, including when Full Access comes from the configured default rather than
 an explicit session mode. Actual permission changes are the exception: tool and
 exec policy, sandboxing, approvals, owners and command allowlists, channel exec
-approvers, channel group/direct-message tool policies, security policy, Workshop
-approval policy, and Gateway authorization (auth, roles, HTTP tools, browser
-origins and Host-header origin fallback, trusted proxies including Real-IP
+approvers, channel sender-admission policies and allowlists, channel group/direct-message
+tool policies, security policy, Workshop approval policy, and Gateway authorization
+(auth, roles, HTTP tools, browser origins, Host-header origin fallback, embed
+sandbox and external-embed trust, trusted proxies including Real-IP
 fallback, and nodes) wait for an authorized human decision, even in Full Access.
 
 The host compares the canonical validated config before and after the change,

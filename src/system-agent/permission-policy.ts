@@ -6,11 +6,14 @@
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveSandboxConfigForAgent } from "../agents/sandbox/config.js";
+import { resolveChannelDmAccess } from "../channels/plugins/dm-access.js";
 import type { ConfigMutationAdmission } from "../cli/config-cli-runner.js";
+import { resolveChannelGroups } from "../config/channel-groups.js";
 import { resolveControlUiAllowedOrigins } from "../config/gateway-control-ui-origins.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { coerceSecretRef } from "../config/types.secrets.js";
 import type { ExecToolConfig } from "../config/types.tools.js";
+import { resolveControlUiBootstrapPresentation } from "../gateway/control-ui-bootstrap-presentation.js";
 import { applyExecPolicyLayer } from "../infra/exec-policy.js";
 import { secretRefKey } from "../secrets/ref-contract.js";
 
@@ -42,8 +45,43 @@ const CHANNEL_TOOL_POLICY_PATHS = [[], ["accounts", ANY]].flatMap((account) =>
     ["tools", "toolsBySender"].map((key) => ["channels", ANY].concat(account, scope, key)),
   ),
 );
+const CHANNEL_ADMISSION_PATHS = [[], ["accounts", ANY]].flatMap((account) =>
+  [...CHANNEL_TOOL_SCOPES, ["groups", ANY, "topics", ANY], ["direct", ANY, "topics", ANY]].flatMap(
+    (scope) =>
+      [
+        "dmPolicy",
+        "groupPolicy",
+        "allowFrom",
+        "groupAllowFrom",
+        "users",
+        "roles",
+        "allowBots",
+        "enabled",
+      ].map((key) => ["channels", ANY].concat(account, scope, key)),
+  ),
+);
 const PERMISSION_POLICY_PATHS: readonly (readonly string[])[] = [
   ...CHANNEL_TOOL_POLICY_PATHS,
+  ...CHANNEL_ADMISSION_PATHS,
+  // Nested-only channel owners can retain conflicting legacy top-level fields.
+  // Compare their canonical admission fields independently of top-level precedence.
+  ...[[], ["accounts", ANY]].flatMap((account) =>
+    ["policy", "allowFrom", "enabled", "groupEnabled", "groupChannels"].map((key) =>
+      ["channels", ANY].concat(account, "dm", key),
+    ),
+  ),
+  ...[[], ["accounts", ANY]].flatMap((account) =>
+    CHANNEL_TOOL_SCOPES.filter((scope) => scope[0] !== "direct" && scope[0] !== "groups").map(
+      (scope) => ["channels", ANY].concat(account, scope.slice(0, -1)),
+    ),
+  ),
+  // Matrix still reads the shipped room allow alias; Doctor owns its migration.
+  ...[[], ["accounts", ANY]].flatMap((account) =>
+    ["groups", "rooms"].map((map) => ["channels", "matrix"].concat(account, map, ANY, "allow")),
+  ),
+  ["channels", "defaults", "groupPolicy"],
+  ["channels", "telegram", "groups"],
+  ["channels", "telegram", "accounts", ANY, "groups"],
   ["channels", "telegram", "direct"],
   ["channels", "telegram", "accounts", ANY, "direct"],
   ["approvals"],
@@ -68,20 +106,21 @@ const PERMISSION_POLICY_PATHS: readonly (readonly string[])[] = [
 function projectPath(
   value: unknown,
   path: readonly string[],
-  projectLeaf: (leaf: unknown) => unknown = (leaf) => leaf,
+  projectLeaf: (leaf: unknown, resolvedPath: readonly string[]) => unknown = (leaf) => leaf,
+  resolvedPath: readonly string[] = [],
 ): unknown {
   const [key, ...rest] = path;
   if (key === undefined) {
-    return projectLeaf(value);
+    return projectLeaf(value, resolvedPath);
   }
   if (!isRecord(value)) {
     return undefined;
   }
   if (key !== ANY) {
-    return projectPath(value[key], rest, projectLeaf);
+    return projectPath(value[key], rest, projectLeaf, [...resolvedPath, key]);
   }
   const entries = Object.entries(value).flatMap(([id, child]) => {
-    const projected = projectPath(child, rest, projectLeaf);
+    const projected = projectPath(child, rest, projectLeaf, [...resolvedPath, id]);
     return projected === undefined ? [] : [[id, projected]];
   });
   return entries.length ? Object.fromEntries(entries) : undefined;
@@ -108,7 +147,16 @@ function projectToolOverride(value: unknown): unknown {
 
 function projectPermissionPath(config: OpenClawConfig, path: readonly string[]) {
   return compactPolicy(
-    projectPath(config, path, (value) => {
+    projectPath(config, path, (value, resolvedPath) => {
+      if (["rooms", "channels", "guilds", "teams"].includes(path.at(-1) ?? "")) {
+        return value === undefined ? undefined : projectGroupMembership(value, resolvedPath[1]);
+      }
+      if (path[1] === "matrix" && path.at(-1) === "allow") {
+        return value === false ? false : undefined;
+      }
+      if (path[0] === "channels" && path.at(-1) === "enabled" && path.at(-2) !== "dm") {
+        return value === false ? false : undefined;
+      }
       if (path[0] === "channels" && path.at(-1) === "tools") {
         return projectToolOverride(value);
       }
@@ -117,14 +165,22 @@ function projectPermissionPath(config: OpenClawConfig, path: readonly string[]) 
           Object.entries(value).map(([sender, policy]) => [sender, projectToolOverride(policy)]),
         );
       }
-      if (path.at(-1) === "direct" && isRecord(value)) {
-        // Telegram selects a whole exact DM entry before resolving tools. Even a
-        // prompt-only entry can hide the wildcard's tool restrictions.
+      if ((path.at(-1) === "direct" || path.at(-1) === "groups") && isRecord(value)) {
+        // Telegram admission selects a whole exact chat before its wildcard.
+        // Group tool policy separately inherits per field; DM tools do not.
         const wildcard = value["*"];
+        const hasAdmission = (entry: unknown) =>
+          isRecord(entry) &&
+          (entry.enabled === false ||
+            ["dmPolicy", "groupPolicy", "allowFrom"].some((key) => entry[key] !== undefined));
         const hasWildcardPolicy =
           isRecord(wildcard) &&
-          (wildcard.tools !== undefined ||
-            (isRecord(wildcard.toolsBySender) && Object.keys(wildcard.toolsBySender).length > 0));
+          (hasAdmission(wildcard) ||
+            (isRecord(wildcard.topics) && Object.values(wildcard.topics).some(hasAdmission)) ||
+            (path.at(-1) === "direct" &&
+              (wildcard.tools !== undefined ||
+                (isRecord(wildcard.toolsBySender) &&
+                  Object.keys(wildcard.toolsBySender).length > 0))));
         return hasWildcardPolicy ? Object.keys(value).toSorted() : undefined;
       }
       return value;
@@ -214,13 +270,113 @@ function projectCredentialDependencies(config: OpenClawConfig) {
   );
 }
 
-function projectPermissionPolicy(config: OpenClawConfig) {
+function projectGroupMembership(groups: unknown, channelId?: string) {
+  if (!isRecord(groups)) {
+    return [];
+  }
+  const wildcard = groups["*"];
+  const hasAdmission = (entry: unknown) =>
+    isRecord(entry) &&
+    (entry.enabled === false ||
+      (channelId === "matrix" && entry.allow === false) ||
+      [
+        "dmPolicy",
+        "groupPolicy",
+        "allowFrom",
+        "groupAllowFrom",
+        "users",
+        "roles",
+        "allowBots",
+      ].some((key) => entry[key] !== undefined));
+  const hasTools = (entry: unknown) =>
+    isRecord(entry) && (entry.tools !== undefined || entry.toolsBySender !== undefined);
+  const hidesWildcardPolicy =
+    isRecord(wildcard) &&
+    (hasAdmission(wildcard) ||
+      ((channelId === "matrix" || channelId === "discord") && hasTools(wildcard)) ||
+      (isRecord(wildcard.topics) && Object.values(wildcard.topics).some(hasAdmission)) ||
+      ["channels", "guilds", "teams", "rooms", "groups"].some((key) => {
+        const children = wildcard[key];
+        return (
+          isRecord(children) &&
+          ((!Object.hasOwn(children, "*") && Object.keys(children).length > 0) ||
+            Object.values(children).some((entry) => hasAdmission(entry) || hasTools(entry)))
+        );
+      }));
+  // Slack inherits wildcard fields; Discord/Matrix select whole entries.
+  // Telegram group tools inherit separately, unlike its admission fields.
+  return Object.hasOwn(groups, "*") && (channelId === "slack" || !hidesWildcardPolicy)
+    ? ["*"]
+    : Object.keys(groups).toSorted();
+}
+
+function projectChannelAdmission(config: OpenClawConfig, channelIds: readonly string[]) {
+  return Object.fromEntries(
+    channelIds.map((id) => {
+      const value: unknown = config.channels?.[id];
+      const root = isRecord(value) ? value : {};
+      // Common root schemas materialize pairing/allowlist; account leaves inherit.
+      // Comparing the same channel ids on both sides keeps token-only setup automatic.
+      const rootPolicy = {
+        ...resolveChannelDmAccess({ account: root, defaultPolicy: "pairing" }),
+        groupPolicy: root.groupPolicy ?? config.channels?.defaults?.groupPolicy ?? "allowlist",
+        groupAllowFrom: root.groupAllowFrom,
+        allowlistOnly: root.allowlistOnly === true,
+        allowBots: root.allowBots ?? false,
+        nameMatching: root.dangerouslyAllowNameMatching === true,
+        groupMembers: projectGroupMembership(root.groups ?? root.rooms, id),
+      };
+      const accounts = isRecord(root.accounts) ? root.accounts : {};
+      return [
+        id,
+        {
+          ...rootPolicy,
+          accounts: Object.fromEntries(
+            Object.entries(accounts).flatMap(([accountId, account]) => {
+              if (!isRecord(account)) {
+                return [];
+              }
+              const policy = {
+                ...resolveChannelDmAccess({ account, parent: root, defaultPolicy: "pairing" }),
+                groupPolicy: account.groupPolicy ?? rootPolicy.groupPolicy,
+                groupAllowFrom: account.groupAllowFrom ?? rootPolicy.groupAllowFrom,
+                allowlistOnly: Object.hasOwn(account, "allowlistOnly")
+                  ? account.allowlistOnly === true
+                  : rootPolicy.allowlistOnly,
+                allowBots: Object.hasOwn(account, "allowBots")
+                  ? (account.allowBots ?? false)
+                  : rootPolicy.allowBots,
+                nameMatching: Object.hasOwn(account, "dangerouslyAllowNameMatching")
+                  ? account.dangerouslyAllowNameMatching === true
+                  : rootPolicy.nameMatching,
+                groupMembers: projectGroupMembership(
+                  resolveChannelGroups(config, id, accountId) ?? account.rooms ?? root.rooms,
+                  id,
+                ),
+              };
+              return isDeepStrictEqual(policy, rootPolicy) ? [] : [[accountId, policy]];
+            }),
+          ),
+        },
+      ];
+    }),
+  );
+}
+
+function projectPermissionPolicy(config: OpenClawConfig, channelIds: readonly string[]) {
   const defaults = projectScopedPolicy(config);
+  const { embedSandbox, allowExternalEmbedUrls } = resolveControlUiBootstrapPresentation(config);
+  // Channel model routing is metadata, not a channel account or admission map.
+  const { modelByChannel: _modelByChannel, ...channels } = config.channels ?? {};
+  const policyConfig = { ...config, channels };
   return {
-    paths: PERMISSION_POLICY_PATHS.map((path) => projectPermissionPath(config, path)),
+    paths: PERMISSION_POLICY_PATHS.map((path) => projectPermissionPath(policyConfig, path)),
     defaults,
+    channelAdmission: projectChannelAdmission(config, channelIds),
     allowRealIpFallback: config.gateway?.allowRealIpFallback ?? false,
-    browserOrigins: {
+    browserAuthority: {
+      embedSandbox,
+      allowExternalEmbedUrls,
       allowedOrigins: resolveControlUiAllowedOrigins(config),
       hostHeaderFallback:
         config.gateway?.controlUi?.dangerouslyAllowHostHeaderOriginFallback ?? false,
@@ -241,7 +397,13 @@ function projectPermissionPolicy(config: OpenClawConfig) {
 
 /** Only validated config may enter this comparison; invalid input is not an exemption. */
 export function changesPermissionPolicy(before: OpenClawConfig, after: OpenClawConfig): boolean {
-  return !isDeepStrictEqual(projectPermissionPolicy(before), projectPermissionPolicy(after));
+  const channelIds = [
+    ...new Set([...Object.keys(before.channels ?? {}), ...Object.keys(after.channels ?? {})]),
+  ].filter((id) => id !== "defaults" && id !== "modelByChannel");
+  return !isDeepStrictEqual(
+    projectPermissionPolicy(before, channelIds),
+    projectPermissionPolicy(after, channelIds),
+  );
 }
 
 /** Re-evaluate the actual write snapshot: a stale no-op must not restore old authority. */

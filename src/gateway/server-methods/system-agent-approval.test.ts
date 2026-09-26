@@ -454,6 +454,12 @@ describe("Full Access delegated chat", () => {
     ["gateway.controlUi.communityInvite", "false", false],
     ["gateway.controlUi.allowedOrigins", '["https://fixture.example"]', true],
     ["gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback", "true", true],
+    ["gateway.controlUi.embedSandbox", "trusted", true],
+    ["gateway.controlUi.allowExternalEmbedUrls", "true", true],
+    ["channels.telegram.accounts.ops.allowFrom", '["42"]', true],
+    ["channels.telegram.accounts.ops.dmPolicy", "disabled", true],
+    ["channels.telegram.botToken", "fixture-bot-token", false],
+    ["gateway.controlUi.embedSandbox", "scripts", false],
     ["channels.telegram.accounts.ops.groups.-100.tools", '{"deny":["exec"]}', true],
     [
       "channels.telegram.accounts.ops.direct.42.toolsBySender",
@@ -506,7 +512,11 @@ describe("Full Access delegated chat", () => {
           expect(fs.readFileSync(configPath, "utf8")).toBe(before);
           const records = await manager.listPendingRecords();
           expect(records).toHaveLength(1);
-          if (configKey === "tools.exec.mode" && value === "full") {
+          if (
+            (configKey === "tools.exec.mode" && value === "full") ||
+            configKey === "gateway.controlUi.embedSandbox" ||
+            configKey === "channels.telegram.accounts.ops.allowFrom"
+          ) {
             // A genuine human decision may authorize the risky choice. The
             // automatic-only effect guard must not become a blanket refusal.
             await manager.resolve(
@@ -517,7 +527,14 @@ describe("Full Access delegated chat", () => {
             expect((await pending).payload).toMatchObject({
               reply: expect.stringContaining("[openclaw] done: config.set"),
             });
-            expect(JSON.parse(fs.readFileSync(configPath, "utf8")).tools.exec.mode).toBe("full");
+            const { getAtPath, parseConfigSetPath, parseConfigSetValue } =
+              await import("../../cli/config-cli-path.js");
+            expect(
+              getAtPath(
+                JSON.parse(fs.readFileSync(configPath, "utf8")),
+                parseConfigSetPath(configKey),
+              ).value,
+            ).toEqual(parseConfigSetValue(value, false));
           }
         } else {
           expect((await pending).payload).toMatchObject({
