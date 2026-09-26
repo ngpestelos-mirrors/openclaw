@@ -12,6 +12,11 @@ import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import {
+  prepareTaskCancellationControl,
+  withTaskCancellationContext,
+  withTaskCancellationControl,
+} from "./task-cancellation-context.js";
 import { createRunningTaskRunCoreWithReceiptAsync } from "./task-executor-create.async.js";
 import {
   bindFollowupTaskProjection,
@@ -606,7 +611,14 @@ it("clears only an accepted successor's retained clue through its original task 
   });
 });
 
-it.each(["committed", "rejected"] as const)(
+it.each([
+  "committed",
+  "rejected",
+  "caller revoked before commit",
+  "caller revoked after commit",
+  "replacement task owner",
+  "replacement completion owner",
+] as const)(
   "joins concurrent paused followup cancellations through the %s Task projection",
   async (projectionOutcome) => {
     await withOpenClawTestState({ layout: "state-only" }, async () => {
@@ -642,6 +654,10 @@ it.each(["committed", "rejected"] as const)(
       const writeEntered = createDeferred();
       const releaseWrite = createDeferred();
       const attempts: Array<ReturnType<TaskRunOwner["cancel"]>> = [];
+      let callerAuthorized = true;
+      let replacementTaskOwner: TaskRunOwner | undefined;
+      let releaseReplacementTask: (() => void) | undefined;
+      let replacementCompletion: SessionFollowupCompletion | undefined;
       try {
         await bindFollowupTaskProjection(owner, receipt, () => {});
         owner.markAccepted(runId);
@@ -676,23 +692,45 @@ it.each(["committed", "rejected"] as const)(
         const stopCohort = vi
           .spyOn(followupCancellation, "cancelFollowupCohort")
           .mockResolvedValue(undefined);
-        const finalize = receipt.finalizeActive.bind(receipt);
+        const store = getTaskRegistryStore();
+        const mutate = store.runInitialMutationAsync.bind(store);
         let projectionSettled = false;
-        const write = vi.spyOn(receipt, "finalizeActive").mockImplementation(async (...args) => {
-          writeEntered.resolve();
-          await releaseWrite.promise;
-          try {
-            if (projectionOutcome === "rejected") {
-              throw new Error("Synthetic followup projection rejected");
+        const write = vi
+          .spyOn(store, "runInitialMutationAsync")
+          .mockImplementation(async (...args) => {
+            if (args[1].type !== "tasks.finalizeActive") {
+              return mutate(...args);
             }
-            return await finalize(...args);
-          } finally {
-            projectionSettled = true;
-          }
-        });
+            writeEntered.resolve();
+            await releaseWrite.promise;
+            try {
+              if (projectionOutcome === "rejected") {
+                throw new Error("Synthetic followup projection rejected");
+              }
+              const result = await mutate(...args);
+              if (projectionOutcome === "caller revoked after commit") {
+                callerAuthorized = false;
+              }
+              return result;
+            } finally {
+              projectionSettled = true;
+            }
+          });
         const returnedBeforeProjection: boolean[] = [];
         const cancel = () =>
-          taskOwner.cancel("Stop the paused followup").then((result) => {
+          withTaskCancellationContext(
+            () => {
+              if (!callerAuthorized) {
+                throw new Error("Cancellation caller revoked");
+              }
+            },
+            () =>
+              withTaskCancellationControl(
+                prepareTaskCancellationControl(getTaskById(receipt.task.taskId)),
+                () => taskOwner.cancel("Stop the paused followup"),
+              ),
+            { selectedTask: receipt.task },
+          ).then((result) => {
             returnedBeforeProjection.push(!projectionSettled);
             return result;
           });
@@ -706,27 +744,54 @@ it.each(["committed", "rejected"] as const)(
         ]);
         const second = cancel();
         attempts.push(second);
+        if (projectionOutcome === "caller revoked before commit") {
+          callerAuthorized = false;
+        } else if (projectionOutcome === "replacement task owner") {
+          releaseReplacementTask = bindTaskRunOwner(receipt.task, async () => err("Replacement"));
+          replacementTaskOwner = getTaskRunOwner(receipt.task);
+        } else if (projectionOutcome === "replacement completion owner") {
+          replacementCompletion = SessionFollowupCompletion.bind(owner.request);
+        }
         releaseWrite.resolve();
         const results = await Promise.all(attempts);
         expect(results[1]).toEqual(results[0]);
         expect(returnedBeforeProjection).toEqual([false, false]);
         expect(stopCohort).toHaveBeenCalledOnce();
-        expect(write).toHaveBeenCalledOnce();
+        expect(
+          write.mock.calls.filter((args) => args[1].type === "tasks.finalizeActive"),
+        ).toHaveLength(1);
         const stored = loadTaskRegistryStateFromSqliteReadOnly().tasks.get(receipt.task.taskId);
-        if (projectionOutcome === "committed") {
+        if (
+          projectionOutcome === "committed" ||
+          projectionOutcome === "caller revoked after commit"
+        ) {
           expect(results[0]).toMatchObject({
             ok: true,
             value: { taskId: receipt.task.taskId, runId, status: "cancelled" },
           });
           expect(stored?.status).toBe("cancelled");
         } else {
-          expect(results[0]).toEqual(err("Synthetic followup projection rejected"));
+          const expectedError =
+            projectionOutcome === "rejected"
+              ? "Synthetic followup projection rejected"
+              : projectionOutcome === "caller revoked before commit"
+                ? "Cancellation caller revoked"
+                : projectionOutcome === "replacement task owner"
+                  ? "Followup Task projection was replaced."
+                  : "Followup completion owner was replaced.";
+          expect(results[0]).toEqual(err(expectedError));
           expect(stored?.status).toBe("running");
         }
         expect(getTaskById(receipt.task.taskId)).toEqual(stored);
+        if (replacementTaskOwner) {
+          expect(getTaskRunOwner(receipt.task)).toBe(replacementTaskOwner);
+        }
+        replacementCompletion?.assertCurrent();
       } finally {
         releaseWrite.resolve();
         await Promise.allSettled(attempts);
+        releaseReplacementTask?.();
+        replacementCompletion?.close();
         owner.close();
       }
     });

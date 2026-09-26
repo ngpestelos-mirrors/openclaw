@@ -79,7 +79,11 @@ export async function bindFollowupTaskProjection(
           }
           if (cancelled.value.kind === "terminal") {
             try {
-              await projectFollowupTaskTerminal(owner, cancelled.value.reply);
+              await projectFollowupTaskTerminal(
+                owner,
+                cancelled.value.reply,
+                cancelled.value.assertCurrent,
+              );
               owner.finishExecution(cancelled.value.runId);
             } catch (error) {
               owner.close(error);

@@ -391,7 +391,12 @@ export class SessionFollowupCompletion implements FollowupCompletionOwner {
         if (outcome.kind !== "terminal") {
           throw new Error("Followup cancellation has no terminal result.");
         }
-        return ok({ kind: "terminal", runId: execution.runId, reply: outcome.reply });
+        return ok({
+          kind: "terminal",
+          runId: execution.runId,
+          reply: outcome.reply,
+          assertCurrent: assertCohortCurrent,
+        });
       } catch (error) {
         return err(formatErrorMessage(error));
       }

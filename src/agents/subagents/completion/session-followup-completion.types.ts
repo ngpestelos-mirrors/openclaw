@@ -30,7 +30,13 @@ export type FollowupSuccessor = {
 export type FollowupSettlement = { kind: "yielded" } | { kind: "terminal"; reply: FollowupReply };
 export type FollowupCancellation =
   | { kind: "settled" }
-  | { kind: "terminal"; runId: string; reply: FollowupReply };
+  | {
+      kind: "terminal";
+      runId: string;
+      reply: FollowupReply;
+      /** Guard the pending projection write without revoking an already committed result. */
+      assertCurrent: () => void;
+    };
 export type FollowupExecution = {
   assertCurrent(): void;
   cancel?: (reason: string, assertCallerCurrent: () => void) => Promise<Result<void, string>>;
