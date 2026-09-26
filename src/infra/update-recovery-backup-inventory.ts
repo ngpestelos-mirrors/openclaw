@@ -4,7 +4,7 @@ import path from "node:path";
 import { resolveBackupPlanFromDisk } from "../commands/backup-shared.js";
 import type { UpdateRecoveryBackupManifest } from "../commands/backup-verify-manifest.js";
 import { collectDoctorSkillWorkshopBackupResources } from "../commands/doctor-update-rehearsal-workshop.js";
-import { resolveStartupConfigSnapshot } from "../commands/doctor/shared/automatic-startup-config-repair.js";
+import { resolveLegacyConfigSnapshotForBackup } from "../commands/doctor/shared/automatic-config-repair.js";
 import { readConfigFileSnapshot } from "../config/config.js";
 import { resolveGatewayLockDir } from "../config/paths.js";
 import { resolveConfiguredAgentDatabaseTargets } from "../config/sessions/targets.js";
@@ -14,6 +14,7 @@ import { inspectOpenClawRegisteredAgentDatabases } from "../state/openclaw-agent
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { isVolatileBackupPath } from "./backup-volatile-filter.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
+import { isMissingPathError } from "./errno.js";
 import { isSqliteSnapshotFile } from "./sqlite-file-header.js";
 import { SQLITE_SIDECAR_SUFFIXES } from "./sqlite-files.js";
 import { assertNotUpdateCapturePath, isUpdateCapturePath } from "./update-capture-paths.js";
@@ -99,11 +100,12 @@ export async function inspectUpdateRecoveryBackup(params: UpdateRecoveryCaptureP
     throw new Error("Candidate capture requires the original v2 baseline for this installation.");
   }
   const registry = await inspectOpenClawRegisteredAgentDatabases({
+    env: params.env,
     includeIncompatibleSchemaVersions: true,
   });
-  const discoveryConfig = (resolveStartupConfigSnapshot(config) ?? config).config;
+  const discoveryConfig = (resolveLegacyConfigSnapshotForBackup(config) ?? config).config;
   const configuredDatabases = resolveConfiguredAgentDatabaseTargets(discoveryConfig, {
-    env: process.env,
+    env: params.env,
     registeredDatabases: registry,
   });
   const resourceConfig =
@@ -113,7 +115,7 @@ export async function inspectUpdateRecoveryBackup(params: UpdateRecoveryCaptureP
     await Promise.all([
       collectPluginDoctorMigrationBackupResources({
         config: resourceConfig,
-        env: process.env,
+        env: params.env,
         stateDir,
         warnings: resourceWarnings,
         requireLocalResources: true,
@@ -141,7 +143,9 @@ export async function inspectUpdateRecoveryBackup(params: UpdateRecoveryCaptureP
     kind === "directory" ? [pathname] : [],
   );
   const databaseOwners = new Map<string, { role: "global" } | { role: "agent"; agentId: string }>();
-  databaseOwners.set(canonicalEntryPath(resolveOpenClawStateSqlitePath()), { role: "global" });
+  databaseOwners.set(canonicalEntryPath(resolveOpenClawStateSqlitePath(params.env)), {
+    role: "global",
+  });
   for (const database of [
     ...registry,
     ...configuredDatabases,
@@ -184,7 +188,7 @@ export async function inspectUpdateRecoveryBackup(params: UpdateRecoveryCaptureP
   const protectedPaths = [
     plan.configPath,
     ...includePaths,
-    resolveOpenClawStateSqlitePath(),
+    resolveOpenClawStateSqlitePath(params.env),
     ...plan.resources.agentRoots.map((root) => root.databasePath),
     ...registry.map((database) => database.path),
     ...configuredDatabases.map((database) => database.path),
@@ -259,43 +263,109 @@ export async function inspectUpdateRecoveryBackup(params: UpdateRecoveryCaptureP
     entries: [],
     warnings: resourceWarnings,
   };
-  const aliases = new Map<
-    string,
-    {
-      target: string;
-      link: Extract<UpdateRecoveryBackupManifest["entries"][number], { kind: "symlink" }>;
+  type RecoveryAlias = {
+    target: string;
+    dangling: boolean;
+    kind: "directory" | "sqlite" | "file";
+    link: Extract<UpdateRecoveryBackupManifest["entries"][number], { kind: "symlink" }>;
+  };
+  const aliases = new Map<string, RecoveryAlias>();
+  const resolvingAliases = new Set<string>();
+  const retainAliasTarget = (pathname: string, kind: RecoveryAlias["kind"]) => {
+    declareResource(pathname, kind);
+    if (!resourcePaths.includes(pathname)) {
+      resourcePaths.push(pathname);
     }
-  >();
-  const admitAlias = async (pathname: string) => {
+    if (kind === "directory" && !directoryResources.includes(pathname)) {
+      directoryResources.push(pathname);
+    }
+    if (kind === "file") {
+      rawFiles.add(pathname);
+    }
+    if (!explicitPaths.includes(pathname)) {
+      explicitPaths.push(pathname);
+    }
+    if (!manifest.protectedPaths.includes(pathname)) {
+      manifest.protectedPaths.push(pathname);
+    }
+    if (!manifest.roots.some((root) => within(pathname, root))) {
+      manifest.roots.push(pathname);
+    }
+  };
+  const admitAlias = async (pathname: string): Promise<RecoveryAlias> => {
     if (aliases.has(pathname)) {
       return aliases.get(pathname)!;
     }
-    const target = await fs.realpath(pathname);
-    assertCaptureRoot(target);
-    const targetStat = await fs.stat(target);
-    const kind =
-      declaredKinds.get(pathname) ??
-      (configFiles.has(pathname) ? "file" : declaredKinds.get(target)) ??
-      (targetStat.isDirectory()
-        ? "directory"
-        : pathname.endsWith(".sqlite") || (await isSqliteSnapshotFile(target))
-          ? "sqlite"
-          : "file");
-    if (kind === "directory" ? !targetStat.isDirectory() : !targetStat.isFile()) {
-      throw new Error(`Declared recovery ${kind} symlink has an incompatible target: ${pathname}`);
+    if (resolvingAliases.has(pathname)) {
+      throw new Error(`Update recovery aliases form a cycle: ${pathname}`);
     }
-    declareResource(target, kind);
-    resourcePaths.push(target);
-    if (kind === "directory") {
-      directoryResources.push(target);
+    resolvingAliases.add(pathname);
+    const linkTarget = await fs.readlink(pathname);
+    const immediateTarget = path.resolve(path.dirname(pathname), linkTarget);
+    const immediateStat = await statOrMissing(immediateTarget);
+    let downstream: RecoveryAlias | undefined;
+    if (immediateStat?.isSymbolicLink()) {
+      const declaredKind =
+        declaredKinds.get(pathname) ?? (configFiles.has(pathname) ? "file" : undefined);
+      if (declaredKind) {
+        declareResource(immediateTarget, declaredKind);
+      }
+      if (configFiles.has(pathname)) {
+        configFiles.add(immediateTarget);
+      }
+      downstream = await admitAlias(immediateTarget);
     }
-    if (kind === "file") {
-      rawFiles.add(target);
+    let target: string;
+    let kind: RecoveryAlias["kind"] | undefined;
+    let dangling = false;
+    try {
+      target = await fs.realpath(pathname);
+    } catch (error) {
+      if (
+        !isMissingPathError(error) ||
+        configFiles.has(pathname) ||
+        databaseOwners.has(pathname) ||
+        declaredKinds.get(pathname) === "sqlite"
+      ) {
+        throw error;
+      }
+      target = downstream?.target ?? immediateTarget;
+      assertCaptureRoot(target);
+      kind =
+        declaredKinds.get(pathname) ??
+        (configFiles.has(pathname) ? "file" : downstream?.kind) ??
+        "file";
+      dangling = true;
+    }
+    if (!dangling) {
+      assertCaptureRoot(target);
+      const targetStat = await fs.stat(target);
+      kind =
+        declaredKinds.get(pathname) ??
+        (configFiles.has(pathname) ? "file" : downstream?.kind) ??
+        declaredKinds.get(target) ??
+        (targetStat.isDirectory()
+          ? "directory"
+          : pathname.endsWith(".sqlite") || (await isSqliteSnapshotFile(target))
+            ? "sqlite"
+            : "file");
+      if (kind === "directory" ? !targetStat.isDirectory() : !targetStat.isFile()) {
+        throw new Error(
+          `Declared recovery ${kind} symlink has an incompatible target: ${pathname}`,
+        );
+      }
+    }
+    if (!kind) {
+      throw new Error(`Update recovery could not classify alias target: ${pathname}`);
+    }
+    retainAliasTarget(target, kind);
+    if (downstream) {
+      retainAliasTarget(immediateTarget, kind);
     }
     const link: Extract<UpdateRecoveryBackupManifest["entries"][number], { kind: "symlink" }> = {
       kind: "symlink",
       sourcePath: pathname,
-      target: await fs.readlink(pathname),
+      target: linkTarget,
       contentPath: target,
     };
     if (configFiles.has(pathname)) {
@@ -316,13 +386,9 @@ export async function inspectUpdateRecoveryBackup(params: UpdateRecoveryCaptureP
       databaseOwners.delete(pathname);
       databaseOwners.set(target, owner);
     }
-    explicitPaths.push(target);
-    manifest.protectedPaths.push(target);
-    if (!manifest.roots.some((root) => within(target, root))) {
-      manifest.roots.push(target);
-    }
-    const alias = { target, link };
+    const alias = { target, dangling, kind, link };
     aliases.set(pathname, alias);
+    resolvingAliases.delete(pathname);
     return alias;
   };
   const assertDeclaredType = (pathname: string, stat: Stats | undefined) => {
@@ -442,7 +508,7 @@ export async function inspectUpdateRecoveryBackup(params: UpdateRecoveryCaptureP
       const alias = await admitAlias(pathname);
       if (
         (await fs.readlink(pathname)) !== alias.link.target ||
-        (await fs.realpath(pathname)) !== alias.target
+        (!alias.dangling && (await fs.realpath(pathname)) !== alias.target)
       ) {
         throw new Error(`Update recovery symlink changed during inventory: ${pathname}`);
       }

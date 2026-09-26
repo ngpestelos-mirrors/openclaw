@@ -64,8 +64,10 @@ export async function rollbackFailedUpdate(
     executor?.assertCurrent();
   };
   const env = before?.serviceEnv ?? opts.run?.env ?? process.env;
-  // A retained B belongs to full recovery even when its publication owner is
-  // unavailable. Refuse there; never downgrade to package-only restoration.
+  // beforeActivate captures B, then the activation owner registers this reverse
+  // transaction synchronously before any package/config/state effect. Without
+  // that transaction publication never began, so existing untouched-runtime
+  // recovery remains the only owner. Once registered, never downgrade to it.
   if (!opts.recovery && run?.recoveryBaseline && packageTransaction?.reversePublication) {
     return rollbackOriginalUpdateGeneration(params);
   }

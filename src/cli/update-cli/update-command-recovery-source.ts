@@ -171,20 +171,36 @@ async function prepareOriginalUpdateRecoveryGeneration(params: {
             entry.sha256 === before.sha256 &&
             entry.size === before.size &&
             entry.mode === before.mode));
-      if (!unchanged && (before.kind !== "file" || !["file", "missing"].includes(entry.kind))) {
+      const fileRestoration =
+        entry.kind === "file" && (before.kind === "file" || before.kind === "missing");
+      if (!unchanged && !fileRestoration && !(before.kind === "file" && entry.kind === "missing")) {
         throw new Error(
           "Recovery resource transformation needs its migration owner's staging contract.",
         );
       }
+      let restoredOwner: { uid: string; gid: string } | undefined;
+      if (entry.kind === "file" && before.kind === "missing") {
+        assertCurrent();
+        const ancestor = await lstat(captured.ancestor.path, { bigint: true });
+        if (
+          !ancestor.isDirectory() ||
+          `${ancestor.dev}:${ancestor.ino}` !== captured.ancestor.identity
+        ) {
+          throw new Error("Recovery resource ancestor changed before file restoration.");
+        }
+        restoredOwner = { uid: String(ancestor.uid), gid: String(ancestor.gid) };
+      }
+      const fileOwner =
+        before.kind === "file" ? { uid: before.uid, gid: before.gid } : restoredOwner;
       const desired = unchanged
         ? before
         : entry.kind === "missing"
           ? ({ kind: "missing" } as const)
-          : entry.kind === "file" && before.kind === "file"
+          : entry.kind === "file" && fileOwner
             ? ({
                 kind: "file" as const,
-                uid: before.uid,
-                gid: before.gid,
+                uid: fileOwner.uid,
+                gid: fileOwner.gid,
                 mode: entry.mode,
                 sha256: entry.sha256,
                 size: entry.size,

@@ -1,5 +1,8 @@
 import type { z } from "zod";
-import type { PluginUpdateOutcome } from "../plugins/update.js";
+import type {
+  PluginUpdateIntegrityDriftParams,
+  PluginUpdateSummary,
+} from "../plugins/update-source.js";
 import type { LocalPackageOverridesResult } from "./package-local-overrides.js";
 import type { UpdateFailureFact } from "./update-failure-facts.js";
 import type { GitRuntimeArtifactIdentity } from "./update-git-runtime.js";
@@ -54,19 +57,10 @@ export type UpdateRunResult = {
         warnings: string[];
         errors: string[];
       };
-      npm: {
-        changed: boolean;
-        outcomes: PluginUpdateOutcome[];
-      };
-      integrityDrifts: Array<{
-        pluginId: string;
-        spec: string;
-        expectedIntegrity: string;
-        actualIntegrity: string;
-        resolvedSpec?: string;
-        resolvedVersion?: string;
-        action: "aborted";
-      }>;
+      npm: Pick<PluginUpdateSummary, "changed" | "outcomes">;
+      integrityDrifts: Array<
+        Omit<PluginUpdateIntegrityDriftParams, "dryRun"> & { action: "aborted" }
+      >;
     };
   };
 };

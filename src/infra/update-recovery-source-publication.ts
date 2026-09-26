@@ -118,6 +118,7 @@ export function updateRecoveryInspectedSourceResources(input: {
 export async function captureInspectedUpdateRecoverySourcePublication(
   params: {
     runId: string;
+    env: NodeJS.ProcessEnv;
     assertOwned: () => void;
     sourcePublication?: UpdateRecoverySourcePublication;
   },
@@ -126,6 +127,7 @@ export async function captureInspectedUpdateRecoverySourcePublication(
   return params.sourcePublication
     ? await captureUpdateRecoverySourcePublication({
         runId: params.runId,
+        env: params.env,
         operationId: params.sourcePublication.operationId,
         resources: updateRecoveryInspectedSourceResources(inspected),
         assertCurrent: params.assertOwned,
@@ -149,11 +151,12 @@ function updateRecoveryManifestSourceResources(
  * inventory, a saved JSON attestation, or a newly observed replacement image. */
 async function captureUpdateRecoverySourcePublication(params: {
   runId: string;
+  env: NodeJS.ProcessEnv;
   operationId: string;
   resources: readonly UpdateRecoverySourceResource[];
   assertCurrent: () => void;
 }) {
-  const { runId, operationId, assertCurrent } = params;
+  const { runId, operationId, assertCurrent, env } = params;
   const inventory = await captureUpdateRecoverySourceInventory(params);
   let sealing = false;
   const snapshots = new Map<string, { targetPath: string; assertCurrent: () => void }>();
@@ -201,7 +204,7 @@ async function captureUpdateRecoverySourcePublication(params: {
       sealing = true;
       // Strict manifest AND payload verification, including SQLite integrity,
       // precedes attestation. The manifest digest keeps its payload semantics.
-      const verified = await prepareVerifiedBackup(candidate);
+      const verified = await prepareVerifiedBackup(candidate, { env });
       try {
         const manifest = verified.manifest;
         if (manifest.runId !== runId || manifest.generation?.kind !== "candidate") {

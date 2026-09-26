@@ -279,6 +279,7 @@ export function createManagedHandoffOriginalOwner(deps: {
         (root === original.key ||
           root.includes("/.openclaw-update-child-") ||
           fs.realpathSync(root) !== root)) ||
+      (receipt.retained && root !== receipt.retained.current.key) ||
       (receipt.retainedSelection !== undefined && receipt.retainedSelection !== root)
     ) {
       return null;

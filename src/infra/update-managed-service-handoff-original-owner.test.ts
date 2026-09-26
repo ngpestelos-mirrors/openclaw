@@ -786,6 +786,22 @@ it("selects the actual planned retained root through the helper before child mut
   expect(store.read(f.retained).kind).toBe("absent");
 }, 30_000);
 
+it("refuses a planned retained root different from its pre-admitted pair", () => {
+  const f = fixture(true);
+  const { original, retainedLease, store } = f.acquire();
+  if (!retainedLease) {
+    throw new Error("Paired fixture did not pre-admit its retained root.");
+  }
+  const other = path.join(f.root, "other-retained");
+  fs.mkdirSync(other, { mode: 0o700 });
+  expect(store.selectOriginalUpdateRetainedRoot(original, original, other)).toBeNull();
+  expect(store.selectOriginalUpdateRetainedRoot(original, original, f.retained)).toMatchObject({
+    retainedLease: { key: retainedLease.key },
+  });
+  const cancelled = store.cancelUpdate(original);
+  expect(cancelled?.release()).toBe(true);
+});
+
 it("retains a real top-level occupied slot through return and cancellation settlement", async () => {
   const f = fixture();
   const { original, identity, store } = f.acquire();

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { installPrivateUpdateHandoffStore } from "../../../test/helpers/private-update-handoff-store.js";
+import { resolveAgentDir } from "../../agents/agent-scope-config.js";
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import * as configMutations from "../../config/mutate.js";
 import {
@@ -14,6 +15,7 @@ import { acquireStateDatabaseCoordinator } from "../../infra/state-database-coor
 import { createManagedHandoffLeaseDatabase } from "../../infra/update-managed-service-handoff-database.js";
 import * as captures from "../../infra/update-recovery-backup-create.js";
 import { backupStore } from "../../infra/update-recovery-backup-files.js";
+import { inspectUpdateRecoveryBackup } from "../../infra/update-recovery-backup-inventory.js";
 import { prepareVerifiedBackup } from "../../infra/update-recovery-backup-verify.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
@@ -168,6 +170,197 @@ it("captures original root/include config under stopped maintenance before later
     acquireStateDatabaseCoordinator({ databasePath: f.statePath, busyTimeoutMs: 0 }).release();
   });
 });
+
+it("uses the selected managed environment for recovery resource discovery", async () => {
+  await fixture(async (f) => {
+    const selectedStateDir = path.join(f.root, "selected-state");
+    fs.mkdirSync(selectedStateDir, { recursive: true });
+    const env = { ...f.run.env, OPENCLAW_STATE_DIR: selectedStateDir };
+    const fence = f.run.executorFence;
+    if (!fence) {
+      throw new Error("Baseline fixture lost its executor.");
+    }
+    const inspected = await inspectUpdateRecoveryBackup({
+      assertOwned: fence.assertCurrent,
+      env,
+      runId: f.run.runId,
+      installRoot: path.join(f.root, "install"),
+    });
+    expect([...inspected.databaseOwners]).toEqual(
+      expect.arrayContaining([
+        [resolveOpenClawStateSqlitePath(env), { role: "global" }],
+        [
+          path.join(resolveAgentDir({}, "main", env), "openclaw-agent.sqlite"),
+          {
+            role: "agent",
+            agentId: "main",
+          },
+        ],
+      ]),
+    );
+  });
+});
+
+it.skipIf(process.platform === "win32")(
+  "captures every symlink hop in a retained recovery resource",
+  async () => {
+    await fixture(async (f) => {
+      const ref = await f.capture();
+      if (!ref) {
+        throw new Error("Baseline fixture did not publish its capture.");
+      }
+      const verified = await prepareVerifiedBackup(ref);
+      let manifest: typeof verified.manifest;
+      try {
+        manifest = structuredClone(verified.manifest);
+      } finally {
+        await verified.close();
+      }
+      const target = path.join(f.stateDir, "retained-chain-target.txt");
+      const middle = path.join(f.stateDir, "retained-chain-middle");
+      const outer = path.join(f.stateDir, "retained-chain-outer");
+      fs.writeFileSync(target, "retained\n", { mode: 0o600 });
+      fs.symlinkSync(path.basename(target), middle);
+      fs.symlinkSync(path.basename(middle), outer);
+      manifest.entries.push(
+        {
+          kind: "file",
+          sourcePath: target,
+          archivePath: "payload/retained-chain-target",
+          size: 9,
+          sha256: "a".repeat(64),
+          sqlite: false,
+          mode: 0o600,
+        },
+        {
+          kind: "symlink",
+          sourcePath: outer,
+          target: path.basename(middle),
+          contentPath: target,
+        },
+      );
+      const fence = f.run.executorFence;
+      if (!fence) {
+        throw new Error("Baseline fixture lost its executor.");
+      }
+      const inspected = await inspectUpdateRecoveryBackup({
+        assertOwned: fence.assertCurrent,
+        env: f.run.env,
+        runId: f.run.runId,
+        installRoot: path.join(f.root, "install"),
+        baseline: { ref, manifest },
+      });
+      expect(inspected.manifest.entries).toEqual(
+        expect.arrayContaining([
+          {
+            kind: "symlink",
+            sourcePath: outer,
+            target: path.basename(middle),
+            contentPath: target,
+          },
+          {
+            kind: "symlink",
+            sourcePath: middle,
+            target: path.basename(target),
+            contentPath: target,
+          },
+        ]),
+      );
+    });
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "retains a dangling ordinary symlink when its captured target was removed",
+  async () => {
+    await fixture(async (f) => {
+      const ref = await f.capture();
+      if (!ref) {
+        throw new Error("Baseline fixture did not publish its capture.");
+      }
+      const verified = await prepareVerifiedBackup(ref);
+      let manifest: typeof verified.manifest;
+      try {
+        manifest = structuredClone(verified.manifest);
+      } finally {
+        await verified.close();
+      }
+      const target = path.join(f.stateDir, "retired-resource.txt");
+      const link = path.join(f.stateDir, "retained-resource-link");
+      fs.symlinkSync(path.basename(target), link);
+      manifest.entries.push(
+        {
+          kind: "file",
+          sourcePath: target,
+          archivePath: "payload/retired-resource",
+          size: 1,
+          sha256: "a".repeat(64),
+          sqlite: false,
+          mode: 0o600,
+        },
+        {
+          kind: "symlink",
+          sourcePath: link,
+          target: path.basename(target),
+          contentPath: target,
+        },
+      );
+      const fence = f.run.executorFence;
+      if (!fence) {
+        throw new Error("Baseline fixture lost its executor.");
+      }
+      const inspected = await inspectUpdateRecoveryBackup({
+        assertOwned: fence.assertCurrent,
+        env: f.run.env,
+        runId: f.run.runId,
+        installRoot: path.join(f.root, "install"),
+        baseline: { ref, manifest },
+      });
+      expect(inspected.manifest.entries).toContainEqual({
+        kind: "symlink",
+        sourcePath: link,
+        target: path.basename(target),
+        contentPath: target,
+      });
+      expect(inspected.manifest.entries).toContainEqual({
+        kind: "missing",
+        sourcePath: target,
+        sqlite: false,
+        directory: false,
+      });
+      const sqliteTarget = path.join(f.stateDir, "retired-plugin.sqlite");
+      const sqliteLink = path.join(f.stateDir, "retained-plugin-link.sqlite");
+      fs.symlinkSync(path.basename(sqliteTarget), sqliteLink);
+      const sqliteManifest = structuredClone(manifest);
+      sqliteManifest.entries.push(
+        {
+          kind: "file",
+          sourcePath: sqliteTarget,
+          archivePath: "payload/retired-plugin",
+          size: 1,
+          sha256: "b".repeat(64),
+          sqlite: true,
+          mode: 0o600,
+        },
+        {
+          kind: "symlink",
+          sourcePath: sqliteLink,
+          target: path.basename(sqliteTarget),
+          contentPath: sqliteTarget,
+        },
+      );
+      await expect(
+        inspectUpdateRecoveryBackup({
+          assertOwned: fence.assertCurrent,
+          env: f.run.env,
+          runId: f.run.runId,
+          installRoot: path.join(f.root, "install"),
+          baseline: { ref, manifest: sqliteManifest },
+        }),
+      ).rejects.toThrow();
+    });
+  },
+);
 
 it("does not seal or publish a baseline after its original run is substituted", async () => {
   await fixture(async (f) => {
