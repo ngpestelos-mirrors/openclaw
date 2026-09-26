@@ -10,7 +10,6 @@ import type {
   GatewayServiceEnv,
   GatewayServiceReadOptions,
 } from "./service-types.js";
-import type { GatewayService } from "./service.js";
 
 type GatewayServiceCommandForMutation =
   | { kind: "current"; command: GatewayServiceCommandConfig }
@@ -22,7 +21,12 @@ type GatewayServiceCommandForMutation =
  * pre-canonical LaunchAgent only when the canonical definition is absent.
  */
 export async function readGatewayServiceCommandForMutation(
-  service: GatewayService,
+  service: {
+    readCommand: (
+      env: GatewayServiceEnv,
+      opts?: GatewayServiceReadOptions,
+    ) => Promise<GatewayServiceCommandConfig | null>;
+  },
   env: GatewayServiceEnv,
   opts?: GatewayServiceReadOptions,
 ): Promise<GatewayServiceCommandForMutation> {
