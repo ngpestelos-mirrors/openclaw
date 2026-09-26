@@ -46,7 +46,6 @@ import type { SessionEntryCreationOperation } from "../config/sessions/session-a
 import { createSessionDiffBaselineCaptureClaim } from "../config/sessions/session-diff-baseline-capture.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
-import { inheritSessionSelection } from "../config/sessions/session-entry-selection.js";
 import {
   createInternalHookEvent,
   hasInternalHookListeners,
@@ -87,6 +86,7 @@ import {
 import { existingSessionSelectionWouldChange } from "./session-create-existing-selection.js";
 import { buildForkedGatewaySessionEntry } from "./session-create-fork-entry.js";
 import {
+  inheritSessionCreateParentFields,
   prepareSessionCreateParent,
   resolveSessionCreateInheritance,
 } from "./session-create-inheritance.js";
@@ -1015,21 +1015,13 @@ export async function createGatewaySession(
         const explicitParentSessionKey =
           canonicalParentSessionKey ?? normalizeOptionalString(initializedEntry.parentSessionKey);
         const storedParentSessionKey = explicitParentSessionKey ?? dashboardParentSessionKey;
-        const inheritedSelection =
-          !canonicalParentSessionKey || catalogModel || normalizeOptionalString(params.model)
-            ? {}
-            : inheritSessionSelection(currentParentSessionEntry);
-        if (requestedToolOverrides) {
-          delete inheritedSelection.toolOverrides;
-        }
-        if (requestedFastMode !== undefined) {
-          // The create-time choice belongs to the new session; parent inheritance must not
-          // replace it after the canonical patch has validated and stored it.
-          delete inheritedSelection.fastMode;
-        }
         const entry: SessionEntry = {
           ...initializedEntry,
-          ...inheritedSelection,
+          ...inheritSessionCreateParentFields({
+            parent: currentParentSessionEntry,
+            existing: existingEntry,
+            overrides: params,
+          }),
           // Main groups dashboard roots; it must not supply their reply-time model.
           ...(createdNewEntry &&
           dashboardParentSessionKey &&

@@ -7,6 +7,7 @@ import { availableLinkReaders } from "../../app/link-reader-routing.ts";
 import { isDesktopPanelAvailable } from "../../app/panel-availability.ts";
 import { latestBrowserTabCards } from "../../lib/chat/browser-tab-preview.ts";
 import { storedChatOutboxScopeKey } from "../../lib/chat/outbox-store.ts";
+import { resolveSafeExternalUrl } from "../../lib/open-external-url.ts";
 import { scopedAgentParamsForSession } from "../../lib/sessions/index.ts";
 import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
 import { resolveSessionWorkspace } from "../../lib/sessions/workspace.ts";
@@ -272,6 +273,10 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
     const availableSlots = availableSidebarSlots(panelDefinitions);
     const panelTemplates = sidebarPanelTemplates(panelDefinitions);
     const panelActions = sidebarPanelTemplates(panelDefinitions, "headerAction");
+    const conversationLink = selectedSession?.conversationLink;
+    const conversationHref = conversationLink
+      ? resolveSafeExternalUrl(conversationLink.url, window.location.href)
+      : null;
     // Main panel actions share the task toolbar. Content roots stay in the
     // sidebar region so changing their presentation never reconnects them.
     const header = this.compact
@@ -288,6 +293,18 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
             panelDefinitions,
           )}
           <div class="chat-session-accessories">
+            ${
+              conversationLink && conversationHref
+                ? html`<a
+                    class="session-conversation-link"
+                    href=${conversationHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-link-reader-external
+                    >${conversationLink.label} ↗</a
+                  >`
+                : nothing
+            }
             <openclaw-plugin-contributions
               .kind=${"session-header"}
               .sessionKey=${state.sessionKey}

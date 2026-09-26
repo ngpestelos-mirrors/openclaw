@@ -49,6 +49,34 @@ approval, command, URL, web-app, question, callback, and model-picker actions
 distinguishable until that encoding boundary; never infer picker intent from a
 raw callback string. Actor and source-message checks remain channel-owned.
 
+## Return to the source conversation
+
+Channel plugins can supply `conversation.link` when building an inbound event
+with `buildChannelInboundEventContext`:
+
+```typescript
+conversation: {
+  ...conversation,
+  link: {
+    url: "https://chat.example.com/conversations/example-thread",
+    label: "Example Thread",
+  },
+}
+```
+
+The channel owns the destination URL and plain-text label. Resolve the actual
+thread after any automatic thread creation; use the platform's permalink API
+when required. Discord and Slack supply this metadata. If a lookup fails, report
+the failure through the channel's logger and omit the link without blocking the
+agent's reply.
+
+The host retains the first valid HTTP(S) link on the logical session, preserves
+it across resets, and carries it to explicitly spawned or forked child sessions.
+Later delivery-route changes do not replace it. The Control UI renders a direct
+external link in the secondary session header, with no preview or dropdown.
+No browser bundle or custom accessory is required. Other plugin accessories,
+including their custom HTML, CSS, and JavaScript, keep their existing contract.
+
 ## Walkthrough
 
 <Steps>

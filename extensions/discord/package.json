@@ -120,7 +120,6 @@
     "release": {
       "publishToClawHub": true,
       "publishToNpm": true
-    },
-    "controlUi": "./browser/prototype.ts"
+    }
   }
 }

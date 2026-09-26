@@ -41,11 +41,5 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
-  },
-  "controlUi": {
-    "entry": "dist/control-ui/f56a3051af86f8816b57670d61692053632511076abcd1518a6621b0d87ba6fa/index.js",
-    "styles": [
-      "dist/control-ui/f56a3051af86f8816b57670d61692053632511076abcd1518a6621b0d87ba6fa/index.css"
-    ]
   }
 }
