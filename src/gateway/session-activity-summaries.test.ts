@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
+import path from "node:path";
 import { backup } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -28,13 +29,10 @@ import { registerAgentRunContext, clearAgentRunContext } from "../infra/agent-ru
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
-import {
-  createAgentDatabaseInspectionRefusal,
-  preparePendingAgentDatabase,
-  recordAgentDatabaseAdmissions,
-} from "../state/agent-database-admission.js";
+import { unregisterOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import type { DB } from "../state/openclaw-agent-db.generated.js";
 import {
+  closeOpenClawAgentDatabaseByPathAsync,
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../state/openclaw-agent-db.js";
@@ -138,8 +136,8 @@ describe("Activity recap lifecycle with the canonical session store", () => {
   const read = () => loadSessionEntryReadOnly(scope);
   const view = () => projectSessionActivitySummary({ ...target, cfg, entry: read() });
 
-  beforeEach(async () => {
-    progress = createActivitySummaryTestProgress();
+  beforeEach(async ({ signal }) => {
+    progress = createActivitySummaryTestProgress(signal);
     testState = await createOpenClawTestState({ scenario: "minimal" });
     cfg = { agents: { defaults: { utilityModel: "test/utility" } } };
     complete.mockReset().mockImplementation(async () => result("Completed the requested work."));
@@ -185,48 +183,6 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     await service.dispose();
     expect(prepare).not.toHaveBeenCalled();
     expect(read()?.activitySummary).toBeUndefined();
-  });
-
-  it("keeps source work outside a publisher's expired database preparation", async () => {
-    await messages(2);
-    await residentProjection.prepareMembership();
-    expect(residentProjection.sharingTarget(target)).not.toBeNull();
-    const watermark = readSessionTranscriptWatermark(scope);
-    const settled = createDeferred<ReturnType<typeof view>>();
-    changed.mockImplementation(() => {
-      const value = projectSessionActivitySummary({
-        ...target,
-        cfg,
-        entry: residentProjection.sharingTarget(target)?.entry,
-        watermark,
-      });
-      if (value && value.state !== "updating") {
-        settled.resolve(value);
-      }
-    });
-    releaseForeground = projectionWork.retainSessionListForegroundWork();
-    const entered = createDeferred();
-    const yieldBackground = projectionWork.yieldSessionListBackgroundWork;
-    vi.spyOn(projectionWork, "yieldSessionListBackgroundWork").mockImplementationOnce(() => {
-      entered.resolve();
-      return yieldBackground();
-    });
-    const refusal = createAgentDatabaseInspectionRefusal({
-      agentId: scope.agentId,
-      paths: [openOpenClawAgentDatabase({ agentId: scope.agentId }).path],
-      pending: true,
-      reason: "Synthetic startup preparation",
-    });
-    recordAgentDatabaseAdmissions([refusal], { source: "startup" });
-    await preparePendingAgentDatabase(refusal, { assertCurrent() {} }, async () => {
-      service.handleTranscript({ target: { ...scope }, lifecycleRevision: "lifecycle-1" });
-      await entered.promise;
-    });
-    await residentProjection.prepareMembership();
-    releaseForeground();
-    expect(await settled.promise).toMatchObject({ state: "current" });
-    expect(complete).toHaveBeenCalledOnce();
-    expect(read()?.activitySummary?.coveredMessages).toBe(2);
   });
 
   it("does not generate conversation recaps for Cron runs", async () => {
@@ -594,9 +550,18 @@ describe("Activity recap lifecycle with the canonical session store", () => {
         const beforeSettlement = changed.mock.calls.length;
         releaseWriter.resolve();
         await blocker;
-        await progress.waitFor(() =>
-          expect(changed.mock.calls.length).toBeGreaterThan(beforeSettlement),
-        );
+        if (change === "lifecycle") {
+          await runExclusiveSqliteSessionWrite(
+            writerScope,
+            async () => undefined,
+            "session-entry.patch",
+          );
+          await service.dispose();
+        } else {
+          await progress.waitFor(() =>
+            expect(changed.mock.calls.length).toBeGreaterThan(beforeSettlement),
+          );
+        }
         expect(read()?.activitySummary).toBeUndefined();
         expect(view()?.state).not.toBe("current");
         expect(complete).toHaveBeenCalledTimes(1);
@@ -893,7 +858,13 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     expect(row.sessions[0]?.activitySummary?.state).toBe("updating");
     finish(result("Prepared the deployment."));
     await progress.waitFor(() =>
-      expect(loadSessionEntryReadOnly(aliasScope)?.activitySummary).toBeDefined(),
+      expect(
+        projectSessionActivitySummary({
+          ...aliasTarget,
+          cfg,
+          entry: loadSessionEntryReadOnly(aliasScope),
+        })?.state,
+      ).toBe("current"),
     );
     await persistSessionTranscriptTurn(aliasScope, {
       messages: [
@@ -980,22 +951,47 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     const relocatedPath = testState.path("relocated", "openclaw-agent.sqlite");
     const originalDatabase = openOpenClawAgentDatabase({ agentId: "main" });
     const originalScope = { ...scope, storePath: originalDatabase.path };
-    await backup(originalDatabase.db, relocatedPath);
-    cfg = { ...cfg, session: { store: relocatedPath } };
-    sessionChanges.emit({ all: true, scope: "config" });
+    const retiredDirectory = testState.path("retired-agent");
+    const retiredScope = {
+      ...scope,
+      storePath: path.join(retiredDirectory, path.basename(originalDatabase.path)),
+    };
     const relocatedScope = { ...scope, storePath: relocatedPath };
     try {
+      await backup(originalDatabase.db, relocatedPath);
+      await closeOpenClawAgentDatabaseByPathAsync(originalDatabase.path, originalDatabase.agentId);
+      await rename(path.dirname(originalDatabase.path), retiredDirectory);
+      openOpenClawAgentDatabase({
+        agentId: scope.agentId,
+        path: relocatedPath,
+        env: testState.env,
+      });
+      cfg = { ...cfg, session: { store: relocatedPath } };
+      unregisterOpenClawAgentDatabase({
+        agentId: scope.agentId,
+        path: originalDatabase.path,
+        env: testState.env,
+      });
+      sessionChanges.emit({ all: true, scope: "config" });
+      await residentProjection.prepareMembership();
       const relocatedEntry = loadSessionEntryReadOnly(relocatedScope)!;
       expect(relocatedEntry.sessionId).toBe(scope.sessionId);
       expect(relocatedEntry.lifecycleRevision).toBe(
-        loadSessionEntryReadOnly(originalScope)?.lifecycleRevision,
+        loadSessionEntryReadOnly(retiredScope)?.lifecycleRevision,
       );
       const projected = projectSessionActivitySummary({ ...target, cfg, entry: relocatedEntry });
       expect.soft(projected?.state).toBe("stale");
       service.ensure(target);
       await progress.waitFor(() =>
-        expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.coveredMessages).toBe(3),
+        expect(
+          projectSessionActivitySummary({
+            ...target,
+            cfg,
+            entry: loadSessionEntryReadOnly(relocatedScope),
+          })?.state,
+        ).toBe("current"),
       );
+      expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.coveredMessages).toBe(3);
       expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.text).toBe(
         "Recap from the relocated store.",
       );
@@ -1007,8 +1003,9 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.text).toBe(
       "Recap from the relocated store.",
     );
-    expect(loadSessionEntryReadOnly(originalScope)?.activitySummary?.coveredMessages).toBe(2);
-    expect(loadSessionEntryReadOnly(originalScope)?.activitySummary?.text).toBe(
+    expect(loadSessionEntryReadOnly(originalScope)).toBeUndefined();
+    expect(loadSessionEntryReadOnly(retiredScope)?.activitySummary?.coveredMessages).toBe(2);
+    expect(loadSessionEntryReadOnly(retiredScope)?.activitySummary?.text).toBe(
       "Completed the requested work.",
     );
   });

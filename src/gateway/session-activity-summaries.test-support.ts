@@ -1,9 +1,10 @@
 import { createDeferred } from "../../test/helpers/promise.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createSessionActivitySummaries } from "./session-activity-summaries.js";
 
 /** Await provider and publication progress without racing worker startup against a polling timeout. */
-export function createActivitySummaryTestProgress() {
+export function createActivitySummaryTestProgress(signal: AbortSignal) {
   let progress = createDeferred();
   const notify = () => {
     const previous = progress;
@@ -39,12 +40,17 @@ export function createActivitySummaryTestProgress() {
     },
     async waitFor(assertion: () => void) {
       for (;;) {
+        signal.throwIfAborted();
         const next = progress.promise;
         try {
           assertion();
           return;
-        } catch {
-          await next;
+        } catch (error) {
+          try {
+            await racePromiseWithAbortSignal(next, signal);
+          } catch {
+            throw error;
+          }
         }
       }
     },

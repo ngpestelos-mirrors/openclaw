@@ -11,6 +11,12 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import {
+  createAgentDatabaseInspectionRefusal,
+  preparePendingAgentDatabase,
+  recordAgentDatabaseAdmissions,
+} from "../state/agent-database-admission.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
@@ -23,6 +29,7 @@ import {
   type ActivitySummaryTarget,
 } from "./session-activity-summary-state.js";
 import type { defaultCompleteModel } from "./session-observer-model.js";
+import * as projectionWork from "./session-projection-work.js";
 import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 
 const result = {
@@ -43,6 +50,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
   let progress: ReturnType<typeof createActivitySummaryTestProgress>;
   let cfg: OpenClawConfig;
   let projection: SessionRowProjection;
+  let releaseForeground: (() => void) | undefined;
   const complete = vi.fn<typeof defaultCompleteModel>();
   const changed = vi.fn();
   const view = (target: ActivitySummaryTarget) =>
@@ -97,8 +105,8 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       completeModel: complete,
     });
 
-  beforeEach(async () => {
-    progress = createActivitySummaryTestProgress();
+  beforeEach(async ({ signal }) => {
+    progress = createActivitySummaryTestProgress(signal);
     testState = await createOpenClawTestState({ scenario: "minimal" });
     cfg = { agents: { defaults: { utilityModel: "test/utility" } } };
     complete.mockReset().mockResolvedValue(result);
@@ -108,12 +116,44 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     service = createService();
   });
   afterEach(async () => {
+    releaseForeground?.();
+    releaseForeground = undefined;
     await service.dispose();
     progress.dispose();
     projection.dispose();
     vi.useRealTimers();
     vi.restoreAllMocks();
     await testState.cleanup();
+  });
+
+  it("keeps source work outside a publisher's expired database preparation", async () => {
+    const target = await addSession(1);
+    await projection.prepareMembership();
+    expect(projection.sharingTarget(target)).not.toBeNull();
+    releaseForeground = projectionWork.retainSessionListForegroundWork();
+    const entered = createDeferred();
+    const yieldBackground = projectionWork.yieldSessionListBackgroundWork;
+    vi.spyOn(projectionWork, "yieldSessionListBackgroundWork").mockImplementationOnce(() => {
+      entered.resolve();
+      return yieldBackground();
+    });
+    const refusal = createAgentDatabaseInspectionRefusal({
+      agentId: target.agentId,
+      paths: [openOpenClawAgentDatabase({ agentId: target.agentId }).path],
+      pending: true,
+      reason: "Synthetic startup preparation",
+    });
+    recordAgentDatabaseAdmissions([refusal], { source: "startup" });
+    await preparePendingAgentDatabase(refusal, { assertCurrent() {} }, async () => {
+      service.handleTranscript({ target: scope(target) });
+      await entered.promise;
+    });
+    await projection.prepareMembership();
+    releaseForeground();
+    await progress.waitFor(() => expect(view(target)?.state).not.toBe("updating"));
+    expect(view(target)).toMatchObject({ state: "current" });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(loadSessionEntryReadOnly(scope(target))?.activitySummary?.coveredMessages).toBe(1);
   });
 
   it.each(["attach", "dispose"] as const)(
