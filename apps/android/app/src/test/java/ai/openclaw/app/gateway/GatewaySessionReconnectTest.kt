@@ -477,6 +477,54 @@ class GatewaySessionReconnectTest {
     }
 
   @Test
+  fun gappedChatTerminalsSettleBeforeRecoveryAndCanDisconnect() =
+    runBlocking {
+      val json = Json { ignoreUnknownKeys = true }
+      val connections = Channel<Unit>(Channel.UNLIMITED)
+      val events = Channel<Pair<String, String?>>(Channel.UNLIMITED)
+      val offline = CompletableDeferred<Unit>()
+      val disconnectOnTerminal = AtomicBoolean()
+      lateinit var session: GatewaySession
+      val server =
+        startGatewayServer(json = json) { webSocket, id, method ->
+          if (method == "connect") webSocket.send(connectResponseFrame(id))
+        }
+      val harness =
+        createReconnectHarness(
+          onConnected = { connections.trySend(Unit).getOrThrow() },
+          onDisconnected = { if (it == "Offline") offline.complete(Unit) },
+          onEvent = { event, payload ->
+            events.trySend(event to payload).getOrThrow()
+            if (event == "chat" && disconnectOnTerminal.get()) session.disconnect()
+          },
+        )
+      session = harness.session
+      try {
+        connectNodeSession(session, server.port)
+        withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { connections.receive() }
+        for ((state, disconnect) in listOf("final" to false, "error" to false, "aborted" to false, "final" to true)) {
+          disconnectOnTerminal.set(disconnect)
+          val terminal = """{"runId":"run","sessionKey":"main","state":"$state","message":{"role":"assistant","content":[{"type":"text","text":"settled"}]}}"""
+          val socket = checkNotNull(server.sockets.lastOrNull())
+          socket.send("""{"type":"event","event":"health","payload":{},"seq":1}""")
+          socket.send("""{"type":"event","event":"chat","payload":$terminal,"seq":3}""")
+          assertEquals("health", withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { events.receive() }.first)
+          assertEquals("chat" to terminal, withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { events.receive() })
+          if (disconnect) {
+            withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { offline.await() }
+            assertTrue(events.tryReceive().isFailure)
+            assertTrue(connections.tryReceive().isFailure)
+          } else {
+            assertEquals("seqGap" to null, withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { events.receive() })
+            withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { connections.receive() }
+          }
+        }
+      } finally {
+        shutdownReconnectHarness(harness, server)
+      }
+    }
+
+  @Test
   fun sequenceGapReconnectsWithoutAdmittingTheTriggeringEvent() =
     runBlocking {
       val json = Json { ignoreUnknownKeys = true }

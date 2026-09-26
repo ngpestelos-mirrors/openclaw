@@ -6,7 +6,7 @@ import {
 } from "@openclaw/session-url-contract/session-key-normalization";
 
 export type ReplaySessionScope = { sessionKey?: string; agentId?: string };
-type UnsubscribedSession = { key: string; requestedKey: string; agentId?: string };
+type UnsubscribedSession = { key: string; agentId?: string };
 
 export function readUnsubscribedSession(
   params: unknown,
@@ -21,9 +21,6 @@ export function readUnsubscribedSession(
   const owner = parseAgentSessionKey(key)?.agentId;
   return {
     key,
-    requestedKey: normalizeSessionKeyPreservingOpaquePeerIds(
-      typeof request.key === "string" ? request.key : undefined,
-    ),
     agentId:
       owner ??
       (typeof request.agentId === "string" ? normalizeAgentId(request.agentId) : undefined),
@@ -39,13 +36,5 @@ export function matchesUnsubscribedSession(
   if (subscription.agentId && (!owner || normalizeAgentId(owner) !== subscription.agentId)) {
     return false;
   }
-  if (key === subscription.key) {
-    return true;
-  }
-  // Raw sentinel requests can receive qualified ACKs; explicitly qualified rows stay distinct.
-  return (
-    (key === "global" || key === "unknown") &&
-    key === subscription.requestedKey &&
-    parseAgentSessionKey(subscription.key)?.rest === key
-  );
+  return key === subscription.key;
 }

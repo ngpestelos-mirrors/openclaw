@@ -26,11 +26,11 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
     gateway.setRequestHandler((socket, request) => {
       const key = request.params.key;
       if (typeof key !== "string") throw new Error("Expected a session key");
-      const canonicalKey = `agent:main:${key}`;
+      const canonicalKey = key === "global" ? key : `agent:main:${key}`;
       if (request.method === "sessions.messages.subscribe") {
         const scope = {
           runId: `run-${runIndex++}`,
-          sessionKey: key === "global" ? key : canonicalKey,
+          sessionKey: canonicalKey,
         };
         subscriptions.set(key, scope);
         gateway.sendEvent(socket, "chat", {
@@ -109,7 +109,7 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
           stream: "assistant",
           data: { text: ++subscriptions === 1 ? "old" : "fresh", delta: "" },
         });
-        gateway.reply(socket, request.id, { subscribed: true, key: "agent:main:global" });
+        gateway.reply(socket, request.id, { subscribed: true, key: "global" });
       } else if (rejectUnsubscribe) {
         rejectUnsubscribe = false;
         socket.send(
@@ -121,7 +121,7 @@ describe("GatewayClientTransport live WebSocket lifecycle", () => {
           }),
         );
       } else {
-        gateway.reply(socket, request.id, { subscribed: false, key: "agent:main:global" });
+        gateway.reply(socket, request.id, { subscribed: false, key: "global" });
       }
     });
     const acknowledged = createDeferred<void>();

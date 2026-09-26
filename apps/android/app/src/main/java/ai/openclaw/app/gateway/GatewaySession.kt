@@ -2104,6 +2104,14 @@ class GatewaySession(
       gatewayEvent.seq?.let { sequence ->
         val previous = lastEventSequence
         if (previous != null && sequence > previous + 1) {
+          if (event == "chat" && payloadJson != null) {
+            val payload = frame["payload"].asObjectOrNull() ?: parseJsonOrNull(payloadJson).asObjectOrNull()
+            if (payload != null && payload["state"].asStringOrNull() in listOf("final", "error", "aborted")) {
+              liveTextProjection.project(event, payload)
+              onEvent(event, payloadJson)
+              if (currentConnection !== this || !isReady()) return
+            }
+          }
           recoverLiveEvents()
           return
         }

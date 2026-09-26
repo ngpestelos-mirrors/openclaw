@@ -1144,6 +1144,15 @@ extension GatewayChannelActor {
             if evt.event == "connect.challenge" { return }
             if let seq = evt.seq {
                 if let last = lastSeq, seq > last + 1 {
+                    if evt.event == "chat",
+                       let state = evt.payload?.dictionaryValue?["state"]?.stringValue,
+                       ["final", "error", "aborted"].contains(state),
+                       let terminal = self.liveTextProjection.project(evt)
+                    {
+                        await self.pushHandler?(.event(terminal), connectionGeneration)
+                    }
+                    // Terminal delivery can retire this socket while its callback is suspended.
+                    guard self.isConnected(connectionGeneration: connectionGeneration) else { return }
                     await self.pushHandler?(
                         .seqGap(expected: last + 1, received: seq),
                         connectionGeneration)

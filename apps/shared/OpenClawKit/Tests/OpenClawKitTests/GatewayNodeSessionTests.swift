@@ -872,6 +872,62 @@ struct GatewayNodeSessionTests {
         }
     }
 
+    @Test(arguments: ["final", "error", "aborted"])
+    func `gap revealing chat terminal settles before native recovery`(terminalState: String) async throws {
+        let session = FakeGatewayWebSocketSession()
+        let pushes = AsyncStream<GatewayPush>.makeStream()
+        let disconnected = AsyncGate()
+        let channel = try GatewayChannelActor(
+            url: testURL("ws://gateway.example.invalid"), token: nil,
+            session: WebSocketSessionBox(session: session),
+            pushHandler: { push, _ in
+                if case .snapshot = push { return }
+                pushes.continuation.yield(push)
+            },
+            connectOptions: nodeConnectOptions(),
+            disconnectHandler: { _, _ in
+                pushes.continuation.finish()
+                await disconnected.markStarted()
+            })
+        do {
+            try await channel.connect()
+            let socket = try #require(session.latestTask())
+            try socket.emitEvent(EventFrame(type: "event", event: "chat", payload: AnyCodable([
+                "runId": "run", "state": "delta", "deltaText": "partial",
+                "message": ["role": "assistant", "content": [["type": "text", "text": "partial"]]],
+            ]), seq: 1))
+            let terminal = AnyCodable([
+                "runId": "run", "state": terminalState,
+                "message": ["role": "assistant", "content": [["type": "text", "text": "settled"]]],
+            ])
+            try socket.emitEvent(EventFrame(type: "event", event: "chat", payload: terminal, seq: 3))
+            try await disconnected.waitUntilStarted()
+            await channel.shutdown()
+            var order: [String] = []
+            var deliveredTerminal: AnyCodable?
+            for await push in pushes.stream {
+                switch push {
+                case let .event(event):
+                    let state = event.payload?.dictionaryValue?["state"]?.stringValue ?? ""
+                    order.append(state)
+                    if state == terminalState { deliveredTerminal = event.payload }
+                case let .seqGap(expected, received):
+                    #expect(expected == 2)
+                    #expect(received == 3)
+                    order.append("seqGap")
+                case .snapshot:
+                    Issue.record("unexpected hello in event trace")
+                }
+            }
+            #expect(order == ["delta", terminalState, "seqGap"])
+            #expect(deliveredTerminal == terminal)
+        } catch {
+            await channel.shutdown()
+            pushes.continuation.finish()
+            throw error
+        }
+    }
+
     @Test func `authenticated invoke metadata reaches the native dispatcher unchanged`() async throws {
         let gateway = GatewayNodeSession()
         let capture = StringCapture()
