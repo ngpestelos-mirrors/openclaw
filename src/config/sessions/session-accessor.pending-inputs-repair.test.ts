@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
-import { upsertSessionEntryCore } from "./session-accessor.js";
 import {
   listSessionPendingInputs,
   stageSessionPendingInput,
 } from "./session-accessor.pending-inputs.js";
 import * as pendingInputRuntime from "./session-accessor.pending-inputs.runtime.js";
+import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";
 import { usePendingInputFixture } from "./session-pending-inputs-test-helpers.js";
 
 describe("pending input repair admission", () => {
