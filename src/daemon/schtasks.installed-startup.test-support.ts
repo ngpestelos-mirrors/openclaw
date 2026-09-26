@@ -278,7 +278,7 @@ export async function inspectInstalledSelectedStartupFallback(
               loaded: z.literal(true),
               runtime: z.object({
                 status: z.literal("stopped"),
-                pid: z.undefined(),
+                pid: z.undefined().optional(),
                 detail: z.string(),
               }),
               command: z.object({ programArguments: z.array(z.string()) }),

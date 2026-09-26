@@ -58,6 +58,7 @@ describe("installed fingerprint source qualification", () => {
       "src/daemon/schtasks.installed-diagnostics.test-support.ts",
       "src/daemon/schtasks.installed-authority.test-support.ts",
       "src/daemon/schtasks.installed.integration.test-support.ts",
+      "src/daemon/schtasks.installed-startup.test-support.ts",
       "src/daemon/schtasks.installed-fingerprint-observer.test-support.mts",
       "src/daemon/schtasks.installed-fingerprint-observer.test.ts",
       "src/config/sessions/session-sharing-store.test.ts",
