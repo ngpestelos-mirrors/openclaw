@@ -755,7 +755,6 @@ enum class GatewayMethod(
   GatewayRestartPreflight("gateway.restart.preflight"),
   GatewayRestartRequest("gateway.restart.request"),
   SystemPresence("system-presence"),
-  PresenceQuery("presence.query"),
   SystemEvent("system-event"),
   MessageAction("message.action"),
   ConversationsSend("conversations.send"),
@@ -981,6 +980,7 @@ enum class GatewayMethod(
   PortalSessionClose("portal.session.close"),
   CronHistory("cron.history"),
   PresenceActivity("presence.activity"),
+  PresenceQuery("presence.query"),
 }
 
 enum class GatewayEvent(
