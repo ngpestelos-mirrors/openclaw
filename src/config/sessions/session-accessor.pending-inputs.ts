@@ -493,8 +493,10 @@ async function readPendingInputRows(
             .where("state", "=", "queued")
             .where("consumed_event_id", "is", null),
         ).rows;
-        const ownedIds = readSessionPendingInputOwnerIds(database, candidates);
-        const ids = candidates.flatMap((row) => (ownedIds.has(row.input_id) ? [] : [row.input_id]));
+        const currentOwnedIds = readSessionPendingInputOwnerIds(database, candidates);
+        const ids = candidates.flatMap((row) =>
+          currentOwnedIds.has(row.input_id) ? [] : [row.input_id],
+        );
         if (ids.length) {
           executeSqliteQuerySync(
             database.db,

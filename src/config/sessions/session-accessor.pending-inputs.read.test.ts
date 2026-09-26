@@ -7,13 +7,14 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
-import { createSessionEntryWithTranscript, upsertSessionEntryCore } from "./session-accessor.js";
+import { createSessionEntryWithTranscript } from "./session-accessor.entry-mutation.js";
 import {
   listSessionPendingInputs,
   readSessionPendingInput,
   stageSessionPendingInput,
   type SessionPendingInputReceipt,
 } from "./session-accessor.pending-inputs.js";
+import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 
