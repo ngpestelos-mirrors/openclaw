@@ -21,7 +21,7 @@ import {
   createSelectedNodeTestShardBundles,
   isExclusiveCompactShardName,
 } from "../../scripts/lib/ci-node-test-plan.mts";
-import { rebalanceRuntimeTestJobs } from "../../scripts/lib/ci-runtime-test-placement.mts";
+import * as runtimePlacement from "../../scripts/lib/ci-runtime-test-placement.mts";
 import { refitTestTimings, type CiTimingRun } from "../../scripts/lib/ci-test-timings-refit.mts";
 import {
   ciTestTimingsSchema,
@@ -326,6 +326,21 @@ describe("runtime placement observations", () => {
               ),
             )
         : undefined;
+      const rebalance = runtimePlacement.rebalanceRuntimeTestJobs;
+      // This case exercises Gateway admission, not which unrelated inventory has the lowest cost.
+      const placementSpy = gatewayRecipient
+        ? vi
+            .spyOn(runtimePlacement, "rebalanceRuntimeTestJobs")
+            .mockImplementation((jobs, policy) =>
+              rebalance(jobs, {
+                ...policy,
+                prepareRecipient: (job) =>
+                  job.groups.some((group) => group.configs.includes(gatewayFixtureConfig))
+                    ? policy.prepareRecipient(job)
+                    : undefined,
+              }),
+            )
+        : undefined;
       const configs = new Set([
         runtimeConfig,
         infrastructure,
@@ -524,6 +539,7 @@ describe("runtime placement observations", () => {
       } finally {
         spy.mockRestore();
         compactSpy.mockRestore();
+        placementSpy?.mockRestore();
         gatewayConfigSpy?.mockRestore();
         fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
       }
@@ -565,7 +581,7 @@ describe("runtime placement observations", () => {
       ];
       const cost = (groups: NodeTestShardGroup[]) =>
         100 + groups.reduce((sum, entry) => sum + (entry === spare ? 50 : 200), 0);
-      rebalanceRuntimeTestJobs(jobs, {
+      runtimePlacement.rebalanceRuntimeTestJobs(jobs, {
         cost,
         admits: (groups) => groups.length > 0 && cost(groups) <= 440,
         runnerRank: ({ runner }) => ["small", "medium", "strong"].indexOf(runner),
@@ -617,7 +633,7 @@ describe("runtime placement observations", () => {
     const weights: Record<string, number> = { moved: 100, retained: 330, spare: 80, ordinary: 50 };
     const cost = (groups: NodeTestShardGroup[]) =>
       100 + groups.reduce((sum, entry) => sum + weights[entry.shard_name]!, 0);
-    rebalanceRuntimeTestJobs(jobs, {
+    runtimePlacement.rebalanceRuntimeTestJobs(jobs, {
       cost,
       admits: (groups) => groups.length > 0 && cost(groups) <= 440,
       runnerRank: () => 0,
