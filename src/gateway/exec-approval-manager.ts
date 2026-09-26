@@ -16,6 +16,7 @@ import type {
   ExecApprovalDurableLookup,
   ExecApprovalForceDenyResult,
   ExecApprovalManagerOptions,
+  ExecApprovalMutationPersistence,
   ExecApprovalRecord,
   ExecApprovalReadAuthority,
   ExecApprovalResolutionSource,
@@ -29,7 +30,6 @@ import {
   readUncertainExecApprovalVerdict,
   readExecApprovalOwnedLookup,
   runWithExecApprovalMutationPersistence,
-  type ExecApprovalMutationPersistence,
 } from "./exec-approval-recovery.js";
 import {
   createExecApprovalRecord,

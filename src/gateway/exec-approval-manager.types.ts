@@ -1,8 +1,8 @@
 import type { ExecutionIdentityAdmissionToken } from "../audit/execution-identity-admission.js";
 import type { ExecApprovalDecision, ExecApprovalRequestPayload } from "../infra/exec-approvals.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import type { AgentRuntimeDelegatedAuthority } from "./agent-runtime-identity-token.js";
-import type { ExecApprovalMutationPersistence } from "./exec-approval-recovery.js";
 import type {
   PlacementStandingGrantMintSpec,
   PlacementStandingGrantRuntime,
@@ -18,6 +18,10 @@ import type {
   ResolveOperatorApprovalResult,
 } from "./operator-approval-store.js";
 import type { OperatorApprovalStoreGuard } from "./operator-approval-store.types.js";
+
+export type ExecApprovalMutationPersistence = ExecApprovalManagerOptions<unknown>["persistence"] & {
+  workerContext?: OpenClawStateWorkerContext;
+};
 
 export type ExecApprovalReadAuthority = {
   assertCurrent: () => void;

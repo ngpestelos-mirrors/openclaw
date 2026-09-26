@@ -11,15 +11,13 @@ import { createDeferredCore } from "../shared/deferred.js";
 import type {
   ExecApprovalIdLookupResult,
   ExecApprovalManagerOptions,
+  ExecApprovalMutationPersistence,
   ExecApprovalRecord,
   ExecApprovalReadAuthority,
   ExecApprovalResolutionSource,
   OperatorApprovalLifecycleEvent,
 } from "./exec-approval-manager.types.js";
-import {
-  assertExecApprovalMutationPersistenceCurrent,
-  type ExecApprovalMutationPersistence,
-} from "./exec-approval-recovery.js";
+import { assertExecApprovalMutationPersistenceCurrent } from "./exec-approval-recovery.js";
 import {
   prepareExecApprovalSettlement,
   resolveExecApprovalResolutionSource,

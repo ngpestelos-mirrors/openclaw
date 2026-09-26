@@ -1,10 +1,10 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { runWithCapturedWorkerContext } from "../state/openclaw-state-worker-operation.js";
 import type {
   ExecApprovalManagerOptions,
+  ExecApprovalMutationPersistence,
   ExecApprovalRecord,
   ExecApprovalReadAuthority,
 } from "./exec-approval-manager.types.js";
@@ -15,10 +15,6 @@ import {
   type OperatorApprovalRecord,
 } from "./operator-approval-store.js";
 import type { GetOperatorApprovalResult } from "./operator-approval-store.types.js";
-
-export type ExecApprovalMutationPersistence = ExecApprovalManagerOptions<unknown>["persistence"] & {
-  workerContext?: OpenClawStateWorkerContext;
-};
 
 /** Bind recovery to the same physical target before the original verdict can yield. */
 export function captureExecApprovalMutationPersistence(

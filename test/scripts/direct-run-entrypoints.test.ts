@@ -524,17 +524,15 @@ process.stdout.write(response + "\n");
           ["--version"],
         ]);
         for (const invocation of invocations) {
-          const alive = isProcessAlive(invocation.pid);
-          expect(
-            alive,
-            alive
-              ? `${JSON.stringify({
-                  invocation,
-                  observedStartTimeMs: readWindowsProcessStartTimeSync(invocation.pid, 0),
-                  invocations,
-                })}\n${formatShimResult(result)}`
-              : undefined,
-          ).toBe(false);
+          expect(invocation.startTimeMs, JSON.stringify(invocation)).not.toBeNull();
+          if (!isProcessAlive(invocation.pid)) {
+            continue;
+          }
+          // A reused PID is not a surviving Job child; unknown identity still fails closed.
+          const observedStartTimeMs = readWindowsProcessStartTimeSync(invocation.pid, 0);
+          const diagnostic = `${JSON.stringify({ invocation, observedStartTimeMs, invocations })}\n${formatShimResult(result)}`;
+          expect(observedStartTimeMs, diagnostic).not.toBeNull();
+          expect(observedStartTimeMs, diagnostic).not.toBe(invocation.startTimeMs);
         }
         expect(readdirSync(state)).toEqual(["tools"]);
       });
