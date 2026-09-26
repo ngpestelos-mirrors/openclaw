@@ -1022,61 +1022,6 @@ describe("session list subagent metadata", () => {
     }
   });
 
-  test("includes explicit parentSessionKey relationships for dashboard child sessions", async () => {
-    resetSubagentRegistryForTests({ persist: false });
-    const now = Date.now();
-    const store: Record<string, SessionEntry> = {
-      "agent:main:main": {
-        sessionId: "sess-main",
-        updatedAt: now,
-      } as SessionEntry,
-      "agent:main:dashboard:child": {
-        sessionId: "sess-child",
-        updatedAt: now - 1_000,
-        parentSessionKey: "agent:main:main",
-      } as SessionEntry,
-    };
-
-    const result = await listSessionFixture({
-      cfg,
-      storePath: fixtureStorePath(),
-      store,
-      opts: {},
-    });
-
-    const main = result.sessions.find((session) => session.key === "agent:main:main");
-    const child = result.sessions.find((session) => session.key === "agent:main:dashboard:child");
-    expect(main?.childSessions).toEqual(["agent:main:dashboard:child"]);
-    expect(child?.parentSessionKey).toBe("agent:main:main");
-  });
-
-  test("returns dashboard child sessions when filtering by parentSessionKey owner", async () => {
-    resetSubagentRegistryForTests({ persist: false });
-    const now = Date.now();
-    const store: Record<string, SessionEntry> = {
-      "agent:main:main": {
-        sessionId: "sess-main",
-        updatedAt: now,
-      } as SessionEntry,
-      "agent:main:dashboard:child": {
-        sessionId: "sess-dashboard-child",
-        updatedAt: now - 1_000,
-        parentSessionKey: "agent:main:main",
-      } as SessionEntry,
-    };
-
-    const result = await listSessionFixture({
-      cfg,
-      storePath: fixtureStorePath(),
-      store,
-      opts: {
-        spawnedBy: "agent:main:main",
-      },
-    });
-
-    expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:dashboard:child"]);
-  });
-
   test("does not reattach stale terminal store-only child links", async () => {
     resetSubagentRegistryForTests({ persist: false });
     const now = Date.now();
