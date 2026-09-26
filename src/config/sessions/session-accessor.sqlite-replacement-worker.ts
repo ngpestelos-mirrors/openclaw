@@ -271,7 +271,7 @@ export function createSessionEntryWorkerCommitPublication(
     },
     async settle(
       fallbackReceipt: SessionEntryReplacementPublication | undefined,
-      onCommitted?: () => void,
+      onCommitted?: (receipt: SessionEntryReplacementPublication) => void,
     ): Promise<boolean> {
       if (!admitted) {
         return false;
@@ -286,7 +286,7 @@ export function createSessionEntryWorkerCommitPublication(
       const unknown = admitted.admission.settlement?.kind !== "completed" || !receipt;
       try {
         if (receipt) {
-          onCommitted?.();
+          onCommitted?.(receipt);
         }
       } finally {
         const published = publication.settle(receipt, unknown);
@@ -312,7 +312,7 @@ export async function commitSessionEntryReplacementsInWorker(
   lifecycle: {
     identityAgentId: string;
     afterCommitted?: (context: SessionEntryCommitContext) => Promise<void>;
-    onLifecycleCommitted?: () => void;
+    onLifecycleCommitted?: (pendingArchiveRecovery: boolean) => void;
   },
   retainedExecution?: OpenClawAgentDatabaseExecution,
 ) {
@@ -337,7 +337,7 @@ export async function commitSessionEntryReplacementsInWorker(
           // Close joins this callback; a delayed result cannot borrow a successor owner.
           const unknown = await publication.settle(
             outcome.ok ? prepareSessionEntryReplacementPublication(outcome.value) : undefined,
-            lifecycle.onLifecycleCommitted,
+            (receipt) => lifecycle.onLifecycleCommitted?.(receipt.pendingArchiveRecovery),
           );
           if (unknown || (outcome.ok && !admitted)) {
             rejectUnknownSessionEntryOutcome(

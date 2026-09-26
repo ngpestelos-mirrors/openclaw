@@ -2425,7 +2425,6 @@ src/daemon/schtasks-control.ts	5
 src/daemon/schtasks-install.ts	2
 src/daemon/schtasks-process.ts	1
 src/daemon/schtasks-runtime.ts	4
-src/daemon/service.ts	1
 src/daemon/systemd-exec.ts	2
 src/daemon/systemd-install.ts	2
 src/daemon/systemd-lifecycle.ts	2
@@ -2463,7 +2462,7 @@ src/gateway/cli-session-history.claude.ts	7
 src/gateway/cli-session-history.merge.ts	6
 src/gateway/control-ui-plugin-auth-cookie.ts	1
 src/gateway/control-ui-session-pr-subscriptions.ts	2
-src/gateway/control-ui.ts	2
+src/gateway/control-ui.ts	1
 src/gateway/conversation-turn.ts	1
 src/gateway/desktop/host-guidance.ts	1
 src/gateway/desktop/managed-linux.ts	1

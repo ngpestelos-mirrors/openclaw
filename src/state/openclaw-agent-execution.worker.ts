@@ -376,6 +376,7 @@ function openAgentDatabaseBackend(
           const publication = result.identity
             ? preparePublication({
                 ...result.identity,
+                pendingArchiveRecovery: false,
                 maintenancePlans: [],
                 membershipInvalidatedKeys: [],
               })
