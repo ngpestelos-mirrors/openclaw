@@ -436,7 +436,7 @@ private fun ProviderListRow(
         )
       }
       Text(row.modelCount.toString(), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
-      if (missing && showSignIn) {
+      if (missing && showSignIn && capability?.canSignIn == true) {
         TextButton(onClick = onSignIn, enabled = canSignIn) { Text(nativeString("Sign in")) }
       }
       Icon(if (expanded) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp), tint = ClawTheme.colors.textMuted)
@@ -450,12 +450,11 @@ private fun providerSignInSubtitle(
 ): String =
   when {
     row.renewalFailed -> nativeString("Renewal failed · sign in again")
+    capability?.canSignIn != true -> nativeString("Set up on computer")
     row.auth?.status == "missing" && !row.ready -> nativeString("Not signed in")
-    capability != null && !capability.canSignIn -> nativeString("Set up on computer")
     row.auth?.authType == "oauth" -> if (row.id == "openai") nativeString("ChatGPT sign-in · renews automatically") else nativeString("Account sign-in · renews automatically")
     row.auth?.authType == "api_key" -> nativeString("API key")
     row.auth?.authType == "token" -> nativeString("Token")
-    capability == null -> nativeString("Set up on computer")
     else -> row.status
   }
 

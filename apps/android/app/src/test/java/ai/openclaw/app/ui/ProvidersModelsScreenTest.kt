@@ -21,10 +21,12 @@ import android.graphics.Bitmap
 import android.provider.Settings
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -109,6 +111,33 @@ class ProvidersModelsScreenTest {
         }
       }
     }
+  }
+
+  @Test
+  fun missingComputerManagedProviderDoesNotOfferAppSignIn() {
+    val providers = ReflectionHelpers.getField<MutableStateFlow<List<GatewayModelProviderSummary>>>(runtime, "_modelAuthProviders")
+    providers.value = providers.value.map { if (it.id == "ollama") it.copy(status = "missing") else it }
+    val models = ReflectionHelpers.getField<MutableStateFlow<List<GatewayModelSummary>>>(runtime, "_providerModelCatalog")
+    models.value = models.value.map { if (it.provider == "ollama") it.copy(available = false) else it }
+    show(dark = true)
+    capture("providers-computer-setup-dark")
+
+    composeRule.onNodeWithText("Set up on computer").assertIsDisplayed()
+    // Anthropic still offers its supported API-key sign-in; Ollama does not.
+    composeRule.onAllNodesWithText("Sign in").assertCountEquals(1)
+    composeRule.onNodeWithText("Not signed in").assertIsDisplayed()
+    composeRule.onNodeWithText("Ollama").performClick()
+    composeRule.onNodeWithText("Sign-in is managed on the computer").assertIsDisplayed()
+    composeRule.onNodeWithText("Manage sign-in").assertDoesNotExist()
+
+    // Missing capability metadata must not advertise an unsupported action either.
+    composeRule.runOnIdle {
+      val capabilities = ReflectionHelpers.getField<MutableStateFlow<List<ProviderAuthProvider>>>(runtime, "modelAuthCapabilitiesState")
+      capabilities.value = capabilities.value.filterNot { it.id == "ollama" }
+    }
+    composeRule.onNodeWithText("Set up on computer").assertIsDisplayed()
+    composeRule.onAllNodesWithText("Sign in").assertCountEquals(1)
+    composeRule.onNodeWithText("Sign-in is managed on the computer").assertIsDisplayed()
   }
 
   @Test
