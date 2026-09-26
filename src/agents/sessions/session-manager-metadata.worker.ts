@@ -81,6 +81,7 @@ export type SessionMetadataOperations<TMessage = unknown> = {
         "beforeFreshMessageCommit" | "prepareMessageAfterIdempotencyCheck"
       >;
       pendingCustody: SessionPendingInputWorkerCustody;
+      replayPreparedPendingInput: boolean;
     };
     output: {
       result: TranscriptMessageAppendResult<TMessage> | undefined;
@@ -255,7 +256,10 @@ export function bindSqliteWorkerBackend(
         const result = appendTranscriptMessageInTransaction(
           database,
           resolved,
-          command.input.options,
+          {
+            ...command.input.options,
+            replayPreparedPendingInput: command.input.replayPreparedPendingInput,
+          },
           undefined,
           {
             scheduleProjectionReconcile: false,

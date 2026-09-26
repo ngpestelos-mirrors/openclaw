@@ -154,6 +154,19 @@ describe("accepted input custody", () => {
       messageId: receipt.inputId,
       message: receipt.message,
     });
+    await expect(
+      withSessionPendingInputPersistence(receipt, () =>
+        appendTranscriptMessage(scope(), {
+          message: message("queued"),
+          prepareMessageAfterIdempotencyCheck: secondHook,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      appended: false,
+      messageId: receipt.inputId,
+      message: receipt.message,
+    });
+    expect(secondHook).not.toHaveBeenCalled();
     expect(await listSessionPendingInputs(scope())).toEqual({ total: 0, items: [] });
     expect(readSessionSubmittedInput(scope(), "queued:user")).toEqual(receipt.message);
     const committedReplay = await stage("queued", { prepareMessageAfterIdempotencyCheck: prepare });

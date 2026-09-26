@@ -142,6 +142,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
   options: TranscriptMessageAppendOptions<TMessage> & {
     messageAlreadyRedacted?: boolean;
     appendMode?: "side";
+    replayPreparedPendingInput?: boolean;
   },
   preparedMessage?: PreparedTranscriptMessageAppend<TMessage>,
   projection?: { scheduleProjectionReconcile?: boolean; onProjectionReconcileNeeded?: () => void },
@@ -208,6 +209,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     if (existing) {
       if (
         !options.prepareMessageAfterIdempotencyCheck &&
+        !(pending && options.replayPreparedPendingInput) &&
         !messagesMatchForIdempotentReplay(existing.message, serializeForStorage(options.message))
       ) {
         throw new TranscriptTurnAdmissionConflictError(idempotencyKey);

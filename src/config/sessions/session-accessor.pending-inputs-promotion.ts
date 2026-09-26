@@ -42,7 +42,7 @@ export function prepareSessionPendingInputPromotion<TMessage>(
       const { env: _env, ...target } = scope;
       const {
         beforeFreshMessageCommit: _beforeFresh,
-        prepareMessageAfterIdempotencyCheck: _prepare,
+        prepareMessageAfterIdempotencyCheck,
         ...appendOptions
       } = options;
       return await withSessionMetadataWorker<
@@ -62,6 +62,7 @@ export function prepareSessionPendingInputPromotion<TMessage>(
               scope: { ...target, storePath: execution.path },
               options: appendOptions,
               pendingCustody: custody.input,
+              replayPreparedPendingInput: Boolean(prepareMessageAfterIdempotencyCheck),
             },
           });
           custody.publishCommitted(committed.consumedInputIds);
