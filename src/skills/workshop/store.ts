@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { FsSafeError, root, type Root } from "../../infra/fs-safe.js";
+import { retainMutationAuthority } from "../../infra/mutation-authority.js";
 import { logWarn } from "../../logger.js";
 import { normalizeSkillIndexName } from "../discovery/skill-index.js";
 import {
@@ -249,6 +250,7 @@ export async function readSkillProposalRecord(
 }
 
 export async function writeSkillProposal(request: {
+  assertCommitAllowed?: () => void;
   record: SkillProposalRecord;
   content: string;
   supportFiles?: readonly PreparedSkillProposalSupportFile[];
@@ -260,6 +262,9 @@ export async function writeSkillProposal(request: {
   assertProposalId(request.record.id);
   assertSkillProposalContentSize(request.content);
   const params = {
+    assertCommitAllowed: request.assertCommitAllowed
+      ? retainMutationAuthority(request.assertCommitAllowed)
+      : undefined,
     ...structuredClone({
       record: request.record,
       content: request.content,
@@ -283,6 +288,7 @@ export async function writeSkillProposal(request: {
         event: params.event,
       },
       params.store,
+      params.assertCommitAllowed,
     );
   } catch (error) {
     const committed = await readCommittedSkillProposalTransition({
@@ -305,6 +311,7 @@ export async function writeSkillProposal(request: {
 }
 
 export async function replaceSkillProposalDraft(request: {
+  assertCommitAllowed?: () => void;
   expected: SkillProposalRecord;
   record: SkillProposalRecord;
   content: string;
@@ -315,6 +322,9 @@ export async function replaceSkillProposalDraft(request: {
   assertProposalId(request.record.id);
   assertSkillProposalContentSize(request.content);
   const params = {
+    assertCommitAllowed: request.assertCommitAllowed
+      ? retainMutationAuthority(request.assertCommitAllowed)
+      : undefined,
     ...structuredClone({
       expected: request.expected,
       record: request.record,
@@ -336,6 +346,7 @@ export async function replaceSkillProposalDraft(request: {
       record: params.record,
       event: params.event,
       store: params.store,
+      assertCommitAllowed: params.assertCommitAllowed,
       operationLabel: "skill-workshop.revision.commit",
       invalidateRollback: true,
     });

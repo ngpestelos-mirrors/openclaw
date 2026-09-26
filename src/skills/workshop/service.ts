@@ -228,6 +228,7 @@ export async function reviseSkillProposal(
       delete revised.evidence;
     }
     const event = await replaceSkillProposalDraft({
+      assertCommitAllowed: lockedRequest.assertCommitAllowed,
       expected: record,
       record: revised,
       content: proposalContent,

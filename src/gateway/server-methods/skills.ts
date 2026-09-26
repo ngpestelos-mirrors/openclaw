@@ -67,6 +67,7 @@ import {
   listWritableWorkshopSkillSummaries,
   readWritableWorkshopSkill,
 } from "../../skills/workshop/workspace-skill-read.js";
+import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
 import { skillsCuratorHandlers } from "./skills-curator.js";
 import { skillsLibraryHandlers } from "./skills-library.js";
 import { skillProposalHistoryHandlers } from "./skills-proposal-history.js";
@@ -415,9 +416,15 @@ export const skillsHandlers: GatewayRequestHandlers = {
   "skills.proposals.create": defineSkillsProposalWorkspaceHandler(
     "skills.proposals.create",
     validateSkillsProposalCreateParams,
-    (parsedParams, resolved) =>
+    (parsedParams, resolved, options) =>
       proposeCreateSkill({
         ...proposalWorkspaceOptions(resolved),
+        assertCommitAllowed: captureGatewayClientUploadCommitGuard({
+          method: "skills.proposals.create",
+          requestParams: parsedParams,
+          client: options.client,
+          context: options.context,
+        }),
         name: parsedParams.name,
         description: parsedParams.description,
         content: parsedParams.content,
@@ -430,9 +437,15 @@ export const skillsHandlers: GatewayRequestHandlers = {
   "skills.proposals.update": defineSkillsProposalWorkspaceHandler(
     "skills.proposals.update",
     validateSkillsProposalUpdateParams,
-    (parsedParams, resolved) =>
+    (parsedParams, resolved, options) =>
       proposeUpdateSkill({
         ...proposalWorkspaceOptions(resolved),
+        assertCommitAllowed: captureGatewayClientUploadCommitGuard({
+          method: "skills.proposals.update",
+          requestParams: parsedParams,
+          client: options.client,
+          context: options.context,
+        }),
         skillName: parsedParams.skillName,
         description: parsedParams.description,
         content: parsedParams.content,
@@ -445,9 +458,15 @@ export const skillsHandlers: GatewayRequestHandlers = {
   "skills.proposals.revise": defineSkillsProposalWorkspaceHandler(
     "skills.proposals.revise",
     validateSkillsProposalReviseParams,
-    (parsedParams, resolved) =>
+    (parsedParams, resolved, options) =>
       reviseSkillProposal({
         ...proposalWorkspaceOptions(resolved),
+        assertCommitAllowed: captureGatewayClientUploadCommitGuard({
+          method: "skills.proposals.revise",
+          requestParams: parsedParams,
+          client: options.client,
+          context: options.context,
+        }),
         proposalId: parsedParams.proposalId,
         expectedRevisionHash: parsedParams.expectedRevisionHash,
         correlationId: parsedParams.correlationId,

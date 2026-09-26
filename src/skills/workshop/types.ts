@@ -121,6 +121,8 @@ export type SkillProposalSupportFileInput = NonNullable<
 >[number];
 
 export type SkillProposalCreateInput = {
+  /** Caller-owned synchronous authority for draft bytes and metadata publication. */
+  assertCommitAllowed?: () => void;
   workspaceDir: string;
   agentId?: string;
   eventActor?: SkillProposalEventActor;
@@ -138,6 +140,8 @@ export type SkillProposalCreateInput = {
 };
 
 export type SkillProposalUpdateInput = {
+  /** Caller-owned synchronous authority for draft bytes and metadata publication. */
+  assertCommitAllowed?: () => void;
   workspaceDir: string;
   agentId?: string;
   eventActor?: SkillProposalEventActor;
@@ -163,6 +167,8 @@ export type SkillProposalUpdateInput = {
 };
 
 export type SkillProposalReviseInput = {
+  /** Caller-owned synchronous authority for draft bytes and metadata publication. */
+  assertCommitAllowed?: () => void;
   workspaceDir: string;
   agentId?: string;
   eventActor?: SkillProposalEventActor;

@@ -3,6 +3,7 @@ import { ErrorCodes, errorShape } from "../../packages/gateway-protocol/src/inde
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
+import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 
 export const GATEWAY_UPLOADS_DISABLED_CODE = "UPLOADS_DISABLED";
 export const GATEWAY_UPLOADS_DISABLED_MESSAGE =
@@ -54,6 +55,10 @@ export function isGatewayUploadRequest(method: string, params: unknown): boolean
       return params.source === "upload";
     case "skills.library.save":
       return Array.isArray(params.files) && params.files.length > 0;
+    case "skills.proposals.create":
+    case "skills.proposals.update":
+    case "skills.proposals.revise":
+      return Array.isArray(params.supportFiles) && params.supportFiles.length > 0;
     case "agents.create":
     case "agents.update":
       return isInlineMedia(params.avatar);
@@ -86,4 +91,19 @@ export function gatewayClientUploadPolicyError(params: {
     : errorShape(ErrorCodes.FORBIDDEN, GATEWAY_UPLOADS_DISABLED_MESSAGE, {
         details: { code: GATEWAY_UPLOADS_DISABLED_CODE },
       });
+}
+
+/** Carry only client-upload policy into worker commits, never opaque SDK guards that may read SQL. */
+export function captureGatewayClientUploadCommitGuard(
+  params: Parameters<typeof gatewayClientUploadPolicyError>[0],
+): (() => void) | undefined {
+  if (!isGatewayUploadRequest(params.method, params.requestParams)) {
+    return undefined;
+  }
+  return () => {
+    const error = gatewayClientUploadPolicyError(params);
+    if (error) {
+      throw new SessionMutationAuthorizationChangedError(error);
+    }
+  };
 }
