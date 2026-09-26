@@ -24,21 +24,34 @@ OpenClaw Android is the officially released Google Play app. It connects to an O
 
 ## Providers and models
 
-Open **Settings → Providers and models** to expand a provider's configured models
-or manage its sign-in. **Gateway default** and **Fallback** identify the Gateway's shared
-default model and fallbacks, not every agent's overrides or active requests.
-Gateways that do not identify this shared tag scope omit those badges.
-Other configured models stay visible; **More models** expands the remaining
-inventory without labeling it old. Search includes those collapsed models.
-This screen does not change model selection.
+Open **Settings → Providers and models** for provider cards like the Web UI.
+Search by provider or model, view the selected agent's credential sources, and
+expand each card's models. **Gateway default** and **Fallback** identify the
+Gateway's shared model defaults, not the selected agent's overrides or active
+requests. Older Gateways that omit this tag scope omit those badges. **More
+models** expands the remaining inventory without labeling it old; this screen
+does not change model selection.
 
-**Add provider** lists the connection methods advertised by the Gateway. Select
-an account sign-in or API key; providers without app setup show instructions for
-the computer running the Gateway. Sign-in keeps the current agent's credential
-scope and requires administrator access. OAuth renewal is automatic; a failed
-renewal is shown only when the Gateway reports that outcome, not simply because
-an access token expired. Older Gateways without that signal cannot show the
-renewal-failed distinction.
+**Connect Provider** offers the Gateway's supported account, device-code,
+token, and API-key methods. **Set API key** opens a masked key field directly.
+**Test connection** displays the Gateway's result, including partial failures.
+**Remove key** asks for confirmation and removes only saved API keys, preserving
+OAuth and token profiles; environment-managed keys remain managed on the
+Gateway computer. Removing a shared Gateway config key also affects other agents
+using that key; the confirmation calls this out. Saved profile changes keep the
+selected agent's credential scope. These actions require administrator access.
+Providers without app setup show computer setup guidance.
+
+Cards distinguish **Credentials configured** from **Ready** using the Gateway's
+catalog result. **Global usage and cost** shows provider-reported quotas and
+billing; **Global session spend · 30d** shows the Gateway's session totals, not
+just the selected agent. Missing metrics are not displayed as zero. Refresh
+updates these independent sources without hiding provider controls when usage
+is unavailable.
+
+OAuth renewal remains automatic. **Renewal failed** appears only when the
+Gateway reports a terminal failure, not merely an expired access token. Older
+Gateways without that signal cannot show the distinction.
 
 ## Session colors
 

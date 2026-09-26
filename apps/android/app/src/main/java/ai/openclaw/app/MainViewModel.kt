@@ -545,6 +545,8 @@ class MainViewModel private constructor(
   val modelCatalog: StateFlow<List<GatewayModelSummary>> = runtimeState(initial = emptyList()) { it.modelCatalog }
   val providerModelCatalog: StateFlow<List<GatewayModelSummary>> = runtimeState(initial = emptyList()) { it.providerModelCatalog }
   val providerModelTagsDescribeDefaults: StateFlow<Boolean> = runtimeState(initial = false) { it.providerModelTagsDescribeDefaults }
+  val providerModelOutcomes: StateFlow<List<GatewayModelProviderOutcome>> = runtimeState(initial = emptyList()) { it.providerModelOutcomes }
+  val providerModelPendingProviders: StateFlow<Set<String>> = runtimeState(initial = emptySet()) { it.providerModelPendingProviders }
   val providerModelCatalogRefreshing: StateFlow<Boolean> = runtimeState(initial = false) { it.providerModelCatalogRefreshing }
   val providerModelCatalogErrorText: StateFlow<String?> = runtimeState(initial = null) { it.providerModelCatalogErrorText }
   val modelAuthProviders: StateFlow<List<GatewayModelProviderSummary>> = runtimeState(initial = emptyList()) { it.modelAuthProviders }
@@ -575,6 +577,7 @@ class MainViewModel private constructor(
   val cronActionState: StateFlow<GatewayCronActionState> = runtimeState(initial = GatewayCronActionState.Idle) { it.cronActionState }
   val pendingCronRunJobIds: StateFlow<Set<String>> = runtimeState(initial = emptySet()) { it.pendingCronRunJobIds }
   internal val usageState = runtimeState(initial = GatewaySummaryState<GatewayUsageSummary>()) { it.usageState }
+  internal val providerSessionSpendState = runtimeState(initial = GatewaySummaryState<Map<String, GatewayProviderSessionSpend>>()) { it.providerSessionSpendState }
   internal val skillsState = runtimeState(initial = GatewaySummaryState<GatewaySkillsSummary>()) { it.skillsState }
   val clawHubSkillMethodsAvailable: StateFlow<Boolean> =
     runtimeState(initial = false) { it.clawHubSkillMethodsAvailable }
@@ -1535,6 +1538,10 @@ class MainViewModel private constructor(
     ensureRuntime().refreshProviderModels(refresh)
   }
 
+  fun refreshProviderSessionSpend() {
+    ensureRuntime().refreshProviderSessionSpend()
+  }
+
   fun refreshTalkSetupReadiness() {
     ensureRuntime().refreshTalkSetupReadiness()
   }
@@ -1928,13 +1935,7 @@ class MainViewModel private constructor(
   /** Reads the authoritative flows at commit time so stale Compose callbacks cannot cross chats. */
   private fun currentChatComposerOwner(): ChatComposerOwner? {
     val runtime = runtimeRef.value ?: return null
-    return resolveChatComposerOwner(
-      gatewayStableId = activeGatewayStableId.value,
-      gatewayDefaultAgentId = runtime.chatSessionOwnerAgentId.value ?: runtime.gatewayDefaultAgentId.value,
-      lastVerifiedOwner = runtime.gatewayComposerDefaultAgentOwner.value,
-      sessionKey = runtime.chatSessionKey.value,
-      mainSessionKey = runtime.mainSessionKey.value,
-    )
+    return runtime.captureChatComposerOwner()
   }
 
   /** Captures a share before async runtime startup; later hello/alias resolution may migrate it. */

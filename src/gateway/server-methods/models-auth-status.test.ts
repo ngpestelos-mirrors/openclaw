@@ -1,3 +1,4 @@
+import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 // Model auth status tests cover profile health summaries, provider usage,
 // credential cleanup, secret refresh, and provider run abort side effects.
@@ -19,9 +20,11 @@ import {
 import type { ModelProviderConfig } from "../../config/types.models.js";
 import type { UsageSummary } from "../../infra/provider-usage.types.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../../plugins/installed-plugin-index-policy.js";
+import { loadPluginManifest } from "../../plugins/manifest.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { NON_ENV_SECRETREF_MARKER } from "../../secrets/provider-credential-values.js";
 import { resolveProviderAuthLookupMaps } from "../../secrets/provider-env-vars.js";
+import { resolveBundledPluginPublicModulePath } from "../../test-utils/bundled-plugin-public-surface.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { createChatRunState } from "../server-chat-state.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -137,6 +140,11 @@ vi.mock("../server-model-catalog-auth.js", () => ({
 }));
 
 import { createDeferred } from "../../../test/helpers/promise.js";
+import {
+  createApiKeyProfile,
+  createStaticApiKeyProvider,
+  createOpenAiCodexOauthHealthSummary,
+} from "./models-auth-health.test-support.js";
 import { modelsAuthOrderHandlers } from "./models-auth-order.js";
 import { clearModelAuthStatusUsageCache } from "./models-auth-status-usage-cache.js";
 import {
@@ -188,25 +196,6 @@ function createActiveRun(providerId: string, authProviderId?: string, agentId = 
     providerId,
     authProviderId,
   };
-}
-
-function createApiKeyProfile(provider: string) {
-  return {
-    profileId: `${provider}:default`,
-    provider,
-    type: "api_key",
-    status: "static",
-    source: "store",
-    label: `${provider}:default`,
-  } satisfies AuthHealthSummary["profiles"][number];
-}
-
-function createStaticApiKeyProvider(provider: string) {
-  return {
-    provider,
-    status: "static",
-    profiles: [createApiKeyProfile(provider)],
-  } satisfies AuthHealthSummary["providers"][number];
 }
 
 function createLogoutOptions(
@@ -395,33 +384,6 @@ async function expectLogoutFailureDoesNotAbortRun(params: {
     run: activeRun,
     message: params.message,
   });
-}
-
-function createOpenAiCodexOauthHealthSummary(): AuthHealthSummary {
-  const profile = {
-    profileId: "openai:default",
-    provider: "openai",
-    type: "oauth",
-    status: "ok",
-    expiresAt: 1_000_000,
-    remainingMs: 60_000,
-    source: "store",
-    label: "openai:default",
-  } satisfies AuthHealthSummary["profiles"][number];
-  return {
-    now: 0,
-    warnAfterMs: 0,
-    profiles: [profile],
-    providers: [
-      {
-        provider: "openai",
-        status: "ok",
-        expiresAt: 1_000_000,
-        remainingMs: 60_000,
-        profiles: [profile],
-      },
-    ],
-  };
 }
 
 describe("models.authStatus", () => {
@@ -848,6 +810,39 @@ describe("models.authStatus", () => {
     expect(result.providerCapabilities).toEqual([
       { provider: "github-copilot", apiKeySupported: false, quickApiKeySetup: false },
       { provider: "openai", apiKeySupported: true, quickApiKeySetup: true },
+    ]);
+  });
+
+  it("offers bundled key, token, browser, and device logins before any credentials exist", async () => {
+    setPreparedMetadataSnapshot(
+      createPluginMetadataSnapshotFixture({
+        plugins: ["anthropic", "openai"].map((pluginId) => {
+          const loaded = loadPluginManifest(
+            path.dirname(
+              resolveBundledPluginPublicModulePath({
+                pluginId,
+                artifactBasename: "openclaw.plugin.json",
+              }),
+            ),
+          );
+          if (!loaded.ok) {
+            throw new Error(loaded.error);
+          }
+          return loaded.manifest;
+        }),
+      }),
+    );
+
+    const result = await readAuthStatus();
+    const options = result.providerCapabilities?.flatMap((provider) => provider.loginOptions ?? []);
+
+    expect(options?.map(({ id, kind }) => ({ id, kind }))).toEqual([
+      { id: "anthropic/apiKey", kind: "secret" },
+      { id: "anthropic/setup-token", kind: "secret" },
+      { id: "openai/openai-token-sharing", kind: "oauth" },
+      { id: "openai/openai-device-code", kind: "device-code" },
+      { id: "openai/openai", kind: "oauth" },
+      { id: "openai/openai-api-key", kind: "secret" },
     ]);
   });
 

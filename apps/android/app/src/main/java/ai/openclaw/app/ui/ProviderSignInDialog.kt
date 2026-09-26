@@ -64,6 +64,7 @@ import kotlinx.serialization.json.jsonPrimitive
 internal fun ProviderSignInDialog(
   controller: ProviderAuthController,
   initialProviderId: String? = null,
+  initialApiKeySelected: Boolean = false,
   onConnected: ((String) -> Unit)? = null,
   onDismiss: () -> Unit,
 ) {
@@ -72,7 +73,7 @@ internal fun ProviderSignInDialog(
   var selectedProviderId by remember(controller, initialProviderId) { mutableStateOf(initialProviderId) }
   var search by remember(controller) { mutableStateOf("") }
   var apiKey by remember(controller, selectedProviderId) { mutableStateOf("") }
-  var apiKeySelected by remember(controller, selectedProviderId) { mutableStateOf(false) }
+  var apiKeySelected by remember(controller, selectedProviderId) { mutableStateOf(initialApiKeySelected) }
   val providers = state.providers
   val provider = providers.firstOrNull { it.id == selectedProviderId }
   val displayName = provider?.displayName ?: selectedProviderId?.let(::providerDisplayName)
@@ -123,7 +124,7 @@ internal fun ProviderSignInDialog(
         when {
           displayName == null -> nativeString("Add provider")
           computerSetup -> nativeString("\$provider needs the computer", displayName)
-          else -> nativeString("Sign in to \$provider", displayName)
+          else -> nativeString("Connect \$provider", displayName)
         },
         style = ClawTheme.type.title,
         modifier = Modifier.weight(1f).padding(start = 8.dp),

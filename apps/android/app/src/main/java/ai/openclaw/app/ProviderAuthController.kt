@@ -22,8 +22,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.util.UUID
 
@@ -52,6 +54,22 @@ internal data class ProviderAuthProvider(
     get() = apiKeySupported || loginOptions.isNotEmpty()
 }
 
+internal data class ProviderConnectionProbeTarget(
+  val label: String,
+  val status: String,
+  val profileId: String? = null,
+  val latencyMs: Long? = null,
+  val error: String? = null,
+)
+
+internal data class ProviderConnectionProbe(
+  val provider: String,
+  val status: String,
+  val latencyMs: Long?,
+  val error: String?,
+  val results: List<ProviderConnectionProbeTarget>,
+)
+
 internal data class ProviderAuthState(
   val authStatus: JsonObject? = null,
   val wizard: JsonObject? = null,
@@ -63,6 +81,9 @@ internal data class ProviderAuthState(
   val noticeText: NativeText? = null,
   val apiKeySaveRevision: Long = 0L,
   val connectedProviderId: String? = null,
+  val actionProviderId: String? = null,
+  val probeResult: ProviderConnectionProbe? = null,
+  val warningText: String? = null,
 ) {
   val providers: List<ProviderAuthProvider>
     get() {
@@ -230,6 +251,64 @@ internal class ProviderAuthController(
     }
   }
 
+  fun probe(provider: String) {
+    if (closed || state.value.busy || state.value.cancelling || sessionId != null || provider.isBlank()) return
+    publish { it.copy(actionProviderId = provider, probeResult = null, noticeText = null, warningText = null) }
+    runRequest(null, nativeText("Could not test the connection. Check the Gateway connection and try again.")) {
+      val result =
+        request(
+          GatewayMethod.ModelsProbe.rawValue,
+          buildJsonObject {
+            put("provider", provider)
+            put("agentId", agentId)
+          },
+        )
+      val probe =
+        ProviderConnectionProbe(
+          provider = result.getValue("provider").jsonPrimitive.content,
+          status = result.getValue("status").jsonPrimitive.content,
+          latencyMs = result["latencyMs"]?.jsonPrimitive?.longOrNull,
+          error = result["error"]?.jsonPrimitive?.content,
+          results =
+            result.getValue("results").jsonArray.map { item ->
+              val target = item.jsonObject
+              ProviderConnectionProbeTarget(
+                label = target.getValue("label").jsonPrimitive.content,
+                status = target.getValue("status").jsonPrimitive.content,
+                profileId = target["profileId"]?.jsonPrimitive?.content,
+                latencyMs = target["latencyMs"]?.jsonPrimitive?.longOrNull,
+                error = target["error"]?.jsonPrimitive?.content,
+              )
+            },
+        )
+      publish { it.copy(probeResult = probe) }
+    }
+  }
+
+  fun removeApiKey(provider: String) {
+    if (closed || state.value.busy || state.value.cancelling || sessionId != null || provider.isBlank()) return
+    publish { it.copy(actionProviderId = provider, probeResult = null, noticeText = null, warningText = null) }
+    runRequest(null, nativeText("Could not remove the API key. Refresh to check its status before trying again.")) {
+      val result =
+        request(
+          GatewayMethod.ModelsAuthLogout.rawValue,
+          buildJsonObject {
+            put("provider", provider)
+            put("agentId", agentId)
+            put("credentialType", "api_key")
+          },
+        )
+      publish { it.copy(noticeText = nativeText("API key removed."), warningText = result["warning"]?.jsonPrimitive?.content) }
+      try {
+        refreshPublishedAuthStatus()
+      } catch (err: CancellationException) {
+        throw err
+      } catch (_: Exception) {
+        publish { it.copy(errorText = nativeText("API key removed, but provider status could not refresh. Tap Refresh to check it.")) }
+      }
+    }
+  }
+
   fun answer(value: JsonElement? = null) {
     val id = sessionId ?: return
     if (closed || state.value.busy || state.value.cancelling) return
@@ -293,6 +372,7 @@ internal class ProviderAuthController(
 
   private fun runRequest(
     id: String?,
+    failureText: NativeText = nativeText("Could not complete the sign-in request. Check the connection and try again."),
     block: suspend () -> Unit,
   ) {
     publish { it.copy(busy = true, errorText = null) }
@@ -305,7 +385,7 @@ internal class ProviderAuthController(
         if (err is GatewayRequestRejected && err.gatewayError.details?.code == "WIZARD_NOT_FOUND" && sessionId != id) return@launch
         if (sessionId == id || sessionId == null) {
           publish {
-            it.copy(errorText = nativeText("Could not complete the sign-in request. Check the connection and try again."))
+            it.copy(errorText = failureText)
           }
         }
       } finally {
@@ -425,8 +505,16 @@ internal class ProviderAuthController(
     params: JsonObject,
     cleanup: Boolean = false,
   ): JsonObject {
-    // Native auth sessions expire after 25 minutes; leave time for terminal teardown.
-    val timeoutMs = if (method == "models.authStatus") 15_000L else 26 * 60_000L
+    val timeoutMs =
+      when (method) {
+        GatewayMethod.ModelsAuthStatus.rawValue -> 15_000L
+
+        // Match the shared browser client's non-streaming deadline; expiry never cancels a server-side write.
+        GatewayMethod.ModelsProbe.rawValue, GatewayMethod.ModelsAuthLogout.rawValue -> 30_000L
+
+        // Native auth sessions expire after 25 minutes; leave time for terminal teardown.
+        else -> 26 * 60_000L
+      }
     val response =
       lease.request(method, params.toString(), timeoutMs) { enqueue ->
         if ((!cleanup && (closed || !isCurrent())) || !lease.isCurrent()) throw GatewayRequestNotEnqueued("Provider sign-in scope changed")

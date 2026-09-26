@@ -5,6 +5,7 @@ import ai.openclaw.app.chat.ChatThinkingLevelOption
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -56,6 +57,14 @@ internal data class GatewayModelCatalogResult(
   val models: List<GatewayModelSummary>,
   val refreshFailed: Boolean,
   val tagsDescribeDefaults: Boolean,
+  val providerOutcomes: List<GatewayModelProviderOutcome>,
+  val pendingProviders: Set<String>,
+)
+
+data class GatewayModelProviderOutcome(
+  val provider: String,
+  val profileId: String?,
+  val status: String,
 )
 
 internal fun parseGatewayModelCatalog(root: JsonObject?): GatewayModelCatalogResult =
@@ -63,6 +72,16 @@ internal fun parseGatewayModelCatalog(root: JsonObject?): GatewayModelCatalogRes
     models = parseGatewayModels(root?.get("models") as? JsonArray),
     refreshFailed = root?.get("refreshFailed")?.jsonPrimitive?.booleanOrNull == true,
     tagsDescribeDefaults = root?.get("tagsScope")?.jsonPrimitive?.content == "defaults",
+    providerOutcomes =
+      (root?.get("providerOutcomes") as? JsonArray).orEmpty().map { item ->
+        val row = item.jsonObject
+        GatewayModelProviderOutcome(
+          provider = row.getValue("provider").jsonPrimitive.content,
+          profileId = row["profileId"]?.jsonPrimitive?.content,
+          status = row.getValue("status").jsonPrimitive.content,
+        )
+      },
+    pendingProviders = (root?.get("pendingProviders") as? JsonArray).orEmpty().map { it.jsonPrimitive.content }.toSet(),
   )
 
 internal fun parseGatewayModels(models: JsonArray?): List<GatewayModelSummary> =
@@ -110,6 +129,40 @@ data class GatewayModelProviderSummary(
   val authType: String? = null,
   val renewalFailed: Boolean = false,
   val authProviderId: String = id,
+  val profiles: List<GatewayModelProviderProfile> = emptyList(),
+  val apiKeySource: String? = null,
+  val apiKeyEnvVar: String? = null,
+  val usage: GatewayUsageProviderSummary? = null,
+) {
+  val hasApiKey: Boolean
+    get() = apiKeySource != null || profiles.any { it.type == "api_key" }
+
+  val canRemoveApiKey: Boolean
+    get() = apiKeySource == "config" || profiles.any { it.type == "api_key" && it.logoutSupported }
+}
+
+data class GatewayModelProviderProfile(
+  val profileId: String,
+  val type: String,
+  val source: String? = null,
+  val logoutSupported: Boolean = false,
+)
+
+data class GatewayUsageBilling(
+  val type: String,
+  val unit: String,
+  val label: String? = null,
+  val amount: Double? = null,
+  val used: Double? = null,
+  val limit: Double? = null,
+  val period: String? = null,
+  val resetAtMs: Long? = null,
+)
+
+data class GatewayProviderSessionSpend(
+  val totalCost: Double,
+  val totalTokens: Long,
+  val messageCount: Long,
 )
 
 internal fun parseGatewayModelProviders(providers: JsonArray?): List<GatewayModelProviderSummary> =
@@ -150,5 +203,76 @@ internal fun parseGatewayModelProviders(providers: JsonArray?): List<GatewayMode
         },
       renewalFailed = status == "expired" && activeProfiles.any { it["renewalFailed"]?.jsonPrimitive?.booleanOrNull == true },
       authProviderId = row["authProvider"]?.jsonPrimitive?.content ?: id,
+      profiles =
+        profiles.map { profile ->
+          GatewayModelProviderProfile(
+            profileId = profile.getValue("profileId").jsonPrimitive.content,
+            type = profile.getValue("type").jsonPrimitive.content,
+            source = profile["source"]?.jsonPrimitive?.content,
+            logoutSupported = profile["logoutSupported"]?.jsonPrimitive?.booleanOrNull == true,
+          )
+        },
+      apiKeySource = (row["apiKey"] as? JsonObject)?.get("source")?.jsonPrimitive?.content,
+      apiKeyEnvVar = (row["apiKey"] as? JsonObject)?.get("envVar")?.jsonPrimitive?.content,
+      usage =
+        (row["usage"] as? JsonObject)?.let { usage ->
+          parseGatewayProviderUsage(
+            usage,
+            providerId = usage["providerId"]?.jsonPrimitive?.content ?: id,
+            displayName = row["displayName"]?.jsonPrimitive?.content ?: providerDisplayName(id),
+          )
+        },
     )
   }
+
+internal fun parseGatewayProviderUsage(
+  row: JsonObject,
+  providerId: String = row["provider"]?.jsonPrimitive?.content.orEmpty(),
+  displayName: String = row["displayName"]?.jsonPrimitive?.content ?: providerDisplayName(providerId),
+): GatewayUsageProviderSummary =
+  GatewayUsageProviderSummary(
+    providerId = providerId,
+    displayName = displayName,
+    plan = row["plan"]?.jsonPrimitive?.content,
+    summary = row["summary"]?.jsonPrimitive?.content,
+    error = row["error"]?.jsonPrimitive?.content,
+    windows =
+      (row["windows"] as? JsonArray).orEmpty().map { item ->
+        val window = item.jsonObject
+        GatewayUsageWindowSummary(
+          label = window.getValue("label").jsonPrimitive.content,
+          usedPercent = window.getValue("usedPercent").jsonPrimitive.doubleOrNull ?: 0.0,
+          resetAtMs = window["resetAt"]?.jsonPrimitive?.longOrNull,
+          groupLabel = window["groupLabel"]?.jsonPrimitive?.content,
+        )
+      },
+    billing =
+      (row["billing"] as? JsonArray).orEmpty().map { item ->
+        val billing = item.jsonObject
+        GatewayUsageBilling(
+          type = billing.getValue("type").jsonPrimitive.content,
+          unit = billing.getValue("unit").jsonPrimitive.content,
+          label = billing["label"]?.jsonPrimitive?.content,
+          amount = billing["amount"]?.jsonPrimitive?.doubleOrNull,
+          used = billing["used"]?.jsonPrimitive?.doubleOrNull,
+          limit = billing["limit"]?.jsonPrimitive?.doubleOrNull,
+          period = billing["period"]?.jsonPrimitive?.content,
+          resetAtMs = billing["resetAt"]?.jsonPrimitive?.longOrNull,
+        )
+      },
+  )
+
+internal fun parseGatewayProviderSessionSpend(root: JsonObject): Map<String, GatewayProviderSessionSpend> =
+  (root["aggregates"]?.jsonObject?.get("byProvider") as? JsonArray)
+    .orEmpty()
+    .mapNotNull { item ->
+      val row = item.jsonObject
+      val provider = row["provider"]?.jsonPrimitive?.content?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+      val totals = row.getValue("totals").jsonObject
+      provider to
+        GatewayProviderSessionSpend(
+          totalCost = totals.getValue("totalCost").jsonPrimitive.doubleOrNull ?: 0.0,
+          totalTokens = totals.getValue("totalTokens").jsonPrimitive.longOrNull ?: 0L,
+          messageCount = row.getValue("count").jsonPrimitive.longOrNull ?: 0L,
+        )
+    }.toMap()

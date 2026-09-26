@@ -2,8 +2,11 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.AndroidScreenshotFixture
 import ai.openclaw.app.AndroidScreenshotScene
+import ai.openclaw.app.GatewayModelProviderOutcome
+import ai.openclaw.app.GatewayModelProviderProfile
 import ai.openclaw.app.GatewayModelProviderSummary
 import ai.openclaw.app.GatewayModelSummary
+import ai.openclaw.app.GatewayProviderSessionSpend
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.NodeApp
 import ai.openclaw.app.NodeRuntime
@@ -25,6 +28,9 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -32,6 +38,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextReplacement
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
@@ -85,6 +92,8 @@ class ProvidersModelsScreenTest {
     val catalog = parseGatewayModelCatalog(Json.parseToJsonElement(modelCatalog()).jsonObject)
     ReflectionHelpers.getField<MutableStateFlow<List<GatewayModelSummary>>>(runtime, "_providerModelCatalog").value = catalog.models
     ReflectionHelpers.getField<MutableStateFlow<Boolean>>(runtime, "_providerModelTagsDescribeDefaults").value = catalog.tagsDescribeDefaults
+    ReflectionHelpers.getField<MutableStateFlow<List<GatewayModelProviderOutcome>>>(runtime, "_providerModelOutcomes").value =
+      listOf(GatewayModelProviderOutcome("openai", null, "ready"), GatewayModelProviderOutcome("ollama", null, "ready"))
     val authStatus = Json.parseToJsonElement(providerCatalog).jsonObject
     ReflectionHelpers.getField<MutableStateFlow<List<GatewayModelProviderSummary>>>(runtime, "_modelAuthProviders").value =
       parseGatewayModelProviders(authStatus["providers"] as JsonArray)
@@ -122,72 +131,159 @@ class ProvidersModelsScreenTest {
     show(dark = true)
     capture("providers-computer-setup-dark")
 
+    composeRule.onNode(hasSetTextAction()).performTextReplacement("Ollama")
     composeRule.onNodeWithText("Set up on computer").assertIsDisplayed()
-    // Anthropic still offers its supported API-key sign-in; Ollama does not.
-    composeRule.onAllNodesWithText("Sign in").assertCountEquals(1)
-    composeRule.onNodeWithText("Not signed in").assertIsDisplayed()
-    composeRule.onNodeWithText("Ollama").performClick()
-    composeRule.onNodeWithText("Sign-in is managed on the computer").assertIsDisplayed()
-    composeRule.onNodeWithText("Manage sign-in").assertDoesNotExist()
+    composeRule.onAllNodesWithText("Connect Provider").assertCountEquals(0)
+    composeRule.onNodeWithText("Not configured").assertIsDisplayed()
+    composeRule.onNodeWithText("Sign-in is managed on the computer").performScrollTo().assertIsDisplayed()
 
-    // Missing capability metadata must not advertise an unsupported action either.
     composeRule.runOnIdle {
       val capabilities = ReflectionHelpers.getField<MutableStateFlow<List<ProviderAuthProvider>>>(runtime, "modelAuthCapabilitiesState")
       capabilities.value = capabilities.value.filterNot { it.id == "ollama" }
     }
-    composeRule.onNodeWithText("Set up on computer").assertIsDisplayed()
-    composeRule.onAllNodesWithText("Sign in").assertCountEquals(1)
-    composeRule.onNodeWithText("Sign-in is managed on the computer").assertIsDisplayed()
+    composeRule.onNodeWithText("Set up on computer").performScrollTo().assertIsDisplayed()
+    composeRule.onAllNodesWithText("Connect Provider").assertCountEquals(0)
   }
 
   @Test
   fun providerExpansionAndSearchExposeAdditionalModelsWithoutSelectingThem() {
     show(dark = true)
-    composeRule.onNodeWithText("OpenAI").assertIsDisplayed()
-    composeRule.onNodeWithText("Anthropic").assertIsDisplayed()
-    composeRule.onNodeWithText("Ollama").assertIsDisplayed()
+    composeRule.onNodeWithText("OpenAI").performScrollTo().assertIsDisplayed()
     composeRule.onNodeWithText("GPT-4.1").assertDoesNotExist()
+    composeRule.onNodeWithText("OAuth profiles: 1").performScrollTo().assertIsDisplayed()
+    scrollToSearch()
     capture("providers-dark")
 
-    composeRule.onNodeWithText("OpenAI").performClick()
-    composeRule.onNodeWithText("GPT-4.1").assertIsDisplayed().assertHasNoClickAction()
-    capture("providers-expanded-dark")
+    composeRule.onNodeWithText("OpenAI").performScrollTo().performClick()
+    composeRule
+      .onNodeWithText("GPT-4.1")
+      .performScrollTo()
+      .assertIsDisplayed()
+      .assertHasNoClickAction()
     composeRule.onNodeWithText("Gateway default").assertIsDisplayed()
-    composeRule.onNodeWithText("o3").assertIsDisplayed()
+    capture("providers-expanded-dark")
+    composeRule.onNodeWithText("o3").performScrollTo().assertIsDisplayed()
     composeRule.onNodeWithText("GPT-4o").assertDoesNotExist()
-    composeRule.onNodeWithText("Manage sign-in").assertIsDisplayed()
-
-    composeRule.onNodeWithText("5 more models").performClick()
+    composeRule.onNodeWithText("5 more models").performScrollTo().performClick()
     composeRule
       .onNodeWithText("GPT-4o")
       .performScrollTo()
       .assertIsDisplayed()
       .assertHasNoClickAction()
-    val search = composeRule.onNodeWithContentDescription("Search models")
-    search.performScrollTo().performTextReplacement("nano")
-    composeRule.onNodeWithText("GPT-4.1 nano").assertIsDisplayed()
+
+    val search = composeRule.onNode(hasSetTextAction())
+    scrollToSearch()
+    search.performTextReplacement("Ollama")
+    composeRule.onNode(hasText("Ollama") and !hasSetTextAction()).assertIsDisplayed()
+    composeRule.onNodeWithText("OpenAI").assertDoesNotExist()
+    composeRule.onNodeWithText("Set up on computer").assertDoesNotExist()
+    capture("providers-search-dark")
+
+    scrollToSearch()
+    search.performTextReplacement("nano")
+    composeRule.onNodeWithText("GPT-4.1 nano").performScrollTo().assertIsDisplayed()
     composeRule.onNodeWithText("GPT-4.1").assertDoesNotExist()
     composeRule.onNodeWithText("Anthropic").assertDoesNotExist()
     composeRule.onNodeWithText("5 more models").assertDoesNotExist()
-    composeRule.onNodeWithText("Manage sign-in").assertDoesNotExist()
     composeRule.onNodeWithText("Add provider").assertDoesNotExist()
-    capture("providers-search-dark")
 
+    scrollToSearch()
     search.performTextReplacement("no-such-model")
-    composeRule.onNodeWithText("No models match \"no-such-model\"").assertIsDisplayed()
+    composeRule.onNodeWithText("No providers or models match \"no-such-model\"").assertIsDisplayed()
     search.performTextReplacement("")
-    composeRule.onNodeWithText("GPT-4.1").assertIsDisplayed()
+    composeRule.onNodeWithText("GPT-4.1").performScrollTo().assertIsDisplayed()
     composeRule.onNodeWithText("GPT-4o").performScrollTo().assertIsDisplayed()
     composeRule.onNodeWithText("OpenAI").performScrollTo().performClick()
     composeRule.onNodeWithText("GPT-4.1").assertDoesNotExist()
-    composeRule.onNodeWithText("GPT-4o").assertDoesNotExist()
-    composeRule.onNodeWithText("OpenAI").performClick()
-    composeRule.onNodeWithText("Gateway default").assertIsDisplayed()
+    composeRule.onNodeWithText("OpenAI").performScrollTo().performClick()
+    composeRule.onNodeWithText("Gateway default").performScrollTo().assertIsDisplayed()
     composeRule.runOnIdle {
       ReflectionHelpers.getField<MutableStateFlow<Boolean>>(runtime, "_providerModelTagsDescribeDefaults").value = false
     }
     composeRule.onNodeWithText("Gateway default").assertDoesNotExist()
     composeRule.onNodeWithText("GPT-4.1").assertIsDisplayed()
+    composeRule.runOnIdle {
+      ReflectionHelpers.getField<MutableStateFlow<List<GatewayModelProviderOutcome>>>(runtime, "_providerModelOutcomes").value = emptyList()
+    }
+    composeRule.onNodeWithText("Credentials configured").performScrollTo().assertIsDisplayed()
+    composeRule.onNodeWithText("Ready").assertDoesNotExist()
+    composeRule.runOnIdle {
+      ReflectionHelpers.getField<MutableStateFlow<List<GatewayModelProviderOutcome>>>(runtime, "_providerModelOutcomes").value = listOf(GatewayModelProviderOutcome("rejected-provider", null, "auth-rejected"))
+    }
+    scrollToSearch()
+    search.performTextReplacement("rejected-provider")
+    composeRule.onNodeWithText("Credentials rejected").assertIsDisplayed()
+  }
+
+  @Test
+  fun mixedCredentialsKeepAvailableRoutesReadyAndShowBothKeySources() {
+    val providers = ReflectionHelpers.getField<MutableStateFlow<List<GatewayModelProviderSummary>>>(runtime, "_modelAuthProviders")
+    providers.value =
+      providers.value.map { provider ->
+        if (provider.id == "openai") {
+          provider.copy(
+            status = "expired",
+            renewalFailed = true,
+            apiKeySource = "config",
+            profiles = provider.profiles + GatewayModelProviderProfile("openai:saved-key", "api_key", "saved", logoutSupported = true),
+          )
+        } else {
+          provider
+        }
+      }
+    show(dark = true)
+    composeRule.onNode(hasSetTextAction()).performTextReplacement("OpenAI")
+    capture("providers-mixed-credentials-dark")
+    composeRule.onNodeWithText("Ready").assertIsDisplayed()
+    composeRule.onNodeWithText("Expired").assertDoesNotExist()
+    composeRule.onNodeWithText("API key set in config", substring = true).assertIsDisplayed()
+    composeRule.onNodeWithText("API key profiles: 1", substring = true).assertIsDisplayed()
+  }
+
+  @Test
+  fun providerCardKeepsKeyActionsDistinctAndLabelsGlobalSpend() {
+    val actions = mutableListOf<String>()
+    val provider = GatewayModelProviderSummary("example", "Example", "static", apiKeySource = "config")
+    composeRule.setContent {
+      ClawDesignTheme {
+        ProviderModelsCard(
+          row = ProviderRow("example", "Example", "Unknown", ProviderAvailability.Unknown, 0, auth = provider),
+          capability = ProviderAuthProvider("example", "Example", emptyList(), apiKeySupported = true, ready = true),
+          agentLabel = "Writer",
+          usage = null,
+          usageLoading = false,
+          spend = GatewayProviderSessionSpend(2.5, 1500, 3),
+          catalogStatus = null,
+          checkingModels = false,
+          tagsDescribeDefaults = false,
+          expanded = false,
+          expandedMore = false,
+          searching = false,
+          enabled = true,
+          actionState = null,
+          onToggle = {},
+          onToggleMore = {},
+          onConnect = { actions += "connect" },
+          onSetApiKey = { actions += "key" },
+          onProbe = { actions += "probe" },
+          onRemoveKey = { actions += "remove" },
+        )
+      }
+    }
+    composeRule.onNodeWithText("Credentials for Writer").assertIsDisplayed()
+    composeRule.onNodeWithText("API key set in config").assertIsDisplayed()
+    composeRule.onNodeWithText("Global session spend · 30d").assertIsDisplayed()
+    composeRule.onNodeWithText("Credentials configured").assertIsDisplayed()
+    composeRule.onNodeWithText("Ready").assertDoesNotExist()
+    composeRule.onNodeWithText("Connect Provider").performClick()
+    composeRule.onNodeWithText("Test connection").performClick()
+    composeRule.onNodeWithText("Set API key").performClick()
+    composeRule.onNodeWithText("Remove key").performClick()
+    assertEquals(listOf("connect", "probe", "key", "remove"), actions)
+  }
+
+  private fun scrollToSearch() {
+    composeRule.onNode(hasScrollToIndexAction()).performScrollToIndex(0)
   }
 
   private fun show(dark: Boolean) {

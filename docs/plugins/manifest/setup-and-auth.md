@@ -146,6 +146,13 @@ The availability probe is also read-only.
 text-inference onboarding do not become credential-only actions. Descriptor-only
 `setup.providers[].authMethods` entries do not create executable login choices.
 
+Bundled API-key and setup-token choices support credential-only connections as
+well as onboarding. The shared API-key helper skips starter-model discovery when
+`ctx.credentialOnly` is true. Provider-owned methods must do the same before
+declaring this capability. Connection settings such as a regional endpoint remain
+part of the login; model selection stays separate. Secret prompts must set
+`sensitive: true` so native and web clients mask the input.
+
 Bare `/login` groups visible browser and device-code choices into provider
 buttons without starting sign-in. A provider with several methods opens a second
 choice. Channels without command buttons show commands to copy. Core builds

@@ -38,6 +38,7 @@ import ai.openclaw.app.chat.SessionDiffSnapshot
 import ai.openclaw.app.chat.SessionForkResult
 import ai.openclaw.app.chat.SessionRewindResult
 import ai.openclaw.app.chat.parseSessionDiff
+import ai.openclaw.app.chat.resolveChatComposerOwner
 import ai.openclaw.app.gateway.DeviceAuthEntry
 import ai.openclaw.app.gateway.DeviceAuthStore
 import ai.openclaw.app.gateway.DeviceIdentityStore
@@ -192,6 +193,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -1462,6 +1467,10 @@ class NodeRuntime private constructor(
   val providerModelCatalog: StateFlow<List<GatewayModelSummary>> = _providerModelCatalog.asStateFlow()
   private val _providerModelTagsDescribeDefaults = MutableStateFlow(false)
   val providerModelTagsDescribeDefaults: StateFlow<Boolean> = _providerModelTagsDescribeDefaults.asStateFlow()
+  private val _providerModelOutcomes = MutableStateFlow<List<GatewayModelProviderOutcome>>(emptyList())
+  val providerModelOutcomes: StateFlow<List<GatewayModelProviderOutcome>> = _providerModelOutcomes.asStateFlow()
+  private val _providerModelPendingProviders = MutableStateFlow<Set<String>>(emptySet())
+  val providerModelPendingProviders: StateFlow<Set<String>> = _providerModelPendingProviders.asStateFlow()
   private val _providerModelCatalogRefreshing = MutableStateFlow(false)
   val providerModelCatalogRefreshing: StateFlow<Boolean> = _providerModelCatalogRefreshing.asStateFlow()
   private val _providerModelCatalogErrorText = MutableStateFlow<NativeText?>(null)
@@ -1520,6 +1529,8 @@ class NodeRuntime private constructor(
   private val pendingCronRunRegistry = PendingCronRunRegistry()
   private val usageSummary = GatewaySummaryOwner<GatewayUsageSummary>()
   val usageState: StateFlow<GatewaySummaryState<GatewayUsageSummary>> = usageSummary.state
+  private val providerSessionSpend = GatewaySummaryOwner<Map<String, GatewayProviderSessionSpend>>()
+  val providerSessionSpendState: StateFlow<GatewaySummaryState<Map<String, GatewayProviderSessionSpend>>> = providerSessionSpend.state
   private var usageIncompleteRetryJob: Job? = null
   private val skillsSummary = GatewaySummaryOwner<GatewaySkillsSummary>()
   val skillsState: StateFlow<GatewaySummaryState<GatewaySkillsSummary>> = skillsSummary.state
@@ -2030,13 +2041,7 @@ class NodeRuntime private constructor(
     _gatewayAgents.value = emptyList()
     modelCatalogRefreshGuard.invalidate()
     _modelCatalog.value = emptyList()
-    providerModelCatalogRefreshGuard.invalidate()
-    _providerModelCatalog.value = emptyList()
-    _providerModelTagsDescribeDefaults.value = false
-    _providerModelCatalogRefreshing.value = false
-    _providerModelCatalogErrorText.value = null
-    _modelAuthProviders.value = emptyList()
-    modelAuthCapabilitiesState.value = emptyList()
+    resetProviderModels()
     _talkSetupReadiness.value = GatewayTalkSetupReadiness.unverified()
     voiceWakeWordsSaveSeq.incrementAndGet()
     _voiceWakeWordsSaving.value = false
@@ -2057,6 +2062,7 @@ class NodeRuntime private constructor(
       usageIncompleteRetryJob = null
       usageSummary.reset()
     }
+    providerSessionSpend.reset()
     skillsSummary.reset()
     synchronized(gatewayDataScopeLock) {
       chatSelectionSeq.incrementAndGet()
@@ -2654,14 +2660,8 @@ class NodeRuntime private constructor(
       if (_mainSessionKey.value == sessionKey) return@synchronized false
       // Retire reads before publishing an agent change, including a switch back to the same agent.
       modelCatalogRefreshGuard.invalidate()
-      providerModelCatalogRefreshGuard.invalidate()
       _modelCatalog.value = emptyList()
-      _providerModelCatalog.value = emptyList()
-      _providerModelTagsDescribeDefaults.value = false
-      _modelAuthProviders.value = emptyList()
-      modelAuthCapabilitiesState.value = emptyList()
-      _providerModelCatalogRefreshing.value = false
-      _providerModelCatalogErrorText.value = null
+      resetProviderModels()
       _mainSessionKey.value = sessionKey
       if (operatorConnected) {
         refreshModelCatalog()
@@ -2934,6 +2934,8 @@ class NodeRuntime private constructor(
   }
 
   fun refreshUsage() = launchGatewayRefresh { refreshUsageFromGateway() }
+
+  fun refreshProviderSessionSpend() = launchGatewayRefresh { refreshProviderSessionSpendFromGateway() }
 
   fun refreshSkills() = launchGatewayRefresh { refreshSkillsFromGateway() }
 
@@ -5935,9 +5937,25 @@ class NodeRuntime private constructor(
     sessionKey: String,
     ownerAgentId: String?,
   ) {
+    val previousOwner = captureChatComposerOwner()
+    val previousSelectionGeneration = chatSelectionGeneration.value
     retirePendingChatSelection()
     chat.switchSession(sessionKey, ownerAgentId)
+    val currentOwner = captureChatComposerOwner()
+    if (previousOwner.agentId != currentOwner.agentId || previousOwner.routingVerified != currentOwner.routingVerified) {
+      resetProviderModels()
+    }
+    if (operatorConnected && previousSelectionGeneration != chatSelectionGeneration.value) refreshProviderModels()
   }
+
+  internal fun captureChatComposerOwner(): ChatComposerOwner =
+    resolveChatComposerOwner(
+      gatewayStableId = prefs.gatewayRegistry.activeStableId.value,
+      gatewayDefaultAgentId = chatSessionOwnerAgentId.value ?: gatewayDefaultAgentId.value,
+      lastVerifiedOwner = gatewayComposerDefaultAgentOwner.value,
+      sessionKey = chatSessionKey.value,
+      mainSessionKey = mainSessionKey.value,
+    )
 
   internal fun refreshSystemAgentChat() {
     systemAgentChatController.refresh()
@@ -6819,10 +6837,13 @@ class NodeRuntime private constructor(
   private inline fun publishProviderModelRefresh(
     gatewayScope: GatewayDataScope,
     refreshGeneration: Long,
+    selectionGeneration: Long,
     crossinline publish: () -> Unit,
   ): Boolean =
     publishGatewayData(gatewayScope) {
-      providerModelCatalogRefreshGuard.publishIfCurrent(refreshGeneration) { publish() }
+      if (chatSelectionGeneration.value == selectionGeneration) {
+        providerModelCatalogRefreshGuard.publishIfCurrent(refreshGeneration) { publish() }
+      }
     }
 
   private fun publishAppearancePreferences(
@@ -7275,21 +7296,33 @@ class NodeRuntime private constructor(
     }
   }
 
+  private fun resetProviderModels() {
+    providerModelCatalogRefreshGuard.invalidate()
+    _providerModelCatalog.value = emptyList()
+    _providerModelTagsDescribeDefaults.value = false
+    _providerModelOutcomes.value = emptyList()
+    _providerModelPendingProviders.value = emptySet()
+    _providerModelCatalogRefreshing.value = false
+    _providerModelCatalogErrorText.value = null
+    _modelAuthProviders.value = emptyList()
+    modelAuthCapabilitiesState.value = emptyList()
+  }
+
   private suspend fun refreshProviderModelsFromGateway(refresh: Boolean = false) {
     val refreshGeneration = providerModelCatalogRefreshGuard.begin()
-    val gatewayScope = captureGatewayDataScope() ?: return
-    val agentId = selectedChatAgentId
-    publishProviderModelRefresh(gatewayScope, refreshGeneration) {
+    val (gatewayScope, owner, selectionGeneration) =
+      synchronized(gatewayDataScopeLock) {
+        Triple(captureGatewayDataScope() ?: return, captureChatComposerOwner(), chatSelectionGeneration.value)
+      }
+    val agentId = owner.agentId
+    publishProviderModelRefresh(gatewayScope, refreshGeneration, selectionGeneration) {
       _providerModelCatalogRefreshing.value = true
       _providerModelCatalogErrorText.value = null
     }
-    if (!operatorConnected) {
-      publishProviderModelRefresh(gatewayScope, refreshGeneration) {
-        _providerModelCatalog.value = emptyList()
-        _providerModelTagsDescribeDefaults.value = false
-        _modelAuthProviders.value = emptyList()
-        modelAuthCapabilitiesState.value = emptyList()
-        _providerModelCatalogRefreshing.value = false
+    if (!operatorConnected || !owner.routingVerified) {
+      publishProviderModelRefresh(gatewayScope, refreshGeneration, selectionGeneration) {
+        resetProviderModels()
+        if (!owner.routingVerified) _providerModelCatalogErrorText.value = nativeText("Agent routing is unavailable. Reconnect or select an agent.")
       }
       return
     }
@@ -7297,16 +7330,18 @@ class NodeRuntime private constructor(
       try {
         val response = requestProviderModelConfig(agentId, refresh) { requestGatewayData(gatewayScope, "models.list", it) }
         val catalog = parseGatewayModelCatalog(json.parseToJsonElement(response).asObjectOrNull())
-        publishProviderModelRefresh(gatewayScope, refreshGeneration) {
+        publishProviderModelRefresh(gatewayScope, refreshGeneration, selectionGeneration) {
           // The Gateway owns compatible inventory; an empty result can revoke old choices.
           _providerModelCatalog.value = catalog.models
           _providerModelTagsDescribeDefaults.value = catalog.tagsDescribeDefaults
+          _providerModelOutcomes.value = catalog.providerOutcomes
+          _providerModelPendingProviders.value = catalog.pendingProviders
           if (catalog.refreshFailed) {
             _providerModelCatalogErrorText.value = nativeText("Some models could not be refreshed. Tap Refresh to retry.")
           }
         }
       } catch (err: Throwable) {
-        publishProviderModelRefresh(gatewayScope, refreshGeneration) {
+        publishProviderModelRefresh(gatewayScope, refreshGeneration, selectionGeneration) {
           _providerModelCatalogErrorText.value =
             if (err is ProviderModelConfigUnsupported) {
               nativeText("Update your Gateway to view provider model config.")
@@ -7319,17 +7354,17 @@ class NodeRuntime private constructor(
       // Keep readiness independent from the additive provider-config view so
       // older Gateways still populate provider status while prompting an upgrade.
       try {
-        val params = buildJsonObject { if (agentId != null) put("agentId", JsonPrimitive(agentId)) }
+        val params = buildJsonObject { put("agentId", JsonPrimitive(agentId)) }
         val response = requestGatewayData(gatewayScope, "models.authStatus", params.toString())
         val authStatus = json.parseToJsonElement(response).asObjectOrNull()
         val providers = parseGatewayModelProviders(authStatus?.get("providers") as? JsonArray)
         val capabilities = ProviderAuthState(authStatus = authStatus).providers
-        publishProviderModelRefresh(gatewayScope, refreshGeneration) {
+        publishProviderModelRefresh(gatewayScope, refreshGeneration, selectionGeneration) {
           _modelAuthProviders.value = providers
           modelAuthCapabilitiesState.value = capabilities
         }
       } catch (_: Throwable) {
-        publishProviderModelRefresh(gatewayScope, refreshGeneration) {
+        publishProviderModelRefresh(gatewayScope, refreshGeneration, selectionGeneration) {
           if (_providerModelCatalogErrorText.value == null) {
             _providerModelCatalogErrorText.value =
               nativeText("Provider models loaded, but readiness is unavailable.")
@@ -7337,7 +7372,7 @@ class NodeRuntime private constructor(
         }
       }
     } finally {
-      publishProviderModelRefresh(gatewayScope, refreshGeneration) {
+      publishProviderModelRefresh(gatewayScope, refreshGeneration, selectionGeneration) {
         _providerModelCatalogRefreshing.value = false
       }
     }
@@ -7759,7 +7794,7 @@ class NodeRuntime private constructor(
       val nextSummary =
         GatewayUsageSummary(
           updatedAtMs = root.long("updatedAt"),
-          providers = parseUsageProviders(root?.get("providers") as? JsonArray),
+          providers = (root?.get("providers") as? JsonArray).orEmpty().map { parseGatewayProviderUsage(it.jsonObject) },
           refreshing = root.boolean("refreshing"),
         )
       usageSummary.publish(gatewayScope) { it.copy(summary = nextSummary) }
@@ -7794,6 +7829,28 @@ class NodeRuntime private constructor(
         }
     }
   }
+
+  private suspend fun refreshProviderSessionSpendFromGateway() =
+    refreshGatewaySummary(
+      summary = providerSessionSpend,
+      failureText = nativeText("Could not load global session spend."),
+    ) { gatewayScope ->
+      val timeZone = ZoneId.systemDefault()
+      val today = LocalDate.now(timeZone)
+      val params =
+        buildJsonObject {
+          put("startDate", today.minusDays(29).toString())
+          put("endDate", today.toString())
+          put("agentScope", "all")
+          put("mode", "specific")
+          put("timeZone", timeZone.id)
+          put("groupBy", "family")
+          put("limit", 1000)
+          put("includeContextWeight", false)
+        }
+      val response = requestGatewayData(gatewayScope, GatewayMethod.SessionsUsage.rawValue, params.toString())
+      parseGatewayProviderSessionSpend(json.parseToJsonElement(response).jsonObject)
+    }
 
   private suspend fun refreshSkillsFromGateway(): GatewaySkillsSummary? =
     refreshGatewaySummary(
@@ -9486,33 +9543,6 @@ class NodeRuntime private constructor(
         )
       }.orEmpty()
 
-  private fun parseUsageProviders(providers: JsonArray?): List<GatewayUsageProviderSummary> =
-    providers
-      ?.mapNotNull { item ->
-        val obj = item.asObjectOrNull() ?: return@mapNotNull null
-        val displayName = obj["displayName"].asStringOrNull()?.trim().orEmpty()
-        if (displayName.isEmpty()) return@mapNotNull null
-        GatewayUsageProviderSummary(
-          displayName = displayName,
-          plan = obj["plan"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
-          error = obj["error"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
-          windows = parseUsageWindows(obj["windows"] as? JsonArray),
-        )
-      }.orEmpty()
-
-  private fun parseUsageWindows(windows: JsonArray?): List<GatewayUsageWindowSummary> =
-    windows
-      ?.mapNotNull { item ->
-        val obj = item.asObjectOrNull() ?: return@mapNotNull null
-        val label = obj["label"].asStringOrNull()?.trim().orEmpty()
-        if (label.isEmpty()) return@mapNotNull null
-        GatewayUsageWindowSummary(
-          label = label,
-          usedPercent = obj.double("usedPercent") ?: 0.0,
-          resetAtMs = obj.long("resetAt"),
-        )
-      }.orEmpty()
-
   private fun parseSkillSummaries(skills: JsonArray?): List<GatewaySkillSummary> =
     skills
       ?.mapNotNull { item ->
@@ -10161,12 +10191,16 @@ data class GatewayUsageProviderSummary(
   val plan: String?,
   val error: String?,
   val windows: List<GatewayUsageWindowSummary>,
+  val providerId: String = "",
+  val summary: String? = null,
+  val billing: List<GatewayUsageBilling> = emptyList(),
 )
 
 data class GatewayUsageWindowSummary(
   val label: String,
   val usedPercent: Double,
   val resetAtMs: Long?,
+  val groupLabel: String? = null,
 )
 
 data class GatewaySkillsSummary(

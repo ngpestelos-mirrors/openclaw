@@ -42,7 +42,7 @@ class ProviderModelStatusTest {
           ),
       )
 
-    assertEquals(listOf("openai", "byteplus"), rows.map { it.id })
+    assertEquals(listOf("byteplus", "openai"), rows.map { it.id })
     assertEquals(1, rows.first { it.id == "openai" }.modelCount)
     assertEquals(1, rows.first { it.id == "byteplus" }.modelCount)
     assertEquals(listOf("gpt-5.5"), rows.first { it.id == "openai" }.models.map { it.id })

@@ -110,7 +110,7 @@ class ProviderSignInDialogTest {
     composeRule.onNodeWithText("Search 3 providers").performTextReplacement("Example")
     composeRule.onNodeWithText("Key").assertDoesNotExist()
     composeRule.onNode(hasText("Example") and !hasSetTextAction()).performClick()
-    composeRule.onNodeWithText("Sign in to Example").assertIsDisplayed()
+    composeRule.onNodeWithText("Connect Example").assertIsDisplayed()
     composeRule.onNodeWithText("Pick how you want to connect.").assertIsDisplayed()
     composeRule.onNodeWithText("Example account").assertIsDisplayed()
     composeRule.onNodeWithText("Recommended").assertIsDisplayed()
@@ -128,11 +128,9 @@ class ProviderSignInDialogTest {
 
   @Test
   fun directProviderEntryMasksKeyAndDoesNotLeaveAfterEmptyInput() {
-    show("key")
+    show("key", initialApiKeySelected = true)
     composeRule.onNodeWithText("Search 3 providers").assertDoesNotExist()
     composeRule.onNodeWithText("Other account").assertDoesNotExist()
-    composeRule.onNodeWithText("Save and connect").assertDoesNotExist()
-    composeRule.onNodeWithText("API key").performClick()
     val key = composeRule.onNode(hasSetTextAction() and hasText("API key"))
     key.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
     composeRule.onNodeWithText("Save and connect").performClick()
@@ -165,7 +163,10 @@ class ProviderSignInDialogTest {
     }
   }
 
-  private fun show(initialProviderId: String? = null) {
+  private fun show(
+    initialProviderId: String? = null,
+    initialApiKeySelected: Boolean = false,
+  ) {
     composeRule.setContent {
       ClawDesignTheme {
         CompositionLocalProvider(
@@ -177,7 +178,7 @@ class ProviderSignInDialogTest {
             },
         ) {
           if (!dismissed) {
-            ProviderSignInDialog(controller, initialProviderId = initialProviderId, onConnected = { connected = it }) {
+            ProviderSignInDialog(controller, initialProviderId = initialProviderId, initialApiKeySelected = initialApiKeySelected, onConnected = { connected = it }) {
               dismissed = true
             }
           }
