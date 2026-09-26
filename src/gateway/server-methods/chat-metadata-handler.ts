@@ -1,3 +1,4 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
   errorShape,
@@ -19,7 +20,6 @@ import { createSessionListEntryFilter } from "../session-sharing.js";
 import { retainGatewaySessionEntryReadOnly } from "../session-utils-read-lifetime.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import type { ChatMetadataReadParams } from "./chat-metadata-contract.js";
-import { normalizeOptionalChatText } from "./chat-text-normalization.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 import { preparePersonalModelAccountSelection } from "./users-model-account-access.js";
 import { resolveAuthenticatedProfileId } from "./users-profile-access.js";
@@ -55,7 +55,7 @@ export function resolveChatMetadataReadParams(
     const requested = resolveRequestedSessionAgentId(
       cfg,
       params.sessionKey,
-      normalizeOptionalChatText(params.agentId),
+      normalizeOptionalString(params.agentId),
     );
     if (!requested.ok) {
       respond(false, undefined, requested.error);

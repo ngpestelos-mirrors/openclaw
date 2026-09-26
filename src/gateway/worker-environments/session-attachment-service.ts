@@ -117,6 +117,18 @@ export function createWorkerEnvironmentSessionAttachments(
       throw new Error("Conversation environment attachment is no longer current");
     }
   };
+  const touchSessionAttachment = async (
+    binding: WorkerEnvironmentAttachment,
+    assertCurrent: () => void = () => assertSessionAttachment(binding),
+  ) => {
+    await store.ready();
+    assertCurrent();
+    await store.touchSessionAttachment(
+      store.getSessionAttachmentRecord(binding.sessionId)!,
+      assertCurrent,
+    );
+    assertCurrent();
+  };
   const close = async (
     sessionId: string,
     authorize: () => void,
@@ -175,15 +187,7 @@ export function createWorkerEnvironmentSessionAttachments(
       return {
         binding,
         assertCurrent,
-        async touch() {
-          await store.ready();
-          assertCurrent();
-          await store.touchSessionAttachment(
-            store.getSessionAttachmentRecord(binding.sessionId)!,
-            assertCurrent,
-          );
-          assertCurrent();
-        },
+        touch: () => touchSessionAttachment(binding, assertCurrent),
       };
     },
     cancelSessionAttachmentCreations() {
@@ -214,13 +218,8 @@ export function createWorkerEnvironmentSessionAttachments(
         : undefined;
     },
     assertSessionAttachment,
-    async touchSessionAttachment(binding: WorkerEnvironmentAttachment) {
-      await store.ready();
-      assertSessionAttachment(binding);
-      const record = store.getSessionAttachmentRecord(binding.sessionId)!;
-      await store.touchSessionAttachment(record, () => assertSessionAttachment(binding));
-      assertSessionAttachment(binding);
-    },
+    touchSessionAttachment: (binding: WorkerEnvironmentAttachment) =>
+      touchSessionAttachment(binding),
     createSessionAttachment(
       input: WorkerEnvironmentSessionCreateRequest,
       authorize: () => void,
