@@ -22,7 +22,7 @@ export const WORKSPACE_ATTESTATION_RECENT_MS = 24 * 60 * 60 * 1000;
 export const WORKSPACE_LEGACY_STATE_MIGRATION_KIND = "legacy-workspace-setup-files";
 export const WORKSPACE_CONTENT_RELOCATION_MIGRATION_KIND = "workspace-content-relocation";
 const MAX_WORKSPACE_ATTESTATION_FILENAME_LENGTH = 255;
-export const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
 // Attested names are joined onto the workspace dir and read back, so keep the
 // accepted set closed rather than denying unsafe forms one at a time: a plain
 // ASCII markdown basename excludes separators, traversal, colons, NUL, and the
