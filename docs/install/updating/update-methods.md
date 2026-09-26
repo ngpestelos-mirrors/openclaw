@@ -148,6 +148,10 @@ selected, natively owned Gateway serves this checkout's physical `dist`. The
 existing source-build transaction stops that Gateway before writing and restores
 the previous output on a settled build failure. A separate candidate checkout or
 a sibling-only match never grants permission to stop another service.
+If that native stop partially succeeds and then fails, the candidate revalidates
+and restarts the original service through its native owner, without running a
+custom shell command or starting the build. The original stop failure is still
+reported, including any failure to complete recovery.
 
 For that first hop, the old script still owns its one successful restart,
 including an authored custom restart command. Its empty or whitespace-only

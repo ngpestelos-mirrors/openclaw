@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { registerHooks } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -9,7 +10,28 @@ const root = process.env.LEGACY_FIXTURE_ROOT;
 const source = process.env.LEGACY_FIXTURE_SOURCE;
 const mode = process.env.LEGACY_FIXTURE_MODE;
 const self = import.meta.url;
+const partialStop = mode.startsWith("partial-stop");
+let definitionReassigned = false;
 export const event = (name) => fs.appendFileSync(path.join(root, "events"), `${name}\n`);
+export async function revalidate({ preManagedServiceStop }) {
+  return mode === "drift" || definitionReassigned
+    ? { ...preManagedServiceStop.serviceUpdateVerdict, fingerprint: "replacement" }
+    : preManagedServiceStop.serviceUpdateVerdict;
+}
+export async function admitNativeRestart(action) {
+  const { assertFutureConfigActionAllowed } = await import(
+    pathToFileURL(path.join(source, "src/daemon/future-config-guard.ts")).href + "?original"
+  );
+  await assertFutureConfigActionAllowed(action);
+  event("native-admission");
+  if (mode === "partial-stop-drift") definitionReassigned = true;
+}
+export async function nativeRestart(args) {
+  args.assertCurrent();
+  assert.equal(args.env.OPENCLAW_PROFILE, "selected");
+  event("native-restart");
+  return { outcome: mode === "partial-stop-scheduled" ? "scheduled" : "completed" };
+}
 const running = () => !fs.existsSync(path.join(root, "stopped"));
 export function readState(_service, options = {}) {
   const sibling = options.env?.OPENCLAW_PROFILE === "sibling";
@@ -41,7 +63,7 @@ export async function stop(params) {
   assert.equal(params.expectedService.serviceEnv.OPENCLAW_PROFILE, "selected");
   event("stop");
   fs.writeFileSync(path.join(root, "stopped"), "stopped");
-  if (mode === "partial-stop" || mode === "native-unjoined") {
+  if (partialStop || mode === "native-unjoined") {
     params.onStopped({
       stopped: true,
       serviceEnv: readState().env,
@@ -119,7 +141,7 @@ const modules = new Map([
   ],
   [
     "src/cli/update-cli/update-command-service-revalidation",
-    `export async function revalidateManagedGatewayServiceAfterUpdate({preManagedServiceStop}) { return ${JSON.stringify(mode)} === 'drift' ? {...preManagedServiceStop.serviceUpdateVerdict, fingerprint:'replacement'} : preManagedServiceStop.serviceUpdateVerdict; }`,
+    exportsFromSelf("revalidate as revalidateManagedGatewayServiceAfterUpdate"),
   ],
   [
     "src/daemon/service",
@@ -131,6 +153,37 @@ const modules = new Map([
     `export const discoverManagedGatewayBindings = async () => ${JSON.stringify(mode === "sibling" ? [{ profile: "sibling", env: { OPENCLAW_PROFILE: "sibling" } }] : [])};`,
   ],
 ]);
+if (partialStop) {
+  // The subprocess owns a synthetic account home; keep canonical-path admission real.
+  const userInfo = os.userInfo;
+  os.userInfo = (...args) => ({ ...userInfo(...args), homedir: process.env.HOME });
+  const { applyCliProfileEnv } = await import(
+    pathToFileURL(path.join(source, "src/cli/profile.ts")).href
+  );
+  applyCliProfileEnv({ profile: process.env.OPENCLAW_PROFILE });
+  const original = (name) =>
+    JSON.stringify(pathToFileURL(path.join(source, `${name}.ts`)).href + "?original");
+  modules.set(
+    "src/daemon/service",
+    exportsFromSelf("readState as readGatewayServiceState") +
+      `export { resolveGatewayService } from ${original("src/daemon/service")};`,
+  );
+  modules.set(
+    "src/daemon/future-config-guard",
+    exportsFromSelf("admitNativeRestart as assertFutureConfigActionAllowed"),
+  );
+  // Keep the real service guard and operation lock; stop only at native effects.
+  for (const [name, restart] of [
+    ["src/daemon/launchd-lifecycle", "restartLaunchAgent"],
+    ["src/daemon/systemd-lifecycle", "restartSystemdService"],
+    ["src/daemon/schtasks-control", "restartScheduledTask"],
+  ]) {
+    modules.set(
+      name,
+      `export * from ${original(name)};` + exportsFromSelf(`nativeRestart as ${restart}`),
+    );
+  }
+}
 const memoryUrl = pathToFileURL(path.join(source, "scripts/lib/process-memory.mts")).href;
 // The compiler is synthetic; its capacity must not depend on other CI workers.
 modules.set(

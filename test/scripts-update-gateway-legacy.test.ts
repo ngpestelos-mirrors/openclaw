@@ -28,6 +28,9 @@ it.skipIf(process.platform === "win32").for([
   { mode: "unjoined", restart: undefined, code: 1, owns: true },
   { mode: "enable-failure", restart: undefined, code: 1, owns: true },
   { mode: "partial-stop", restart: undefined, code: 1, owns: true },
+  { mode: "partial-stop-custom", restart: "custom-restart", code: 1, owns: true },
+  { mode: "partial-stop-drift", restart: "custom-restart", code: 1, owns: true },
+  { mode: "partial-stop-scheduled", restart: "custom-restart", code: 1, owns: true },
   { mode: "native-unjoined", restart: undefined, code: 1, owns: true },
   { mode: "drift", restart: undefined, code: 1, owns: true },
   { mode: "begin-abort", restart: undefined, code: 1, owns: true },
@@ -213,9 +216,22 @@ if [ "$LEGACY_FIXTURE_MODE" = build-throw-restart ]; then exit 23; fi`,
         expect(
           fs.existsSync(path.join(checkout, ".artifacts/dist-artifacts.lock/owner.json")),
         ).toBe(true);
-      } else if (mode === "partial-stop") {
-        expect(events).toEqual(["stop", "restart"]);
+      } else if (mode.startsWith("partial-stop")) {
+        expect(events, result.stderr).toEqual([
+          "stop",
+          "native-admission",
+          ...(mode === "partial-stop-drift" ? [] : ["native-restart"]),
+        ]);
+        expect(result.stderr).toContain("fixture stop rejected after native mutation");
+        if (mode === "partial-stop-drift") {
+          expect(result.stderr).toContain("native fingerprint changed");
+        } else if (mode === "partial-stop-scheduled") {
+          expect(result.stderr).toMatch(/scheduled|not completed/i);
+        }
         expect(fs.readFileSync(path.join(checkout, "dist/entry.js"), "utf8")).toBe("old runtime\n");
+        expect(
+          fs.readdirSync(checkout).some((name) => name.startsWith(".update-build-backup.")),
+        ).toBe(false);
       } else if (mode === "drift") {
         expect(events).toEqual(["stop", "mutation", "build", "complete:false"]);
         expect(result.stderr).toContain("native fingerprint changed");

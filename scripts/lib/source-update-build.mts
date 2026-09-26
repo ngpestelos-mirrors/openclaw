@@ -152,19 +152,17 @@ export async function runLegacySourceUpdateBuild(
             !(error instanceof ScheduledTaskAutoStartRecoveryError)
           ) {
             try {
-              await revalidate();
-              const restarted = await runManagedCommand({
-                bin: "bash",
-                args: ["-c", restartCommand],
-                cwd: root,
-                env,
-                stdio: "inherit",
+              // Reacquire native custody and recheck the original binding inside it.
+              const restarted = await resolveGatewayService().restart({
+                env: selected.env,
+                stdout: process.stdout,
+                preserveDefinition: true,
+                beforeMutation: revalidate,
               });
-              if (restarted !== 0) {
-                throw new Error(
-                  `Original Gateway restart failed (${restarted}) after partial stop.`,
-                  { cause: error },
-                );
+              if (restarted.outcome !== "completed") {
+                throw new Error("Original Gateway restart was not completed after partial stop.", {
+                  cause: error,
+                });
               }
             } catch (recoveryError) {
               throw new AggregateError(
