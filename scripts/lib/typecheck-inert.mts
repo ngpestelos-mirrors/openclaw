@@ -26,7 +26,8 @@ function significantTokens(sourceFile: ts.SourceFile) {
       kind === ts.SyntaxKind.SingleLineCommentTrivia ||
       kind === ts.SyntaxKind.MultiLineCommentTrivia
     ) {
-      if (/@ts-|@jsx/u.test(text) || text.startsWith("///")) {
+      // TypeScript matches pragma names case-insensitively.
+      if (/@ts-|@jsx/iu.test(text) || text.startsWith("///")) {
         valid = false;
       }
     } else if (kind !== ts.SyntaxKind.WhitespaceTrivia && kind !== ts.SyntaxKind.NewLineTrivia) {

@@ -43,6 +43,13 @@ describe("typecheck-inert TypeScript changes", () => {
       ["existing-directive.ts", "// @ts-ignore\nx(); // old", "// @ts-ignore\nx(); // new", false],
       ["jsx-directive.tsx", "/** @jsx h */\nx(); // old", "/** @jsx h */\nx(); // new", false],
       [
+        "upper-directive.ts",
+        "// @TS-NOCHECK\nconst x: string = 1;",
+        "// ok\nconst x: string = 1;",
+        false,
+      ],
+      ["upper-jsx.tsx", "/** @JSX h */\nx(); // old", "/** @JSX h */\nx(); // new", false],
+      [
         "reference.ts",
         '/// <reference path="a.ts" />\n// old',
         '/// <reference path="a.ts" />\n// new',
