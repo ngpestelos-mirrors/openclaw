@@ -25,10 +25,12 @@ import {
   getGatewayContextResolver,
   withPluginRuntimeGatewayContextResolver,
 } from "../plugins/runtime/gateway-request-scope.js";
+import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import {
   assertAgentHarnessTaskRuntimeScope,
   type AgentHarnessTaskRuntimeScope,
 } from "../tasks/agent-harness-task-runtime-scope.js";
+import { SUBAGENT_KILL_TASK_ERROR } from "../tasks/detached-task-runtime-contract.js";
 import {
   createRunningTaskRun,
   finalizeTaskRunByRunId,
@@ -46,6 +48,38 @@ type CreateRunningTaskRunParams = Parameters<typeof createRunningTaskRun>[0];
 type RecordTaskRunProgressParams = Parameters<typeof recordTaskRunProgressByRunId>[0];
 type FinalizeTaskRunParams = Parameters<typeof finalizeTaskRunByRunId>[0];
 type SetDeliveryStatusParams = Parameters<typeof setDetachedTaskDeliveryStatusByRunId>[0];
+
+type HarnessTaskContent = {
+  task?: string;
+  label?: string;
+  progressSummary?: string | null;
+  terminalSummary?: string | null;
+  eventSummary?: string | null;
+  error?: string;
+};
+
+/** Keep native task lifecycle receipts durable, not their temporary conversation content. */
+function projectHarnessTaskContentForPersistence<T extends HarnessTaskContent>(
+  requesterSessionKey: string,
+  params: T,
+): T {
+  if (!isIncognitoSessionKey(requesterSessionKey)) {
+    return params;
+  }
+  return {
+    ...params,
+    ...(params.task !== undefined ? { task: "Incognito task" } : {}),
+    ...(params.label !== undefined ? { label: "Incognito task" } : {}),
+    ...(params.progressSummary !== undefined ? { progressSummary: null } : {}),
+    ...(params.terminalSummary !== undefined ? { terminalSummary: null } : {}),
+    ...(params.eventSummary !== undefined ? { eventSummary: null } : {}),
+    ...(params.error !== undefined
+      ? {
+          error: params.error === SUBAGENT_KILL_TASK_ERROR ? params.error : "Incognito task error.",
+        }
+      : {}),
+  };
+}
 
 /** Scope and naming options used to bind task operations to one requester session. */
 export type AgentHarnessTaskRuntimeScopeParams = {
@@ -133,7 +167,7 @@ export function createAgentHarnessTaskRuntime(
   ): TaskRecord | null => {
     assertRunId(taskParams.runId);
     return createRunningTaskRun({
-      ...taskParams,
+      ...projectHarnessTaskContentForPersistence(requesterSessionKey, taskParams),
       runtime,
       ...(taskKind ? { taskKind } : {}),
       requesterSessionKey,
@@ -154,7 +188,7 @@ export function createAgentHarnessTaskRuntime(
     recordTaskRunProgressByRunId(taskParams) {
       assertRunId(taskParams.runId);
       return recordTaskRunProgressByRunId({
-        ...taskParams,
+        ...projectHarnessTaskContentForPersistence(requesterSessionKey, taskParams),
         runtime,
         sessionKey: requesterSessionKey,
       });
@@ -162,7 +196,7 @@ export function createAgentHarnessTaskRuntime(
     finalizeTaskRunByRunId(taskParams) {
       assertRunId(taskParams.runId);
       return finalizeTaskRunByRunId({
-        ...taskParams,
+        ...projectHarnessTaskContentForPersistence(requesterSessionKey, taskParams),
         runtime,
         sessionKey: requesterSessionKey,
       });
@@ -170,7 +204,7 @@ export function createAgentHarnessTaskRuntime(
     setDetachedTaskDeliveryStatusByRunId(taskParams) {
       assertRunId(taskParams.runId);
       return setDetachedTaskDeliveryStatusByRunId({
-        ...taskParams,
+        ...projectHarnessTaskContentForPersistence(requesterSessionKey, taskParams),
         runtime,
         sessionKey: requesterSessionKey,
       });

@@ -165,6 +165,21 @@ describe("agent-harness-task-runtime", () => {
     },
   );
 
+  it("keeps full Incognito completion content on the live delivery path", async () => {
+    const result = "SYNTHETIC_LIVE_COMPLETION";
+    await expect(
+      deliverAgentHarnessTaskCompletion({
+        scope: createScope("agent:main:dashboard:incognito-native"),
+        childSessionKey: "harness-thread:child",
+        childSessionId: "child",
+        announceId: "harness:parent:child:succeeded",
+        status: "succeeded",
+        result,
+      }),
+    ).resolves.toMatchObject({ delivered: true, path: "steered" });
+    expect(JSON.stringify(vi.mocked(deliverSubagentAnnouncement).mock.calls)).toContain(result);
+  });
+
   it("rejects task run ids outside the configured harness scope", () => {
     const runtime = createAgentHarnessTaskRuntime({
       runtime: "subagent",
