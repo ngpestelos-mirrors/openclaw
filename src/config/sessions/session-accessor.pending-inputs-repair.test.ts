@@ -43,9 +43,9 @@ describe("pending input repair admission", () => {
   });
 
   it("skips a stale read repair after staging publishes its live owner", async () => {
-    const committed = createDeferred<void>();
-    const publish = createDeferred<void>();
-    const repairing = createDeferred<void>();
+    const committed = createDeferred();
+    const publish = createDeferred();
+    const repairing = createDeferred();
     const accessDatabase = pendingInputRuntime.withSessionPendingInputDatabase;
     const holdPublication: typeof accessDatabase = (resolved, assertCurrent, run, captured) =>
       accessDatabase(
