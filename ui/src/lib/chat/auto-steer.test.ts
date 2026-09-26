@@ -18,6 +18,49 @@ describe("Auto presentation eligibility", () => {
     ...createInitialConfigState({ phase: "connected" }),
     configSnapshot: { runtimeConfig: config },
   });
+  it.each([
+    ["all plugins disabled", { enabled: false }],
+    ["Auto plugin disabled", { entries: { "auto-steer": { enabled: false } } }],
+    [
+      "conversation access revoked",
+      { entries: { "auto-steer": { hooks: { allowConversationAccess: false } } } },
+    ],
+    ["denied plugin", { deny: ["auto-steer"] }],
+    ["excluded from allowlist", { allow: ["other-plugin"] }],
+  ])("does not offer Auto when %s in the running configuration", (_name, plugins) => {
+    expect(
+      isChatAutoSteerAvailable(
+        {
+          ...state(),
+          configSnapshot: { config, runtimeConfig: { ...config, plugins } },
+        },
+        "main",
+      ),
+    ).toBe(false);
+  });
+
+  it("uses running plugin grants, not a disabled staged/source snapshot", () => {
+    expect(
+      isChatAutoSteerAvailable(
+        {
+          ...state(),
+          configSnapshot: {
+            config: { ...config, plugins: { enabled: false } },
+            runtimeConfig: {
+              ...config,
+              plugins: {
+                entries: {
+                  "auto-steer": { enabled: true, hooks: { allowConversationAccess: true } },
+                },
+              },
+            },
+          },
+        },
+        "main",
+      ),
+    ).toBe(true);
+  });
+
   it("requires the live Lab and effective owning agent selection, not a staged form", () => {
     expect(isChatAutoSteerAvailable(state(), "main")).toBe(true);
     expect(isChatAutoSteerAvailable(state(), "disabled")).toBe(false);

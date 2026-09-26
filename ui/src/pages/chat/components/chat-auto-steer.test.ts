@@ -29,6 +29,18 @@ describe("Auto routing receipts", () => {
       expect(host.textContent).not.toContain("Steered");
     },
   );
+  it("does not invent Auto history for serialized pre-Auto messages", () => {
+    const host = document.createElement("div");
+    for (const oldBytes of [
+      '{"role":"user","content":"Original task","timestamp":1700000000000,"idempotencyKey":"old:user","__openclaw":{"senderId":"historical-human"}}',
+      '{"role":"user","content":"Manual correction","timestamp":1700000000001,"idempotencyKey":"old-steer:user","__openclaw":{"senderId":"historical-human","steerTargetRunId":"old-active-run"}}',
+    ]) {
+      render(renderAutoSteerReceipt(JSON.parse(oldBytes)), host);
+      expect(host.querySelector(".chat-auto-steer-receipt")).toBeNull();
+      expect(host.textContent).toBe("");
+    }
+  });
+
   it("ignores malformed or non-user receipts", () => {
     const host = document.createElement("div");
     for (const message of [

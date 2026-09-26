@@ -2197,6 +2197,7 @@
                 "pages": [
                   "concepts/models",
                   "concepts/decision-models",
+                  "concepts/decision-powered-features",
                   "concepts/model-providers",
                   {
                     "group": "Model providers",
@@ -2658,7 +2659,8 @@
                   "gateway/remote",
                   "gateway/stable-https-url",
                   "gateway/tailscale",
-                  "gateway/cloudflare-access"
+                  "gateway/cloudflare-access",
+                  "gateway/team-server"
                 ]
               },
               {

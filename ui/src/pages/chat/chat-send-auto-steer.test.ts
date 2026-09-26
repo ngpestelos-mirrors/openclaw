@@ -10,12 +10,67 @@ import {
   steerQueuedChatMessage,
 } from "./chat-send-actions.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
+import { restoreChatComposerState } from "./composer-persistence.ts";
 import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
 import { beginQueuedMessageEdit, updateQueuedMessageEdit } from "./queued-message-edit.ts";
 
 useChatSendBrowserFixture();
 
 describe("Auto send overlay", () => {
+  // Historical v4 wire shape from d9d8f0829d87 (before Auto): no new-row
+  // writer/admission helper manufactures these upgrade inputs.
+  it.each([undefined, "steer", "followup"] as const)(
+    "restores and retries a pre-Auto %s outbox without inferring Auto",
+    async (queueMode) => {
+      const gatewayUrl = "ws://historical-outbox.test";
+      const storageKey = "openclaw.control.chatComposer.v4:ws%3A%2F%2Fhistorical-outbox.test";
+      const modeField = queueMode ? `,"queueMode":"${queueMode}"` : "";
+      const oldBytes = `{"version":4,"gatewayOwner":"ws://historical-outbox.test","sessions":{"agent:main:main\\u0000agent:main":{"draft":"Unsent historical draft","draftRevision":7,"updatedAt":1700000000000,"queue":[{"id":"old-input","sessionKey":"agent:main:main","agentId":"main","text":"Keep commas, quotes and tabs.","createdAt":1700000000000,"sendRunId":"old-run","sendState":"sending","sendAttempts":2,"sender":{"id":"historical-human","name":"Historical human","username":"historical"}${modeField}}]}},"recovery":{}}`;
+      sessionStorage.setItem(storageKey, oldBytes);
+      const host = makeChatHost({
+        requestHandlers: {
+          "chat.send": { status: "started" },
+          "chat.history": {
+            messages: [],
+            sessionInfo: {
+              key: "agent:main:main",
+              sessionId: "historical-session",
+              kind: "direct",
+              updatedAt: 1700000000000,
+              hasActiveRun: false,
+              status: "done",
+            },
+          },
+        },
+        sessionKey: "agent:main:main",
+        agentsList: { defaultId: "main", mainKey: "main" },
+        settings: { gatewayUrl, chatAutoSteer: true, chatFollowUpMode: "steer" },
+        isAutoSteerAvailable: () => true,
+      });
+      expect(restoreChatComposerState(host)).toBe(true);
+      expect(sessionStorage.getItem(storageKey)).toBe(oldBytes);
+      expect(host.chatMessage).toBe("Unsent historical draft");
+      expect(host.chatQueue).toHaveLength(1);
+      expect(host.chatQueue[0]).toMatchObject({
+        id: "old-input",
+        text: "Keep commas, quotes and tabs.",
+        sendRunId: "old-run",
+        sendState: "waiting-reconnect",
+        sendAttempts: 2,
+        sender: { id: "historical-human", name: "Historical human", username: "historical" },
+      });
+      expect(host.chatQueue[0]?.queueMode).toBe(queueMode);
+      expect(host.chatQueue[0]?.deliveryPolicy).toBeUndefined();
+      await retryQueuedChatMessage(host, "old-input");
+      const payload = findChatSendPayload(host);
+      expect(payload).toMatchObject({
+        message: "Keep commas, quotes and tabs.",
+        idempotencyKey: "old-run",
+      });
+      expect(payload.queueMode).toBe(queueMode);
+      expect(payload).not.toHaveProperty("deliveryPolicy");
+    },
+  );
   it("retains Auto and its server baseline through a queued edit after Auto is turned off", async () => {
     const original = {
       id: "edit-auto",
@@ -120,7 +175,7 @@ describe("Auto send overlay", () => {
     },
   );
 
-  it.each(["collect", "interrupt"] as const)(
+  it.each(["collect", "interrupt", "followup"] as const)(
     "lets the Gateway resolve inherited %s after Auto classification",
     async (chatFollowUpMode) => {
       const host = makeChatHost({

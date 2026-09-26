@@ -39,6 +39,9 @@ Automatic experimental consumers additionally require explicit
 feature plugin and the browser Auto preference. Explicit `decision_evaluate`
 remains independent of Labs.
 
+See the [Decision-powered feature index](/concepts/decision-powered-features)
+for implemented consumers, their opt-ins, evidence transfer, and fallback behavior.
+
 ## Choose a provider and model
 
 Configure the provider plugin before selecting its model:

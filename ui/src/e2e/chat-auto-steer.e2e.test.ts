@@ -30,7 +30,6 @@ suite.define(() => {
           },
         ],
         sessionInfo: { model: "plain", modelProvider: "example" },
-        inFlightRun: { runId: "active-task", text: "Working on the current task." },
         historyMessages: [{ role: "user", content: "Write a CSV parser." }],
         methodResponses: {
           "config.get": {
@@ -60,14 +59,23 @@ suite.define(() => {
       await effort.click();
       await expect.poll(() => auto.getAttribute("aria-checked")).toBe("true");
       await page.keyboard.press("Escape");
+      // Establish the active turn through the same UI lifecycle as a real send;
+      // a synthetic history hint alone is not an active-turn receipt.
+      await composer.locator("textarea").fill("Start a CSV parser task.");
+      await composer.locator("textarea").press("Enter");
+      await gateway.waitForRequest("chat.send");
+      await page.getByRole("button", { name: "Stop generating", exact: true }).waitFor();
+      const startedCount = (await gateway.getRequests("chat.send")).length;
       await composer.locator("textarea").fill("Also handle escaped commas.");
       await composer.locator("textarea").press("Enter");
-      const request = await gateway.waitForRequest("chat.send");
+      const request = await gateway.waitForRequest("chat.send", { after: startedCount });
       expect(request.params).toMatchObject({
         message: "Also handle escaped commas.",
         deliveryPolicy: "auto",
-        queueMode: "followup",
       });
+      // Inherited policy stays unset on the wire; only an explicit browser
+      // Queue/Steer choice becomes an override. The Gateway owns its default.
+      expect(request.params).not.toHaveProperty("queueMode");
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
       ).toBe(true);

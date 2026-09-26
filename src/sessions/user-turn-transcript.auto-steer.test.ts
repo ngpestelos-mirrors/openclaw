@@ -7,6 +7,38 @@ import {
 import type { PersistedUserTurnMessage } from "./user-turn-transcript.types.js";
 
 describe("host Auto receipt provenance", () => {
+  it.each([false, true])(
+    "preserves pre-Auto transcript provenance (manual steer: %s)",
+    (steered) => {
+      // Persisted message shape predates Auto at d9d8f0829d87; construct old
+      // serialized bytes, not a record emitted by the new metadata builder.
+      const oldBytes = `{"role":"user","content":"Keep the original CSV task.","timestamp":1700000000000,"idempotencyKey":"old-run:user","__openclaw":{"senderId":"historical-human","senderName":"Historical human","senderIsOwner":true${steered ? ',"steerTargetRunId":"historical-active-run"' : ""}}}`;
+      const preparedMessage: PersistedUserTurnMessage = JSON.parse(oldBytes);
+      const written = preparePersistedUserTurnMessageForTranscriptWrite(preparedMessage, {
+        beforeMessageWrite: ({ message }) => ({
+          ...message,
+          __openclaw: {
+            ...message["__openclaw"],
+            autoSteer: { choice: "steer", reason: "decision" },
+            steerTargetRunId: "forged-new-run",
+          },
+        }),
+      });
+      expect(written).toEqual(JSON.parse(oldBytes));
+      const runtime = restorePreparedUserTurnOperationalMetaForRuntime({
+        preparedMessage: JSON.parse(oldBytes),
+        runtimeMessage: {
+          ...preparedMessage,
+          __openclaw: {
+            ...preparedMessage["__openclaw"],
+            autoSteer: { choice: "steer", reason: "decision" },
+            steerTargetRunId: "forged-new-run",
+          },
+        },
+      });
+      expect(runtime).toEqual(JSON.parse(oldBytes));
+    },
+  );
   it.each([true, false])(
     "protects producer advice across mutating hooks (present: %s)",
     (present) => {
