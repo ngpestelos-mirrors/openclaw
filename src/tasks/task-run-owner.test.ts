@@ -1,6 +1,11 @@
 import { err } from "@openclaw/normalization-core/result";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
+import * as followupCancellation from "../agents/subagents/completion/session-followup-cancellation.js";
+import {
+  SessionFollowupCompletion,
+  getFollowupForCohort,
+} from "../agents/subagents/completion/session-followup-completion.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
@@ -8,7 +13,10 @@ import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cach
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createRunningTaskRunCoreWithReceiptAsync } from "./task-executor-create.async.js";
-import { TaskFollowupCompletion, getFollowupForCohort } from "./task-followup-completion.js";
+import {
+  bindFollowupTaskProjection,
+  resumeFollowupTaskProjection,
+} from "./task-followup-projection.js";
 import { captureTaskRegistryReadFence } from "./task-registry-listener-state.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
 import { deleteTaskRecordById } from "./task-registry-query.js";
@@ -21,6 +29,7 @@ import {
 } from "./task-registry.store.sqlite.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import { bindTaskRunOwner, getTaskRunOwner } from "./task-run-owner.js";
+import type { TaskRunOwner } from "./task-run-owner.types.js";
 import {
   resetTaskFlowRegistryForTests,
   resetTaskRegistryForTests,
@@ -457,32 +466,29 @@ it("clears only an accepted successor's retained clue through its original task 
       }
       const authority = new AbortController();
       const releaseCustody = vi.fn();
-      const owner = await TaskFollowupCompletion.bind(
-        {
-          runId: first,
-          requesterAgentId: "main",
-          requesterSessionKey: "agent:main:A",
-          requesterSessionId: "A",
-          targetAgentId: "main",
-          targetSessionKey: "agent:main:B",
-          custody: {
-            signal: authority.signal,
-            assertCurrent: () => authority.signal.throwIfAborted(),
-            release: releaseCustody,
-            run: (run) => run(),
-          },
+      const owner = SessionFollowupCompletion.bind({
+        runId: first,
+        requesterAgentId: "main",
+        requesterSessionKey: "agent:main:A",
+        requesterSessionId: "A",
+        targetAgentId: "main",
+        targetSessionKey: "agent:main:B",
+        custody: {
+          signal: authority.signal,
+          assertCurrent: () => authority.signal.throwIfAborted(),
+          release: releaseCustody,
+          run: (run) => run(),
         },
-        receipt,
-      );
+      });
+      await bindFollowupTaskProjection(owner, receipt, () => {});
       let release: (() => void) | undefined;
       const store = getTaskRegistryStore();
       try {
         owner.markAccepted(first);
-        const releaseOld = await owner.activate(
-          first,
-          async () => err("old"),
-          () => {},
-        );
+        const releaseOld = await owner.activate(first, {
+          cancel: async () => err("old"),
+          assertCurrent: () => {},
+        });
         emitAgentEvent({
           runId: first,
           stream: "tool",
@@ -543,16 +549,25 @@ it("clears only an accepted successor's retained clue through its original task 
               return mutate(...args);
             });
           }
-          const activate = async () =>
-            owner.activate(
-              second,
-              async () => err("new"),
-              () => {
-                if (scenario === "stale run") {
-                  throw new Error("Gateway registration replaced");
-                }
-              },
-            );
+          const activate = async () => {
+            const assertCurrent = () => {
+              owner.assertCurrent();
+              if (scenario === "stale run") {
+                throw new Error("Gateway registration replaced");
+              }
+            };
+            const releaseExecution = await owner.activate(second, {
+              cancel: async () => err("new"),
+              assertCurrent,
+            });
+            try {
+              await resumeFollowupTaskProjection(owner, second, assertCurrent);
+              return releaseExecution;
+            } catch (error) {
+              releaseExecution();
+              throw error;
+            }
+          };
           if (scenario === "accepted") {
             release = await activate();
             releaseOld();
@@ -590,3 +605,130 @@ it("clears only an accepted successor's retained clue through its original task 
     }
   });
 });
+
+it.each(["committed", "rejected"] as const)(
+  "joins concurrent paused followup cancellations through the %s Task projection",
+  async (projectionOutcome) => {
+    await withOpenClawTestState({ layout: "state-only" }, async () => {
+      const runId = "joined-followup-cancellation";
+      const receipt = await createRunningTaskRunCoreWithReceiptAsync({
+        runtime: "cli",
+        runId,
+        ownerKey: "agent:main:A",
+        childSessionKey: "agent:main:B",
+        scopeKind: "session",
+        task: "Join the original cancellation projection",
+        notifyPolicy: "silent",
+        deliveryStatus: "not_applicable",
+      });
+      if (!receipt) {
+        throw new Error("Expected the real followup Task receipt");
+      }
+      const authority = new AbortController();
+      const owner = SessionFollowupCompletion.bind({
+        runId,
+        requesterAgentId: "main",
+        requesterSessionKey: "agent:main:A",
+        requesterSessionId: "A",
+        targetAgentId: "main",
+        targetSessionKey: "agent:main:B",
+        custody: {
+          signal: authority.signal,
+          assertCurrent: () => authority.signal.throwIfAborted(),
+          release: () => {},
+          run: (run) => run(),
+        },
+      });
+      const writeEntered = createDeferred();
+      const releaseWrite = createDeferred();
+      const attempts: Array<ReturnType<TaskRunOwner["cancel"]>> = [];
+      try {
+        await bindFollowupTaskProjection(owner, receipt, () => {});
+        owner.markAccepted(runId);
+        const child: SubagentRunRecord = {
+          runId: "joined-followup-child",
+          childSessionKey: "agent:main:C",
+          requesterSessionKey: "agent:main:B",
+          requesterDisplayKey: "B",
+          task: "Nested work",
+          cleanup: "keep",
+          createdAt: receipt.task.createdAt,
+          execution: {
+            status: "terminal",
+            endedAt: receipt.task.createdAt + 1,
+            outcome: { status: "ok" },
+          },
+          requesterSettleWake: {
+            status: "pending",
+            attemptCount: 0,
+            requesterYieldBatch: true,
+            rearmGeneration: 1,
+            batchRunIds: ["joined-followup-child"],
+          },
+        };
+        owner.promoteYield(runId, [child], 1);
+        await owner.settle(runId, { status: "ok", yielded: true });
+        owner.finishExecution(runId);
+        const taskOwner = getTaskRunOwner(receipt.task);
+        if (!taskOwner) {
+          throw new Error("Expected the live Task cancellation owner");
+        }
+        const stopCohort = vi
+          .spyOn(followupCancellation, "cancelFollowupCohort")
+          .mockResolvedValue(undefined);
+        const finalize = receipt.finalizeActive.bind(receipt);
+        let projectionSettled = false;
+        const write = vi.spyOn(receipt, "finalizeActive").mockImplementation(async (...args) => {
+          writeEntered.resolve();
+          await releaseWrite.promise;
+          try {
+            if (projectionOutcome === "rejected") {
+              throw new Error("Synthetic followup projection rejected");
+            }
+            return await finalize(...args);
+          } finally {
+            projectionSettled = true;
+          }
+        });
+        const returnedBeforeProjection: boolean[] = [];
+        const cancel = () =>
+          taskOwner.cancel("Stop the paused followup").then((result) => {
+            returnedBeforeProjection.push(!projectionSettled);
+            return result;
+          });
+        const first = cancel();
+        attempts.push(first);
+        await Promise.race([
+          writeEntered.promise,
+          first.then(() => {
+            throw new Error("Cancellation skipped its Task projection");
+          }),
+        ]);
+        const second = cancel();
+        attempts.push(second);
+        releaseWrite.resolve();
+        const results = await Promise.all(attempts);
+        expect(results[1]).toEqual(results[0]);
+        expect(returnedBeforeProjection).toEqual([false, false]);
+        expect(stopCohort).toHaveBeenCalledOnce();
+        expect(write).toHaveBeenCalledOnce();
+        const stored = loadTaskRegistryStateFromSqliteReadOnly().tasks.get(receipt.task.taskId);
+        if (projectionOutcome === "committed") {
+          expect(results[0]).toMatchObject({
+            ok: true,
+            value: { taskId: receipt.task.taskId, runId, status: "cancelled" },
+          });
+          expect(stored?.status).toBe("cancelled");
+        } else {
+          expect(results[0]).toEqual(err("Synthetic followup projection rejected"));
+          expect(stored?.status).toBe("running");
+        }
+        expect(getTaskById(receipt.task.taskId)).toEqual(stored);
+      } finally {
+        releaseWrite.resolve();
+        await Promise.allSettled(attempts);
+        owner.close();
+      }
+    });
+  },
+);
