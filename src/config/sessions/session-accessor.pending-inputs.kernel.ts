@@ -196,11 +196,11 @@ export function readSessionPendingInputStage(
               "run_id",
               "request_hash",
             ])
-            .select((eb) =>
+            .select((eb) => [
               hasPendingInputConsumptionColumn(database.db)
                 ? "consumed_event_id"
                 : eb.val(null).as("consumed_event_id"),
-            )
+            ])
             .select((eb) => eb.fn<number>("octet_length", ["message_json"]).as("bytes"))
             .where("session_key", "=", resolved.sessionKey)
             .where("session_id", "=", resolved.sessionId)
