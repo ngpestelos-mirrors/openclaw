@@ -140,7 +140,11 @@ export async function persistAuthProfileSuccess(
       },
     );
     if (result && !result.ok) {
-      throw authProfileUsageError(result.error);
+      const error = authProfileUsageError(result.error);
+      if (isSqliteLockError(error)) {
+        return null;
+      }
+      throw error;
     }
     return result?.receipt ?? null;
   } catch (error) {
