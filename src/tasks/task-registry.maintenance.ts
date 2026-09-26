@@ -41,7 +41,6 @@ import {
 } from "./detached-task-runtime.js";
 import { isHarnessOwnedSubagentTask } from "./harness-owned-subagent-task.js";
 import {
-  deleteTaskRecordById,
   ensureTaskRegistryReady,
   getTaskById,
   hasActiveTaskForChildSessionKey,
@@ -50,7 +49,6 @@ import {
   markTaskTerminalById,
   maybeDeliverTaskTerminalUpdate,
   resolveTaskForLookupToken,
-  setTaskCleanupAfterById,
 } from "./runtime-internal.js";
 import { readTaskBackingInstance } from "./task-backing-authority.js";
 import { runTaskFlowRegistryMaintenance } from "./task-flow-registry.maintenance.js";
@@ -61,14 +59,13 @@ import {
   type CloseAcpSession,
   type TaskRegistryAcpMaintenanceRuntime,
 } from "./task-registry-acp-cleanup.js";
-import {
-  applyTaskRegistryMaintenanceRetention,
-  shouldStampCleanupAfter,
-} from "./task-registry-maintenance-retention.js";
+import { applyTaskRegistryMaintenanceRetention } from "./task-registry-maintenance-retention.js";
 import { createTaskMaintenanceScheduler } from "./task-registry-maintenance-scheduler.js";
 import {
   createBackingSessionLookupContext,
   findTaskSessionEntry,
+  hasActiveCliRun,
+  hasCliRunIdentity,
   prepareBackingSessionFacts,
   observeBackingSessionFacts,
   resolveSessionChatType,
@@ -100,7 +97,11 @@ import {
 } from "./task-registry.summary.js";
 import type { TaskRecord, TaskRegistrySummary, TaskStatus } from "./task-registry.types.js";
 import type { ActiveTaskRestartBlocker } from "./task-restart-blocker.js";
-import { resolveEffectiveTaskCleanupAfter, resolveTaskCleanupAfter } from "./task-retention.js";
+import {
+  resolveEffectiveTaskCleanupAfter,
+  resolveTaskCleanupAfter,
+  shouldStampCleanupAfter,
+} from "./task-retention.js";
 export { CRON_HISTORY_KEEP_PER_JOB } from "./cron-history-retention.js";
 
 const log = createSubsystemLogger("tasks/task-registry-maintenance");
@@ -271,21 +272,6 @@ function resolveDurableCronTaskRecovery(
     ...(row.terminalSummary !== undefined ? { terminalSummary: row.terminalSummary } : {}),
     ...(row.detail !== undefined ? { detail: row.detail } : {}),
   };
-}
-
-function hasActiveCliRun(task: TaskRecord): boolean {
-  const candidateRunIds = [task.sourceId, task.runId];
-  for (const candidate of candidateRunIds) {
-    const runId = candidate?.trim();
-    if (runId && getAgentRunContext(runId)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasCliRunIdentity(task: TaskRecord): boolean {
-  return [task.sourceId, task.runId].some((candidate) => Boolean(candidate?.trim()));
 }
 
 function hasBackingSession(task: TaskRecord, context: BackingSessionLookupContext): boolean {
@@ -936,11 +922,11 @@ export async function runTaskRegistryMaintenance(): Promise<TaskRegistryMaintena
           shouldPruneTerminalTask(current, now, cronHistoryOverflowTaskIds) ||
           shouldStampCleanupAfter(current)
         ) {
-          const result = applyTaskRegistryMaintenanceRetention(
-            current.taskId,
+          const result = await applyTaskRegistryMaintenanceRetention(
+            current,
             now,
             cronHistoryOverflowTaskIds,
-            { getTaskById, deleteTaskRecordById, setTaskCleanupAfterById },
+            assertOwnerCurrent,
           );
           if (result === "pruned") {
             pruned += 1;

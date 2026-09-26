@@ -502,7 +502,14 @@ test("sessions.create clamps configured capacity to the selected child model win
       }),
     },
   });
-  const cfg = getRuntimeConfig();
+  const cfg = {
+    ...getRuntimeConfig(),
+    models: {
+      providers: {
+        openai: { models: [{ id: "gpt-selectable", contextTokens: 1_000_000 }] },
+      },
+    },
+  };
 
   const created = await directSessionReq(
     "sessions.create",
@@ -515,14 +522,7 @@ test("sessions.create clamps configured capacity to the selected child model win
     },
     {
       context: {
-        getRuntimeConfig: () => ({
-          ...cfg,
-          models: {
-            providers: {
-              openai: { models: [{ id: "gpt-selectable", contextTokens: 1_000_000 }] },
-            },
-          },
-        }),
+        getRuntimeConfig: () => cfg,
       },
     },
   );

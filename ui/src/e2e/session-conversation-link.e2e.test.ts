@@ -77,6 +77,13 @@ suite.define(() => {
             url: "https://example.slack.com/archives/C123/p1234567890123457",
           },
         },
+        {
+          key: "agent:main:govslack-message-link",
+          conversationLink: {
+            label: "Slack Message",
+            url: "https://example.slack-gov.com/archives/C123/p1234567890123458",
+          },
+        },
         { key: "agent:main:web-only", conversationLink: undefined },
       ].map((session) => Object.assign(session, { kind: "direct", agentId: "main", updatedAt: 1 }));
       const [firstSession] = sessions;
@@ -108,7 +115,7 @@ suite.define(() => {
       });
       await page.addInitScript(createControlUiMockSameOriginGatewayScript());
       // Capture navigation at the external boundary without contacting real workspaces.
-      await context.route(/^https:\/\/(discord\.com|example\.slack\.com)\//, (route) =>
+      await context.route(/^https:\/\/(discord\.com|example\.slack(?:-gov)?\.com)\//, (route) =>
         route.fulfill({
           contentType: "text/html",
           body: "<title>Conversation destination</title>",
