@@ -160,21 +160,26 @@ export async function settleUnstartedGatewayAgentTask(params: {
       // synchronously adopted at final admission owns this outcome.
       if (tracking.completion.ownsExecution(params.runId)) {
         tracking.completion.assertCurrent();
+        const assertAdmissionCurrent = () => {
+          const current = params.context.chatAbortControllers.get(params.runId);
+          if (current && current !== params.admittedRunEntry) {
+            throw new Error("Follow-up admission was replaced before cleanup.");
+          }
+        };
         const decision = await tracking.completion.settle(
           params.runId,
           {
             ...params.outcome,
             endedAt: terminal.endedAt,
           },
-          () => {
-            const current = params.context.chatAbortControllers.get(params.runId);
-            if (current && current !== params.admittedRunEntry) {
-              throw new Error("Follow-up admission was replaced before cleanup.");
-            }
-          },
+          assertAdmissionCurrent,
         );
         if (decision.kind === "terminal") {
-          await projectFollowupTaskTerminal(tracking.completion, decision.reply);
+          await projectFollowupTaskTerminal(
+            tracking.completion,
+            decision.reply,
+            assertAdmissionCurrent,
+          );
         }
       } else if (
         !tracking.completion.accepted &&
