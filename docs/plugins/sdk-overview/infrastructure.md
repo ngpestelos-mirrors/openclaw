@@ -328,6 +328,9 @@ profile; conflicting registrations are rejected without changing the listener.
 Bind failure warns without disabling the Gateway route. After the operator changes
 the provider callback or reverse proxy to reach the Gateway port, the plugin can
 stop registering the compatibility endpoint.
+Retiring an endpoint stops new connections while admitted responses finish. The
+Gateway keeps those closing sockets in its transport ownership and closes them
+on full shutdown; channels retain their own response-drain ordering before teardown.
 
 Channel webhook listeners that own their `createServer` admission serialize each
 connection with `runHttpConnectionRequest(req, run, res?)` from

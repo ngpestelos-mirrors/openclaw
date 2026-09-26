@@ -7,6 +7,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getWebhookLegacyListener } from "../../plugin-sdk/webhook-ingress.js";
 import { readRequestBodyWithLimit } from "../../plugin-sdk/webhook-request-guards.js";
@@ -659,5 +660,75 @@ describe("legacy channel webhook ports", () => {
     removeBlocker();
     await closed;
     expect(await (await fetch(url(1))).text()).toBe("accepted");
+  });
+
+  it("drains retired listeners until callbacks finish and closes pending retired sockets on owner stop", async () => {
+    const callbacks = [1, 2].map((offset) => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      const finished = createDeferred();
+      const unregister = register({
+        path: `/callback-${offset}`,
+        legacyListener: endpoint(offset),
+        handler: async (_req, res) => {
+          entered.resolve();
+          try {
+            await release.promise;
+            res.end("accepted");
+          } finally {
+            finished.resolve();
+          }
+        },
+      });
+      return { offset, entered, release, finished, unregister };
+    });
+    await listening();
+    const servers = httpServers.slice(1);
+    const closed = servers.map((server) => once(server, "close"));
+    const responses = callbacks.map(({ offset }) =>
+      send(offset, `/callback-${offset}`).then(
+        (response) => ({ response }),
+        (error: unknown) => ({ error }),
+      ),
+    );
+    try {
+      await Promise.all(callbacks.map(({ entered }) => entered.promise));
+      for (const { unregister } of callbacks) {
+        unregister();
+      }
+      await Promise.resolve();
+      expect(servers.map((server) => server.listening)).toEqual([false, false]);
+      expect(httpServers.slice(1)).toEqual(servers);
+      for (const { offset } of callbacks) {
+        await expect(send(offset, `/callback-${offset}`)).rejects.toMatchObject({
+          code: "ECONNREFUSED",
+        });
+      }
+
+      callbacks[0]!.release.resolve();
+      expect(await responses[0]).toMatchObject({ response: { status: 200, body: "accepted" } });
+      await closed[0];
+      expect(httpServers).toEqual([gatewayServer, servers[1]]);
+
+      stop();
+      expect(await responses[1]).toMatchObject({ error: { code: "ECONNRESET" } });
+      await closed[1];
+      expect(httpServers).toEqual([gatewayServer]);
+    } finally {
+      for (const { release, unregister } of callbacks) {
+        release.resolve();
+        unregister();
+      }
+      stop();
+      await Promise.all(closed);
+      await Promise.all(callbacks.map(({ finished }) => finished.promise));
+      await Promise.all(responses);
+      stop = startPluginLegacyListeners({
+        gatewayServer,
+        httpServers,
+        getRegistry: () => registry,
+        warn,
+      });
+    }
   });
 });

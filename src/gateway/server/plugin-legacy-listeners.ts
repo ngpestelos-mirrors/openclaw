@@ -22,17 +22,16 @@ export function startPluginLegacyListeners(params: {
   warn: (message: string) => void;
 }): () => void {
   const listeners = new Map<string, LegacyListener>();
+  const ownedListeners = new Set<LegacyListener>();
   // Channel publications cannot lend their account lifetime to a shared listener.
   const runInGatewayContext = AsyncLocalStorage.snapshot();
   let stopped = false;
   let queued = false;
-  const close = ({ server, controller }: LegacyListener) => {
+  const close = ({ server, controller }: LegacyListener, force = false) => {
     controller.abort();
     server.close();
-    server.closeAllConnections();
-    const index = params.httpServers.indexOf(server);
-    if (index !== -1) {
-      params.httpServers.splice(index, 1);
+    if (force) {
+      server.closeAllConnections();
     }
   };
   const reconcile = () => {
@@ -77,6 +76,18 @@ export function startPluginLegacyListeners(params: {
           socket: server.timeout,
         },
       };
+      // Retired ports stop accepting connections, but retain their active responses.
+      ownedListeners.add(listener);
+      server.once("close", () => {
+        ownedListeners.delete(listener);
+        if (listeners.get(key) === listener) {
+          listeners.delete(key);
+        }
+        const index = params.httpServers.indexOf(server);
+        if (index !== -1) {
+          params.httpServers.splice(index, 1);
+        }
+      });
       if (endpoint.timeouts) {
         server.headersTimeout = endpoint.timeouts.headers;
         server.requestTimeout = endpoint.timeouts.request;
@@ -103,11 +114,10 @@ export function startPluginLegacyListeners(params: {
         params.gatewayServer.emit("request", req, res);
       });
       server.on("error", (error) => {
-        const listener = listeners.get(key);
-        if (listener?.server === server) {
+        if (listeners.get(key) === listener) {
           listeners.delete(key);
-          close(listener);
         }
+        close(listener, true);
         params.warn(
           `Legacy webhook listener ${key} failed: ${String(error)}. ` +
             "The Gateway webhook route remains available; update the external callback or reverse proxy to the Gateway port.",
@@ -150,8 +160,8 @@ export function startPluginLegacyListeners(params: {
     stopped = true;
     stopWatching();
     params.gatewayServer.off("close", stop);
-    for (const listener of listeners.values()) {
-      close(listener);
+    for (const listener of ownedListeners) {
+      close(listener, true);
     }
     listeners.clear();
   };
