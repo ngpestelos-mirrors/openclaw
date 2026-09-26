@@ -25,7 +25,10 @@ const service = vi.hoisted(() => ({
   readDefinitionMutationCapability: vi.fn(async () => ({ kind: "writable" as const })),
 }));
 
-vi.mock("../../daemon/service.js", () => ({ resolveGatewayService: () => service }));
+vi.mock("../../daemon/service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../daemon/service.js")>()),
+  resolveGatewayService: () => service,
+}));
 vi.mock("../../runtime.js", () => ({ defaultRuntime }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);

@@ -2,13 +2,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildServiceEnvironment } from "../../daemon/service-env.js";
 import type { GatewayServiceInstallArgs } from "../../daemon/service-types.js";
 import { mockSystemAccountHome } from "../../daemon/service.test-helpers.js";
 import { systemdManagerVersionProbe } from "../../daemon/systemd-user-bus.test-support.js";
 import { makeTempWorkspace } from "../../test-helpers/workspace.js";
 import { captureEnv } from "../../test-utils/env.js";
 import { createCliRuntimeCapture } from "../test-runtime-capture.js";
+import { createInstalledServiceCommand, readJson } from "./install.integration.test-support.js";
 
 const { runtimeLogs, runtimeErrors, defaultRuntime, resetRuntimeCapture } =
   createCliRuntimeCapture();
@@ -48,7 +48,8 @@ const serviceMock = vi.hoisted(() => ({
   readRuntime: vi.fn(async () => ({ status: "stopped" as const })),
 }));
 
-vi.mock("../../daemon/service.js", () => ({
+vi.mock("../../daemon/service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../daemon/service.js")>()),
   resolveGatewayService: () => serviceMock,
 }));
 
@@ -66,32 +67,7 @@ vi.mock("../../daemon/runtime-paths.js", async (importOriginal) => ({
 
 const daemonExec = await import("../../daemon/exec-file.js");
 const { runDaemonInstall } = await import("./install.js");
-const { clearConfigCache, clearRuntimeConfigSnapshot, readConfigFileSnapshot } =
-  await import("../../config/config.js");
-
-async function readJson(filePath: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await fs.readFile(filePath, "utf8")) as Record<string, unknown>;
-}
-
-async function createInstalledServiceCommand() {
-  // An installed service has already observed its config; include that health store in snapshots.
-  await readConfigFileSnapshot();
-  const programArguments = ["openclaw", "gateway", "run"];
-  const environment = buildServiceEnvironment({
-    env: process.env,
-    port: 18789,
-    execPath: programArguments[0],
-  });
-  return {
-    programArguments,
-    // Service readers return only persisted strings, including the host's required TLS CA bundle.
-    environment: Object.fromEntries(
-      Object.entries(environment).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    ),
-  };
-}
+const { clearConfigCache, clearRuntimeConfigSnapshot } = await import("../../config/config.js");
 
 describe("runDaemonInstall integration", () => {
   let envSnapshot: ReturnType<typeof captureEnv>;
