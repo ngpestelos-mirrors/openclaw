@@ -28,6 +28,7 @@ import { loadTaskRegistryStateFromSqliteReadOnly } from "./task-registry.store.s
 import type { TaskRegistryObserverEvent } from "./task-registry.store.types.js";
 import {
   createTaskFixture,
+  prepareTaskFixtureRead,
   reloadTaskRegistryFromStoreAsync,
   resetTaskRegistryForTests,
 } from "./task-registry.test-support.js";
@@ -90,6 +91,9 @@ describe("task maintenance retention", () => {
             await reloadTaskRegistryFromStoreAsync(context);
             await loadTaskAcpSessionCloser();
             await prepareTaskRegistryRead();
+            for (const task of fixtures) {
+              await prepareTaskFixtureRead(task);
+            }
 
             const before = fixtures.map(({ taskId }) => {
               const task = structuredClone(expectDefined(tasks.get(taskId), "resident task"));
