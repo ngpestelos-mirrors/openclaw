@@ -177,7 +177,7 @@ export function renderStreamGroup(parts: StreamGroupPart[], opts: StreamGroupOpt
 
 /** Completed work keeps elapsed time and outcomes above the expandable narration. */
 export function renderWorkGroupSummary(
-  work: { key: string; durationMs: number | null; groups: readonly MessageGroup[] },
+  item: { key: string; durationMs: number | null; groups: readonly MessageGroup[] },
   opts: {
     expanded: boolean;
     onToggle: () => void;
@@ -185,8 +185,8 @@ export function renderWorkGroupSummary(
     browserTabPreviews?: unknown;
   },
 ) {
-  const duration = formatDurationCompact(work.durationMs);
-  const entries = work.groups.flatMap((group) =>
+  const duration = formatDurationCompact(item.durationMs);
+  const entries = item.groups.flatMap((group) =>
     group.messages.map(({ message }) => ({
       cards: extractToolCardsCached(message),
       // An explicit empty projection also owns the message: its calls were hidden.
@@ -201,7 +201,7 @@ export function renderWorkGroupSummary(
   const preparedCallIds = new Set(
     prepared.flatMap(({ cards, activity }) => [
       ...cards.flatMap((card) => (card.callId ? [card.callId] : [])),
-      ...activity.map((item) => item.toolCallId ?? item.itemId),
+      ...activity.map((activityItem) => activityItem.toolCallId ?? activityItem.itemId),
     ]),
   );
   const cardsById = new Map(
@@ -218,13 +218,13 @@ export function renderWorkGroupSummary(
   );
   const activity: Array<Parameters<typeof describeToolGroup>[0][number]> = [];
   for (const entry of prepared) {
-    for (const item of entry.activity) {
-      const card = cardsById.get(item.toolCallId ?? item.itemId);
+    for (const activityItem of entry.activity) {
+      const card = cardsById.get(activityItem.toolCallId ?? activityItem.itemId);
       // Copy only adjusted outcomes; the cached message projection stays untouched.
       activity.push(
-        item.status === "blocked" && card && isToolCardSkipped(card)
-          ? { ...item, status: "skipped" }
-          : item,
+        activityItem.status === "blocked" && card && isToolCardSkipped(card)
+          ? { ...activityItem, status: "skipped" }
+          : activityItem,
       );
     }
   }
@@ -244,17 +244,17 @@ export function renderWorkGroupSummary(
   const outcomes = summary.outcomes.filter(({ kind }) => kind !== "failed");
   const currentActivity = new Map(
     activity
-      .filter((item) => !item.suppressChannelProgress)
-      .map((item) => [item.toolCallId ?? item.itemId, item]),
+      .filter((activityItem) => !activityItem.suppressChannelProgress)
+      .map((activityItem) => [activityItem.toolCallId ?? activityItem.itemId, activityItem]),
   );
   const visibleCards = cards.filter((card) => {
-    const item = card.callId ? currentActivity.get(card.callId) : undefined;
+    const activityItem = card.callId ? currentActivity.get(card.callId) : undefined;
     return (
       fallback.has(card) ||
       Boolean(
-        item &&
-        !item.hideFromChannelProgress &&
-        (!isToolCardSkipped(card) || item.status === "skipped"),
+        activityItem &&
+        !activityItem.hideFromChannelProgress &&
+        (!isToolCardSkipped(card) || activityItem.status === "skipped"),
       )
     );
   });
@@ -299,7 +299,7 @@ export function renderWorkGroupSummary(
   return opts.presentation === "continuation"
     ? content
     : html`
-        <div class="chat-group tool chat-group--work" data-chat-row-key=${work.key}>
+        <div class="chat-group tool chat-group--work" data-chat-row-key=${item.key}>
           <div class="chat-group-messages">${content}</div>
         </div>
       `;
