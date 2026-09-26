@@ -11,6 +11,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -33,7 +34,8 @@ import {
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { upsertTaskFlowRegistryRecordToSqlite } from "./task-flow-registry.store.sqlite.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
-import { getTaskDeliveryState, upsertTaskDeliveryState } from "./task-registry-mutation.js";
+import { commitTaskDeliveryFixture } from "./task-registry-delivery.test-support.js";
+import { getTaskDeliveryState } from "./task-registry-mutation.js";
 import type { TaskRegistryRestoreResult } from "./task-registry-restore.worker.js";
 import {
   ensureTaskRegistryReadyAsync,
@@ -46,7 +48,6 @@ import {
   listTasksForOwnerKey,
   findTaskByRunId,
   updateTaskNotifyPolicyById,
-  deleteTaskRecordById,
 } from "./task-registry.js";
 import {
   configureTaskRegistryRuntime,
@@ -342,14 +343,8 @@ describe("asynchronous registry restoration", () => {
         },
       },
     });
-    const native = requireNodeSqlite();
-    const counters = [
-      vi.spyOn(native.DatabaseSync.prototype, "prepare"),
-      vi.spyOn(native.DatabaseSync.prototype, "exec"),
-      ...(["iterate", "get", "all", "run"] as const).map((method) =>
-        vi.spyOn(native.StatementSync.prototype, method),
-      ),
-    ];
+    requireNodeSqlite();
+    const sql = observeMainThreadSql();
     await ensureTaskRuntimeStateReady();
     expect(restored).toEqual(["retained:flow-a"]);
     expect(getTaskDeliveryState("retained")?.lastNotifiedEventAt).toBe(50);
@@ -376,7 +371,7 @@ describe("asynchronous registry restoration", () => {
       }
     }
     await closeOpenClawStateDatabaseAsync();
-    expect(counters.map((counter) => counter.mock.calls.length)).toEqual([0, 0, 0, 0, 0, 0]);
+    sql.expectIdle();
   });
 
   it("preserves flow preparation failure when task publication loses admission", async () => {
@@ -389,6 +384,13 @@ describe("asynchronous registry restoration", () => {
     );
     const retirementError = new Error("Synthetic task publication admission retired");
     const context = captureOpenClawStateWorkerContext();
+    const admission = context.admission;
+    context.admission = {
+      ...admission,
+      get identity() {
+        return admission.identity;
+      },
+    };
     const observed: string[] = [];
     let loads = 0;
     configureTaskFlowRegistryRuntime({
@@ -508,7 +510,7 @@ describe("asynchronous registry restoration", () => {
         },
       },
     });
-    tasksWithPendingDelivery.add(task.taskId);
+    tasksWithPendingDelivery.set(task.taskId, Symbol("test delivery claim"));
     const first = ensureTaskRegistryReadyAsync(context);
     const second = ensureTaskRegistryReadyAsync({
       ...context,
@@ -539,7 +541,7 @@ describe("asynchronous registry restoration", () => {
   });
 
   it.each(["snapshot", "failure"] as const)(
-    "keeps a newer synchronous restore and deletion over a delayed %s",
+    "keeps a newer synchronous restore and update over a delayed %s",
     async (outcome) => {
       const store = taskStore();
       const snapshot = store.loadSnapshot();
@@ -561,15 +563,17 @@ describe("asynchronous registry restoration", () => {
       });
       const pending = ensureTaskRegistryReadyAsync(captureOpenClawStateWorkerContext());
       await started.promise;
+      let updated: TaskRecord | null = null;
       try {
         expect(getTaskById(task.taskId)?.notifyPolicy).toBe("silent");
-        updateTaskNotifyPolicyById({ taskId: task.taskId, notifyPolicy: "done_only" });
-        expect(deleteTaskRecordById(task.taskId)).toBe(true);
+        updated = updateTaskNotifyPolicyById({ taskId: task.taskId, notifyPolicy: "done_only" });
+        expect(updated).toMatchObject({ ...task, notifyPolicy: "done_only" });
+        expect(getTaskById(task.taskId)?.notifyPolicy).toBe("done_only");
       } finally {
         release.resolve();
       }
       await (outcome === "failure" ? expect(pending).rejects.toBe(failure) : pending);
-      expect(getTaskById(task.taskId)).toBeUndefined();
+      expect(getTaskById(task.taskId)).toEqual(updated);
     },
   );
 
@@ -679,7 +683,7 @@ describe("asynchronous registry restoration", () => {
     const pending = ensureTaskRegistryReadyAsync(captureOpenClawStateWorkerContext());
     await started.promise;
     try {
-      upsertTaskDeliveryState({ taskId: task.taskId, lastNotifiedEventAt: 30 });
+      commitTaskDeliveryFixture({ taskId: task.taskId, lastNotifiedEventAt: 30 });
     } finally {
       release.resolve();
     }
@@ -773,7 +777,7 @@ describe("asynchronous registry restoration", () => {
       async (readMode) => {
         const fixture = identityRestoreFixture(kind, { sameIdentity: true });
         await fixture.ensure(fixture.first);
-        tasksWithPendingDelivery.add(task.taskId);
+        tasksWithPendingDelivery.set(task.taskId, Symbol("test delivery claim"));
         vi.spyOn(fixture.first.admission, "assertCurrent").mockImplementation(() => {
           throw new Error("retired fixture admission");
         });
@@ -866,7 +870,7 @@ describe("asynchronous registry restoration", () => {
   it("preserves live delivery work when a sync reader reenters a foreign pending restore", async () => {
     const fixture = identityRestoreFixture("task");
     await fixture.ensure(fixture.first);
-    tasksWithPendingDelivery.add(task.taskId);
+    tasksWithPendingDelivery.set(task.taskId, Symbol("test delivery claim"));
     const release = createDeferred();
     fixture.beforeSnapshot(async () => {
       await release.promise;

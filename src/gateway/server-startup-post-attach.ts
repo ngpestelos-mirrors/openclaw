@@ -1,10 +1,8 @@
 import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
-import { isDeepStrictEqual } from "node:util";
 import { loadGetReplyFromConfigRuntime } from "../auto-reply/reply/dispatch-from-config.runtime-loaders.js";
 import type { AmbientEnvTriggerPolicy } from "../channels/config-presence.js";
 import type { CliDeps } from "../cli/deps.types.js";
-import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveInternalHookSelection } from "../hooks/configured.js";
 import {
@@ -21,16 +19,16 @@ import type { loadOpenClawPlugins } from "../plugins/loader.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { getPluginModuleLoaderStats } from "../plugins/plugin-module-loader-cache.js";
-import { findCapabilityProviderEntry } from "../plugins/provider-registry-shared.js";
 import type { PluginRegistry } from "../plugins/registry.js";
-import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
+import {
+  getGatewayContextLifetime,
+  withPluginRuntimeRegistryScope,
+} from "../plugins/runtime/gateway-request-scope.js";
 import type { PluginServiceCronHost } from "../plugins/service-cron.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
-import { hasSameTranscriptCaptureIntent } from "../transcripts/config-reload.js";
-import { resolveTranscriptsConfig } from "../transcripts/config.js";
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type { GatewayControlUiRootLifecycle } from "./server-control-ui-root.js";
 import type { GatewayRecoveryRuntime } from "./server-instance-runtime.types.js";
@@ -38,7 +36,6 @@ import type { GatewayClient, GatewayContextResolver } from "./server-methods/sha
 import type { GatewayPluginRuntimeClaim } from "./server-plugin-runtime-generation.js";
 import type { refreshLatestUpdateRestartSentinel } from "./server-restart-sentinel.js";
 import type { GatewaySidecarStartupMode } from "./server-sidecar-startup-mode.js";
-import { scheduleContextCachePrewarm } from "./server-startup-context-cache-prewarm.js";
 import { scheduleGatewayHandlerPrewarm } from "./server-startup-handler-prewarm.js";
 import type { logGatewayStartup } from "./server-startup-log.js";
 import {
@@ -53,11 +50,16 @@ import {
 } from "./server-startup-outcomes.js";
 import { logGatewayReady, logGatewaySidecarsReady } from "./server-startup-readiness.js";
 import {
+  refreshLatestUpdateRestartSentinelIfPresent,
+  scheduleRestartSentinelWakeAfterReady,
+} from "./server-startup-restart-sentinel.js";
+import {
   scheduleGatewayGenerationTimer,
   schedulePostReadySidecarTask,
   type GatewayPostReadySidecarHandle,
 } from "./server-startup-sidecar-scheduler.js";
 import { measureStartup, type GatewayStartupTrace } from "./server-startup-trace.js";
+import { scheduleTranscriptsSidecar } from "./server-startup-transcripts.js";
 import { createDeferredGatewayUpdateCheck } from "./server-startup-update-check.js";
 import type { ReadinessChecker } from "./server/readiness.js";
 import {
@@ -84,169 +86,8 @@ const loadAgentModelSelectionModule = createLazyRuntimeModule(
 
 const loadInternalHooksModule = createLazyRuntimeModule(() => import("../hooks/internal-hooks.js"));
 
-const loadGatewayRestartSentinelModule = createLazyRuntimeModule(
-  () => import("./server-restart-sentinel.js"),
-);
-
 function shouldCheckRestartSentinel(env: NodeJS.ProcessEnv = process.env): boolean {
   return !env.VITEST && env.NODE_ENV !== "test";
-}
-
-function scheduleRestartSentinelWakeAfterReady(params: {
-  deps: CliDeps;
-  context?: DeliveryQueueStateContext;
-  log: { warn: (msg: string) => void };
-  shouldRun?: () => boolean;
-}): GatewayPostReadySidecarHandle {
-  const context = params.context ?? captureDeliveryQueueStateContext();
-  return scheduleGatewayGenerationTimer({
-    delayMs: 750,
-    origin: "restart-sentinel:wake",
-    shouldRun: params.shouldRun,
-    run: async (isStopped) => {
-      const { scheduleRestartSentinelWake } = await loadGatewayRestartSentinelModule();
-      if (isStopped()) {
-        return;
-      }
-      await scheduleRestartSentinelWake({
-        deps: params.deps,
-        context,
-        shouldRun: () => !isStopped(),
-      });
-    },
-    onError: (err) => params.log.warn(`restart sentinel wake failed to schedule: ${String(err)}`),
-  });
-}
-
-function scheduleTranscriptsAutoStartSidecar(params: {
-  cfg: OpenClawConfig;
-  getConfig: () => OpenClawConfig;
-  getPluginRegistry: () => PluginRegistry;
-  startupTrace?: GatewayStartupTrace;
-  log: { warn: (msg: string) => void };
-  waitForPostReadyWork?: () => Promise<void>;
-  shouldRun?: () => boolean;
-}): GatewayPostReadySidecarHandle {
-  let config = params.cfg;
-  let pausedProviders: ReadonlySet<string> | undefined;
-  let service:
-    | ReturnType<typeof import("../transcripts/auto-start.js").createTranscriptsAutoStartService>
-    | undefined;
-  let sidecar: GatewayPostReadySidecarHandle | undefined;
-  let stopped = false;
-  const start = () => {
-    if (stopped) {
-      return;
-    }
-    if (service) {
-      withPluginRuntimeRegistryScope(params.getPluginRegistry(), () =>
-        service!.start(config, pausedProviders),
-      );
-    } else if (!sidecar && config.transcripts?.autoStart?.length) {
-      // Keep the reload handle from startup, but load capture runtime only on first use.
-      sidecar = schedulePostReadySidecarTask({
-        startupTrace: params.startupTrace,
-        name: "sidecars.transcripts-auto-start",
-        log: params.log,
-        waitForPostReadyWork: params.waitForPostReadyWork,
-        shouldRun: params.shouldRun,
-        run: async (isStopped) => {
-          const { createTranscriptsAutoStartService } =
-            await import("../transcripts/auto-start.js");
-          if (isStopped()) {
-            return;
-          }
-          service = createTranscriptsAutoStartService(
-            { config, stateDir: resolveStateDir(), logger: params.log },
-            params.getConfig,
-          );
-          start();
-        },
-        stop: async () => {
-          await withPluginRuntimeRegistryScope(params.getPluginRegistry(), () => service?.stop());
-        },
-      });
-    }
-  };
-  start();
-  return {
-    stop: async () => {
-      stopped = true;
-      await sidecar?.stop();
-    },
-    preparePluginReload({ previousRegistry, nextRegistry, changedPluginIds, nextConfig }) {
-      const affected = new Set<string>();
-      // Removed or changed entries release capture and guild ownership before publication.
-      const next = resolveTranscriptsConfig(nextConfig.transcripts);
-      const retained = next.enabled ? [...next.autoStart] : [];
-      const sameCaptureIntent = hasSameTranscriptCaptureIntent(
-        config.transcripts,
-        nextConfig.transcripts,
-      );
-      for (const [index, entry] of resolveTranscriptsConfig(
-        config.transcripts,
-      ).autoStart.entries()) {
-        const { providerId } = entry;
-        const expected = sameCaptureIntent ? next.autoStart[index] : entry;
-        const retainedIndex = retained.findIndex((candidate) =>
-          isDeepStrictEqual(candidate, expected),
-        );
-        if (retainedIndex >= 0) {
-          retained.splice(retainedIndex, 1);
-        }
-        const replaced = [previousRegistry, nextRegistry].some((registry) => {
-          const provider = findCapabilityProviderEntry(
-            registry.transcriptSourceProviders,
-            providerId,
-          );
-          return provider && changedPluginIds.has(provider.pluginId);
-        });
-        if (replaced || retainedIndex < 0) {
-          affected.add(providerId.trim().toLowerCase());
-        }
-      }
-      // Pause before draining: the lazy startup import may finish during replacement.
-      pausedProviders = affected;
-      return {
-        drain: async () => {
-          await withPluginRuntimeRegistryScope(previousRegistry, () => service?.stop(affected));
-        },
-        async resume(resumedConfig) {
-          const registry = params.getPluginRegistry();
-          const newlyAvailable = new Set<string>();
-          // Metadata preflight has no runtime provider aliases for newly enabled
-          // plugins. Retire their unavailable-provider retries once the real
-          // registration is published so capture resumes immediately.
-          for (const { providerId } of resolveTranscriptsConfig(config.transcripts).autoStart) {
-            const normalized = providerId.trim().toLowerCase();
-            const provider = findCapabilityProviderEntry(
-              registry.transcriptSourceProviders,
-              providerId,
-            );
-            if (provider && changedPluginIds.has(provider.pluginId) && !affected.has(normalized)) {
-              affected.add(normalized);
-              newlyAvailable.add(normalized);
-            }
-          }
-          if (newlyAvailable.size) {
-            await withPluginRuntimeRegistryScope(registry, () => service?.stop(newlyAvailable));
-          }
-          config = resumedConfig;
-          pausedProviders = undefined;
-          start();
-        },
-      };
-    },
-  };
-}
-
-async function refreshLatestUpdateRestartSentinelIfPresent(
-  env: NodeJS.ProcessEnv = captureDeliveryQueueStateContext().workerContext.environment,
-): Promise<Awaited<ReturnType<typeof refreshLatestUpdateRestartSentinel>> | null> {
-  if (!(await hasRestartSentinel(env))) {
-    return null;
-  }
-  return await (await loadGatewayRestartSentinelModule()).refreshLatestUpdateRestartSentinel(env);
 }
 
 function hasGatewayStartHooks(pluginRegistry: ReturnType<typeof loadOpenClawPlugins>): boolean {
@@ -621,10 +462,16 @@ export async function startGatewaySidecars(params: {
         if (!shouldCheckRestartSentinel() || isStopped()) {
           return;
         }
-        if (
-          !(await hasRestartSentinel(restartSentinelContext.workerContext.environment)) ||
-          isStopped()
-        ) {
+        if (!(await hasRestartSentinel(restartSentinelContext.workerContext.environment))) {
+          const { detectLegacyRestartSentinel } =
+            await import("../infra/state-migrations.restart-sentinel.js");
+          if (
+            !detectLegacyRestartSentinel({ stateDir: restartSentinelContext.stateDir }).hasLegacy
+          ) {
+            return;
+          }
+        }
+        if (isStopped()) {
           return;
         }
         restartSentinelWake = scheduleRestartSentinelWakeAfterReady({
@@ -1151,7 +998,6 @@ export async function startGatewayPostAttachRuntime(
           // work can create sessions that the recovery scan must leave alone.
           params.unlockStartupMethods();
           const newGatewayLifetimeSidecars = [
-            scheduleContextCachePrewarm(params),
             scheduleGatewayHandlerPrewarm(params),
             ...(mainSessionRecoverySidecar ? [mainSessionRecoverySidecar] : []),
           ];
@@ -1160,10 +1006,11 @@ export async function startGatewayPostAttachRuntime(
               ? params.getConfig()
               : params.gatewayPluginConfigAtStart;
           newGatewayLifetimeSidecars.push(
-            scheduleTranscriptsAutoStartSidecar({
+            scheduleTranscriptsSidecar({
               cfg: transcriptsConfig,
               getConfig: params.getConfig,
               getPluginRegistry: () => params.getCurrentPluginRegistry?.() ?? pluginRegistry,
+              lifetimeSignal: getGatewayContextLifetime(params.resolveGatewayContext).signal,
               startupTrace: params.startupTrace,
               log: params.log,
               waitForPostReadyWork: params.waitForPostReadyWork,
@@ -1255,8 +1102,4 @@ export async function startGatewayPostAttachRuntime(
   };
 }
 
-export const testing = {
-  refreshLatestUpdateRestartSentinelIfPresent,
-  scheduleRestartSentinelWakeAfterReady,
-};
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

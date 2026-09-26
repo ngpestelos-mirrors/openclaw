@@ -7,7 +7,7 @@ import { bindTestChannelParticipantAdmissionEvidence } from "../../../test/helpe
 import { AcpRuntimeError } from "../../acp/runtime/errors.js";
 import { resolveSessionStorePathForAcp } from "../../acp/runtime/session-meta-store.js";
 import { configureExecutionIdentityAdmissionSink } from "../../audit/execution-identity-admission.js";
-import { configureChannelAdmissionEvidenceCollection } from "../../channels/message-access/admission-evidence.js";
+import { createChannelAdmissionAudit } from "../../channels/message-access/admission-evidence.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -17,6 +17,10 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { createInMemoryTaskRegistryStore } from "../../test-utils/task-registry-store.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
+import {
+  createAcpTestSessionBinding as createSessionBinding,
+  type AcpTestSessionBinding as FakeBinding,
+} from "./test-fixtures/acp-runtime.js";
 
 const hoisted = vi.hoisted(() => {
   const callGatewayMock = vi.fn();
@@ -161,7 +165,6 @@ function configureInMemoryTaskRegistryStoreForTests(): void {
     store: {
       ...createInMemoryTaskRegistryStore(),
       upsertTaskWithDeliveryState: () => {},
-      deleteTaskWithDeliveryState: () => {},
       upsertDeliveryState: () => {},
       close: () => {},
     },
@@ -448,47 +451,6 @@ function setMinimalAcpCommandRegistryForTests(): void {
       })),
     ]),
   );
-}
-
-type FakeBinding = {
-  bindingId: string;
-  targetSessionKey: string;
-  targetKind: "subagent" | "session";
-  conversation: {
-    channel: string;
-    accountId: string;
-    conversationId: string;
-    parentConversationId?: string;
-  };
-  status: "active";
-  boundAt: number;
-  metadata?: {
-    agentId?: string;
-    label?: string;
-    boundBy?: string;
-    webhookId?: string;
-  };
-};
-
-function createSessionBinding(overrides?: Partial<FakeBinding>): FakeBinding {
-  return {
-    bindingId: "default:thread-created",
-    targetSessionKey: "agent:codex:acp:s1",
-    targetKind: "session",
-    conversation: {
-      channel: "discord",
-      accountId: "default",
-      conversationId: "thread-created",
-      parentConversationId: "parent-1",
-    },
-    status: "active",
-    boundAt: Date.now(),
-    metadata: {
-      agentId: "codex",
-      boundBy: "user-1",
-    },
-    ...overrides,
-  };
 }
 
 const baseCfg = {
@@ -1739,7 +1701,7 @@ describe("/acp command", () => {
 
   it("admits ACP steer with the original channel participant", async () => {
     const captured: unknown[] = [];
-    const clearCollection = configureChannelAdmissionEvidenceCollection(true);
+    const audit = createChannelAdmissionAudit({ enabled: true });
     const clearSink = configureExecutionIdentityAdmissionSink((work) => {
       captured.push(work);
       return true;
@@ -1764,6 +1726,7 @@ describe("/acp command", () => {
         cfg,
       );
       bindTestChannelParticipantAdmissionEvidence({
+        audit,
         context: params.ctx,
         channelId: "discord",
         accountId: "default",
@@ -1783,7 +1746,7 @@ describe("/acp command", () => {
       ]);
     } finally {
       clearSink();
-      clearCollection();
+      audit.close();
     }
   });
 
@@ -1842,7 +1805,7 @@ describe("/acp command", () => {
     expect(result?.reply?.text).toContain("Viewed diver package.");
   });
 
-  it("resolves ACP reset targets through the configured default account when AccountId is omitted", () => {
+  it("resolves ACP reset targets through the configured default account when AccountId is omitted", async () => {
     const cfg = {
       ...baseCfg,
       channels: {
@@ -1874,7 +1837,7 @@ describe("/acp command", () => {
           : null,
     );
 
-    const result = resolveEffectiveResetTargetSessionKey({
+    const result = await resolveEffectiveResetTargetSessionKey({
       cfg,
       channel: "discord",
       conversationId: defaultThreadId,

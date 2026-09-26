@@ -7,7 +7,10 @@ import { serializeSidebarEntry } from "../app-navigation.ts";
 import { isSessionRouteId } from "../app-route-paths.ts";
 import { t } from "../i18n/index.ts";
 import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
-import type { SidebarSessionsGrouping } from "../lib/sessions/grouping.ts";
+import {
+  collectKnownSessionGroups,
+  type SidebarSessionsGrouping,
+} from "../lib/sessions/grouping.ts";
 import { runSessionNavigationIntent } from "../lib/sessions/navigation-handoff.ts";
 import {
   composerDraftSearch,
@@ -41,7 +44,6 @@ import {
   buildSidebarSessionNavigationState,
   createSidebarSessionRowsComparator,
   collectKnownSidebarSessionCatalogIds,
-  collectKnownSidebarSessionGroups,
   extendSidebarSessionSelection,
   findSidebarMainSessionRow,
   findProjectedSidebarSession,
@@ -126,7 +128,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
   }
 
   sessionPeopleSortAvailable(): boolean {
-    return this.sessionPeopleSortCapability() === true;
+    return this.sessionPeopleSortCapability() !== false;
   }
 
   effectiveSessionSortMode(): SidebarSessionSortMode {
@@ -657,7 +659,7 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
   }
 
   knownSessionGroups(): string[] {
-    return collectKnownSidebarSessionGroups(
+    return collectKnownSessionGroups(
       this.context?.sessions.state.groups ?? [],
       this.sessionData.sessionsResult?.sessions ?? [],
     );
@@ -683,7 +685,11 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
   }
 
   findSidebarHovercardRowByKey(sessionKey: string) {
-    return findSidebarHovercardRow(this, sessionKey);
+    return findSidebarHovercardRow(
+      this,
+      sessionKey,
+      this.selectedAgentSessionRows(this.getSessionNavigationState()),
+    );
   }
 
   /** The list follows the chip-selected agent without flashing stale rows mid-switch. */

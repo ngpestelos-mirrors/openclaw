@@ -1,4 +1,5 @@
 import { getRuntimeConfig } from "../config/config.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { purgeExpiredSecretStoreEntries } from "../secrets/store/secret-store.js";
 import {
   createGitHubOAuthLifecycle,
@@ -13,6 +14,7 @@ import { attachSessionChangeEventLifetime } from "./server-methods/session-chang
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import type { GatewaySidecarStopOwner } from "./server-sidecar-owners.js";
 import type { GatewayPostReadySidecarHandle } from "./server-startup-sidecar-scheduler.js";
+import { startIncognitoSessionLifetime } from "./session-incognito-lifetime.js";
 
 type GatewayChatMetadataLifecycle = Awaited<ReturnType<typeof createGatewayChatMetadataLifecycle>>;
 const SECRET_STORE_EXPIRY_INTERVAL_MS = 60_000;
@@ -53,24 +55,40 @@ function startSecretStoreExpiryMaintenance(
   logWarning: (message: string) => void,
 ): GatewayPostReadySidecarHandle {
   let warned = false;
+  let current: Promise<void> | undefined;
+  let stopped = false;
   const purge = () => {
-    try {
-      purgeExpiredSecretStoreEntries();
-      warned = false;
-    } catch {
-      if (!warned) {
-        logWarning("Secret store expiry cleanup failed; will retry.");
-        warned = true;
-      }
+    if (stopped || current) {
+      return;
     }
+    current = purgeExpiredSecretStoreEntries()
+      .then(() => {
+        warned = false;
+      })
+      .catch(() => {
+        if (!warned) {
+          logWarning("Secret store expiry cleanup failed; will retry.");
+          warned = true;
+        }
+      })
+      .finally(() => {
+        current = undefined;
+      });
   };
   purge();
   const interval = setInterval(purge, SECRET_STORE_EXPIRY_INTERVAL_MS);
   interval.unref?.();
-  return { stop: () => clearInterval(interval) };
+  return {
+    stop: async () => {
+      stopped = true;
+      clearInterval(interval);
+      await current;
+    },
+  };
 }
 
 export async function attachInitialGatewayLifetimeSidecars(params: {
+  scheduler: GatewayScheduler;
   chatMetadataLifecycle: GatewayChatMetadataLifecycle;
   gatewayRequestContext: GatewayRequestContext;
   flushPendingSessionsChangedEvents: (context?: object) => Promise<void>;
@@ -79,6 +97,14 @@ export async function attachInitialGatewayLifetimeSidecars(params: {
   reconcileGitHubPublications?: () => Promise<void>;
   publishSidecars: GatewaySidecarStopOwner["publish"];
 }): Promise<void> {
+  // Kernel preparation precedes HTTP/internal dispatch. Incognito has no restart inventory.
+  params.publishSidecars(
+    startIncognitoSessionLifetime({
+      scheduler: params.scheduler,
+      context: params.gatewayRequestContext,
+      logWarning: params.logWarning,
+    }),
+  );
   await params.chatMetadataLifecycle.attachContext(
     params.gatewayRequestContext,
     params.publishSidecars,
@@ -97,6 +123,7 @@ export async function attachInitialGatewayLifetimeSidecars(params: {
     },
   });
   const githubOAuth = createGitHubOAuthLifecycle({
+    scheduler: params.scheduler,
     getConfig: params.gatewayRequestContext.getRuntimeConfig,
     getPersistedConfig: () => getRuntimeConfig({ pin: false }),
     warn: params.logWarning,

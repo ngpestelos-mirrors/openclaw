@@ -44,10 +44,11 @@ const boundaries = vi.hoisted(() => ({
     >(),
 }));
 
-vi.mock("../session-transcript-readers.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../session-transcript-readers.js")>()),
-  visitSessionMessagesAsync: boundaries.visit,
-}));
+vi.mock("../session-transcript-readers.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../session-transcript-readers.js")>();
+  const { withArtifactFixtureReader } = await import("./artifacts.test-support.js");
+  return withArtifactFixtureReader(actual, boundaries.visit);
+});
 vi.mock("../managed-image-attachments.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../managed-image-attachments.js")>()),
   resolveManagedOutgoingMediaArtifactDownload: boundaries.managed,
@@ -324,7 +325,7 @@ async function exercise(
       };
       expect(readsBeforeRelease).toEqual(
         secondPreparation
-          ? { session: 1, sharing: 1, transcript: 1 }
+          ? { session: 2, sharing: 2, transcript: 1 }
           : { session: 0, sharing: 0, transcript: 0 },
       );
       changeAuthority();
