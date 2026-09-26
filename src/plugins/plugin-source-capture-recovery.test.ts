@@ -160,11 +160,11 @@ it.each([
     path.join(stateDir, "tmp", "openclaw-model-catalog-retained"),
     path.join(tmpdir(), "openclaw-plugin-build-retained"),
   ];
-  const identities = roots.map((directory) => {
+  const capturedRoots = roots.map((directory) => {
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(path.join(directory, "source.js"), "producer still needs this path");
     const { dev, ino } = fs.lstatSync(directory, { bigint: true });
-    return { dev, ino };
+    return { directory, identity: { dev, ino } };
   });
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(Date.now() + 2 * hour);
@@ -178,8 +178,8 @@ it.each([
   expect(inspect).toHaveBeenCalled();
   expect(rename).not.toHaveBeenCalled();
   expect(remove).not.toHaveBeenCalled();
-  for (const [index, directory] of roots.entries()) {
-    expect(fs.lstatSync(directory, { bigint: true })).toMatchObject(identities[index]);
+  for (const { directory, identity } of capturedRoots) {
+    expect(fs.lstatSync(directory, { bigint: true })).toMatchObject(identity);
     expect(fs.readFileSync(path.join(directory, "source.js"), "utf8")).toBe(
       "producer still needs this path",
     );
