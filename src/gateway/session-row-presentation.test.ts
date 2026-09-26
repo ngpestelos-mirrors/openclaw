@@ -334,7 +334,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
           key: "agent:main:dashboard:incognito-private",
         }),
       ).toMatchObject({ code: "INVALID_REQUEST" });
-      const peers = Array.from({ length: 100 }, (_, index) => {
+      const peers = Array.from({ length: 100 }, (_value, index) => {
         const profile = index % 2 ? member : secondMember;
         const client: GatewayWsClient = {
           ...clients[1]!,
@@ -364,7 +364,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
       expect(rowPresentations).toHaveBeenCalledTimes(1);
       expect(stateReads).toHaveBeenCalledTimes(1);
       for (const peer of peers) {
-        const frame = JSON.parse(String(vi.mocked(peer.socket.send).mock.calls[0]?.[0]));
+        const frame = JSON.parse(String(vi.mocked(peer.socket).send.mock.calls[0]?.[0]));
         expect(frame).toMatchObject({
           seq: 1,
           recipientProfileId: peer.preparedRecipientProfileId,
@@ -388,7 +388,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
           session: { sessionId: entry.sessionId },
         };
         if (installDuringSend) {
-          vi.mocked(peers[0]!.socket.send).mockImplementationOnce(() => {
+          vi.mocked(peers[0]!.socket).send.mockImplementationOnce(() => {
             Object.assign(payload, serializationHook);
           });
         } else {
@@ -400,7 +400,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
           new Set(peers.slice(0, 3).map((peer) => peer.connId)),
         );
         for (const [index, peer] of peers.slice(0, 3).entries()) {
-          const frame = JSON.parse(String(vi.mocked(peer.socket.send).mock.lastCall?.[0]));
+          const frame = JSON.parse(String(vi.mocked(peer.socket).send.mock.lastCall?.[0]));
           expect(frame.payload.session.label).toBe(
             installDuringSend && index === 0 ? "Parent" : "Parent!",
           );
@@ -536,7 +536,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
         new Set(clients.slice(0, 2).map((client) => client.connId)),
       );
       for (const [index, label] of ["Parent", "Renamed during publication"].entries()) {
-        const frame = JSON.parse(String(vi.mocked(clients[index]!.socket.send).mock.lastCall?.[0]));
+        const frame = JSON.parse(String(vi.mocked(clients[index]!.socket).send.mock.lastCall?.[0]));
         expect(frame.payload.session.label).toBe(label);
       }
       removeSessionMember(scope, member.id);

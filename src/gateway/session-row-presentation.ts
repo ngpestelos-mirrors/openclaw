@@ -48,8 +48,8 @@ export function createSessionRowPresentationCache() {
         children.clear();
         read = {
           state,
-          readSource: projection.readSource,
-          readMembership: projection.readMembership,
+          readSource: projection.readSource.bind(projection),
+          readMembership: projection.readMembership.bind(projection),
           present: projection.present,
           describe(query, captured) {
             const key = JSON.stringify([query.agentId, query.storePath, query.key]);
