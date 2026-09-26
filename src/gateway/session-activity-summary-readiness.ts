@@ -74,9 +74,11 @@ export function createActivitySummaryReadiness(params: {
       if (closed || (!previous && pending.size >= params.capacity)) {
         return false;
       }
-      if (!previous?.immediate || request.immediate) {
-        pending.set(key, { ...request });
-      }
+      // Keep the newest identity even when older work requested immediate scheduling.
+      pending.set(key, {
+        ...request,
+        immediate: request.immediate || previous?.immediate === true,
+      });
       resume();
       return true;
     },

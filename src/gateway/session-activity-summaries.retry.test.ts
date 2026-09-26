@@ -1,3 +1,5 @@
+import { rename } from "node:fs/promises";
+import { backup } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
@@ -15,7 +17,12 @@ import {
   preparePendingAgentDatabase,
   recordAgentDatabaseAdmissions,
 } from "../state/agent-database-admission.js";
-import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
+import {
+  closeOpenClawAgentDatabaseByPathAsync,
+  openOpenClawAgentDatabase,
+} from "../state/openclaw-agent-db.js";
+import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -204,6 +211,75 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     await committed.promise;
     expect(complete).toHaveBeenCalledTimes(2);
     expect(view(target)?.state).toBe("current");
+  });
+
+  it("retains a newer transcript request after same-path physical store replacement", async () => {
+    const target = await addSession(1);
+    await projection.prepareMembership();
+    const originalGeneration = projection.sharingTarget(target)!.generation;
+    const database = openOpenClawAgentDatabase({ agentId: target.agentId });
+    const replacementPath = testState.path("recap-replacement.sqlite");
+    await backup(database.db, replacementPath);
+    const completion = createDeferred<typeof result>();
+    complete.mockImplementationOnce(() => completion.promise);
+    service.ensure(target);
+    await progress.waitFor(() => expect(complete).toHaveBeenCalledOnce());
+
+    const topologyEntered = createDeferred();
+    const releaseTopology = createDeferred();
+    const originalRead = stateReads.executeExistingOpenClawStateRead;
+    const read = vi
+      .spyOn(stateReads, "executeExistingOpenClawStateRead")
+      .mockImplementation(async (...args) => {
+        const reply = await originalRead(...args);
+        if (args[1].type === "agentDatabaseDeletion.snapshot") {
+          topologyEntered.resolve();
+          await releaseTopology.promise;
+        }
+        return reply;
+      });
+    const preparationEntered = createDeferred<{ work: Promise<void> }>();
+    const prepareMembership = projection.prepareMembership;
+    let readinessWork: Promise<void> | undefined;
+    const prepare = vi.spyOn(projection, "prepareMembership").mockImplementationOnce(() => {
+      readinessWork = prepareMembership();
+      preparationEntered.resolve({ work: readinessWork });
+      return readinessWork;
+    });
+    try {
+      sessionChanges.emit({ all: true, scope: "stores" });
+      await topologyEntered.promise;
+      completion.resolve({ ...result, text: "Outdated recap must not be stored." });
+      const { work } = await preparationEntered.promise;
+
+      await closeOpenClawAgentDatabaseByPathAsync(database.path, target.agentId);
+      await rename(replacementPath, database.path);
+      registerOpenClawAgentDatabase({ agentId: target.agentId, path: database.path });
+      await appendWork(target);
+      expect(projection.sharingTarget(target)).toBeNull();
+      service.handleTranscript({ target: scope(target) });
+
+      // The readiness drain registered first, so it consumes the held intent before this await.
+      releaseTopology.resolve();
+      await work;
+      expect(projection.sharingTarget(target)?.generation).not.toBe(originalGeneration);
+      expect(view(target)?.state).toBe("updating");
+      await progress.waitFor(() => expect(view(target)?.state).toBe("current"));
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect(loadSessionEntryReadOnly(scope(target))?.activitySummary).toMatchObject({
+        text: result.text,
+        coveredMessages: 2,
+      });
+      expect(JSON.parse(complete.mock.calls[1]![0].prompt).messages).toContain(
+        "assistant: Verified additional work.",
+      );
+    } finally {
+      completion.resolve(result);
+      releaseTopology.resolve();
+      await readinessWork?.catch(() => undefined);
+      prepare.mockRestore();
+      read.mockRestore();
+    }
   });
 
   it.each([false, true])(
