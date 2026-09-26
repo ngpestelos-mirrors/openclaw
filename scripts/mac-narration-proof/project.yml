@@ -23,6 +23,9 @@ schemes:
       targets:
         NativeNarrationUITests: all
     test:
+      captureScreenshotsAutomatically: true
+      deleteScreenshotsWhenEachTestSucceeds: false
+      preferredScreenCaptureFormat: screenRecording
       targets:
         - name: NativeNarrationUITests
           parallelizable: false
