@@ -89,6 +89,6 @@ describe("typecheck-inert TypeScript changes", () => {
     const inert = findTypecheckInertSources(
       cases.map(([path, before, after]) => ({ path, before, after })),
     );
-    expect(inert).toEqual(cases.filter(([, , , expected]) => expected).map(([path]) => path));
+    expect(inert).toEqual(cases.filter((entry) => entry[3]).map(([path]) => path));
   });
 });
