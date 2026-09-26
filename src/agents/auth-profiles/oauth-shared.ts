@@ -7,6 +7,7 @@ import { cloneAuthProfileStore } from "./clone.js";
 import { hasUsableOAuthCredential } from "./credential-state.js";
 import {
   isSafeToCopyOAuthIdentity,
+  isSafeToCopyOAuthRoutingScope,
   normalizeAuthEmailToken,
   normalizeAuthIdentityToken,
 } from "./oauth-identity.js";
@@ -96,7 +97,8 @@ function isSafeOAuthIdentityTransition(
   if (!existing || existing.type !== "oauth") {
     return policy.whenExistingCredentialMissing;
   }
-  if (existing.provider !== incoming.provider) {
+  // Tenant scope must precede the baseline equivalent and identity-less shortcuts.
+  if (!isSafeToCopyOAuthRoutingScope(existing, incoming)) {
     return false;
   }
   if (areOAuthCredentialsEquivalent(existing, incoming)) {

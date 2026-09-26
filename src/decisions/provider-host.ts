@@ -251,7 +251,11 @@ export class DecisionProviderHost {
       if (controller.signal.reason instanceof DecisionConsumerClosedError) {
         throw controller.signal.reason;
       }
-      if (this.retired || controller.signal.reason === "decision-provider-retired") {
+      if (
+        this.retired ||
+        instance.owner?.revoked ||
+        controller.signal.reason === "decision-provider-retired"
+      ) {
         return this.unavailable("retiring");
       }
       if (
@@ -282,13 +286,18 @@ export class DecisionProviderHost {
       try {
         // Preserve the offered questions even when the provider mutates its input.
         questions = structuredClone(submitted.questions);
-        outcome = await instance.runInRegistry(registry, () =>
-          this.provider.evaluate(submitted, {
-            model,
-            ...(options.agentId ? { agentId: options.agentId } : {}),
-            signal,
-            deadlineMonotonicMs,
-          }),
+        outcome = await instance.runInRegistry(
+          registry,
+          () =>
+            this.provider.evaluate(submitted, {
+              model,
+              ...(options.agentId ? { agentId: options.agentId } : {}),
+              signal,
+              deadlineMonotonicMs,
+            }),
+          // The callback's physical settlement is tracked by done. Joining disposal
+          // would wait on host.stop(), which itself waits for done.
+          { joinDisposal: false },
         );
       } catch {
         const stopped = interrupted();

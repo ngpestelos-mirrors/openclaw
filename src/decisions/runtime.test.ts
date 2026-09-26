@@ -9,6 +9,7 @@ import { createPluginRecord } from "../plugins/loader-records.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { evaluateDecisionInRegistry, prepareDecisionProviderReload } from "./runtime.js";
 import type {
   DecisionBatch,
@@ -665,3 +666,35 @@ it("preserves an authentication latch across reversible admission recovery", asy
   expect(await host.run()).toMatchObject({ reason: "circuit-open" });
   expect(call).toHaveBeenCalledTimes(1);
 });
+
+it.each([false, true])(
+  "settles a provider callback before disposal cleanup waits on its host (sibling: %s)",
+  async (withSibling) => {
+    const started = createDeferredCore();
+    const release = createDeferredCore();
+    const siblingRelease = createDeferredCore();
+    const host = registered(async () => {
+      started.resolve();
+      await release.promise;
+      return answer;
+    });
+    const instance = getPluginInstance(host.record)!;
+    const sibling = withSibling ? instance.run(() => siblingRelease.promise) : undefined;
+    const pending = host.run();
+    await started.promise;
+
+    const disposal = instance.dispose();
+    release.resolve();
+    try {
+      // Another admitted call can postpone host.stop(), but cannot keep this
+      // retiring instance's completed provider result current.
+      await expect(pending).resolves.toEqual({ status: "unavailable", reason: "retiring" });
+    } finally {
+      siblingRelease.resolve();
+      await sibling;
+      await disposal;
+    }
+    await expect(disposal).resolves.toEqual({ errors: [] });
+    expect(host.registry.decisionProviders[0]!.host.inspect(config).activeRequests).toBe(0);
+  },
+);
