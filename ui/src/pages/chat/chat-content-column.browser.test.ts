@@ -112,11 +112,19 @@ describe("shared chat content column", () => {
               } else {
                 container.style.removeProperty("--chat-message-max-width");
               }
+              if (mode === "saved") {
+                container.style.setProperty("--chat-thread-max-width", "100%");
+              } else {
+                container.style.removeProperty("--chat-thread-max-width");
+              }
               container.dir = direction;
               container.style.width = narrow ? "min(100%, 480px)" : "100%";
               render(
                 html`
-                  <div class=${`chat-thread${direct ? " chat-thread--direct" : ""}`}>
+                  <div
+                    class=${`chat-thread${direct ? " chat-thread--direct" : ""}`}
+                    style="height: 850px"
+                  >
                     <div class="chat-thread-inner">
                       ${renderMessageGroup(
                         group("own", "user", paragraph, {
