@@ -11,8 +11,9 @@ const TYPESCRIPT_PATH = /\.(?:ts|tsx|mts|cts)$/u;
 
 function significantTokens(sourceFile: ts.SourceFile) {
   const source = sourceFile.getFullText();
-  const tokens: Array<{ text: string; lineBreak: boolean }> = [];
-  let lineBreak = false;
+  // "" = adjacent, " " = same-line trivia, "\n" = trivia containing a line terminator.
+  const tokens: Array<{ text: string; gap: "" | " " | "\n" }> = [];
+  let gap: "" | " " | "\n" = "";
   let end = 0;
   let valid = true;
   walkTypeScriptTokens(sourceFile, (kind, pos, tokenEnd) => {
@@ -34,16 +35,17 @@ function significantTokens(sourceFile: ts.SourceFile) {
       if (kind <= ts.SyntaxKind.NonTextFileMarkerTrivia) {
         valid = false;
       }
-      tokens.push({ text, lineBreak });
-      lineBreak = false;
+      tokens.push({ text, gap });
+      gap = "";
       return;
     }
-    lineBreak ||= /[\r\n\u2028\u2029]/u.test(text);
+    // Adjacency matters too: the parser rescans `>` together with an adjacent `=` or `>`.
+    gap = gap === "\n" || /[\r\n\u2028\u2029]/u.test(text) ? "\n" : " ";
   });
   return valid && end === source.length ? tokens : undefined;
 }
 
-/** Compare syntax in one native snapshot, preserving literal bytes and ASI boundaries. */
+/** Compare syntax in one native snapshot, preserving literal bytes, adjacency, and ASI boundaries. */
 export function findTypecheckInertSources(changes: readonly SourceChange[]): string[] {
   const candidates = changes.filter((change) => TYPESCRIPT_PATH.test(change.path));
   try {
@@ -68,9 +70,7 @@ export function findTypecheckInertSources(changes: readonly SourceChange[]): str
       return before &&
         after &&
         before.length === after.length &&
-        before.every(
-          (token, i) => token.text === after[i]!.text && token.lineBreak === after[i]!.lineBreak,
-        )
+        before.every((token, i) => token.text === after[i]!.text && token.gap === after[i]!.gap)
         ? [change.path]
         : [];
     });
