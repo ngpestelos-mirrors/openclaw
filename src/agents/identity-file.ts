@@ -332,6 +332,12 @@ export async function loadAgentIdentityFromFile(
   if (result.kind === "too-large") {
     throw new Error(
       `Identity file ${identityPath} exceeds the maximum size of ${MAX_IDENTITY_FILE_BYTES} bytes`,
+      {
+        cause: new FsSafeError(
+          "too-large",
+          `File exceeds ${MAX_IDENTITY_FILE_BYTES} bytes: ${identityPath}`,
+        ),
+      },
     );
   }
   return result.kind === "loaded" ? result.identity : null;
