@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { root as fsSafeRoot, type Root } from "@openclaw/fs-safe/root";
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, vi, type Mock } from "vitest";
 import { writePackageDistInventory } from "../../../scripts/lib/package-dist-inventory.ts";
@@ -7,6 +8,31 @@ import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { runCommandWithTimeout as RunCommandWithTimeout } from "../../process/exec.js";
 import { createCommandResult as commandResult } from "../../test-utils/npm-spec-install-test-helpers.js";
 import { quoteCliArg } from "../quote-cli-arg.js";
+
+/** Refuse only the staged launcher after the candidate package has been activated. */
+export async function mockStagedShimCopyFailure(
+  root: string,
+  packageRoot: string,
+  stagedShim: () => string | undefined,
+) {
+  const prototype = Object.getPrototypeOf(await fsSafeRoot(root)) as Root;
+  // oxlint-disable-next-line typescript/unbound-method -- Preserve the intercepted Root receiver and authority options.
+  const copy = prototype.copyIn;
+  let injections = 0;
+  const copySpy = vi
+    .spyOn(prototype, "copyIn")
+    .mockImplementation(async function (this: Root, destination, source, options) {
+      if (source === stagedShim()) {
+        injections += 1;
+        expect(
+          JSON.parse(await fs.readFile(path.join(packageRoot, "package.json"), "utf8")).version,
+        ).toBe("2026.8.1");
+        throw new Error("staged shim copy failed");
+      }
+      await copy.call(this, destination, source, options);
+    });
+  return { copySpy, injections: () => injections };
+}
 
 function requireValue<T>(value: T | undefined, label: string): T {
   if (value === undefined) {

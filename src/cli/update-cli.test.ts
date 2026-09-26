@@ -82,6 +82,7 @@ import {
 } from "./update-cli/update-cli-failure-recovery.test-support.js";
 import {
   createUpdateCliPackageFixtures,
+  mockStagedShimCopyFailure,
   createCurrentProcessFreshDoctorFixture,
   writeJsonFixture,
   writeOpenClawPackageFixture,
@@ -7707,13 +7708,7 @@ describe("update-cli", () => {
         await fs.writeFile(targetShim, "old shim\n");
       }
       let stagedShim: string | undefined;
-      const copyFile = fs.copyFile.bind(fs);
-      const copyFileSpy = vi.spyOn(fs, "copyFile").mockImplementation(async (...args) => {
-        if (String(args[0]) === stagedShim) {
-          throw new Error("staged shim copy failed");
-        }
-        return await copyFile(...args);
-      });
+      const copyFailure = await mockStagedShimCopyFailure(tempDir, pkgRoot, () => stagedShim);
       readPackageVersion.mockResolvedValue("2026.7.1");
       primeNpmChannelTag("latest", "2026.8.1");
       mockNpmGlobalCommands(nodeModules, async (argv) => {
@@ -7759,9 +7754,10 @@ describe("update-cli", () => {
       try {
         await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
       } finally {
-        copyFileSpy.mockRestore();
+        copyFailure.copySpy.mockRestore();
       }
 
+      expect(copyFailure.injections()).toBe(failure === "shim swap" ? 1 : 0);
       expect(defaultRuntime.exit).not.toHaveBeenCalled();
       expect(doctorCommandCall()).toBeUndefined();
       expect(updateNpmInstalledPlugins).not.toHaveBeenCalled();

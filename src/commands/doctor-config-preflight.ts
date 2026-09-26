@@ -36,7 +36,7 @@ import {
   createDoctorRehearsalSnapshotPreparation,
   needsRefreshedPluginIndexPersistence,
   persistRefreshedPluginIndex,
-  readDoctorConfigPreflightSnapshot,
+  createDoctorConfigPreflightSnapshotReader,
   shouldSkipPluginValidationForDoctorConfigPreflight,
   type DoctorConfigPreflightPluginSnapshotRead,
 } from "./doctor-config-preflight-plugin-index.js";
@@ -238,20 +238,14 @@ async function runDoctorConfigPreflightOperation(
     enabled: options.migrateLegacyConfig !== false,
     measure: measurePreflightStep,
   });
-  const readConfigSnapshotForPreflight = async (allowCurrentPluginMetadata = true) =>
-    await measurePreflightStep("config-snapshot", async () =>
-      readDoctorConfigPreflightSnapshot({
-        allowCurrentPluginMetadata,
-        includePluginMetadata:
-          Boolean(migrationCheckpoint) || options.preparePluginMetadataSnapshot === true,
-        measure: options.measure,
-        observe: gatewayStartupCheckpointRequired ? false : options.observe,
-        preparePluginMetadataSnapshot: options.preparePluginMetadataSnapshot === true,
-        skipPluginValidation: shouldSkipPluginValidationForDoctorConfigPreflight(),
-        prepareSnapshot: getSnapshotPreparation(options.doctorOnlyStateMigrations === true),
-        ...(await pluginMigrations.snapshotOptions()),
-      }),
-    );
+  const readConfigSnapshotForPreflight = createDoctorConfigPreflightSnapshotReader({
+    options,
+    gatewayStartupCheckpointRequired,
+    checkpointRequired: () => Boolean(migrationCheckpoint),
+    measure: measurePreflightStep,
+    getSnapshotPreparation,
+    snapshotOptions: () => pluginMigrations.snapshotOptions(),
+  });
   const readAdmittedStartupSnapshot = async () =>
     readStartupMigrationSnapshot({
       env: startupMigrationEnv,
@@ -429,6 +423,7 @@ async function runDoctorConfigPreflightOperation(
         }
       }
     }
+    let postConvergenceStateConfig: OpenClawConfig | undefined;
     if (
       (gatewayStartupCheckpointRequired || stateDirMigrations) &&
       stateMigrationsAllowed &&
@@ -472,9 +467,16 @@ async function runDoctorConfigPreflightOperation(
         snapshot = refreshed.snapshot;
         baseConfig = snapshot.sourceConfig ?? snapshot.config ?? {};
         automaticConfigRepair = planAdmittedConfigRepair(snapshot);
+        // Keep source locators for plugin migrations while core migrations use
+        // the complete runtime config validated after package convergence.
+        postConvergenceStateConfig = automaticConfigRepair?.snapshot.config;
       }
     }
-    const stateMigrationInput = resolveStateMigrationConfigInput({ snapshot, baseConfig });
+    const stateMigrationInput = resolveStateMigrationConfigInput({
+      snapshot,
+      baseConfig,
+      postConvergenceConfig: postConvergenceStateConfig,
+    });
     if (migrationCheckpoint) {
       migrationCheckpointIdentity = checkpointIdentityForSnapshot(
         { ...configSnapshotRead, snapshot },

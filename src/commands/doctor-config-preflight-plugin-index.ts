@@ -19,6 +19,7 @@ import { createPluginCache, getPluginCache, withPluginCache } from "../plugins/p
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveMigrationCheckpointIdentity } from "./doctor-config-preflight-checkpoint.js";
+import type { DoctorConfigPreflightOptions } from "./doctor/shared/config-migration-result.js";
 import { addDoctorLegacyIssues } from "./doctor/shared/legacy-config-issues.js";
 import { completeDoctorPluginMetadataSnapshot } from "./doctor/shared/plugin-metadata-snapshot-scope.js";
 
@@ -105,6 +106,38 @@ function formatPluginRegistryDifferences(
         `${sanitizeTerminalText(difference.pluginId)} (${difference.changed.join("+")} changed; persisted source: ${JSON.stringify(difference.persistedSource)}; derived source: ${JSON.stringify(difference.derivedSource)})`,
     )
     .join(", ");
+}
+
+/** Bind one preflight's readers while retaining its current checkpoint and pending inputs. */
+export function createDoctorConfigPreflightSnapshotReader(params: {
+  options: DoctorConfigPreflightOptions;
+  gatewayStartupCheckpointRequired: boolean;
+  checkpointRequired: () => boolean;
+  measure: MeasurePreflightStep;
+  getSnapshotPreparation: ReturnType<typeof createDoctorRehearsalSnapshotPreparation>;
+  snapshotOptions: () => Promise<
+    Pick<
+      Parameters<typeof readDoctorConfigPreflightSnapshot>[0],
+      "preparePluginMigrations" | "deferredPluginMigrations"
+    >
+  >;
+}) {
+  return async (allowCurrentPluginMetadata = true) =>
+    await params.measure("config-snapshot", async () =>
+      readDoctorConfigPreflightSnapshot({
+        allowCurrentPluginMetadata,
+        includePluginMetadata:
+          params.checkpointRequired() || params.options.preparePluginMetadataSnapshot === true,
+        measure: params.options.measure,
+        observe: params.gatewayStartupCheckpointRequired ? false : params.options.observe,
+        preparePluginMetadataSnapshot: params.options.preparePluginMetadataSnapshot === true,
+        skipPluginValidation: shouldSkipPluginValidationForDoctorConfigPreflight(),
+        prepareSnapshot: params.getSnapshotPreparation(
+          params.options.doctorOnlyStateMigrations === true,
+        ),
+        ...(await params.snapshotOptions()),
+      }),
+    );
 }
 
 export async function readDoctorConfigPreflightSnapshot(params: {
