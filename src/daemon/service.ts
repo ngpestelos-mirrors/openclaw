@@ -37,7 +37,6 @@ import { readGatewayServiceState } from "./service-state.js";
 import type {
   GatewayService,
   GatewayServiceControlArgs,
-  GatewayServiceEnv,
   GatewayServiceEnvArgs,
   GatewayServiceInstallArgs,
   GatewayServiceManageArgs,
@@ -46,7 +45,6 @@ import type {
   GatewayServiceStartResult,
   GatewayServiceState,
 } from "./service-types.js";
-import { getGatewayServiceUpdateNativeCommand } from "./service-update-authority.js";
 import { readSystemdDefinitionMutationCapability } from "./systemd-definition-mutation.js";
 import { isSystemdServiceAbsent } from "./systemd-scope.js";
 import {
