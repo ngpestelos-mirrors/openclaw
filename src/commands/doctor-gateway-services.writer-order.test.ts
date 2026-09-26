@@ -37,7 +37,8 @@ vi.mock("./doctor-platform-notes.js", () => ({
   noteMacLaunchctlGatewayEnvOverrides: vi.fn(),
 }));
 vi.mock("../infra/container-environment.js", () => ({ isContainerEnvironment: () => false }));
-vi.mock("../daemon/service.js", () => ({
+vi.mock("../daemon/service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../daemon/service.js")>()),
   resolveGatewayService: () => ({
     ...service,
     readDefinitionMutationCapability: async () => ({ kind: "writable" }),
