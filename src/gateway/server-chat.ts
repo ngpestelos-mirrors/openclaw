@@ -40,14 +40,13 @@ import {
 } from "../sessions/session-key-utils.js";
 import { resolveAssistantEventPhase } from "../shared/chat-message-content.js";
 import { setSafeTimeout } from "../utils/timer-delay.js";
-import { mergeAssistantText, resolveAssistantTextInput } from "./agent-event-assistant-text.js";
+import { resolveAssistantTextInput } from "./agent-event-assistant-text.js";
 import {
   appendChatCanvasBlocks,
   appendChatCanvasBlocksToMessage,
   extractChatToolResultCanvasPreview,
 } from "./chat-display-projection.canvas.js";
 import {
-  capLiveAssistantText,
   projectLiveAssistantBufferedText,
   shouldSuppressAssistantEventForLiveChat,
 } from "./live-chat-projector.js";
@@ -61,11 +60,7 @@ import {
   resolveHeartbeatFlag,
   shouldHideHeartbeatChatOutput,
 } from "./server-chat-heartbeat.js";
-import {
-  mergeAgentTextPayload,
-  mergeChatTextPayload,
-  resolveBroadcastDelta,
-} from "./server-chat-live-text.js";
+import { mergeAgentTextPayload, mergeChatTextPayload } from "./server-chat-live-text.js";
 import { isChatAbortMarkerCurrent } from "./server-chat-state.js";
 import type {
   BufferedAgentEvent,
@@ -86,7 +81,6 @@ import {
 import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import { resolveSessionSubscriptionKeys } from "./session-subscription-keys.js";
-import { projectGatewaySessionRunState } from "./session-utils-display.js";
 import { loadGatewaySessionEntryReadOnly, type GatewaySessionRow } from "./session-utils.js";
 import { formatForLog } from "./ws-log.js";
 
@@ -482,47 +476,17 @@ export function createAgentEventHandler({
     }
   };
 
-  // Native, ACP, and spawn-owned dashboard sessions can carry spawnedBy.
-  // Short-circuit everyone else so high-volume chat streams do not touch the
-  // session store. Results are cached per sessionKey because
-  // spawnedBy is immutable once set and resolveSpawnedBy sits on the hot event
-  // path (delta, flush, final, agent, seq-gap).
-  const spawnedByCache = new Map<string, string | null>();
   const resolveSpawnedBy = (sessionKey: string): string | null => {
-    if (spawnedByCache.has(sessionKey)) {
-      return spawnedByCache.get(sessionKey)!;
-    }
-    // Non-lineage keys return null without polluting the cache; only eligible
-    // child-session results (positive or null) are worth memoising.
-    const isDashboardSession =
-      parseAgentSessionKey(sessionKey)?.rest.startsWith("dashboard:") === true;
+    const parsed = parseAgentSessionKey(sessionKey);
+    const isDashboardSession = parsed?.rest.startsWith("dashboard:") === true;
     if (!isSubagentSessionKey(sessionKey) && !isAcpSessionKey(sessionKey) && !isDashboardSession) {
       return null;
     }
-    let result: string | null = null;
-    try {
-      const { entry, canonicalKey } = loadGatewaySessionEntryReadOnly(sessionKey, { clone: false });
-      if (entry) {
-        const rowContext = getSessionRowProjection?.()?.readPreparedRowContext();
-        result =
-          (rowContext
-            ? projectGatewaySessionRunState({
-                key: canonicalKey,
-                entry,
-                now: Date.now(),
-                rowContext,
-              }).subagentOwner
-            : undefined) ||
-          entry.spawnedBy ||
-          null;
-        if (getSessionRowProjection && !rowContext) {
-          // Pending projection facts must not make this temporary fallback permanent.
-          return result;
-        }
-      }
-    } catch {}
-    spawnedByCache.set(sessionKey, result);
-    return result;
+    const agentId =
+      parsed?.agentId ?? tryResolveSessionCompatibilityOwnerAgentId(getRuntimeConfig(), sessionKey);
+    return agentId
+      ? (getSessionRowProjection?.()?.readPreparedSpawnedBy({ key: sessionKey, agentId }) ?? null)
+      : null;
   };
 
   const buildSessionEventSnapshot = (
@@ -896,16 +860,12 @@ export function createAgentEventHandler({
   ) => {
     cancelPendingChatDeltaFlush(clientRunId);
     const run = chatRunState.getOrCreate(clientRunId);
-    const broadcastDelta = resolveBroadcastDelta({
-      text,
-      previousBroadcastText: run.deltaLastBroadcastText,
-    });
+    const broadcastDelta = chatRunState.takeBufferDelta(clientRunId, text);
     if (!broadcastDelta) {
       return;
     }
     const now = Date.now();
     run.deltaSentAt = now;
-    run.deltaLastBroadcastText = text;
     const spawnedBy = resolveSpawnedBy(sessionKey);
     const payload = {
       runId: clientRunId,
@@ -980,28 +940,13 @@ export function createAgentEventHandler({
     opts?: { controlUiVisible?: boolean; isCurrent?: () => boolean; isHeartbeat?: boolean },
   ) => {
     const run = chatRunState.getOrCreate(clientRunId);
-    if (input.managedMediaUrls?.length) {
-      const managedMediaUrls = (run.managedMediaUrls ??= new Set<string>());
-      for (const url of input.managedMediaUrls) {
-        managedMediaUrls.add(url);
-      }
-      delete run.bufferProjection;
-    }
     const previousRawText = run.rawBuffer ?? "";
-    const snapshot = mergeAssistantText(
-      { text: previousRawText, scope: run.assistantScope },
-      input,
-      "live",
-    );
-    run.assistantScope = snapshot.scope;
-    const mergedRawText = capLiveAssistantText(snapshot);
+    const mergedRawText = chatRunState.updateBuffer(clientRunId, input);
     if (!mergedRawText && !previousRawText) {
       return;
     }
     const now = Date.now();
-    run.rawBuffer = mergedRawText;
     run.bufferIsCurrent = opts?.isCurrent;
-    run.bufferUpdatedAt = now;
     if (!mergedRawText) {
       broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, "", opts);
       return;
@@ -1166,6 +1111,30 @@ export function createAgentEventHandler({
       shouldSuppressSilent,
     });
     const spawnedBy = resolveSpawnedBy(sessionKey);
+    const terminalPayload = {
+      runId: clientRunId,
+      sessionKey,
+      ...(opts?.agentId ? { agentId: opts.agentId } : {}),
+      ...(spawnedBy && { spawnedBy }),
+      seq,
+    };
+    const createTerminalMessage = (canvasBlocks: NonNullable<ChatRunRecord["canvasBlocks"]>) =>
+      appendChatCanvasBlocksToMessage(
+        {
+          role: "assistant",
+          content: text ? [{ type: "text", text }] : [],
+          timestamp: Date.now(),
+          ...(opts?.assistantTranscriptIdempotencyKey
+            ? {
+                __openclaw: {
+                  runId: clientRunId,
+                  idempotencyKey: opts.assistantTranscriptIdempotencyKey,
+                },
+              }
+            : {}),
+        },
+        canvasBlocks,
+      );
     if (jobState !== "error") {
       const run = chatRunState.runs.get(clientRunId);
       const canvasBlocks = run?.canvasBlocks ?? [];
@@ -1176,11 +1145,7 @@ export function createAgentEventHandler({
         canvasBlocks.length > 0 &&
         !(run?.rawBuffer ?? run?.buffer ?? "").trim();
       const payload = {
-        runId: clientRunId,
-        sessionKey,
-        ...(opts?.agentId ? { agentId: opts.agentId } : {}),
-        ...(spawnedBy && { spawnedBy }),
-        seq,
+        ...terminalPayload,
         state: jobState === "done" ? ("final" as const) : ("aborted" as const),
         ...(jobState === "aborted" && opts?.abortErrorMessage
           ? { errorMessage: opts.abortErrorMessage }
@@ -1189,22 +1154,7 @@ export function createAgentEventHandler({
         ...(jobState === "done" && opts?.yielded ? { yielded: true as const } : {}),
         message:
           (text && !shouldSuppressSilent) || canvasOnly
-            ? appendChatCanvasBlocksToMessage(
-                {
-                  role: "assistant",
-                  content: text ? [{ type: "text", text }] : [],
-                  timestamp: Date.now(),
-                  ...(opts?.assistantTranscriptIdempotencyKey
-                    ? {
-                        __openclaw: {
-                          runId: clientRunId,
-                          idempotencyKey: opts.assistantTranscriptIdempotencyKey,
-                        },
-                      }
-                    : {}),
-                },
-                canvasBlocks,
-              )
+            ? createTerminalMessage(canvasBlocks)
             : undefined,
       };
       if (payload.message) {
@@ -1216,26 +1166,11 @@ export function createAgentEventHandler({
     }
     const errorDetail = projectChatErrorDetail(opts?.errorObservation);
     const payload = {
-      runId: clientRunId,
-      sessionKey,
-      ...(opts?.agentId ? { agentId: opts.agentId } : {}),
-      ...(spawnedBy && { spawnedBy }),
-      seq,
+      ...terminalPayload,
       state: "error" as const,
       ...(opts?.assistantTranscriptIdempotencyKey && text && !shouldSuppressSilent
         ? {
-            message: appendChatCanvasBlocksToMessage(
-              {
-                role: "assistant",
-                content: [{ type: "text", text }],
-                timestamp: Date.now(),
-                __openclaw: {
-                  runId: clientRunId,
-                  idempotencyKey: opts.assistantTranscriptIdempotencyKey,
-                },
-              },
-              chatRunState.runs.get(clientRunId)?.canvasBlocks ?? [],
-            ),
+            message: createTerminalMessage(chatRunState.runs.get(clientRunId)?.canvasBlocks ?? []),
           }
         : {}),
       errorMessage: error ? formatForLog(error) : undefined,

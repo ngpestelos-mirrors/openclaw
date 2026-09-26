@@ -63,6 +63,16 @@ a lost result. Uncertain mutations are never replayed. Incognito and maintenance
 scopes retain their native connection and use the same mutation kernel. Stored
 data, schemas, configuration, and update behavior are unchanged.
 
+Placement turn claims and releases execute through the shared-state writer,
+including their coordinator acquisition. Local turns retain durable claims:
+cloud dispatch closes admission and joins their settlement before preparing the
+workspace. Claim admission rechecks the live caller before mutation and commit;
+conditional release compares the exact claim inside the transaction. Commit
+receipts publish claim authority and release observers before callers continue,
+including when ordinary reply delivery fails. Local forced completion and final
+cleanup join the same pending release. Restart recovery, schemas, persisted
+fields, and update behavior are unchanged.
+
 Memory session preparation retains only export text, provenance, timestamps, and
 classification/reset facts from each decoded SQLite event. Full-message observers
 retain their original snapshot, and callbacks run after its read transaction closes.
