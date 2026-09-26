@@ -107,7 +107,7 @@ describe("subagent registry restart recovery", () => {
         const lease =
           owner === "admission"
             ? await beginSessionWorkAdmission({
-                scope: "/tmp/subagent-recovery.sqlite",
+                scope: mocks.storePath,
                 identities: [childSessionKey, "session-id"],
                 assertAllowed: () => {},
               })
@@ -260,7 +260,7 @@ describe("interrupted requester-settle continuation ownership", () => {
       childSessionKey: "agent:main:subagent:leaf",
       requesterSessionKey: childSessionKey,
       requesterAgentId: "main",
-      requesterStorePath: "/tmp/subagent-recovery.sqlite",
+      requesterStorePath: "/tmp/openclaw-subagent-recovery/agents/main/agent/openclaw-agent.sqlite",
       completionRequesterSessionId: "session-id",
       expectsCompletionMessage: true,
       execution: { status: "terminal", endedAt: Date.now(), outcome: { status: "ok" } },
@@ -297,13 +297,17 @@ describe("interrupted requester-settle continuation ownership", () => {
   }
 
   it.each([
-    { backoff: 0, privateCompletion: false },
-    { backoff: 120_000, privateCompletion: false },
-    { backoff: 120_000, privateCompletion: true },
+    { backoff: 0, privateCompletion: false, physicalLocator: false },
+    { backoff: 0, privateCompletion: false, physicalLocator: true },
+    { backoff: 120_000, privateCompletion: false, physicalLocator: false },
+    { backoff: 120_000, privateCompletion: true, physicalLocator: false },
   ])(
-    "keeps the exact saved wake owned before admission (backoff $backoff, private $privateCompletion)",
-    async ({ backoff, privateCompletion }) => {
+    "keeps the exact saved wake owned before admission (backoff $backoff, private $privateCompletion, physical locator $physicalLocator)",
+    async ({ backoff, privateCompletion, physicalLocator }) => {
       const { child, worker } = cohort();
+      if (physicalLocator) {
+        mocks.storePath = child.requesterStorePath!;
+      }
       child.requesterSettleWake!.nextAttemptAt = Date.now() + backoff;
       if (privateCompletion) {
         child.completionTarget = "parent";

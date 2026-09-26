@@ -1,4 +1,5 @@
 import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
+import { prepareSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target.js";
 import * as agentEvents from "../../../infra/agent-events.js";
 import { listAgentRunsForSession } from "../../../infra/agent-run-registry.js";
 import {
@@ -69,6 +70,19 @@ export async function recoverInterruptedSubagentRow(
     if ((!session && !replayTerminal) || !isCurrent()) {
       return { status: "deferred" };
     }
+    // Registry custody stores the physical locator; session configuration may
+    // still name its logical sessions.json alias. Let the store owner resolve it.
+    const physicalStorePath =
+      session && !replayTerminal && !entry.execution.restartRecovery
+        ? (
+            await prepareSqliteTargetFromSessionStorePath(session.storePath, {
+              agentId: session.agentId,
+            })
+          ).path
+        : undefined;
+    if (!isCurrent()) {
+      return { status: "deferred" };
+    }
     const sessionEntry = session?.sessionEntry;
     const sessionId = sessionEntry?.sessionId;
     const lifecycleRevision = sessionEntry?.lifecycleRevision;
@@ -118,7 +132,7 @@ export async function recoverInterruptedSubagentRow(
               member?.expectsCompletionMessage === true &&
               !member.collect &&
               member.completionRequesterSessionId === sessionId &&
-              member.requesterStorePath === session.storePath &&
+              member.requesterStorePath === physicalStorePath &&
               member.requesterAgentId === session.agentId &&
               !member.suppressCompletionDelivery &&
               !member.killReconciliation?.suppressTaskDelivery &&
