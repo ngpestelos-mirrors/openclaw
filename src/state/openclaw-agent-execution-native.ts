@@ -420,7 +420,7 @@ export function createAgentDatabaseNativeGeneration(
       admission(source, undefined, assertCallerCurrent),
     );
   }
-  const publishCloseCheckpoint = () => {
+  const readConfirmedClose = () => {
     const receipt = readCloseReceipt?.();
     if (
       !receipt ||
@@ -430,14 +430,22 @@ export function createAgentDatabaseNativeGeneration(
       receipt.identity.key !== `file:${nativeIdentity.physicalIdentity}` ||
       receipt.identity.canonicalPath !== nativeIdentity.nativeLocation
     ) {
+      return undefined;
+    }
+    return { receipt, identity: nativeIdentity, lease };
+  };
+  const publishCloseCheckpoint = () => {
+    const closed = readConfirmedClose();
+    if (!closed) {
       return;
     }
+    const { receipt, identity, lease: closedLease } = closed;
     try {
       // Cleanup retains custody after ordinary admission is revoked during shutdown.
       assertCleanupOwned();
       assertExistingDatabaseIdentity(pathname, receipt.identity.key);
-      assertExistingDatabaseIdentity(nativeIdentity.nativeLocation, receipt.identity.key);
-      assertExistingDatabaseIdentity(lease.sharedStatePath, lease.sharedStateIdentity);
+      assertExistingDatabaseIdentity(identity.nativeLocation, receipt.identity.key);
+      assertExistingDatabaseIdentity(closedLease.sharedStatePath, closedLease.sharedStateIdentity);
       publishSqliteWalCheckpointObservation(pathname, receipt.checkpoint);
     } catch {
       // A stale diagnostic must not clear another generation's budget or fail native cleanup.
@@ -452,10 +460,14 @@ export function createAgentDatabaseNativeGeneration(
       retiring = true;
       closing ??= (async () => {
         const errors: unknown[] = [];
+        let storeClosed = false;
         if (opening) {
           try {
             await opening.then(
-              (store) => store?.close(),
+              async (store) => {
+                await store?.close();
+                storeClosed = store !== undefined;
+              },
               () =>
                 openedStore
                   ? openedStore.close()
@@ -467,12 +479,20 @@ export function createAgentDatabaseNativeGeneration(
         }
         if (nativeStopped && lease) {
           try {
-            await cleanupRetiredAgentDatabaseLease({
-              context,
-              stopped: nativeStopped,
-              assertOwned: assertCleanupOwned,
-              lease,
-            });
+            await nativeStopped;
+            assertCleanupOwned();
+            // The backend publishes this receipt only after native close and lease release.
+            // A closed client or exited Worker alone still needs orphan recovery.
+            if (storeClosed && readConfirmedClose()) {
+              assertExistingDatabaseIdentity(lease.sharedStatePath, lease.sharedStateIdentity);
+            } else {
+              await cleanupRetiredAgentDatabaseLease({
+                context,
+                stopped: nativeStopped,
+                assertOwned: assertCleanupOwned,
+                lease,
+              });
+            }
           } catch (error) {
             errors.push(error);
           }
