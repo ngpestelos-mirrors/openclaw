@@ -119,6 +119,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "sqlite-readonly-location.worker",
     distWorkerPath: "infra/sqlite-readonly-location.worker.js",
   },
+  sqliteSourceRevision: {
+    currentModuleUrl,
+    sourceWorkerName: "sqlite-source-revision.worker",
+    distWorkerPath: "infra/sqlite-source-revision.worker.js",
+  },
   sqliteIntegrity: {
     currentModuleUrl,
     sourceWorkerName: "sqlite-integrity.worker",

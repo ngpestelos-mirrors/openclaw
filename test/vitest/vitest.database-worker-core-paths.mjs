@@ -295,6 +295,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-state-lease-exclusion.test.ts",
   "src/state/openclaw-state-lease-existing.test.ts",
   "src/state/openclaw-state-lease-heartbeat.test.ts",
+  "src/state/openclaw-state-lease-heartbeat.slow-renewal.test.ts",
   "src/state/openclaw-state-lease-worker-owner.test.ts",
   "src/state/openclaw-state-lease.test.ts",
   "src/agents/tools/transcripts-tool-read.test.ts",
