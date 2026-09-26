@@ -159,7 +159,7 @@ describe("workspace state store", () => {
     );
   });
 
-  it.each(["merge", "attest", "expire", "delete", "register-alias"] as const)(
+  it.each(["merge", "expire", "delete", "register-alias"] as const)(
     "checks current ownership inside the %s transaction before changing state",
     async (operation) => {
       const dir = workspaceDir();
@@ -184,14 +184,6 @@ describe("workspace state store", () => {
       const operations = {
         merge: () =>
           mergeWorkspaceSetupState(dir, { setupCompletedAt: "2026-07-16T02:00:00.000Z" }, 2_000, {
-            assertCurrent,
-          }),
-        attest: () =>
-          replaceWorkspaceAttestation({
-            workspaceDir: dir,
-            attestedAtMs: 2_000,
-            generatedHashes: new Map([["AGENTS.md", "b".repeat(64)]]),
-            nowMs: 2_000,
             assertCurrent,
           }),
         expire: () =>
