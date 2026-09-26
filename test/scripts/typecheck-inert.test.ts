@@ -17,6 +17,30 @@ describe("typecheck-inert TypeScript changes", () => {
         true,
       ],
       ["ambient.d.mts", "// old\nexport {};", "// new\nexport {};", true],
+      [
+        "add-prose-doc.ts",
+        "const a = 1;\nexport const x = a;",
+        "const a = 1;\n/** Added prose. */\nexport const x = a;",
+        true,
+      ],
+      [
+        "link.ts",
+        'import type { Foo } from "./foo";\n/** Uses {@link Foo}. */\nexport const x = 1;',
+        'import type { Foo } from "./foo";\n/** Uses Foo. */\nexport const x = 1;',
+        false,
+      ],
+      [
+        "see.ts",
+        'import type { Foo } from "./foo";\n/** Old. @see Foo */\nexport const x = 1;',
+        'import type { Foo } from "./foo";\n/** New. @see Foo */\nexport const x = 1;',
+        false,
+      ],
+      [
+        "moved-doc.ts",
+        "/** @deprecated */\nexport const x = 1;\nexport const y = 2;",
+        "export const x = 1;\n/** @deprecated */\nexport const y = 2;",
+        false,
+      ],
       ["ambient.d.cts", "// old\nexport {};", "// new\nexport {};", true],
       ["return.ts", "function f() { return x; }", "function f() { return\nx; }", false],
       [

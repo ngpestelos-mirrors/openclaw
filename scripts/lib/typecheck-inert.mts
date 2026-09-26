@@ -9,11 +9,14 @@ import { walkTypeScriptTokens } from "./ts-guard-utils.mts";
 type SourceChange = { path: string; before: string; after: string };
 const TYPESCRIPT_PATH = /\.(?:ts|tsx|mts|cts)$/u;
 
-function significantTokens(sourceFile: ts.SourceFile) {
+/** Returns a syntax signature, or undefined when trivia could carry compiler semantics. */
+function syntaxSignature(sourceFile: ts.SourceFile) {
   const source = sourceFile.getFullText();
-  // "" = adjacent, " " = same-line trivia, "\n" = trivia containing a line terminator.
-  const tokens: Array<{ text: string; gap: "" | " " | "\n" }> = [];
-  let gap: "" | " " | "\n" = "";
+  // Each token keeps its preceding gap: "" adjacent, " " same-line trivia, "\n" line terminator.
+  const tokens: Array<[string, string]> = [];
+  // Tagged JSDoc can reference symbols (`{@link Foo}`, `@see Foo`), so it stays pinned in place.
+  const docs: Array<[number, string]> = [];
+  let gap = "";
   let end = 0;
   let valid = true;
   walkTypeScriptTokens(sourceFile, (kind, pos, tokenEnd) => {
@@ -30,19 +33,21 @@ function significantTokens(sourceFile: ts.SourceFile) {
       // TypeScript matches pragma names case-insensitively.
       if (/@ts-|@jsx/iu.test(text) || text.startsWith("///")) {
         valid = false;
+      } else if (text.startsWith("/**") && text.includes("@")) {
+        docs.push([tokens.length, text]);
       }
     } else if (kind !== ts.SyntaxKind.WhitespaceTrivia && kind !== ts.SyntaxKind.NewLineTrivia) {
       if (kind <= ts.SyntaxKind.NonTextFileMarkerTrivia) {
         valid = false;
       }
-      tokens.push({ text, gap });
+      tokens.push([gap, text]);
       gap = "";
       return;
     }
     // Adjacency matters too: the parser rescans `>` together with an adjacent `=` or `>`.
     gap = gap === "\n" || /[\r\n\u2028\u2029]/u.test(text) ? "\n" : " ";
   });
-  return valid && end === source.length ? tokens : undefined;
+  return valid && end === source.length ? JSON.stringify([tokens, docs]) : undefined;
 }
 
 /** Compare syntax in one native snapshot, preserving literal bytes, adjacency, and ASI boundaries. */
@@ -65,12 +70,8 @@ export function findTypecheckInertSources(changes: readonly SourceChange[]): str
       ) {
         return [];
       }
-      const before = significantTokens(parsed[offset]!);
-      const after = significantTokens(parsed[offset + 1]!);
-      return before &&
-        after &&
-        before.length === after.length &&
-        before.every((token, i) => token.text === after[i]!.text && token.gap === after[i]!.gap)
+      const before = syntaxSignature(parsed[offset]!);
+      return before !== undefined && before === syntaxSignature(parsed[offset + 1]!)
         ? [change.path]
         : [];
     });
