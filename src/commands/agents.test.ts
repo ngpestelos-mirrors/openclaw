@@ -8,9 +8,9 @@ import { applyAgentBindings, removeAgentBindings } from "./agents.bindings.js";
 import { applyAgentConfig, buildAgentSummaries, pruneAgentConfig } from "./agents.config.js";
 
 function requireAgentSummary(
-  summaries: ReturnType<typeof buildAgentSummaries>,
+  summaries: Awaited<ReturnType<typeof buildAgentSummaries>>,
   id: string,
-): ReturnType<typeof buildAgentSummaries>[number] {
+): Awaited<ReturnType<typeof buildAgentSummaries>>[number] {
   const summary = summaries.find((entry) => entry.id === id);
   if (!summary) {
     throw new Error(`expected agent summary ${id}`);
@@ -19,7 +19,7 @@ function requireAgentSummary(
 }
 
 describe("agents helpers", () => {
-  it("buildAgentSummaries includes configured agents without inventing a fleet default", () => {
+  it("buildAgentSummaries includes configured agents without inventing a fleet default", async () => {
     const cfg: OpenClawConfig = {
       agents: {
         defaults: {
@@ -45,7 +45,7 @@ describe("agents helpers", () => {
       ],
     };
 
-    const summaries = buildAgentSummaries(cfg);
+    const summaries = await buildAgentSummaries(cfg);
     const main = requireAgentSummary(summaries, "main");
     const work = requireAgentSummary(summaries, "work");
 
@@ -62,7 +62,7 @@ describe("agents helpers", () => {
     expect(work.isDefault).toBe(false);
   });
 
-  it("buildAgentSummaries renders local avatars and omits absent avatars", () => {
+  it("buildAgentSummaries renders local avatars and omits absent avatars", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-agent-avatar-"));
     try {
       fs.writeFileSync(path.join(workspace, "avatar.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -75,7 +75,7 @@ describe("agents helpers", () => {
         },
       };
 
-      const summaries = buildAgentSummaries(cfg);
+      const summaries = await buildAgentSummaries(cfg);
       const work = requireAgentSummary(summaries, "work");
       expect(work.identityAvatarUrl).toBe("data:image/png;base64,iVBORw==");
       expect(work.identitySource).toBe("config");
@@ -106,11 +106,11 @@ describe("agents helpers", () => {
     expect(work?.model).toBe("anthropic/claude");
   });
 
-  it("applyAgentConfig leaves a first roster entry trivially sole", () => {
+  it("applyAgentConfig leaves a first roster entry trivially sole", async () => {
     const next = applyAgentConfig({}, { agentId: "work", name: "Work" });
 
     expect(next.agents?.entries).toEqual({ work: { name: "Work" } });
-    expect(requireAgentSummary(buildAgentSummaries(next), "work").isDefault).toBe(true);
+    expect(requireAgentSummary(await buildAgentSummaries(next), "work").isDefault).toBe(true);
   });
 
   it("preserves the sole agent as the ambient system owner when adding a second agent", () => {
@@ -125,7 +125,7 @@ describe("agents helpers", () => {
     });
   });
 
-  it("applyAgentConfig clears a model override", () => {
+  it("applyAgentConfig clears a model override", async () => {
     const cfg: OpenClawConfig = {
       agents: {
         defaults: { model: { primary: "openai/gpt-5.6-luna" } },
@@ -139,7 +139,7 @@ describe("agents helpers", () => {
     const work = next.agents?.entries?.work;
 
     expect(work).not.toHaveProperty("model");
-    expect(requireAgentSummary(buildAgentSummaries(next), "work").model).toBe(
+    expect(requireAgentSummary(await buildAgentSummaries(next), "work").model).toBe(
       "openai/gpt-5.6-luna",
     );
   });
