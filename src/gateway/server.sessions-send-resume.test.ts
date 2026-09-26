@@ -258,7 +258,12 @@ it("rejects parent authority revoked while durable input preparation awaits", as
   try {
     const proof = await arrangeAuthorityProof("revoked-parent");
     sending = proof.send(proof.parent, parentAuthority.signal);
-    await prepared.promise;
+    await Promise.race([
+      prepared.promise,
+      sending.then((result) => {
+        throw new Error(`Resume ended before input preparation: ${JSON.stringify(result.details)}`);
+      }),
+    ]);
     expect(preparation).toHaveBeenCalledTimes(1);
     expect(await listSessionPendingInputs(proof.scope)).toMatchObject({
       total: 1,

@@ -183,6 +183,7 @@ function releaseSessionPendingInputOwner(owner: SessionPendingInputOwner): void 
 
 export function finishSessionPendingInputOwner(
   owner: SessionPendingInputOwner,
+  processingSettlement: Promise<void>,
   persist: () => Promise<void>,
 ): Promise<void> {
   if (owner.settlement) {
@@ -192,6 +193,7 @@ export function finishSessionPendingInputOwner(
   owner.closing = true;
   owner.settlement = (async () => {
     try {
+      await processingSettlement;
       if (!owner.consumed) {
         await persist();
       }

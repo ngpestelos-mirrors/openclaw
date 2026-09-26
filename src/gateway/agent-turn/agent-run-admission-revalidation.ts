@@ -23,6 +23,7 @@ export function createAgentRunAdmissionRevalidator(options: {
     cfg: OpenClawConfig;
     resolvedSessionKey?: string;
     getAdmittedSessionId: () => string;
+    hasGatewayAdmissionOutcome: () => boolean;
     respondToGatewayAdmissionOutcome: () => boolean;
   };
   activeRunAbort: ReturnType<typeof registerChatAbortController>;
@@ -37,6 +38,21 @@ export function createAgentRunAdmissionRevalidator(options: {
     rejectPreaccept,
     cleanupPreaccept,
   } = options;
+  const disposition = parentResume ? "cancelled" : "interrupted";
+  const assertAllowed = () => {
+    params.assertGatewayWorkAdmissionAllowed();
+    if (parentResume) {
+      if (params.client?.internal?.syntheticClient !== true) {
+        throw new Error("Task resume requires trusted in-process admission.");
+      }
+      assertParentSubagentResumeCurrent({
+        cfg: params.cfg,
+        resume: parentResume,
+        sessionKey: params.resolvedSessionKey,
+        sessionId: params.getAdmittedSessionId(),
+      });
+    }
+  };
   return (userTurn?: PreparedAgentRunUserTurn): true | Promise<undefined> => {
     if (activeRunAbort.controller.signal.aborted) {
       setAbortedAgentDedupeEntries({
@@ -48,34 +64,31 @@ export function createAgentRunAdmissionRevalidator(options: {
       });
     }
     try {
-      params.assertGatewayWorkAdmissionAllowed();
-      if (parentResume) {
-        if (params.client?.internal?.syntheticClient !== true) {
-          throw new Error("Task resume requires trusted in-process admission.");
-        }
-        assertParentSubagentResumeCurrent({
-          cfg: params.cfg,
-          resume: parentResume,
-          sessionKey: params.resolvedSessionKey,
-          sessionId: params.getAdmittedSessionId(),
-        });
-      }
+      assertAllowed();
     } catch (err) {
       const reject = () => rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, err));
       return userTurn
-        ? releasePreparedAgentRunUserTurn(userTurn, "interrupted").then(reject, (cleanupError) =>
+        ? releasePreparedAgentRunUserTurn(userTurn, disposition).then(reject, (cleanupError) =>
             rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, cleanupError)),
           )
         : reject();
     }
-    if (!params.respondToGatewayAdmissionOutcome()) {
+    if (!params.hasGatewayAdmissionOutcome()) {
       return true;
     }
-    const cleanup = () => cleanupPreaccept(true).then(() => undefined);
+    const respond = () => {
+      try {
+        assertAllowed();
+        params.respondToGatewayAdmissionOutcome();
+      } catch (err) {
+        return rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, err));
+      }
+      return cleanupPreaccept(true).then(() => undefined);
+    };
     return userTurn
-      ? releasePreparedAgentRunUserTurn(userTurn, parentResume ? "cancelled" : "interrupted")
-          .finally(cleanup)
-          .then(() => undefined)
-      : cleanup();
+      ? releasePreparedAgentRunUserTurn(userTurn, disposition).then(respond, (cleanupError) =>
+          rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, cleanupError)),
+        )
+      : respond();
   };
 }

@@ -17,6 +17,7 @@ import {
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { registerInternalHook, unregisterInternalHook } from "../hooks/internal-hooks.js";
+import { isSessionWorkAdmissionActive } from "../sessions/session-lifecycle-admission.js";
 import type { PreparedAgentRunDispatch } from "./agent-turn/agent-run-admission-types.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugins.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
@@ -54,6 +55,7 @@ describe("spawn input ownership transfer", () => {
 
   it.for([
     "before staging",
+    "before acceptance",
     "after acceptance",
     "child abort",
     "before reset",
@@ -133,13 +135,17 @@ describe("spawn input ownership transfer", () => {
     const releaseWriter = createDeferred();
     const releaseExecution = createDeferred();
     const executionEntered = createDeferred();
+    const releasePreparation = createDeferred();
+    const finishingInput = createDeferred();
     const release = () => {
       releaseWriter.resolve();
       releaseExecution.resolve();
+      releasePreparation.resolve();
     };
     signal.addEventListener("abort", release, { once: true });
     let writer: Promise<unknown> | undefined;
     let execution: Promise<void> | undefined;
+    let inputSettlement: Promise<void> | undefined;
     let prepared:
       | import("./agent-turn/agent-run-admission-types.js").PreparedAgentRunDispatch
       | undefined;
@@ -170,6 +176,31 @@ describe("spawn input ownership transfer", () => {
           await entered.promise;
         }
         const pending = stage(...args);
+        if (boundary === "before acceptance") {
+          const receipt = await pending;
+          if (!receipt) {
+            throw new Error("Expected durable input before cancellation");
+          }
+          const finish = receipt.finish;
+          receipt.finish = (disposition) => {
+            inputSettlement = finish(disposition);
+            finishingInput.resolve();
+            return inputSettlement;
+          };
+          const entered = createDeferred();
+          writer = runExclusiveSqliteSessionWrite(
+            resolveSqliteStoreScope(loaded.storePath, { agentId: "main" }),
+            async () => {
+              entered.resolve();
+              await releaseWriter.promise;
+            },
+            "session.transcript.batch",
+          );
+          await entered.promise;
+          staged.resolve();
+          await releasePreparation.promise;
+          return receipt;
+        }
         staged.resolve();
         return await pending;
       });
@@ -188,6 +219,10 @@ describe("spawn input ownership transfer", () => {
         (value) => ({ value }),
         (error: unknown) => ({ error }),
       );
+      let responded = false;
+      void outcome.then(() => {
+        responded = true;
+      });
       await Promise.race([
         staged.promise,
         outcome.then((value) => {
@@ -215,6 +250,27 @@ describe("spawn input ownership transfer", () => {
             })
           ).total,
         ).toBe(0);
+      } else if (boundary === "before acceptance") {
+        const child = context.chatAbortControllers.get(runId);
+        expect(child).toBeDefined();
+        expect(isSessionWorkAdmissionActive(loaded.storePath, [childKey, sessionId])).toBe(true);
+        child!.controller.abort(new Error("child stopped before acceptance"));
+        releasePreparation.resolve();
+        await Promise.race([finishingInput.promise, outcome]);
+        expect(inputSettlement).toBeDefined();
+        expect(isSessionWorkAdmissionActive(loaded.storePath, [childKey, sessionId])).toBe(true);
+        expect(responded).toBe(false);
+        releaseWriter.resolve();
+        expect(await outcome).toHaveProperty("value.status", "timeout");
+        expect(prepared).toBeUndefined();
+        expect(
+          await listSessionPendingInputs({
+            agentId: "main",
+            sessionKey: childKey,
+            sessionId,
+            storePath: loaded.storePath,
+          }),
+        ).toMatchObject({ total: 1, items: [{ state: "interrupted" }] });
       } else {
         expect(await outcome).toHaveProperty("value.status", "accepted");
         await executionEntered.promise;
@@ -244,6 +300,7 @@ describe("spawn input ownership transfer", () => {
     } finally {
       release();
       await Promise.allSettled([writer, dispatch, execution]);
+      await inputSettlement?.catch(() => undefined);
       admission.close();
       stageSpy.mockRestore();
       executionSpy.mockRestore();

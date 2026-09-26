@@ -1,11 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { runWithSqliteBusyTimeout } from "../../infra/sqlite-busy-timeout.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -33,7 +35,12 @@ import {
   type SessionPendingInputReceipt,
 } from "./session-accessor.pending-inputs.js";
 import * as pendingInputRuntime from "./session-accessor.pending-inputs.runtime.js";
-import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import {
+  resolveSqliteScope,
+  runExclusiveSqliteSessionWrite,
+  toDatabaseOptions,
+} from "./session-accessor.sqlite-scope.js";
+import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 
 describe("committed pending input release", () => {
@@ -419,6 +426,42 @@ describe("committed pending input release", () => {
     database()
       .db.prepare("SELECT seq, event_json, created_at FROM transcript_events ORDER BY seq")
       .all();
+
+  it("revokes recorder execution while its processing completion waits for the writer", async () => {
+    const recorder = createUserTurnTranscriptRecorder({
+      target: scope(),
+      message: message("recorder-completion"),
+      trackInputCompletion: true,
+    });
+    expect(
+      await recorder.stageApproved?.({ runId: "recorder-completion", assertCurrent: () => {} }),
+    ).toBe(true);
+    const entered = createDeferred<void>();
+    const release = createDeferred<void>();
+    const writer = runExclusiveSqliteSessionWrite(
+      resolveSqliteScope(scope()),
+      async () => {
+        entered.resolve();
+        await release.promise;
+      },
+      "session.pending-input.stage",
+    );
+    await entered.promise;
+    const completion = recorder.completeProcessing?.(
+      buildAgentRunTerminalOutcome({ status: "ok" }),
+    );
+    const finishing = recorder.finishPendingInput?.("interrupted");
+    try {
+      expect(() => recorder.withPendingInput?.(() => {})).toThrow(SessionPendingInputCustodyError);
+    } finally {
+      release.resolve();
+      await writer;
+      await completion;
+      await finishing;
+    }
+    expect(recorder.getProcessingCompletion?.()).toMatchObject({ reason: "completed" });
+    expect(pendingCount()).toBe(0);
+  });
 
   it("settles durable custody and private completion without host data SQL", async () => {
     const hostSql = observeHostDataSql();

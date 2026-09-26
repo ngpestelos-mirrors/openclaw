@@ -45,6 +45,7 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { redactTranscriptMessageForStorage } from "./session-accessor.sqlite-transcript-store.js";
+import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 
 export { withSessionPendingInputRelocation };
@@ -59,7 +60,11 @@ export type SessionPendingInputReceipt = {
   completion?: AgentRunTerminalOutcome;
   complete?: (outcome: AgentRunTerminalOutcome) => Promise<AgentRunTerminalOutcome>;
 };
-const receiptOwners = new WeakMap<SessionPendingInputReceipt, SessionPendingInputOwner>();
+const receiptBindings = new WeakMap<
+  SessionPendingInputReceipt,
+  | { kind: "pending"; owner: SessionPendingInputOwner }
+  | { kind: "committed"; persist: <T>(operation: () => T) => T }
+>();
 
 function ownerReceipt(owner: SessionPendingInputOwner): SessionPendingInputReceipt {
   const receipt: SessionPendingInputReceipt = {
@@ -69,7 +74,7 @@ function ownerReceipt(owner: SessionPendingInputOwner): SessionPendingInputRecei
     run: (operation) => runWithSessionPendingInput(owner, operation),
     finish: owner.finish,
   };
-  receiptOwners.set(receipt, owner);
+  receiptBindings.set(receipt, { kind: "pending", owner });
   return receipt;
 }
 
@@ -78,8 +83,12 @@ export function withSessionPendingInputPersistence<T>(
   receipt: SessionPendingInputReceipt,
   persist: () => T,
 ): T {
-  const owner = receiptOwners.get(receipt);
-  return owner ? runWithSessionPendingInputPersistence(owner, persist) : receipt.run(persist);
+  const binding = receiptBindings.get(receipt);
+  return binding?.kind === "pending"
+    ? runWithSessionPendingInputPersistence(binding.owner, persist)
+    : binding?.kind === "committed"
+      ? binding.persist(persist)
+      : receipt.run(persist);
 }
 
 /** Bind one collected message to its private admitted sources without creating another durable queue. */
@@ -93,7 +102,8 @@ export function bindSessionPendingInputSources(
         if (receipt.state === "consumed") {
           throw new Error("Collected input has already been consumed");
         }
-        const owner = receiptOwners.get(receipt);
+        const binding = receiptBindings.get(receipt);
+        const owner = binding?.kind === "pending" ? binding.owner : undefined;
         return owner ? (owner.sources ?? [owner]) : [];
       }),
     ),
@@ -195,7 +205,17 @@ export async function stageSessionPendingInput(
         const { message, stableMessage } = replayRequest;
         let requestHash = replayRequest.requestHash;
         const lifecycleGeneration = getAgentEventLifecycleGeneration();
+        let closing = false;
         let finished = false;
+        const pendingCompletions = new Set<Promise<AgentRunTerminalOutcome>>();
+        let completionSettlement: Promise<void> | undefined;
+        const settleCompletion = () => {
+          closing = true;
+          completionSettlement ??= Promise.allSettled(pendingCompletions).then(() => {
+            finished = true;
+          });
+          return completionSettlement;
+        };
         let complete: SessionPendingInputReceipt["complete"];
         if (options.trackCompletion) {
           const completionScope = {
@@ -222,6 +242,9 @@ export async function stageSessionPendingInput(
             };
           }
           complete = (outcome) => {
+            if (closing) {
+              return Promise.reject(new Error("Input completion owner has already been released"));
+            }
             const assertCompletion = () => {
               if (finished) {
                 throw new Error("Input completion owner has already been released");
@@ -230,12 +253,16 @@ export async function stageSessionPendingInput(
               (options.assertCompletionCurrent ?? options.assertCurrent)();
               assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
             };
-            return withSessionPendingInputDatabase(
+            const operation = withSessionPendingInputDatabase(
               resolved,
               assertCompletion,
               (current) => current.complete({ ...completionScope, requestHash, outcome }),
               source,
             );
+            pendingCompletions.add(operation);
+            const settled = () => pendingCompletions.delete(operation);
+            void operation.then(settled, settled);
+            return operation;
           };
         }
         if (existing) {
@@ -288,19 +315,25 @@ export async function stageSessionPendingInput(
             options.assertCurrent();
           }
           // Committed transcript replay keeps its existing contract and never creates new custody.
-          return {
+          const persist = <T>(operation: () => T): T => {
+            options.assertCurrent();
+            return operation();
+          };
+          const receipt: SessionPendingInputReceipt = {
             state: "queued",
             inputId: committed.messageId,
             message: committedMessage,
             run: (operation) => {
-              options.assertCurrent();
-              return operation();
+              if (closing) {
+                throw new SessionPendingInputCustodyError("Pending input ownership ended");
+              }
+              return persist(operation);
             },
-            finish: async () => {
-              finished = true;
-            },
+            finish: settleCompletion,
             ...(complete ? { complete } : {}),
           };
+          receiptBindings.set(receipt, { kind: "committed", persist });
+          return receipt;
         }
         const prepared = existing
           ? parseSessionPendingInputMessage(existing.message_json)
@@ -343,8 +376,7 @@ export async function stageSessionPendingInput(
           assertCurrent: options.assertAdmittedCurrent ?? options.assertCurrent,
           ...(existing ? { restartRecovered: true as const } : {}),
           finish: (disposition) => {
-            finished = true;
-            return finishSessionPendingInputOwner(owner, () =>
+            return finishSessionPendingInputOwner(owner, settleCompletion(), () =>
               withSessionPendingInputDatabase(
                 resolved,
                 () => {},

@@ -596,9 +596,6 @@ export function createUserTurnTranscriptRecorder(
     isPendingInputConsumed: () => pendingInput?.state === "consumed",
     withPendingInput: (run) => (pendingInput ? pendingInput.run(run) : run()),
     finishPendingInput: async (disposition) => {
-      if (processingCompletionPending) {
-        await processingCompletionPending.catch(() => undefined);
-      }
       if (pendingInput) {
         await pendingInput.finish(disposition);
       } else {
