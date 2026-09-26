@@ -35,10 +35,12 @@ describe("Gateway startup catalog", () => {
       readStoredCatalog: read,
     });
     const pending = createDeferred<never>();
+    const bootstrapEntered = createDeferred();
     const stopped = new Error("fixture stops bootstrap");
     const prepare = vi
       .spyOn(bootstrap, "prepareGatewayServerBootstrap")
       .mockImplementationOnce(() => {
+        bootstrapEntered.resolve();
         return pending.promise;
       });
     const startup = startGatewayServerCore(0).catch((error: unknown) => error);
@@ -56,7 +58,11 @@ describe("Gateway startup catalog", () => {
       );
       expect(getRemoteModelCatalogPricing({})).toEqual(absent ? undefined : bundle.pricing);
     } finally {
-      pending.reject(stopped);
+      // Startup may yield before adopting the fixture promise; keep the snapshot assertions synchronous.
+      await Promise.race([bootstrapEntered.promise, startup]);
+      if (prepare.mock.calls.length > 0) {
+        pending.reject(stopped);
+      }
       const outcome = await startup;
       prepare.mockRestore();
       setRemoteModelCatalogOverlaySourcesForTest();
