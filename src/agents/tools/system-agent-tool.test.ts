@@ -203,6 +203,25 @@ describe("openclaw tool", () => {
     expect(mocks.executeSystemAgentOperation).not.toHaveBeenCalled();
   });
 
+  it.each(["cli", "gateway"] as const)(
+    "rejects mixed credential sources before staging on %s",
+    async (surface) => {
+      const proposalRef: NonNullable<SystemAgentToolOptions["proposalRef"]> = {};
+      const tool = createSystemAgentTool({ surface, proposalRef });
+      await expect(
+        tool.execute("mixed-source", {
+          action: "config_set_ref",
+          path: "models.providers.openai.apiKey",
+          secret: "fixture-mixed-source-secret",
+          envVar: "EXISTING_API_KEY",
+          approved: true,
+        }),
+      ).rejects.toThrow("either secret or envVar, not both");
+      expect(proposalRef).toEqual({});
+      expect(mocks.executeSystemAgentOperation).not.toHaveBeenCalled();
+    },
+  );
+
   it("createSystemAgentTool.execute does not stage a config proposal when cancelled", async () => {
     const proposalRef: NonNullable<SystemAgentToolOptions["proposalRef"]> = {};
     const controller = new AbortController();

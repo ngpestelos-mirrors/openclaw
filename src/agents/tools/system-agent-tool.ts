@@ -446,6 +446,11 @@ function operationForAction(params: Record<string, unknown>): SystemAgentOperati
       }
       // Before the proposal exists anywhere, so plans, logs, and transcripts mask it.
       registerSecretValueForRedaction(secret);
+      if (readToolStringParam(params, "envVar")) {
+        throw new ToolInputError(
+          "openclaw: config_set_ref accepts either secret or envVar, not both",
+        );
+      }
       return {
         kind: "config-set-ref",
         path: configPath,
