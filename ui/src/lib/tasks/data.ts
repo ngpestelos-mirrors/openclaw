@@ -6,14 +6,10 @@ import {
   TasksCancelResultSchema,
   TasksGetResultSchema,
   TasksListResultSchema,
-  TasksRecoveryResultSchema,
 } from "../../../../packages/gateway-protocol/src/schema/tasks.js";
-import type {
-  TasksCancelResult,
-  TasksRecoveryResult,
-} from "../../../../packages/gateway-protocol/src/schema/tasks.js";
+import type { TasksCancelResult } from "../../../../packages/gateway-protocol/src/schema/tasks.js";
 import { t } from "../../i18n/index.ts";
-import { formatDurationCompact } from "../format.ts";
+import { formatDurationCompact } from "../format-duration.ts";
 import { normalizeTaskSummary, type TaskStatus, type TaskSummary } from "./task-summary.ts";
 
 type TaskTimestamp = NonNullable<TaskSummary["updatedAt"]>;
@@ -22,6 +18,10 @@ type TaskEventPayload =
   | { action: "upserted"; task: TaskSummary }
   | { action: "deleted"; taskId: string }
   | { action: "restored" };
+
+export type CoalescedTaskEvent =
+  | { action: "deleted" }
+  | { action: "upserted"; task: TaskSummary; afterDelete: boolean };
 
 const STATUS_LABEL_KEYS = {
   queued: "tasksPage.status.queued",
@@ -146,6 +146,16 @@ export function newestTaskSnapshot(
   if (current.status === "queued" && lookup.status === "running") {
     return preserveTaskPrompt(lookup, current, lookup);
   }
+  // Execution observations can advance while the durable lifecycle clock stays fixed.
+  const currentActivityAt = taskTimestampMs(current.execution?.lastActivityAt);
+  const lookupActivityAt = taskTimestampMs(lookup.execution?.lastActivityAt);
+  if (lookupActivityAt !== currentActivityAt) {
+    return preserveTaskPrompt(
+      lookupActivityAt > currentActivityAt ? lookup : current,
+      current,
+      lookup,
+    );
+  }
   const currentToolCount = current.toolUseCount ?? 0;
   const lookupToolCount = lookup.toolUseCount ?? 0;
   if (currentToolCount > lookupToolCount) {
@@ -159,7 +169,16 @@ export function newestTaskSnapshot(
 
 export function sortTasks(tasks: readonly TaskSummary[]): TaskSummary[] {
   return tasks.toSorted((left, right) => {
-    const timeDelta = taskTimestampMs(right.updatedAt) - taskTimestampMs(left.updatedAt);
+    // Activity keeps live work visible without changing snapshot lifecycle authority.
+    const leftAt = Math.max(
+      taskTimestampMs(left.updatedAt),
+      isActiveTask(left) ? taskTimestampMs(left.execution?.lastActivityAt) : 0,
+    );
+    const rightAt = Math.max(
+      taskTimestampMs(right.updatedAt),
+      isActiveTask(right) ? taskTimestampMs(right.execution?.lastActivityAt) : 0,
+    );
+    const timeDelta = rightAt - leftAt;
     if (timeDelta !== 0) {
       return timeDelta;
     }
@@ -244,23 +263,6 @@ export function normalizeTasksCancelResult(value: unknown): NormalizedTasksCance
   };
 }
 
-type NormalizedTasksRecoveryResult = Omit<TasksRecoveryResult, "results"> & {
-  results: Array<Omit<TasksRecoveryResult["results"][number], "task"> & { task?: TaskSummary }>;
-};
-
-export function normalizeTasksRecoveryResult(value: unknown): NormalizedTasksRecoveryResult | null {
-  if (!Value.Check(TasksRecoveryResultSchema, value)) {
-    return null;
-  }
-  return {
-    results: value.results.map((result) => {
-      const task = normalizeTaskSummary(result.task);
-      const { task: _wireTask, ...rest } = result;
-      return { ...rest, ...(task ? { task } : {}) };
-    }),
-  };
-}
-
 export function normalizeTaskEventPayload(value: unknown): TaskEventPayload | null {
   if (!isRecord(value)) {
     return null;
@@ -279,24 +281,42 @@ export function normalizeTaskEventPayload(value: unknown): TaskEventPayload | nu
   return null;
 }
 
-export function applyTaskEvent(
-  tasks: readonly TaskSummary[],
-  value: unknown,
-): { tasks: TaskSummary[]; refetch: boolean } {
-  const event = normalizeTaskEventPayload(value);
-  if (!event || event.action === "restored") {
-    return { tasks: [...tasks], refetch: true };
-  }
+/** Task events omit detail-only prompts; repeated snapshots share the event freshness rules. */
+export function coalesceTaskEvent(
+  pending: Map<string, CoalescedTaskEvent>,
+  event: Exclude<TaskEventPayload, { action: "restored" }>,
+): void {
   if (event.action === "deleted") {
-    return {
-      tasks: sortTasks(tasks.filter((task) => task.id !== event.taskId)),
-      refetch: false,
-    };
+    pending.set(event.taskId, { action: "deleted" });
+    return;
   }
-  const current = tasks.find((task) => task.id === event.task.id);
-  const next = current ? newestTaskSnapshot(current, event.task, "event") : event.task;
-  return {
-    tasks: sortTasks([next, ...tasks.filter((task) => task.id !== event.task.id)]),
-    refetch: false,
-  };
+  const previous = pending.get(event.task.id);
+  pending.set(event.task.id, {
+    action: "upserted",
+    task:
+      previous?.action === "upserted"
+        ? newestTaskSnapshot(previous.task, event.task, "event")
+        : event.task,
+    afterDelete:
+      previous?.action === "deleted" || (previous?.action === "upserted" && previous.afterDelete),
+  });
+}
+
+export function replayTaskEvents(
+  tasks: readonly TaskSummary[],
+  pending: ReadonlyMap<string, CoalescedTaskEvent>,
+): TaskSummary[] {
+  let result = [...tasks];
+  for (const [taskId, event] of pending) {
+    // A recreated task must replace even a newer row from the pre-delete snapshot.
+    if (event.action === "deleted" || event.afterDelete) {
+      result = sortTasks(result.filter((task) => task.id !== taskId));
+    }
+    if (event.action === "upserted") {
+      const current = result.find((task) => task.id === event.task.id);
+      const next = current ? newestTaskSnapshot(current, event.task, "event") : event.task;
+      result = sortTasks([next, ...result.filter((task) => task.id !== event.task.id)]);
+    }
+  }
+  return result;
 }

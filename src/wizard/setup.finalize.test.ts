@@ -10,11 +10,21 @@ import type { GatewayTlsConfig } from "../config/types.gateway.js";
 import type { PluginWebSearchProviderEntry } from "../plugins/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import {
+  createReinstallServiceCommand,
+  expectNoteContains,
+  expectNoteTitleNotCalled,
+  withPlatform,
+  expectNoteNotContains,
+} from "./setup.finalize.test-support.js";
 
 type DefaultModelAuthStatus = ReturnType<typeof AuthChoiceModelCheck.resolveDefaultModelAuthStatus>;
 type DefaultModelCatalogFacts = ReturnType<
   typeof AuthChoiceModelCheck.resolveDefaultModelCatalogFacts
 >;
+
+const readPin = vi.hoisted(() => vi.fn());
+vi.mock("../daemon/runtime-pin-state.js", () => ({ readDaemonRuntimePinForInstall: readPin }));
 
 const runTui = vi.hoisted(() => vi.fn<(options: unknown) => Promise<void>>(async () => {}));
 const setupCleanupExitTimer = vi.hoisted(() => ({ unref: vi.fn() }));
@@ -85,10 +95,12 @@ const gatewayServiceRestart = vi.hoisted(() =>
     outcome: "completed",
   })),
 );
-const readGatewayServiceCommandForMutation = vi.hoisted(() => vi.fn());
 const gatewayServiceUninstall = vi.hoisted(() => vi.fn(async () => {}));
 const gatewayServiceIsLoaded = vi.hoisted(() => vi.fn(async () => false));
 const gatewayServiceReadCommand = vi.hoisted(() => vi.fn());
+const readGatewayServiceCommandForMutation = vi.hoisted(() =>
+  vi.fn<typeof import("../daemon/service.js").readGatewayServiceCommandForMutation>(),
+);
 const startGatewayService = vi.hoisted(() => vi.fn());
 const resolveGatewayInstallToken = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -206,25 +218,11 @@ vi.mock("../web-search/runtime.js", () => ({
   listConfiguredWebSearchProviders,
 }));
 
-vi.mock("../daemon/service.js", () => ({
-  describeGatewayServiceRestart: vi.fn((serviceNoun: string, result: { outcome: string }) =>
-    result.outcome === "scheduled"
-      ? {
-          scheduled: true,
-          daemonActionResult: "scheduled",
-          message: `restart scheduled, ${serviceNoun.toLowerCase()} will restart momentarily`,
-          progressMessage: `${serviceNoun} service restart scheduled.`,
-        }
-      : {
-          scheduled: false,
-          daemonActionResult: "restarted",
-          message: `${serviceNoun} service restarted.`,
-          progressMessage: `${serviceNoun} service restarted.`,
-        },
-  ),
+vi.mock("../daemon/service.js", async (original) => ({
+  ...(await original<typeof import("../daemon/service.js")>()),
+  readGatewayServiceCommandForMutation,
   formatGatewayServiceStartRepairIssues: (issues: Array<{ message: string }>) =>
     issues.map((issue) => issue.message).join("; "),
-  readGatewayServiceCommandForMutation,
   startGatewayService,
   resolveGatewayService: vi.fn(() => ({
     label: "Mock Platform Service",
@@ -236,7 +234,8 @@ vi.mock("../daemon/service.js", () => ({
   })),
 }));
 
-vi.mock("../daemon/systemd.js", () => ({
+vi.mock("../daemon/systemd.js", async (original) => ({
+  ...(await original<typeof import("../daemon/systemd.js")>()),
   isSystemdUserServiceAvailable,
   resolveSystemdUserServiceAccount,
   readSystemdUserLingerStatus,
@@ -395,46 +394,9 @@ function requireMockArg(mock: ReturnType<typeof vi.fn>, callIndex = 0, argIndex 
   return call[argIndex];
 }
 
-function expectNoteContains(
-  prompter: ReturnType<typeof buildWizardPrompter>,
-  expected: string,
-  title: string,
-): void {
-  const calls = vi.mocked(prompter.note).mock.calls;
-  expect(calls.filter((call) => call[0].includes(expected) && call[1] === title)).not.toEqual([]);
-}
-
-function expectNoteTitleNotCalled(
-  prompter: ReturnType<typeof buildWizardPrompter>,
-  title: string,
-): void {
-  const calls = vi.mocked(prompter.note).mock.calls;
-  expect(calls.filter((call) => call[1] === title)).toEqual([]);
-}
-
-function expectNoteNotContains(
-  prompter: ReturnType<typeof buildWizardPrompter>,
-  unexpected: string,
-): void {
-  const calls = vi.mocked(prompter.note).mock.calls;
-  expect(calls.filter((call) => call[0].includes(unexpected))).toEqual([]);
-}
-
-async function withPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T>): Promise<T> {
-  const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
-  Object.defineProperty(process, "platform", {
-    configurable: true,
-    value: platform,
-  });
-  try {
-    return await fn();
-  } finally {
-    Object.defineProperty(process, "platform", originalPlatformDescriptor);
-  }
-}
-
 describe("finalizeSetupWizard", () => {
   beforeEach(() => {
+    readPin.mockReset().mockReturnValue({ revision: "empty", stored: false });
     runTui.mockClear();
     setupCleanupExitTimer.unref.mockClear();
     scheduleProcessExitAfterTuiReturn.mockReset();
@@ -472,10 +434,9 @@ describe("finalizeSetupWizard", () => {
     gatewayServiceIsLoaded.mockResolvedValue(false);
     gatewayServiceReadCommand.mockReset();
     gatewayServiceReadCommand.mockResolvedValue(null);
-    readGatewayServiceCommandForMutation.mockReset();
-    readGatewayServiceCommandForMutation.mockImplementation(async () => {
+    readGatewayServiceCommandForMutation.mockReset().mockImplementation(async () => {
       const command = await gatewayServiceReadCommand();
-      return command === null ? { kind: "missing", command: null } : { kind: "current", command };
+      return command ? { kind: "current", command } : { kind: "missing", command: null };
     });
     startGatewayService.mockReset();
     gatewayServiceRestart.mockReset();
@@ -1617,9 +1578,16 @@ describe("finalizeSetupWizard", () => {
     },
   );
 
-  it.each(["current systemd", "relocated LaunchAgent"] as const)(
-    "passes a %s service command intact to the reinstall owner",
-    async (definitionKind) => {
+  it.each(
+    ([undefined, "node", "bun"] as const).flatMap((daemonRuntime) =>
+      (["current", "relocated"] as const).map((kind) => ({ daemonRuntime, kind })),
+    ),
+  )(
+    "passes $kind installed pin intent to the reinstall owner (explicit=$daemonRuntime)",
+    async ({ daemonRuntime, kind }) => {
+      const pin = { runtime: "bun", path: "/opt/pinned/bun" };
+      const expected = { revision: "pin-version", stored: true, pin };
+      readPin.mockReturnValue(expected);
       let installed = true;
       gatewayServiceIsLoaded.mockImplementation(async () => installed);
       gatewayServiceUninstall.mockImplementationOnce(async () => {
@@ -1628,46 +1596,24 @@ describe("finalizeSetupWizard", () => {
       gatewayServiceInstall.mockImplementationOnce(async () => {
         expect(installed).toBe(true);
       });
-      const managedDefinition = {
-        programArguments: [
-          "/usr/bin/node",
-          "--max-old-space-size=24576",
-          "--require=/tmp/service-preload.js",
-          "/usr/local/bin/openclaw",
-          "gateway",
-        ],
-        environment: { NODE_OPTIONS: "--max-heap-size=32768", UNRELATED: "not-persisted" },
-      };
-      const currentSystemdCommand = {
-        programArguments: ["/operator/drop-in-wrapper", "gateway"],
-        environment: { NODE_OPTIONS: "--max-old-space-size=1024" },
-        managedDefinition,
-        managedOverrides: { environment: { keys: ["NODE_OPTIONS"] } },
-      };
-      const relocatedLaunchAgentCommand = {
-        programArguments: [
-          "/usr/bin/node",
-          "--max-old-space-size=24576",
-          "/usr/local/bin/openclaw",
-          "gateway",
-        ],
-        environment: { NODE_OPTIONS: "" },
-      };
-      const existingCommand =
-        definitionKind === "current systemd" ? currentSystemdCommand : relocatedLaunchAgentCommand;
-      if (definitionKind === "current systemd") {
-        gatewayServiceReadCommand.mockResolvedValue(existingCommand);
-      } else {
-        readGatewayServiceCommandForMutation.mockResolvedValue({
-          kind: "relocated",
-          plistPath: "/external/Library/LaunchAgents/ai.openclaw.gateway.plist",
-          command: existingCommand,
-        });
-      }
+      const existingCommand = createReinstallServiceCommand(kind);
+      gatewayServiceReadCommand.mockResolvedValue(kind === "current" ? existingCommand : null);
+      readGatewayServiceCommandForMutation.mockResolvedValue(
+        kind === "relocated"
+          ? {
+              kind,
+              command: existingCommand,
+              plistPath: "/external/Library/LaunchAgents/ai.openclaw.gateway.plist",
+            }
+          : { kind, command: existingCommand },
+      );
       const prompter = buildWizardPrompter({ select: vi.fn(async () => "reinstall") as never });
 
       const result = await ensureGatewayServiceForOnboarding(
-        createFinalizeArgs("quickstart", { opts: { installDaemon: true }, prompter }),
+        createFinalizeArgs("quickstart", {
+          opts: { installDaemon: true, daemonRuntime },
+          prompter,
+        }),
       );
 
       expect(result.gateway).toEqual({ status: "ready", action: "installed" });
@@ -1676,9 +1622,19 @@ describe("finalizeSetupWizard", () => {
           existingCommand,
         }),
       );
-      expect(readGatewayServiceCommandForMutation).toHaveBeenCalledOnce();
       expect(buildGatewayInstallPlan.mock.calls[0]?.[0]).not.toHaveProperty("existingEnvironment");
       expect(gatewayServiceInstall).toHaveBeenCalledOnce();
+      expect(gatewayServiceInstall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimePinUpdate: { expected, pin: daemonRuntime ? undefined : pin },
+        }),
+      );
+      expect(buildGatewayInstallPlan).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtime: daemonRuntime ?? "bun",
+          pinnedRuntimePath: daemonRuntime ? undefined : pin.path,
+        }),
+      );
       expect(gatewayServiceUninstall).not.toHaveBeenCalled();
     },
   );
@@ -1695,6 +1651,7 @@ describe("finalizeSetupWizard", () => {
       status: "ready",
       action: action === "restart" ? "restarted" : "reused",
     });
+    expect(readPin).not.toHaveBeenCalled();
     expect(gatewayServiceInstall).not.toHaveBeenCalled();
     expect(gatewayServiceUninstall).not.toHaveBeenCalled();
     expect(gatewayServiceRestart).toHaveBeenCalledTimes(action === "restart" ? 1 : 0);

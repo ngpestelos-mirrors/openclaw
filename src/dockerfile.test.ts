@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BUNDLED_PLUGIN_ROOT_DIR } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it } from "vitest";
+import { resolveTestNodeExecPath } from "./test-utils/node-process.js";
 
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const dockerfilePath = join(repoRoot, "Dockerfile");
@@ -129,7 +130,9 @@ describe("Dockerfile", () => {
     expect(dockerfile).toContain(
       "ca-certificates curl git hostname libgomp1 lsof openssh-client openssl procps python3 tini",
     );
-    expect(dockerfile).toContain('ENTRYPOINT ["tini", "-s", "--"]');
+    expect(dockerfile).toContain(
+      'ENTRYPOINT ["tini", "-s", "--", "node", "/app/docker-entrypoint.mjs"]',
+    );
   });
 
   it.runIf(process.platform !== "win32").each([
@@ -244,9 +247,6 @@ describe("Dockerfile", () => {
     const installIndex = dockerfile.indexOf("pnpm install --frozen-lockfile");
     const postinstallIndex = dockerfile.indexOf("COPY scripts/postinstall-bundled-plugins.mjs");
     const prepareIndex = dockerfile.indexOf("scripts/prepare-git-hooks.mjs");
-    const importGrammarIndex = dockerfile.indexOf(
-      "COPY scripts/lib/guard-inventory-utils.mjs ./scripts/lib/guard-inventory-utils.mjs",
-    );
     const distImportHelperIndex = dockerfile.indexOf(
       "COPY scripts/lib/package-dist-imports.mjs ./scripts/lib/package-dist-imports.mjs",
     );
@@ -259,7 +259,6 @@ describe("Dockerfile", () => {
 
     expect(postinstallIndex).toBeGreaterThan(-1);
     expect(prepareIndex).toBeGreaterThan(-1);
-    expect(importGrammarIndex).toBeGreaterThan(-1);
     expect(distImportHelperIndex).toBeGreaterThan(-1);
     expect(packageManifestIndex).toBeGreaterThan(-1);
     expect(extensionManifestIndex).toBeGreaterThan(-1);
@@ -274,7 +273,6 @@ describe("Dockerfile", () => {
     );
     expect(postinstallIndex).toBeLessThan(installIndex);
     expect(prepareIndex).toBeLessThan(installIndex);
-    expect(importGrammarIndex).toBeLessThan(installIndex);
     expect(distImportHelperIndex).toBeLessThan(installIndex);
     expect(packageManifestIndex).toBeLessThan(installIndex);
     expect(extensionManifestIndex).toBeLessThan(installIndex);
@@ -347,7 +345,7 @@ describe("Dockerfile", () => {
           expect
             .soft(
               () =>
-                execFileSync(process.execPath, [scriptPath], {
+                execFileSync(resolveTestNodeExecPath(), [scriptPath], {
                   cwd: fixture,
                   env: {
                     HOME: home,

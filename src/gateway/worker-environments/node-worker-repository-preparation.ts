@@ -7,7 +7,10 @@ import type {
   WorkerWorkspaceSyncResult,
 } from "./tunnel-contract.js";
 import { boundedWorkerError } from "./worker-error.js";
-import { workspaceSyncError } from "./workspace-sync-helpers.js";
+import {
+  workerWorkspaceCommandSucceeded as succeeded,
+  workspaceSyncError,
+} from "./workspace-sync-helpers.js";
 import { REMOTE_WORKSPACE_MANIFEST_JS } from "./workspace-sync-scripts.js";
 
 const GIT_TIMEOUT_MS = 60_000;
@@ -43,7 +46,7 @@ process.exitCode = result.status ?? 1;`;
 
 const BIND_PREPARED_REPOSITORY_JS = String.raw`const fs = require("node:fs");
 const { spawnSync } = require("node:child_process");
-const { origin, commit, branch, workspaceDir } = JSON.parse(fs.readFileSync(0, "utf8"));
+const { origin, commit, branch, workspaceDir, author } = JSON.parse(fs.readFileSync(0, "utf8"));
 if (fs.realpathSync(process.cwd()) !== fs.realpathSync(workspaceDir)) throw Error("Prepared repository workspace changed");
 const env = { ...process.env };
 for (const key of Object.keys(env)) if (/^(GIT_|GH_TOKEN$|GITHUB_TOKEN$)/i.test(key)) delete env[key];
@@ -65,6 +68,9 @@ if (current !== branch) {
   if (current !== undefined) throw Error("Prepared repository already belongs to another session branch");
   git(["checkout", "-b", branch, commit]);
 }
+for (const [key, value] of Object.entries(author ?? {})) {
+  if (value) git(["config", "--local", "user." + key, value]);
+}
 `;
 
 export type NodeWorkerRepositoryOutcome =
@@ -78,10 +84,6 @@ export type NodeWorkerRepositoryOutcome =
       reason: "clone-failed" | "checkout-failed" | "manifest-capture-failed" | "manifest-mismatch";
       detail?: string;
     };
-
-function succeeded(result: SpawnResult): boolean {
-  return result.termination === "exit" && result.code === 0;
-}
 
 function gitFailure(
   reason: "clone-failed" | "checkout-failed",
@@ -192,12 +194,13 @@ export function createNodeWorkerRepositoryPreparation(exec: NodeWorkerRepository
     bindPreparedRepository: async (
       identity: RepositoryIdentity & { commit: string; branch: string },
       prepared: PreparedRepositoryWorkspace,
+      author?: { name?: string; email?: string },
     ): Promise<WorkerWorkspaceSyncResult & { mode: "repository" }> => {
       if (identity.commit !== prepared.baseCommit) {
         throw new Error("Prepared repository does not match the pinned session commit");
       }
-      // Binding changes only the session branch. It must never fetch, reset, or
-      // reseed the fixed workspace that already owns reusable build outputs.
+      // Bind the branch and author in one remote command without fetching,
+      // resetting, or reseeding the workspace that owns reusable build outputs.
       const bound = await exec({
         argv: ["node", "-e", BIND_PREPARED_REPOSITORY_JS],
         input: JSON.stringify({
@@ -205,6 +208,7 @@ export function createNodeWorkerRepositoryPreparation(exec: NodeWorkerRepository
           commit: identity.commit,
           branch: identity.branch,
           workspaceDir: prepared.workspaceDir,
+          author,
         }),
         timeoutMs: GIT_TIMEOUT_MS,
         transportRetry: "never",

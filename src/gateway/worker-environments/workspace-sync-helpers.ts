@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { hasNodeErrorCode } from "../../infra/path-guards.js";
 import { redactSensitiveText } from "../../logging/redact.js";
 import type { CommandOptions, SpawnResult } from "../../process/exec.js";
 import { WORKER_BUNDLE_RSYNC_RECEIVER_PATH } from "../../shared/worker-bundle-hash.js";
@@ -13,6 +14,7 @@ import {
   workerSshRemoteCommand,
 } from "./ssh.js";
 import type { WorkerWorkspaceCommand, WorkerLocalWorkspaceSyncRequest } from "./tunnel-contract.js";
+import { boundedWorkerError } from "./worker-error.js";
 import {
   parseRemoteWorkspaceManifestEnvelope,
   recordRemoteWorkspaceHashMetrics,
@@ -21,7 +23,10 @@ import {
   type WorkspaceHashMemo,
   type WorkspaceReconcileMetrics,
 } from "./workspace-hash-memo.js";
-import { REMOTE_WORKSPACE_MANIFEST_JS } from "./workspace-sync-scripts.js";
+import {
+  createRemoteWorkspaceManifestScript,
+  REMOTE_WORKSPACE_MANIFEST_JS,
+} from "./workspace-sync-scripts.js";
 
 const MANIFEST_REF_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const INBOUND_QUOTA_INITIAL_POLL_MS = 25;
@@ -172,7 +177,7 @@ export function workerWorkspaceSshArgv(
   ];
 }
 
-async function resolveRemoteWorkspaceBaseManifest(
+export async function resolveRemoteWorkspaceManifest(
   runWorkspaceCommand: (command: WorkerWorkspaceCommand) => Promise<SpawnResult>,
   remoteWorkspaceDir: string,
   expectedRef: string,
@@ -202,18 +207,6 @@ async function resolveRemoteWorkspaceBaseManifest(
   return baseDigest;
 }
 
-export async function resolveRemoteWorkspaceManifest(
-  runWorkspaceCommand: (command: WorkerWorkspaceCommand) => Promise<SpawnResult>,
-  remoteWorkspaceDir: string,
-  expectedRef: string,
-) {
-  return await resolveRemoteWorkspaceBaseManifest(
-    runWorkspaceCommand,
-    remoteWorkspaceDir,
-    expectedRef,
-  );
-}
-
 export async function captureRemoteWorkspaceManifest(params: {
   runWorkspaceCommand: (command: WorkerWorkspaceCommand) => Promise<SpawnResult>;
   remoteWorkspaceDir: string;
@@ -221,6 +214,7 @@ export async function captureRemoteWorkspaceManifest(params: {
   priorManifestDigests: readonly string[];
   hashMemo: WorkspaceHashMemo;
   metrics: WorkspaceReconcileMetrics;
+  maxHashMemoBytes?: number;
 }): Promise<string> {
   params.metrics.remoteManifestCalls += 1;
   const startedAt = performance.now();
@@ -230,20 +224,27 @@ export async function captureRemoteWorkspaceManifest(params: {
       argv: [
         "node",
         "-e",
-        REMOTE_WORKSPACE_MANIFEST_JS,
+        params.maxHashMemoBytes === undefined
+          ? REMOTE_WORKSPACE_MANIFEST_JS
+          : createRemoteWorkspaceManifestScript(params.maxHashMemoBytes),
         params.remoteWorkspaceDir,
         params.baseCommit ?? "",
-        ...(params.baseCommit ? ["eligible"] : []),
+        params.baseCommit ? "eligible" : "all",
         ...params.priorManifestDigests,
         "memo-v1",
       ],
-      input: serializeRemoteWorkspaceHashMemo(params.hashMemo),
+      input: serializeRemoteWorkspaceHashMemo(params.hashMemo, params.maxHashMemoBytes),
     })
     .finally(() => {
       params.metrics.remoteManifestWallDurationMs += performance.now() - startedAt;
     });
   if (!workerWorkspaceCommandSucceeded(captured)) {
-    throw workspaceSyncError(captured);
+    throw new Error(
+      `Worker workspace manifest capture failed: ${boundedWorkerError(
+        captured.stderr.trim() ||
+          `${captured.termination} (exit code ${captured.code}, signal ${captured.signal})`,
+      )}`,
+    );
   }
   let response;
   try {
@@ -264,7 +265,7 @@ export async function probeWorkspaceGitMode(params: {
   runTask: (argv: string[], options: CommandOptions) => Promise<SpawnResult>;
 }): Promise<{ mode: "git" | "plain"; gitRoot: string; baseCommit: string }> {
   const gitAdmin = await fs.lstat(path.join(params.localPath, ".git")).catch((error: unknown) => {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+    if (hasNodeErrorCode(error, "ENOENT")) {
       return undefined;
     }
     throw error;
@@ -307,11 +308,11 @@ export async function resolveWorkerWorkspaceGitAuthor(
     const result = await runTask([...git, `user.${key}`]);
     return workerWorkspaceCommandSucceeded(result) ? result.stdout.trim() : "";
   };
-  const [name, email] = await Promise.all([read("name"), read("email")]);
-  return {
-    name: request.gitAuthor?.name ?? name,
-    email: request.gitAuthor?.email ?? email,
-  };
+  const [name, email] = await Promise.all([
+    request.gitAuthor?.name ?? read("name"),
+    request.gitAuthor?.email ?? read("email"),
+  ]);
+  return { name, email };
 }
 
 export function stableWorkerPathComponent(value: string, length: number): string {
@@ -378,7 +379,7 @@ export function parseManifestRef(stdout: string): string {
 
 export async function readTransferredManifest(filePath: string): Promise<string> {
   const stats = await fs.lstat(filePath).catch((error: unknown) => {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+    if (hasNodeErrorCode(error, "ENOENT")) {
       return undefined;
     }
     throw error;
@@ -399,12 +400,7 @@ async function inboundDirectoryUsage(
     for await (const directoryEntry of await fs.opendir(directory)) {
       const candidate = path.join(directory, directoryEntry.name);
       const stats = await fs.lstat(candidate).catch((error: unknown) => {
-        if (
-          typeof error === "object" &&
-          error !== null &&
-          "code" in error &&
-          error.code === "ENOENT"
-        ) {
+        if (hasNodeErrorCode(error, "ENOENT")) {
           return undefined;
         }
         throw error;

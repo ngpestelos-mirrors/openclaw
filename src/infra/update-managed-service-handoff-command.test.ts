@@ -1,26 +1,30 @@
 // Managed-service handoff command tests cover immutable update target serialization.
 import { EventEmitter } from "node:events";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { findSystemdGatewayInstallation } from "../daemon/systemd-scope.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { parseDevUpdateTargetEnv, type DevUpdateTarget } from "./update-dev-target.js";
 import type { ManagedHandoffLease } from "./update-managed-service-handoff-lease.js";
 import { signalMockManagedUpdateHandoffReady } from "./update-managed-service-handoff.test-support.js";
 
+const privateLease = vi.hoisted(() => ({ path: "", physicalPath: "", externalHome: "" }));
 const spawnMock = vi.hoisted(() => vi.fn());
-const getFileLockProcessStartTimeMock = vi.hoisted(() => vi.fn((_pid: number) => 17));
 const resolvePreferredOpenClawTmpDirMock = vi.hoisted(() => vi.fn());
 const spawnSyncMock = vi.hoisted(() => vi.fn());
 const forceKillChildProcessTreeMock = vi.hoisted(() => vi.fn());
-const fsState = vi.hoisted(() => ({ externalHome: undefined as string | undefined }));
 const tempDirs = new Set<string>();
 const mockedHandoffLeaseCleanups = new Set<() => void>();
 const MOCK_INSTALL_ROOT = path.join(os.tmpdir(), `openclaw-handoff-command-${process.pid}`);
+const systemRoots = useAutoCleanupTempDirTracker(afterEach);
 
-function createReadyChild(_command: string, args: string[]) {
+function createReadyChild(_command: string, args: string[], readyDelayMs = 0) {
   const child = Object.assign(new EventEmitter(), {
     pid: process.pid,
     exitCode: null,
@@ -30,11 +34,21 @@ function createReadyChild(_command: string, args: string[]) {
     unref: vi.fn(),
   });
   process.nextTick(() => {
-    signalMockManagedUpdateHandoffReady({
-      child,
-      paramsPath: args.at(-1) ?? "",
-      cleanups: mockedHandoffLeaseCleanups,
-    });
+    const ready = () => {
+      const paramsPath = args.at(-1) ?? "";
+      const prepared = JSON.parse(fsSync.readFileSync(paramsPath, "utf8"));
+      expect(fsSync.realpathSync(prepared.updateLeaseDatabasePath)).toBe(privateLease.physicalPath);
+      signalMockManagedUpdateHandoffReady({
+        child,
+        paramsPath,
+        cleanups: mockedHandoffLeaseCleanups,
+      });
+    };
+    if (readyDelayMs > 0) {
+      setTimeout(ready, readyDelayMs);
+    } else {
+      ready();
+    }
   });
   return child;
 }
@@ -48,45 +62,68 @@ vi.mock("node:child_process", async () => {
   });
 });
 
-vi.mock("../shared/pid-alive.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../shared/pid-alive.js")>()),
-  getFileLockProcessStartTime: getFileLockProcessStartTimeMock,
-}));
-
 vi.mock("../process/child-process-tree.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/child-process-tree.js")>()),
   forceKillChildProcessTree: forceKillChildProcessTreeMock,
 }));
 
-vi.mock("node:fs", async () => {
-  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
-  const statSync = ((target: string) => {
-    if (fsState.externalHome) {
-      if (target === "/") {
-        return { dev: 1 };
-      }
-      if (target === fsState.externalHome) {
-        return { dev: 2 };
-      }
-      if (target === "/Users/test") {
-        return { dev: 1 };
-      }
-    }
-    return actual.statSync(target);
-  }) as typeof actual.statSync;
-  return { ...actual, statSync, default: { ...actual, statSync } };
-});
-
-vi.mock("node:os", async () => {
-  const actual = await vi.importActual<typeof import("node:os")>("node:os");
-  const userInfo = () => ({ ...actual.userInfo(), username: "test" });
-  return { ...actual, userInfo, default: { ...actual, userInfo } };
-});
-
 vi.mock("../daemon/systemd-scope.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../daemon/systemd-scope.js")>()),
-  findInstalledSystemdGatewayScope: vi.fn(async () => null),
+  findSystemdGatewayInstallation: vi.fn(async () => ({ kind: "none" })),
 }));
+
+vi.mock("./update-managed-service-handoff-lease.js", async (original) => {
+  const actual = await original<typeof import("./update-managed-service-handoff-lease.js")>();
+  return {
+    ...actual,
+    resolveManagedUpdateLeaseDatabasePath: () => privateLease.path,
+    createManagedHandoffLeaseStore: (
+      options?: Parameters<typeof actual.createManagedHandoffLeaseStore>[0],
+      logger?: Parameters<typeof actual.createManagedHandoffLeaseStore>[1],
+    ) => {
+      const selected = options ?? {
+        databasePath: privateLease.path,
+        serviceManagerEnv: process.env,
+      };
+      expect(privateLease.path).not.toBe("");
+      expect(
+        path.join(
+          fsSync.realpathSync(path.dirname(selected.databasePath)),
+          path.basename(selected.databasePath),
+        ),
+      ).toBe(privateLease.physicalPath);
+      return actual.createManagedHandoffLeaseStore(selected, logger);
+    },
+  };
+});
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  const statSync = (
+    file: Parameters<typeof actual.statSync>[0],
+    options?: Parameters<typeof actual.statSync>[1],
+  ) => {
+    const stat = actual.statSync(
+      privateLease.externalHome && file === "/Users/fixture-user" ? "/" : file,
+      options,
+    );
+    if (!privateLease.externalHome || stat === undefined) {
+      return stat;
+    }
+    if (file === "/" || file === "/Users/fixture-user") {
+      return Object.assign(stat, { dev: typeof stat.dev === "bigint" ? 1n : 1 });
+    }
+    if (file === privateLease.externalHome) {
+      return Object.assign(stat, { dev: typeof stat.dev === "bigint" ? 2n : 2 });
+    }
+    return stat;
+  };
+  return { ...actual, statSync, default: { ...actual, statSync } };
+});
+vi.mock("node:os", async (original) => {
+  const actual = await original<typeof import("node:os")>();
+  const userInfo = () => ({ ...actual.userInfo(), username: "fixture-user" });
+  return { ...actual, userInfo, default: { ...actual, userInfo } };
+});
 
 vi.mock("./tmp-openclaw-dir.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./tmp-openclaw-dir.js")>()),
@@ -94,14 +131,15 @@ vi.mock("./tmp-openclaw-dir.js", async (importOriginal) => ({
 }));
 
 beforeEach(async () => {
-  fsState.externalHome = undefined;
-  getFileLockProcessStartTimeMock.mockReset();
-  getFileLockProcessStartTimeMock.mockReturnValue(17);
+  vi.mocked(findSystemdGatewayInstallation).mockResolvedValue({ kind: "none" });
   // Helpers in one fixture share a coordinator without touching the operator's database.
   const coordinatorDir = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-handoff-coordinator-")),
   );
   tempDirs.add(coordinatorDir);
+  privateLease.path = path.join(coordinatorDir, "managed-update-handoffs.sqlite");
+  privateLease.physicalPath = privateLease.path;
+  privateLease.externalHome = "";
   resolvePreferredOpenClawTmpDirMock.mockReturnValue(coordinatorDir);
   forceKillChildProcessTreeMock.mockReset();
   spawnMock.mockReset();
@@ -110,10 +148,13 @@ beforeEach(async () => {
     .mockImplementation(
       (await vi.importActual<typeof import("node:child_process")>("node:child_process")).spawnSync,
     );
-  spawnMock.mockImplementation(createReadyChild);
+  spawnMock.mockImplementation((command: string, args: string[]) =>
+    createReadyChild(command, args),
+  );
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const cleanup of mockedHandoffLeaseCleanups) {
     mockedHandoffLeaseCleanups.delete(cleanup);
     cleanup();
@@ -128,6 +169,7 @@ async function startHandoffAndReadCommand(params: {
   channel: "beta" | "extended-stable";
   tag?: string;
   acceptCapabilities?: boolean;
+  admission?: "auto" | "installed";
   reapplyLocalOverrides?: boolean;
   devTarget?: DevUpdateTarget;
   env?: NodeJS.ProcessEnv;
@@ -151,6 +193,7 @@ async function startHandoffAndReadCommand(params: {
     channel: params.channel,
     ...(params.tag ? { tag: params.tag } : {}),
     ...(params.acceptCapabilities ? { acceptCapabilities: true } : {}),
+    admission: params.admission,
     ...(params.reapplyLocalOverrides ? { reapplyLocalOverrides: true } : {}),
     parentPid: process.pid,
     execPath: "/usr/local/bin/node",
@@ -170,10 +213,10 @@ async function startHandoffAndReadCommand(params: {
   }
   tempDirs.add(path.dirname(paramsPath));
   const helperParams = JSON.parse(await fs.readFile(paramsPath, "utf-8")) as {
+    serviceRecovery?: { kind?: string; plistPath?: string };
     commandArgv?: string[];
     parentExitTimeoutMs: number;
     parentExitDeadlineAt: number;
-    serviceRecovery?: { kind?: string; plistPath?: string };
   };
   const metaPath = path.join(path.dirname(paramsPath), "sentinel-meta.json");
   const metaFile = JSON.parse(await fs.readFile(metaPath, "utf-8")) as {
@@ -194,6 +237,163 @@ async function startHandoffAndReadCommand(params: {
 }
 
 describe("managed service update handoff command", () => {
+  it.each([
+    { writable: false, signal: null },
+    { writable: true, signal: null },
+    { writable: true, signal: "SIGKILL" },
+  ])(
+    "admits writable=$writable system updates and joins helper settlement (signal=$signal)",
+    async ({ writable, signal }) => {
+      const root = systemRoots.make("openclaw-system-update-");
+      const unitName = "openclaw-custom.service";
+      vi.mocked(findSystemdGatewayInstallation).mockResolvedValue({
+        kind: "system",
+        system: {
+          scope: "system",
+          unitName,
+          unitPath: `/etc/systemd/system/${unitName}`,
+        },
+      });
+      if (!writable) {
+        const access = fs.access.bind(fs);
+        vi.spyOn(fs, "access").mockImplementation(async (file, mode) => {
+          if (
+            String(file) === (await fs.realpath(root)) &&
+            mode === (fs.constants.W_OK | fs.constants.X_OK)
+          ) {
+            throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+          }
+          return access(file, mode);
+        });
+      }
+      const { startManagedServiceUpdateHandoff, waitForSystemServiceUpdateHandoffs } =
+        await import("./update-managed-service-handoff.js");
+      expect(waitForSystemServiceUpdateHandoffs()).toBeUndefined();
+      const spawned = createDeferredCore<ReturnType<typeof createReadyChild>>();
+      spawnMock.mockImplementationOnce((command: string, args: string[]) => {
+        const child = createReadyChild(command, args);
+        spawned.resolve(child);
+        return child;
+      });
+      const started = startManagedServiceUpdateHandoff({
+        root,
+        restartDrainTimeoutMs: 300_000,
+        supervisor: "systemd",
+        env: { ...process.env, OPENCLAW_STATE_DIR: root },
+        execPath: process.execPath,
+        argv1: path.join(root, "openclaw.mjs"),
+        meta: {},
+      });
+      if (!writable) {
+        await expect(started).rejects.toMatchObject({
+          reason: "managed-service-handoff-failed",
+          message: expect.stringContaining(`sudo systemctl restart ${unitName}`),
+        });
+        expect(spawnMock).not.toHaveBeenCalled();
+        return;
+      }
+      await expect(started).resolves.toMatchObject({ status: "started" });
+      const [command, args] = spawnMock.mock.calls[0] as [string, string[]];
+      tempDirs.add(path.dirname(args.at(-1)!));
+      const prepared = JSON.parse(await fs.readFile(args.at(-1)!, "utf8"));
+      expect(command).toBe(process.execPath);
+      expect(prepared.commandArgv).toContain("--no-restart");
+      expect(prepared.serviceRecovery).toBeUndefined();
+      expect(prepared.operatorRestartWarning).toBe(
+        `System-scope Gateway service ${unitName} requires an operator restart. Package updates do not stop or restart this service. After the update, run: sudo systemctl restart ${unitName}`,
+      );
+      const barrier = waitForSystemServiceUpdateHandoffs();
+      expect(barrier).toBeDefined();
+      const settled = vi.fn();
+      const observed = barrier?.then(settled, settled);
+      const child = await spawned.promise;
+      Object.assign(child, { exitCode: signal ? null : 0, signalCode: signal });
+      child.emit("exit", signal ? null : 0, signal);
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      child.emit("close", signal ? null : 0, signal);
+      if (signal) {
+        await expect(barrier).rejects.toThrow("settlement could not be confirmed");
+      } else {
+        await expect(barrier).resolves.toBeUndefined();
+      }
+      await observed;
+    },
+  );
+
+  it.each(
+    (["readiness", "park"] as const).flatMap((phase) =>
+      [30_000, 120_000].map((budgetMs) => ({ phase, budgetMs })),
+    ),
+  )(
+    "waits for delayed $phase ACKs within the owning $budgetMs ms budget",
+    async ({ phase, budgetMs }) => {
+      const { requestManagedServiceUpdateHandoffPark, startManagedServiceUpdateHandoff } =
+        await import("./update-managed-service-handoff.js");
+      const spawned = createDeferredCore<ReturnType<typeof createReadyChild>>();
+      spawnMock.mockImplementationOnce((command: string, args: string[]) => {
+        const child = createReadyChild(command, args, phase === "readiness" ? 31_000 : 0);
+        tempDirs.add(path.dirname(args.at(-1)!));
+        spawned.resolve(child);
+        return child;
+      });
+      vi.useFakeTimers();
+      let child: ReturnType<typeof createReadyChild> | undefined;
+      try {
+        const starting = startManagedServiceUpdateHandoff({
+          root: MOCK_INSTALL_ROOT,
+          timeoutMs: phase === "readiness" ? budgetMs : 5_000,
+          restartDrainTimeoutMs: phase === "park" ? budgetMs - 30_000 : 300_000,
+          parentPid: process.pid,
+          execPath: "/usr/local/bin/node",
+          argv1: "/opt/openclaw/openclaw.mjs",
+          meta: {},
+        }).then(
+          (value) => ({ kind: "ready" as const, value }),
+          (error: unknown) => ({ kind: "rejected" as const, error }),
+        );
+        child = await spawned.promise;
+        if (phase === "readiness") {
+          await vi.advanceTimersByTimeAsync(31_000);
+        }
+        const started = await starting;
+        if (phase === "readiness" && budgetMs === 30_000) {
+          expect(started).toMatchObject({
+            kind: "rejected",
+            error: { message: "managed update handoff did not signal readiness within 30 seconds" },
+          });
+          expect(forceKillChildProcessTreeMock).toHaveBeenCalledExactlyOnceWith(child);
+          return;
+        }
+        expect(started.kind).toBe("ready");
+        if (started.kind !== "ready" || started.value.status !== "started") {
+          throw new Error("expected a ready owned helper");
+        }
+        if (phase === "park") {
+          const requested = createDeferredCore();
+          const output = child.stdout;
+          child.stdin.on("data", (chunk: Buffer) => {
+            if (chunk.toString() === "park\n") {
+              setTimeout(() => output.write("parked\n"), 31_000);
+              requested.resolve();
+            }
+          });
+          const parked = requestManagedServiceUpdateHandoffPark({
+            kind: "managed-update-handoff",
+            ...started.value,
+          });
+          await requested.promise;
+          await vi.advanceTimersByTimeAsync(31_000);
+          expect(await parked).toBe(budgetMs === 120_000);
+        }
+        expect(forceKillChildProcessTreeMock).not.toHaveBeenCalled();
+      } finally {
+        child?.emit("exit", 0, null);
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("stages automatic triage in a stop-linked scope with the installed entry", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-triage-command-"));
     tempDirs.add(root);
@@ -339,20 +539,42 @@ describe("managed service update handoff command", () => {
     }
   });
 
-  it("serializes extended-stable into the detached CLI command", async () => {
-    const result = await startHandoffAndReadCommand({ channel: "extended-stable" });
+  it.each(["canonical", "ancestor alias"] as const)(
+    "serializes extended-stable into the detached CLI command with a %s lease path",
+    async (leasePath) => {
+      if (leasePath === "ancestor alias") {
+        const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "handoff-alias-")));
+        tempDirs.add(root);
+        const realParent = path.join(root, "real");
+        const aliasParent = path.join(root, "alias");
+        await fs.mkdir(path.join(realParent, "leases"), { recursive: true, mode: 0o700 });
+        await fs.symlink(
+          realParent,
+          aliasParent,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        resolvePreferredOpenClawTmpDirMock.mockReturnValue(path.join(aliasParent, "leases"));
+        privateLease.path = path.join(aliasParent, "leases", "managed-update-handoffs.sqlite");
+        privateLease.physicalPath = path.join(
+          realParent,
+          "leases",
+          "managed-update-handoffs.sqlite",
+        );
+      }
+      const result = await startHandoffAndReadCommand({ channel: "extended-stable" });
 
-    expect(result.commandArgv).toEqual([
-      "/usr/local/bin/node",
-      "/opt/openclaw/openclaw.mjs",
-      "update",
-      "--yes",
-      "--json",
-      "--channel",
-      "extended-stable",
-    ]);
-    expect(result.command).toContain("--channel extended-stable");
-  });
+      expect(result.commandArgv).toEqual([
+        "/usr/local/bin/node",
+        "/opt/openclaw/openclaw.mjs",
+        "update",
+        "--yes",
+        "--json",
+        "--channel",
+        "extended-stable",
+      ]);
+      expect(result.command).toContain("--channel extended-stable");
+    },
+  );
 
   it.each([true, false])(
     "preserves replay consent=%s across the detached handoff",
@@ -360,6 +582,17 @@ describe("managed service update handoff command", () => {
       const result = await startHandoffAndReadCommand({ channel: "beta", reapplyLocalOverrides });
       expect(result.commandArgv?.includes("--reapply-local-overrides")).toBe(reapplyLocalOverrides);
       expect(result.command.includes("--reapply-local-overrides")).toBe(reapplyLocalOverrides);
+    },
+  );
+
+  it.each(["auto", "installed"] as const)(
+    "preserves %s admission through the detached CLI command",
+    async (admission) => {
+      const result = await startHandoffAndReadCommand({ channel: "beta", admission });
+      const flagIndex = result.commandArgv?.indexOf("--admission") ?? -1;
+      expect(flagIndex).toBeGreaterThan(0);
+      expect(result.commandArgv?.[flagIndex + 1]).toBe(admission);
+      expect(result.command).toContain(`--admission ${admission}`);
     },
   );
 
@@ -416,21 +649,18 @@ describe("managed service update handoff command", () => {
       },
     });
   });
-
-  it("serializes the boot-volume plist for launchd recovery with an external home", async () => {
-    const externalHome = "/Volumes/MainDataDrive";
-    fsState.externalHome = externalHome;
-
+  it("serializes the boot-volume recovery definition without moving external state", async () => {
+    const root = systemRoots.make("handoff-external-home-");
+    privateLease.externalHome = root;
     const result = await startHandoffAndReadCommand({
       channel: "beta",
       supervisor: "launchd",
-      env: { HOME: externalHome, USER: "test" },
+      env: { HOME: root, OPENCLAW_STATE_DIR: path.join(root, "state") },
     });
-
     expect(result.serviceRecovery).toMatchObject({
       kind: "launchd",
-      plistPath: "/Users/test/Library/LaunchAgents/ai.openclaw.gateway.plist",
+      plistPath: "/Users/fixture-user/Library/LaunchAgents/ai.openclaw.gateway.plist",
     });
-    expect(result.serviceRecovery?.plistPath).not.toContain("/Volumes/");
+    expect(result.spawnEnv?.OPENCLAW_STATE_DIR).toBe(path.join(root, "state"));
   });
 });

@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { expect, it, vi } from "vitest";
+import type { ChatEvent } from "../../packages/gateway-protocol/src/index.js";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as followupDelivery from "../auto-reply/reply/followup-delivery.js";
@@ -14,6 +15,7 @@ import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { GatewayContextResolver, GatewayRequestContext } from "./server-methods/types.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
+import "./server.subagent-prompt-recent.gateway.test-support.js";
 
 it(
   "records an actual RPC queued reply awaiting final delivery during restart",
@@ -37,6 +39,7 @@ it(
     const firstGate = createDeferred();
     const finalGate = createDeferred();
     const finalReached = createDeferred();
+    const queuedDispatchSettled = createDeferred<ChatEvent>();
     let firstReceived = false;
     let followupReceived = false;
     const tasks = new Set<Promise<void>>();
@@ -133,7 +136,24 @@ it(
         gateway: { auth: { mode: "token", token } },
         plugins: { slots: { memory: "none" } },
       } satisfies OpenClawConfig;
-      gateway = await startGatewayWithClient({ cfg, configPath: state.configPath, token });
+      gateway = await startGatewayWithClient({
+        cfg,
+        configPath: state.configPath,
+        token,
+        onEvent: ({ event, payload }) => {
+          if (event !== "chat") {
+            return;
+          }
+          const chat = payload as ChatEvent;
+          if (
+            chat.runId === "rpc-queued" &&
+            chat.sessionKey === sessionKey &&
+            (chat.state === "final" || chat.state === "error" || chat.state === "aborted")
+          ) {
+            queuedDispatchSettled.resolve(chat);
+          }
+        },
+      });
       startupSpy.mockRestore();
       await gateway.server.startupSettled;
       await gateway.client.request("chat.send", {
@@ -149,7 +169,9 @@ it(
         idempotencyKey: "rpc-queued",
         queueMode: "followup",
       });
-      await vi.waitFor(() => expect(context?.chatQueuedTurns.has("rpc-queued")).toBe(true));
+      // The ACK precedes detached dispatch; its terminal event follows queue admission.
+      expect(await queuedDispatchSettled.promise).toMatchObject({ state: "final" });
+      expect(context?.chatQueuedTurns.has("rpc-queued")).toBe(true);
       firstGate.resolve();
       await finalReached.promise;
       expect(followupReceived).toBe(true);

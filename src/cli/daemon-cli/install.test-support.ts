@@ -1,71 +1,41 @@
-// Shared daemon install test harness: mocks, module registrations, and assertion helpers.
-import { expect, vi } from "vitest";
+import type { DaemonRuntimePinSnapshot } from "../../daemon/runtime-pin-types.js";
+const pinSnapshotMock = vi.hoisted(() =>
+  vi.fn<() => DaemonRuntimePinSnapshot>(() => ({ revision: "empty", stored: false })),
+);
+vi.mock("../../daemon/runtime-pin-state.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../daemon/runtime-pin-state.js")>()),
+  readDaemonRuntimePinForInstall: pinSnapshotMock,
+}));
+// Daemon install tests cover service install command behavior and plan handling.
+import { afterEach, beforeEach, expect, vi } from "vitest";
+import type { SecretInput } from "../../config/types.secrets.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
+import { mockSystemAccountHome } from "../../daemon/service.test-helpers.js";
 import type { ResolvedGatewayAuth } from "../../gateway/auth.js";
 import { captureFullEnv } from "../../test-utils/env.js";
 import { createCliRuntimeCapture } from "../test-runtime-capture.js";
+import { createInstallPlanFixture, nodeProbeOutput } from "./install.test-helpers.js";
 import type { createDaemonInstallActionContext } from "./shared.js";
 
 type DaemonActionResponse = Parameters<
   ReturnType<typeof createDaemonInstallActionContext>["emit"]
 >[0];
 
+const readGatewayServiceCommandForMutationMock = vi.hoisted(() =>
+  vi.fn<typeof import("../../daemon/service.js").readGatewayServiceCommandForMutation>(),
+);
 const resolveNodeStartupTlsEnvironmentMock = vi.hoisted(() => vi.fn());
 const runExecMock = vi.hoisted(() => vi.fn());
-const loadConfigMock = vi.hoisted(() => vi.fn());
 const readConfigFileSnapshotMock = vi.hoisted(() => vi.fn());
 const resolveGatewayPortMock = vi.hoisted(() => vi.fn(() => 18789));
 const replaceConfigFileMock = vi.hoisted(() => vi.fn());
-const resolveSecretInputRefMock = vi.hoisted(() =>
-  vi.fn((_value?: unknown): { ref: unknown } => ({ ref: undefined })),
-);
-const hasConfiguredSecretInputMock = vi.hoisted(() =>
-  vi.fn((value: unknown): boolean => {
-    if (typeof value === "string" && value.trim()) {
-      return true;
-    }
-    return resolveSecretInputRefMock(value)?.ref != null;
-  }),
-);
-const resolveGatewayAuthMock = vi.hoisted(() =>
-  vi.fn<() => ResolvedGatewayAuth>(() => ({
-    mode: "token",
-    token: undefined,
-    password: undefined,
-    allowTailscale: false,
-  })),
-);
+const resolveGatewayAuthMock = vi.hoisted(() => vi.fn<() => ResolvedGatewayAuth>());
 const resolveGatewayBindHostMock = vi.hoisted(() => vi.fn(async () => "127.0.0.1"));
 const resolveSecretRefValuesMock = vi.hoisted(() => vi.fn());
 const randomTokenMock = vi.hoisted(() => vi.fn(() => "generated-token"));
-const createInstallPlanFixture = vi.hoisted(() => {
-  return async (params?: {
-    wrapperPath?: string;
-    env?: Record<string, string | undefined>;
-  }): Promise<{
-    programArguments: string[];
-    workingDirectory: string;
-    environment: Record<string, string | undefined>;
-    environmentValueSources?: Record<string, string | undefined>;
-  }> => {
-    const environment: Record<string, string | undefined> = {};
-    if (params?.wrapperPath || params?.env?.OPENCLAW_WRAPPER) {
-      environment.OPENCLAW_WRAPPER = params.wrapperPath ?? params.env?.OPENCLAW_WRAPPER;
-    }
-    return {
-      programArguments: params?.wrapperPath
-        ? [params.wrapperPath, "gateway", "run"]
-        : ["openclaw", "gateway", "run"],
-      workingDirectory: "/tmp",
-      environment,
-    };
-  };
-});
-const buildGatewayInstallPlanMock = vi.hoisted(() => vi.fn(createInstallPlanFixture));
-const parsePortMock = vi.hoisted(() => vi.fn(() => null));
+const buildGatewayInstallPlanMock = vi.hoisted(() => vi.fn<typeof createInstallPlanFixture>());
 const isGatewayDaemonRuntimeMock = vi.hoisted(() => vi.fn(() => true));
 const installDaemonServiceAndEmitMock = vi.hoisted(() => vi.fn(async (_params?: unknown) => {}));
-const readGatewayServiceCommandForMutationMock = vi.hoisted(() => vi.fn());
 
 const actionState = vi.hoisted(() => ({
   warnings: [] as string[],
@@ -98,7 +68,6 @@ vi.mock("../../process/exec.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../config/io.js", () => ({
-  loadConfig: loadConfigMock,
   readConfigFileSnapshotForWrite: vi.fn(async () => ({
     snapshot: await readConfigFileSnapshotMock(),
     writeOptions: { expectedConfigPath: "/tmp/openclaw.json" },
@@ -113,17 +82,6 @@ vi.mock("../../config/paths.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../config/paths.js")>()),
   resolveGatewayPort: resolveGatewayPortMock,
 }));
-
-vi.mock("../../config/types.secrets.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../config/types.secrets.js")>();
-  return {
-    ...actual,
-    coerceSecretRef: (value: unknown, defaults?: unknown) =>
-      resolveSecretInputRefMock({ value, defaults })?.ref ?? null,
-    hasConfiguredSecretInput: hasConfiguredSecretInputMock,
-    resolveSecretInputRef: resolveSecretInputRefMock,
-  };
-});
 
 vi.mock("../../gateway/auth.js", () => ({
   resolveGatewayAuth: resolveGatewayAuthMock,
@@ -156,7 +114,6 @@ vi.mock("../../daemon/program-args.js", () => ({
 
 vi.mock("./shared.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./shared.js")>()),
-  parsePort: parsePortMock,
   createDaemonInstallActionContext: (jsonFlag: unknown) => {
     const json = Boolean(jsonFlag);
     return {
@@ -166,14 +123,25 @@ vi.mock("./shared.js", async (importOriginal) => ({
       emit: (payload: DaemonActionResponse) => {
         actionState.emitted.push(payload);
       },
+      // This fixture records plan decisions; output behavior uses the real-owner integration suite.
+      emitMessage: (payload: DaemonActionResponse) => {
+        actionState.emitted.push(payload);
+      },
+      warn: (message: string) => {
+        if (json) {
+          actionState.warnings.push(message);
+        } else {
+          defaultRuntime.log(message);
+        }
+      },
       fail: (message: string, hints?: string[]) => {
         actionState.failed.push({ message, hints });
       },
     };
   },
 }));
-vi.mock("../../commands/daemon-runtime.js", () => ({
-  DEFAULT_GATEWAY_DAEMON_RUNTIME: "node",
+vi.mock("../../commands/daemon-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../commands/daemon-runtime.js")>()),
   isGatewayDaemonRuntime: isGatewayDaemonRuntimeMock,
 }));
 
@@ -193,8 +161,7 @@ vi.mock("../../runtime.js", () => ({
 }));
 
 function expectFirstInstallPlanCallOmitsToken() {
-  const firstArg = readFirstInstallPlanArg();
-  expect("token" in firstArg).toBe(false);
+  expect("token" in readFirstInstallPlanArg()).toBe(false);
 }
 
 function expectFields(value: unknown, expected: Record<string, unknown>): void {
@@ -237,9 +204,15 @@ function expectLastEmittedResult(result: string): void {
   expectFields(actionState.emitted.at(-1), { result });
 }
 
-function mockResolvedGatewayTokenSecretRef() {
-  resolveSecretInputRefMock.mockReturnValue({
-    ref: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_TOKEN" },
+function mockResolvedGatewayTokenSecretRef(
+  token: SecretInput = { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_TOKEN" },
+) {
+  const config = { gateway: { mode: "local" as const, auth: { mode: "token" as const, token } } };
+  readConfigFileSnapshotMock.mockResolvedValue({
+    exists: true,
+    valid: true,
+    config,
+    sourceConfig: config,
   });
   resolveSecretRefValuesMock.mockResolvedValue(
     new Map([["env:default:OPENCLAW_GATEWAY_TOKEN", "resolved-from-secretref"]]),
@@ -248,37 +221,100 @@ function mockResolvedGatewayTokenSecretRef() {
 
 const { runDaemonInstall } = await import("./install.js");
 const envSnapshot = captureFullEnv();
-const originalPlatform = process.platform;
+
+export function setupInstallTests() {
+  beforeEach(() => {
+    pinSnapshotMock.mockReset().mockReturnValue({ revision: "empty", stored: false });
+    runExecMock.mockReset();
+    runExecMock.mockResolvedValue(nodeProbeOutput("26.8.1"));
+    resolveNodeStartupTlsEnvironmentMock.mockReset();
+    readConfigFileSnapshotMock.mockReset();
+    resolveGatewayPortMock.mockClear();
+    mockSystemAccountHome();
+    delete process.env.OPENCLAW_PROFILE;
+    replaceConfigFileMock.mockReset();
+    resolveGatewayAuthMock.mockReset();
+    resolveGatewayBindHostMock.mockReset();
+    resolveSecretRefValuesMock.mockReset();
+    randomTokenMock.mockReset();
+    buildGatewayInstallPlanMock.mockReset();
+    isGatewayDaemonRuntimeMock.mockReset();
+    installDaemonServiceAndEmitMock.mockReset();
+    service.isLoaded.mockReset();
+    service.stage.mockReset();
+    service.install.mockReset();
+    service.readDefinitionMutationCapability.mockReset();
+    service.readCommand.mockReset();
+    resetRuntimeCapture();
+    actionState.warnings.length = 0;
+    actionState.emitted.length = 0;
+    actionState.failed.length = 0;
+
+    readConfigFileSnapshotMock.mockResolvedValue({
+      exists: false,
+      valid: true,
+      config: {},
+      sourceConfig: { gateway: { mode: "local", auth: { mode: "token" } } },
+    });
+    resolveGatewayPortMock.mockReturnValue(18789);
+    delete process.env.OPENCLAW_NIX_MODE;
+    resolveGatewayAuthMock.mockReturnValue({
+      mode: "token",
+      token: undefined,
+      password: undefined,
+      allowTailscale: false,
+    });
+    resolveGatewayBindHostMock.mockResolvedValue("127.0.0.1");
+    resolveSecretRefValuesMock.mockResolvedValue(new Map());
+    randomTokenMock.mockReturnValue("generated-token");
+    buildGatewayInstallPlanMock.mockImplementation(createInstallPlanFixture);
+    isGatewayDaemonRuntimeMock.mockReturnValue(true);
+    installDaemonServiceAndEmitMock.mockResolvedValue(undefined);
+    service.isLoaded.mockResolvedValue(false);
+    service.stage.mockResolvedValue(undefined);
+    service.install.mockResolvedValue(undefined);
+    service.readDefinitionMutationCapability.mockResolvedValue({ kind: "writable" });
+    service.readCommand.mockResolvedValue(null);
+    readGatewayServiceCommandForMutationMock.mockReset().mockImplementation(async () => {
+      const command = await service.readCommand();
+      return command === null ? { kind: "missing", command: null } : { kind: "current", command };
+    });
+    resolveNodeStartupTlsEnvironmentMock.mockReturnValue({
+      NODE_EXTRA_CA_CERTS: undefined,
+      NODE_USE_SYSTEM_CA: undefined,
+    });
+    delete process.env.OPENCLAW_GATEWAY_TOKEN;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    envSnapshot.restore();
+  });
+}
 
 export {
+  readGatewayServiceCommandForMutationMock,
   actionState,
   buildGatewayInstallPlanMock,
-  createInstallPlanFixture,
-  envSnapshot,
   expectFields,
   expectFirstInstallPlanCallOmitsToken,
   expectLastEmittedResult,
   installDaemonServiceAndEmitMock,
   isGatewayDaemonRuntimeMock,
-  loadConfigMock,
   mockResolvedGatewayTokenSecretRef,
-  originalPlatform,
-  parsePortMock,
   randomTokenMock,
   readConfigFileSnapshotMock,
   readFirstConfigWriteParams,
   readFirstInstallPlanArg,
   readFirstNodeStartupTlsEnvironmentArg,
-  readGatewayServiceCommandForMutationMock,
   replaceConfigFileMock,
-  resetRuntimeCapture,
   resolveGatewayAuthMock,
   resolveGatewayBindHostMock,
-  resolveGatewayPortMock,
   resolveNodeStartupTlsEnvironmentMock,
-  runExecMock,
-  resolveSecretInputRefMock,
   resolveSecretRefValuesMock,
   runDaemonInstall,
+  runExecMock,
   service,
 };
+
+export { pinSnapshotMock };

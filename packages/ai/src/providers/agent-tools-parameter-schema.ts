@@ -13,6 +13,17 @@ import type { TSchema } from "typebox";
 import { cleanSchemaForGemini } from "./clean-for-gemini.js";
 import { cleanSchemaForLlamacppGbnf } from "./clean-for-llamacpp-gbnf.js";
 import { stripUnsupportedSchemaKeywords } from "./schema-keyword-strip.js";
+import { createToolSchemaNormalizationCache } from "./tool-schema-normalization-cache.js";
+import {
+  setOwnSchemaProperty,
+  copySchemaMeta,
+  inlineLocalToolSchemaRefs,
+  canPreserveRootSchemaRefs,
+  SCHEMA_MAP_KEYS,
+  SCHEMA_OBJECT_KEYS,
+  SCHEMA_ARRAY_KEYS,
+  SCHEMA_LITERAL_KEYS,
+} from "./tool-schema-refs.js";
 
 /**
  * Narrow structural view of the host's model compat config. packages/ai must stay
@@ -65,7 +76,9 @@ export type ToolParameterSchemaOptions = {
 };
 
 const MAX_TOOL_PARAMETER_SCHEMA_CACHE_ENTRIES_PER_SCHEMA = 8;
-const toolParameterSchemaCache = new WeakMap<object, Array<{ key: string; value: TSchema }>>();
+const toolParameterSchemaCache = createToolSchemaNormalizationCache<TSchema>(
+  MAX_TOOL_PARAMETER_SCHEMA_CACHE_ENTRIES_PER_SCHEMA,
+);
 
 function resolveToolParameterSchemaCacheKey(
   options: ToolParameterSchemaOptions | undefined,
@@ -86,22 +99,6 @@ function resolveToolParameterSchemaCacheKey(
     unsupportedKeywords,
     omitEmptyArrayItems,
   ]);
-}
-
-function getCachedToolParameterSchema(schema: object, key: string): TSchema | undefined {
-  return toolParameterSchemaCache.get(schema)?.find((entry) => entry.key === key)?.value;
-}
-
-function rememberCachedToolParameterSchema(schema: object, key: string, value: TSchema): TSchema {
-  const entries = toolParameterSchemaCache.get(schema) ?? [];
-  toolParameterSchemaCache.set(
-    schema,
-    [{ key, value }, ...entries.filter((entry) => entry.key !== key)].slice(
-      0,
-      MAX_TOOL_PARAMETER_SCHEMA_CACHE_ENTRIES_PER_SCHEMA,
-    ),
-  );
-  return value;
 }
 
 function isGeminiModelId(modelId: string): boolean {
@@ -171,15 +168,6 @@ function mergePropertySchemas(existing: unknown, incoming: unknown): unknown {
 
 type FlattenableVariantKey = "anyOf" | "oneOf";
 type TopLevelConditionalKey = FlattenableVariantKey | "allOf";
-
-function setOwnSchemaProperty(target: Record<string, unknown>, key: string, value: unknown): void {
-  Object.defineProperty(target, key, {
-    value,
-    enumerable: true,
-    configurable: true,
-    writable: true,
-  });
-}
 
 function hasTopLevelArrayKeyword(
   schemaRecord: Record<string, unknown>,
@@ -296,9 +284,10 @@ function normalizeArraySchemaItems(schema: unknown, mode: ArrayItemsMode): unkno
     }
     let next = value;
     if (SCHEMA_MAP_KEYS.has(key) && isSchemaRecord(value)) {
-      const entries = Object.entries(value).map(
-        ([entryKey, entry]) => [entryKey, normalizeArraySchemaItems(entry, mode)] as const,
-      );
+      const entries = Object.entries(value);
+      for (const entry of entries) {
+        entry[1] = normalizeArraySchemaItems(entry[1], mode);
+      }
       if (entries.some(([entryKey, entry]) => entry !== value[entryKey])) {
         next = Object.fromEntries(entries);
       }
@@ -316,260 +305,6 @@ function normalizeArraySchemaItems(schema: unknown, mode: ArrayItemsMode): unkno
     }
   }
   return changed ? normalized : schema;
-}
-
-type SchemaDefs = {
-  $defs: Map<string, unknown>;
-  definitions: Map<string, unknown>;
-};
-
-function copySchemaMeta(from: Record<string, unknown>, to: Record<string, unknown>): void {
-  for (const key of ["title", "description", "default"] as const) {
-    if (key in from && from[key] !== undefined) {
-      to[key] = from[key];
-    }
-  }
-}
-
-function extendSchemaDefs(
-  defs: SchemaDefs | undefined,
-  schema: Record<string, unknown>,
-): SchemaDefs | undefined {
-  const defsEntry =
-    schema.$defs && typeof schema.$defs === "object" && !Array.isArray(schema.$defs)
-      ? (schema.$defs as Record<string, unknown>)
-      : undefined;
-  const legacyDefsEntry =
-    schema.definitions &&
-    typeof schema.definitions === "object" &&
-    !Array.isArray(schema.definitions)
-      ? (schema.definitions as Record<string, unknown>)
-      : undefined;
-
-  if (!defsEntry && !legacyDefsEntry) {
-    return defs;
-  }
-
-  const next: SchemaDefs = defs
-    ? {
-        $defs: new Map(defs.$defs),
-        definitions: new Map(defs.definitions),
-      }
-    : {
-        $defs: new Map<string, unknown>(),
-        definitions: new Map<string, unknown>(),
-      };
-  if (defsEntry) {
-    for (const [key, value] of Object.entries(defsEntry)) {
-      next.$defs.set(key, value);
-    }
-  }
-  if (legacyDefsEntry) {
-    for (const [key, value] of Object.entries(legacyDefsEntry)) {
-      next.definitions.set(key, value);
-    }
-  }
-  return next;
-}
-
-function decodeJsonPointerSegment(segment: string): string {
-  return segment.replaceAll("~1", "/").replaceAll("~0", "~");
-}
-
-function resolveJsonPointerPath(value: unknown, segments: string[]): unknown {
-  let current = value;
-  for (const segment of segments) {
-    if (!current || typeof current !== "object") {
-      return undefined;
-    }
-    const key = decodeJsonPointerSegment(segment);
-    if (Array.isArray(current)) {
-      const index = /^(?:0|[1-9]\d*)$/.test(key) ? Number(key) : -1;
-      if (index < 0 || index >= current.length) {
-        return undefined;
-      }
-      current = current[index];
-      continue;
-    }
-    const record = current as Record<string, unknown>;
-    if (!Object.hasOwn(record, key)) {
-      return undefined;
-    }
-    current = record[key];
-  }
-  return current;
-}
-
-function resolveLocalJsonPointer(rootDocument: unknown, ref: string): unknown {
-  if (!ref.startsWith("#/")) {
-    return undefined;
-  }
-  return resolveJsonPointerPath(rootDocument, ref.slice(2).split("/"));
-}
-
-const SCHEMA_MAP_KEYS = new Set([
-  "$defs",
-  "definitions",
-  "dependentSchemas",
-  "patternProperties",
-  "properties",
-]);
-
-const SCHEMA_OBJECT_KEYS = new Set([
-  "additionalProperties",
-  "contains",
-  "else",
-  "if",
-  "items",
-  "not",
-  "propertyNames",
-  "then",
-]);
-
-const SCHEMA_ARRAY_KEYS = new Set(["allOf", "anyOf", "items", "oneOf", "prefixItems"]);
-
-const SCHEMA_LITERAL_KEYS = new Set(["const", "default", "enum", "examples"]);
-
-function tryResolveLocalRef(
-  ref: string,
-  defs: SchemaDefs | undefined,
-  rootDocument: unknown,
-): unknown {
-  const match = ref.match(/^#\/(\$defs|definitions)\/([^/]+)(?:\/(.*))?$/);
-  if (match && defs) {
-    const namespace = match[1] === "$defs" ? defs.$defs : defs.definitions;
-    const name = decodeJsonPointerSegment(match[2] ?? "");
-    const resolved = name ? namespace.get(name) : undefined;
-    if (resolved !== undefined) {
-      const remainingPath = match[3] ? match[3].split("/") : [];
-      return resolveJsonPointerPath(resolved, remainingPath);
-    }
-  }
-  return resolveLocalJsonPointer(rootDocument, ref);
-}
-
-function inlineLocalSchemaRefsWithDefs(
-  schema: unknown,
-  defs: SchemaDefs | undefined,
-  refStack: Set<string> | undefined,
-  state: { unresolvedLocalRefs: boolean },
-  rootDocument: unknown,
-): unknown {
-  if (!schema || typeof schema !== "object") {
-    return schema;
-  }
-  if (Array.isArray(schema)) {
-    return schema.map((entry) =>
-      inlineLocalSchemaRefsWithDefs(entry, defs, refStack, state, rootDocument),
-    );
-  }
-
-  const obj = schema as Record<string, unknown>;
-  const nextDefs = extendSchemaDefs(defs, obj);
-  const refValue = typeof obj.$ref === "string" ? obj.$ref : undefined;
-
-  if (refValue) {
-    if (refStack?.has(refValue)) {
-      return {};
-    }
-    const resolved = tryResolveLocalRef(refValue, nextDefs, rootDocument);
-    if (resolved === undefined) {
-      if (refValue.startsWith("#/")) {
-        state.unresolvedLocalRefs = true;
-      }
-      return { ...obj };
-    }
-    const nextRefStack = refStack ? new Set(refStack) : new Set<string>();
-    nextRefStack.add(refValue);
-    const inlined = inlineLocalSchemaRefsWithDefs(
-      resolved,
-      nextDefs,
-      nextRefStack,
-      state,
-      rootDocument,
-    );
-    if (!inlined || typeof inlined !== "object" || Array.isArray(inlined)) {
-      return inlined;
-    }
-    const result: Record<string, unknown> = { ...(inlined as Record<string, unknown>) };
-    copySchemaMeta(obj, result);
-    if (obj.nullable === true) {
-      result.nullable = true;
-    }
-    return result;
-  }
-
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (key === "$defs" || key === "definitions" || key === "components") {
-      continue;
-    }
-    if (SCHEMA_LITERAL_KEYS.has(key)) {
-      setOwnSchemaProperty(result, key, value);
-      continue;
-    }
-    if (SCHEMA_MAP_KEYS.has(key) && isSchemaRecord(value)) {
-      setOwnSchemaProperty(
-        result,
-        key,
-        Object.fromEntries(
-          Object.entries(value).map(([entryKey, entryValue]) => [
-            entryKey,
-            inlineLocalSchemaRefsWithDefs(entryValue, nextDefs, refStack, state, rootDocument),
-          ]),
-        ),
-      );
-      continue;
-    }
-    if (SCHEMA_OBJECT_KEYS.has(key) && isSchemaRecord(value)) {
-      setOwnSchemaProperty(
-        result,
-        key,
-        inlineLocalSchemaRefsWithDefs(value, nextDefs, refStack, state, rootDocument),
-      );
-      continue;
-    }
-    if (SCHEMA_ARRAY_KEYS.has(key) && Array.isArray(value)) {
-      setOwnSchemaProperty(
-        result,
-        key,
-        value.map((entry) =>
-          inlineLocalSchemaRefsWithDefs(entry, nextDefs, refStack, state, rootDocument),
-        ),
-      );
-      continue;
-    }
-    setOwnSchemaProperty(result, key, value);
-  }
-  if (state.unresolvedLocalRefs) {
-    if ("$defs" in obj) {
-      result.$defs = obj.$defs;
-    }
-    if ("definitions" in obj) {
-      result.definitions = obj.definitions;
-    }
-    if ("components" in obj) {
-      result.components = obj.components;
-    }
-  }
-  return result;
-}
-
-/** Inline local $ref pointers so providers receive self-contained tool schemas. */
-function inlineLocalToolSchemaRefs(schema: unknown): TSchema {
-  if (!schema || typeof schema !== "object") {
-    return schema as TSchema;
-  }
-  const defs = extendSchemaDefs(undefined, schema as Record<string, unknown>);
-  return inlineLocalSchemaRefsWithDefs(
-    schema,
-    defs,
-    undefined,
-    {
-      unresolvedLocalRefs: false,
-    },
-    schema,
-  ) as TSchema;
 }
 
 const OPENAPI_SCHEMA_ANNOTATION_KEYS = new Set([
@@ -648,49 +383,45 @@ function normalizeOpenApiSchemaKeywords(schema: unknown): unknown {
 
   let changed = false;
   const nullable = schema.nullable === true;
-  const normalized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(schema)) {
+  const entries = Object.entries(schema);
+  let normalized: Record<string, unknown> | undefined;
+  for (const [key, value] of entries) {
     if (key === "nullable" || OPENAPI_SCHEMA_ANNOTATION_KEYS.has(key)) {
+      normalized ??= Object.fromEntries(entries);
+      delete normalized[key];
       changed = true;
       continue;
     }
-    if (SCHEMA_LITERAL_KEYS.has(key)) {
-      normalized[key] = value;
+    if (SCHEMA_LITERAL_KEYS.has(key) || key === "components") {
       continue;
     }
+    let next = value;
     if (SCHEMA_MAP_KEYS.has(key) && isSchemaRecord(value)) {
       let mapChanged = false;
-      const next = Object.fromEntries(
-        Object.entries(value).map(([entryKey, entryValue]) => {
-          const nextEntry = normalizeOpenApiSchemaKeywords(entryValue);
-          mapChanged ||= nextEntry !== entryValue;
-          return [entryKey, nextEntry];
-        }),
-      );
-      normalized[key] = mapChanged ? next : value;
-      changed ||= mapChanged;
+      const mapEntries = Object.entries(value);
+      for (const entry of mapEntries) {
+        const nextEntry = normalizeOpenApiSchemaKeywords(entry[1]);
+        mapChanged ||= nextEntry !== entry[1];
+        entry[1] = nextEntry;
+      }
+      next = mapChanged ? Object.fromEntries(mapEntries) : value;
+    } else if (SCHEMA_OBJECT_KEYS.has(key) && isSchemaRecord(value)) {
+      next = normalizeOpenApiSchemaKeywords(value);
+    } else if (SCHEMA_ARRAY_KEYS.has(key) && Array.isArray(value)) {
+      const nextEntries = value.map(normalizeOpenApiSchemaKeywords);
+      // A changed sibling also exposes these composition-array copies.
+      (normalized ??= Object.fromEntries(entries))[key] = nextEntries;
+      changed ||= nextEntries.some((entry, index) => entry !== value[index]);
       continue;
     }
-    if (key === "components") {
-      normalized[key] = value;
-      continue;
+    if (next !== value) {
+      (normalized ??= Object.fromEntries(entries))[key] = next;
+      changed = true;
     }
-    if (SCHEMA_OBJECT_KEYS.has(key) && isSchemaRecord(value)) {
-      const next = normalizeOpenApiSchemaKeywords(value);
-      normalized[key] = next;
-      changed ||= next !== value;
-      continue;
-    }
-    if (SCHEMA_ARRAY_KEYS.has(key) && Array.isArray(value)) {
-      const next = value.map(normalizeOpenApiSchemaKeywords);
-      normalized[key] = next;
-      changed ||= next.some((entry, index) => entry !== value[index]);
-      continue;
-    }
-    setOwnSchemaProperty(normalized, key, value);
   }
 
   if (nullable) {
+    normalized ??= Object.fromEntries(entries);
     if (hasOpenApiComposition(normalized)) {
       return wrapNullableComposedSchema(normalized);
     }
@@ -705,22 +436,13 @@ function normalizeOpenApiSchemaKeywords(schema: unknown): unknown {
     }
   }
 
-  return changed || nullable ? normalized : schema;
+  return changed || nullable ? (normalized ?? schema) : schema;
 }
 
 function normalizeToolParameterSchemaUncached(
   schema: unknown,
   options?: ToolParameterSchemaOptions,
 ): TSchema {
-  const inlinedSchema = normalizeOpenApiSchemaKeywords(inlineLocalToolSchemaRefs(schema));
-  const schemaRecord =
-    inlinedSchema && typeof inlinedSchema === "object"
-      ? (inlinedSchema as Record<string, unknown>)
-      : undefined;
-  if (!schemaRecord) {
-    return inlinedSchema as TSchema;
-  }
-
   // Provider quirks:
   // - Gemini rejects several JSON Schema keywords, so we scrub those.
   // - OpenAI rejects function tool schemas unless the *top-level* is `type: "object"`.
@@ -743,6 +465,22 @@ function normalizeToolParameterSchemaUncached(
   const unsupportedToolSchemaKeywords = resolveUnsupportedToolSchemaKeywords(options?.modelCompat);
   const omitEmptyArrayItems = shouldOmitEmptyArrayItems(options?.modelCompat);
   const isLlamacppGbnfProfile = normalizedToolSchemaProfile === "llamacpp";
+  const preserveRefs =
+    normalizedProvider === "openai" &&
+    !isGeminiProvider &&
+    !isLlamacppGbnfProfile &&
+    !["$ref", "$defs", "definitions"].some((key) => unsupportedToolSchemaKeywords.has(key)) &&
+    canPreserveRootSchemaRefs(schema);
+  const inlinedSchema = normalizeOpenApiSchemaKeywords(
+    preserveRefs ? schema : inlineLocalToolSchemaRefs(schema),
+  );
+  const schemaRecord =
+    inlinedSchema && typeof inlinedSchema === "object"
+      ? (inlinedSchema as Record<string, unknown>)
+      : undefined;
+  if (!schemaRecord) {
+    return inlinedSchema as TSchema;
+  }
 
   function applyProviderCleaning(s: unknown): TSchema {
     let arrayItemsCompatibleSchema = normalizeArraySchemaItems(
@@ -878,14 +616,13 @@ export function normalizeToolParameterSchema(
     return normalizeToolParameterSchemaUncached(schema, options);
   }
   const cacheKey = resolveToolParameterSchemaCacheKey(options);
-  const cached = getCachedToolParameterSchema(schema, cacheKey);
+  const cached = toolParameterSchemaCache.get(schema, cacheKey);
   if (cached) {
     return cached;
   }
-  return rememberCachedToolParameterSchema(
+  return toolParameterSchemaCache.remember(
     schema,
     cacheKey,
     normalizeToolParameterSchemaUncached(schema, options),
   );
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

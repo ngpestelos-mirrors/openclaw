@@ -5,8 +5,7 @@ enum NodeServiceManager {
     private static let logger = Logger(subsystem: "ai.openclaw", category: "node.service")
     private static let lifecycleQueue = LifecycleQueue()
     private static var launchdPlistURL: URL {
-        LaunchAgentPlist.launchAgentHomeDirectory(
-            homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+        LaunchAgentPlist.launchAgentHomeDirectory(homeDirectory: LaunchAgentPlist.homeDirectoryURL)
             .appendingPathComponent("Library/LaunchAgents/\(nodeLaunchdLabel).plist")
     }
 
@@ -28,6 +27,8 @@ enum NodeServiceManager {
         if self.skipUnderProfile(profile, action: "status") { return [] }
         return self.launchdProgramArguments(
             plistURL: self.launchdPlistURL,
+            formerPlistURL: LaunchAgentPlist.homeDirectoryURL
+                .appendingPathComponent("Library/LaunchAgents/\(nodeLaunchdLabel).plist"),
             fileManager: .default)
     }
 
@@ -90,11 +91,9 @@ extension NodeServiceManager {
     }
 
     private static func serviceCommand(_ args: [String]) async -> [String] {
-        await CommandResolver.openclawCommand(
+        await CommandResolver.localOpenclawCommand(
             subcommand: "node",
-            extraArgs: self.withJsonFlag(args),
-            // Service management must always run locally, even if remote mode is configured.
-            configRoot: ["gateway": ["mode": "local"]])
+            extraArgs: self.withJsonFlag(args))
     }
 
     private struct CommandResult {
@@ -200,16 +199,31 @@ extension NodeServiceManager {
 
     private static func launchdProgramArguments(
         plistURL: URL,
+        formerPlistURL: URL? = nil,
         fileManager: FileManager) -> [String]?
     {
         #if DEBUG
         self.testingOwnershipReadCount += 1
         #endif
-        guard fileManager.fileExists(atPath: plistURL.path) else { return [] }
-        guard let arguments = LaunchAgentPlist.snapshot(url: plistURL)?.programArguments,
-              !arguments.isEmpty
-        else { return nil }
-        return arguments
+        let candidates = [plistURL] + (formerPlistURL.map { $0 == plistURL ? [] : [$0] } ?? [])
+        for candidate in candidates {
+            do {
+                _ = try fileManager.attributesOfItem(atPath: candidate.path)
+            } catch {
+                let failure = error as NSError
+                guard failure.domain == NSCocoaErrorDomain,
+                      [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(failure.code)
+                else { return nil }
+                continue
+            }
+            // Only a missing canonical record permits migration fallback. Malformed,
+            // unreadable, or dangling canonical records continue to fail closed.
+            guard let arguments = LaunchAgentPlist.snapshot(url: candidate)?.programArguments,
+                  !arguments.isEmpty
+            else { return nil }
+            return arguments
+        }
+        return []
     }
 
     private static func runtimeIsRunning(in object: [String: Any]) -> Bool {
@@ -243,8 +257,8 @@ extension NodeServiceManager {
         await self.serviceCommand(args)
     }
 
-    static func _testLaunchdProgramArguments(plistURL: URL) -> [String]? {
-        self.launchdProgramArguments(plistURL: plistURL, fileManager: .default)
+    static func _testLaunchdProgramArguments(plistURL: URL, formerPlistURL: URL? = nil) -> [String]? {
+        self.launchdProgramArguments(plistURL: plistURL, formerPlistURL: formerPlistURL, fileManager: .default)
     }
 
     static func _testRuntimeIsRunning(fromJSON json: String) -> Bool {

@@ -14,16 +14,12 @@ import {
   readNodeWorkspaceUpload,
   type NodeWorkspaceTransferUpload,
 } from "./node-workspace-upload-reader.js";
-import { readWorkspaceFileSnapshotWithLimit } from "./workspace-actual-manifest.js";
 import { prepareWorkerWorkspaceGitPack } from "./workspace-git-base.js";
 import { MAX_WORKSPACE_INVENTORY_TOTAL_BYTES } from "./workspace-inventory-limits.js";
-import { serializeWorkerWorkspaceManifest } from "./workspace-manifest.js";
-import { readActualWorkspaceManifest } from "./workspace-reconcile.js";
-
-export {
-  isNodeWorkspaceTransferLimitError,
-  nodeWorkspaceTransferInvalidReason,
-} from "./node-workspace-upload-reader.js";
+import {
+  captureWorkspaceSnapshot,
+  computeWorkspaceFileSnapshot,
+} from "./workspace-manifest-worker.js";
 
 const TRANSFER_TIMEOUT_MS = 10 * 60_000;
 const MANIFEST_REF_PATTERN = /^sha256:[a-f0-9]{64}$/u;
@@ -128,6 +124,18 @@ function capabilityMatchesContext(
     capability.sessionId === context.sessionId &&
     capability.generation === context.generation
   );
+}
+
+function watchTransferOwnerSignal(context: TransferContext, signal?: AbortSignal): void {
+  if (!signal) {
+    return;
+  }
+  const abort = () => context.abortController.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  context.stopWatchingOwnerSignal = () => signal.removeEventListener("abort", abort);
+  if (signal.aborted) {
+    abort();
+  }
 }
 
 export function createNodeWorkspaceTransferService(options: {
@@ -309,7 +317,7 @@ export function createNodeWorkspaceTransferService(options: {
       }
       const root = await fsp.realpath(params.localPath);
       params.signal.throwIfAborted();
-      const actual = await readActualWorkspaceManifest({
+      const actual = await captureWorkspaceSnapshot({
         root,
         baseCommit: null,
         signal: params.signal,
@@ -322,7 +330,6 @@ export function createNodeWorkspaceTransferService(options: {
       const snapshot = {
         ...actual,
         root,
-        rawManifest: serializeWorkerWorkspaceManifest(actual.manifest),
       };
       context.snapshots.set(snapshot.manifestRef, snapshot);
       return {
@@ -357,15 +364,7 @@ export function createNodeWorkspaceTransferService(options: {
           downloads: new Map(),
           abortController,
         };
-        if (params.signal) {
-          const abort = () => abortController.abort(params.signal!.reason);
-          params.signal.addEventListener("abort", abort, { once: true });
-          context.stopWatchingOwnerSignal = () =>
-            params.signal?.removeEventListener("abort", abort);
-          if (params.signal.aborted) {
-            abort();
-          }
-        }
+        watchTransferOwnerSignal(context, params.signal);
         contexts.set(params.environmentId, context);
         if (!isCurrentContext(context)) {
           await closeContext(context);
@@ -400,15 +399,7 @@ export function createNodeWorkspaceTransferService(options: {
           downloads: new Map(),
           abortController,
         };
-        if (params.signal) {
-          const abortFromOwner = () => abortController.abort(params.signal!.reason);
-          params.signal.addEventListener("abort", abortFromOwner, { once: true });
-          context.stopWatchingOwnerSignal = () =>
-            params.signal?.removeEventListener("abort", abortFromOwner);
-          if (params.signal.aborted) {
-            abortFromOwner();
-          }
-        }
+        watchTransferOwnerSignal(context, params.signal);
         try {
           const snapshot = await prepareNodeWorkspaceTransferSnapshot({
             localPath: params.localPath,
@@ -691,7 +682,7 @@ export function createNodeWorkspaceTransferService(options: {
     },
 
     async verifyBlob(params: { path: string; size: number; sha256: string }): Promise<boolean> {
-      const snapshot = await readWorkspaceFileSnapshotWithLimit(
+      const snapshot = await computeWorkspaceFileSnapshot(
         params.path,
         Math.min(params.size, MAX_WORKSPACE_INVENTORY_TOTAL_BYTES),
       );
@@ -700,6 +691,16 @@ export function createNodeWorkspaceTransferService(options: {
         snapshot.size === params.size &&
         snapshot.sha256 === params.sha256
       );
+    },
+
+    fenceEnvironment(environmentId: string, reason?: Error): void {
+      const context = contexts.get(environmentId);
+      // Abort synchronously so every in-flight response and capability for this owner is
+      // fenced at once; cleanup (scratch removal, map entry) settles behind the queue.
+      if (context && !context.abortController.signal.aborted) {
+        context.abortController.abort(reason ?? new Error("Worker environment credential revoked"));
+      }
+      void closeEnvironment(environmentId).catch(() => undefined);
     },
 
     close: closeEnvironment,
