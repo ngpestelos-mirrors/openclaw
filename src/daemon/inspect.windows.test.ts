@@ -179,7 +179,7 @@ describe("findExtraGatewayServices (win32)", () => {
       expect(extras.errors).toEqual([]);
       expect(extras.services).toEqual(extra ? [expect.objectContaining({ label, marker })] : []);
       expect(renderGatewayServiceCleanupHints(extras.services)).toEqual(
-        extra ? [`schtasks /Delete /TN "${label}" /F`] : [],
+        extra ? [`schtasks /Query /TN "${label}" /V /FO LIST`] : [],
       );
     },
   );
