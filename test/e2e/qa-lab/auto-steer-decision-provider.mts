@@ -1,5 +1,5 @@
 import { appendFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { isAbsolute } from "node:path";
 import type { DecisionBatch, DecisionProviderV1 } from "openclaw/plugin-sdk/decisions";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
@@ -15,6 +15,10 @@ export default definePluginEntry({
   description:
     "Fixed answer at the Decision provider boundary only; no routing or transcript writes.",
   register(api: OpenClawPluginApi) {
+    const evidencePath = api.pluginConfig?.evidencePath;
+    if (typeof evidencePath !== "string" || !isAbsolute(evidencePath)) {
+      throw new Error("The proof owner must provide an absolute observation path.");
+    }
     const provider: DecisionProviderV1 = {
       id: "auto-joined-decision",
       contractVersion: 1,
@@ -22,7 +26,7 @@ export default definePluginEntry({
       async evaluate(batch, context) {
         context.signal.throwIfAborted();
         appendFileSync(
-          fileURLToPath(new URL("./evaluations.jsonl", import.meta.url)),
+          evidencePath,
           JSON.stringify({
             batch,
             model: context.model,

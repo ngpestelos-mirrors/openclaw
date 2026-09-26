@@ -169,7 +169,12 @@ try {
       name: "Joined proof deterministic Decision provider",
       activation: { onStartup: true },
       contracts: { decisionProviders: ["auto-joined-decision"] },
-      configSchema: { type: "object", additionalProperties: false, properties: {} },
+      configSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["evidencePath"],
+        properties: { evidencePath: { type: "string" } },
+      },
     }),
   );
   // Only the model-boundary answer is synthetic. The actual bundled input_route
@@ -246,7 +251,13 @@ try {
       plugins: {
         allow: ["auto-steer", "auto-joined-decision", "openai"],
         load: { paths: [pluginDir] },
-        entries: { "auto-steer": { enabled: true }, "auto-joined-decision": { enabled: true } },
+        entries: {
+          "auto-steer": { enabled: true },
+          "auto-joined-decision": {
+            enabled: true,
+            config: { evidencePath: path.join(pluginDir, "evaluations.jsonl") },
+          },
+        },
         slots: { memory: "none" },
       },
     },
@@ -386,9 +397,10 @@ try {
   const history = async () => {
     const sessionId = sends()[0]?.params.sessionId;
     assert(typeof sessionId === "string" && sessionId.length > 0);
+    // sessionId is an anchored-message selector on this wire contract.
+    // Read current history by key, then reject any physical-session mismatch.
     const result = await call("chat.history", {
       sessionKey,
-      sessionId,
       limit: 50,
       inputRunIds: sends().map((frame) => frame.params.idempotencyKey),
     });
