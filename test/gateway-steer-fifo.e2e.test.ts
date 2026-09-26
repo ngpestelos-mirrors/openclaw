@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_CLIENT_CAPS } from "../packages/gateway-protocol/src/client-info.js";
+import type { HelloOk } from "../packages/gateway-protocol/src/schema/frames.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { GatewayClient, type GatewayClientOptions } from "../src/gateway/client.js";
 import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
+import type { DiagnosticStabilityEventRecord } from "../src/logging/diagnostic-stability.js";
 import { GatewayChatClient } from "../src/tui/gateway-chat.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../src/utils/message-channel.js";
 import { writeOpenAiResponsesSse } from "./helpers/openai-responses-sse.js";
@@ -253,6 +255,17 @@ async function startMockModelServer(holdSecondResponse = false): Promise<MockMod
         if (res.destroyed) {
           return;
         }
+        if (firstResponseKind !== "final") {
+          const toolNames =
+            firstResponseKind === "tool"
+              ? ["session_status"]
+              : [STEERING_GATE_TOOL, STEERING_TAIL_TOOL];
+          expect(requests[0]?.body.tools).toEqual(
+            expect.arrayContaining(
+              toolNames.map((name) => expect.objectContaining({ type: "function", name })),
+            ),
+          );
+        }
         if (firstResponseKind === "tool") {
           writeToolResponse(res);
           return;
@@ -449,9 +462,13 @@ function createConfig(params: {
         main: { default: true, model: { primary: provider.modelRef }, skills: [] },
       },
     },
-    tools: steeringTools
-      ? { profile: "minimal", alsoAllow: [STEERING_GATE_TOOL, STEERING_TAIL_TOOL] }
-      : { profile: "minimal" },
+    tools: {
+      profile: "minimal",
+      // This provider emits direct calls to exercise steering, not discovery.
+      codeMode: false,
+      toolSearch: false,
+      ...(steeringTools ? { alsoAllow: [STEERING_GATE_TOOL, STEERING_TAIL_TOOL] } : {}),
+    },
     models: {
       mode: "replace",
       providers: {
@@ -472,27 +489,34 @@ async function connectDiagnosticsClient(
   instance: OpenClawTestInstance,
   cliMode = false,
   onEvent?: GatewayClientOptions["onEvent"],
-): Promise<GatewayClient> {
-  let resolveHello!: () => void;
+  pairedUiOwner = false,
+): Promise<{ client: GatewayClient; hello: HelloOk }> {
+  let resolveHello!: (hello: HelloOk) => void;
   let rejectHello!: (error: Error) => void;
-  const hello = new Promise<void>((resolve, reject) => {
+  const hello = new Promise<HelloOk>((resolve, reject) => {
     resolveHello = resolve;
     rejectHello = reject;
   });
   const gatewayUrl = new URL(instance.url);
   gatewayUrl.protocol = gatewayUrl.protocol === "wss:" ? "https:" : "http:";
-  // UI diagnostics share the TUI identity; CLI requests own a separate connection.
+  // The separate UI connection must match the TUI permission contract.
+  // Keep the CLI case's narrower scopes and isolated connection unchanged.
   const options: GatewayClientOptions = {
     url: instance.url,
     origin: cliMode ? undefined : gatewayUrl.origin,
-    token: "steer-fifo-token",
+    token: pairedUiOwner ? undefined : "steer-fifo-token",
     clientName: cliMode ? GATEWAY_CLIENT_NAMES.CLI : GATEWAY_CLIENT_NAMES.TUI,
     clientDisplayName: "steer-fifo-e2e-diagnostics",
     mode: cliMode ? GATEWAY_CLIENT_MODES.CLI : GATEWAY_CLIENT_MODES.UI,
     deviceIdentity: cliMode ? null : undefined,
     sharedStateMode: cliMode ? "read-only" : undefined,
     role: "operator",
-    scopes: ["operator.admin", "operator.read", "operator.write"],
+    scopes: [
+      "operator.admin",
+      "operator.read",
+      "operator.write",
+      ...(cliMode ? [] : ["operator.approvals"]),
+    ],
     caps: [
       GATEWAY_CLIENT_CAPS.AGENT_KIND,
       GATEWAY_CLIENT_CAPS.PLUGIN_APPROVALS,
@@ -508,8 +532,7 @@ async function connectDiagnosticsClient(
   const client = new GatewayClient(options);
   diagnosticsClients.push(client);
   client.start();
-  await hello;
-  return client;
+  return { client, hello: await hello };
 }
 
 async function createGatewayFixture(
@@ -519,6 +542,8 @@ async function createGatewayFixture(
     steeringGateMode?: SteeringGateMode;
     cliMode?: boolean;
     holdSecondResponse?: boolean;
+    withDocumentUnderstanding?: boolean;
+    pairedUiOwner?: boolean;
   } = {},
 ): Promise<GatewayFixture> {
   const fixtureDir = await mkdtemp(path.join(tmpdir(), `openclaw-${name}-`));
@@ -536,6 +561,8 @@ async function createGatewayFixture(
       OPENCLAW_LOG_LEVEL: "debug",
       OPENCLAW_SKIP_PROVIDERS: undefined,
       OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+      // Only the document case needs the real extraction path, including fallback.
+      ...(options.withDocumentUnderstanding ? { OPENCLAW_TEST_FAST: undefined } : {}),
     },
   });
   instances.push(instance);
@@ -543,11 +570,23 @@ async function createGatewayFixture(
   const events: AgentEvent[] = [];
   const chatErrors: Array<{ errorMessage?: string; runId?: string; state: "error" }> = [];
   const chatFinalRunIds: string[] = [];
-  const client = new GatewayChatClient({
+  const pairedUiOwner = options.pairedUiOwner === true && !options.cliMode;
+  let client = new GatewayChatClient({
     url: instance.url,
     token: "steer-fifo-token",
   });
   clients.push(client);
+  if (pairedUiOwner) {
+    // Shared auth bootstraps pairing; the positive turns use classified device auth.
+    // Ready follows the normal client-owned token persistence, before either turn starts.
+    client.start();
+    await client.waitForReady();
+    expect(client.hello?.auth.method).toBe("token");
+    expect(Boolean(client.hello?.auth.deviceToken)).toBe(true);
+    await client.stop();
+    client = new GatewayChatClient({ url: instance.url });
+    clients.push(client);
+  }
   const onEvent: GatewayChatClient["onEvent"] = ({ event, payload }) => {
     if (event === "agent" && payload && typeof payload === "object") {
       const agentEvent = payload as AgentEvent;
@@ -572,11 +611,21 @@ async function createGatewayFixture(
   client.start();
   await client.waitForReady();
   await client.subscribeSessionEvents();
-  const diagnosticsClient = await connectDiagnosticsClient(
+  const { client: diagnosticsClient, hello } = await connectDiagnosticsClient(
     instance,
     options.cliMode,
     options.cliMode ? onEvent : undefined,
+    pairedUiOwner,
   );
+  if (pairedUiOwner) {
+    expect(client.hello?.auth.method).toBe("device-token");
+    expect(hello.auth.method).toBe("device-token");
+    expect(hello.server.connId).not.toBe(client.hello?.server.connId);
+    expect(hello.auth.scopes.toSorted()).toEqual(
+      ["operator.admin", "operator.read", "operator.write", "operator.approvals"].toSorted(),
+    );
+    expect(client.hello?.auth.scopes.toSorted()).toEqual(hello.auth.scopes.toSorted());
+  }
   if (options.cliMode) {
     await diagnosticsClient.request("sessions.subscribe", {});
   }
@@ -692,20 +741,69 @@ async function queueOrdinaryFollowup(
   }, WAIT_OPTS);
 }
 
-async function waitForRunTerminal(fixture: GatewayFixture, runId: string): Promise<void> {
-  await vi.waitFor(
-    () =>
-      expect(fixture.events).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            runId,
-            stream: "lifecycle",
-            data: expect.objectContaining({ phase: "end" }),
-          }),
-        ]),
-      ),
-    WAIT_OPTS,
+async function captureSteeringDisposition(
+  fixture: GatewayFixture,
+  targetRunId: string,
+  steerRunId: string,
+): Promise<string> {
+  // Source final follows the confirmed transcript annotation. Read it after the
+  // existing terminal wait, never delay releasing the tool or infer from ACK.
+  const [snapshot, history, self] = await Promise.all([
+    fixture.diagnosticsClient.request<{ events: DiagnosticStabilityEventRecord[] }>(
+      "diagnostics.stability",
+      { type: "message.processed", limit: 10 },
+    ),
+    fixture.diagnosticsClient.request<{
+      messages: Array<{
+        role?: string;
+        idempotencyKey?: string;
+        __openclaw?: { steerTargetRunId?: string; senderIdentity?: unknown };
+      }>;
+    }>("chat.history", { sessionKey: fixture.sessionKey, limit: 100 }),
+    fixture.diagnosticsClient.request<{ profile: { id: string } }>("users.self", {}),
+  ]);
+  const original = history.messages.find(
+    (message) => message.idempotencyKey === `${targetRunId}:user`,
   );
+  const steered = history.messages.filter(
+    (message) => message.idempotencyKey === `${steerRunId}:user`,
+  );
+  const evidence = JSON.stringify({
+    sessionKey: fixture.sessionKey,
+    processed: snapshot.events.map(({ seq, outcome, reason }) => ({ seq, outcome, reason })),
+    steerTargets: steered.map((message) => message["__openclaw"]?.steerTargetRunId),
+    profileId: self.profile.id,
+  });
+  console.info(`STEERING_DISPOSITION ${evidence}`);
+  const senderIdentity = { type: "profile", id: self.profile.id };
+  expect(original, evidence).toMatchObject({ role: "user", __openclaw: { senderIdentity } });
+  expect(steered, evidence).toHaveLength(1);
+  expect(steered[0], evidence).toMatchObject({
+    role: "user",
+    __openclaw: { senderIdentity, steerTargetRunId: targetRunId },
+  });
+  return evidence;
+}
+
+async function waitForRunTerminal(
+  fixture: GatewayFixture,
+  runId: string,
+  completedInputRunId?: string,
+): Promise<void> {
+  await vi.waitFor(() => {
+    expect(fixture.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runId,
+          stream: "lifecycle",
+          data: expect.objectContaining({ phase: "end" }),
+        }),
+      ]),
+    );
+    if (completedInputRunId) {
+      expect(fixture.chatFinalRunIds).toContain(completedInputRunId);
+    }
+  }, WAIT_OPTS);
 }
 
 async function waitForSessionIdle(fixture: GatewayFixture, sinceSeq: number): Promise<void> {
@@ -773,7 +871,15 @@ function userInputs(request: ModelRequest | undefined): string[] {
 }
 
 function currentUserInput(request: ModelRequest | undefined): string {
-  return userInputs(request).at(-1) ?? "";
+  if (typeof request?.body.input === "string") {
+    return request.body.input;
+  }
+  // One user turn can end with a separate runtime-context message.
+  const items = responseInputItems(request);
+  return items
+    .slice(items.findLastIndex((item) => item.role !== "user") + 1)
+    .map((item) => contentText(item.content))
+    .join("\n");
 }
 
 describe("Gateway steer FIFO", () => {
@@ -898,6 +1004,7 @@ describe("Gateway steer FIFO", () => {
       const fixture = await createGatewayFixture("steer-running-tool-tail", {
         withSteeringTools: true,
         steeringGateMode: "execute",
+        pairedUiOwner: true,
       });
       const steeringTools = fixture.steeringTools;
       if (!steeringTools) {
@@ -905,6 +1012,7 @@ describe("Gateway steer FIFO", () => {
       }
       const first = await sendHeldTurn(fixture);
       const steerMarker = "STEER_DURING_RUNNING_TOOL";
+      const steerRunId = `run-${steerMarker.toLowerCase()}`;
 
       try {
         fixture.modelServer.releaseFirst("sequential-tools");
@@ -912,7 +1020,6 @@ describe("Gateway steer FIFO", () => {
           expect(await readTrace(steeringTools.tracePath)).toEqual(["gate-execute-start"]);
           expect(fixture.modelServer.requests).toHaveLength(1);
         }, WAIT_OPTS);
-        const steerRunId = `run-${steerMarker.toLowerCase()}`;
         const steerResult = await fixture.diagnosticsClient.request<{
           runId?: string;
           status?: string;
@@ -934,10 +1041,11 @@ describe("Gateway steer FIFO", () => {
       }
 
       await vi.waitFor(() => expect(fixture.modelServer.requests).toHaveLength(2), WAIT_OPTS);
-      await waitForRunTerminal(fixture, first.runId);
+      await waitForRunTerminal(fixture, first.runId, steerRunId);
+      const disposition = await captureSteeringDisposition(fixture, first.runId, steerRunId);
       await vi.waitFor(
         async () =>
-          expect(await readTrace(steeringTools.tracePath)).toEqual([
+          expect(await readTrace(steeringTools.tracePath), disposition).toEqual([
             "gate-execute-start",
             "gate-execute-end",
           ]),
@@ -1119,7 +1227,10 @@ describe("Gateway steer FIFO", () => {
   it(
     "hands steered document attachments to the active run as extracted file context",
     async () => {
-      const fixture = await createGatewayFixture("steer-document-context");
+      const fixture = await createGatewayFixture("steer-document-context", {
+        withDocumentUnderstanding: true,
+        pairedUiOwner: true,
+      });
       const first = await sendHeldTurn(fixture);
 
       // Real gateway protocol send with a file attachment while the initial
@@ -1150,13 +1261,27 @@ describe("Gateway steer FIFO", () => {
       fixture.modelServer.releaseFirst("final");
 
       await vi.waitFor(() => expect(fixture.modelServer.requests).toHaveLength(2), WAIT_OPTS);
+      await waitForRunTerminal(fixture, first.runId, "run-steer-document");
+      const disposition = await captureSteeringDisposition(
+        fixture,
+        first.runId,
+        "run-steer-document",
+      );
       const currentSteer = currentUserInput(fixture.modelServer.requests[1]);
-      expect(currentSteer).toContain("QUEUED_STEER_DOCUMENT");
-      // The media store persists uploads as `<original>---<mediaId><ext>`, so
-      // the extracted block carries the stored name, matching reply dispatch.
-      expect(currentSteer).toMatch(/<file name="notes---[0-9a-f-]+\.txt" mime="text\/plain">/);
+      expect(currentSteer, disposition).toContain("QUEUED_STEER_DOCUMENT");
+      const renderErrors = currentSteer.includes("<file ")
+        ? []
+        : (
+            await fixture.diagnosticsClient.request<{ lines: string[] }>("logs.tail", {
+              limit: 200,
+              maxBytes: 200_000,
+            })
+          ).lines.filter((line) => line.includes("steer document render failed"));
+      // Model context preserves the sender filename, not the generated storage key.
+      expect(currentSteer, [disposition, ...renderErrors].join("\n")).toContain(
+        '<file name="notes.txt" mime="text/plain">',
+      );
       expect(currentSteer).toContain("steered document body");
-      await waitForRunTerminal(fixture, first.runId);
     },
     TEST_TIMEOUT_MS,
   );
