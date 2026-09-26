@@ -28,7 +28,6 @@ import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
 import { renderDiffStatChips } from "./chat-diff-render.ts";
 import { renderChatHistoryBoundary } from "./chat-history-boundary.ts";
 import type { SidebarFullMessageLoader } from "./chat-sidebar-content-types.ts";
-import { renderTaskActivityFeed } from "./chat-task-activity-feed.ts";
 import {
   loadOlderTaskTranscript,
   readTaskTranscript,
@@ -38,6 +37,7 @@ import {
   type TaskDetailHost,
   type TaskTranscriptHost,
 } from "./chat-task-detail-state.ts";
+import { renderChatTranscriptFeed } from "./chat-transcript-feed.ts";
 
 registerBackgroundTasksEnglish();
 
@@ -301,7 +301,7 @@ export function renderTaskTranscript(params: {
     }
     ${load.status === "loaded" && load.nextCursor && !capacityMessage ? renderChatHistoryBoundary({ hasMore: true, loading: load.loading, onShowEarlier: () => loadOlderTaskTranscript(params.host) }) : nothing}
     ${load.status === "loaded" && !messages.length && !load.nextCursor && !load.error ? html`<div class="chat-task-detail__state">${t("chat.backgroundTasks.transcriptEmpty")}</div>` : nothing}
-    ${renderTaskActivityFeed(messages, recovery)}
+    ${renderChatTranscriptFeed(messages, recovery)}
   </div>`;
 }
 
