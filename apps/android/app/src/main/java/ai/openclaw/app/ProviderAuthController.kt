@@ -27,31 +27,99 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.UUID
 
+internal enum class ProviderAuthLoginKind {
+  OAuth,
+  DeviceCode,
+  Secret,
+}
+
+internal data class ProviderAuthLoginOption(
+  val id: String,
+  val label: String,
+  val hint: String?,
+  val kind: ProviderAuthLoginKind,
+  val featured: Boolean,
+)
+
+internal data class ProviderAuthProvider(
+  val id: String,
+  val displayName: String,
+  val loginOptions: List<ProviderAuthLoginOption>,
+  val apiKeySupported: Boolean,
+  val ready: Boolean,
+) {
+  val canSignIn: Boolean
+    get() = apiKeySupported || loginOptions.isNotEmpty()
+}
+
 internal data class ProviderAuthState(
   val authStatus: JsonObject? = null,
   val wizard: JsonObject? = null,
   val signInActive: Boolean = false,
+  val activeLoginKind: ProviderAuthLoginKind? = null,
   val busy: Boolean = false,
   val cancelling: Boolean = false,
   val errorText: NativeText? = null,
   val noticeText: NativeText? = null,
   val apiKeySaveRevision: Long = 0L,
+  val connectedProviderId: String? = null,
 ) {
-  val apiKeyProviders: List<String>
-    get() =
-      (authStatus?.get("providerCapabilities") as? JsonArray)
-        .orEmpty()
-        .map { it.jsonObject }
-        .filter { it["apiKeySupported"]?.jsonPrimitive?.booleanOrNull == true && it["quickApiKeySetup"]?.jsonPrimitive?.booleanOrNull == true }
-        .map { it.getValue("provider").jsonPrimitive.content }
+  val providers: List<ProviderAuthProvider>
+    get() {
+      if (authStatus?.get("unavailable") != null) return emptyList()
+      val statuses = (authStatus?.get("providers") as? JsonArray).orEmpty().map { it.jsonObject }
+      val capabilities =
+        (authStatus?.get("providerCapabilities") as? JsonArray)
+          .orEmpty()
+          .map { it.jsonObject }
+          .associateBy { it.getValue("provider").jsonPrimitive.content }
+      val providerIds = capabilities.keys + statuses.map { (it["authProvider"] ?: it.getValue("provider")).jsonPrimitive.content }
+      return providerIds
+        .map { id ->
+          val capability = capabilities[id]
+          val status =
+            statuses.firstOrNull { it["provider"]?.jsonPrimitive?.content == id }
+              ?: statuses.firstOrNull { it["authProvider"]?.jsonPrimitive?.content == id }
+          val rawOptions = (capability?.get("loginOptions") as? JsonArray).orEmpty().map { it.jsonObject }
+          ProviderAuthProvider(
+            id = id,
+            displayName =
+              status
+                ?.get("displayName")
+                ?.jsonPrimitive
+                ?.content
+                ?.takeUnless { it == id }
+                ?: rawOptions.firstNotNullOfOrNull { it["groupLabel"]?.jsonPrimitive?.content }
+                ?: providerDisplayName(id),
+            loginOptions =
+              rawOptions
+                .mapNotNull { option ->
+                  val kind =
+                    when (option["kind"]?.jsonPrimitive?.content) {
+                      "oauth" -> ProviderAuthLoginKind.OAuth
+                      "device-code" -> ProviderAuthLoginKind.DeviceCode
+                      "secret" -> ProviderAuthLoginKind.Secret
+                      else -> return@mapNotNull null
+                    }
+                  ProviderAuthLoginOption(
+                    id = option.getValue("id").jsonPrimitive.content,
+                    label = option.getValue("label").jsonPrimitive.content,
+                    hint = option["hint"]?.jsonPrimitive?.content,
+                    kind = kind,
+                    featured = option["featured"]?.jsonPrimitive?.booleanOrNull == true,
+                  )
+                }.distinctBy { it.id }
+                .sortedByDescending { it.featured },
+            apiKeySupported =
+              capability?.get("apiKeySupported")?.jsonPrimitive?.booleanOrNull == true &&
+                capability["quickApiKeySetup"]?.jsonPrimitive?.booleanOrNull == true,
+            ready = status?.get("status")?.jsonPrimitive?.content in setOf("ok", "static", "expiring"),
+          )
+        }.sortedBy { it.displayName.lowercase() }
+    }
 
-  val loginOptions: List<JsonObject>
-    get() =
-      (authStatus?.get("providerCapabilities") as? JsonArray)
-        .orEmpty()
-        .flatMap { (it.jsonObject["loginOptions"] as? JsonArray).orEmpty() }
-        .map { it.jsonObject }
-        .distinctBy { it.getValue("id").jsonPrimitive.content }
+  val apiKeyProviders: List<String>
+    get() = providers.filter { it.apiKeySupported }.map { it.id }
 }
 
 /** One agent on one physical connection. Replace and close this owner when either changes. */
@@ -71,6 +139,8 @@ internal class ProviderAuthController(
   @Volatile private var sessionId: String? = null
 
   @Volatile private var cancelRequested = false
+
+  @Volatile private var signInProviderId: String? = null
 
   fun refresh(refresh: Boolean = false) {
     if (closed || state.value.busy || state.value.cancelling || sessionId != null) return
@@ -93,11 +163,13 @@ internal class ProviderAuthController(
 
   fun start(authChoice: String) {
     if (closed || state.value.busy || state.value.cancelling || sessionId != null) return
-    if (state.value.loginOptions.none { it.getValue("id").jsonPrimitive.content == authChoice }) return
+    val provider = state.value.providers.firstOrNull { it.loginOptions.any { option -> option.id == authChoice } } ?: return
+    val option = provider.loginOptions.first { it.id == authChoice }
     val id = UUID.randomUUID().toString()
     sessionId = id
+    signInProviderId = provider.id
     cancelRequested = false
-    publish { it.copy(wizard = null, signInActive = true, noticeText = null) }
+    publish { it.copy(wizard = null, signInActive = true, activeLoginKind = option.kind, noticeText = null, connectedProviderId = null) }
     runRequest(id) {
       val started =
         try {
@@ -111,7 +183,7 @@ internal class ProviderAuthController(
           )
         } catch (err: GatewayRequestDefinitiveFailure) {
           if (sessionId == id) sessionId = null
-          publish { it.copy(signInActive = false) }
+          publish { it.copy(signInActive = false, activeLoginKind = null) }
           throw err
         }
       if (closed) {
@@ -130,7 +202,11 @@ internal class ProviderAuthController(
     apiKey: String,
   ) {
     if (closed || state.value.busy || state.value.cancelling || sessionId != null || provider !in state.value.apiKeyProviders) return
-    publish { it.copy(noticeText = null) }
+    if (apiKey.isBlank()) {
+      publish { it.copy(errorText = nativeText("Enter an API key.")) }
+      return
+    }
+    publish { it.copy(noticeText = null, connectedProviderId = null) }
     runRequest(null) {
       val result =
         request(
@@ -150,6 +226,7 @@ internal class ProviderAuthController(
         )
       }
       refreshPublishedAuthStatus()
+      if (result["warning"] == null) publishConnectedProvider(provider)
     }
   }
 
@@ -260,17 +337,35 @@ internal class ProviderAuthController(
     result: JsonObject,
   ) {
     if (closed || sessionId != id) return
+    val provider = signInProviderId
     sessionId = null
+    signInProviderId = null
     publish {
       it.copy(
         wizard = result,
         signInActive = false,
+        activeLoginKind = null,
         errorText = resultError(result),
         noticeText = if (result["status"]?.jsonPrimitive?.content == "done") null else it.noticeText,
       )
     }
     // Native login already publishes credential changes, including writes before a terminal error.
     refreshPublishedAuthStatus()
+    if (!cancelRequested && result["status"]?.jsonPrimitive?.content == "done" && result["error"] == null && provider != null) {
+      publishConnectedProvider(provider)
+    }
+  }
+
+  private fun publishConnectedProvider(provider: String) {
+    publish { current ->
+      if (current.providers.any { it.id == provider && it.ready }) {
+        current.copy(connectedProviderId = provider)
+      } else if (current.errorText == null) {
+        current.copy(noticeText = nativeText("Sign-in saved. Refresh to check the connection."))
+      } else {
+        current
+      }
+    }
   }
 
   private suspend fun refreshPublishedAuthStatus() {

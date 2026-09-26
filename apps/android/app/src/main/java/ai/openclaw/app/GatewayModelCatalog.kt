@@ -29,6 +29,7 @@ data class GatewayModelSummary(
   val supportsTools: Boolean? = null,
   val agentRuntime: JsonObject? = null,
   val unavailableUntil: Long? = null,
+  val tags: Set<String> = emptySet(),
 ) {
   val runtimeName: String?
     get() =
@@ -54,12 +55,14 @@ enum class GatewayModelUnavailableReason {
 internal data class GatewayModelCatalogResult(
   val models: List<GatewayModelSummary>,
   val refreshFailed: Boolean,
+  val tagsDescribeDefaults: Boolean,
 )
 
 internal fun parseGatewayModelCatalog(root: JsonObject?): GatewayModelCatalogResult =
   GatewayModelCatalogResult(
     models = parseGatewayModels(root?.get("models") as? JsonArray),
     refreshFailed = root?.get("refreshFailed")?.jsonPrimitive?.booleanOrNull == true,
+    tagsDescribeDefaults = root?.get("tagsScope")?.jsonPrimitive?.content == "defaults",
   )
 
 internal fun parseGatewayModels(models: JsonArray?): List<GatewayModelSummary> =
@@ -96,5 +99,58 @@ internal fun parseGatewayModels(models: JsonArray?): List<GatewayModelSummary> =
       supportsTools = row["supportsTools"]?.jsonPrimitive?.booleanOrNull,
       agentRuntime = row["agentRuntime"]?.jsonObject,
       unavailableUntil = row["unavailableUntil"]?.jsonPrimitive?.longOrNull,
+      tags = (row["tags"] as? JsonArray).orEmpty().map { it.jsonPrimitive.content }.toSet(),
+    )
+  }
+
+data class GatewayModelProviderSummary(
+  val id: String,
+  val displayName: String,
+  val status: String,
+  val profileCount: Int,
+  val authType: String? = null,
+  val renewalFailed: Boolean = false,
+  val authProviderId: String = id,
+)
+
+internal fun parseGatewayModelProviders(providers: JsonArray?): List<GatewayModelProviderSummary> =
+  providers.orEmpty().mapNotNull { item ->
+    val row = item as? JsonObject ?: return@mapNotNull null
+    val id =
+      row["provider"]
+        ?.jsonPrimitive
+        ?.content
+        ?.trim()
+        ?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
+    val profiles = (row["profiles"] as? JsonArray).orEmpty().map { it.jsonObject }
+    val order = (row["profileOrder"] as? JsonArray)?.map { it.jsonPrimitive.content }?.toSet()
+    val activeProfiles = profiles.filter { it["reasonCode"]?.jsonPrimitive?.content != "setup_inactive" && (order == null || it["profileId"]?.jsonPrimitive?.content in order) }
+    val types = activeProfiles.mapNotNull { it["type"]?.jsonPrimitive?.content }
+    val status =
+      row["status"]
+        ?.jsonPrimitive
+        ?.content
+        ?.trim()
+        ?.takeIf(String::isNotEmpty) ?: "unknown"
+    GatewayModelProviderSummary(
+      id = id,
+      displayName =
+        row["displayName"]
+          ?.jsonPrimitive
+          ?.content
+          ?.trim()
+          ?.takeIf(String::isNotEmpty) ?: providerDisplayName(id),
+      status = status,
+      profileCount = profiles.size,
+      authType =
+        if ("oauth" in types) {
+          "oauth"
+        } else if ("api_key" in types || row["apiKey"] is JsonObject) {
+          "api_key"
+        } else {
+          types.firstOrNull()
+        },
+      renewalFailed = status == "expired" && activeProfiles.any { it["renewalFailed"]?.jsonPrimitive?.booleanOrNull == true },
+      authProviderId = row["authProvider"]?.jsonPrimitive?.content ?: id,
     )
   }

@@ -3,16 +3,15 @@ package ai.openclaw.app.ui
 import ai.openclaw.app.GatewayModelProviderSummary
 import ai.openclaw.app.GatewayModelSummary
 import ai.openclaw.app.MainViewModel
-import ai.openclaw.app.currentAppLanguage
+import ai.openclaw.app.ProviderAuthController
+import ai.openclaw.app.ProviderAuthProvider
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.providerDisplayName
 import ai.openclaw.app.ui.design.ClawEmptyState
 import ai.openclaw.app.ui.design.ClawPanel
 import ai.openclaw.app.ui.design.ClawScaffold
-import ai.openclaw.app.ui.design.ClawSecondaryButton
+import ai.openclaw.app.ui.design.ClawTextField
 import ai.openclaw.app.ui.design.ClawTheme
-import ai.openclaw.app.uppercaseFirstGraphemeOrNull
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,117 +22,193 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 
-/** Android provider readiness screen backed by the configured gateway model view. */
+/** Provider inventory and sign-in; model selection remains in agent settings. */
 @Composable
 internal fun ProvidersModelsScreen(
   viewModel: MainViewModel,
   onBack: () -> Unit,
 ) {
   val isConnected by viewModel.isConnected.collectAsState()
+  val gatewayId by viewModel.activeGatewayStableId.collectAsState()
+  val selectionGeneration by viewModel.chatSelectionGeneration.collectAsState()
   val models by viewModel.providerModelCatalog.collectAsState()
+  val tagsDescribeDefaults by viewModel.providerModelTagsDescribeDefaults.collectAsState()
   val providers by viewModel.modelAuthProviders.collectAsState()
+  val capabilities by viewModel.modelAuthCapabilities.collectAsState()
   val refreshing by viewModel.providerModelCatalogRefreshing.collectAsState()
   val errorText by viewModel.providerModelCatalogErrorText.collectAsState()
-  val providerRows = providerRows(providers = providers, models = models)
-
-  LaunchedEffect(isConnected) {
-    if (isConnected) {
-      viewModel.refreshProviderModels()
+  var query by rememberSaveable(gatewayId) { mutableStateOf("") }
+  var expandedProviders by rememberSaveable(gatewayId) { mutableStateOf(emptyList<String>()) }
+  var expandedMore by rememberSaveable(gatewayId) { mutableStateOf(emptyList<String>()) }
+  var signIn by remember { mutableStateOf<ProviderAuthController?>(null) }
+  var signInProvider by remember { mutableStateOf<String?>(null) }
+  val snackbar = remember { SnackbarHostState() }
+  val scope = rememberCoroutineScope()
+  val rows = providerRows(providers, models)
+  val search = query.trim()
+  val searching = search.isNotEmpty()
+  val visibleRows =
+    if (!searching) {
+      rows
+    } else {
+      rows.mapNotNull { row ->
+        val matches = row.models.filter { it.name.contains(search, ignoreCase = true) || it.id.contains(search, ignoreCase = true) }
+        if (matches.isEmpty()) null else row.copy(models = matches)
+      }
     }
+
+  fun openSignIn(provider: String?) {
+    val controller = viewModel.createProviderAuthController(viewModel.captureChatShareOwner())
+    if (controller == null) {
+      scope.launch { snackbar.showSnackbar(nativeString("Sign-in is unavailable. Reconnect with administrator access and try again.")) }
+      return
+    }
+    signIn?.close()
+    signInProvider = provider
+    signIn = controller
+  }
+
+  LaunchedEffect(isConnected, gatewayId, selectionGeneration) {
+    signIn?.close()
+    signIn = null
+    if (isConnected) viewModel.refreshProviderModels()
+  }
+
+  signIn?.let { controller ->
+    ProviderSignInDialog(
+      controller = controller,
+      initialProviderId = signInProvider,
+      onConnected = { provider ->
+        expandedProviders = (expandedProviders + provider + rows.filter { it.auth?.authProviderId == provider }.map { it.id }).distinct()
+        scope.launch { snackbar.showSnackbar(nativeString("\$provider connected", providerDisplayName(provider))) }
+      },
+      onDismiss = { signIn = null },
+    )
   }
 
   ClawScaffold(
-    contentPadding =
-      PaddingValues(
-        start = ClawTheme.spacing.sm,
-        top = ClawTheme.spacing.xxs,
-        end = ClawTheme.spacing.sm,
-        bottom = ClawTheme.spacing.xxxs,
-      ),
+    contentPadding = PaddingValues(horizontal = ClawTheme.spacing.sm, vertical = ClawTheme.spacing.xxs),
     contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
   ) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize()) {
       LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs),
-        contentPadding = PaddingValues(bottom = ClawTheme.spacing.xxxs),
+        verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs),
+        contentPadding = PaddingValues(bottom = ClawTheme.spacing.sm),
       ) {
-        item {
-          Column(verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-              ProviderHeaderIconButton(icon = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = nativeString("Back"), outlined = true, onClick = onBack)
+        item(key = "header") {
+          Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+              Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = nativeString("Back"), tint = ClawTheme.colors.text)
             }
-            Column(verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
-              Text(text = nativeString("Providers & Models"), style = ClawTheme.type.display, color = ClawTheme.colors.text)
-              Text(
-                text = nativeString("Review provider readiness\nand configured models."),
-                style = ClawTheme.type.caption,
-                color = ClawTheme.colors.textMuted,
-              )
+            Text(
+              nativeString("Providers and models"),
+              modifier = Modifier.weight(1f),
+              style = ClawTheme.type.title,
+              color = ClawTheme.colors.text,
+            )
+            IconButton(onClick = { viewModel.refreshProviderModels(refresh = true) }, enabled = isConnected && !refreshing) {
+              Icon(Icons.Default.Refresh, contentDescription = if (refreshing) nativeString("Refreshing") else nativeString("Refresh"), tint = ClawTheme.colors.textMuted)
             }
           }
         }
-
-        item {
-          ProviderOverviewPanel(
-            isConnected = isConnected,
-            providerRows = providerRows,
-            modelCount = models.size,
-            onRefresh = { viewModel.refreshProviderModels(refresh = true) },
-            refreshing = refreshing,
+        item(key = "search") {
+          ClawTextField(value = query, onValueChange = { query = it }, placeholder = nativeString("Search models"), modifier = Modifier.semantics { contentDescription = nativeString("Search models") }, maxLines = 1)
+        }
+        item(key = "summary") {
+          Text(
+            if (models.size == 1) nativeString("Providers · \$ready ready · 1 model", rows.count { it.ready }) else nativeString("Providers · \$ready ready · \$models models", rows.count { it.ready }, models.size),
+            modifier = Modifier.padding(vertical = ClawTheme.spacing.xs),
+            style = ClawTheme.type.caption,
+            color = ClawTheme.colors.textMuted,
           )
         }
-
-        item {
-          ProviderSectionLabel(title = nativeString("Providers and configured models"))
-        }
-
-        if (!isConnected && providerRows.isEmpty()) {
-          item {
-            ClawEmptyState(title = nativeString("Gateway offline"), body = nativeString("Connect your Gateway to load provider readiness."))
+        when {
+          !isConnected && rows.isEmpty() -> {
+            item { ClawEmptyState(title = nativeString("Gateway offline"), body = nativeString("Connect your Gateway to load provider readiness.")) }
           }
-        } else {
-          providerListItems(rows = providerRows, refreshing = refreshing)
-        }
 
-        errorText?.let { message ->
-          item {
-            ClawPanel {
-              Text(text = message, style = ClawTheme.type.body, color = ClawTheme.colors.textMuted)
+          searching && visibleRows.isEmpty() -> {
+            item { Text(nativeString("No models match \"\$query\"", query), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) }
+          }
+
+          rows.isEmpty() -> {
+            item { Text(if (refreshing) nativeString("Loading providers…") else nativeString("No providers connected"), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) }
+          }
+
+          else -> {
+            providerListItems(
+              rows = visibleRows,
+              capabilities = capabilities,
+              tagsDescribeDefaults = tagsDescribeDefaults,
+              searching = searching,
+              expandedProviders = expandedProviders,
+              expandedMore = expandedMore,
+              canSignIn = isConnected,
+              onToggle = { id -> expandedProviders = if (id in expandedProviders) expandedProviders - id else expandedProviders + id },
+              onToggleMore = { id -> expandedMore = if (id in expandedMore) expandedMore - id else expandedMore + id },
+              onSignIn = ::openSignIn,
+            )
+          }
+        }
+        if (!searching) {
+          item(key = "add-provider") {
+            TextButton(onClick = { openSignIn(null) }, enabled = isConnected, modifier = Modifier.fillMaxWidth()) {
+              Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+              Text(nativeString("Add provider"), modifier = Modifier.padding(start = ClawTheme.spacing.xxs))
             }
+          }
+        }
+        errorText?.let { message ->
+          item(key = "error") {
+            ClawPanel { Text(message, style = ClawTheme.type.body, color = ClawTheme.colors.warning) }
           }
         }
       }
+      SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter))
     }
   }
 }
@@ -145,9 +220,13 @@ internal data class ProviderRow(
   val availability: ProviderAvailability,
   val modelCount: Int,
   val models: List<GatewayModelSummary> = emptyList(),
+  val auth: GatewayModelProviderSummary? = null,
 ) {
   val ready: Boolean
     get() = availability == ProviderAvailability.Available
+
+  val renewalFailed: Boolean
+    get() = auth?.renewalFailed == true && !ready
 }
 
 internal enum class ProviderAvailability {
@@ -180,6 +259,7 @@ internal fun providerRows(
         availability = availability,
         modelCount = providerModels.size,
         models = providerModels,
+        auth = authProvider,
       )
     }.sortedWith(compareBy(::providerPriority, { it.name.lowercase() }))
 }
@@ -197,6 +277,7 @@ private fun providerAvailability(
   models: List<GatewayModelSummary>,
 ): ProviderAvailability {
   if (models.any { it.available == true }) return ProviderAvailability.Available
+  if (authProvider?.renewalFailed == true) return ProviderAvailability.Unavailable
   if (models.isNotEmpty()) {
     return if (models.all { it.available == false }) ProviderAvailability.Unavailable else ProviderAvailability.Unknown
   }
@@ -219,7 +300,20 @@ internal fun modelProviderReady(status: String): Boolean {
     normalized == "static"
 }
 
-private val modelComparator = compareBy<GatewayModelSummary>({ it.name.lowercase() }, { it.id.lowercase() })
+private val modelComparator =
+  compareBy<GatewayModelSummary>(
+    {
+      if ("default" in it.tags) {
+        0
+      } else if (it.tags.any { tag -> tag.startsWith("fallback#") }) {
+        1
+      } else {
+        2
+      }
+    },
+    { it.name.lowercase() },
+    { it.id.lowercase() },
+  )
 
 private fun providerPriority(row: ProviderRow): Int = providerPriority(row.id)
 
@@ -236,141 +330,170 @@ private fun providerPriority(provider: String): Int =
 
 private fun LazyListScope.providerListItems(
   rows: List<ProviderRow>,
-  refreshing: Boolean,
+  capabilities: List<ProviderAuthProvider>,
+  tagsDescribeDefaults: Boolean,
+  searching: Boolean,
+  expandedProviders: List<String>,
+  expandedMore: List<String>,
+  canSignIn: Boolean,
+  onToggle: (String) -> Unit,
+  onToggleMore: (String) -> Unit,
+  onSignIn: (String) -> Unit,
 ) {
-  if (rows.isEmpty()) {
-    item(key = "provider-catalog-empty") {
-      ProviderListRow(
-        row =
-          ProviderRow(
-            id = "loading",
-            name = nativeString("Provider catalog"),
-            status = if (refreshing) nativeString("Loading") else nativeString("No providers"),
-            availability = ProviderAvailability.Unknown,
-            modelCount = 0,
-          ),
-      )
-    }
-    return
-  }
   rows.forEach { row ->
+    val expanded = searching || row.id in expandedProviders
+    val authProviderId = row.auth?.authProviderId ?: row.id
+    val capability = capabilities.firstOrNull { it.id == authProviderId }
     item(key = "provider:${row.id}") {
-      ProviderListRow(row = row)
+      ProviderListRow(row, capability, expanded, showSignIn = !searching, canSignIn = canSignIn, onToggle = { onToggle(row.id) }, onSignIn = { onSignIn(authProviderId) })
     }
-    items(
-      count = row.models.size,
-      key = { index -> "model:${row.id}:$index:${row.models[index].id}" },
-    ) { index ->
-      Box(modifier = Modifier.padding(horizontal = ClawTheme.spacing.xs)) {
-        ProviderModelRow(model = row.models[index])
-      }
-    }
-  }
-}
-
-@Composable
-private fun ProviderOverviewPanel(
-  isConnected: Boolean,
-  providerRows: List<ProviderRow>,
-  modelCount: Int,
-  refreshing: Boolean,
-  onRefresh: () -> Unit,
-) {
-  val readyCount = providerRows.count { it.ready }
-  val needsSetupCount = providerRows.count { it.availability == ProviderAvailability.Unavailable }
-  val unknownCount = providerRows.count { it.availability == ProviderAvailability.Unknown }
-  ClawPanel(contentPadding = PaddingValues(horizontal = ClawTheme.spacing.xs, vertical = ClawTheme.spacing.xs)) {
-    Column(verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xs)) {
-      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
-        ProviderMetricTile(label = nativeString("Ready"), value = readyCount.toString(), modifier = Modifier.weight(1f))
-        ProviderMetricTile(label = nativeString("Needs"), value = needsSetupCount.toString(), modifier = Modifier.weight(1f))
-        ProviderMetricTile(label = nativeString("Unknown"), value = unknownCount.toString(), modifier = Modifier.weight(1f))
-      }
-      Text(
-        text = if (isConnected) configuredModelsOverviewText(modelCount) else nativeString("Connect your Gateway to view provider readiness."),
-        style = ClawTheme.type.body,
-        color = ClawTheme.colors.textMuted,
-      )
-      ClawSecondaryButton(text = if (refreshing) nativeString("Refreshing") else nativeString("Refresh"), onClick = onRefresh, enabled = isConnected && !refreshing, modifier = Modifier.fillMaxWidth())
-    }
-  }
-}
-
-@Composable
-private fun ProviderMetricTile(
-  label: String,
-  value: String,
-  modifier: Modifier = Modifier,
-) {
-  Surface(
-    modifier = modifier,
-    shape = RoundedCornerShape(ClawTheme.radii.panel),
-    color = ClawTheme.colors.surface,
-    border = BorderStroke(1.dp, ClawTheme.colors.border),
-    contentColor = ClawTheme.colors.text,
-  ) {
-    Column(modifier = Modifier.padding(horizontal = ClawTheme.spacing.xxs, vertical = ClawTheme.spacing.xxs), verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
-      Text(text = value, style = ClawTheme.type.title, color = ClawTheme.colors.text, maxLines = 1)
-      Text(text = label, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 1)
-    }
-  }
-}
-
-@Composable
-private fun ProviderListRow(row: ProviderRow) {
-  ClawPanel(contentPadding = PaddingValues(horizontal = ClawTheme.spacing.xs, vertical = ClawTheme.spacing.xxs)) {
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xs)) {
-      ProviderBadge(text = row.name)
-      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
-        Text(text = row.name, style = ClawTheme.type.body, color = ClawTheme.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(text = configuredModelsCountText(row.modelCount), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 1)
-      }
-      AvailabilityPill(availability = row.availability, label = row.status)
-    }
-  }
-}
-
-internal fun configuredModelsOverviewText(count: Int): String =
-  when (count) {
-    0 -> nativeString("No configured models. Refresh to recheck availability.")
-    1 -> nativeString("1 configured model. Refresh to recheck availability.")
-    else -> nativeString("\$count configured models. Refresh to recheck availability.", count)
-  }
-
-internal fun configuredModelsCountText(count: Int): String =
-  when (count) {
-    0 -> nativeString("No configured models")
-    1 -> nativeString("1 configured model")
-    else -> nativeString("\$count configured models", count)
-  }
-
-@Composable
-private fun ProviderModelRow(model: GatewayModelSummary) {
-  Surface(shape = RoundedCornerShape(ClawTheme.radii.row), color = ClawTheme.colors.surface, border = BorderStroke(1.dp, ClawTheme.colors.border)) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = ClawTheme.spacing.xxs, vertical = ClawTheme.spacing.xxs), verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
-      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs), verticalAlignment = Alignment.Top) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
-          Text(text = model.name, style = ClawTheme.type.body, color = ClawTheme.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-          Text(text = model.id, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    if (expanded) {
+      if (!searching) {
+        item(key = "signin:${row.id}") {
+          if (capability?.canSignIn == true) {
+            TextButton(onClick = { onSignIn(authProviderId) }, enabled = canSignIn) {
+              Text(
+                if (row.renewalFailed) nativeString("Sign in again") else nativeString("Manage sign-in"),
+                color = if (row.renewalFailed) ClawTheme.colors.danger else ClawTheme.colors.textMuted,
+              )
+            }
+          } else {
+            Text(
+              nativeString("Sign-in is managed on the computer"),
+              modifier = Modifier.padding(ClawTheme.spacing.xs),
+              style = ClawTheme.type.caption,
+              color = ClawTheme.colors.textMuted,
+            )
+          }
         }
-        val availability = model.available.toProviderAvailability()
-        AvailabilityPill(availability = availability, label = availability.modelLabel)
       }
-      modelCapabilities(model).takeIf { it.isNotEmpty() }?.let { capabilities ->
-        Text(text = capabilities, style = ClawTheme.type.caption, color = ClawTheme.colors.textSubtle, maxLines = 2, overflow = TextOverflow.Ellipsis)
+      val (configured, more) = row.models.partition { model -> model.tags.any { it == "default" || it == "configured" || it.startsWith("fallback#") } }
+      val visible = if (searching) row.models else configured
+      items(visible, key = { "model:${row.id}:${it.id}:${it.runtimeName}" }) { model -> ProviderModelRow(model, row.availability, tagsDescribeDefaults) }
+      if (!searching && more.isNotEmpty()) {
+        item(key = "more:${row.id}") {
+          TextButton(onClick = { onToggleMore(row.id) }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (more.size == 1) nativeString("1 more model") else nativeString("\$count more models", more.size), modifier = Modifier.weight(1f))
+            Icon(if (row.id in expandedMore) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = if (row.id in expandedMore) nativeString("Collapse") else nativeString("Expand"))
+          }
+        }
+        if (row.id in expandedMore) {
+          items(more, key = { "model:${row.id}:${it.id}:${it.runtimeName}" }) { model -> ProviderModelRow(model, row.availability, tagsDescribeDefaults) }
+        }
+      }
+      if (row.models.isEmpty()) {
+        item(key = "empty:${row.id}") {
+          Text(
+            if (row.ready) nativeString("Connected, no models configured") else nativeString("No models configured"),
+            modifier = Modifier.padding(ClawTheme.spacing.xs),
+            style = ClawTheme.type.caption,
+            color = ClawTheme.colors.textMuted,
+          )
+        }
       }
     }
   }
 }
 
 @Composable
-private fun AvailabilityPill(
-  availability: ProviderAvailability,
-  label: String,
+private fun ProviderListRow(
+  row: ProviderRow,
+  capability: ProviderAuthProvider?,
+  expanded: Boolean,
+  showSignIn: Boolean,
+  canSignIn: Boolean,
+  onToggle: () -> Unit,
+  onSignIn: () -> Unit,
 ) {
-  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
-    Box(modifier = Modifier.size(4.5.dp).clip(CircleShape).background(availability.color()))
-    Text(text = label, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted, maxLines = 1)
+  val missing = row.auth?.status == "missing" && !row.ready && !row.renewalFailed
+  val failed = row.renewalFailed
+  val statusColor = if (failed) ClawTheme.colors.danger else row.availability.color()
+  val expansionState = if (expanded) nativeString("Expanded") else nativeString("Collapsed")
+  Surface(
+    onClick = onToggle,
+    modifier = Modifier.fillMaxWidth().semantics { stateDescription = expansionState },
+    shape = RoundedCornerShape(ClawTheme.radii.row),
+    color = if (missing) ClawTheme.colors.warningSoft else ClawTheme.colors.surface,
+  ) {
+    Row(
+      modifier = Modifier.heightIn(min = ClawTheme.spacing.touchTarget).padding(horizontal = ClawTheme.spacing.xs, vertical = ClawTheme.spacing.xxs),
+      horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Box(
+        Modifier
+          .size(7.dp)
+          .clip(CircleShape)
+          .background(statusColor)
+          .semantics { contentDescription = row.status },
+      )
+      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(row.name, style = ClawTheme.type.body, color = ClawTheme.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+          providerSignInSubtitle(row, capability),
+          style = ClawTheme.type.caption,
+          color = if (failed) ClawTheme.colors.danger else ClawTheme.colors.textMuted,
+        )
+      }
+      Text(row.modelCount.toString(), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+      if (missing && showSignIn) {
+        TextButton(onClick = onSignIn, enabled = canSignIn) { Text(nativeString("Sign in")) }
+      }
+      Icon(if (expanded) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp), tint = ClawTheme.colors.textMuted)
+    }
+  }
+}
+
+private fun providerSignInSubtitle(
+  row: ProviderRow,
+  capability: ProviderAuthProvider?,
+): String =
+  when {
+    row.renewalFailed -> nativeString("Renewal failed · sign in again")
+    row.auth?.status == "missing" && !row.ready -> nativeString("Not signed in")
+    capability != null && !capability.canSignIn -> nativeString("Set up on computer")
+    row.auth?.authType == "oauth" -> if (row.id == "openai") nativeString("ChatGPT sign-in · renews automatically") else nativeString("Account sign-in · renews automatically")
+    row.auth?.authType == "api_key" -> nativeString("API key")
+    row.auth?.authType == "token" -> nativeString("Token")
+    capability == null -> nativeString("Set up on computer")
+    else -> row.status
+  }
+
+@Composable
+private fun ProviderModelRow(
+  model: GatewayModelSummary,
+  providerAvailability: ProviderAvailability,
+  tagsDescribeDefaults: Boolean,
+) {
+  val availability = model.available.toProviderAvailability()
+  Column(Modifier.fillMaxWidth().padding(horizontal = ClawTheme.spacing.xs, vertical = ClawTheme.spacing.xxs)) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxxs)) {
+      Text(model.name, modifier = Modifier.weight(1f), style = ClawTheme.type.body, color = ClawTheme.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      if (tagsDescribeDefaults && "default" in model.tags) ModelTag(nativeString("In use"), emphasized = true)
+      if (tagsDescribeDefaults && model.tags.any { it.startsWith("fallback#") }) ModelTag(nativeString("Fallback"))
+      model.contextTokens?.let { ModelTag(formatContextTokens(it)) }
+    }
+    if (availability != providerAvailability) {
+      Text(
+        when (availability) {
+          ProviderAvailability.Available -> nativeString("Available")
+          ProviderAvailability.Unavailable -> nativeString("Unavailable")
+          ProviderAvailability.Unknown -> nativeString("Availability unknown")
+        },
+        style = ClawTheme.type.caption,
+        color = availability.color(),
+      )
+    }
+  }
+}
+
+@Composable
+private fun ModelTag(
+  label: String,
+  emphasized: Boolean = false,
+) {
+  Surface(shape = RoundedCornerShape(ClawTheme.radii.row), color = if (emphasized) ClawTheme.colors.successSoft else ClawTheme.colors.surfacePressed) {
+    Text(label, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp), style = ClawTheme.type.captionSmall, color = if (emphasized) ClawTheme.colors.success else ClawTheme.colors.textMuted, maxLines = 1)
   }
 }
 
@@ -382,14 +505,6 @@ private fun ProviderAvailability.color(): Color =
     ProviderAvailability.Unknown -> ClawTheme.colors.textSubtle
   }
 
-private val ProviderAvailability.modelLabel: String
-  get() =
-    when (this) {
-      ProviderAvailability.Available -> nativeString("Available")
-      ProviderAvailability.Unavailable -> nativeString("Unavailable")
-      ProviderAvailability.Unknown -> nativeString("Unknown")
-    }
-
 private fun Boolean?.toProviderAvailability(): ProviderAvailability =
   when (this) {
     true -> ProviderAvailability.Available
@@ -397,64 +512,4 @@ private fun Boolean?.toProviderAvailability(): ProviderAvailability =
     null -> ProviderAvailability.Unknown
   }
 
-internal fun modelCapabilities(model: GatewayModelSummary): String =
-  buildList {
-    if (model.supportsReasoning) add(nativeString("reasoning"))
-    if (model.supportsVision) add(nativeString("image"))
-    if (model.supportsAudio) add(nativeString("audio"))
-    if (model.supportsVideo) add(nativeString("video"))
-    if (model.supportsDocuments) add(nativeString("document"))
-    model.contextTokens?.let { add(nativeString("\$context context", formatContextTokens(it))) }
-  }.joinToString(" / ")
-
 private fun formatContextTokens(tokens: Long): String = if (tokens >= 1_000) "${tokens / 1_000}k" else tokens.toString()
-
-@Composable
-private fun ProviderBadge(text: String) {
-  Surface(modifier = Modifier.size(30.dp), shape = RoundedCornerShape(ClawTheme.radii.row), color = ClawTheme.colors.surfacePressed, border = BorderStroke(1.dp, ClawTheme.colors.border)) {
-    Box(contentAlignment = Alignment.Center) {
-      Text(text = providerInitials(text), style = ClawTheme.type.label, color = ClawTheme.colors.text, textAlign = TextAlign.Center)
-    }
-  }
-}
-
-private fun providerInitials(value: String): String =
-  value
-    .split(' ', '-', '_')
-    .filter { it.isNotBlank() }
-    .take(2)
-    .mapNotNull { it.uppercaseFirstGraphemeOrNull() }
-    .joinToString("")
-    .ifBlank { "AI" }
-
-@Composable
-private fun ProviderSectionLabel(title: String) {
-  Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-    Text(
-      text = localizedUppercase(title, currentAppLanguage().languageTag),
-      style = ClawTheme.type.caption,
-      color = ClawTheme.colors.textMuted,
-    )
-  }
-}
-
-@Composable
-private fun ProviderHeaderIconButton(
-  icon: ImageVector,
-  contentDescription: String,
-  outlined: Boolean = false,
-  onClick: () -> Unit,
-) {
-  Surface(
-    onClick = onClick,
-    modifier = Modifier.size(ClawTheme.spacing.touchTarget),
-    shape = CircleShape,
-    color = Color.Transparent,
-    contentColor = ClawTheme.colors.text,
-    border = if (outlined) BorderStroke(1.dp, ClawTheme.colors.borderStrong) else null,
-  ) {
-    Box(contentAlignment = Alignment.Center) {
-      Icon(imageVector = icon, contentDescription = contentDescription, modifier = Modifier.size(if (outlined) 17.dp else 20.dp))
-    }
-  }
-}

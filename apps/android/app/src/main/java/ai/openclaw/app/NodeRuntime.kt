@@ -1460,6 +1460,8 @@ class NodeRuntime private constructor(
   val modelCatalog: StateFlow<List<GatewayModelSummary>> = _modelCatalog.asStateFlow()
   private val _providerModelCatalog = MutableStateFlow<List<GatewayModelSummary>>(emptyList())
   val providerModelCatalog: StateFlow<List<GatewayModelSummary>> = _providerModelCatalog.asStateFlow()
+  private val _providerModelTagsDescribeDefaults = MutableStateFlow(false)
+  val providerModelTagsDescribeDefaults: StateFlow<Boolean> = _providerModelTagsDescribeDefaults.asStateFlow()
   private val _providerModelCatalogRefreshing = MutableStateFlow(false)
   val providerModelCatalogRefreshing: StateFlow<Boolean> = _providerModelCatalogRefreshing.asStateFlow()
   private val _providerModelCatalogErrorText = MutableStateFlow<NativeText?>(null)
@@ -1467,6 +1469,8 @@ class NodeRuntime private constructor(
   private val providerModelCatalogRefreshGuard = LatestGatewayRefreshGuard()
   private val _modelAuthProviders = MutableStateFlow<List<GatewayModelProviderSummary>>(emptyList())
   val modelAuthProviders: StateFlow<List<GatewayModelProviderSummary>> = _modelAuthProviders.asStateFlow()
+  private val modelAuthCapabilitiesState = MutableStateFlow<List<ProviderAuthProvider>>(emptyList())
+  internal val modelAuthCapabilities: StateFlow<List<ProviderAuthProvider>> = modelAuthCapabilitiesState.asStateFlow()
   private val _talkSetupReadiness = MutableStateFlow(GatewayTalkSetupReadiness.unverified())
   val talkSetupReadiness: StateFlow<GatewayTalkSetupReadiness> = _talkSetupReadiness.asStateFlow()
   private val _gatewayDefaultAgentId = MutableStateFlow<String?>(null)
@@ -2028,9 +2032,11 @@ class NodeRuntime private constructor(
     _modelCatalog.value = emptyList()
     providerModelCatalogRefreshGuard.invalidate()
     _providerModelCatalog.value = emptyList()
+    _providerModelTagsDescribeDefaults.value = false
     _providerModelCatalogRefreshing.value = false
     _providerModelCatalogErrorText.value = null
     _modelAuthProviders.value = emptyList()
+    modelAuthCapabilitiesState.value = emptyList()
     _talkSetupReadiness.value = GatewayTalkSetupReadiness.unverified()
     voiceWakeWordsSaveSeq.incrementAndGet()
     _voiceWakeWordsSaving.value = false
@@ -2651,7 +2657,9 @@ class NodeRuntime private constructor(
       providerModelCatalogRefreshGuard.invalidate()
       _modelCatalog.value = emptyList()
       _providerModelCatalog.value = emptyList()
+      _providerModelTagsDescribeDefaults.value = false
       _modelAuthProviders.value = emptyList()
+      modelAuthCapabilitiesState.value = emptyList()
       _providerModelCatalogRefreshing.value = false
       _providerModelCatalogErrorText.value = null
       _mainSessionKey.value = sessionKey
@@ -7248,6 +7256,7 @@ class NodeRuntime private constructor(
     if (!operatorConnected) {
       _modelCatalog.value = emptyList()
       _modelAuthProviders.value = emptyList()
+      modelAuthCapabilitiesState.value = emptyList()
       return
     }
     try {
@@ -7277,7 +7286,9 @@ class NodeRuntime private constructor(
     if (!operatorConnected) {
       publishProviderModelRefresh(gatewayScope, refreshGeneration) {
         _providerModelCatalog.value = emptyList()
+        _providerModelTagsDescribeDefaults.value = false
         _modelAuthProviders.value = emptyList()
+        modelAuthCapabilitiesState.value = emptyList()
         _providerModelCatalogRefreshing.value = false
       }
       return
@@ -7289,6 +7300,7 @@ class NodeRuntime private constructor(
         publishProviderModelRefresh(gatewayScope, refreshGeneration) {
           // The Gateway owns compatible inventory; an empty result can revoke old choices.
           _providerModelCatalog.value = catalog.models
+          _providerModelTagsDescribeDefaults.value = catalog.tagsDescribeDefaults
           if (catalog.refreshFailed) {
             _providerModelCatalogErrorText.value = nativeText("Some models could not be refreshed. Tap Refresh to retry.")
           }
@@ -7309,9 +7321,12 @@ class NodeRuntime private constructor(
       try {
         val params = buildJsonObject { if (agentId != null) put("agentId", JsonPrimitive(agentId)) }
         val response = requestGatewayData(gatewayScope, "models.authStatus", params.toString())
-        val providers = parseGatewayModelProviders(json.parseToJsonElement(response).asObjectOrNull()?.get("providers") as? JsonArray)
+        val authStatus = json.parseToJsonElement(response).asObjectOrNull()
+        val providers = parseGatewayModelProviders(authStatus?.get("providers") as? JsonArray)
+        val capabilities = ProviderAuthState(authStatus = authStatus).providers
         publishProviderModelRefresh(gatewayScope, refreshGeneration) {
           _modelAuthProviders.value = providers
+          modelAuthCapabilitiesState.value = capabilities
         }
       } catch (_: Throwable) {
         publishProviderModelRefresh(gatewayScope, refreshGeneration) {
@@ -9450,20 +9465,6 @@ class NodeRuntime private constructor(
     return if (level in setOf("trace", "debug", "info", "warn", "error", "fatal")) level else null
   }
 
-  private fun parseGatewayModelProviders(providers: JsonArray?): List<GatewayModelProviderSummary> =
-    providers
-      ?.mapNotNull { item ->
-        val obj = item.asObjectOrNull() ?: return@mapNotNull null
-        val id = obj["provider"].asStringOrNull()?.trim().orEmpty()
-        if (id.isEmpty()) return@mapNotNull null
-        GatewayModelProviderSummary(
-          id = id,
-          displayName = obj["displayName"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: providerDisplayName(id),
-          status = obj["status"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: "unknown",
-          profileCount = ((obj["profiles"] as? JsonArray)?.size ?: 0),
-        )
-      }.orEmpty()
-
   private fun parseCronJobs(jobs: JsonArray?): List<GatewayCronJobSummary> =
     jobs
       ?.mapNotNull { item ->
@@ -10132,13 +10133,6 @@ internal suspend fun requestProviderModelConfig(
     if (err.gatewayError.code != "INVALID_REQUEST") throw err
     throw ProviderModelConfigUnsupported()
   }
-
-data class GatewayModelProviderSummary(
-  val id: String,
-  val displayName: String,
-  val status: String,
-  val profileCount: Int,
-)
 
 data class GatewayCronStatus(
   val enabled: Boolean,

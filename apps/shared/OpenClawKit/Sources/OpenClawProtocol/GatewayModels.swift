@@ -9281,6 +9281,7 @@ public struct ModelsListParams: Codable, Sendable {
 
 public struct ModelsListResult: Codable, Sendable {
     public let models: [ModelChoice]
+    public let tagsscope: String?
     public let modelselectionpolicy: [String: AnyCodable]?
     public let decisionmodels: [[String: AnyCodable]]?
     public let defaultmodels: [String: AnyCodable]?
@@ -9291,6 +9292,7 @@ public struct ModelsListResult: Codable, Sendable {
 
     public init(
         models: [ModelChoice],
+        tagsscope: String? = nil,
         modelselectionpolicy: [String: AnyCodable]? = nil,
         decisionmodels: [[String: AnyCodable]]? = nil,
         defaultmodels: [String: AnyCodable]? = nil,
@@ -9300,6 +9302,7 @@ public struct ModelsListResult: Codable, Sendable {
         provideroutcomes: [[String: AnyCodable]]? = nil)
     {
         self.models = models
+        self.tagsscope = tagsscope
         self.modelselectionpolicy = modelselectionpolicy
         self.decisionmodels = decisionmodels
         self.defaultmodels = defaultmodels
@@ -9311,6 +9314,7 @@ public struct ModelsListResult: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case models
+        case tagsscope = "tagsScope"
         case modelselectionpolicy = "modelSelectionPolicy"
         case decisionmodels = "decisionModels"
         case defaultmodels = "defaultModels"

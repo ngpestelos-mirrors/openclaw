@@ -353,11 +353,12 @@ class ScreenTypographyLayoutTest {
   fun providerPageKeepsHeadingHierarchyAndPhoneGutters() {
     show { ProvidersModelsScreen(model, onBack = {}) }
     capture("providers-dark")
-    assertTextStyle("Providers & Models", type.display)
-    assertTextStyle("Review provider readiness\nand configured models.", type.caption)
+    assertTextStyle("Providers and models", type.title)
     assertPhoneGutter()
-    assertTextStyle("1 configured model", type.caption, scroll = true)
-    assertTextStyle("gpt-5.2", type.caption, scroll = true)
+    assertTextStyle("Providers · 1 ready · 1 model", type.caption)
+    composeRule.onNodeWithText("OpenAI").performClick()
+    composeRule.onNodeWithText("1 more model").performClick()
+    assertTextStyle("GPT-5.2", type.body, scroll = true)
   }
 
   @Test
@@ -365,12 +366,12 @@ class ScreenTypographyLayoutTest {
   fun providerHeadingWrapsWithoutClippingAtLargeFontScale() {
     show(fontScale = 2f) { ProvidersModelsScreen(model, onBack = {}) }
     capture("providers-large-dark")
-    val title = assertTextStyle("Providers & Models", type.display)
+    val title = assertTextStyle("Providers and models", type.title)
     assertTrue("The large page title must wrap instead of shrinking or clipping", title.lineCount > 1)
     assertFalse("The full page name must remain readable", title.hasVisualOverflow)
-    val titleBounds = composeRule.onNodeWithText("Providers & Models").getUnclippedBoundsInRoot()
-    val subtitleBounds = composeRule.onNodeWithText("Review provider readiness\nand configured models.").getUnclippedBoundsInRoot()
-    assertTrue("The wrapped heading must not overlap its helper copy", titleBounds.bottom <= subtitleBounds.top)
+    val titleBounds = composeRule.onNodeWithText("Providers and models").getUnclippedBoundsInRoot()
+    val subtitleBounds = composeRule.onNodeWithText("Providers · 1 ready · 1 model").getUnclippedBoundsInRoot()
+    assertTrue("The wrapped heading must not overlap the provider summary", titleBounds.bottom <= subtitleBounds.top)
   }
 
   @Test
@@ -404,7 +405,7 @@ class ScreenTypographyLayoutTest {
   fun providerPageRetainsHeadingHierarchyInLightMode() {
     show(dark = false) { ProvidersModelsScreen(model, onBack = {}) }
     capture("providers-light")
-    assertTextStyle("Providers & Models", type.display)
+    assertTextStyle("Providers and models", type.title)
     assertPhoneGutter()
   }
 

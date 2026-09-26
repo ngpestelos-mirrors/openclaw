@@ -1464,13 +1464,15 @@ describe("models.authStatus", () => {
     expect(provider?.profiles).toHaveLength(1);
   });
 
-  it("forwards unresolved auth reason codes to status clients", async () => {
+  it.each([
+    { status: "missing", reasonCode: "unresolved_ref", renewalFailed: undefined },
+    { status: "expired", reasonCode: "expired", renewalFailed: true },
+  ] as const)("forwards $reasonCode credential health to status clients", async (health) => {
     const profile = {
       profileId: "openai-codex:default",
       provider: "openai-codex",
       type: "oauth",
-      status: "missing",
-      reasonCode: "unresolved_ref",
+      ...health,
       source: "store",
       label: "openai-codex:default",
     } satisfies AuthHealthSummary["profiles"][number];
@@ -1478,22 +1480,13 @@ describe("models.authStatus", () => {
       now: 0,
       warnAfterMs: 0,
       profiles: [profile],
-      providers: [
-        {
-          provider: "openai-codex",
-          status: "missing",
-          profiles: [profile],
-        },
-      ],
+      providers: [{ provider: profile.provider, status: health.status, profiles: [profile] }],
     });
 
-    const opts = createOptions();
-    await handler(opts);
-
-    const [, payload] = firstRespondCall(opts) ?? [];
-    const result = payload as ModelAuthStatusResult;
-    expect(result.providers[0]?.status).toBe("missing");
-    expect(result.providers[0]?.profiles[0]?.reasonCode).toBe("unresolved_ref");
+    const result = await readAuthStatus();
+    expect(result.providers[0]?.status).toBe(health.status);
+    expect(result.providers[0]?.profiles[0]?.reasonCode).toBe(health.reasonCode);
+    expect(result.providers[0]?.profiles[0]?.renewalFailed).toBe(health.renewalFailed);
   });
 
   it("shares provider resolution across 20 clients of one published auth generation", async () => {

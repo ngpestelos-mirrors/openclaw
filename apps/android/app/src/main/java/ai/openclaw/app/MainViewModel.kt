@@ -544,9 +544,11 @@ class MainViewModel private constructor(
   val gatewayUpdateAvailable: StateFlow<GatewayUpdateAvailableSummary?> = runtimeState(initial = null) { it.gatewayUpdateAvailable }
   val modelCatalog: StateFlow<List<GatewayModelSummary>> = runtimeState(initial = emptyList()) { it.modelCatalog }
   val providerModelCatalog: StateFlow<List<GatewayModelSummary>> = runtimeState(initial = emptyList()) { it.providerModelCatalog }
+  val providerModelTagsDescribeDefaults: StateFlow<Boolean> = runtimeState(initial = false) { it.providerModelTagsDescribeDefaults }
   val providerModelCatalogRefreshing: StateFlow<Boolean> = runtimeState(initial = false) { it.providerModelCatalogRefreshing }
   val providerModelCatalogErrorText: StateFlow<String?> = runtimeState(initial = null) { it.providerModelCatalogErrorText }
   val modelAuthProviders: StateFlow<List<GatewayModelProviderSummary>> = runtimeState(initial = emptyList()) { it.modelAuthProviders }
+  internal val modelAuthCapabilities: StateFlow<List<ProviderAuthProvider>> = runtimeState(initial = emptyList()) { it.modelAuthCapabilities }
   val modelFavorites: StateFlow<List<String>> = prefs.modelFavorites
   val modelRecents: StateFlow<List<String>> = prefs.modelRecents
   val sessionCustomGroups: StateFlow<List<String>> = prefs.sessionCustomGroups

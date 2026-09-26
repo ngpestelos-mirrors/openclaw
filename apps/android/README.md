@@ -22,6 +22,24 @@ OpenClaw Android is the officially released Google Play app. It connects to an O
 
 - Open the folder `apps/android`.
 
+## Providers and models
+
+Open **Settings → Providers and models** to expand a provider's configured models
+or manage its sign-in. **In use** and **Fallback** identify the Gateway's shared
+default model and fallbacks, not every agent's overrides or active requests.
+Gateways that do not identify this shared tag scope omit those badges.
+Other configured models stay visible; **More models** expands the remaining
+inventory without labeling it old. Search includes those collapsed models.
+This screen does not change model selection.
+
+**Add provider** lists the connection methods advertised by the Gateway. Select
+an account sign-in or API key; providers without app setup show instructions for
+the computer running the Gateway. Sign-in keeps the current agent's credential
+scope and requires administrator access. OAuth renewal is automatic; a failed
+renewal is shown only when the Gateway reports that outcome, not simply because
+an access token expired. Older Gateways without that signal cannot show the
+renewal-failed distinction.
+
 ## Session colors
 
 Long-press a row on the **Threads** page and choose **Color**, then select a swatch or **Default** to clear it. The eight colors are red, blue, green, yellow, purple, orange, pink, and cyan. Colored sessions show a narrow leading stripe in the sidebar and Threads page, plus a colored ring around the agent avatar in the open chat header. Unset colors add no indicator. Colors sync through the Gateway and remain visible in the local session cache while offline.

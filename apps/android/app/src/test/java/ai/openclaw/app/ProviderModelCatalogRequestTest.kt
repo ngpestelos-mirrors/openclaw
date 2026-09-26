@@ -12,6 +12,27 @@ import org.junit.Test
 
 class ProviderModelCatalogRequestTest {
   @Test
+  fun providerAuthProjectionOnlyReportsOwnerConfirmedRenewalFailure() {
+    val payload =
+      Json
+        .parseToJsonElement(
+          """[
+        {"provider":"expired","status":"expired","profiles":[{"profileId":"expired:main","type":"oauth","status":"expired"}]},
+        {"provider":"pending","status":"expired","profiles":[{"profileId":"pending:main","type":"oauth","status":"expired","reasonCode":"expired"}]},
+        {"provider":"failed","status":"expired","profiles":[{"profileId":"failed:main","type":"oauth","status":"expired","renewalFailed":true}]},
+        {"provider":"excluded","status":"ok","profileOrder":["excluded:active"],"profiles":[{"profileId":"excluded:inactive","type":"oauth","renewalFailed":true},{"profileId":"excluded:active","type":"api_key","status":"static"}]},
+        {"provider":"healthy-sibling","status":"ok","profiles":[{"profileId":"healthy-sibling:failed","type":"oauth","renewalFailed":true},{"profileId":"healthy-sibling:active","type":"oauth","status":"ok"}]},
+        {"provider":"alias","authProvider":"canonical","status":"static","apiKey":{"configured":true},"profiles":[]}
+      ]""",
+        ).jsonArray
+    val providers = parseGatewayModelProviders(payload)
+
+    assertEquals(listOf(false, false, true, false, false, false), providers.map { it.renewalFailed })
+    assertEquals(listOf("oauth", "oauth", "oauth", "api_key", "oauth", "api_key"), providers.map { it.authType })
+    assertEquals("canonical", providers.last().authProviderId)
+  }
+
+  @Test
   fun prefersEffectiveContextCapOverNativeWindow() {
     val models =
       parseGatewayModels(

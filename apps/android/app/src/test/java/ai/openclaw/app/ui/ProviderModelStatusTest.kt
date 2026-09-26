@@ -2,9 +2,6 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.GatewayModelProviderSummary
 import ai.openclaw.app.GatewayModelSummary
-import ai.openclaw.app.parseGatewayModels
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -122,7 +119,7 @@ class ProviderModelStatusTest {
   fun oneAvailableRouteMakesProviderReadyAndModelsSortByName() {
     val rows =
       providerRows(
-        providers = emptyList(),
+        providers = listOf(GatewayModelProviderSummary("custom", "Custom", "expired", 2, authType = "oauth", renewalFailed = true)),
         models =
           listOf(
             model(provider = "custom", id = "zeta", name = "Zeta", available = null),
@@ -133,6 +130,7 @@ class ProviderModelStatusTest {
     assertEquals(ProviderAvailability.Available, rows.single().availability)
     assertEquals(listOf("alpha", "zeta"), rows.single().models.map { it.id })
     assertTrue(rows.single().ready)
+    assertFalse(rows.single().renewalFailed)
   }
 
   @Test
@@ -155,62 +153,6 @@ class ProviderModelStatusTest {
         models = listOf(model(provider = "openai", id = "gpt-5.5")),
       ),
     )
-  }
-
-  @Test
-  fun configuredModelCopyHandlesZeroOneAndMany() {
-    assertEquals("No configured models", configuredModelsCountText(0))
-    assertEquals("1 configured model", configuredModelsCountText(1))
-    assertEquals("2 configured models", configuredModelsCountText(2))
-    assertEquals(
-      "No configured models. Refresh to recheck availability.",
-      configuredModelsOverviewText(0),
-    )
-    assertEquals(
-      "1 configured model. Refresh to recheck availability.",
-      configuredModelsOverviewText(1),
-    )
-    assertEquals(
-      "2 configured models. Refresh to recheck availability.",
-      configuredModelsOverviewText(2),
-    )
-  }
-
-  @Test
-  fun videoCapabilitySurvivesGatewayParsingAndRendering() {
-    val payload =
-      Json
-        .parseToJsonElement(
-          """[{"id":"video-model","name":"Video Model","provider":"openai","input":["text","video"]}]""",
-        ).jsonArray
-    val model = parseGatewayModels(payload).single()
-
-    assertTrue(model.supportsVideo)
-    assertEquals("video", modelCapabilities(model))
-  }
-
-  @Test
-  fun modelCapabilitiesLocalizeControlledLabelsWithoutChangingGatewayMetadata() {
-    val model =
-      model(
-        provider = "custom-provider",
-        id = "model/internal-id",
-        name = "Model Display Name",
-        supportsReasoning = true,
-        supportsVision = true,
-        supportsAudio = true,
-        supportsVideo = true,
-        supportsDocuments = true,
-        contextTokens = 128_000,
-      )
-
-    assertEquals(
-      "reasoning / image / audio / video / document / 128k context",
-      modelCapabilities(model),
-    )
-    assertEquals("custom-provider", model.provider)
-    assertEquals("model/internal-id", model.id)
-    assertEquals("Model Display Name", model.name)
   }
 
   private fun model(

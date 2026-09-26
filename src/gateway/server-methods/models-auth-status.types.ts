@@ -21,6 +21,8 @@ export type ModelAuthStatusProfile = {
   type: "oauth" | "token" | "api_key";
   status: AuthProfileHealthStatus;
   reasonCode?: AuthCredentialReasonCode;
+  /** Terminal OAuth renewal failure, not token expiry or an in-progress renewal. */
+  renewalFailed?: true;
   expiry?: ModelAuthExpiry;
   /** True only for saved OAuth/token profiles this gateway can remove. */
   logoutSupported?: boolean;
