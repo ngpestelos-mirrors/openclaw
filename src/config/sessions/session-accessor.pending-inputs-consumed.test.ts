@@ -429,7 +429,7 @@ describe("committed pending input release", () => {
 
   it("revokes recorder execution while its processing completion waits for the writer", async () => {
     const recorder = createUserTurnTranscriptRecorder({
-      target: scope(),
+      target: { ...scope(), sessionEntry: undefined },
       message: message("recorder-completion"),
       trackInputCompletion: true,
     });

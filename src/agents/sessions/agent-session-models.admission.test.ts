@@ -181,14 +181,11 @@ describe("model transitions after SQLite write admission", () => {
     const stateDir = fs.realpathSync(tempDirs.make("metadata-context-environment-"));
     const original = metadataRuntime.withSessionMetadataWorker;
     const commands = new Set<string>();
-    const observeCommands: typeof original = async (
-      options,
-      database,
-      assertCurrent,
-      operation,
+    const observeCommands: typeof original = async <T, TMessage>(
+      ...[options, database, assertCurrent, operation]: Parameters<typeof original<T, TMessage>>
     ) => {
       expect(options.env?.OPENCLAW_STATE_DIR).toBe(stateDir);
-      return await original(options, database, assertCurrent, (scope) =>
+      return await original<T, TMessage>(options, database, assertCurrent, (scope) =>
         operation({
           execute: async (command, commandOptions) => {
             expect(command.input.scope).not.toHaveProperty("env");
@@ -380,8 +377,10 @@ describe("model transitions after SQLite write admission", () => {
     const manager = SessionManager.open(target, root);
     const original = metadataRuntime.withSessionMetadataWorker;
     let rebound = false;
-    const observeHeader: typeof original = async (options, database, assertCurrent, operation) =>
-      await original(options, database, assertCurrent, (scope) =>
+    const observeHeader: typeof original = async <T, TMessage>(
+      ...[options, database, assertCurrent, operation]: Parameters<typeof original<T, TMessage>>
+    ) =>
+      await original<T, TMessage>(options, database, assertCurrent, (scope) =>
         operation({
           execute: async (command, commandOptions) => {
             const reply = await scope.execute(command, commandOptions);
@@ -554,13 +553,10 @@ describe("model transitions after SQLite write admission", () => {
       });
       const original = metadataRuntime.withSessionMetadataWorker;
       let invalidated = false;
-      const observeCommittedResult: typeof original = async (
-        options,
-        database,
-        assertCurrent,
-        operation,
+      const observeCommittedResult: typeof original = async <T, TMessage>(
+        ...[options, database, assertCurrent, operation]: Parameters<typeof original<T, TMessage>>
       ) => {
-        const result = await original(options, database, assertCurrent, (scope) =>
+        const result = await original<T, TMessage>(options, database, assertCurrent, (scope) =>
           operation({
             execute: async (command, commandOptions) => {
               const reply = await scope.execute(command, commandOptions);
