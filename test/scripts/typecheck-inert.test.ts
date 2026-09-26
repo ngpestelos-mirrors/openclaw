@@ -36,6 +36,18 @@ describe("typecheck-inert TypeScript changes", () => {
         false,
       ],
       [
+        "attached-doc.ts",
+        'import type { Foo } from "./foo";\n/** {@link Foo} */\nexport const x = 1;',
+        'import type { Foo } from "./foo"; /** {@link Foo} */\nexport const x = 1;',
+        false,
+      ],
+      [
+        "tagged-doc-neighbor.ts",
+        "/** @deprecated */\nexport const x = 1;\n// old\nexport const y = 2;",
+        "/** @deprecated */\nexport const x = 1;\n// new\nexport const y = 2;",
+        true,
+      ],
+      [
         "moved-doc.ts",
         "/** @deprecated */\nexport const x = 1;\nexport const y = 2;",
         "export const x = 1;\n/** @deprecated */\nexport const y = 2;",

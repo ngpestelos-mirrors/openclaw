@@ -14,9 +14,12 @@ function syntaxSignature(sourceFile: ts.SourceFile) {
   const source = sourceFile.getFullText();
   // Each token keeps its preceding gap: "" adjacent, " " same-line trivia, "\n" line terminator.
   const tokens: Array<[string, string]> = [];
-  // Tagged JSDoc can reference symbols (`{@link Foo}`, `@see Foo`), so it stays pinned in place.
+  // Tagged JSDoc can reference symbols (`{@link Foo}`, `@see Foo`), and its surrounding trivia
+  // decides leading/trailing attachment, so that whole trivia run must stay byte-identical.
   const docs: Array<[number, string]> = [];
   let gap = "";
+  let trivia = "";
+  let tagged = false;
   let end = 0;
   let valid = true;
   walkTypeScriptTokens(sourceFile, (kind, pos, tokenEnd) => {
@@ -34,19 +37,28 @@ function syntaxSignature(sourceFile: ts.SourceFile) {
       if (/@ts-|@jsx/iu.test(text) || text.startsWith("///")) {
         valid = false;
       } else if (text.startsWith("/**") && text.includes("@")) {
-        docs.push([tokens.length, text]);
+        tagged = true;
       }
     } else if (kind !== ts.SyntaxKind.WhitespaceTrivia && kind !== ts.SyntaxKind.NewLineTrivia) {
       if (kind <= ts.SyntaxKind.NonTextFileMarkerTrivia) {
         valid = false;
       }
+      if (tagged) {
+        docs.push([tokens.length, trivia]);
+      }
       tokens.push([gap, text]);
       gap = "";
+      trivia = "";
+      tagged = false;
       return;
     }
+    trivia += text;
     // Adjacency matters too: the parser rescans `>` together with an adjacent `=` or `>`.
     gap = gap === "\n" || /[\r\n\u2028\u2029]/u.test(text) ? "\n" : " ";
   });
+  if (tagged) {
+    docs.push([tokens.length, trivia]);
+  }
   return valid && end === source.length ? JSON.stringify([tokens, docs]) : undefined;
 }
 
