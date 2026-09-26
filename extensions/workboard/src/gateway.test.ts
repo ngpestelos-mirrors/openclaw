@@ -3,7 +3,10 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi } from "../api.js";
 import { registerWorkboardGatewayMethods } from "./gateway.js";
-import { createWorkboardSqliteTestStore } from "./test/sqlite-store.js";
+import {
+  createWorkboardSqliteTestHarness,
+  createWorkboardSqliteTestStore,
+} from "./test/sqlite-store.js";
 import { createWorkboardTools } from "./tools.js";
 
 function createGatewayMethodCapture() {
@@ -82,6 +85,52 @@ describe("workboard gateway methods", () => {
     await add({ params: { ...input, fileName: "reenabled.txt" }, respond: reenabled } as never);
     expect(reenabled.mock.calls[0]?.[0]).toBe(true);
   });
+
+  it.each(["card-read", "attachment-write"] as const)(
+    "rejects attachment bytes after %s preparation observes hot disable",
+    async (phase) => {
+      const { api, methods } = createGatewayMethodCapture();
+      let disabled = false;
+      let pauseRead = false;
+      api.runtime.config = {
+        current: () => ({ gateway: { uploads: { enabled: !disabled } } }),
+      } as OpenClawPluginApi["runtime"]["config"];
+      const { store, stores } = createWorkboardSqliteTestHarness({
+        beforeCardLookup: async () => {
+          if (pauseRead && phase === "card-read") {
+            disabled = true;
+          }
+        },
+      });
+      const register = stores.attachments.register.bind(stores.attachments);
+      using registering = vi
+        .spyOn(stores.attachments, "register")
+        .mockImplementation(async (key, value) => {
+          if (pauseRead && phase === "attachment-write") {
+            disabled = true;
+          }
+          return register(key, value);
+        });
+      registerWorkboardGatewayMethods({ api, store });
+      const card = await store.create({ title: "Late upload policy" });
+      pauseRead = true;
+      const respond = vi.fn();
+      await methods.get("workboard.cards.attachments.add")!.handler({
+        params: { id: card.id, fileName: "late.txt", contentBase64: "bGF0ZQ==" },
+        respond,
+      } as never);
+      expect
+        .soft(respond)
+        .toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ code: "FORBIDDEN", details: { code: "UPLOADS_DISABLED" } }),
+        );
+      expect(registering).toHaveBeenCalledOnce();
+      expect(await stores.attachments.entries()).toEqual([]);
+      expect((await store.listAttachments(card.id)).attachments).toEqual([]);
+    },
+  );
 
   it.each(["move", "archive", "delete"] as const)(
     "returns a redacted conflict for stale %s requests",

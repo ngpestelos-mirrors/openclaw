@@ -109,6 +109,7 @@ export class WorkboardEnrichmentStore extends WorkboardCoreStore {
     id: string,
     input: WorkboardAttachmentInput,
     scope?: WorkboardMutationScope,
+    assertCurrent?: () => void,
   ): Promise<WorkboardCard> {
     return await this.enqueueMutation(async () => {
       const existing = await this.requireCard(id);
@@ -138,7 +139,7 @@ export class WorkboardEnrichmentStore extends WorkboardCoreStore {
         await this.attachmentStore.delete(attachment.id);
         throw error;
       }
-    });
+    }, assertCurrent);
   }
 
   async listAttachments(id: string): Promise<{

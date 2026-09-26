@@ -1,5 +1,6 @@
+import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type {
   SkillsLibraryListResult,
   SkillsLibraryReadResult,
@@ -11,6 +12,7 @@ import {
   loadSessionEntry,
   patchSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import * as libraryBundle from "../../skills/library/bundle.js";
 import { seedSkillLibrarySelection } from "../../skills/library/selection.js";
 import { mutateSkillLibrary, saveSkillLibrary } from "../../skills/library/service.js";
 import type { SkillLibraryAuthority } from "../../skills/library/store.js";
@@ -86,10 +88,68 @@ function retainedFilesHarness() {
     });
     return respond.mock.calls[0]!;
   };
-  return { alice, bob, actor, cfg, call };
+  return { alice, bob, actor, cfg, call, root };
 }
 
 describe("skill library retained support files", () => {
+  it("does not write client bytes after asynchronous file preparation observes hot disable", async () => {
+    const { call, cfg, root } = retainedFilesHarness();
+    const open = fs.open;
+    let write: MockInstance<FileHandle["writeFile"]> | undefined;
+    using opening = vi.spyOn(fs, "open").mockImplementation(async (target, flags, mode) => {
+      const handle = await open(target, flags, mode);
+      if (typeof target === "string" && target.endsWith("pixel.png")) {
+        write = vi.spyOn(handle, "writeFile");
+        cfg.gateway.uploads.enabled = false;
+      }
+      return handle;
+    });
+    try {
+      const result = await call("skills.library.save", {
+        slug: "file-policy",
+        content,
+        expectedRevision: null,
+        files: [image],
+      });
+      expect.soft(result[0]).toBe(false);
+      expect
+        .soft(result[2])
+        .toMatchObject({ code: "FORBIDDEN", details: { code: "UPLOADS_DISABLED" } });
+      expect(opening).toHaveBeenCalled();
+      expect(write).toBeDefined();
+      expect(write).not.toHaveBeenCalled();
+      const files = await fs.readdir(root, { recursive: true, withFileTypes: true });
+      expect(files.filter((entry) => entry.isFile() && entry.name === "pixel.png")).toEqual([]);
+    } finally {
+      write?.mockRestore();
+    }
+  });
+
+  it("does not publish client files when uploads turn off after real bundle staging", async () => {
+    const { call, cfg, root } = retainedFilesHarness();
+    const stage = libraryBundle.stageSkillLibraryBundle;
+    using staged = vi
+      .spyOn(libraryBundle, "stageSkillLibraryBundle")
+      .mockImplementation(async (...args) => {
+        const result = await stage(...args);
+        cfg.gateway.uploads.enabled = false;
+        return result;
+      });
+    const result = await call("skills.library.save", {
+      slug: "late-policy",
+      content,
+      expectedRevision: null,
+      files: [image],
+    });
+    expect.soft(result[0]).toBe(false);
+    expect
+      .soft(result[2])
+      .toMatchObject({ code: "FORBIDDEN", details: { code: "UPLOADS_DISABLED" } });
+    expect(staged).toHaveBeenCalledOnce();
+    const files = await fs.readdir(root, { recursive: true, withFileTypes: true });
+    expect(files.filter((entry) => entry.isFile() && entry.name === "pixel.png")).toEqual([]);
+  });
+
   it("edits SKILL.md with uploads disabled while retaining exact image bytes and CAS", async () => {
     const { call, cfg } = retainedFilesHarness();
     const executable = { path: "scripts/example.sh", content: "echo example\n", executable: true };

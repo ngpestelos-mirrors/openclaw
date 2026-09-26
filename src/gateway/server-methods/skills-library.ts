@@ -37,6 +37,7 @@ import {
   resolveSessionSharingTarget,
   SessionMutationAuthorizationChangedError,
 } from "../session-sharing.js";
+import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
 import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -45,13 +46,18 @@ export type SkillLibraryRequestOwner = Pick<
   "client" | "context" | "sessionMutationCommitGuard" | "sessionMutationAuthorization"
 >;
 
-export function libraryAuthority(options: SkillLibraryRequestOwner): SkillLibraryAuthority {
+export function libraryAuthority(
+  options: SkillLibraryRequestOwner,
+  assertFileMutationAllowed?: () => void,
+): SkillLibraryAuthority {
   const { client, context } = options;
   return {
     profileId: client?.authenticatedUserProfile?.profileId,
     scopes: client?.connect.scopes ?? [],
     getConfig: context.getRuntimeConfig,
+    assertFileMutationAllowed,
     assertCurrent: () => {
+      assertFileMutationAllowed?.();
       options.sessionMutationCommitGuard?.();
       options.sessionMutationAuthorization?.assertCurrent();
       // Synthetic agents must carry host-bound operator authority; identityless agents cannot publish.
@@ -211,7 +217,19 @@ function libraryHandler<P>(
     try {
       options.respond(
         true,
-        await run(libraryAuthority(options), options.params, options),
+        await run(
+          libraryAuthority(
+            options,
+            captureGatewayClientUploadCommitGuard({
+              method: name,
+              requestParams: options.params,
+              client: options.client,
+              context: options.context,
+            }),
+          ),
+          options.params,
+          options,
+        ),
         undefined,
       );
     } catch (error) {
