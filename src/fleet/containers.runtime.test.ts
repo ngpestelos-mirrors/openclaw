@@ -29,7 +29,6 @@ const profileMocks = vi.hoisted(() => ({
 vi.mock("./cell-profile.js", () => profileMocks);
 
 import type { CellContainerProfile } from "./cell-profile.js";
-import { createRedactingStreamWriter } from "./containers.redaction.js";
 import { createFleetContainerRuntime } from "./containers.runtime.js";
 
 type FleetContainerCommandExecutor = NonNullable<Parameters<typeof createFleetContainerRuntime>[0]>;
@@ -61,6 +60,61 @@ function createStreamChild(pid?: number): ChildProcess {
 }
 
 describe("fleet container runtime", () => {
+  it("redacts split self-overlapping secrets through the registered log stream with backpressure", async () => {
+    const child = createStreamChild(4242);
+    if (!child.stdout) {
+      throw new Error("Expected child stdout");
+    }
+    const pause = vi.spyOn(child.stdout, "pause");
+    const resume = vi.spyOn(child.stdout, "resume");
+    spawnMock.mockReturnValue(child);
+    const runtime = createFleetContainerRuntime(successfulExecutor());
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutErrors = process.stdout.listenerCount("error");
+    const stderrErrors = process.stderr.listenerCount("error");
+    const out = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return false;
+    });
+    const err = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    let closed = false;
+    try {
+      const completion = runtime.logs("docker", "test-cell", {
+        follow: false,
+        tail: 20,
+        redactValues: ["abcabc", "abcdef", "abc", "🦞密🦞"],
+      });
+      child.stdout?.emit("data", Buffer.from("abc"));
+      child.stdout?.emit("data", Buffer.from("abc!"));
+      expect(pause).toHaveBeenCalled();
+      process.stdout.emit("drain");
+      expect(resume).toHaveBeenCalled();
+      for (const byte of Buffer.from("abcdef 🦞密🦞 partial")) {
+        child.stderr?.emit("data", Buffer.from([byte]));
+      }
+      child.emit("close", 0, null);
+      closed = true;
+      await completion;
+    } finally {
+      if (!closed) {
+        child.emit("close", 0, null);
+      }
+      process.stdout.emit("drain");
+      out.mockRestore();
+      err.mockRestore();
+      pause.mockRestore();
+      resume.mockRestore();
+    }
+    expect(stdout.join("")).toBe("<redacted>!");
+    expect(stderr.join("")).toBe("<redacted> <redacted> partial");
+    expect(process.stdout.listenerCount("error")).toBe(stdoutErrors);
+    expect(process.stderr.listenerCount("error")).toBe(stderrErrors);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -597,32 +651,6 @@ describe("fleet container runtime", () => {
     const runtime = createFleetContainerRuntime(executor);
     await runtime.createNetwork("podman", "openclaw-cell-acme-net", {}, { internal });
     expect(executor.mock.calls[0]?.[1].includes("--internal")).toBe(expected);
-  });
-
-  it("redacts secrets from streamed log output, including across chunk boundaries", () => {
-    const written: string[] = [];
-    const target = { write: (text: string) => written.push(text) } as unknown as NodeJS.WriteStream;
-    const writer = createRedactingStreamWriter(target, ["gw-secret-token"]);
-    writer.write(Buffer.from("boot ok\ntoken=gw-sec"));
-    writer.write(Buffer.from("ret-token done\ntail without newline"));
-    writer.flush();
-    const output = written.join("");
-    expect(output).toContain("token=<redacted> done");
-    expect(output).toContain("tail without newline");
-    expect(output).not.toContain("gw-secret-token");
-  });
-
-  it("never splits a secret across a forced long-line flush", () => {
-    const written: string[] = [];
-    const target = { write: (text: string) => written.push(text) } as unknown as NodeJS.WriteStream;
-    const writer = createRedactingStreamWriter(target, ["gw-secret-token"]);
-    // An unterminated line ending exactly in a secret prefix at the flush point.
-    writer.write(Buffer.from(`${"x".repeat(64 * 1024)}gw-sec`));
-    writer.write(Buffer.from("ret-token trailing"));
-    writer.flush();
-    const output = written.join("");
-    expect(output).toContain("<redacted> trailing");
-    expect(output).not.toContain("gw-secret-token");
   });
 
   it("parses hardened inspect fields and Docker network internal state", async () => {
