@@ -105,7 +105,7 @@ export function createSessionRowProjectionContext() {
       rows: object | undefined,
       cfg: records.ProjectionOptions["cfg"],
       policyConfig: records.ProjectionOptions["cfg"],
-    ) {
+    ): object {
       const registries = `${getSubagentRegistryPublicationRevision()}:${readAgentRunIndexVersion()}`;
       if (
         presentationRevision?.epoch !== epoch ||

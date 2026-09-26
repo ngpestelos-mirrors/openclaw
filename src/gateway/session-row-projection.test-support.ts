@@ -245,6 +245,9 @@ export function createSessionRowProjectionFixture(params: {
     get sharingRevision() {
       return revisionToken;
     },
+    get presentationRevision() {
+      return revisionToken;
+    },
     state: {
       get revision() {
         return revisionToken;
