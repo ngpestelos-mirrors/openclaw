@@ -1,3 +1,4 @@
+import { isProxy } from "node:util/types";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 // Gateway connection and run registries.
@@ -16,9 +17,13 @@ import { GatewayConnectionWork } from "./server-connection-work.js";
 import { WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
+import type { GatewayWsClient } from "./server/ws-types.js";
 import { buildGatewaySessionSnapshot } from "./session-event-payload.js";
 import { resolveSessionEventAgentScope } from "./session-request-agent.js";
-import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
+import {
+  createSessionRowPresentationCache,
+  prepareProjectedSessionPresentation,
+} from "./session-row-presentation.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import { canReceiveSessionEvent, prepareProjectedSessionSharing } from "./session-sharing.js";
 
@@ -132,13 +137,16 @@ export function createGatewayConnectionState(params: {
       }
       const now = Date.now();
       const ancestors = projection.ancestorRows(record);
-      let projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
+      const cache = createSessionRowPresentationCache();
+      const reuseRows = !isProxy(base) && !("toJSON" in base);
+      let projectedAgentRuns = cache.read(projection).state.rowContext.projectedAgentRuns;
       let registrations: (readonly [string, ChatAbortControllerEntry])[] = [];
       let projectRun: ReturnType<typeof createVisibleActiveSessionRunProjector> | undefined;
-      return (client) => {
+      const project = (client: GatewayWsClient) => {
         if (!projection.isCurrent(record)) {
           return undefined;
         }
+        const read = cache.read(projection);
         if (
           !projectRun ||
           registrations.length !== chatAbortControllers.size ||
@@ -154,26 +162,27 @@ export function createGatewayConnectionState(params: {
               current.controlUiVisible !== previous.controlUiVisible
             );
           }) ||
-          projectedAgentRuns !== projection.state.rowContext.projectedAgentRuns
+          projectedAgentRuns !== read.state.rowContext.projectedAgentRuns
         ) {
           registrations = Array.from(chatAbortControllers, ([runId, entry]) => [
             runId,
             { ...entry },
           ]);
-          projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
+          projectedAgentRuns = read.state.rowContext.projectedAgentRuns;
           projectRun = createVisibleActiveSessionRunProjector(
             { chatAbortControllers: new Map(registrations) },
             projectedAgentRuns,
           );
         }
         const presentation = prepareProjectedSessionPresentation(
-          projection,
+          read,
           client,
           now,
           projectRun,
+          reuseRows ? cache : undefined,
         );
         const enrichment = { includeDerivedTitles: true, includeLastMessage: true };
-        const { row } = presentation.snapshot(query, enrichment);
+        const row = presentation.present(record, enrichment);
         if (!row) {
           return undefined;
         }
@@ -205,6 +214,7 @@ export function createGatewayConnectionState(params: {
         }
         return projected;
       };
+      return Object.assign(project, { rows: cache.rows });
     },
     onBroadcast: (event, payload, opts) => eventWebPush.handleEvent(event, payload, opts),
   });

@@ -674,6 +674,9 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     get sharingRevision() {
       return disposed || topologyDirty ? undefined : (revisionToken ??= {});
     },
+    get presentationRevision() {
+      return metadata.readPublicationRevision(epoch, revisionToken, cfg, getPolicyConfig());
+    },
     get state() {
       if (!disposed && !prepareRead()) {
         throw new Error("Session row topology changed; prepare current facts before reading");

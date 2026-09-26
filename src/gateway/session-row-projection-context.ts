@@ -19,6 +19,15 @@ import { refreshSessionRowProfiles } from "./session-utils-row.js";
 
 /** Registry and display facts have their own lifecycle, independent of stored row acquisition. */
 export function createSessionRowProjectionContext() {
+  let presentationRevision:
+    | {
+        epoch: number;
+        rows: object | undefined;
+        registries: string;
+        cfg: records.ProjectionOptions["cfg"];
+        policyConfig: records.ProjectionOptions["cfg"];
+      }
+    | undefined;
   let preparedEpoch = -1;
   let registryRevision: number | undefined = getSubagentRegistryPublicationRevision();
   let registrySnapshot = getSubagentSessionListReadSnapshotIdentity();
@@ -90,6 +99,25 @@ export function createSessionRowProjectionContext() {
     preparedEpoch = epoch;
   }
   return {
+    // A publication prepares once; reentrant owner writes retire its prepared display facts.
+    readPublicationRevision(
+      epoch: number,
+      rows: object | undefined,
+      cfg: records.ProjectionOptions["cfg"],
+      policyConfig: records.ProjectionOptions["cfg"],
+    ) {
+      const registries = `${getSubagentRegistryPublicationRevision()}:${readAgentRunIndexVersion()}`;
+      if (
+        presentationRevision?.epoch !== epoch ||
+        presentationRevision.rows !== rows ||
+        presentationRevision.registries !== registries ||
+        presentationRevision.cfg !== cfg ||
+        presentationRevision.policyConfig !== policyConfig
+      ) {
+        presentationRevision = { epoch, rows, registries, cfg, policyConfig };
+      }
+      return presentationRevision;
+    },
     readPrepared(epoch: number): SessionListRowContext | undefined {
       return preparedEpoch === epoch &&
         parentRevision === subagentRevision &&

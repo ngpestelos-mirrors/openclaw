@@ -33,6 +33,10 @@ import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constan
 import type { GatewayClientRegistry } from "./server/client-registry.js";
 import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import {
+  trySerializeSessionRowEvent,
+  type SessionEventProjection,
+} from "./session-row-event-encoding.js";
 import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
 // Opt-in scoped clients never receive session-bearing broadcasts without an
@@ -179,7 +183,7 @@ export function createGatewayBroadcaster(params: {
     event: string,
     payload: unknown,
     scope: { sessionKeys: readonly string[]; agentId?: string },
-  ) => ((client: GatewayWsClient) => unknown) | undefined;
+  ) => SessionEventProjection | undefined;
   sessionMessageSubscribers?: SessionMessageSubscriberRegistry;
   canReceiveSessionEvent?: (
     client: GatewayWsClient,
@@ -302,7 +306,8 @@ export function createGatewayBroadcaster(params: {
         isSessionReadInvalidation(event, payload, isTargeted));
     let projectPresence: ((client: GatewayWsClient) => SystemPresence[]) | undefined;
     let presenceFragments: Map<SystemPresence[], string> | undefined;
-    let projectSession: ((client: GatewayWsClient) => unknown) | undefined;
+    let projectSession: SessionEventProjection | undefined;
+    let rowEncodings: WeakMap<object, string> | undefined;
     let skipSourcePayload = false;
     let sessionProjectionPrepared = false;
     let outboundEventLogged = false;
@@ -612,11 +617,17 @@ export function createGatewayBroadcaster(params: {
           if (projected === undefined) {
             continue;
           }
-          payloadFragment = serializeFrameField(
-            "payload",
-            projected,
-            messageStrings?.capture || messageStrings?.values.size ? messageStrings : undefined,
-          );
+          const strings =
+            messageStrings?.capture || messageStrings?.values.size ? messageStrings : undefined;
+          payloadFragment =
+            (projectSession.rows &&
+              trySerializeSessionRowEvent(
+                projected,
+                projectSession.rows,
+                (rowEncodings ??= new WeakMap()),
+                (fields) => serializeFrameField("payload", fields, strings).slice(12, -1),
+              )) ??
+            serializeFrameField("payload", projected, strings);
           if (messageStrings) {
             messageStrings.capture = false;
           }

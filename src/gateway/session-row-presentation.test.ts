@@ -211,6 +211,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const owner = ensureProfileForEmail("owner@presentation.test");
     const member = ensureProfileForEmail("member@presentation.test");
+    const secondMember = ensureProfileForEmail("second-member@presentation.test");
     const viewer = ensureProfileForEmail("viewer@presentation.test");
     setUserProfileRole(viewer.id, "none");
     const clients = [owner, member, viewer].map((profile) => {
@@ -231,6 +232,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
     const scope = { agentId: "main", sessionKey: query.key };
     const entry = {
       sessionId: "parent-session",
+      label: "Parent",
       updatedAt: Date.now(),
       visibility: "suggest" as const,
       createdActor: { type: "human" as const, source: "profile" as const, id: owner.id },
@@ -245,6 +247,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
       },
     );
     addSessionMember(scope, { identityId: member.id, addedBy: owner.id });
+    addSessionMember(scope, { identityId: secondMember.id, addedBy: owner.id });
     const projection = await createSessionRowProjection({ cfg });
     const connection = createGatewayConnectionState({ bootId: "presentation", cfg });
     const detach = connection.attachSessionRowProjection(projection);
@@ -331,6 +334,60 @@ it("presents current recipient roles without SQLite while rejecting source overr
           key: "agent:main:dashboard:incognito-private",
         }),
       ).toMatchObject({ code: "INVALID_REQUEST" });
+      const peers = Array.from({ length: 100 }, (_, index) => {
+        const profile = index % 2 ? member : secondMember;
+        const client: GatewayWsClient = {
+          ...clients[1]!,
+          ...sharingPolicyClient({ user: profile.id }),
+          connId: `same-view-${index}`,
+          socket: { ...clients[1]!.socket, send: vi.fn() },
+        };
+        prepareGatewayRecipientProfile(client);
+        connection.clients.add(client);
+        return client;
+      });
+      const rowPresentations = vi.spyOn(projection, "present");
+      const stateReads = vi.spyOn(projection, "state", "get");
+      connection.broadcastToConnIds(
+        "sessions.changed",
+        { sessionKey: query.key, agentId: query.agentId, session: { sessionId: entry.sessionId } },
+        new Set(peers.map((peer) => peer.connId)),
+      );
+      // Different people with the same visible row share its presentation, never its authorization.
+      expect(rowPresentations).toHaveBeenCalledTimes(1);
+      expect(stateReads).toHaveBeenCalledTimes(1);
+      for (const peer of peers) {
+        const frame = JSON.parse(String(vi.mocked(peer.socket.send).mock.calls[0]?.[0]));
+        expect(frame).toMatchObject({
+          seq: 1,
+          recipientProfileId: peer.preparedRecipientProfileId,
+          payload: { session: { sharingRole: "member", hiddenFromInvolvingMe: false } },
+        });
+      }
+      rowPresentations.mockRestore();
+      stateReads.mockRestore();
+      connection.broadcastToConnIds(
+        "sessions.changed",
+        {
+          sessionKey: query.key,
+          agentId: query.agentId,
+          session: { sessionId: entry.sessionId },
+          toJSON(this: { session: { label?: string } }) {
+            if (this.session.label) {
+              this.session.label += "!";
+            }
+            return this;
+          },
+        },
+        new Set(peers.slice(0, 2).map((peer) => peer.connId)),
+      );
+      for (const peer of peers.slice(0, 2)) {
+        const frame = JSON.parse(String(vi.mocked(peer.socket.send).mock.lastCall?.[0]));
+        expect(frame.payload.session.label).toBe("Parent!");
+      }
+      for (const peer of peers) {
+        connection.clients.delete(peer);
+      }
       const activeRun = {
         controller: new AbortController(),
         sessionKey: query.key,
@@ -449,6 +506,18 @@ it("presents current recipient roles without SQLite while rejecting source overr
       expect(exec).not.toHaveBeenCalled();
       prepares.mockRestore();
       exec.mockRestore();
+      vi.mocked(clients[0]!.socket).send.mockImplementationOnce(() => {
+        replaceSessionEntrySync(scope, { ...entry, label: "Renamed during publication" });
+      });
+      connection.broadcastToConnIds(
+        "sessions.changed",
+        { sessionKey: query.key, agentId: query.agentId, session: { sessionId: entry.sessionId } },
+        new Set(clients.slice(0, 2).map((client) => client.connId)),
+      );
+      for (const [index, label] of ["Parent", "Renamed during publication"].entries()) {
+        const frame = JSON.parse(String(vi.mocked(clients[index]!.socket.send).mock.lastCall?.[0]));
+        expect(frame.payload.session.label).toBe(label);
+      }
       removeSessionMember(scope, member.id);
       await projection.ensureMaterialized();
       expect(
