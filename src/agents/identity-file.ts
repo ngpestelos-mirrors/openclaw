@@ -50,11 +50,9 @@ export function sanitizeAgentIdentityLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-const IDENTITY_CONFIG_FIELDS = ["name", "theme", "emoji", "avatar"] as const;
-
 function compactIdentityConfig(identity: IdentityConfig): IdentityConfig | undefined {
   const resolved: IdentityConfig = {};
-  for (const field of IDENTITY_CONFIG_FIELDS) {
+  for (const [field] of WRITABLE_IDENTITY_FIELDS) {
     const value = identity[field]?.trim();
     if (value) {
       resolved[field] = value;
@@ -103,7 +101,7 @@ function isIdentityPlaceholder(value: string): boolean {
 }
 
 /** Parse rich identity fields from human-authored markdown content. */
-function parseIdentityMarkdown(content: string): AgentIdentityFile {
+function parseIdentityMarkdown(content: string): AgentIdentityFile | null {
   const identity: AgentIdentityFile = {};
   const lines = content.split(/\r?\n/);
   for (const line of lines) {
@@ -123,42 +121,17 @@ function parseIdentityMarkdown(content: string): AgentIdentityFile {
     if (isIdentityPlaceholder(value)) {
       continue;
     }
-    if (label === "name") {
-      identity.name = value;
-    }
-    if (label === "emoji") {
-      identity.emoji = value;
-    }
-    if (label === "creature") {
-      identity.creature = value;
-    }
-    if (label === "vibe") {
-      identity.vibe = value;
-    }
-    if (label === "theme") {
-      identity.theme = value;
-    }
-    if (label === "avatar") {
-      identity.avatar = value;
+    switch (label) {
+      case "name":
+      case "emoji":
+      case "creature":
+      case "vibe":
+      case "theme":
+      case "avatar":
+        identity[label] = value;
     }
   }
-  return identity;
-}
-
-/** Return true when the parsed identity has any meaningful user-supplied value. */
-function identityHasValues(identity: AgentIdentityFile): boolean {
-  return Boolean(
-    identity.name ||
-    identity.emoji ||
-    identity.theme ||
-    identity.creature ||
-    identity.vibe ||
-    identity.avatar,
-  );
-}
-
-function buildIdentityLine(label: string, value: string): string {
-  return `- ${label}: ${value}`;
+  return Object.keys(identity).length > 0 ? identity : null;
 }
 
 function matchesIdentityLabel(line: string, label: string): boolean {
@@ -172,13 +145,6 @@ function matchesIdentityLabel(line: string, label: string): boolean {
     return false;
   }
   return normalizeIdentityLabel(cleaned.slice(0, colonIndex)) === normalizeIdentityLabel(label);
-}
-
-function normalizeIdentityContent(content: string | undefined): string[] {
-  if (!content) {
-    return [];
-  }
-  return content.replace(/\r\n/g, "\n").split("\n");
 }
 
 function resolveIdentityInsertIndex(lines: string[]): number {
@@ -219,14 +185,16 @@ export function mergeIdentityMarkdownContent(
   content: string | undefined,
   identity: Pick<AgentIdentityFile, "name" | "theme" | "emoji" | "avatar">,
 ): string {
-  const lines = normalizeIdentityContent(content);
-  const nextLines = lines.length > 0 ? [...lines] : ["# IDENTITY.md - Agent Identity", ""];
+  const nextLines = content
+    ? content.replace(/\r\n/g, "\n").split("\n")
+    : ["# IDENTITY.md - Agent Identity", ""];
 
   for (const [field, label] of WRITABLE_IDENTITY_FIELDS) {
     const value = identity[field]?.trim();
     if (!value) {
       continue;
     }
+    const identityLine = `- ${label}: ${value}`;
 
     const matchingIndexes = nextLines.reduce<number[]>((indexes, line, index) => {
       if (matchesIdentityLabel(line, label)) {
@@ -240,7 +208,7 @@ export function mergeIdentityMarkdownContent(
       if (firstIndex === undefined) {
         continue;
       }
-      nextLines[firstIndex] = buildIdentityLine(label, value);
+      nextLines[firstIndex] = identityLine;
       for (const duplicateIndex of duplicateIndexes.toReversed()) {
         nextLines.splice(duplicateIndex, 1);
       }
@@ -248,7 +216,7 @@ export function mergeIdentityMarkdownContent(
     }
 
     const insertIndex = resolveIdentityInsertIndex(nextLines);
-    nextLines.splice(insertIndex, 0, buildIdentityLine(label, value));
+    nextLines.splice(insertIndex, 0, identityLine);
   }
 
   return nextLines.join("\n").replace(/\n*$/, "\n");
@@ -311,7 +279,7 @@ export function readIdentityFileSnapshot(input: IdentityFileRead): IdentityFileS
         kind: "loaded",
         revision,
         size: buffer.byteLength,
-        identity: identityHasValues(identity) ? identity : null,
+        identity,
       };
     } finally {
       fs.closeSync(opened.fd);
