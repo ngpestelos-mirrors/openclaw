@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/commands/doctor-session-canonical-keys.completions.test.ts",
   "src/state/openclaw-agent-pending-inputs-schema.test.ts",
   "src/auto-reply/reply/queue.pending-inputs.test.ts",
   "src/trajectory/runtime-store-writer.test.ts",
@@ -748,6 +749,7 @@ const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
 
 // Preserve watch admission for consumers previously inferred into fast lanes.
 export const databaseWorkerCoreFormerFastKinds = new Map([
+  ["src/commands/doctor-session-canonical-keys.completions.test.ts", "unitFast"],
   ["test/e2e/qa-lab/runtime/gateway-loopback-lan-access.test.ts", "unitFast"],
   ["src/infra/outbound/bound-delivery-router.test.ts", "unitFast"],
   ["src/agents/harness/agent-end-side-effects.no-verbatim-capture.test.ts", "unitFast"],
