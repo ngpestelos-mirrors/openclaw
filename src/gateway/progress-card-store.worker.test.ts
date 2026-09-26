@@ -12,7 +12,6 @@ import { readSessionProgressCard } from "../session-cards/progress-card-store.js
 import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
-import * as workerStore from "../state/openclaw-agent-worker-store.js";
 import { runOpenClawAgentWorkerWrite } from "../state/openclaw-agent-write-admission.js";
 import {
   createOpenClawTestState,
@@ -74,7 +73,7 @@ it("executes lazy creation and FIFO replacements off the host using captured que
     release.resolve();
     await held;
     expect(await empty).toEqual({ card: null });
-    expect(await first).toMatchObject({
+    expect.soft(await first).toMatchObject({
       card: {
         markdown: "Captured",
         steps: [{ step: "Original", status: "pending" }],
@@ -82,6 +81,9 @@ it("executes lazy creation and FIFO replacements off the host using captured que
       },
     });
     expect(await second).toMatchObject({ card: { markdown: "Second", revision: 2 } });
+    expect(await progressCardStore.put(sessionKey, { expectedRevision: 1 }, "main")).toMatchObject({
+      card: { markdown: "Second", revision: 2 },
+    });
     expect(await progressCardStore.get(sessionKey, "main")).toMatchObject({
       markdown: "Second",
       revision: 2,
@@ -217,23 +219,3 @@ it.each(["shared.sqlite", "custom.json"])(
     }
   },
 );
-
-it("returns the committed card when publication cleanup fails", async () => {
-  const sessionKey = createSession("close-progress");
-  const open = workerStore.openOpenClawAgentSqliteWorkerStore;
-  using interception = vi
-    .spyOn(workerStore, "openOpenClawAgentSqliteWorkerStore")
-    .mockImplementation(async (...args) => {
-      const publication = await open(...args);
-      return {
-        ...publication,
-        async close() {
-          await publication.close();
-          throw new Error("Injected publication cleanup failure");
-        },
-      };
-    });
-  const result = await progressCardStore.put(sessionKey, { markdown: "Committed once" }, "main");
-  expect(result).toMatchObject({ card: { markdown: "Committed once", revision: 1 } });
-  expect(await progressCardStore.get(sessionKey, "main")).toEqual(result.card);
-});

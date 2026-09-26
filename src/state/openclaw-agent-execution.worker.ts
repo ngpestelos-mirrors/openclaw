@@ -5,7 +5,10 @@ import type { Result } from "@openclaw/normalization-core/result";
 import type { SessionTranscriptInitializationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
-import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
+import {
+  assertTransactionUsable,
+  runSqliteImmediateTransactionSync,
+} from "../infra/sqlite-transaction.js";
 import {
   onSqliteWalCheckpoint,
   type SqliteWalCheckpointSnapshot,
@@ -318,6 +321,7 @@ function openAgentDatabaseBackend(
     | typeof import("../config/sessions/session-accessor.sqlite-replacement-state.js")
     | undefined;
   let trajectory: typeof import("../trajectory/runtime-store.sqlite.js") | undefined;
+  let progressCard: typeof import("../session-cards/progress-card-store.js") | undefined;
   const domain = createAgentDatabaseDomainOwner({
     databasePath: input.databasePath,
     assertCurrent() {
@@ -349,6 +353,25 @@ function openAgentDatabaseBackend(
     }
     if (command.type === "session.entry.read" && entryReader) {
       return entryReader.readSessionEntryRow(openWriter(), command.input.sessionKey)?.entry;
+    }
+    if (command.type === "progress-card.put" && progressCard) {
+      const opened = openWriter();
+      const write = progressCard.writeSessionProgressCard;
+      return runSqliteImmediateTransactionSync(
+        opened.db,
+        () => {
+          admit("transaction");
+          return write(opened.db, command.input.sessionKey, command.input);
+        },
+        {
+          databaseLabel: input.databasePath,
+          operationLabel: command.type,
+          withCommit(commit) {
+            admit("commit");
+            commit();
+          },
+        },
+      );
     }
     if (command.type === "trajectory.events.append" && trajectory) {
       const opened = openWriter();
@@ -484,6 +507,11 @@ function openAgentDatabaseBackend(
   };
   return {
     prepare(command) {
+      if (command.type === "progress-card.put") {
+        return import("../session-cards/progress-card-store.js").then((module) => {
+          progressCard = module;
+        });
+      }
       if (command.type === "session.entry.read") {
         return import("../config/sessions/session-accessor.sqlite-entry-read.js").then((module) => {
           entryReader = module;

@@ -20,6 +20,7 @@ import type {
   SqliteWorkerAdmissionRequest,
 } from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import type { writeSessionProgressCard } from "../session-cards/progress-card-store.js";
 import type { SqliteTrajectoryRuntimeAppend } from "../trajectory/runtime-store.sqlite.js";
 import type { AgentDatabaseRegistryChange } from "./openclaw-agent-db-registry-listing.js";
 import type { AgentDatabaseDomainOperations } from "./openclaw-agent-execution-domain.js";
@@ -50,6 +51,10 @@ export type AgentDatabaseExecutionOpen = {
 };
 
 export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
+  "progress-card.put": {
+    input: { sessionKey: string } & Parameters<typeof writeSessionProgressCard>[2];
+    output: ReturnType<typeof writeSessionProgressCard>;
+  };
   "trajectory.events.append": { input: SqliteTrajectoryRuntimeAppend; output: void };
   "session.archives.preparePublication": {
     input: {

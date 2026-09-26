@@ -3,27 +3,29 @@ import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/ses
 import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { withSessionHistoryWorkerDatabase } from "../config/sessions/session-transcript-worker-runtime.js";
 import { captureSessionTranscriptStorageEnvironment } from "../config/sessions/transcript-target-binding.js";
-import { formatErrorMessage } from "../infra/errors.js";
-import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
-import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
+import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import {
   readSessionProgressCard,
   writeSessionProgressCard,
 } from "../session-cards/progress-card-store.js";
-import type { ProgressCardWriteOperations } from "../session-cards/progress-card-store.worker.js";
-import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
+import {
+  isOpenClawAgentDatabasePathCurrent,
+  readOpenClawAgentDatabaseIdentity,
+} from "../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import {
+  getOpenClawAgentDatabaseIfOpen,
   isIncognitoOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
   withOpenClawAgentDatabaseAsync,
 } from "../state/openclaw-agent-db.js";
-import { openOpenClawAgentSqliteWorkerStore } from "../state/openclaw-agent-worker-store.js";
-import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-admission.js";
+import type { AgentDatabaseRequestExecutionSource } from "../state/openclaw-agent-execution-contract.js";
+import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
+import {
+  runOpenClawAgentWorkerWrite,
+  runOpenClawAgentWriteAdmission,
+} from "../state/openclaw-agent-write-admission.js";
 import { captureGatewaySessionStoreScope } from "./board-store.js";
-
-const log = createSubsystemLogger("gateway/progress-card");
 
 export type ProgressCardStore = {
   get(sessionKey: string, agentId?: string): Promise<ProgressCard | null>;
@@ -97,7 +99,8 @@ export const progressCardStore: ProgressCardStore = {
         databaseOptions,
         async (database) => {
           assertCurrent();
-          if (typeof readOpenClawAgentDatabaseIdentity(database).identity === "symbol") {
+          const identity = readOpenClawAgentDatabaseIdentity(database);
+          if (typeof identity.identity === "symbol") {
             return runOpenClawAgentWriteTransaction(
               (current) => {
                 assertCurrent();
@@ -107,51 +110,66 @@ export const progressCardStore: ProgressCardStore = {
               { operationLabel: "progress-card.put" },
             );
           }
-          const publication = await openOpenClawAgentSqliteWorkerStore<ProgressCardWriteOperations>(
-            databaseOptions,
-            database.db,
-            {
-              moduleUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.progressCardStore),
-              input: undefined,
+          const execution = captureOpenClawAgentDatabaseExecution(databaseOptions, {
+            expectedIdentity: {
+              kind: "file",
+              physicalIdentity: identity.identity,
+              birthtime: identity.birthtime,
+              nativeLocation: identity.filename,
             },
-          );
-          let completed = false;
-          let failure: unknown;
+          });
+          const source: AgentDatabaseRequestExecutionSource = {
+            assertCurrent() {
+              execution.assertCurrent();
+              if (
+                getOpenClawAgentDatabaseIfOpen(databaseOptions) !== database ||
+                !isOpenClawAgentDatabasePathCurrent(database)
+              ) {
+                throw new Error("Progress-card mutation lost its borrowed database owner");
+              }
+              assertCurrent();
+            },
+            createAdmission(binding) {
+              return () => {
+                let phase: "waiting" | "transaction" | "commit" = "waiting";
+                return {
+                  nativeLocations: binding.nativeLocations,
+                  admission: createSqliteWorkerOperationAdmission((request, grant) => {
+                    binding.authorize(request);
+                    if (request.stage === "transaction" || request.stage === "commit") {
+                      if (
+                        !(
+                          (phase === "waiting" && request.stage === "transaction") ||
+                          (phase === "transaction" && request.stage === "commit")
+                        )
+                      ) {
+                        throw new Error("Progress-card authority requested out of order");
+                      }
+                      phase = request.stage;
+                    }
+                    if (!grant()) {
+                      throw new Error("Progress-card authority expired");
+                    }
+                  }, binding.attachment),
+                };
+              };
+            },
+          };
           try {
-            const value = await publication.run(
-              (worker) =>
+            const result = await runOpenClawAgentWorkerWrite(databaseOptions, () =>
+              execution.runExisting(source, (worker) =>
                 worker.execute({
                   type: "progress-card.put",
                   input: { ...captured, sessionKey: scope.sessionKey },
                 }),
-              assertCurrent,
+              ),
             );
-            completed = true;
-            return value;
-          } catch (error) {
-            failure = error;
-            throw error;
-          } finally {
-            try {
-              await publication.close();
-            } catch (error) {
-              if (!completed) {
-                throw new AggregateError(
-                  [failure, error],
-                  "Progress-card publication and cleanup failed",
-                  {
-                    cause: failure,
-                  },
-                );
-              }
-              try {
-                log.warn(
-                  `Progress-card publication completed before cleanup failed: ${formatErrorMessage(error)}`,
-                );
-              } catch {
-                // Diagnostics cannot make a committed write replayable.
-              }
+            if (!result) {
+              throw new Error("Progress-card database disappeared before mutation");
             }
+            return result;
+          } finally {
+            await execution.release();
           }
         },
         assertCurrent,
