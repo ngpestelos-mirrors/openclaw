@@ -645,7 +645,7 @@ describe("embedded-agent active-run steering", () => {
     );
   });
 
-  it("returns structured queue failures for legacy, unavailable, or compacting runs", () => {
+  it("preserves backend refusal and legacy compaction rejection", () => {
     const legacyQueue = vi.fn(async () => {});
     const unavailableQueue = vi.fn(async () => {});
     setActiveEmbeddedRun(
@@ -655,6 +655,7 @@ describe("embedded-agent active-run steering", () => {
     setActiveEmbeddedRun(
       "session-unavailable",
       createEmbeddedRunHandle({
+        isCompacting: true,
         messageInjection: { isAvailable: () => false, queueMessage: unavailableQueue },
       }),
     );
