@@ -10,6 +10,7 @@ import {
   type CurrentTranscriptProjection,
   type SessionTranscriptReadScope,
 } from "../config/sessions/session-accessor.js";
+import type { ActivitySummarySourceBatch } from "../config/sessions/session-history-types.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
@@ -35,7 +36,7 @@ export const ACTIVITY_SUMMARY_SYSTEM_PROMPT = [
 export function readActivitySummarySourceBatch(
   projection: CurrentTranscriptProjection,
   previousSummary?: SessionActivitySummary,
-) {
+): ActivitySummarySourceBatch {
   let previous = previousSummary;
   const snapshot = readSessionTranscriptBoundedMessageTailPageFromProjection(projection, {
     maxBytes: 0,
@@ -85,8 +86,6 @@ export function readActivitySummarySourceBatch(
   const omitted = (previous?.omittedContent ?? false) || page.events.length < page.scannedMessages;
   return { previous, snapshot, watermark, covered, page, omitted };
 }
-
-export type ActivitySummarySourceBatch = ReturnType<typeof readActivitySummarySourceBatch>;
 
 /** Restore only this transcript; redaction retains the host's registered secret values. */
 export async function readActivitySummarySource(params: {

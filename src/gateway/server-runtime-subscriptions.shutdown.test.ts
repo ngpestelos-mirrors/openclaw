@@ -5,6 +5,7 @@ import {
   persistSessionTranscriptTurn,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -16,6 +17,7 @@ import {
 import { GatewayConnectionWork } from "./server-connection-work.js";
 import { startGatewayEventSubscriptions } from "./server-runtime-subscriptions.js";
 import * as sessionObserverModel from "./session-observer-model.js";
+import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 
 const runtimeConfigState = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock("../config/io.js", () => ({ getRuntimeConfig: () => runtimeConfigState.value }));
@@ -51,10 +53,11 @@ function createParams(signal: AbortSignal): Parameters<typeof startGatewayEventS
   };
 }
 
-it.each(["before startup", "before inherited connection drain"] as const)(
+it.for(["before startup", "before inherited connection drain"] as const)(
   "cancels auxiliary model work %s",
-  async (phase) => {
+  async (phase, { signal }) => {
     let unsubs: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
+    let projection: SessionRowProjection | undefined;
     const testState = await createOpenClawTestState({ scenario: "minimal" });
     const connectionWork = new GatewayConnectionWork();
     const target = { key: "agent:main:shutdown-recap", agentId: "main" };
@@ -64,6 +67,7 @@ it.each(["before startup", "before inherited connection drain"] as const)(
       sessionId: "shutdown-recap",
     };
     const finish = createDeferred();
+    const modelStarted = createDeferred();
     const prepared = vi.spyOn(sessionObserverModel, "defaultPrepareModel").mockResolvedValue({
       config: {},
       authProfileId: undefined,
@@ -75,6 +79,7 @@ it.each(["before startup", "before inherited connection drain"] as const)(
     });
     const complete = vi.spyOn(sessionObserverModel, "defaultCompleteModel").mockImplementation(() =>
       trackAsyncWork(async () => {
+        modelStarted.resolve();
         await finish.promise;
         return {
           text: "Finished.",
@@ -98,7 +103,11 @@ it.each(["before startup", "before inherited connection drain"] as const)(
       if (phase === "before startup") {
         connectionWork.beginClose();
       }
-      unsubs = startGatewayEventSubscriptions(createParams(connectionWork.signal));
+      projection = await createSessionRowProjection({ cfg: runtimeConfigState.value });
+      unsubs = startGatewayEventSubscriptions({
+        ...createParams(connectionWork.signal),
+        getSessionRowProjection: () => projection,
+      });
       if (phase === "before startup") {
         expect(unsubs.sessionActivitySummaries.ensure(target).state).toBe("unavailable");
         expect(prepared).not.toHaveBeenCalled();
@@ -106,7 +115,8 @@ it.each(["before startup", "before inherited connection drain"] as const)(
         return;
       }
       await connectionWork.track(() => unsubs!.sessionActivitySummaries.ensure(target));
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledOnce());
+      await racePromiseWithAbortSignal(modelStarted.promise, signal);
+      expect(complete).toHaveBeenCalledOnce();
       const modelSignal = complete.mock.calls[0]![0].abortSignal!;
       let drained = false;
       draining = connectionWork.drain().then(() => {
@@ -130,6 +140,7 @@ it.each(["before startup", "before inherited connection drain"] as const)(
       await draining;
       prepared.mockRestore();
       complete.mockRestore();
+      projection?.dispose();
       await testState.cleanup();
     }
   },

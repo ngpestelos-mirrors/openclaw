@@ -1,10 +1,11 @@
-import type { ActivitySummarySourceBatch } from "../../gateway/session-activity-summary-source.js";
 import type { AgentHistoryActivity } from "../../infra/agent-activity-events.js";
 import type { SessionActivitySummary } from "./activity-summary.js";
+import type { SessionTranscriptBoundedMessageTailPage } from "./session-accessor.sqlite-active-events.js";
 import type {
   SessionTranscriptDisplayDeltaResult,
   SessionTranscriptMessageByIdOptions,
 } from "./session-accessor.sqlite-history-query.js";
+import type { SessionTranscriptWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
 import type {
   SessionTranscriptRawDeltaLimits,
   SessionTranscriptReadScope,
@@ -109,6 +110,17 @@ export type ReadSessionMessageByIdResult = {
 };
 
 export type SessionHistoryTranscriptBinding = { sessionKey: string; sessionId: string };
+
+export type ActivitySummarySourceBatch =
+  | {
+      previous: SessionActivitySummary | undefined;
+      snapshot: SessionTranscriptBoundedMessageTailPage;
+      watermark: SessionTranscriptWatermark;
+      covered: number;
+      page: SessionTranscriptBoundedMessageTailPage;
+      omitted: boolean;
+    }
+  | undefined;
 
 export type SessionHistoryWorkerRequest =
   | {

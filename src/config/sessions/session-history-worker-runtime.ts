@@ -1,5 +1,4 @@
 import path from "node:path";
-import type { ActivitySummarySourceBatch } from "../../gateway/session-activity-summary-source.js";
 import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-read.types.js";
 import { prepareGatewaySessionStoreReadSources } from "../../gateway/session-utils-store-sources.js";
 import {
@@ -22,6 +21,7 @@ import {
 import { prepareSessionTranscriptReadTargetCore } from "./session-accessor.transcript-read-target.js";
 import { readRestoredSessionTranscript } from "./session-cold-storage-read.js";
 import type {
+  ActivitySummarySourceBatch,
   ChatHistoryPage,
   ReadSessionMessageByIdResult,
   SessionHistoryDelta,
