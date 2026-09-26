@@ -92,6 +92,10 @@ export async function createSessionEntryWithTranscriptInWorker<TError>(
           return { ok: false, error: created.error, phase: "entry" };
         }
         const owner = options.resolveOwnerAssignment?.();
+        const labelClaim =
+          options.label === undefined
+            ? undefined
+            : { sessionKey: normalizedKey, label: options.label };
         const assertCurrent = () => {
           assertDatabaseCurrent();
           options.commitGuard?.();
@@ -187,6 +191,7 @@ export async function createSessionEntryWithTranscriptInWorker<TError>(
             assertCommitAllowed: assertCurrent,
             withCommit,
             ownerAssignment: owner ? { sessionKey: normalizedKey, owner } : undefined,
+            labelClaim,
             onLifecycleCommitted,
             checkPendingArchiveRecovery: true,
             afterCommitted: options.afterCommitted
@@ -238,6 +243,7 @@ export async function createSessionEntryWithTranscriptInWorker<TError>(
                   {
                     expectedRows: replacement.expectedRows,
                     labelOwnerKeys: replacement.labelOwnerKeys,
+                    labelClaim,
                     validationKeys: [normalizedKey],
                     replacements: [{ sessionKey: normalizedKey, entry: created.entry }],
                     checkPendingArchiveRecovery: true,

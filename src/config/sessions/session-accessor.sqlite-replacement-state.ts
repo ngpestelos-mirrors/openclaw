@@ -1,5 +1,6 @@
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { hasPendingSessionTranscriptArchives } from "./session-accessor.sqlite-archive-store-kernel.js";
+import { assertSessionCreationLabelAvailable } from "./session-accessor.sqlite-creation-read.js";
 import {
   projectSessionSharingEntry,
   type SessionEntryReplacementPublication,
@@ -56,6 +57,13 @@ export function commitSessionEntryReplacementsInDatabase(
   input: SessionEntryReplacementCommit,
   beforeReplacements: () => void,
 ): SessionEntryReplacementCommitted {
+  if (input.labelClaim) {
+    assertSessionCreationLabelAvailable(
+      database,
+      input.labelClaim.sessionKey,
+      input.labelClaim.label,
+    );
+  }
   if (
     input.includeLabelOwners !== undefined &&
     JSON.stringify(

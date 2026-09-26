@@ -21,7 +21,10 @@ import {
   patchSessionEntryCore,
 } from "./session-accessor.entry.js";
 import { applySessionEntryLifecycleMutation } from "./session-accessor.lifecycle.js";
-import { readSessionCreationSnapshotInDatabase } from "./session-accessor.sqlite-creation-read.js";
+import {
+  assertSessionCreationLabelAvailable,
+  readSessionCreationSnapshotInDatabase,
+} from "./session-accessor.sqlite-creation-read.js";
 import { createSessionEntryWithTranscriptInWorker } from "./session-accessor.sqlite-creation-worker.js";
 import { hasPreparedNativeSessionDeletion } from "./session-accessor.sqlite-deletion.js";
 import {
@@ -482,7 +485,10 @@ export async function createSessionEntryWithTranscript<TError = string>(
         removals: legacyKeys.map((sessionKey) => ({ sessionKey })),
         upserts: [{ sessionKey: normalizedKey, entry }],
         skipMaintenance: true,
-        ...(commitGuard ? { beforeCommitInTransaction: commitGuard } : {}),
+        beforeCommitInTransaction: () => {
+          commitGuard?.();
+          assertSessionCreationLabelAvailable(creationDatabase, normalizedKey, options.label);
+        },
         ...(withCommit ? { withCommit } : {}),
         ...(ownerAssignment
           ? {

@@ -15,6 +15,7 @@ export type SessionEntryReplacementCommit = {
   expectedRows: Map<string, ResolvedSessionEntryRow>;
   labelOwnerKeys: string[];
   includeLabelOwners?: string;
+  labelClaim?: { sessionKey: string; label: string };
   validationKeys: string[];
   replacements: SqliteSessionEntryReplacement[];
   checkPendingArchiveRecovery?: boolean;

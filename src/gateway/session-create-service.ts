@@ -108,7 +108,7 @@ import {
 } from "./session-lifecycle-preparation.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
-import { invalidSessionRequest } from "./session-request-error.js";
+import { invalidSessionRequest, sessionCreationFailure } from "./session-request-error.js";
 import { isSessionVisibilityAllowed, resolveSessionVisibility } from "./session-sharing.js";
 import {
   loadGatewaySessionEntryReadOnly,
@@ -1168,18 +1168,14 @@ export async function createGatewaySession(
         },
         ...(runtimeCwd ? { cwd: runtimeCwd } : {}),
       },
-    );
+    ).catch((error: unknown) => {
+      if (error instanceof Error && error.name === "SessionLabelConflictError") {
+        return { ...invalidSessionRequest(error.message), phase: "entry" as const };
+      }
+      throw error;
+    });
     if (!created.ok) {
-      return {
-        ok: false,
-        error:
-          created.phase === "transcript"
-            ? errorShape(
-                ErrorCodes.UNAVAILABLE,
-                `failed to create session transcript: ${created.error}`,
-              )
-            : created.error,
-      };
+      return sessionCreationFailure(created);
     }
     onPhase?.("effects");
     createdContext = {

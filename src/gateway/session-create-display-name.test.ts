@@ -1,8 +1,104 @@
 import { describe, expect, it } from "vitest";
+import { loadSessionEntry } from "../config/sessions/session-accessor.js";
+import { createDeferredCore } from "../shared/deferred.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewaySession } from "./session-create-service.js";
+import type { PreparedGatewaySessionLifecycle } from "./session-create-service.types.js";
 
 describe("session creation display titles", () => {
+  it.each(["durable", "incognito", "shared"])(
+    "reserves concurrent explicit labels atomically in %s storage",
+    async (storage) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const incognito = storage === "incognito";
+        const storePath = storage === "shared" ? state.statePath("shared.sqlite") : undefined;
+        const cfg = { agents: { entries: { main: {}, other: {} } }, session: { store: storePath } };
+        const prepared = createDeferredCore();
+        let preparing = 0;
+        const keys = ["first", "second"].map(
+          (name, index) =>
+            `agent:${storage === "shared" && index === 1 ? "other" : "main"}:dashboard:${incognito ? "incognito-" : ""}${name}`,
+        );
+        const outcomes = await Promise.all(
+          keys.map((key) => {
+            let joined = false;
+            const withCommit: PreparedGatewaySessionLifecycle["withCommit"] = async (run) => {
+              if (!joined) {
+                joined = true;
+                if (++preparing === 2) {
+                  prepared.resolve();
+                }
+                await prepared.promise;
+              }
+              return run(() => {});
+            };
+            return createGatewaySession({
+              cfg,
+              key,
+              incognito,
+              label: " Shared label ",
+              commandSource: "test",
+              operatorRoleActor: { kind: "system" },
+              prepareLifecycle: async () => ({ ok: true, value: { withCommit } }),
+            });
+          }),
+        );
+        expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+        expect(outcomes.find((outcome) => !outcome.ok)).toMatchObject({
+          ok: false,
+          error: { code: "INVALID_REQUEST", message: "label already in use: Shared label" },
+        });
+        for (const [index, key] of keys.entries()) {
+          const stored = loadSessionEntry({ sessionKey: key, storePath });
+          if (outcomes[index]?.ok) {
+            expect(stored?.label).toBe("Shared label");
+          } else {
+            expect(stored?.label).toBeUndefined();
+          }
+        }
+      });
+    },
+  );
+
+  it("rejects a label claimed by a raw metadata edit after creation preparation", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const siblingKey = "agent:main:sibling";
+      const sibling = await createGatewaySession({
+        cfg: {},
+        key: siblingKey,
+        label: "Old label",
+        commandSource: "test",
+        operatorRoleActor: { kind: "system" },
+      });
+      expect(sibling.ok).toBe(true);
+      if (!sibling.ok) {
+        throw new Error(sibling.error.message);
+      }
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const withCommit: PreparedGatewaySessionLifecycle["withCommit"] = async (run) => {
+        database.db
+          .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
+          .run(JSON.stringify({ ...sibling.entry, label: "Claimed" }), siblingKey);
+        return run(() => {});
+      };
+      await expect(
+        createGatewaySession({
+          cfg: {},
+          key: "agent:main:contender",
+          label: "Claimed",
+          commandSource: "test",
+          operatorRoleActor: { kind: "system" },
+          prepareLifecycle: async () => ({ ok: true, value: { withCommit } }),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "INVALID_REQUEST", message: "label already in use: Claimed" },
+      });
+      expect(loadSessionEntry({ sessionKey: "agent:main:contender" })).toBeUndefined();
+    });
+  });
+
   it.each([
     { kind: "trimmed", title: "  Native title  ", expected: "Native title" },
     { kind: "empty", title: "", expected: undefined },
