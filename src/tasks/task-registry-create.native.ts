@@ -42,14 +42,14 @@ class TaskCreateRejected extends Error {}
 
 /** The deprecated synchronous adapter retains its process insertion-order selection. */
 export function createTaskRecord(
-  params: CreateTaskRecordParams,
+  input: CreateTaskRecordParams,
   assertCurrent?: (existing: TaskRecord | undefined) => void,
 ): TaskRecord | null {
   try {
     const created = runTaskCreateOperation(
-      { params, taskId: crypto.randomUUID(), now: Date.now() },
+      { params: input, taskId: crypto.randomUUID(), now: Date.now() },
       {
-        readSelection(identity) {
+        readSelection(identity, params) {
           assertParentFlowLinkAllowed({ ...identity, parentFlowId: params.parentFlowId });
           let mirroredFlowIds: ReadonlySet<string> | undefined;
           const selectCurrent = () => {

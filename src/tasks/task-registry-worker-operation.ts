@@ -32,7 +32,13 @@ export async function runTaskRegistryWorkerOperation<Key extends keyof Operation
           assertCurrent();
           const facts = request.facts;
           if (
-            request.stage !== "transaction" ||
+            (request.stage !== "transaction" &&
+              !(
+                request.stage === "commit" &&
+                (command.type === "tasks.bindRunOwner" ||
+                  command.type === "tasks.finalizeActive" ||
+                  command.type === "tasks.settleUnstarted")
+              )) ||
             !isRecord(facts) ||
             facts.kind !== "task-registry-mutation" ||
             facts.operation !== command.type ||
@@ -43,7 +49,9 @@ export async function runTaskRegistryWorkerOperation<Key extends keyof Operation
           if (!grant()) {
             throw new Error("Task mutation admission expired");
           }
-          onGranted?.(admission);
+          if (request.stage === "transaction") {
+            onGranted?.(admission);
+          }
         });
         return {
           nativeLocations: [context.admission.databasePath],
