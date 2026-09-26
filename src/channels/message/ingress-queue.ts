@@ -17,6 +17,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { resolveChannelIngressStateEnv } from "./ingress-queue-client.js";
 import {
   FAILED_NULL_PAYLOAD_SENTINEL,
@@ -483,6 +484,7 @@ export function createChannelIngressQueue<
   TCompletedMetadata = unknown,
 >(
   options: CreateChannelIngressQueueOptions,
+  assertPruneCurrent?: () => void,
 ): ChannelIngressQueue<TPayload, TMetadata, TCompletedMetadata> {
   const channelId = normalizePart(options.channelId, "unknown");
   const accountId = normalizePart(options.accountId, "default");
@@ -1340,88 +1342,39 @@ export function createChannelIngressQueue<
     ) {
       return 0;
     }
-    const database = openChannelIngressDatabase(options.stateDir);
-    return runOpenClawStateWriteTransaction(
-      (tx) => {
-        const kysely = getChannelIngressKysely(tx.db);
-        let deleted = 0;
-        if (pendingCutoff !== null) {
-          let deleteQuery = kysely
-            .deleteFrom("channel_ingress_events")
-            .where("queue_name", "=", queueName)
-            .where("status", "=", "pending")
-            .where("updated_at", "<", pendingCutoff);
-          if (protectIds.length > 0) {
-            deleteQuery = deleteQuery.where("event_id", "not in", protectIds);
-          }
-          deleted += affectedRows(executeSqliteQuerySync(tx.db, deleteQuery));
-        }
-        if (completedCutoff !== null) {
-          let deleteQuery = kysely
-            .deleteFrom("channel_ingress_events")
-            .where("queue_name", "=", queueName)
-            .where("status", "=", "completed")
-            .where("completed_at", "<", completedCutoff);
-          if (protectIds.length > 0) {
-            deleteQuery = deleteQuery.where("event_id", "not in", protectIds);
-          }
-          deleted += affectedRows(executeSqliteQuerySync(tx.db, deleteQuery));
-        }
-        if (failedCutoff !== null) {
-          let deleteQuery = kysely
-            .deleteFrom("channel_ingress_events")
-            .where("queue_name", "=", queueName)
-            .where("status", "=", "failed")
-            .where("failed_at", "<", failedCutoff);
-          if (protectIds.length > 0) {
-            deleteQuery = deleteQuery.where("event_id", "not in", protectIds);
-          }
-          deleted += affectedRows(executeSqliteQuerySync(tx.db, deleteQuery));
-        }
-        const pruneMaxEntries = (status: string, maxEntries: number | null) => {
-          if (maxEntries === null) {
-            return;
-          }
-          const batchSize = 500;
-          const protectedSet = new Set(protectIds);
-          // Page before filtering protected IDs; they still occupy their retention slots.
-          while (true) {
-            const rowsToDelete = executeSqliteQuerySync(
-              tx.db,
-              kysely
-                .selectFrom("channel_ingress_events")
-                .select("event_id")
-                .where("queue_name", "=", queueName)
-                .where("status", "=", status)
-                .orderBy("updated_at", "desc")
-                .orderBy("event_id", "desc")
-                .limit(batchSize)
-                .offset(maxEntries),
-            ).rows;
-            const ids = rowsToDelete
-              .map((row) => row.event_id)
-              .filter((id) => !protectedSet.has(id));
-            if (ids.length === 0) {
-              return;
-            }
-            deleted += affectedRows(
-              executeSqliteQuerySync(
-                tx.db,
-                kysely
-                  .deleteFrom("channel_ingress_events")
-                  .where("queue_name", "=", queueName)
-                  .where("status", "=", status)
-                  .where("event_id", "in", ids),
-              ),
-            );
-          }
-        };
-        pruneMaxEntries("pending", pendingMaxEntries);
-        pruneMaxEntries("completed", completedMaxEntries);
-        pruneMaxEntries("failed", failedMaxEntries);
-        return deleted;
+    const context = captureOpenClawStateWorkerContext({
+      env: resolveChannelIngressStateEnv(options.stateDir),
+    });
+    const input = {
+      queueName,
+      pendingCutoff,
+      completedCutoff,
+      failedCutoff,
+      pendingMaxEntries,
+      completedMaxEntries,
+      failedMaxEntries,
+      protectIds,
+    };
+    const assertCurrent = () => {
+      context.admission.assertCurrent();
+      assertPruneCurrent?.();
+    };
+    assertCurrent();
+    const [{ runOpenClawStateWorkerOperation }, { createSqliteWorkerWriteAdmission }] =
+      await Promise.all([
+        import("../../state/openclaw-state-worker-store.js"),
+        import("../../infra/sqlite-worker-store.js"),
+      ]);
+    return runOpenClawStateWorkerOperation(
+      context,
+      (scope) => scope.execute({ type: "channelIngress.prune", input }),
+      {
+        requireStateLifecycle: true,
+        assertCurrent,
+        createAdmission: createSqliteWorkerWriteAdmission(assertCurrent, [
+          context.admission.databasePath,
+        ]),
       },
-      { path: database.path },
     );
   };
 

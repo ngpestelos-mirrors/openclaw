@@ -336,12 +336,15 @@ function buildChannelIngressQueueAccess(
       openOptions: { accountId?: string } | undefined,
       access: "read-write" | "read-only",
     ) =>
-      createChannelIngressQueue<TPayload, TMetadata, TCompletedMetadata>({
-        channelId,
-        ...(openOptions?.accountId === undefined ? {} : { accountId: openOptions.accountId }),
-        stateDir,
-        access,
-      });
+      createChannelIngressQueue<TPayload, TMetadata, TCompletedMetadata>(
+        {
+          channelId,
+          ...(openOptions?.accountId === undefined ? {} : { accountId: openOptions.accountId }),
+          stateDir,
+          access,
+        },
+        access === "read-write" && mutation ? () => mutation.assertCurrent() : undefined,
+      );
     const access: PluginDoctorChannelIngressQueueAccess = {
       channelId,
       // Detection runs before exclusive ownership, so it reads through the

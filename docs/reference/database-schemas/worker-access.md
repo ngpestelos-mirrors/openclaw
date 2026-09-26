@@ -460,6 +460,13 @@ Relevant identity or role mutations revoke prior authority before publication;
 closing or replacing the store invalidates its retained authority. Display caches
 and discovery snapshots do not grant permission.
 
+Channel ingress pruning runs in the shared-state writer. Callers capture retention
+cutoffs and protected IDs before yielding; the worker preserves the existing TTL,
+entry-cap, and queue-scoping rules and returns the deleted count. Monitor admission
+still awaits pruning before enqueue, and stop joins accepted pruning. Doctor's
+repair authority is checked at transaction and commit admission. Other queue
+mutations retain their existing owners; schema and retention policy are unchanged.
+
 Secret-store expiry runs in that worker for scheduled Gateway cleanup and
 post-mutation cleanup. The caller captures the database and expiry cutoffs before
 yielding; the worker retains the existing SQL and expiry rules and returns only

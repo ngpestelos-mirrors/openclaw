@@ -1,5 +1,14 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/channels/message/durable-receive.test.ts",
+  "src/channels/message/ingress-drain.async-work.test.ts",
+  "src/channels/message/ingress-monitor.admission.test.ts",
+  "src/channels/message/ingress-monitor.capacity.test.ts",
+  "src/channels/message/ingress-monitor.inspection.test.ts",
+  "src/channels/message/ingress-monitor.restart-drain.test.ts",
+  "src/channels/message/ingress-monitor.test.ts",
+  "src/channels/message/ingress-queue.pruning.test.ts",
+  "src/channels/message/ingress-queue.test.ts",
   "src/agents/session-placement-admission.caller-scope.test.ts",
   "src/trajectory/runtime-store-writer.test.ts",
   "src/trajectory/runtime.test.ts",

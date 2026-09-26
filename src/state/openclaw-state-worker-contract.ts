@@ -11,6 +11,7 @@ import type { WorktreeRegistryReadOperations } from "../agents/worktrees/registr
 import type { WorktreeRetirementOperations } from "../agents/worktrees/registry-retirement.worker.js";
 import type { AuditEventListQuery, AuditEventListPage } from "../audit/audit-event-types.js";
 import type { AuditWriterOperations } from "../audit/audit-event-writer.types.js";
+import type { ChannelIngressPruneInput } from "../channels/message/ingress-queue.kernel.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
@@ -191,6 +192,7 @@ export type OpenClawStateWorkerOperations = WorktreeRetirementOperations &
     };
     "agentProvenance.list": { input: undefined; output: AgentProvenance[] };
     "secrets.purge": { input: SecretStoreExpiryCutoffs; output: number };
+    "channelIngress.prune": { input: ChannelIngressPruneInput; output: number };
     "promotions.markNotified": { input: { slugs: string[]; now: number }; output: true };
     "promotions.recordClaim": { input: PreparedPromotionClaim; output: void };
     "managedImages.read": { input: { attachmentId: string }; output: ManagedImageRecord | null };

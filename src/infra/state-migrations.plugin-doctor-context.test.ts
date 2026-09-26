@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import * as sqliteAdmission from "./sqlite-worker-operation-admission.js";
 import { createPluginDoctorStateMigrationContext } from "./state-migrations.plugin-doctor-context.js";
 
 describe("plugin doctor session identity evidence", () => {
@@ -239,3 +242,86 @@ describe("plugin doctor session identity evidence", () => {
     );
   });
 });
+
+it.each(["current", "transaction", "commit"] as const)(
+  "joins ingress pruning with a native sibling writer when Doctor authority is %s",
+  async (revocation) => {
+    await withOpenClawTestState({ layout: "state-only" }, async ({ env, stateDir }) => {
+      let active = true;
+      const context = createPluginDoctorStateMigrationContext({
+        pluginId: "test",
+        env,
+        config: {},
+        channelIngress: {
+          channelIds: ["test"],
+          stateDir,
+          mutation: {
+            assertCurrent() {
+              if (!active) {
+                throw new Error("Doctor prune authority expired");
+              }
+            },
+          },
+        },
+      });
+      const queue = context.channelIngressQueues?.[0]?.openChannelIngressQueue?.({
+        accountId: "a",
+      });
+      if (!queue) {
+        throw new Error("Expected Doctor's writable ingress queue");
+      }
+      const sibling = createChannelIngressQueue({
+        channelId: "test",
+        accountId: "a",
+        stateDir,
+        now: () => 10,
+      });
+      await queue.enqueue("old", { text: "old" }, { receivedAt: 1 });
+      await queue.prune({ pendingMaxEntries: 10 });
+      const createAdmission = sqliteAdmission.createSqliteWorkerOperationAdmission;
+      const stages: string[] = [];
+      let siblingWrite: Promise<unknown> | undefined;
+      let pending: Promise<PromiseSettledResult<unknown>[]> | undefined;
+      const admission = vi
+        .spyOn(sqliteAdmission, "createSqliteWorkerOperationAdmission")
+        .mockImplementation((admit, attachment) =>
+          createAdmission((request, grant) => {
+            stages.push(request.stage);
+            if (request.stage === revocation) {
+              active = false;
+            }
+            admit(request, grant);
+            if (request.stage === "transaction") {
+              // The native waiter must service the worker's commit grant before taking its lock.
+              siblingWrite = sibling.enqueue("sibling", { text: "sibling" });
+            }
+          }, attachment),
+        );
+      try {
+        const pruning = queue.prune({ pendingMaxEntries: 0 });
+        pending = Promise.allSettled([pruning]);
+        if (revocation === "current") {
+          await expect(pruning).resolves.toBe(1);
+        } else {
+          await expect(pruning).rejects.toThrow("Doctor prune authority expired");
+        }
+        await siblingWrite;
+        expect(stages).toEqual(
+          revocation === "transaction" ? ["transaction"] : ["transaction", "commit"],
+        );
+        expect((await sibling.listPending()).map((row) => row.id)).toEqual(
+          revocation === "current"
+            ? ["sibling"]
+            : revocation === "commit"
+              ? ["old", "sibling"]
+              : ["old"],
+        );
+      } finally {
+        admission.mockRestore();
+        await pending;
+        await siblingWrite;
+        await closeOpenClawStateDatabaseAsync();
+      }
+    });
+  },
+);

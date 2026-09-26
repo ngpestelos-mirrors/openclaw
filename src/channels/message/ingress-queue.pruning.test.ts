@@ -1,14 +1,41 @@
+import fs from "node:fs";
+import path from "node:path";
 // Pruning keeps durable ingress retention bounded without loading retained rows.
 import { describe, expect, it } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
-import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../../state/openclaw-state-db.js";
 import { createTestIngressQueue, withTempState } from "./ingress-drain.test-helpers.js";
+import { pruneChannelIngressInDatabase } from "./ingress-queue.kernel.js";
 
 type ChannelIngressTestDatabase = Pick<OpenClawStateKyselyDatabase, "channel_ingress_events">;
 
 describe("channel ingress pruning", () => {
+  it("does not create a database when no retention work is requested", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue(stateDir);
+      expect(await queue.prune({ protectIds: ["retained"] })).toBe(0);
+      expect(fs.existsSync(path.join(stateDir, "state", "openclaw.sqlite"))).toBe(false);
+    });
+  });
+
+  it("captures protected ids before worker preparation yields", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue(stateDir, { now: () => 10 });
+      await queue.enqueue("a", { text: "retained" });
+      await queue.enqueue("z", { text: "expired" });
+      const protectIds = new Set([" a ", ""]);
+      const pruning = queue.prune({ pendingMaxEntries: 0, protectIds });
+      protectIds.clear();
+      expect(await pruning).toBe(1);
+      expect((await queue.listPending()).map((row) => row.id)).toEqual(["a"]);
+    });
+  });
+
   it("can bound pending scans and prune stale pending rows", async () => {
     await withTempState(async (stateDir) => {
       let clock = 1;
@@ -43,7 +70,7 @@ describe("channel ingress pruning", () => {
   });
 
   it.each(["pending", "completed", "failed"] as const)(
-    "prunes %s overflow without materializing the retained prefix",
+    "prunes %s overflow in the connection kernel without materializing the retained prefix",
     async (status) => {
       await withTempState(async (stateDir) => {
         let clock = 1;
@@ -66,10 +93,24 @@ describe("channel ingress pruning", () => {
             : null,
         );
         try {
-          const pruneOptions = { [`${status}MaxEntries`]: 2 };
-          expect(await queue.prune(pruneOptions)).toBe(518);
+          const prune = () =>
+            runOpenClawStateWriteTransaction(
+              () =>
+                pruneChannelIngressInDatabase(db, {
+                  queueName: JSON.stringify(["test", "a"]),
+                  pendingCutoff: null,
+                  completedCutoff: null,
+                  failedCutoff: null,
+                  pendingMaxEntries: status === "pending" ? 2 : null,
+                  completedMaxEntries: status === "completed" ? 2 : null,
+                  failedMaxEntries: status === "failed" ? 2 : null,
+                  protectIds: [],
+                }),
+              { env: { OPENCLAW_STATE_DIR: stateDir } },
+            );
+          expect(prune()).toBe(518);
           expect(reads.rowCounts.candidates).toBe(518);
-          expect(await queue.prune(pruneOptions)).toBe(0);
+          expect(prune()).toBe(0);
           expect(reads.rowCounts.candidates).toBe(518);
         } finally {
           reads.restore();
