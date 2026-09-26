@@ -40,6 +40,8 @@ Workspace quiescence retries slow process probes within one 30-second budget. Th
 
 Result staging and rollback preserve exact supported filenames and file bytes, independently of Git attributes and checkout encodings.
 
+SSH workspace downloads check byte and entry limits during transfer and again after rsync exits. Temporary files renamed away during a check do not interrupt the download; the check continues through the remaining files. Directory changes and read failures stop the transfer before its result can be accepted.
+
 If workspace transfer ownership closes during an upload, the Gateway disconnects the uploader promptly, including while it waits for validation after sending all bytes. The cancelled upload cannot become an accepted workspace result.
 
 Replacement and Gateway Move restore files against the pinned base; they do not restore worker commit history, merge stages, or partial staging. After a recorded cloud publication, Gateway Move continues the local branch from that verified pushed commit while keeping later accepted file changes available for review. Review recovered conflict-marker files before continuing. When a publishable checkpoint is available, restoration marks its added files as intent-to-add, keeping added and edited contents unstaged for review. Accepted publication deletions are restored as staged index removals; any recovered file bytes remain available. Ignored recovery-only files and attachments are not enrolled for publication. If publication capture was unavailable, recovered ignored files need an explicit `git add -f` before publishing.

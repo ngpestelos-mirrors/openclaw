@@ -1,8 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { readRegularFile } from "@openclaw/fs-safe/advanced";
+import {
+  assertDirectoryIdentitySync,
+  readDirectoryIdentity,
+  readRegularFile,
+  type DirectoryIdentity,
+} from "@openclaw/fs-safe/advanced";
 import { root as fsSafeRoot } from "@openclaw/fs-safe/root";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
@@ -390,21 +396,62 @@ async function assertInboundDirectoryQuota(
   limits: { bytes: number; entries: number },
 ): Promise<void> {
   const root = await fsSafeRoot(directory);
+  const rootIdentity = await readDirectoryIdentity(root.rootReal);
+  await root.resolve("");
   let bytes = 0;
-  for await (const entry of root.walk("", {
-    order: "filesystem",
-    maxEntries: limits.entries,
-    symlinkPolicy: "skip",
-  })) {
-    if (entry.kind === "file") {
-      bytes += entry.size;
-    }
-    if (entry.kind === "truncated" || bytes > limits.bytes) {
+  let entries = 0;
+  const assertQuota = () => {
+    if (entries > limits.entries || bytes > limits.bytes) {
       throw new Error(
         `Cloud workspace inbound transfer exceeds its ${limits.bytes} byte or ${limits.entries} entry limit`,
       );
     }
-  }
+  };
+  const walk = async (current: string, identity: DirectoryIdentity): Promise<void> => {
+    const assertCurrent = () => {
+      assertDirectoryIdentitySync(root.rootReal, rootIdentity);
+      if (current !== root.rootReal) {
+        assertDirectoryIdentitySync(current, identity);
+      }
+    };
+    assertCurrent();
+    const handle = await fs.opendir(current, { bufferSize: 1 });
+    try {
+      while (true) {
+        assertCurrent();
+        const entry = await handle.read();
+        assertCurrent();
+        if (!entry) {
+          return;
+        }
+        entries += 1;
+        assertQuota();
+        const candidate = path.join(current, entry.name);
+        let stats;
+        try {
+          stats = fsSync.lstatSync(candidate, { bigint: true });
+        } catch (error) {
+          assertCurrent();
+          // Rsync renames temporary leaves during a scan. Keep the same iterator
+          // so a vanished leaf cannot hide later siblings from the quota check.
+          if (hasNodeErrorCode(error, "ENOENT")) {
+            continue;
+          }
+          throw error;
+        }
+        assertCurrent();
+        if (stats.isDirectory()) {
+          await walk(candidate, { dev: stats.dev, ino: stats.ino, realPath: candidate });
+        } else if (stats.isFile()) {
+          bytes += Number(stats.size);
+          assertQuota();
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+  };
+  await walk(root.rootReal, rootIdentity);
 }
 
 export async function runBoundedInboundRsync(params: {

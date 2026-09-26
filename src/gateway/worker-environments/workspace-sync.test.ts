@@ -1,9 +1,12 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withTestTimeout } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { CommandOptions, SpawnResult } from "../../process/exec.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import type { PreparedWorkerSsh } from "./ssh.js";
 import { rsyncArgvPort, sshArgvPort } from "./worker-ssh-argv.test-support.js";
 import { runBoundedInboundRsync } from "./workspace-sync-helpers.js";
@@ -231,6 +234,152 @@ describe("worker workspace rsync transport retry", () => {
 
 describe("bounded inbound workspace transfer", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+  it.each(["within", "bytes", "entries"] as const)(
+    "continues the same quota scan after a listed leaf disappears (%s limit)",
+    async (limit) => {
+      const destinationRoot = await fs.realpath(tempDirs.make("openclaw-rsync-disappearance-"));
+      const names = new Set([
+        `${path.basename(destinationRoot)}-a`,
+        `${path.basename(destinationRoot)}-b`,
+      ]);
+      await Promise.all(
+        [...names].map((name) => fs.writeFile(path.join(destinationRoot, name), "data")),
+      );
+      const lstat = fsSync.lstatSync.bind(fsSync);
+      let removed = false;
+      vi.spyOn(fsSync, "lstatSync").mockImplementation((...args) => {
+        if (!removed && names.has(path.basename(String(args[0])))) {
+          fsSync.unlinkSync(args[0]);
+          removed = true;
+        }
+        return lstat(...args);
+      });
+
+      const transfer = runBoundedInboundRsync({
+        argv: ["rsync"],
+        destinationRoot,
+        entryLimit: limit === "entries" ? 1 : 10,
+        totalByteLimit: limit === "bytes" ? 1 : 100,
+        ownerSignal: new AbortController().signal,
+        runTask: async () => result(),
+        timeoutMs: 10_000,
+      });
+      if (limit === "within") {
+        await expect(transfer).resolves.toEqual(result());
+      } else {
+        await expect(transfer).rejects.toThrow("inbound transfer exceeds");
+      }
+      expect(removed).toBe(true);
+      expect(await fs.readdir(destinationRoot)).toHaveLength(1);
+    },
+  );
+
+  it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
+    "joins the writer before reporting a real directory read denial",
+    async () => {
+      const destinationRoot = tempDirs.make("openclaw-rsync-denied-");
+      const unreadable = path.join(destinationRoot, "unreadable");
+      await fs.mkdir(unreadable);
+      await fs.writeFile(path.join(unreadable, "payload"), "data");
+      await fs.chmod(unreadable, 0);
+      const aborted = createDeferredCore();
+      const releaseWriter = createDeferredCore();
+      let writerSettled = false;
+      let reported = false;
+      const transfer = runBoundedInboundRsync({
+        argv: ["rsync"],
+        destinationRoot,
+        entryLimit: 10,
+        totalByteLimit: 100,
+        ownerSignal: new AbortController().signal,
+        runTask: async (_argv, { signal }) => {
+          signal?.addEventListener("abort", () => aborted.resolve(), { once: true });
+          await releaseWriter.promise;
+          writerSettled = true;
+          throw new Error("transfer cancelled");
+        },
+        timeoutMs: 10_000,
+      });
+      const observed = transfer.finally(() => {
+        reported = true;
+      });
+      void observed.catch(() => {});
+      try {
+        await withTestTimeout(
+          aborted.promise,
+          10_000,
+          "directory read denial did not cancel transfer",
+        );
+        expect(reported).toBe(false);
+        expect(writerSettled).toBe(false);
+        releaseWriter.resolve();
+        await expect(observed).rejects.toThrow(/denied/i);
+        expect(writerSettled).toBe(true);
+      } finally {
+        releaseWriter.resolve();
+        await observed.catch(() => {});
+        await fs.chmod(unreadable, 0o700);
+      }
+    },
+  );
+
+  it.each(["root", "nested"] as const)(
+    "rejects a replaced %s directory instead of ignoring its missing leaf",
+    async (scope) => {
+      const parent = await fs.realpath(tempDirs.make("openclaw-rsync-replaced-"));
+      const destinationRoot = path.join(parent, "destination");
+      const current = scope === "root" ? destinationRoot : path.join(destinationRoot, "nested");
+      await fs.mkdir(current, { recursive: true });
+      const leaf = path.join(current, "temporary.json");
+      await fs.writeFile(leaf, "data");
+      const lstat = fsSync.lstatSync.bind(fsSync);
+      let replaced = false;
+      vi.spyOn(fsSync, "lstatSync").mockImplementation((...args) => {
+        if (!replaced && args[0] === leaf) {
+          fsSync.renameSync(current, path.join(parent, "previous"));
+          fsSync.mkdirSync(current);
+          replaced = true;
+        }
+        return lstat(...args);
+      });
+
+      await expect(
+        runBoundedInboundRsync({
+          argv: ["rsync"],
+          destinationRoot,
+          entryLimit: 10,
+          totalByteLimit: 100,
+          ownerSignal: new AbortController().signal,
+          runTask: async () => result(),
+          timeoutMs: 10_000,
+        }),
+      ).rejects.toThrow(/changed/);
+      expect(replaced).toBe(true);
+    },
+  );
+
+  it("counts symlinks as entries without following their targets", async () => {
+    const parent = tempDirs.make("openclaw-rsync-symlink-");
+    const destinationRoot = path.join(parent, "destination");
+    const outside = path.join(parent, "outside");
+    await fs.mkdir(destinationRoot);
+    await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, "oversized"), "over quota");
+    await fs.symlink(outside, path.join(destinationRoot, "link"), "junction");
+    const transfer = (entryLimit: number) =>
+      runBoundedInboundRsync({
+        argv: ["rsync"],
+        destinationRoot,
+        entryLimit,
+        totalByteLimit: 1,
+        ownerSignal: new AbortController().signal,
+        runTask: async () => result(),
+        timeoutMs: 10_000,
+      });
+    await expect(transfer(1)).resolves.toEqual(result());
+    await expect(transfer(0)).rejects.toThrow("inbound transfer exceeds");
+  });
 
   it("aborts and joins a transfer before reporting a failed directory scan", async () => {
     vi.useFakeTimers();
