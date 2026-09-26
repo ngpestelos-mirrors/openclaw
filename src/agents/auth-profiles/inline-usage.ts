@@ -313,7 +313,12 @@ async function persistAgentAuthProfileUsage(
             throw outcome.error;
           }
           if (!outcome.value.ok) {
-            throw authProfileUsageError(outcome.value.error);
+            const error = authProfileUsageError(outcome.value.error);
+            if (isSqliteLockError(error)) {
+              failure = { error };
+              return null;
+            }
+            throw error;
           }
           return outcome.value.receipt;
         },
@@ -335,10 +340,7 @@ async function persistAgentAuthProfileUsage(
         agentDir: effectiveAgentDir,
         error: message,
       });
-      if (!isSqliteLockError(error)) {
-        throw error;
-      }
-      return null;
+      throw error;
     }
   };
   const outcome = await runWithAdmission().then(

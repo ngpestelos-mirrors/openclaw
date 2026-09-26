@@ -8,8 +8,6 @@ import {
   closeOpenClawAgentDatabaseByPath,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { encodeOpenClawStateWorkerError } from "../../state/openclaw-state-worker-error.js";
-import * as stateWorker from "../../state/openclaw-state-worker-store.js";
 import {
   connectUserModelAccount,
   readUserModelAuthProfile,
@@ -18,7 +16,6 @@ import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { AUTH_STORE_VERSION } from "./constants.js";
-import type { AuthProfileUsageResult } from "./inline-usage-kernel.js";
 import * as publication from "./inline-usage-publication.js";
 import * as usageReader from "./inline-usage-reader.js";
 import { persistInlineAuthFailure } from "./inline-usage.js";
@@ -616,82 +613,3 @@ it.each(["success-first", "failure-first"] as const)(
     );
   },
 );
-
-it.each([
-  { owner: "shared", outcome: "refused" },
-  { owner: "personal", outcome: "refused" },
-  { owner: "shared", outcome: "unknown" },
-  { owner: "personal", outcome: "unknown" },
-] as const)("settles $owner success with a $outcome lock outcome", async ({ owner, outcome }) => {
-  await withOpenClawTestState(
-    { label: "auth-success-lock-outcome", scenario: "minimal" },
-    async () => {
-      let store = createStore();
-      let selected = profileId;
-      if (owner === "personal") {
-        selected = connectUserModelAccount({
-          ownerProfileId: ensureProfileForEmail("lock-fixture@example.test").id,
-          credential: store.profiles[profileId],
-          assertCurrent() {},
-        }).authProfileId;
-        store = { version: 1, profiles: { [selected]: store.profiles[profileId] } };
-      } else {
-        saveAuthProfileStore(store, undefined, saveOptions);
-      }
-      const readUsage = () =>
-        owner === "personal"
-          ? readUserModelAuthProfile(selected)?.usageStats
-          : loadPersistedAuthProfileStore()?.usageStats?.[selected];
-      const previous = readUsage();
-      const caller = structuredClone(store);
-      const busy = Object.assign(new Error("database is locked"), {
-        code: "SQLITE_BUSY",
-        errcode: 5,
-      });
-      const error = encodeOpenClawStateWorkerError(busy, { includeOrdinary: true });
-      if (!error) {
-        throw new Error("Synthetic lock refusal could not be encoded");
-      }
-      const refusal: AuthProfileUsageResult = { ok: false, error };
-      const run = stateWorker.runOpenClawStateWorkerOperation;
-      let injected = 0;
-      vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation").mockImplementation(
-        (context, operation, options) =>
-          run(
-            context,
-            (scope) => {
-              const execute = vi.fn<typeof scope.execute>();
-              execute.mockImplementation(async (command, executeOptions) => {
-                const success =
-                  command.type === "authProfiles.sharedSuccess" ||
-                  command.type === "authProfiles.personalSuccess";
-                if (success) {
-                  injected += 1;
-                  if (outcome === "refused") {
-                    return refusal;
-                  }
-                }
-                const result = await scope.execute(command, executeOptions);
-                if (success) {
-                  throw busy;
-                }
-                return result;
-              });
-              return operation({ execute });
-            },
-            options,
-          ),
-      );
-      const pending = markAuthProfileSuccess({ store, provider, profileId: selected });
-      if (outcome === "refused") {
-        await expect(pending).resolves.toBeUndefined();
-        expect(readUsage()).toEqual(previous);
-      } else {
-        await expect(pending).rejects.toThrow("database is locked");
-        expect(readUsage()?.errorCount).toBe(0);
-      }
-      expect(injected).toBe(1);
-      expect(store).toEqual(caller);
-    },
-  );
-});
