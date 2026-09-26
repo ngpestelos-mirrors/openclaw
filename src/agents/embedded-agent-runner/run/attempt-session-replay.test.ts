@@ -11,7 +11,7 @@ import {
 import { resolveSessionTranscriptReadFence } from "../../../config/sessions/session-transcript-read-fence.js";
 import { withOwnedSessionTranscriptWrites } from "../../../config/sessions/transcript-write-context.js";
 import { rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
-import type { ImageContent } from "../../../llm/types.js";
+import type { ImageContent, Message } from "../../../llm/types.js";
 import { finalizeRuntimePromptImages } from "../../../media/runtime-prompt-image-provenance.js";
 import { readVisibleSessionTranscriptMessageEntries } from "../../../plugin-sdk/session-transcript-runtime.js";
 import { createNestedToolActivity } from "../../../sessions/nested-tool-activity.js";
@@ -61,6 +61,20 @@ import { buildRuntimeContextCustomMessage } from "./runtime-context-prompt.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 registerAgentSessionLoopTestLifecycle();
+
+function mockAssistantText(text: string) {
+  streamMocks.streamSimple.mockImplementation((model) =>
+    createAssistantResultStream(createAssistant(model, [{ type: "text", text }])),
+  );
+}
+
+function expectSinglePromptUser(messages: Message[], prompt: string) {
+  const users = messages.filter(
+    (message) => message.role === "user" && JSON.stringify(message.content).includes(prompt),
+  );
+  expect(users).toHaveLength(1);
+  return users[0]!;
+}
 
 function appendCompletedToolWork(
   manager: SessionManager,
@@ -466,21 +480,11 @@ describe("interrupted canonical user replay", () => {
           const before = loadTranscriptEventsSync(fixture.target);
           await withReplaySession(fixture, appendOnly, async (session, submit) => {
             expect(fixture.attempt.userTurnTranscriptRecorder!.hasPersisted()).toBe(true);
-            streamMocks.streamSimple.mockImplementation((model) =>
-              createAssistantResultStream(
-                createAssistant(model, [{ type: "text", text: "Continued from completed work" }]),
-              ),
-            );
+            mockAssistantText("Continued from completed work");
             await submit();
             expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
             const messages = streamMocks.streamSimple.mock.calls[0]![1].messages;
-            expect(
-              messages.filter(
-                (message: { role: string; content: unknown }) =>
-                  message.role === "user" &&
-                  JSON.stringify(message.content).includes(fixture.attempt.prompt),
-              ),
-            ).toHaveLength(1);
+            expectSinglePromptUser(messages, fixture.attempt.prompt);
             if (toolProgress) {
               expect(JSON.stringify(messages)).not.toContain("Nested read completed");
               expect(messages).toContainEqual(
@@ -542,11 +546,7 @@ describe("interrupted canonical user replay", () => {
                   input: { text: queuedText, timestamp: 2, idempotencyKey: "queued-user:user" },
                 })
               : undefined;
-          streamMocks.streamSimple.mockImplementation((model) =>
-            createAssistantResultStream(
-              createAssistant(model, [{ type: "text", text: "Both requests handled" }]),
-            ),
-          );
+          mockAssistantText("Both requests handled");
           try {
             if (recorder) {
               await recorder.stageApproved!({
@@ -567,13 +567,7 @@ describe("interrupted canonical user replay", () => {
               before,
             );
             for (const [, context] of streamMocks.streamSimple.mock.calls) {
-              expect(
-                context.messages.filter(
-                  (message: { role: string; content: unknown }) =>
-                    message.role === "user" &&
-                    JSON.stringify(message.content).includes(fixture.attempt.prompt),
-                ),
-              ).toHaveLength(1);
+              expectSinglePromptUser(context.messages, fixture.attempt.prompt);
             }
             expect(
               SessionManager.open(fixture.target)
@@ -611,11 +605,7 @@ describe("interrupted canonical user replay", () => {
     manager.appendMessage(user);
     const { session } = await createTestSession({ sessionManager: manager });
     const image = { type: "image" as const, data: "aW1hZ2U=", mimeType: "image/png" };
-    streamMocks.streamSimple.mockImplementation((model) =>
-      createAssistantResultStream(
-        createAssistant(model, [{ type: "text", text: "Image described" }]),
-      ),
-    );
+    mockAssistantText("Image described");
     try {
       await session.prompt(user.content, {
         persistedUserIdempotencyKey: user.idempotencyKey,
@@ -656,21 +646,12 @@ describe("interrupted canonical user replay", () => {
             fixture,
             false,
             async (session, submit) => {
-              streamMocks.streamSimple.mockImplementation((model) =>
-                createAssistantResultStream(
-                  createAssistant(model, [{ type: "text", text: "Image turn recovered" }]),
-                ),
-              );
+              mockAssistantText("Image turn recovered");
               await submit();
               expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
               const messages = streamMocks.streamSimple.mock.calls[0]![1].messages;
-              const users = messages.filter(
-                (message: { role: string; content: unknown }) =>
-                  message.role === "user" &&
-                  JSON.stringify(message.content).includes(fixture.attempt.prompt),
-              );
-              expect(users).toHaveLength(1);
-              expect(users[0].content).toContainEqual(image);
+              const user = expectSinglePromptUser(messages, fixture.attempt.prompt);
+              expect(user.content).toContainEqual(image);
               expect(loadTranscriptEventsSync(fixture.target).slice(0, before.length)).toEqual(
                 before,
               );
@@ -721,9 +702,7 @@ describe("interrupted canonical user replay", () => {
     const { session } = await createTestSession({ sessionManager: manager });
     const before = structuredClone(session.messages);
     const providerPrefix = await session.agent.convertToLlm(before);
-    streamMocks.streamSimple.mockImplementation((model) =>
-      createAssistantResultStream(createAssistant(model, [{ type: "text", text: "Continued" }])),
-    );
+    mockAssistantText("Continued");
     try {
       await session.prompt("Rebuilt prompt", {
         persistedUserIdempotencyKey: user.idempotencyKey,
@@ -857,11 +836,7 @@ describe("interrupted canonical user replay", () => {
           appendOnly,
           async (session, submit) => {
             activeSession = session;
-            streamMocks.streamSimple.mockImplementation((model) =>
-              createAssistantResultStream(
-                createAssistant(model, [{ type: "text", text: "Recovered same turn" }]),
-              ),
-            );
+            mockAssistantText("Recovered same turn");
             await submit();
             expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
             expect(session.getLastAssistantText()).toBe("Recovered same turn");
@@ -991,11 +966,7 @@ describe("interrupted canonical user replay", () => {
                     },
               ),
             );
-            streamMocks.streamSimple.mockImplementation((model) =>
-              createAssistantResultStream(
-                createAssistant(model, [{ type: "text", text: "Recovered after retry" }]),
-              ),
-            );
+            mockAssistantText("Recovered after retry");
             await submit();
             expect(streamMocks.streamSimple).toHaveBeenCalledTimes(2);
             expect(session.getLastAssistantText()).toBe("Recovered after retry");

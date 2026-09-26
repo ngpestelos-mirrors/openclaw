@@ -47,7 +47,7 @@ import {
 } from "./bot-processing-outcome.js";
 import { createTelegramUpdateTracker } from "./bot-update-tracker.js";
 import type { TelegramUpdateKeyContext } from "./bot-updates.js";
-import { apiThrottler, Bot, sequentialize, type ApiClientOptions } from "./bot.runtime.js";
+import { apiThrottler, Bot, type ApiClientOptions } from "./bot.runtime.js";
 import type { TelegramBotOptions } from "./bot.types.js";
 import {
   setTelegramCallbackQueryAnswerPromise,
@@ -69,19 +69,17 @@ import {
 } from "./poll-answer-context.js";
 import { formatTelegramRawUpdateForLog } from "./raw-update-log.js";
 import type { TelegramSendChatActionHandler } from "./sendchataction-401-backoff.js";
-import { getTelegramSequentialConstraints } from "./sequential-key.js";
+import { createTelegramSequentializer } from "./sequentialize.js";
 import { createTelegramThreadBindingManager } from "./thread-bindings.js";
 
 type TelegramBotRuntime = {
   Bot: typeof Bot;
-  sequentialize: typeof sequentialize;
   apiThrottler: typeof apiThrottler;
 };
 type TelegramBotInstance = InstanceType<TelegramBotRuntime["Bot"]>;
 
 const DEFAULT_TELEGRAM_BOT_RUNTIME: TelegramBotRuntime = {
   Bot,
-  sequentialize,
   apiThrottler,
 };
 export async function createTelegramBotCore(
@@ -254,7 +252,7 @@ export async function createTelegramBotCore(
     await next();
   });
 
-  bot.use(botRuntime.sequentialize(getTelegramSequentialConstraints));
+  bot.use(createTelegramSequentializer());
 
   // A fast vote can know its route before outbound verification finishes. Hold
   // only that route's sequential lane until registration succeeds or declines it.
