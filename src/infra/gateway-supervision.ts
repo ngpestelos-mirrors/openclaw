@@ -32,7 +32,8 @@ type SupervisorPreset = {
 const SUPERVISOR_PRESETS = {
   docker: {
     name: "Docker Compose",
-    runFrom: "Docker host",
+    runFrom:
+      "Docker host, in this deployment's Compose project directory, using its existing Compose file set and order",
     actions: {
       start: "docker compose up -d openclaw-gateway",
       stop: "docker compose stop openclaw-gateway",

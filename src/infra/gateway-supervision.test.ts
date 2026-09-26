@@ -153,7 +153,8 @@ describe("gateway supervision", () => {
     {
       type: "docker",
       name: "Docker Compose",
-      location: "Docker host",
+      location:
+        "Docker host, in this deployment's Compose project directory, using its existing Compose file set and order",
       command: "docker compose up -d openclaw-gateway",
     },
     {
@@ -205,7 +206,9 @@ describe("gateway supervision", () => {
     const env = { OPENCLAW_SUPERVISOR_MODE: "docker" };
     expect(() =>
       assertGatewayServiceMutationAllowed("repair the gateway service", env, "repair"),
-    ).toThrow("Repair (Docker host): docker compose up -d --force-recreate openclaw-gateway");
+    ).toThrow(
+      "Repair (Docker host, in this deployment's Compose project directory, using its existing Compose file set and order): docker compose up -d --force-recreate openclaw-gateway",
+    );
     expect(() =>
       assertGatewayServiceMutationAllowed("install the gateway service", env, "install"),
     ).toThrow("Use that supervisor to install the gateway service.");
@@ -216,7 +219,7 @@ describe("gateway supervision", () => {
     expect(
       formatExternalSupervisorUpdateRequired(resolveExternalSupervisorGuidance("update", env), env),
     ).toContain(
-      "Update (Docker host): docker compose pull openclaw-gateway && docker compose up -d openclaw-gateway",
+      "Update (Docker host, in this deployment's Compose project directory, using its existing Compose file set and order): docker compose pull openclaw-gateway && docker compose up -d openclaw-gateway",
     );
     const clawctlEnv = { OPENCLAW_SUPERVISOR_MODE: "clawctl" };
     const clawctlMessage = formatExternalSupervisorUpdateRequired(

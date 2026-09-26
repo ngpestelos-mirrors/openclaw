@@ -224,6 +224,13 @@ these commands match your deployment:
 | Repair  | `docker compose up -d --force-recreate openclaw-gateway`                        |
 | Update  | `docker compose pull openclaw-gateway && docker compose up -d openclaw-gateway` |
 
+Run these commands in the deployment's Compose project directory with the same
+Compose file set and order used at setup. The displayed commands use Compose
+default discovery or the host's `COMPOSE_FILE`; they cannot discover container-host
+paths or reconstruct `-f` options. If your deployment requires explicit `-f`
+options, set `COMPOSE_FILE` to the equivalent ordered file set before using the
+commands, or keep `OPENCLAW_SUPERVISOR_MODE=external` and use your existing workflow.
+
 The update command pulls the image selected by your Compose configuration. It
 does not change a pinned tag or rebuild a local image. The default Docker setup
 builds `openclaw:local`; use `OPENCLAW_SUPERVISOR_MODE=external` for that workflow, customized
@@ -234,6 +241,13 @@ The `clawctl` mode supplies `clawctl gateway-service start`,
 `clawctl gateway-service stop`, and `clawctl gateway-service restart`. It does
 not supply install, uninstall, repair, or update commands. Docker has no built-in
 install or uninstall guidance either; those actions retain generic instructions.
+
+The current Windows packaged launcher sets `OPENCLAW_SUPERVISOR_MODE=external`
+for its children, overriding the host shell value, so it keeps generic guidance.
+The `clawctl` preset is available to launchers that explicitly select it after
+upgrading their OpenClaw payload. This core change does not change Windows
+packaging or automatically enable its preset; package adoption must retain
+`external` for older payloads.
 
 An unset or unrecognized mode does not enable external supervision. Running
 inside Docker does not automatically select `docker`. The supported modes use

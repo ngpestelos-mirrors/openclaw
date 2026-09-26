@@ -9,7 +9,8 @@ const suite = createControlUiE2eSuite({ name: "Control UI external supervisor up
 const guidance = {
   action: "update",
   name: "Docker Compose",
-  runFrom: "Docker host",
+  runFrom:
+    "Docker host, in this deployment's Compose project directory, using its existing Compose file set and order",
   command: "docker compose pull openclaw-gateway && docker compose up -d openclaw-gateway",
 } as const;
 const config = { update: { auto: { enabled: false }, channel: "stable" } };
@@ -87,7 +88,7 @@ suite.define(() => {
               "Managed by Docker Compose.",
             );
             expect(await dialog.locator(".external-supervisor-guidance").textContent()).toContain(
-              "Run from: Docker host",
+              `Run from: ${guidance.runFrom}`,
             );
             expect(await dialog.locator(".external-supervisor-guidance code").textContent()).toBe(
               guidance.command,

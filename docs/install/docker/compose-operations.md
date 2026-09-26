@@ -26,6 +26,13 @@ also need this mode to apply the same external supervision and instructions. The
 for the Docker host, in the Compose project directory; OpenClaw displays them
 without running them.
 
+Run these commands in the deployment's Compose project directory with the same
+Compose file set and order used at setup. The displayed commands use Compose
+default discovery or the host's `COMPOSE_FILE`; they cannot discover container-host
+paths or reconstruct `-f` options. If your deployment requires explicit `-f`
+options, set `COMPOSE_FILE` to the equivalent ordered file set before using the
+commands, or keep `OPENCLAW_SUPERVISOR_MODE=external` and use your existing workflow.
+
 The update instruction is `docker compose pull openclaw-gateway && docker compose up -d openclaw-gateway`.
 It pulls the currently configured image tag. It does not advance a pinned tag or
 rebuild an image. The default setup builds `openclaw:local`, so use
