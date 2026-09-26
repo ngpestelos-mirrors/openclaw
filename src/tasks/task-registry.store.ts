@@ -67,6 +67,7 @@ export type TaskRegistryStore = TaskExecutionRestoreStore & {
   loadMutationSnapshotAsync: (
     context: OpenClawStateWorkerContext,
     scope?: TaskRegistryMutationScope | readonly TaskRegistryMutationScope[],
+    options?: { missingDatabase: "empty" },
   ) => Promise<TaskRegistryStoreSnapshot>;
   listTasksForOwnerKey?: (
     context: OpenClawStateWorkerContext,
@@ -117,13 +118,16 @@ const defaultTaskRegistryStore: TaskRegistryStore = {
     );
   },
   loadSnapshot: loadTaskRegistryStateFromSqlite,
-  async loadMutationSnapshotAsync(context, scope) {
+  async loadMutationSnapshotAsync(context, scope, options) {
     const reply = await executeExistingOpenClawStateRead(
       { path: context.admission.databasePath, env: context.environment },
       { type: "tasks.mutationSnapshot", input: scope },
       { context },
     );
     if (!reply) {
+      if (options?.missingDatabase === "empty") {
+        return { tasks: new Map(), deliveryStates: new Map() };
+      }
       throw new Error("Task registry snapshot requires an admitted database");
     }
     if (!reply.ok || reply.type !== "tasks.mutationSnapshot") {
