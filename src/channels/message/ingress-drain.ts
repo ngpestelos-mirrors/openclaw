@@ -192,11 +192,7 @@ export function createChannelIngressDrain<
     state.guillotined = true;
     clearStallTimer(state);
     clearClaimRefresh(state);
-    try {
-      state.abortController.abort(new Error("ingress claim lease reclaimed"));
-    } catch {
-      // AbortController.abort is not fallible in practice.
-    }
+    state.abortController.abort(new Error("ingress claim lease reclaimed"));
   };
 
   const armClaimRefresh = (state: ActiveHandlerState<TPayload, TMetadata>) => {
@@ -290,11 +286,7 @@ export function createChannelIngressDrain<
       state.guillotined = true;
       clearStallTimer(state);
       log(message);
-      try {
-        state.abortController.abort(timeoutError);
-      } catch {
-        // AbortController.abort is not fallible in practice.
-      }
+      state.abortController.abort(timeoutError);
       // Route the timeout through the canonical retry owner. A release/fail write
       // error must not falsely settle (would stop heartbeat and wedge recovery).
       void state
@@ -496,11 +488,7 @@ export function createChannelIngressDrain<
         // Mark adopted BEFORE tombstone retries so a write failure cannot release
         // a claim whose dispatch side effects already ran (replay risk).
         if (state.phase === "dispatching") {
-          state.phase = "adopted";
-          clearStallTimer(state);
-          await state.settleOnce(async () => {
-            await completeClaimWithRetry(claim);
-          });
+          await lifecycle.onAdopted();
         }
       } catch (err) {
         if (isStopped() || state.phase === "settled") {
