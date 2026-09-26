@@ -231,7 +231,7 @@ try {
           experimental: { decisionAssistance: true },
         },
       },
-      messages: { queue: { mode: "followup", debounceMs: 0 } },
+      messages: { queue: { mode: "followup" } },
       models: {
         catalogRefresh: { enabled: false },
         providers: {
