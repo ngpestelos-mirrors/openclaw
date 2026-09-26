@@ -1,19 +1,26 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { stopChildProcess } from "../../test/helpers/stop-child-process.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { isErrno } from "../infra/errno.js";
 import { resolveDiagnosticProcessEnv } from "../infra/process-env.js";
 import { getWindowsCmdExePath } from "../infra/windows-install-roots.js";
 import { createProcessSupervisor } from "../process/supervisor/supervisor.js";
 import { quoteCmdScriptArg } from "./cmd-argv.js";
+import { renderCmdSetAssignment } from "./cmd-set.js";
 import { buildTaskScript, encodeWindowsLauncherScript } from "./schtasks-layout.js";
 import { findInstalledProcessPid, readWindowsProcessSnapshot } from "./schtasks-process.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
 
 it.skipIf(process.platform !== "win32")(
   "matches a live process with Unicode paths and arguments through hidden PowerShell",
@@ -40,7 +47,39 @@ it.skipIf(process.platform !== "win32")(
     try {
       const [ready] = await once(child, "message");
       expect(ready).toBe("ready");
+      vi.mocked(spawnSync).mockClear();
+      const started = performance.now();
       const snapshot = readWindowsProcessSnapshot();
+      const elapsedMs = performance.now() - started;
+      const call = vi.mocked(spawnSync).mock.results.at(-1);
+      const native = call?.type === "return" ? call.value : undefined;
+      const error = native?.error;
+      let jsonOutput = "not-parsed-native-failure";
+      if (native && !error && native.status === 0) {
+        try {
+          const text = String(native.stdout ?? "").trim();
+          const value: unknown = JSON.parse(text || "[]");
+          jsonOutput = !text ? "empty" : Array.isArray(value) ? "array" : typeof value;
+        } catch {
+          jsonOutput = "invalid-json";
+        }
+      }
+      // Preserve the original native result without logging process command lines or credentials.
+      console.info(
+        "[windows-cim-snapshot]",
+        JSON.stringify({
+          elapsedMs,
+          capturedNativeResult: native !== undefined,
+          errorCode: isErrno(error) ? error.code : null,
+          status: native?.status,
+          signal: native?.signal,
+          stdoutBytes: Buffer.byteLength(native?.stdout ?? ""),
+          stderrBytes: Buffer.byteLength(native?.stderr ?? ""),
+          jsonOutput,
+          snapshotEntries: snapshot?.length ?? null,
+        }),
+      );
+      vi.mocked(spawnSync).mockClear();
       expect(snapshot).not.toBeNull();
       if (!snapshot || child.pid === undefined) {
         throw new Error("Expected the live Unicode fixture and its native process snapshot");
@@ -70,18 +109,26 @@ it
     return lifetime.run(async () => {
       const directory = lifetime.createTempDir("openclaw-cmd-argv-");
       const literal = "réseau %% ^!";
+      const workingDirectory = path.join(directory, literal);
+      await fs.mkdir(workingDirectory);
       // ASCII relative paths isolate argument encoding from script lookup.
       const programArguments = [process.execPath, "argv-probe.cjs", literal];
       await fs.writeFile(
-        path.join(directory, "argv-probe.cjs"),
-        "console.log(JSON.stringify({ argv: process.argv.slice(2), pid: process.pid, ppid: process.ppid }));\n",
+        path.join(workingDirectory, "argv-probe.cjs"),
+        "console.log(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), value: process.env.OPENCLAW_TEST_LITERAL, pid: process.pid, ppid: process.ppid }));\n",
       );
       const content =
         mode === "production renderer"
-          ? buildTaskScript({ programArguments })
+          ? buildTaskScript({
+              programArguments,
+              workingDirectory,
+              environment: { OPENCLAW_TEST_LITERAL: literal },
+            })
           : [
               "@echo off",
               "setlocal DisableDelayedExpansion",
+              `cd /d ${quoteCmdScriptArg(workingDirectory, { delayedExpansion: false })}`,
+              renderCmdSetAssignment("OPENCLAW_TEST_LITERAL", literal, { delayedExpansion: false }),
               programArguments
                 .map((argument) => quoteCmdScriptArg(argument, { delayedExpansion: false }))
                 .join(" ") + " < NUL",
@@ -152,7 +199,7 @@ it
           outputLimit,
         );
         const observed: unknown = JSON.parse(result.stdout);
-        expect(observed).toMatchObject({ argv: [literal] });
+        expect(observed).toMatchObject({ argv: [literal], cwd: workingDirectory, value: literal });
       } finally {
         context.signal.removeEventListener("abort", cancel);
         await lifetime.verifyCleanup(closeScope);

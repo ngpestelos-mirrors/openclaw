@@ -716,7 +716,8 @@ describe("Windows startup fallback", () => {
         buffer: await fs.readFile(startupEntryPath),
       });
       expect(result.scriptPath).toBe(resolveTaskScriptPath(env));
-      expect(startupScript).toContain(`start "" /min ${getWindowsCmdExePath()} /d /c`);
+      expect(startupScript).toContain("setlocal DisableDelayedExpansion\r\n");
+      expect(startupScript).toContain(`start "" /min ${getWindowsCmdExePath()} /d /v:off /c`);
       expect(startupScript).toContain("gateway.cmd");
       expectStartupFallbackSpawn();
       expect(childUnref).toHaveBeenCalled();
