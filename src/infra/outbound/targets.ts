@@ -542,6 +542,7 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     input: deliveryTo,
     accountId: delivery.accountId,
     unknownTargetMode: "normalized",
+    nativeTargetMode: "heartbeat",
     plugin,
   }).catch(() => null);
   if (!targetResolution && channelNamespace) {

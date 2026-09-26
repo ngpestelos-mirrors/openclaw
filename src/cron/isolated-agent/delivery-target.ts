@@ -179,6 +179,7 @@ export async function resolveDeliveryTarget(
   });
 
   let fallbackChannel: string | undefined;
+  let allowNativeChannelNamespace: boolean | undefined;
   let channelResolutionError: Error | undefined;
   if (!preliminary.channel) {
     if (preliminary.lastChannel) {
@@ -193,6 +194,7 @@ export async function resolveDeliveryTarget(
         const { resolveMessageChannelSelection } = await channelSelectionRuntimeLoader.load();
         const selection = await resolveMessageChannelSelection({ cfg });
         fallbackChannel = selection.channel;
+        allowNativeChannelNamespace = selection.source !== "single-configured";
       } catch (err) {
         const detail = formatErrorMessage(err);
         channelResolutionError = new Error(
@@ -351,6 +353,8 @@ export async function resolveDeliveryTarget(
     agentId,
     input: toCandidate,
     accountId,
+    allowNativeChannelNamespace,
+    nativeTargetMode: mode,
   });
   if (!targetResolution.ok) {
     return {
