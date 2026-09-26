@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
@@ -121,7 +122,7 @@ describe("sessions cleanup applied summary", () => {
         expect(result.previewResults[0]?.summary).toMatchObject(expected);
         expect(result.appliedSummaries[0]).toMatchObject(expected);
         expect(loadSessionEntry(scope("hook:disposable"))).toBeUndefined();
-        closeOpenClawAgentDatabasesForTest();
+        await closeOpenClawAgentDatabasesAsync(state.stateDir);
         expect(loadSessionEntry(scope("conversation"))).toMatchObject({
           sessionId: "conversation",
           archivedAt: expect.any(Number),
