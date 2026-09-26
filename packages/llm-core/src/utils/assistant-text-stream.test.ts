@@ -110,6 +110,18 @@ describe("queued assistant text appends", () => {
     expect(await collect(stream)).toEqual(expected);
   });
 
+  it("freezes unread text when the producer ends with an explicit result", async () => {
+    const { message, stream, append } = fixture();
+    append("Hello");
+    append(" world");
+    stream.end(message);
+    append("discarded");
+    expect(await collect(stream)).toEqual([
+      { type: "text_delta", contentIndex: 0, delta: "Hello world" },
+    ]);
+    await expect(stream.result()).resolves.toBe(message);
+  });
+
   it.each(["error", "aborted"] as const)(
     "drains prior text before %s and rejects later pushes",
     async (reason) => {
