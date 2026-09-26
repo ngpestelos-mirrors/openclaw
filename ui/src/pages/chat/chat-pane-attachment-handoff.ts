@@ -9,6 +9,8 @@ import {
 } from "./attachment-payload-store.ts";
 import type { ChatComposerRecoveryOwner } from "./chat-send-contract.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import { reviewPrivateComposerDraft } from "./components/private-composer-recovery-dialog.ts";
+import { isIncognitoComposerScope } from "./composer-persistence-state.ts";
 import {
   CHAT_COMPOSER_DRAFT_STORAGE_ERROR,
   loadChatComposerDraftRevision,
@@ -271,6 +273,7 @@ export function preparePaneStagedAttachments(
 ): void {
   const attachments = [...state.chatAttachments];
   context.chatAttachmentHandoff.prepare({
+    reviewPrivateDraft: reviewPrivateComposerDraft,
     ...handoffKey(paneId, state, owner),
     attachments,
     fallbacks: state.chatComposerFallbackByScope,
@@ -278,6 +281,10 @@ export function preparePaneStagedAttachments(
     mentions: state.chatMentions,
     goalMode: state.chatGoalDraftMode,
     draftRevision,
+    incognito: isIncognitoComposerScope(
+      state,
+      resolveUiConversationIdentity(state, state.sessionKey),
+    ),
   });
 }
 
