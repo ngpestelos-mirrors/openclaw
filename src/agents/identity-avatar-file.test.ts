@@ -222,6 +222,17 @@ describe("local agent avatar files", () => {
     fs.writeFileSync(avatarPath, "original");
     const unchangedMtime = new Date("2024-01-01T00:00:00Z");
     fs.utimesSync(avatarPath, unchangedMtime, unchangedMtime);
+    const originalStat = fs.statSync(avatarPath);
+    const originalFstatSync = fs.fstatSync;
+    // Control the ctime tick without depending on the filesystem's timestamp resolution.
+    let ctimeMs = originalStat.ctimeMs;
+    vi.spyOn(fs, "fstatSync").mockImplementation((fd, options) => {
+      const stat = originalFstatSync(fd, options);
+      if (stat.dev === originalStat.dev && stat.ino === originalStat.ino) {
+        stat.ctimeMs = ctimeMs;
+      }
+      return stat;
+    });
     const params = { cfg, agentId: "main", source: "avatar.png", readBody: true };
     const [first, duplicate] = await Promise.all([
       prepareLocalAgentAvatarFile(params),
@@ -233,9 +244,19 @@ describe("local agent avatar files", () => {
     expect(pool.run).toHaveBeenCalledTimes(2);
     fs.writeFileSync(avatarPath, "modified");
     fs.utimesSync(avatarPath, unchangedMtime, unchangedMtime);
+    ctimeMs += 1;
     expect(await prepareLocalAgentAvatarFile(params)).toMatchObject({
       ok: true,
-      file: { body: Buffer.from("modified") },
+      file: {
+        body: Buffer.from("modified"),
+        stat: {
+          ctimeMs,
+          dev: originalStat.dev,
+          ino: originalStat.ino,
+          mtimeMs: originalStat.mtimeMs,
+          size: originalStat.size,
+        },
+      },
     });
     const replacement = path.join(workspace, "replacement.png");
     fs.writeFileSync(replacement, "replacement bytes");
