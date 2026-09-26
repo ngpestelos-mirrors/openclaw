@@ -1635,7 +1635,14 @@ preparation owner and reads the card on the session transcript worker. Reads do
 not create missing databases or unused card tables. The same worker custody joins
 native cleanup and rejects retired owners; Gateway authorization is rechecked
 before returning a delayed card. Incognito reads retain their process-held owner.
-Progress-card writes and reset clears keep their existing transaction owners.
+Durable progress-card PUT runs its complete lazy-table and card mutation on the
+canonical agent worker. Payload and storage routing are captured before waiting;
+the retained host authority grants transaction entry and commit. Reads and reset
+clears consume current admitted schema facts, keeping unused storage dormant.
+Explicit empty PUT still creates the lazy table. Revisions, tombstones, conditional
+dismissal, and reset rollback behavior are unchanged. Incognito writes and reset
+clears retain their existing native transaction owners; worker failures never
+replay on the host. No schema, configuration, migration, or update change is needed.
 
 MCP App pinning retains its existing source-interaction checks. A delayed adapter must
 revalidate that source authority at its actual write admission; checking view registration

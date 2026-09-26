@@ -1,16 +1,19 @@
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { admitSqliteSchema, getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
+import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import { AGENT_SCHEMA_WITHOUT_PROGRESS_CARD_SQL } from "../state/openclaw-agent-progress-card-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../state/openclaw-agent-schema.js";
 import {
   clearSessionProgressCardForReset,
   readSessionProgressCard,
-  writeSessionProgressCard,
 } from "./progress-card-store.js";
+import { writeSessionProgressCard } from "./progress-card-store.test-support.js";
 
 const SESSION_KEY = "agent:main:main";
 const STEPS = [
@@ -20,14 +23,16 @@ const STEPS = [
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function measure<T>(db: DatabaseSync, operation: () => T) {
-  const counter = trackSqliteStatementExecutions(db, ["all"], () => "all");
+  const counter = trackSqliteStatementExecutions(db, ["card"], (sql) =>
+    /\bfrom\s+"?session_progress_cards\b/iu.test(sql) ? "card" : null,
+  );
   try {
     const result = operation();
     return {
       result,
       metrics: {
-        rows: counter.rowCounts.all,
-        returnedTextBytes: counter.textBytes.all,
+        rows: counter.rowCounts.card,
+        returnedTextBytes: counter.textBytes.card,
       },
     };
   } finally {
@@ -41,9 +46,10 @@ describe("session progress card store", () => {
 
   beforeEach(() => {
     dbPath = path.join(tempDirs.make("progress-card-"), "agent.sqlite");
-    db = new DatabaseSync(dbPath);
+    db = openNodeSqliteDatabase(dbPath);
     db.exec("PRAGMA foreign_keys = ON;");
     db.exec(OPENCLAW_AGENT_SCHEMA_SQL);
+    admitSqliteSchema(db);
     db.prepare(
       "INSERT INTO session_nodes (session_key, current_session_id, entry_json, updated_at) VALUES (?, ?, ?, ?)",
     ).run(SESSION_KEY, "session-1", JSON.stringify({ sessionId: "session-1" }), 1);
@@ -148,7 +154,11 @@ describe("session progress card store", () => {
       writeSessionProgressCard(db, SESSION_KEY, { markdown, steps });
       setOldSteps();
       clock.mockReturnValue(4000);
-      const reset = measure(db, () => clearSessionProgressCardForReset(db, SESSION_KEY));
+      const reset = measure(db, () =>
+        runSqliteImmediateTransactionSync(db, () =>
+          clearSessionProgressCardForReset(db, SESSION_KEY),
+        ),
+      );
       expect(reset.result).toBe(true);
       const expectedTombstone = {
         session_key: SESSION_KEY,
@@ -162,7 +172,8 @@ describe("session progress card store", () => {
       expect(resetRow).toEqual(expectedTombstone);
       clearNodeSqliteKyselyCacheForDatabase(db);
       db.close();
-      db = new DatabaseSync(dbPath);
+      db = openNodeSqliteDatabase(dbPath);
+      admitSqliteSchema(db);
       const reopenedRow = stored();
       expect(reopenedRow).toEqual(expectedTombstone);
       expect(readSessionProgressCard(db, SESSION_KEY)).toBeNull();
@@ -173,10 +184,11 @@ describe("session progress card store", () => {
     },
   );
 
-  it("treats a missing lazy table as no card without creating it", () => {
+  it("keeps absent storage dormant until explicit PUT and rolls back first-use creation", () => {
     db.close();
-    db = new DatabaseSync(":memory:");
+    db = openNodeSqliteDatabase(":memory:");
     db.exec(AGENT_SCHEMA_WITHOUT_PROGRESS_CARD_SQL);
+    admitSqliteSchema(db);
 
     expect(clearSessionProgressCardForReset(db, SESSION_KEY)).toBe(false);
     expect(readSessionProgressCard(db, SESSION_KEY)).toBeNull();
@@ -185,9 +197,24 @@ describe("session progress card store", () => {
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get("session_progress_cards"),
     ).toBeUndefined();
+    expect(() =>
+      runSqliteImmediateTransactionSync(db, () => {
+        expect(writeSessionProgressCard(db, SESSION_KEY, {})).toEqual({ cleared: true });
+        expect(getAdmittedSqliteSchemaFacts(db)?.tables.has("session_progress_cards")).toBe(true);
+        throw new Error("roll back first-use creation");
+      }),
+    ).toThrow("roll back first-use creation");
+    expect(readSessionProgressCard(db, SESSION_KEY)).toBeNull();
+    expect(getAdmittedSqliteSchemaFacts(db)?.tables.has("session_progress_cards")).toBe(false);
+    expect(writeSessionProgressCard(db, SESSION_KEY, {})).toEqual({ cleared: true });
+    expect(getAdmittedSqliteSchemaFacts(db)?.tables.has("session_progress_cards")).toBe(true);
+    expect(readSessionProgressCard(db, SESSION_KEY)).toBeNull();
   });
 
-  it("deletes the card when its owning session node is deleted", () => {
+  it("requires an owning session and deletes the card with its session node", () => {
+    expect(() =>
+      writeSessionProgressCard(db, "agent:main:missing", { markdown: "Unowned" }),
+    ).toThrow(/FOREIGN KEY/iu);
     writeSessionProgressCard(db, SESSION_KEY, { markdown: "Owned by the session" });
 
     db.prepare("DELETE FROM session_nodes WHERE session_key = ?").run(SESSION_KEY);
@@ -258,7 +285,10 @@ describe("session progress card store", () => {
       const operations = {
         replace: () => writeSessionProgressCard(db, SESSION_KEY, { markdown: "Replacement" }),
         clear: () => writeSessionProgressCard(db, SESSION_KEY, {}),
-        reset: () => clearSessionProgressCardForReset(db, SESSION_KEY),
+        reset: () =>
+          runSqliteImmediateTransactionSync(db, () =>
+            clearSessionProgressCardForReset(db, SESSION_KEY),
+          ),
         dismiss: () => writeSessionProgressCard(db, SESSION_KEY, { expectedRevision: 2 }),
       };
       for (const [name, operation] of Object.entries(operations)) {

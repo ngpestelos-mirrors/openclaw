@@ -3,11 +3,10 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { readBoardHtml } from "../../boards/board-store.test-support.js";
 import { SqliteBoardStore } from "../../boards/sqlite-board-store.js";
-import {
-  readSessionProgressCard,
-  writeSessionProgressCard,
-} from "../../session-cards/progress-card-store.js";
+import { readSessionProgressCard } from "../../session-cards/progress-card-store.js";
+import { writeSessionProgressCard } from "../../session-cards/progress-card-store.test-support.js";
 import { onSessionLifecycleEvent } from "../../sessions/session-lifecycle-events.js";
+import { withFreshOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly-open.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
@@ -120,9 +119,12 @@ it.each(
         }
       }
       // A fresh read-only connection proves this is durable state, not client/cache invalidation.
-      expect(readSessionProgressCard(database.path, sessionKey)).toEqual(
-        context === "clear" && !rollback ? null : before,
-      );
+      expect(
+        withFreshOpenClawAgentDatabaseReadOnly(
+          (fresh) => readSessionProgressCard(fresh.db, sessionKey),
+          { agentId: database.agentId, path: database.path },
+        ),
+      ).toEqual({ found: true, value: context === "clear" && !rollback ? null : before });
       expect(await boards.getSnapshot({ sessionKey })).toEqual(boardBefore);
       expect((await readBoardHtml(boards, { sessionKey }, "retained-widget"))?.html).toBe(
         "<p>Keep this dashboard</p>",

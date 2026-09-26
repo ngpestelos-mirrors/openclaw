@@ -12,10 +12,8 @@ import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
-import {
-  readSessionProgressCard,
-  writeSessionProgressCard,
-} from "../../session-cards/progress-card-store.js";
+import { readSessionProgressCard } from "../../session-cards/progress-card-store.js";
+import { writeSessionProgressCard } from "../../session-cards/progress-card-store.test-support.js";
 import { resolveStoredModelOverride } from "../../sessions/stored-model-overrides.js";
 import {
   onInternalSessionTranscriptUpdate,

@@ -9,10 +9,8 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  readSessionProgressCard,
-  writeSessionProgressCard,
-} from "../session-cards/progress-card-store.js";
+import { readSessionProgressCard } from "../session-cards/progress-card-store.js";
+import { writeSessionProgressCard } from "../session-cards/progress-card-store.test-support.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
