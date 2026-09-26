@@ -9,6 +9,7 @@ import {
 } from "../infra/sqlite-busy-timeout.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import { admitSqliteSchema } from "../infra/sqlite-schema-facts.js";
 import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.js";
 import type { SqliteTransactionOptions } from "../infra/sqlite-transaction.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
@@ -238,6 +239,7 @@ export async function openExistingOpenClawStateDatabaseReadOnly(
     if (readStateSchemaContentVersion(db) === OPENCLAW_STATE_SCHEMA_VERSION) {
       assertOpenClawStateDatabaseForMaintenance(db, { pathname });
     }
+    admitSqliteSchema(db);
   } catch (error) {
     try {
       connection.close();

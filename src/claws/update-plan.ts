@@ -18,6 +18,7 @@ import {
   isApplicationUpdateBlocker,
   recordingClawPackagePreflight,
 } from "./application-provenance.js";
+import { clawWorkspaceFileRemovalOwned } from "./lifecycle-delete-support.js";
 import { readClawStatus } from "./lifecycle-state.js";
 import { buildClawAddPlan } from "./lifecycle.js";
 import { digestClawMcpServer, readClawMcpServerRefsByName } from "./mcp.js";
@@ -190,6 +191,17 @@ export async function buildClawUpdatePlan(params: {
       },
     });
     const blockers = targetPlan.blockers.filter(isApplicationUpdateBlocker);
+    for (const file of record.workspaceFiles) {
+      if (!clawWorkspaceFileRemovalOwned(file, record.workspaceOrigin)) {
+        blockers.push(
+          diagnostic(
+            "workspace_file_ownership_uncertain",
+            file.path,
+            "An interrupted write does not prove ownership. Remove the partial install while retaining this file, then preview adoption again.",
+          ),
+        );
+      }
+    }
     const actions: ClawUpdateAction[] = [];
     const capabilityChanges: ClawUpdateCapabilityChange[] = [];
 
