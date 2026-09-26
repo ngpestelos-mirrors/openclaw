@@ -12,6 +12,7 @@ import {
   adoptRuntimeChannelRegistrations,
   captureRuntimeChannelSource,
 } from "../plugins/channel-registry-adoption.js";
+import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
 import { extractPluginInstallRecordsFromInstalledPluginIndex } from "../plugins/installed-plugin-index-install-records.js";
 import {
@@ -31,9 +32,12 @@ import {
   bindPluginRegistryGatewayOwner,
   bindPluginRegistryResourceOwner,
   getPluginRegistryGatewayOwner,
+  getPluginRegistryResourceOwner,
+  markPluginRegistryActive,
 } from "../plugins/registry-lifecycle.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import {
+  disposePluginRegistryInstances,
   getActivePluginRegistry,
   getActivePluginRegistryWorkspaceDir,
 } from "../plugins/runtime.js";
@@ -41,6 +45,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeRegistryScope,
 } from "../plugins/runtime/gateway-request-scope.js";
+import { getPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js";
 import { adoptRuntimeWidgetPresenterRegistrations } from "../plugins/widget-presenters.js";
 import { resolveUserPath } from "../utils.js";
 import {
@@ -49,6 +54,7 @@ import {
   type AgentHarnessPluginSelection,
   type RuntimePluginLoadPurpose,
 } from "./harness/runtime-plugin-load-plan.js";
+import { resolveLocalAgentPluginRegistry } from "./runtime-local-plugin-registry.js";
 import { releaseRuntimePluginWork, retainRuntimePluginWork } from "./runtime-plugin-work.js";
 
 type AgentRuntimePluginRegistryParams = {
@@ -143,6 +149,13 @@ function resolveAgentRuntimePluginRegistryLoad(
     preferBuiltPluginArtifacts: params.preferBuiltPluginArtifacts,
     onlyPluginIds: startupPluginIds === undefined ? undefined : plan.pluginIds,
     channelPluginLoadIntent: startupPluginIds === undefined ? undefined : "full",
+    // Expanding an admitted local root owns full capabilities as well as providers.
+    // Shared Gateway discovery and provider-only catalog workers never enter this path.
+    ...(params.purpose === "agent" &&
+    params.reusableRegistry &&
+    resolveLocalAgentPluginRegistry(params, metadataSnapshot) === params.reusableRegistry
+      ? { runtimeSideEffects: true }
+      : {}),
   };
 }
 
@@ -296,7 +309,8 @@ export function loadAgentRuntimePluginRegistryHandle(
     onPrimaryRegistry?.(reusable);
     return bindAdmittingGateway(reusable);
   }
-  // Discovery-only load: full mode can replace process-global sandbox backends.
+  // Shared-host discovery must not replace process-global sandbox backends.
+  // Only a compatible local composition above can admit a full selected expansion.
   // Adopt full-only runtime capabilities from the matching composition-root owners.
   // Prepared metadata outlives a transient caller's install or reload lease.
   const load = () => loadPluginRegistryHandle(loadOptions);
@@ -310,14 +324,133 @@ export function loadAgentRuntimePluginRegistryHandle(
     .registry;
 }
 
-/** Binds a scoped plugin generation when a direct host has no Gateway owner. */
-export async function withAgentPluginRegistry<T>(params: {
+type AgentPluginRegistryParams<T> = {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   selections?: readonly AgentHarnessPluginSelection[];
   workspaceDir: string;
   run: (pluginRegistry: PluginRegistry) => Promise<T>;
-}): Promise<T> {
+};
+
+/** Local composition owns full capabilities for the selected config and workspace. */
+export async function withLocalAgentPluginRegistry<T>(
+  params: Omit<AgentPluginRegistryParams<T>, "selections">,
+): Promise<T> {
+  const request = getPluginRuntimeGatewayRequestScope();
+  const requestRegistry = request?.pluginRegistry;
+  const gatewayRegistry =
+    requestRegistry && getPluginRegistryGatewayOwner(requestRegistry)?.current();
+  // A Gateway-owned request follows its own admission contract. A local nested
+  // call may borrow only the exact live root with matching load facts and custody.
+  if (
+    requestRegistry &&
+    gatewayRegistry &&
+    getPluginRegistryResourceOwner(gatewayRegistry) ===
+      getPluginRegistryResourceOwner(requestRegistry) &&
+    !request?.context?.localEmbedded
+  ) {
+    return await withAgentPluginRegistry(params);
+  }
+  const currentLocal = requestRegistry && getPluginRuntimeLoadContext(requestRegistry);
+  if (currentLocal?.metadataSnapshot) {
+    const compatible = resolveLocalAgentPluginRegistry(params, currentLocal.metadataSnapshot);
+    if (compatible) {
+      return await params.run(compatible);
+    }
+  }
+  const [
+    { resolvePluginRuntimeLoadContext },
+    { buildPluginRuntimeLoadOptions },
+    { loadGatewayStartupPluginPlan },
+    { getCliPluginInvocationResources },
+  ] = await Promise.all([
+    import("../plugins/runtime/load-context.resolve.js"),
+    import("../plugins/runtime/load-context.js"),
+    import("../plugins/gateway-startup-plugin-ids.js"),
+    import("../cli/runtime-cleanup-scope.js"),
+  ]);
+  const context = resolvePluginRuntimeLoadContext({
+    config: params.config,
+    activationSourceConfig: projectConfigOntoRuntimeSourceSnapshot(params.config),
+    env: params.env,
+    workspaceDir: params.workspaceDir,
+  });
+  const authored = normalizePluginsConfig(context.activationSourceConfig.plugins);
+  // Reuse startup selection, preserving every explicit local allow/enable choice.
+  // Auto-enable's picker-only provider entries are availability, not a turn selection.
+  const pluginIds = authored.enabled
+    ? [
+        ...new Set([
+          ...authored.allow,
+          ...Object.entries(authored.entries)
+            .filter(([, entry]) => entry.enabled === true)
+            .map(([id]) => id),
+          ...loadGatewayStartupPluginPlan({
+            config: context.config,
+            activationSourceConfig: context.activationSourceConfig,
+            env: context.env,
+            workspaceDir: context.workspaceDir,
+            metadataSnapshot: context.metadataSnapshot,
+          }).pluginIds,
+        ]),
+      ]
+    : [];
+  // The existing executable owner joins terminal harness cleanup before retiring
+  // this exact handle. Programmatic local calls retire their own handle on return.
+  const resources = getCliPluginInvocationResources();
+  const load = () => {
+    const registry = loadPluginRegistryHandle(
+      buildPluginRuntimeLoadOptions(context, {
+        onlyPluginIds: pluginIds,
+        cache: false,
+        throwOnLoadError: true,
+        runtimeSideEffects: true,
+      }),
+    );
+    // Prepared generations borrow an already-owned handle rather than opening a
+    // second lifetime whose retirement would compete with this caller's release.
+    markPluginRegistryActive(registry);
+    return registry;
+  };
+  const registry = resources
+    ? await resources.acquire(async () => {
+        const ownedRegistry = load();
+        return {
+          registry: ownedRegistry,
+          release: async () => {
+            await disposePluginRegistryInstances(ownedRegistry);
+          },
+        };
+      })
+    : load();
+  let invocations: PluginInvocationScope | undefined;
+  try {
+    const registered = getPluginRuntimeLoadContext(registry);
+    if (!registered?.metadataSnapshot) {
+      throw new Error("Local plugin root has no prepared metadata generation");
+    }
+    const invocation = new PluginInvocationScope(
+      registry,
+      collectRegistryInvocationInstances(registry),
+      { retained: true },
+    );
+    invocations = invocation;
+    return await withPluginMetadataSnapshotScope(
+      registered.metadataSnapshot,
+      () =>
+        withPluginRuntimeRegistryScope(registry, () => invocation.run(() => params.run(registry))),
+      { config: params.config, env: context.env, workspaceDir: context.workspaceDir },
+    );
+  } finally {
+    invocations?.release();
+    if (!resources) {
+      await disposePluginRegistryInstances(registry);
+    }
+  }
+}
+
+/** Binds a scoped plugin generation when a direct host has no Gateway owner. */
+export async function withAgentPluginRegistry<T>(params: AgentPluginRegistryParams<T>): Promise<T> {
   const requestPluginRegistry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
   if (requestPluginRegistry && params.selections === undefined) {
     return await params.run(requestPluginRegistry);
