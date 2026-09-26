@@ -253,7 +253,7 @@ export function bindSqliteWorkerBackend(
           throw new Error("Pending input promotion lost its borrowed canonical connection");
         }
         context.admit("transaction");
-        const result = appendTranscriptMessageInTransaction(
+        const appended = appendTranscriptMessageInTransaction(
           database,
           resolved,
           {
@@ -269,7 +269,7 @@ export function bindSqliteWorkerBackend(
           },
         );
         context.admit("commit");
-        return result;
+        return appended;
       }, options);
       return {
         ok: true,

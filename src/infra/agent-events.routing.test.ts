@@ -33,7 +33,7 @@ describe("agent event routing after cancellation", () => {
   test.each([false, true])(
     "revokes the lifecycle before joining durable owner retirement (fails=%s)",
     async (fails) => {
-      const retirement = createDeferred<void>();
+      const retirement = createDeferred();
       let revokedGeneration: string | undefined;
       registerAgentEventLifecycleRotationHandler("retirement-test", (generation) => {
         revokedGeneration = generation;

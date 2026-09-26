@@ -44,7 +44,7 @@ export function createChatSendWorkAdmission(params: {
     }
     references -= 1;
     if (references !== 0) {
-      return;
+      return undefined;
     }
     cleanup = (async () => {
       try {

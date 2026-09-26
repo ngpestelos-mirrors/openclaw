@@ -55,7 +55,7 @@ export async function withSessionPendingInputDatabase<T>(
             assertCapturedSessionEntryReadSource(captured, database);
           }
         };
-        const write = <T>(mutate: (current: typeof database) => T): Promise<T> => {
+        const write = <TValue>(mutate: (current: typeof database) => TValue): Promise<TValue> => {
           assertHeld();
           return Promise.resolve(
             runOpenClawAgentWriteTransaction((current) => {

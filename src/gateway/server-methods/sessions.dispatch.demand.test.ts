@@ -58,7 +58,7 @@ async function withDemandFixture(
   run: (fixture: {
     dispatch: (sessionId: string, deviceId?: string) => Promise<string>;
     send: (sessionId: string) => Promise<HeldTurn>;
-    release: (sessionId: string) => void;
+    release: (sessionId: string) => Promise<void>;
     nodes: NodeWorkerSupervisorNodeProof[];
     placements: Map<string, WorkerSessionPlacementRecord>;
     service: NonNullable<GatewayRequestContext["workerPlacementDispatchService"]>;
@@ -259,7 +259,7 @@ async function withDemandFixture(
       });
     } finally {
       for (const turn of heldTurns.values()) {
-        turn.admission.cleanupAdmittedRun();
+        await turn.admission.cleanupAdmittedRun();
         clearAgentRunContext(turn.session.clientRunId, turn.admission.lifecycleGeneration);
       }
     }
@@ -294,7 +294,7 @@ describe("sessions.dispatch after admitted sessions.send", () => {
         if (state !== "idle") {
           const turn = await send("auto-04");
           if (state === "released") {
-            turn.admission.cleanupAdmittedRun();
+            await turn.admission.cleanupAdmittedRun();
           } else {
             rotateAgentRunRegistryLifecycleGeneration();
           }
@@ -308,7 +308,7 @@ describe("sessions.dispatch after admitted sessions.send", () => {
   it("excludes a physically full node even when it has the least admitted demand", async () => {
     await withDemandFixture(async ({ dispatch, release, nodes }) => {
       // Release the first real send without changing its retained placement.
-      release("explicit-1");
+      await release("explicit-1");
       nodes[0]!.workerHost.capacity = { total: 2, available: 0 };
       nodes[2]!.workerHost.capacity = { total: 2, available: 1 };
 

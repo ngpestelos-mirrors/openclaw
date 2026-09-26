@@ -600,8 +600,8 @@ export function createUserTurnTranscriptRecorder(
         await pendingInput.finish(disposition);
       } else {
         const settled = await Promise.allSettled(
-          (params.pendingInputSources ?? []).map((source) =>
-            source.finishPendingInput?.(disposition),
+          (params.pendingInputSources ?? []).map(
+            async (source) => await source.finishPendingInput?.(disposition),
           ),
         );
         const failures = settled.flatMap((result) =>

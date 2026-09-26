@@ -436,8 +436,8 @@ describe("committed pending input release", () => {
     expect(
       await recorder.stageApproved?.({ runId: "recorder-completion", assertCurrent: () => {} }),
     ).toBe(true);
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
+    const entered = createDeferred();
+    const release = createDeferred();
     const writer = runExclusiveSqliteSessionWrite(
       resolveSqliteScope(scope()),
       async () => {

@@ -257,11 +257,15 @@ async function scenario(
     running.value.activeRunAbort.controller.signal.addEventListener("abort", () => {
       if (cancellationNeedsRecovery) {
         // Real worker failure completion joins placement recovery before releasing admission.
-        cancellationRecovery = coordinated.reconcileActive().finally(() => {
-          running.value.cleanupAdmittedRun();
-        });
+        cancellationRecovery = (async () => {
+          try {
+            await coordinated.reconcileActive();
+          } finally {
+            await running.value.cleanupAdmittedRun();
+          }
+        })();
       } else {
-        running.value.cleanupAdmittedRun();
+        cancellationRecovery = running.value.cleanupAdmittedRun();
       }
     });
   }
@@ -311,13 +315,14 @@ async function scenario(
   let abortedDuringInspection = false;
   let destroyedDuringInspection = false;
   let old!: ReturnType<typeof admit>;
+  let oldCleanup: Promise<void> | undefined;
   let reclaimResult: { ok: boolean; state?: string; message?: string } | undefined;
   const reserveOld = () => {
     old = admit(oldRunId);
     if (blockedInspection || pendingDispatch) {
-      void old.promise.then((result) => {
+      oldCleanup = old.promise.then(async (result) => {
         if (result.ok) {
-          result.value.cleanupAdmittedRun();
+          await result.value.cleanupAdmittedRun();
         }
       });
     }
@@ -389,6 +394,7 @@ async function scenario(
     await stop();
   }
   const oldResult = await old.promise;
+  await oldCleanup;
   if (destroyFailure && !failedRetry) {
     expect(oldResult.ok).toBe(false);
     expect(harness.environments.get(active.environmentId!)?.state).toBe("destroying");
@@ -403,14 +409,14 @@ async function scenario(
   expect(environment?.state).toBe("destroyed");
   expect(harness.environments.destroy).toHaveBeenCalledTimes(destroyFailure ? 2 : 1);
   if (oldResult.ok) {
-    oldResult.value.cleanupAdmittedRun();
+    await oldResult.value.cleanupAdmittedRun();
     clearAgentRunContext(oldRunId, oldResult.value.lifecycleGeneration);
   }
   const freshRunId = name + "-explicit-after-stop";
   const fresh = admit(freshRunId);
   const freshResult = await fresh.promise;
   if (freshResult.ok) {
-    freshResult.value.cleanupAdmittedRun();
+    await freshResult.value.cleanupAdmittedRun();
     clearAgentRunContext(freshRunId, freshResult.value.lifecycleGeneration);
   }
   const persistedPartials = pendingMove
@@ -454,7 +460,7 @@ async function scenario(
   };
   context.chatRunState.clear();
   if (running?.ok) {
-    running.value.cleanupAdmittedRun();
+    await running.value.cleanupAdmittedRun();
     clearAgentRunContext(name + "-running", running.value.lifecycleGeneration);
   }
   return report;
@@ -669,8 +675,9 @@ it.each(["missing", "local"] as const)(
     }
     context.chatRunState.getOrCreate(runId).buffer = "partial before queued dispatch Stop";
     const aborted = createDeferred();
+    let cancellationCleanup: Promise<void> | undefined;
     controller.controller.signal.addEventListener("abort", () => {
-      admitted.value.cleanupAdmittedRun();
+      cancellationCleanup = admitted.value.cleanupAdmittedRun();
       aborted.resolve();
     });
     const entered = createDeferred();
@@ -720,7 +727,8 @@ it.each(["missing", "local"] as const)(
       cancellationLoad.resolve();
       release.resolve();
       await Promise.all([sweep, dispatch, stopping]);
-      admitted.value.cleanupAdmittedRun();
+      await cancellationCleanup;
+      await admitted.value.cleanupAdmittedRun();
       clearAgentRunContext(runId, admitted.value.lifecycleGeneration);
     }
     expect(await dispatch).toBe("cancelled");

@@ -16,6 +16,7 @@ import {
 } from "../../../config/sessions/session-accessor.sqlite-scope.js";
 import { resolvePhysicalSessionStorePath } from "../../../config/sessions/session-store-path.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../../state/openclaw-agent-db.js";
@@ -99,11 +100,12 @@ describe("parent runtime facts from retained completion obligations", () => {
       if (!receipt?.complete) {
         throw new Error("Expected a private processing completion owner");
       }
-      receipt.complete(buildAgentRunTerminalOutcome({ status: "ok" }));
-      receipt.finish("interrupted");
+      await receipt.complete(buildAgentRunTerminalOutcome({ status: "ok" }));
+      await receipt.finish("interrupted");
       resetSubagentRegistryForTests({ persist: false });
-      closeOpenClawStateDatabaseForTest();
+      await closeOpenClawAgentDatabasesAsync();
       closeOpenClawAgentDatabasesForTest();
+      closeOpenClawStateDatabaseForTest();
       const shared = openOpenClawStateDatabase().db;
       const agent = openOpenClawAgentDatabase(toDatabaseOptions(resolveSqliteScope(scope))).db;
       const rows = () => shared.prepare("SELECT * FROM subagent_runs ORDER BY run_id").all();

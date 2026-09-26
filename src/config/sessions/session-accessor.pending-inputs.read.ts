@@ -225,16 +225,16 @@ async function readPendingInputData(
     scope: { ...resolved, sessionKey: normalizeSqliteSessionKey(scope.sessionKey) },
   };
   const consume = async (result: PendingInputReadResult, assertCurrent: () => void) => {
-    const identity =
+    const databaseIdentity =
       result.kind === "page" ? result.snapshot.databaseIdentity : result.databaseIdentity;
     const assertSource = () => {
       assertStateCurrent();
       assertCurrent();
-      if (identity) {
+      if (databaseIdentity) {
         assertExistingDatabaseIdentity(
           resolved.path,
-          `file:${identity.identity}`,
-          identity.birthtime,
+          `file:${databaseIdentity.identity}`,
+          databaseIdentity.birthtime,
         );
       }
     };
@@ -251,14 +251,16 @@ async function readPendingInputData(
           await import("./session-accessor.pending-inputs.runtime.js");
         const repaired = await repairSessionPendingInputRows(
           options,
-          stale.map(({ identity: row }) => ({
-            ...row,
-            ...(result.snapshot.currentSessionId !== row.session_id &&
-            hasSessionPendingInputOwner(resolved.path, row)
-              ? { requireRetiredSession: true as const }
-              : {}),
-          })),
-          identity,
+          stale.map(({ identity: row }) => {
+            if (
+              result.snapshot.currentSessionId !== row.session_id &&
+              hasSessionPendingInputOwner(resolved.path, row)
+            ) {
+              row.requireRetiredSession = true;
+            }
+            return row;
+          }),
+          databaseIdentity,
           assertSource,
         );
         assertSource();

@@ -23,12 +23,24 @@ import { repairCanonicalSessionKeys } from "./doctor-session-canonical-keys.js";
 
 const receipts: SessionPendingInputReceipt[] = [];
 afterEach(async () => {
-  for (const receipt of receipts.splice(0)) {
-    receipt.finish("interrupted");
-  }
   await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
 });
+
+async function withCompletionState(
+  prefix: string,
+  run: (context: { stateDir: string }) => Promise<void>,
+) {
+  await withStateDirEnv(prefix, async (context) => {
+    try {
+      await run(context);
+    } finally {
+      for (const receipt of receipts.splice(0)) {
+        await receipt.finish("interrupted");
+      }
+    }
+  });
+}
 
 function fixture(stateDir: string, alias = false) {
   const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
@@ -107,14 +119,14 @@ describe("Doctor canonical completion receipt repair", () => {
     { name: "restart interruption", outcome: interrupted, final: false },
     { name: "unhandled", outcome: undefined, final: false },
   ])("preserves $name semantics across owner repair and restart", async ({ outcome, final }) => {
-    await withStateDirEnv("doctor-private-completion-", async ({ stateDir }) => {
+    await withCompletionState("doctor-private-completion-", async ({ stateDir }) => {
       const f = fixture(stateDir);
       f.create();
       const first = await f.stage();
       if (outcome) {
-        first.complete!(outcome);
+        await first.complete!(outcome);
       }
-      first.finish("interrupted");
+      await first.finish("interrupted");
       const before = f.rows();
       if (outcome) {
         f.database(true).db.exec("DROP TABLE session_input_completions");
@@ -137,12 +149,12 @@ describe("Doctor canonical completion receipt repair", () => {
       } else {
         expect(retry.completion).toBeUndefined();
         expect(retry.run(() => "unhandled work")).toBe("unhandled work");
-        retry.complete!(completed);
+        await retry.complete!(completed);
       }
       expect(
         await repairCanonicalSessionKeys({ apply: true, cfg: f.cfg, env: f.env }),
       ).toMatchObject({ repairedGroups: 0 });
-      retry.finish("interrupted");
+      await retry.finish("interrupted");
       const deleted = await deleteSessionEntryLifecycle({
         agentId: "main",
         storePath: f.scope(true).storePath,
@@ -156,10 +168,11 @@ describe("Doctor canonical completion receipt repair", () => {
   });
 
   it("rekeys a final receipt before removing a same-store alias", async () => {
-    await withStateDirEnv("doctor-private-alias-", async ({ stateDir }) => {
+    await withCompletionState("doctor-private-alias-", async ({ stateDir }) => {
       const f = fixture(stateDir, true);
       f.create();
-      (await f.stage()).complete!(stopped);
+      const sourceReceipt = await f.stage();
+      await sourceReceipt.complete!(stopped);
       const before = f.rows();
       f.database()
         .db.prepare(
@@ -188,16 +201,16 @@ describe("Doctor canonical completion receipt repair", () => {
   it.each([false, true])(
     "preserves final receipts when source is final=%s",
     async (sourceFinal) => {
-      await withStateDirEnv("doctor-private-merge-", async ({ stateDir }) => {
+      await withCompletionState("doctor-private-merge-", async ({ stateDir }) => {
         const f = fixture(stateDir);
         f.create(false, 20);
         f.create(true, 10);
         const source = await f.stage();
-        source.complete!(sourceFinal ? stopped : interrupted);
-        source.finish("interrupted");
+        await source.complete!(sourceFinal ? stopped : interrupted);
+        await source.finish("interrupted");
         const destination = await f.stage(true);
-        destination.complete!(sourceFinal ? interrupted : stopped);
-        destination.finish("interrupted");
+        await destination.complete!(sourceFinal ? interrupted : stopped);
+        await destination.finish("interrupted");
         const retained = sourceFinal ? f.rows() : f.rows(true);
         rotateAgentEventLifecycleGeneration();
         await closeOpenClawAgentDatabasesAsync(stateDir);
@@ -210,12 +223,14 @@ describe("Doctor canonical completion receipt repair", () => {
   );
 
   it("rolls back conflicting receipt identities without deleting either store's evidence", async () => {
-    await withStateDirEnv("doctor-private-conflict-", async ({ stateDir }) => {
+    await withCompletionState("doctor-private-conflict-", async ({ stateDir }) => {
       const f = fixture(stateDir);
       f.create(false, 20);
       f.create(true, 10);
-      (await f.stage()).complete!(completed);
-      (await f.stage(true, "different private result")).complete!(stopped);
+      const sourceReceipt = await f.stage();
+      await sourceReceipt.complete!(completed);
+      const destinationReceipt = await f.stage(true, "different private result");
+      await destinationReceipt.complete!(stopped);
       const source = f.rows();
       const destination = f.rows(true);
       rotateAgentEventLifecycleGeneration();
@@ -230,16 +245,18 @@ describe("Doctor canonical completion receipt repair", () => {
   });
 
   it("rejects a receipt collision owned by another logical key", async () => {
-    await withStateDirEnv("doctor-private-key-conflict-", async ({ stateDir }) => {
+    await withCompletionState("doctor-private-key-conflict-", async ({ stateDir }) => {
       const f = fixture(stateDir);
       f.create();
-      (await f.stage()).complete!(completed);
+      const sourceReceipt = await f.stage();
+      await sourceReceipt.complete!(completed);
       const otherKey = "agent:main:another-parent";
       replaceSessionEntrySync(
         { ...f.scope(true), sessionKey: otherKey },
         { sessionId: f.scope(true).sessionId, updatedAt: 10 },
       );
-      (await f.stage(true, "private child result", otherKey)).complete!(stopped);
+      const destinationReceipt = await f.stage(true, "private child result", otherKey);
+      await destinationReceipt.complete!(stopped);
       const source = f.rows();
       const destination = f.rows(true);
       rotateAgentEventLifecycleGeneration();
@@ -254,7 +271,7 @@ describe("Doctor canonical completion receipt repair", () => {
   });
 
   it("does not install completion tracking for stores with no receipts", async () => {
-    await withStateDirEnv("doctor-private-lazy-", async ({ stateDir }) => {
+    await withCompletionState("doctor-private-lazy-", async ({ stateDir }) => {
       const f = fixture(stateDir);
       f.create();
       f.database().db.exec("DROP TABLE session_input_completions");

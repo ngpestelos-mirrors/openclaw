@@ -187,7 +187,7 @@ describe("pending Stop producer binding", () => {
         await hold;
         const settled = await admission;
         if (settled.ok) {
-          settled.value.cleanupAdmittedRun();
+          await settled.value.cleanupAdmittedRun();
         }
         expect(settled.ok).toBe(false);
       }

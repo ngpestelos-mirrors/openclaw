@@ -683,10 +683,11 @@ describe("queued collector session projection", () => {
         scenario === "mixed" ? await admitOrdinaryChat(foreignRunId, "other-requester") : undefined;
       admission.activeRunAbort.markExecutionStarted();
       context.chatRunState.getOrCreate(extraRunId).buffer = "Additional run partial";
-      const cleanup = () => {
-        admission.cleanupAdmittedRun();
+      const cleanup = async () => {
+        await admission.cleanupAdmittedRun();
         clearAgentRunContext(extraRunId);
       };
+      let cancellationCleanup: Promise<void> | undefined;
       admission.activeRunAbort.controller.signal.addEventListener(
         "abort",
         () =>
@@ -694,7 +695,7 @@ describe("queued collector session projection", () => {
             if (scenario === "parent-retired") {
               context.chatAbortControllers.delete("parent-turn");
             }
-            cleanup();
+            cancellationCleanup = cleanup();
           }),
         { once: true },
       );
@@ -777,9 +778,10 @@ describe("queued collector session projection", () => {
         }
         expect(launchedRunIds).toEqual([]);
       } finally {
-        cleanup();
+        await cancellationCleanup;
+        await cleanup();
         if (foreignAdmission) {
-          foreignAdmission.cleanupAdmittedRun();
+          await foreignAdmission.cleanupAdmittedRun();
           clearAgentRunContext(foreignRunId);
         }
       }

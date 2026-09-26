@@ -321,7 +321,7 @@ describe("operator access cancellation", () => {
           }
         }
         retained.armCancellation();
-        work.release();
+        await work.release();
         if (collect) {
           retireQueuedChatTurnCancellation(
             f.context.chatQueuedTurns,
@@ -341,7 +341,7 @@ describe("operator access cancellation", () => {
           );
           expect(f.context.broadcast).not.toHaveBeenCalled();
         } finally {
-          releaseQueue();
+          await releaseQueue();
         }
       });
     },

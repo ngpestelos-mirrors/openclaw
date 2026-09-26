@@ -32,8 +32,8 @@ describe("retained chat work admission", () => {
       work.setPendingInputCleanup(finishPendingInput);
       const releaseCollectedTurn = work.retain();
       caller.release();
-      work.release();
-      work.release();
+      await work.release();
+      await work.release();
 
       expect(work.isActive()).toBe(true);
       expect(caller.isCurrent()).toBe(true);
@@ -41,12 +41,12 @@ describe("retained chat work admission", () => {
       expect(releaseAdmission).not.toHaveBeenCalled();
 
       const released = releaseCollectedTurn();
-      releaseCollectedTurn();
+      const duplicateRelease = releaseCollectedTurn();
       expect(work.isActive()).toBe(false);
       expect(caller.isCurrent()).toBe(true);
       expect(releaseAdmission).not.toHaveBeenCalled();
       settlement.resolve();
-      await released;
+      await Promise.all([released, duplicateRelease]);
       expect(caller.isCurrent()).toBe(false);
       expect(finishPendingInput).toHaveBeenCalledOnce();
       expect(releaseAdmission).toHaveBeenCalledOnce();

@@ -509,7 +509,10 @@ it.each(["missing", "local", "reclaimed"] as const)(
       throw new Error("Ordinary local chat fixture was not admitted");
     }
     const controller = admitted.value.activeRunAbort.controller;
-    controller.signal.addEventListener("abort", () => admitted.value.cleanupAdmittedRun());
+    let cancellationCleanup: Promise<void> | undefined;
+    controller.signal.addEventListener("abort", () => {
+      cancellationCleanup = admitted.value.cleanupAdmittedRun();
+    });
     f.context.chatRunState.getOrCreate(runId).buffer = "keep ordinary local output";
     const entered = createDeferredCore();
     const release = createDeferredCore();
@@ -547,7 +550,8 @@ it.each(["missing", "local", "reclaimed"] as const)(
     } finally {
       release.resolve();
       await Promise.all([sweep, first, second]);
-      admitted.value.cleanupAdmittedRun();
+      await cancellationCleanup;
+      await admitted.value.cleanupAdmittedRun();
       clearAgentRunContext(runId, admitted.value.lifecycleGeneration);
       f.context.chatRunState.clear();
     }

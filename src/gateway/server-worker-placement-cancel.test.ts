@@ -94,6 +94,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
     let subscriptions: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
     let heldWriter: Promise<unknown> | undefined;
     let reclaim: Promise<unknown> | undefined;
+    let cancellationCleanup: Promise<void> | undefined;
     const writerEntered = createDeferred();
     const releaseWriter = createDeferred();
     const abortObserved = createDeferred();
@@ -164,7 +165,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         "abort",
         () => {
           if (outcome !== "setup-failed-write") {
-            owned.cleanupAdmittedRun();
+            cancellationCleanup = owned.cleanupAdmittedRun();
           }
           abortObserved.resolve();
         },
@@ -267,7 +268,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
       const fresh = await admit("explicit-after-terminal-stop");
       expect(fresh.ok).toBe(true);
       if (fresh.ok) {
-        fresh.value.cleanupAdmittedRun();
+        await fresh.value.cleanupAdmittedRun();
         clearAgentRunContext("explicit-after-terminal-stop", fresh.value.lifecycleGeneration);
       }
     } finally {
@@ -275,8 +276,9 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
       releaseWriter.resolve();
       await heldWriter;
       await reclaim?.catch(() => {});
+      await cancellationCleanup;
       if (active?.ok) {
-        active.value.cleanupAdmittedRun();
+        await active.value.cleanupAdmittedRun();
         clearAgentRunContext(runId, active.value.lifecycleGeneration);
       }
       unsubscribe();

@@ -122,10 +122,10 @@ function createInputHandoff(sharedStore = false) {
         ).toMatchObject({ appended: true, messageId: aggregate.inputId });
       }
       if (params.completion) {
-        receipt.complete!(params.completion);
+        await receipt.complete!(params.completion);
       }
     } finally {
-      receipt.finish(params.disposition ?? "interrupted");
+      await receipt.finish(params.disposition ?? "interrupted");
     }
     return receipt;
   };

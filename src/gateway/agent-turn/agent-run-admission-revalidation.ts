@@ -68,8 +68,10 @@ export function createAgentRunAdmissionRevalidator(options: {
     } catch (err) {
       const reject = () => rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, err));
       return userTurn
-        ? releasePreparedAgentRunUserTurn(userTurn, disposition).then(reject, (cleanupError) =>
-            rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, cleanupError)),
+        ? releasePreparedAgentRunUserTurn(userTurn, disposition).then(
+            reject,
+            (cleanupError: unknown) =>
+              rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, cleanupError)),
           )
         : reject();
     }
@@ -86,8 +88,10 @@ export function createAgentRunAdmissionRevalidator(options: {
       return cleanupPreaccept(true).then(() => undefined);
     };
     return userTurn
-      ? releasePreparedAgentRunUserTurn(userTurn, disposition).then(respond, (cleanupError) =>
-          rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, cleanupError)),
+      ? releasePreparedAgentRunUserTurn(userTurn, disposition).then(
+          respond,
+          (cleanupError: unknown) =>
+            rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, cleanupError)),
         )
       : respond();
   };

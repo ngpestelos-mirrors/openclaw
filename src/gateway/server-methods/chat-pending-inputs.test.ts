@@ -143,7 +143,7 @@ describe("pending input read boundary", () => {
         }
       } finally {
         for (const receipt of receipts) {
-          receipt.finish("interrupted");
+          await receipt.finish("interrupted");
         }
       }
     });
@@ -288,7 +288,7 @@ describe("pending input read boundary", () => {
       } finally {
         readDisplay.mockRestore();
         for (const receipt of receipts) {
-          receipt.finish("interrupted");
+          await receipt.finish("interrupted");
         }
         now.mockRestore();
       }
@@ -326,7 +326,7 @@ describe("pending input read boundary", () => {
         "pending receipt",
       );
       try {
-        receipt.finish("cancelled");
+        await receipt.finish("cancelled");
         const page = await readChatPendingInputs(scope, { limit: 1, maxChars: 50 });
         const displayId = `pending:${receipt.inputId}`;
         expect(page).toMatchObject({
@@ -367,7 +367,7 @@ describe("pending input read boundary", () => {
           unavailableReason: "not_found",
         });
       } finally {
-        receipt.finish("interrupted");
+        await receipt.finish("interrupted");
       }
     });
   });
@@ -412,7 +412,7 @@ describe("pending input read boundary", () => {
         });
         expect(respond).toHaveBeenCalledWith(true, { ok: false, unavailableReason: "not_visible" });
       } finally {
-        receipt.finish("interrupted");
+        await receipt.finish("interrupted");
       }
     });
   });
@@ -547,12 +547,12 @@ describe("pending input consumption receipts", () => {
           await upsertSessionEntryCore(scope, { sessionId: "replacement", updatedAt: 2 });
           expect((await call({ inputRunIds })).inputReceipts).toEqual([]);
         } finally {
-          aggregate.finish("interrupted");
+          await aggregate.finish("interrupted");
           for (const source of sources) {
-            source.finish("interrupted");
+            await source.finish("interrupted");
           }
           for (const receipt of retained) {
-            receipt.finish("interrupted");
+            await receipt.finish("interrupted");
           }
         }
       });

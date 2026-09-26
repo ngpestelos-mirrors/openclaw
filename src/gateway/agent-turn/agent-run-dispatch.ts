@@ -443,7 +443,7 @@ export function dispatchAgentRunFromGateway(
   // Startup failures may never enter command finalization; delivery already joined this boundary.
   const agentRun = terminalProducer.settle(agentExecution);
   let inputCompletionWriteFailed = false;
-  const runCompletion = agentRun
+  const executionCompletion = agentRun
     .then(async (result) => {
       const recordedOutcome = readAgentRunTerminalOutcome(result);
       const signalStopReason = resolveResolvedAgentTimeoutStopReason(
@@ -655,11 +655,15 @@ export function dispatchAgentRunFromGateway(
         ...(aborted ? {} : { error: renderedErr }),
       });
       return { terminalOutcome, settled };
-    })
-    .finally(async () => {
+    });
+  const runCompletion = (async () => {
+    try {
+      return await executionCompletion;
+    } finally {
       await cleanupRunOwner();
       releaseTaskOwner?.();
-    });
+    }
+  })();
 
   if (finalizeLegacyRun && trackedTask) {
     const cancel = createTrackedTaskCancellation(trackedTask);

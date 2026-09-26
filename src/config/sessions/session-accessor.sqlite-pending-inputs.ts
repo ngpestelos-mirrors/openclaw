@@ -16,7 +16,7 @@ import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { SessionPendingInputs } from "../../state/openclaw-agent-db.generated.js";
-import { type OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { hasSessionPendingInputsSchema } from "../../state/openclaw-agent-pending-inputs-schema.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
@@ -81,10 +81,10 @@ export function captureSessionPendingInputWorkerCustody() {
       config: _config,
       closing: _closing,
       settlement: _settlement,
-      sources,
+      sources: childSources,
       ...input
     } = current;
-    return { ...input, ...(sources ? { sources: sources.map(capture) } : {}) };
+    return { ...input, ...(childSources ? { sources: childSources.map(capture) } : {}) };
   };
   return {
     input: capture(owner),
@@ -119,10 +119,10 @@ export function runWithSessionPendingInputWorkerCustody<T>(
   assertCurrent: () => void,
   run: () => T,
 ): T {
-  const install = (input: SessionPendingInputWorkerCustody): SessionPendingInputOwner => {
+  const install = (current: SessionPendingInputWorkerCustody): SessionPendingInputOwner => {
     const owner: SessionPendingInputOwner = {
-      ...input,
-      sources: input.sources?.map(install),
+      ...current,
+      sources: current.sources?.map(install),
       assertCurrent,
       finish: () => {
         throw new Error("Worker custody cannot release its host owner");
