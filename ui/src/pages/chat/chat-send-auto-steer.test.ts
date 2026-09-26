@@ -17,6 +17,49 @@ import { beginQueuedMessageEdit, updateQueuedMessageEdit } from "./queued-messag
 useChatSendBrowserFixture();
 
 describe("Auto send overlay", () => {
+  it.each([false, true])(
+    "renews a failed Auto retry only with proven no custody (%s)",
+    async (proven) => {
+      const original = {
+        id: "auto-failed",
+        text: "Preserve the full input",
+        createdAt: 1,
+        deliveryPolicy: "auto" as const,
+        queueMode: "followup" as const,
+        sendState: "failed" as const,
+        sendRunId: "failed-auto-run",
+        sendRejectedBeforeCustody: proven,
+        sessionKey: "agent:main:main",
+        agentId: "main",
+      };
+      const host = makeChatHost({
+        requestHandlers: { "chat.send": { status: "started" } },
+        chatQueue: [original],
+        sessionKey: original.sessionKey,
+        settings: { chatAutoSteer: false },
+        isAutoSteerAvailable: () => false,
+      });
+      expect(
+        admitQueuedMessageForSession(
+          host,
+          captureChatOutboxAdmission(host, host.sessionKey, original.agentId),
+          original,
+        ),
+      ).toBe(true);
+      await retryQueuedChatMessage(host, original.id);
+      const payload = findChatSendPayload(host);
+      expect(payload).toMatchObject({
+        message: original.text,
+        deliveryPolicy: "auto",
+        queueMode: "followup",
+      });
+      if (proven) {
+        expect(payload.idempotencyKey).not.toBe(original.sendRunId);
+      } else {
+        expect(payload.idempotencyKey).toBe(original.sendRunId);
+      }
+    },
+  );
   // Historical v4 wire shape from d9d8f0829d87 (before Auto): no new-row
   // writer/admission helper manufactures these upgrade inputs.
   it.each([undefined, "steer", "followup"] as const)(
@@ -175,7 +218,7 @@ describe("Auto send overlay", () => {
     },
   );
 
-  it.each(["collect", "interrupt", "followup"] as const)(
+  it.each(["collect", "interrupt", "followup", "steer"] as const)(
     "lets the Gateway resolve inherited %s after Auto classification",
     async (chatFollowUpMode) => {
       const host = makeChatHost({

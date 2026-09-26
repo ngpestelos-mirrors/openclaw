@@ -16,6 +16,12 @@ import { handleChatComposerDetailsToggle, syncChatPickerOverlay } from "./chat-p
 
 registerModelControlsEnglish();
 
+const autoSteerIcon = strokeIcon(svg`<path d="m18 14 4 4-4 4" />
+    <path d="m18 2 4 4-4 4" />
+    <path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22" />
+    <path d="M2 6h1.972a4 4 0 0 1 3.6 2.2" />
+    <path d="M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45" />`);
+
 export type ChatAutoSteerControl = {
   active: boolean;
   disabled?: boolean;
@@ -220,7 +226,7 @@ export function renderChatEffortPicker(params: ChatEffortPickerParams) {
                 </span>
               `
             : html`<span class="chat-controls__effort-speed" aria-hidden="true"
-                >${params.autoSteer && !params.fastMode.supported ? icons.shuffle : icons.zap}</span
+                >${params.autoSteer && !params.fastMode.supported ? autoSteerIcon : icons.zap}</span
               >`
         }
         <span class="chat-controls__inline-select-label">${triggerLabel}</span>
@@ -387,7 +393,7 @@ export function renderChatEffortPicker(params: ChatEffortPickerParams) {
               ? html`
                   <div class="chat-controls__fast-mode-row" data-chat-auto-steer-row>
                     <span class="chat-controls__fast-mode-icon" aria-hidden="true"
-                      >${icons.shuffle}</span
+                      >${autoSteerIcon}</span
                     >
                     <span class="chat-controls__fast-mode-copy">
                       <span class="chat-controls__fast-mode-title"

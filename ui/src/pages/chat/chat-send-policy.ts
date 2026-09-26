@@ -19,14 +19,12 @@ type ChatSendPolicyInput = {
 /** Capture delivery intent once, before the outbox takes custody of the input. */
 export function resolveChatSendPolicy(host: ChatHost, input: ChatSendPolicyInput) {
   const { source, intent, applyRunPolicy, userMessage } = input;
+  const browserOverride = normalizeChatFollowUpModeOverride(host.settings?.chatFollowUpMode);
   // Editing preserves the row's delivery choice; current composer defaults must
   // not turn an explicitly queued message into a steer or interrupt.
   const followUpMode =
     input.followUpMode ??
-    (source
-      ? (source.queueMode ?? "queue")
-      : (host.chatFollowUpMode ??
-        normalizeChatFollowUpModeOverride(host.settings?.chatFollowUpMode)));
+    (source ? (source.queueMode ?? "queue") : (host.chatFollowUpMode ?? browserOverride));
   // An edited/retried row owns its original intent, independent of today's toggle.
   const deliveryPolicy = input.followUpMode
     ? undefined
@@ -48,13 +46,13 @@ export function resolveChatSendPolicy(host: ChatHost, input: ChatSendPolicyInput
         ? ("auto" as const)
         : undefined;
   // Auto carries explicit browser queue/steer choices, but leaves inherited
-  // collect/interrupt semantics to the Gateway after classification.
+  // server semantics to the Gateway after classification.
   const activeRunQueueMode = deliveryPolicy
     ? source
       ? source.queueMode
-      : followUpMode === "queue"
+      : browserOverride === "queue"
         ? "followup"
-        : followUpMode === "steer"
+        : browserOverride === "steer"
           ? "steer"
           : undefined
     : !intent && applyRunPolicy && followUpMode !== "queue"

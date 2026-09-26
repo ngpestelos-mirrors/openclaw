@@ -457,7 +457,14 @@ describe("Auto through real chat.send admission and custody", () => {
           queueMode === "followup" || kind === "attachment" ? 1 : 0,
         );
         expect(fixture.decide).toHaveBeenCalledOnce();
-        expect(readHistory).toHaveBeenCalledOnce();
+        // Reply context may use the history owner independently; only the
+        // first Auto input may perform the bounded classifier evidence read.
+        expect(
+          readHistory.mock.calls.filter(
+            ([scope]) =>
+              asOptionalRecord(asOptionalRecord(scope)?.params)?.maxHistoryBytes === 32_000,
+          ),
+        ).toHaveLength(1);
       } finally {
         first.result.resolve({ status: "abstained" });
         await fixture.cleanup();

@@ -93,9 +93,9 @@ describe("effort bar colour and flow", () => {
         ?.previousElementSibling?.querySelector("[data-chat-speed-toggle]"),
     ).not.toBeNull();
     const expectedIcon = document.createElement("span");
-    render(icons.shuffle, expectedIcon);
-    const autoIcon = expectedIcon.querySelector("svg")!.innerHTML;
-    expect(host!.querySelector("[data-chat-auto-steer-row] svg")!.innerHTML).toBe(autoIcon);
+    const autoSvg = host!.querySelector("[data-chat-auto-steer-row] svg")!;
+    expect(autoSvg.querySelector("path")?.getAttribute("d")).toBe("m18 14 4 4-4 4");
+    const autoIcon = autoSvg.innerHTML;
     expect(host!.querySelector("summary .chat-controls__effort-speed svg")!.innerHTML).toBe(
       autoIcon,
     );
