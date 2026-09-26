@@ -149,7 +149,7 @@ describe("Codex app-server config", () => {
             },
             privateEndpoints: [
               {
-                host: " git.openclaw-system.svc ",
+                host: "git.123-control.svc",
                 port: 443,
                 allowMethods: ["POST"],
               },
@@ -196,7 +196,7 @@ describe("Codex app-server config", () => {
               },
               private_endpoints: [
                 {
-                  host: "git.openclaw-system.svc",
+                  host: "git.123-control.svc",
                   port: 443,
                   allow_methods: ["POST"],
                 },

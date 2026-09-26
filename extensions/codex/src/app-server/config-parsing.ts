@@ -69,13 +69,11 @@ const codexAppServerExperimentalSchema = z
 const codexAppServerRemoteWorkspaceRootSchema = z.string().trim().min(1);
 const codexAppServerNetworkProxyDomainPermissionSchema = z.enum(["allow", "deny"]);
 const codexAppServerNetworkProxyUnixSocketPermissionSchema = z.enum(["allow", "none"]);
+const PRIVATE_ENDPOINT_HOST_PATTERN =
+  /^(?!\d{1,3}(?:\.\d{1,3}){3}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?))*$/u;
 const codexAppServerNetworkProxyPrivateEndpointSchema = z
   .object({
-    host: z
-      .string()
-      .trim()
-      .min(1)
-      .regex(/^(?!.*(?:\*|:\/\/|\/|\s))[A-Za-z0-9.-]+$/u),
+    host: z.string().min(1).regex(PRIVATE_ENDPOINT_HOST_PATTERN),
     port: z.literal(443),
     allowMethods: z.tuple([z.literal("POST")]),
   })

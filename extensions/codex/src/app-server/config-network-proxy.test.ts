@@ -88,6 +88,43 @@ describe("Codex network proxy config admission", () => {
     );
   });
 
+  it("admits numeric-leading Kubernetes DNS labels for private endpoints", () => {
+    const pluginConfig = {
+      appServer: {
+        networkProxy: {
+          enabled: true,
+          profileName: "numeric-label-test",
+          domains: { "api.openai.com": "allow" },
+          privateEndpoints: [{ host: "git.123-control.svc", port: 443, allowMethods: ["POST"] }],
+        },
+      },
+    };
+
+    const validated = validateJsonSchemaValue({
+      schema: manifest.configSchema,
+      value: pluginConfig,
+      applyDefaults: true,
+    });
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) {
+      throw new Error("Expected manifest-valid private endpoint config");
+    }
+
+    expect(
+      resolveRuntimeForTest({ pluginConfig: validated.value }).networkProxy?.configPatch,
+    ).toMatchObject({
+      permissions: {
+        "numeric-label-test": {
+          network: {
+            private_endpoints: [
+              { host: "git.123-control.svc", port: 443, allow_methods: ["POST"] },
+            ],
+          },
+        },
+      },
+    });
+  });
+
   it.each([
     {
       name: "wildcard host",
@@ -100,6 +137,18 @@ describe("Codex network proxy config admission", () => {
       ],
     },
     {
+      name: "whitespace-padded host",
+      privateEndpoints: [{ host: " git.openclaw-system.svc ", port: 443, allowMethods: ["POST"] }],
+    },
+    {
+      name: "IP literal host",
+      privateEndpoints: [{ host: "169.254.169.254", port: 443, allowMethods: ["POST"] }],
+    },
+    {
+      name: "empty DNS label",
+      privateEndpoints: [{ host: "git..openclaw-system.svc", port: 443, allowMethods: ["POST"] }],
+    },
+    {
       name: "non-broker port",
       privateEndpoints: [{ host: "git.openclaw-system.svc", port: 8443, allowMethods: ["POST"] }],
     },
@@ -108,19 +157,24 @@ describe("Codex network proxy config admission", () => {
       privateEndpoints: [{ host: "git.openclaw-system.svc", port: 443, allowMethods: ["GET"] }],
     },
   ])("rejects private endpoint $name without broadening the proxy", ({ privateEndpoints }) => {
-    expect(() =>
-      resolveRuntimeForTest({
-        pluginConfig: {
-          appServer: {
-            networkProxy: {
-              enabled: true,
-              domains: { "api.openai.com": "allow" },
-              privateEndpoints,
-            },
-          },
+    const pluginConfig = {
+      appServer: {
+        networkProxy: {
+          enabled: true,
+          domains: { "api.openai.com": "allow" },
+          privateEndpoints,
         },
-      }),
-    ).toThrow(
+      },
+    };
+
+    expect(
+      validateJsonSchemaValue({
+        schema: manifest.configSchema,
+        value: pluginConfig,
+        applyDefaults: true,
+      }).ok,
+    ).toBe(false);
+    expect(() => resolveRuntimeForTest({ pluginConfig })).toThrow(
       new Error(
         'Invalid plugins.entries.codex.config.appServer.networkProxy.privateEndpoints; fix this field before starting Codex with network restrictions. Run "openclaw doctor --fix" for supported repairs.',
       ),

@@ -123,7 +123,7 @@ function normalizeNetworkProxyPrivateEndpoints(
   value: CodexAppServerNetworkProxyConfig["privateEndpoints"] | undefined,
 ): JsonObject[] | undefined {
   const entries = (value ?? []).map((endpoint) => ({
-    host: endpoint.host.trim(),
+    host: endpoint.host,
     port: endpoint.port,
     allow_methods: endpoint.allowMethods,
   }));
