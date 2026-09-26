@@ -361,7 +361,7 @@ const COMPACT_HYBRID_RUNTIME_JOB_SECONDS = 440;
 const COMPACT_GITHUB_MAX_PREDICTED_SECONDS = 150;
 // Hosted run 35477045216 timed out after an hour on a 203-file serial stripe;
 // its 196-file sibling took 2867s. Bound admission independently of stale costs.
-const COMPACT_HOSTED_STORAGE_STATE_MAX_FILES = 64;
+const COMPACT_STORAGE_STATE_MAX_FILES = 64;
 // Trusted forks can use the GitHub profile on Blacksmith. Every compact
 // profile must fit the same runner-registration allowance.
 const COMPACT_NODE_TEST_JOB_CAP = 90;
@@ -3181,8 +3181,8 @@ function splitOversizedCompactGroup(
   const isCliProcess = group.shard_name === "agentic-cli-process";
   const isTooling = isParallelToolingGroup(group);
   const storageStateFileLimit =
-    runnerBackend === "github" && group.shard_name === "core-runtime-infra-storage-state"
-      ? COMPACT_HOSTED_STORAGE_STATE_MAX_FILES
+    group.shard_name === "core-runtime-infra-storage-state"
+      ? COMPACT_STORAGE_STATE_MAX_FILES
       : undefined;
   const exceedsStorageStateFileLimit =
     storageStateFileLimit !== undefined &&
