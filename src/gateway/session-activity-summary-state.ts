@@ -15,6 +15,27 @@ import { sessionChanges } from "../sessions/session-row-changes.js";
 import { resolveSessionStoreKey } from "./session-store-key.js";
 
 export type ActivitySummaryTarget = { key: string; agentId: string };
+export type SessionActivitySummaryWork = ActivitySummaryTarget & {
+  sessionId: string;
+  lifecycleRevision?: string;
+  storePath: string;
+  sourceStorePath: string;
+  storeAgentId: string;
+  rowGeneration: string | symbol;
+  readyAt: number;
+  retryPending: boolean;
+  failures: number;
+  controller?: AbortController;
+  inFlight: boolean;
+  queued: boolean;
+  dirty: boolean;
+  immediate: boolean;
+  lastStartedAt: number;
+  retryAt: number;
+  windowStart: number;
+  calls: number;
+};
+
 type PendingState = {
   sessionId: string;
   storePath: string;

@@ -1,4 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import type { SessionActivitySummary } from "../config/sessions/activity-summary.js";
 import { readSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
 import { readSessionTranscriptRunInputVisibilityFromProjection } from "../config/sessions/session-accessor.sqlite-history-input-visibility.js";
 import { readTranscriptDisplayDeltaFromProjection } from "../config/sessions/session-accessor.sqlite-history-query.js";
@@ -112,6 +113,13 @@ export function createReadonlySessionHistoryReader(target: PreparedSessionHistor
     return result.value.value;
   };
   return {
+    async readActivitySummarySource(previous?: SessionActivitySummary) {
+      const { readActivitySummarySourceBatch } =
+        await import("./session-activity-summary-source.js");
+      return readSnapshot(() =>
+        readActivitySummarySourceBatch({ scope: target.transcript, previous }),
+      );
+    },
     readTranscriptBinding: (run?: { id: string; maxBytes: number }) =>
       readSnapshot((projection) => readSessionTranscriptBindingFromProjection(projection, run)),
     readTranscriptDisplayDelta: (limits: SessionTranscriptRawDeltaLimits) =>

@@ -96,6 +96,7 @@ export async function prepareGatewayKernelRequestRuntime(params: {
   }
   if (projection) {
     projectionLifetime.detach = runtime.attachSessionRowProjection(projection);
+    runtime.sessionActivitySummaries.resume();
   }
   gatewayRequestContext.requestEntryLifetime = runtime.requestEntryLifetime;
   bindApprovalPublicationContext(gatewayRequestContext);

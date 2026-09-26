@@ -1,4 +1,6 @@
+import type { ActivitySummarySourceBatch } from "../../gateway/session-activity-summary-source.js";
 import type { AgentHistoryActivity } from "../../infra/agent-activity-events.js";
+import type { SessionActivitySummary } from "./activity-summary.js";
 import type {
   SessionTranscriptDisplayDeltaResult,
   SessionTranscriptMessageByIdOptions,
@@ -110,6 +112,10 @@ export type SessionHistoryTranscriptBinding = { sessionKey: string; sessionId: s
 
 export type SessionHistoryWorkerRequest =
   | {
+      kind: "activity-summary";
+      params: { target: SessionTranscriptReadScope; previous?: SessionActivitySummary };
+    }
+  | {
       kind: "transcript-binding";
       params: { target: SessionTranscriptReadScope; run?: { id: string; maxBytes: number } };
     }
@@ -140,6 +146,7 @@ export type SessionHistoryWorkerRequest =
   | { kind: "http"; params: SessionHistoryReadParams };
 
 export type SessionHistoryWorkerResult =
+  | { kind: "activity-summary"; source: ActivitySummarySourceBatch }
   | { kind: "transcript-binding"; binding: SessionHistoryTranscriptBinding | undefined }
   | { kind: "rpc"; page: ChatHistoryPage }
   | { kind: "message-lookup"; messages: unknown[] }

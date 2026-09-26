@@ -222,15 +222,20 @@ export function readActiveTranscriptEntryIdentityInSnapshot(
 export function readSessionTranscriptActivePathEntryRelation(
   scope: SessionTranscriptReadScope,
   entryId: string | null,
+  options?: { readOnly?: boolean },
 ): "exact" | "ancestor" | "off-path" {
-  return withCurrentProjectionSnapshot(scope, (projection) => {
-    if (projection.state.leafEventId === entryId || entryId === null) {
-      return projection.state.leafEventId === entryId ? "exact" : "off-path";
-    }
-    return readActiveTranscriptEntryIdentityInSnapshot(projection, entryId)
-      ? "ancestor"
-      : "off-path";
-  });
+  return withCurrentProjectionSnapshot(
+    scope,
+    (projection) => {
+      if (projection.state.leafEventId === entryId || entryId === null) {
+        return projection.state.leafEventId === entryId ? "exact" : "off-path";
+      }
+      return readActiveTranscriptEntryIdentityInSnapshot(projection, entryId)
+        ? "ancestor"
+        : "off-path";
+    },
+    options,
+  );
 }
 
 /** Reads a bounded context tail, preserving control facts but excluding display-only messages. */

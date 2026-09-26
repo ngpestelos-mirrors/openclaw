@@ -161,9 +161,12 @@ describe("utility completion with an unavailable implicit harness", () => {
       ],
       touchSessionEntry: false,
     });
+    const { createSessionRowProjection } = await import("./session-row-projection.js");
+    const projection = await createSessionRowProjection({ cfg: config });
     const complete = vi.fn(defaultCompleteModel);
     const recaps = createSessionActivitySummaries({
       getConfig: () => config,
+      getSessionRowProjection: () => projection,
       onChanged: vi.fn(),
       completeModel: complete,
     });
@@ -186,6 +189,7 @@ describe("utility completion with an unavailable implicit harness", () => {
       expect(runtimeMocks.runEmbeddedAttempt).not.toHaveBeenCalled();
     } finally {
       await recaps.dispose();
+      projection.dispose();
     }
   });
 

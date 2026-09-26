@@ -60,6 +60,7 @@ export function createSessionRowMembershipReadAccess(params: {
     return row && entry
       ? {
           agentId: row.agentId,
+          storeAgentId: row.storeTarget.agentId,
           generation: row.generation,
           canonicalKey: row.key,
           entry,

@@ -27,6 +27,12 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { registerAgentRunContext, clearAgentRunContext } from "../infra/agent-run-registry.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
+import {
+  createAgentDatabaseInspectionRefusal,
+  preparePendingAgentDatabase,
+  recordAgentDatabaseAdmissions,
+} from "../state/agent-database-admission.js";
 import type { DB } from "../state/openclaw-agent-db.generated.js";
 import {
   openOpenClawAgentDatabase,
@@ -48,8 +54,9 @@ import {
 import { projectSessionActivitySummary } from "./session-activity-summary-state.js";
 import { listSessionFixture } from "./session-list.test-support.js";
 import type { defaultCompleteModel } from "./session-observer-model.js";
+import * as projectionWork from "./session-projection-work.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
-import { createSessionRowProjection } from "./session-row-projection.js";
+import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 
 const archiveMaterializationHook = vi.hoisted(() => ({
   beforeMaterialize: undefined as (() => Promise<void>) | undefined,
@@ -122,6 +129,8 @@ describe("Activity recap lifecycle with the canonical session store", () => {
   let testState: OpenClawTestState;
   let cfg: OpenClawConfig;
   let service: SessionActivitySummaryService;
+  let residentProjection: SessionRowProjection;
+  let releaseForeground: (() => void) | undefined;
   const complete = vi.fn(async (_params: Parameters<typeof defaultCompleteModel>[0]) =>
     result("Completed the requested work."),
   );
@@ -141,18 +150,80 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       lifecycleRevision: "lifecycle-1",
       updatedAt: 1,
     });
+    residentProjection = await createSessionRowProjection({ cfg, getConfig: () => cfg });
     service = createSessionActivitySummaries({
       getConfig: () => cfg,
+      getSessionRowProjection: () => residentProjection,
       onChanged: changed,
       prepareModel: prepare,
       completeModel: complete,
     });
   });
   afterEach(async () => {
+    releaseForeground?.();
+    releaseForeground = undefined;
     archiveMaterializationHook.beforeMaterialize = undefined;
     clearAgentRunContext("recap-context-run");
     await service.dispose();
+    residentProjection.dispose();
+    vi.restoreAllMocks();
     await testState.cleanup();
+  });
+
+  it("joins source cancellation while foreground history remains retained", async () => {
+    await messages(2);
+    releaseForeground = projectionWork.retainSessionListForegroundWork();
+    const entered = createDeferred();
+    const yieldBackground = projectionWork.yieldSessionListBackgroundWork;
+    vi.spyOn(projectionWork, "yieldSessionListBackgroundWork").mockImplementationOnce(() => {
+      entered.resolve();
+      return yieldBackground();
+    });
+    service.ensure(target);
+    await entered.promise;
+    await service.dispose();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(read()?.activitySummary).toBeUndefined();
+  });
+
+  it("keeps source work outside a publisher's expired database preparation", async () => {
+    await messages(2);
+    const watermark = readSessionTranscriptWatermark(scope);
+    const settled = createDeferred<ReturnType<typeof view>>();
+    changed.mockImplementation(() => {
+      const value = projectSessionActivitySummary({
+        ...target,
+        cfg,
+        entry: residentProjection.sharingTarget(target)?.entry,
+        watermark,
+      });
+      if (value && value.state !== "updating") {
+        settled.resolve(value);
+      }
+    });
+    releaseForeground = projectionWork.retainSessionListForegroundWork();
+    const entered = createDeferred();
+    const yieldBackground = projectionWork.yieldSessionListBackgroundWork;
+    vi.spyOn(projectionWork, "yieldSessionListBackgroundWork").mockImplementationOnce(() => {
+      entered.resolve();
+      return yieldBackground();
+    });
+    const refusal = createAgentDatabaseInspectionRefusal({
+      agentId: scope.agentId,
+      paths: [openOpenClawAgentDatabase({ agentId: scope.agentId }).path],
+      pending: true,
+      reason: "Synthetic startup preparation",
+    });
+    recordAgentDatabaseAdmissions([refusal], { source: "startup" });
+    await preparePendingAgentDatabase(refusal, { assertCurrent() {} }, async () => {
+      service.handleTranscript({ target: { ...scope }, lifecycleRevision: "lifecycle-1" });
+      await entered.promise;
+    });
+    await residentProjection.prepareMembership();
+    releaseForeground();
+    expect(await settled.promise).toMatchObject({ state: "current" });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(read()?.activitySummary?.coveredMessages).toBe(2);
   });
 
   it("does not generate conversation recaps for Cron runs", async () => {
@@ -255,6 +326,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     await service.dispose();
     service = createSessionActivitySummaries({
       getConfig: () => cfg,
+      getSessionRowProjection: () => residentProjection,
       onChanged: changed,
       prepareModel: prepare,
       completeModel: complete,
@@ -384,7 +456,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     }
   });
 
-  it("does not decode saved prompts during transcript notification bursts", async () => {
+  it("serves transcript notification bursts from committed session facts", async () => {
     await messages(2);
     const prompt = "Saved recap prompt marker. ".repeat(40_000);
     await patchSessionEntryCore(scope, () => ({ skillsSnapshot: { prompt, skills: [] } }));
@@ -402,8 +474,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       for (let index = 0; index < 100; index += 1) {
         service.handleTranscript({ target: { ...scope }, lifecycleRevision: "lifecycle-1" });
       }
-      expect(queries.rowCounts.entries).toBeGreaterThanOrEqual(100);
-      expect(queries.textBytes.entries).toBeLessThan(100 * 1024);
+      expect(queries.counts.entries).toBe(0);
       expect(parse.mock.calls.some(([json]) => json.includes("Saved recap prompt marker."))).toBe(
         false,
       );
@@ -607,6 +678,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     await waitForSessionTranscriptProjection(scope);
     service = createSessionActivitySummaries({
       getConfig: () => cfg,
+      getSessionRowProjection: () => residentProjection,
       onChanged: changed,
       prepareModel: prepare,
       completeModel: complete,
@@ -643,6 +715,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     const secondTarget = { key: "agent:main:second-recap", agentId: "main" };
     const thirdTarget = { key: "agent:other:third-recap", agentId: "other" };
     cfg.agents!.list = [{ id: "main" }, { id: "other", utilityModel: "test/other" }];
+    sessionChanges.emit({ all: true, scope: "config" });
     for (const other of [secondTarget, thirdTarget]) {
       const otherScope = { agentId: other.agentId, sessionKey: other.key, sessionId: other.key };
       await upsertSessionEntryCore(otherScope, { sessionId: other.key, updatedAt: 1 });
@@ -698,6 +771,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     const oldService = service;
     service = createSessionActivitySummaries({
       getConfig: () => cfg,
+      getSessionRowProjection: () => residentProjection,
       onChanged: changed,
       prepareModel: async () => prepared,
       completeModel: complete,
@@ -903,6 +977,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     const originalScope = { ...scope, storePath: originalDatabase.path };
     await backup(originalDatabase.db, relocatedPath);
     cfg = { ...cfg, session: { store: relocatedPath } };
+    sessionChanges.emit({ all: true, scope: "config" });
     const relocatedScope = { ...scope, storePath: relocatedPath };
     try {
       const relocatedEntry = loadSessionEntryReadOnly(relocatedScope)!;

@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { ActivitySummarySourceBatch } from "../../gateway/session-activity-summary-source.js";
 import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-read.types.js";
 import { prepareGatewaySessionStoreReadSources } from "../../gateway/session-utils-store-sources.js";
 import {
@@ -138,6 +139,15 @@ function captureHistoryRequest(request: SessionHistoryWorkerRequest): SessionHis
         },
       };
     }
+    if (request.kind === "activity-summary") {
+      return {
+        kind: request.kind,
+        params: {
+          target: capturedTarget,
+          previous: request.params.previous ? { ...request.params.previous } : undefined,
+        },
+      };
+    }
     if (request.kind === "message-count") {
       return { kind: request.kind, params: { target: capturedTarget } };
     }
@@ -219,6 +229,10 @@ function captureHistoryRequest(request: SessionHistoryWorkerRequest): SessionHis
 }
 
 export function readSessionHistoryPageInWorker(
+  request: Extract<SessionHistoryWorkerRequest, { kind: "activity-summary" }>,
+  signal?: AbortSignal,
+): Promise<ActivitySummarySourceBatch>;
+export function readSessionHistoryPageInWorker(
   request: Extract<SessionHistoryWorkerRequest, { kind: "transcript-binding" }>,
   signal?: AbortSignal,
 ): Promise<SessionHistoryTranscriptBinding | undefined>;
@@ -250,6 +264,7 @@ export async function readSessionHistoryPageInWorker(
   request: SessionHistoryWorkerRequest,
   signal?: AbortSignal,
 ): Promise<
+  | ActivitySummarySourceBatch
   | SessionHistoryTranscriptBinding
   | undefined
   | ChatHistoryPage
@@ -316,17 +331,20 @@ export async function readSessionHistoryPageInWorker(
       agentId: databaseOptions.agentId,
       path: resolveOpenClawAgentSqlitePath(databaseOptions),
     };
-    const sourceReads = prepareGatewaySessionStoreReadSources({
-      cfg,
-      currentSource,
-      env,
-      registryPath: stateContext.admission.databasePath,
-    });
+    const sourceReads =
+      capturedRequest.kind === "activity-summary"
+        ? undefined
+        : prepareGatewaySessionStoreReadSources({
+            cfg,
+            currentSource,
+            env,
+            registryPath: stateContext.admission.databasePath,
+          });
     const assertStateCurrent = () => {
       signal?.throwIfAborted();
       stateContext.maintenanceScope?.assertAdmission();
       stateContext.admission.assertCurrent();
-      sourceReads.assertCurrent();
+      sourceReads?.assertCurrent();
     };
     assertStateCurrent();
     const target: Omit<PreparedSessionHistoryReadTarget, "database"> = {
@@ -342,7 +360,7 @@ export async function readSessionHistoryPageInWorker(
         environment: stateContext.environment,
         coordinatorRuntime: stateContext.coordinatorRuntime,
       },
-      sourceDatabases: sourceReads.sources,
+      sourceDatabases: sourceReads?.sources,
       ...(entryValidationKey ? { entryValidationKey } : {}),
     };
     const input: SessionTranscriptHistoryWorkerInput = {
@@ -438,6 +456,9 @@ export async function readSessionHistoryPageInWorker(
     const result = acquired.result;
     if (result.kind !== capturedRequest.kind) {
       throw new Error("Session history worker returned the wrong page type");
+    }
+    if (result.kind === "activity-summary") {
+      return result.source;
     }
     if (result.kind === "transcript-binding") {
       return result.binding;

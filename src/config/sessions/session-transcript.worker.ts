@@ -514,6 +514,14 @@ serveOwnedWorkerTasks(
                   deferProfileDisplay: true,
                   resolveCronJobName: () => undefined,
                 };
+                if (request.request.kind === "activity-summary") {
+                  return {
+                    kind: "activity-summary",
+                    source: await options.readers.readActivitySummarySource(
+                      request.request.params.previous,
+                    ),
+                  };
+                }
                 if (request.request.kind === "transcript-binding") {
                   return {
                     kind: "transcript-binding",

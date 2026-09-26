@@ -265,6 +265,9 @@ describe("startGatewayEventSubscriptions", () => {
       ...createParams(),
       getSessionRowProjection: () => (admitted ? projection : undefined),
     });
+    expect(observeActivitySummary.mock.calls[0]?.[0].getSessionRowProjection()).toBe(
+      admitted ? projection : undefined,
+    );
     emitAgentEvent({
       runId: "queued-owner",
       agentId: "main",
@@ -275,6 +278,7 @@ describe("startGatewayEventSubscriptions", () => {
     });
     current = { sessionId: change === "replacement" ? "successor" : "original" };
     admitted = true;
+    expect(observeActivitySummary.mock.calls[0]?.[0].getSessionRowProjection()).toBe(projection);
     prepared.resolve();
     await waitForFast(() => expect(delivered).toHaveBeenCalledWith(null));
   });

@@ -218,6 +218,7 @@ export function createSessionRowProjectionFixture(params: {
       return row
         ? {
             agentId: row.agentId,
+            storeAgentId: row.storeTarget.agentId,
             generation: row.generation,
             canonicalKey: row.key,
             entry: row.entry,

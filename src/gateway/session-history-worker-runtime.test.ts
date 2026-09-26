@@ -2,6 +2,7 @@ import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import type { SessionActivitySummary } from "../config/sessions/activity-summary.js";
 import * as sqliteScope from "../config/sessions/session-accessor.sqlite-scope.js";
 import type {
   SessionHistoryWorkerRequest,
@@ -249,8 +250,15 @@ it.each(["rpc", "http"] as const)(
   },
 );
 
-it.each(["delta", "message-lookup", "recent", "message-by-id", "message-count"] as const)(
-  "captures %s selectors and target before asynchronous dispatch",
+it.each([
+  "delta",
+  "message-lookup",
+  "recent",
+  "message-by-id",
+  "message-count",
+  "activity-summary",
+] as const)(
+  "captures %s selectors and target before preparation yields and worker dispatch",
   async (kind) => {
     const target = {
       agentId: "main",
@@ -259,6 +267,20 @@ it.each(["delta", "message-lookup", "recent", "message-by-id", "message-count"] 
       storePath: "/tmp/history-worker-fixture/sessions.json",
       sessionEntry: { sessionId: "history-worker" },
       env: { OPENCLAW_STATE_DIR: "/tmp/captured-history-state", UNRELATED_SECRET: "synthetic" },
+    };
+    const previous: SessionActivitySummary = {
+      version: 1,
+      formatRevision: 2,
+      text: "Original recap.",
+      updatedAt: 1,
+      sessionId: "history-worker",
+      lifecycleRevision: "lifecycle-1",
+      generation: "generation-1",
+      maxSeq: 7,
+      leafEntryId: "leaf-1",
+      coveredMessages: 2,
+      totalMessages: 3,
+      omittedContent: false,
     };
     const supplied =
       kind === "delta"
@@ -286,7 +308,9 @@ it.each(["delta", "message-lookup", "recent", "message-by-id", "message-count"] 
                     },
                   },
                 }
-              : { kind, params: { target, messageId: "original" } };
+              : kind === "activity-summary"
+                ? { kind, params: { target, previous } }
+                : { kind, params: { target, messageId: "original" } };
     const expected = structuredClone(supplied);
     const pending =
       supplied.kind === "message-by-id"
@@ -295,7 +319,9 @@ it.each(["delta", "message-lookup", "recent", "message-by-id", "message-count"] 
           ? readSessionHistoryPageInWorker(supplied)
           : supplied.kind === "delta"
             ? readSessionHistoryPageInWorker(supplied)
-            : readSessionHistoryPageInWorker(supplied);
+            : supplied.kind === "activity-summary"
+              ? readSessionHistoryPageInWorker(supplied)
+              : readSessionHistoryPageInWorker(supplied);
     target.sessionId = "successor";
     target.sessionEntry.sessionId = "successor";
     target.env.OPENCLAW_STATE_DIR = "/tmp/successor-history-state";
@@ -312,6 +338,15 @@ it.each(["delta", "message-lookup", "recent", "message-by-id", "message-count"] 
       supplied.params.options.allowResetArchiveFallback = false;
     } else if (supplied.kind === "message-lookup") {
       supplied.params.messageId = "successor";
+    } else if (supplied.kind === "activity-summary") {
+      Object.assign(previous, {
+        text: "Successor recap.",
+        generation: "generation-2",
+        maxSeq: 9,
+        leafEntryId: "successor-leaf",
+        coveredMessages: 3,
+        omittedContent: true,
+      });
     }
     await waitForReaderAdmission(1);
     const input = queued[0]!.prepare();
@@ -326,7 +361,9 @@ it.each(["delta", "message-lookup", "recent", "message-by-id", "message-count"] 
           ? { kind, result: { found: false, oversized: false } }
           : kind === "message-count"
             ? { kind, count: 0 }
-            : { kind, messages: [] },
+            : kind === "activity-summary"
+              ? { kind, source: undefined }
+              : { kind, messages: [] },
     );
     await pending;
     expect(input.request).toMatchObject({

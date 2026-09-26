@@ -9,6 +9,7 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -24,6 +25,7 @@ import {
   type ActivitySummaryTarget,
 } from "./session-activity-summary-state.js";
 import type { defaultCompleteModel } from "./session-observer-model.js";
+import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 
 const result = {
   text: "Verified the change.",
@@ -41,6 +43,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
   let testState: OpenClawTestState;
   let service: SessionActivitySummaryService;
   let cfg: OpenClawConfig;
+  let projection: SessionRowProjection;
   const complete = vi.fn<typeof defaultCompleteModel>();
   const changed = vi.fn();
   const view = (target: ActivitySummaryTarget) =>
@@ -77,9 +80,11 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
   };
 
+  let projectionAttached = true;
   const createService = () =>
     createSessionActivitySummaries({
       getConfig: () => cfg,
+      getSessionRowProjection: () => (projectionAttached ? projection : undefined),
       onChanged: changed,
       prepareModel: async ({ agentId, modelRef }) => ({
         config: cfg,
@@ -98,14 +103,48 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     cfg = { agents: { defaults: { utilityModel: "test/utility" } } };
     complete.mockReset().mockResolvedValue(result);
     changed.mockReset();
+    projection = await createSessionRowProjection({ cfg, getConfig: () => cfg });
+    projectionAttached = true;
     service = createService();
   });
   afterEach(async () => {
     await service.dispose();
+    projection.dispose();
     vi.useRealTimers();
     vi.restoreAllMocks();
     await testState.cleanup();
   });
+
+  it.each(["attach", "dispose"] as const)(
+    "retains startup requests until projection %s without a native fallback",
+    async (action) => {
+      const target = await addSession(1);
+      await service.dispose();
+      projectionAttached = false;
+      const committed = createDeferred();
+      changed.mockImplementation(() => {
+        if (projection.sharingTarget(target)?.entry.activitySummary) {
+          committed.resolve();
+        }
+      });
+      service = createService();
+      service.handleTranscript({ target: scope(target) });
+      expect(service.ensure(target)).toEqual({ state: "updating" });
+      expect(complete).not.toHaveBeenCalled();
+      if (action === "dispose") {
+        await service.dispose();
+        projectionAttached = true;
+        service.resume();
+        expect(complete).not.toHaveBeenCalled();
+        return;
+      }
+      projectionAttached = true;
+      service.resume();
+      await committed.promise;
+      expect(complete).toHaveBeenCalledOnce();
+      expect(loadSessionEntryReadOnly(scope(target))?.activitySummary?.coveredMessages).toBe(1);
+    },
+  );
 
   it.each([false, true])(
     "restyles old cached text once while retaining coverage (new work: %s)",
@@ -350,6 +389,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     const blocker = await addSession(3, "healthy");
     const healthy = await addSession(4, "healthy");
     cfg.agents!.list = [{ id: "main" }, { id: "healthy", utilityModel: "test/other" }];
+    sessionChanges.emit({ all: true, scope: "config" });
     const failure = createDeferred<typeof result>();
     const release = createDeferred<typeof result>();
     complete
