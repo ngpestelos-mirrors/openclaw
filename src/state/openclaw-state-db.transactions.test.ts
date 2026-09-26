@@ -23,6 +23,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 
 function publishForeignSchemaOwner(databasePath: string, incomplete = false): string {
   const marker = resolveGatewayStateOwnerPath(databasePath);
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
   fs.writeFileSync(
     marker,
     incomplete
