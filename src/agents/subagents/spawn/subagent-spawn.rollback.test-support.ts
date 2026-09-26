@@ -7,7 +7,8 @@ import type { GatewayRequestContext } from "../../../gateway/server-methods/type
 import { withTimeout } from "../../../infra/fs-safe.js";
 import type { AdmittedRunOperatorAuthority } from "../../admitted-run-context.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
-import { persistSubagentRunsToDiskOrThrow } from "../registry/subagent-registry-state.js";
+import { SubagentRegistryWriteError } from "../registry/subagent-registry-persistence.js";
+import { persistSubagentRunsToDiskAsyncOrThrow } from "../registry/subagent-registry-state.js";
 import {
   createBoundSpawnInvocation,
   createSpawnOperatorSource,
@@ -69,22 +70,26 @@ export function registerOperatorSpawnRollbackCases(options: {
             embeddedSettled = true;
           }
         });
-        vi.mocked(persistSubagentRunsToDiskOrThrow).mockImplementation(() => {
+        vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockImplementationOnce(async (runs) => {
           const record = expectDefined(
-            [...subagentRuns.values()].find(
+            [...runs.values()].find(
               (entry) => entry.requesterSessionKey === bound.parentSessionKey,
             ),
             "ordinary child registration",
           );
           childSessionKey = record.childSessionKey;
           childRunId = record.runId;
+          expect(subagentRuns.has(record.runId)).toBe(false);
           const acceptedRun = expectDefined(
             context.chatAbortControllers.get(record.runId),
             "accepted child execution owner",
           );
           expect(acceptedRun.sessionKey).toBe(record.childSessionKey);
           source.revoke();
-          throw new Error("ordinary child registry write failed");
+          throw new SubagentRegistryWriteError(
+            "not-committed",
+            new Error("ordinary child registry write failed"),
+          );
         });
       }
       try {
@@ -123,7 +128,7 @@ export function registerOperatorSpawnRollbackCases(options: {
         failures.push(error);
       } finally {
         spawnTesting.setDepsForTest();
-        vi.mocked(persistSubagentRunsToDiskOrThrow).mockReset();
+        vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockReset();
         for (const entry of context.chatAbortControllers.values()) {
           if (entry !== bound.parent.entry) {
             entry.controller.abort(new Error("spawn rollback fixture cleanup"));
