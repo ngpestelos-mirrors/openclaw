@@ -2026,7 +2026,7 @@
     {"id":"native.apple.9a6317bf808261e4","source":"Ask Discord","surface":"apple","sites":[{"kind":"ui-call","path":"apps/macos/Sources/OpenClaw/PostUpdate.swift"}]},
     {"id":"native.apple.74f27d64ff20b370","source":"Ask, create, and automate","surface":"apple","sites":[{"kind":"ui-named-argument","path":"apps/macos/Sources/OpenClaw/OnboardingView+Pages.swift"}]},
     {"id":"native.apple.38253d83f3fa7498","source":"Asking OpenClaw","surface":"apple","sites":[{"kind":"ui-localized-call","path":"apps/ios/Sources/Voice/TalkModeManager.swift"},{"kind":"conditional-branch","path":"apps/ios/Sources/Voice/TalkRealtimeWebRTCSession.swift"}]},
-    {"id":"native.apple.1bc1c50e6c31b571","source":"Assistant","surface":"apple","sites":[{"kind":"ui-localized-call","path":"apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatAgentCatalog.swift"},{"kind":"ui-localized-call","path":"apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift"}]},
+    {"id":"native.apple.1bc1c50e6c31b571","source":"Assistant","surface":"apple","sites":[{"kind":"ui-localized-call","path":"apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift"}]},
     {"id":"native.apple.75e4cb1171a28fdb","source":"Attach context","surface":"apple","sites":[{"kind":"ui-modifier","path":"apps/macos/Sources/OpenClaw/QuickChatView.swift"}]},
     {"id":"native.apple.166147d514a47902","source":"Attach only (skip launchd install)","surface":"apple","sites":[{"kind":"ui-call","path":"apps/macos/Sources/OpenClaw/DebugSettings.swift"}]},
     {"id":"native.apple.52926fa74acd46af","source":"Attach text from %@","surface":"apple","sites":[{"kind":"ui-localized-call","path":"apps/macos/Sources/OpenClaw/QuickChatView.swift"}]},

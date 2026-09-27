@@ -2,15 +2,16 @@ import Foundation
 import OpenClawChatUI
 
 extension MacGatewayChatTransport {
-    func listAgents() async throws -> OpenClawChatAgentsListResponse? {
+    func loadAgents(onUpdate: @escaping OpenClawChatAgentCatalogUpdate) async throws {
         // The window's first catalog load can precede its event subscription connecting.
         let serverLease = try await self.connection.acquireServerLease()
         try await self.requireCurrentOutboxGateway()
-        return try await self.listAgents(ifCurrentServerLease: serverLease)
+        try await self.loadAgents(ifCurrentServerLease: serverLease, onUpdate: onUpdate)
     }
 
-    private func listAgents(
-        ifCurrentServerLease serverLease: GatewayConnection.ServerLease) async throws -> OpenClawChatAgentsListResponse
+    private func loadAgents(
+        ifCurrentServerLease serverLease: GatewayConnection.ServerLease,
+        onUpdate: OpenClawChatAgentCatalogUpdate) async throws
     {
         try await OpenClawChatAgentsListResponse.load(
             request: { request in
@@ -20,7 +21,8 @@ extension MacGatewayChatTransport {
                     timeoutMs: request.timeoutMs,
                     ifCurrentServerLease: serverLease)
             },
-            isCurrent: { await self.connection.isCurrentServerLease(serverLease) })
+            isCurrent: { await self.connection.isCurrentServerLease(serverLease) },
+            onUpdate: onUpdate)
     }
 
     func acquireNewSessionRouteLease() async -> OpenClawChatNewSessionRouteLease? {
@@ -34,8 +36,8 @@ extension MacGatewayChatTransport {
                 ifCurrentServerLease: serverLease)
         }
         return OpenClawChatNewSessionRouteLease(
-            listAgents: {
-                try await self.listAgents(ifCurrentServerLease: serverLease)
+            loadAgents: { onUpdate in
+                try await self.loadAgents(ifCurrentServerLease: serverLease, onUpdate: onUpdate)
             },
             createSession: { key, label, explicitAgentID, parentSessionKey, worktree, worktreeBaseRef in
                 let agentID = explicitAgentID

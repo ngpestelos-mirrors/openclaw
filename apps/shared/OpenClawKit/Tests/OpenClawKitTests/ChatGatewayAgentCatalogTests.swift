@@ -1,13 +1,14 @@
 import Foundation
-import OpenClawChatUI
 import OpenClawProtocol
 import Testing
+@testable import OpenClawChatUI
 
+@MainActor
 struct ChatGatewayAgentCatalogTests {
-    @Test func `unnamed agents use the assistant identity fallback`() throws {
+    @Test func `unnamed roster agents retain their id until an identity arrives`() throws {
         let data = Data(#"{"defaultId":"main","mainKey":"main","scope":"per-sender","agents":[{"id":"main"}]}"#.utf8)
         let catalog = try OpenClawChatGatewayPayloadCodec.decodeAgentsList(data)
-        #expect(catalog.agents.first?.displayName == "Assistant")
+        #expect(catalog.agents.first?.displayName == "main")
     }
 
     @Test func `identity requests target the listed agent without a session alias`() {
@@ -17,7 +18,7 @@ struct ChatGatewayAgentCatalogTests {
     }
 
     @Test(arguments: [
-        (" ", "Assistant"),
+        (" ", "main"),
         (" Research ", "Research"),
         (String(repeating: "x", count: 51), String(repeating: "x", count: 50)),
         (String(repeating: "x", count: 49) + "🦞", String(repeating: "x", count: 49)),
@@ -47,11 +48,84 @@ struct ChatGatewayAgentCatalogTests {
     {
         let agent = OpenClawChatAgentChoice(id: "main", name: "Research", emoji: avatar)
         #expect(agent.emoji == expected)
-        #expect(agent.avatarText == (expected ?? "R"))
+    }
+
+    @Test(arguments: [("Research", "Re"), ("👩🏽‍💻🇦🇹🦞", "👩🏽‍💻🇦🇹"), ("🦞", "🦞")])
+    func `badges clamp text to two complete graphemes`(avatar: String, expected: String) {
+        let agent = OpenClawChatAgentChoice(id: "main", emoji: avatar)
+        #expect(agent.emoji == avatar)
+        #expect(agent.avatarText == expected)
+    }
+
+    @Test func `picker is usable before identity responses and updates without resetting selection`() async {
+        let options = ChatNewSessionAgentOptions()
+        let lease = OpenClawChatNewSessionRouteLease(
+            loadAgents: { onUpdate in
+                try await OpenClawChatAgentsListResponse.load(request: { request in
+                    if request.method == "agents.list" {
+                        return Data(
+                            #"{"defaultId":"main","mainKey":"main","scope":"per-sender","agents":[{"id":"main"},{"id":"ops","name":"Operations"}]}"#
+                                .utf8)
+                    }
+                    // No identity response has been returned when the picker first becomes usable.
+                    await MainActor.run {
+                        #expect(!options.isLoading)
+                        #expect(options.routeLease != nil)
+                        #expect(options.agents.map(\.id) == ["main", "ops"])
+                        #expect(options.agents.last?.displayName == "Operations")
+                        options.selectedAgentID = "ops"
+                    }
+                    let id = try #require(request.params["agentId"]?.value as? String)
+                    return try JSONEncoder().encode(AgentIdentityResult(
+                        agentid: id, name: "Assistant", avatar: "A"))
+                }, isCurrent: { true }, onUpdate: onUpdate)
+            },
+            createSession: { key, _, _, _, _, _ in .init(ok: true, key: key, sessionId: nil) })
+
+        await options.load(selectedAgentID: "main") { lease }
+
+        #expect(options.agents.map(\.displayName) == ["Assistant", "Operations"])
+        #expect(options.selectedAgentID == "ops")
+        #expect(!options.isLoading)
+        #expect(options.errorText == nil)
+    }
+
+    @Test func `retired connection drops identity updates and disables picker creation`() async {
+        actor Route {
+            var current = true
+            func retire() {
+                self.current = false
+            }
+        }
+        let route = Route()
+        let options = ChatNewSessionAgentOptions()
+        let lease = OpenClawChatNewSessionRouteLease(
+            loadAgents: { onUpdate in
+                try await OpenClawChatAgentsListResponse.load(request: { request in
+                    if request.method == "agents.list" {
+                        return Data(
+                            #"{"defaultId":"main","mainKey":"main","scope":"per-sender","agents":[{"id":"main"}]}"#
+                                .utf8)
+                    }
+                    await MainActor.run {
+                        #expect(!options.isLoading)
+                        #expect(options.agents.first?.displayName == "main")
+                    }
+                    await route.retire()
+                    return try JSONEncoder().encode(AgentIdentityResult(agentid: "main", name: "Retired"))
+                }, isCurrent: { await route.current }, onUpdate: onUpdate)
+            },
+            createSession: { key, _, _, _, _, _ in .init(ok: true, key: key, sessionId: nil) })
+
+        await options.load(selectedAgentID: "main") { lease }
+        #expect(options.routeLease == nil)
+        #expect(options.agents.isEmpty)
+        #expect(!options.isLoading)
     }
 
     @Test func `catalog hydration preserves configured identity routing and roster order`() async throws {
-        let catalog = try await OpenClawChatAgentsListResponse.load(request: { request in
+        var updates: [OpenClawChatAgentsListResponse] = []
+        try await OpenClawChatAgentsListResponse.load(request: { request in
             if request.method == "agents.list" {
                 #expect(request.params.isEmpty)
                 return Data(
@@ -63,8 +137,10 @@ struct ChatGatewayAgentCatalogTests {
             #expect(["main", "ops", "research"].contains(id))
             return try JSONEncoder().encode(AgentIdentityResult(
                 agentid: id, name: "Assistant", namesource: "default", avatar: "A"))
-        }, isCurrent: { true })
+        }, isCurrent: { true }, onUpdate: { if let catalog = $0 { updates.append(catalog) } })
 
+        let catalog = try #require(updates.last)
+        #expect(updates.first?.agents.map(\.displayName) == ["main", "Operations", "Research"])
         #expect(catalog.defaultId == "main")
         #expect(catalog.sessionRoutingContract == "global|inbox|main")
         #expect(catalog.agents.map(\.id) == ["main", "ops", "research"])
@@ -75,7 +151,8 @@ struct ChatGatewayAgentCatalogTests {
 
     @Test func `identity refreshes replace prior names and isolate failed or mismatched identities`() async throws {
         for name in ["First identity", "Updated identity"] {
-            let catalog = try await OpenClawChatAgentsListResponse.load(request: { request in
+            var catalog: OpenClawChatAgentsListResponse?
+            try await OpenClawChatAgentsListResponse.load(request: { request in
                 if request.method == "agents.list" {
                     return Data(
                         #"{"defaultId":"main","mainKey":"main","scope":"per-sender","agents":[{"id":"main"},{"id":"offline","name":"Configured"},{"id":"mismatch"}]}"#
@@ -86,9 +163,9 @@ struct ChatGatewayAgentCatalogTests {
                 return try JSONEncoder().encode(AgentIdentityResult(
                     agentid: id == "mismatch" ? "another-agent" : id,
                     name: name, avatar: "AB", emoji: "🦞"))
-            }, isCurrent: { true })
-            #expect(catalog.agents.map(\.displayName) == [name, "Configured", "Assistant"])
-            #expect(catalog.agents.map(\.avatarText) == ["🦞", "C", "A"])
+            }, isCurrent: { true }, onUpdate: { catalog = $0 })
+            #expect(catalog?.agents.map(\.displayName) == [name, "Configured", "mismatch"])
+            #expect(catalog?.agents.map(\.avatarText) == ["🦞", "C", "M"])
         }
     }
 
@@ -100,7 +177,7 @@ struct ChatGatewayAgentCatalogTests {
                         .utf8)
                 }
                 throw CancellationError()
-            }, isCurrent: { false })
+            }, isCurrent: { false }, onUpdate: { _ in Issue.record("Retired roster published") })
         }
     }
 

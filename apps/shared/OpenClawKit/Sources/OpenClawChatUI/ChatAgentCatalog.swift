@@ -1,6 +1,8 @@
 import Foundation
 import OpenClawProtocol
 
+public typealias OpenClawChatAgentCatalogUpdate = @MainActor @Sendable (OpenClawChatAgentsListResponse?) -> Void
+
 public struct OpenClawChatAgentChoice: Codable, Identifiable, Sendable, Hashable {
     public let id: String
     public let name: String?
@@ -15,11 +17,11 @@ public struct OpenClawChatAgentChoice: Codable, Identifiable, Sendable, Hashable
     }
 
     public var displayName: String {
-        Self.normalizedName(self.name) ?? String(localized: "Assistant")
+        Self.normalizedName(self.name) ?? self.id
     }
 
     public var avatarText: String {
-        Self.textAvatar(self.emoji) ?? String(self.displayName.prefix(1)).uppercased()
+        String((Self.textAvatar(self.emoji) ?? String(self.displayName.prefix(1)).uppercased()).prefix(2))
     }
 
     static func normalizedName(_ value: String?) -> String? {
@@ -66,15 +68,19 @@ public struct OpenClawChatAgentsListResponse: Codable, Sendable, Equatable {
         self.sessionRoutingContract = sessionRoutingContract
     }
 
-    /// Resolved identities live in the caller's existing catalog, and refresh with its roster.
-    /// Both callbacks must retain the same Gateway connection for the entire load.
+    /// Publishes the roster before starting optional identity requests, then each resolved identity.
+    /// Requests and currentness checks must retain the same Gateway connection for the entire load.
     public static func load(
         request: @escaping @Sendable (OpenClawChatGatewayRequest) async throws -> Data,
-        isCurrent: @Sendable () async -> Bool) async throws -> Self
+        isCurrent: @Sendable () async -> Bool,
+        onUpdate: OpenClawChatAgentCatalogUpdate) async throws
     {
         let data = try await request(OpenClawChatGatewayRequests.agentsList())
         let catalog = try OpenClawChatGatewayPayloadCodec.decodeAgentsList(data)
-        let agents = await withTaskGroup(of: (Int, OpenClawChatAgentChoice).self) { group in
+        try Task.checkCancellation()
+        guard await isCurrent() else { throw CancellationError() }
+        await onUpdate(catalog)
+        try await withThrowingTaskGroup(of: (Int, OpenClawChatAgentChoice).self) { group in
             for (index, agent) in catalog.agents.enumerated() {
                 group.addTask {
                     let data = try? await request(OpenClawChatGatewayRequests.agentIdentity(agentID: agent.id))
@@ -83,17 +89,16 @@ public struct OpenClawChatAgentsListResponse: Codable, Sendable, Equatable {
                 }
             }
             var agents = catalog.agents
-            for await (index, agent) in group {
+            for try await (index, agent) in group {
+                try Task.checkCancellation()
+                guard await isCurrent() else { throw CancellationError() }
+                guard agents[index] != agent else { continue }
                 agents[index] = agent
+                await onUpdate(Self(
+                    defaultId: catalog.defaultId,
+                    agents: agents,
+                    sessionRoutingContract: catalog.sessionRoutingContract))
             }
-            return agents
         }
-        try Task.checkCancellation()
-        // An optional identity failure must not hide the roster, but a retired connection must.
-        guard await isCurrent() else { throw CancellationError() }
-        return Self(
-            defaultId: catalog.defaultId,
-            agents: agents,
-            sessionRoutingContract: catalog.sessionRoutingContract)
     }
 }

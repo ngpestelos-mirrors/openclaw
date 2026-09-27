@@ -124,7 +124,7 @@ struct IOSGatewayChatTransportTests {
 
     private func withSessionTransport(
         unreadAckAdvertisement: Bool? = true,
-        _ run: (IOSGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
+        _ run: @MainActor (IOSGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
     {
         let recorder = RequestRecorder()
         let session = GatewayTestWebSocketSession(taskFactory: {
@@ -192,7 +192,8 @@ struct IOSGatewayChatTransportTests {
     @Test func `new session roster preserves selectable choices on its captured connection`() async throws {
         try await self.withSessionTransport { transport, recorder in
             let lease = try #require(await transport.acquireNewSessionRouteLease())
-            let roster = try await lease.listAgents()
+            var roster: OpenClawChatAgentsListResponse?
+            try await lease.loadAgents { roster = $0 }
             #expect(roster == OpenClawChatAgentsListResponse(
                 defaultId: "system",
                 agents: [
@@ -203,7 +204,7 @@ struct IOSGatewayChatTransportTests {
                 sessionRoutingContract: "per-sender|main|system"))
             await transport.gateway.disconnect()
             await #expect(throws: Error.self) {
-                _ = try await lease.listAgents()
+                try await lease.loadAgents { _ in Issue.record("Retired roster published") }
             }
             let requests = await recorder.all()
             #expect(requests.map(\.method) == ["agents.list"] + Array(repeating: "agent.identity.get", count: 3))
@@ -859,13 +860,15 @@ struct LocalFixtureChatTransportTests {
         (LocalChatFixture.appleReviewDemo, ["main"]),
         (LocalChatFixture.appScreenshots, ["main", "research", "automation"]),
     ])
-    func `new session options expose fixture agents and create the selected session`(
+    @MainActor func `new session options expose fixture agents and create the selected session`(
         fixture: LocalChatFixture,
         expectedAgentIDs: [String]) async throws
     {
         let transport = LocalFixtureChatTransport(fixture: fixture)
         let route = try #require(await transport.acquireNewSessionRouteLease())
-        let catalog = try #require(try await route.listAgents())
+        var response: OpenClawChatAgentsListResponse?
+        try await route.loadAgents { response = $0 }
+        let catalog = try #require(response)
 
         #expect(catalog.defaultId == fixture.defaultAgentID)
         #expect(catalog.agents.map(\.id) == expectedAgentIDs)

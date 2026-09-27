@@ -36,11 +36,14 @@ The full native chat window is a split view:
 - **Find in Conversation**: press Cmd-F to search user and assistant text in the loaded conversation. Return or Cmd-G moves to the next matching message; Shift-Cmd-G moves backward. The selected message is outlined and revealed without incoming replies pulling you away. Escape closes Find. Search does not fetch older history or search hidden reasoning and tool payloads.
 - **Voice controls**: the composer can start or stop the existing macOS Talk Mode without replacing its menu-bar overlay. While Talk Mode is active, the composer shows its listening/thinking/speaking state, live audio activity, and an expandable rolling transcript. Right-click the Talk button to choose **System Default** or a connected microphone; this is the same microphone selection used by Voice Wake and push-to-talk. If a selected microphone disconnects, the active Talk session falls back to the system default and tries the selection again the next time Talk Mode starts. A separate microphone action records a voice note when Talk Mode does not own audio capture.
 
-Agent names in the sidebar, New Thread picker, toolbar subtitle, and composer
-use the configured name when present, then the Gateway's resolved agent identity,
-and finally **Assistant**. Text and emoji avatars follow the same agent catalog
-and refresh with it after reconnects or identity changes. Image avatars are not
-shown in the full native window; a text avatar or name initial appears instead.
+The sidebar and New Thread picker show the agent roster immediately, using
+configured names or agent IDs. Resolved identities update each agent as they
+arrive, including the toolbar subtitle and composer, without delaying selection.
+Configured names keep precedence; the Gateway's default identity is **Assistant**.
+Text and emoji avatars refresh with the same catalog after reconnects or identity
+changes. Badges show at most two complete characters, preserving emoji sequences.
+Image avatars are not shown in the full native window; a text avatar or name
+initial appears instead.
 
 The anchored compact chat panel from the menu bar keeps the compact single-column layout with the same model, thinking, verbosity, and Fast controls inline, plus starter prompts, Talk Mode, voice notes, and Listen. Assistant reasoning and tool activity remain hidden in this compact surface.
 

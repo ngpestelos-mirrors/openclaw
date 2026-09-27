@@ -97,7 +97,7 @@ struct MacGatewayChatTransportMappingTests {
 
     private func withSessionTransport(
         connectInitially: Bool = true,
-        _ run: (MacGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
+        _ run: @MainActor (MacGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
     {
         let recorder = RequestRecorder()
         let session = GatewayTestWebSocketSession(taskFactory: {
@@ -164,12 +164,15 @@ struct MacGatewayChatTransportMappingTests {
                     OpenClawChatAgentChoice(id: "alpha", name: "Assistant", emoji: "A", workspaceGit: false),
                 ],
                 sessionRoutingContract: "per-sender|main|system")
-            #expect(try await transport.listAgents() == expected)
+            var catalog: OpenClawChatAgentsListResponse?
+            try await transport.loadAgents { catalog = $0 }
+            #expect(catalog == expected)
             let lease = try #require(await transport.acquireNewSessionRouteLease())
-            #expect(try await lease.listAgents() == expected)
+            try await lease.loadAgents { catalog = $0 }
+            #expect(catalog == expected)
             await transport.connection.shutdown()
             await #expect(throws: Error.self) {
-                _ = try await lease.listAgents()
+                try await lease.loadAgents { _ in Issue.record("Retired roster published") }
             }
             let frames = try await recorder.snapshot().map {
                 try #require(JSONSerialization.jsonObject(with: $0) as? [String: Any])
@@ -184,8 +187,9 @@ struct MacGatewayChatTransportMappingTests {
 
     @Test func `catalog loading connects before acquiring its identity lease`() async throws {
         try await self.withSessionTransport(connectInitially: false) { transport, _ in
-            let catalog = try #require(try await transport.listAgents())
-            #expect(catalog.agents.map(\.displayName) == ["Zeta", "Assistant", "Assistant"])
+            var catalog: OpenClawChatAgentsListResponse?
+            try await transport.loadAgents { catalog = $0 }
+            #expect(catalog?.agents.map(\.displayName) == ["Zeta", "Assistant", "Assistant"])
         }
     }
 
