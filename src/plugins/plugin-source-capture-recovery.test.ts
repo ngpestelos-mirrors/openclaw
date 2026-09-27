@@ -491,12 +491,8 @@ it.each(["managed", "fallback"] as const)(
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1_000);
     try {
-      inspectProcesses.mockReturnValue({ pids: [4242] });
-      expect(await duringMaintenance()).toContain("PIDs: 4242");
-      expect(fs.existsSync(orphan.directory)).toBe(true);
-      inspectProcesses.mockReturnValue({ pids: [] });
+      inspectProcesses.mockReturnValue({ error: "fixture unreadable host argv" });
       const output = await duringMaintenance();
-      expect(output).not.toContain("PIDs: 4242");
       expect(output).toContain("Removed 1 unreferenced native plugin capture root(s).");
       expect(fs.existsSync(orphan.directory)).toBe(false);
       expect(fs.readFileSync(captured, "utf8")).toBe("published native bytes");
@@ -505,6 +501,7 @@ it.each(["managed", "fallback"] as const)(
       expect(fs.readFileSync(otherFile, "utf8")).toBe("another state's payload");
       expect(fs.readFileSync(legacyFile, "utf8")).toBe("unqualified legacy payload");
       expect(fs.readFileSync(tokenlessFile, "utf8")).toBe("unknown custody");
+      expect(inspectProcesses).not.toHaveBeenCalled();
       releaseWarm();
       await duringMaintenance();
       expect(fs.existsSync(warm.directory)).toBe(false);

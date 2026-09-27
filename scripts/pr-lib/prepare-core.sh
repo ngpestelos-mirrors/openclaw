@@ -450,6 +450,7 @@ prepare_push() {
     return $?
   fi
   # Inspect retained intent before any main refresh, recovery or checkout.
+  # grep, not rg: test harnesses run this guard on GitHub-hosted runners without ripgrep.
   if [ -f .local/gates.env ] && grep -q '^PENDING_CRABBOX_' .local/gates.env; then
     echo "Crabbox dispatch is pending; use prepare-push $pr --resume-crabbox-run <Actions run ID>." >&2
     return 1

@@ -34,6 +34,7 @@ export type OpenClawStateLeaseLifecycleOperations = {
       operationLabel: string;
       observeExpiry?: true;
       schemaPolicy?: "existing";
+      processBound?: boolean;
     };
     output: OpenClawStateLeaseAcquisition;
   };
