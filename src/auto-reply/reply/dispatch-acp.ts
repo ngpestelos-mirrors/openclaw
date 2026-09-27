@@ -81,6 +81,7 @@ import {
   createAcpDispatchDeliveryCoordinator,
   type AcpDispatchDeliveryCoordinator,
 } from "./dispatch-acp-delivery.js";
+import type { InboundMessageAuditTerminalRecorder } from "./dispatch-from-config.audit.js";
 import { needsTtsFallback } from "./dispatch-from-config.finalize.js";
 import { appendRecentHistoryImageContext } from "./history-media.js";
 import { hasInboundMediaForUnderstanding } from "./inbound-media.js";
@@ -129,13 +130,7 @@ const loadDispatchAcpTranscriptRuntime = createLazyPromise(
   () => import("./dispatch-acp-transcript.runtime.js"),
 );
 
-type DispatchProcessedRecorder = (
-  outcome: "completed" | "skipped" | "error",
-  opts?: {
-    reason?: string;
-    error?: string;
-  },
-) => void;
+type DispatchProcessedRecorder = InboundMessageAuditTerminalRecorder["note"];
 
 function resolveAcpRequestId(ctx: FinalizedRuntimeMsgContext): string {
   const id = ctx.MessageSidFull ?? ctx.MessageSid ?? ctx.MessageSidFirst ?? ctx.MessageSidLast;
