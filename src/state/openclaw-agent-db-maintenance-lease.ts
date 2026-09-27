@@ -130,6 +130,7 @@ export function withAgentDatabaseMaintenanceLease<T>(
   options: Pick<OpenClawStateDatabaseOptions, "env"> & {
     schemaPolicy?: "existing";
     leaseMs?: number;
+    processBound?: boolean;
   },
   run: (maintenance: OpenClawStateLeaseContext) => Promise<T>,
 ): Promise<T> {
@@ -158,6 +159,7 @@ export function withAgentDatabaseMaintenanceLease<T>(
       waitMs: 5_000,
       prepareDatabase: true,
       heartbeat: "worker",
+      processBound: options.processBound,
       leaseLabel: "agent database maintenance lease",
       operationLabel: "agent.database.maintenance.lease",
     },

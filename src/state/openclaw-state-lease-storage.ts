@@ -66,7 +66,12 @@ function readLeaseDatabase<T>(
 
 export async function acquireLease(
   database: OpenClawStateLeaseDatabase,
-  input: { identity: OpenClawStateLeaseIdentity; leaseMs: number; operationLabel: string },
+  input: {
+    identity: OpenClawStateLeaseIdentity;
+    leaseMs: number;
+    operationLabel: string;
+    processBound?: boolean;
+  },
   assertCurrent: () => void,
   signal?: AbortSignal,
 ) {

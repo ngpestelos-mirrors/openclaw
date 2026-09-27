@@ -86,12 +86,9 @@ describe("tree row snapshots", () => {
     async (event) => {
       vi.useFakeTimers();
       const outcomes: GatewaySessionRow[][] = [];
-      const enrichedParent = {
-        ...settledParent,
-        activitySummary: { state: "stale" as const, canEnsure: true },
-      };
+      const summary = { state: "stale" as const, canEnsure: true };
       try {
-        for (const references of [false, true]) {
+        for (const references of [true, false]) {
           const h = treeHarness();
           const invalidated = vi.fn();
           const observer = h.sessions.observeRow(
@@ -107,7 +104,8 @@ describe("tree row snapshots", () => {
             for (const snapshotAt of [101, 102, 103]) {
               const ancestors = [
                 {
-                  ...enrichedParent,
+                  ...settledParent,
+                  activitySummary: summary,
                   totalTokensFresh: false,
                   snapshotAt,
                   ancestorRevision: "parent-revision",
@@ -144,33 +142,25 @@ describe("tree row snapshots", () => {
                   ts: snapshotAt,
                 },
               });
-              await vi.dynamicImportSettled();
-              if (snapshotAt === 101) {
-                // A narrower managed read must retain the richer primary row and its reference proof.
-                const heldParent = h.sessions.state.result!.sessions.find(
-                  (row) => row.key === parent.key,
-                );
-                const pending = h.holdRead();
-                const page = h.sessions.observeList(
-                  { agentId: "main", includeUnknown: false, limit: 50 },
-                  () => undefined,
-                );
-                const read = page.refresh();
-                pending.resolve(
+              if (snapshotAt === 102) {
+                // Page reads omit opt-in recaps and retain the wire's empty usage marker.
+                const read = h.holdRead();
+                const refresh = h.sessions.refreshList({
+                  agentId: "main",
+                  includeUnknown: false,
+                  force: true,
+                });
+                read.resolve(
                   sessionsResult(
-                    [settledChild, settledParent, settledGrandparent].map((row) => ({
-                      ...row,
-                      snapshotAt: 102,
-                      totalTokensFresh: false,
-                    })),
-                    102,
+                    [
+                      { ...settledChild, totalTokensFresh: false, snapshotAt },
+                      { ...settledParent, totalTokensFresh: false, snapshotAt },
+                      { ...settledGrandparent, totalTokensFresh: false, snapshotAt },
+                    ],
+                    snapshotAt,
                   ),
                 );
-                await read;
-                page.dispose();
-                expect(
-                  h.sessions.state.result!.sessions.find((row) => row.key === parent.key),
-                ).toBe(heldParent);
+                await refresh;
                 h.request.mockClear();
               }
             }
@@ -178,7 +168,7 @@ describe("tree row snapshots", () => {
             outcomes.push(
               h.sessions.state.result!.sessions.map(({ snapshotAt: _clock, ...row }) => row),
             );
-            expect(observer.row).toMatchObject(enrichedParent);
+            expect(observer.row).toMatchObject(settledParent);
             expect(invalidated).not.toHaveBeenCalled();
             await vi.advanceTimersByTimeAsync(5_000);
             expect(h.request).not.toHaveBeenCalled();
@@ -188,8 +178,8 @@ describe("tree row snapshots", () => {
           }
         }
         expect(outcomes).toEqual([
-          [settledChild, enrichedParent, settledGrandparent],
-          [settledChild, enrichedParent, settledGrandparent],
+          [settledChild, { ...settledParent, activitySummary: summary }, settledGrandparent],
+          [settledChild, { ...settledParent, activitySummary: summary }, settledGrandparent],
         ]);
       } finally {
         vi.useRealTimers();
@@ -217,7 +207,6 @@ describe("tree row snapshots", () => {
             ],
           },
         });
-        await vi.dynamicImportSettled();
         if (change === "list replacement") {
           const read = h.holdRead();
           const refresh = h.sessions.refresh({ agentId: "main", force: true });
@@ -351,7 +340,6 @@ describe("tree row snapshots", () => {
           },
         });
       emit(false);
-      await vi.dynamicImportSettled();
       const pending = h.holdRead();
       const refresh = h.sessions.refresh({ agentId: "main", force: true });
       emit(true);

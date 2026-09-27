@@ -1,17 +1,5 @@
 import type { GatewaySessionRow } from "../../api/types.ts";
 
-function presentationKeys(row: GatewaySessionRow): string[] {
-  return Object.keys(row).filter(
-    (key) =>
-      key !== "snapshotAt" &&
-      !(
-        key === "totalTokensFresh" &&
-        row.totalTokens === undefined &&
-        row.totalTokensFresh === false
-      ),
-  );
-}
-
 /** Compare presentation values without treating read freshness as a content change. */
 export function isShallowEqualSessionRow(
   incoming: GatewaySessionRow,
@@ -19,8 +7,8 @@ export function isShallowEqualSessionRow(
 ): boolean {
   const incomingFields: Record<string, unknown> = incoming;
   const existingFields: Record<string, unknown> = existing;
-  const incomingKeys = presentationKeys(incoming);
-  const existingKeys = presentationKeys(existing);
+  const incomingKeys = Object.keys(incoming).filter((key) => key !== "snapshotAt");
+  const existingKeys = Object.keys(existing).filter((key) => key !== "snapshotAt");
   if (incomingKeys.length !== existingKeys.length) {
     return false;
   }
