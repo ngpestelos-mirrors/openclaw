@@ -141,7 +141,7 @@ export async function updateRepairCommand(opts: UpdateFinalizeOptions): Promise<
       const targetVersion =
         lastRun.target.version ??
         (lastRun.target.tag
-          ? await resolveTargetVersion(lastRun.target.tag, timeoutMs, { env })
+          ? (await resolveTargetVersion(lastRun.target.tag, timeoutMs, { env })).version
           : (await resolveNpmChannelTag({ channel, timeoutMs, env })).version);
       await assertUpdateRecoveryAdmission(options);
       // Registry resolution awaited I/O; inspect the installed version again before recording recovery.

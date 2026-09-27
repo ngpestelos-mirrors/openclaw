@@ -880,9 +880,11 @@ describe("Browser dashboard lifetime", () => {
     }));
     try {
       expect(await reconcileBrowserDashboards()).toBe(5);
-      expect(browser.closeOwned.mock.calls.map(([params]) => params.nativeTargetId)).toEqual(
-        Array.from({ length: 5 }, (_, index) => `seeded-${index}`),
-      );
+      expect(
+        browser.closeOwned.mock.calls
+          .map(([params]) => params.nativeTargetId)
+          .toSorted((left, right) => left.localeCompare(right)),
+      ).toEqual(Array.from({ length: 5 }, (_, index) => `seeded-${index}`));
       expect(fetchedRows).toBeLessThanOrEqual(30);
     } finally {
       scans.mockRestore();

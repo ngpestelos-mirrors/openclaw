@@ -209,9 +209,7 @@ async function materialize(
     const observation = await observeExistingTab(definition, tab, authority);
     if (observation === "present") {
       await assertDefinitionCurrent(definition, authority);
-      const current = (await tabsForDefinition(definition, authority, tab.storageKey)).find(
-        (candidate) => candidate.storageKey === tab.storageKey,
-      );
+      const current = (await tabsForDefinition(definition, authority, tab.storageKey))[0];
       assertAuthority(authority);
       if (!current || current.dashboard?.state !== "active") {
         throw new Error("Dashboard tab stopped during this operation");
@@ -264,10 +262,7 @@ async function materialize(
             assertAuthority(registrationAuthority);
             const stopped = (
               await tabsForDefinition(definition, registrationAuthority, candidate.tab.storageKey)
-            ).find(
-              (tab) =>
-                tab.storageKey === candidate.tab.storageKey && tab.dashboard?.state === "stopped",
-            );
+            ).find((tab) => tab.dashboard?.state === "stopped");
             assertAuthority(registrationAuthority);
             if (!stopped) {
               throw new Error(
@@ -417,10 +412,7 @@ export async function assertBrowserDashboardTargetCurrent(
     });
     await assertDefinitionCurrent(definition, authority);
     const retained = (await tabsForDefinition(definition, authority, current.storageKey)).find(
-      (tab) =>
-        tab.storageKey === current.storageKey &&
-        tab.dashboard?.state === "active" &&
-        definitionOwnsTab(definition, tab),
+      (tab) => tab.dashboard?.state === "active" && definitionOwnsTab(definition, tab),
     );
     assertAuthority(authority);
     if (
@@ -563,8 +555,7 @@ async function stopMaterializedDashboard(
       assertAuthority(authority);
       if (
         (await readBrowserDashboardTabs(stopping.storageKey, authority)).some(
-          (current) =>
-            current.storageKey === stopping.storageKey && current.dashboard?.state === "stopping",
+          (current) => current.dashboard?.state === "stopping",
         )
       ) {
         throw new Error(

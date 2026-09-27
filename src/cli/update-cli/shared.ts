@@ -202,13 +202,13 @@ export async function resolveTargetVersion(
   tag: string,
   timeoutMs?: number,
   options: { spec?: string; command?: string; cwd?: string; env?: NodeJS.ProcessEnv } = {},
-): Promise<string | null> {
+): Promise<Pick<Awaited<ReturnType<typeof fetchNpmTagVersion>>, "version" | "metadata">> {
   if (!canResolveRegistryVersionForPackageTarget(tag)) {
-    return null;
+    return { version: null };
   }
   const direct = normalizeVersionTag(tag);
   if (direct) {
-    return direct;
+    return { version: direct };
   }
   const res = await fetchNpmTagVersion({
     tag,
@@ -218,7 +218,7 @@ export async function resolveTargetVersion(
     cwd: options.cwd,
     env: options.env,
   });
-  return res.version ?? null;
+  return res;
 }
 
 /** Return true when `root` is a local git checkout directory. */

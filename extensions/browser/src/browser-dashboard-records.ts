@@ -116,9 +116,8 @@ export async function releaseTab(
     ? await closeBrowserDashboardTabs([released], { ...params, authority })
     : 0;
   return {
-    released: !(
-      await readBrowserDashboardTabs(tab.storageKey, { runtime: authority.runtime })
-    ).some((current) => current.storageKey === tab.storageKey),
+    released:
+      (await readBrowserDashboardTabs(tab.storageKey, { runtime: authority.runtime })).length === 0,
     closed,
   };
 }
@@ -132,7 +131,7 @@ export async function closeStoppingTab(
   const closed = await closeBrowserDashboardTabs([tab], { ...params, authority });
   if (
     (await readBrowserDashboardTabs(tab.storageKey, { runtime: authority.runtime })).some(
-      (current) => current.storageKey === tab.storageKey && current.dashboard?.state === "stopped",
+      (current) => current.dashboard?.state === "stopped",
     )
   ) {
     emitDashboardChanged(definition, authority);
