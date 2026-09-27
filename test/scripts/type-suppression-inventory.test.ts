@@ -116,6 +116,36 @@ describe("type suppression inventory", () => {
 
     expect(report.summary.kindCounts["as-any"]).toBe(0);
     expect(report.summary.kindCounts["type-assertion-any"]).toBe(0);
+    const whatsappFixture = "extensions/whatsapp/src/approval-reactions.test.ts";
+    const invalidKindAssertion = report.findings.find(
+      (finding) => finding.file === whatsappFixture && finding.kind === "expect-error",
+    );
+    if (!invalidKindAssertion) {
+      throw new Error("Missing WhatsApp invalid approval-kind fixture assertion");
+    }
+    // Bind this synthetic allowance to its invalid inputs, not just reusable marker text.
+    expect(
+      fs
+        .readFileSync(path.join(repoRoot, whatsappFixture), "utf8")
+        .split(/\r?\n/)
+        .slice(invalidKindAssertion.line - 10, invalidKindAssertion.line + 6)
+        .join("\n"),
+    ).toBe(`  it.each([undefined, "invalid"] as const)(
+    "rejects reaction targets without a valid explicit approval kind: %s",
+    async (approvalKind) => {
+      expect(
+        await registerWhatsAppApprovalReactionTarget({
+          accountId: "default",
+          remoteJid: "15551230000@s.whatsapp.net",
+          messageId: "msg-invalid-kind",
+          approvalId: "exec-invalid-kind",
+          // @ts-expect-error Runtime callers must not register missing or unsupported kinds.
+          approvalKind,
+          allowedDecisions: ["allow-once"],
+        }),
+      ).toBeNull();
+    },
+  );`);
     // Track intentional suppressions without coupling the ratchet to unrelated line shifts.
     expect(
       report.findings
@@ -125,6 +155,7 @@ describe("type suppression inventory", () => {
     ).toEqual(
       [
         "extensions/openai/realtime-quicksilver-session-lifecycle.test.ts:@ts-expect-error JavaScript callers must still fail before reserving a native session.",
+        "extensions/whatsapp/src/approval-reactions.test.ts:@ts-expect-error Runtime callers must not register missing or unsupported kinds.",
         "test/type-contracts/kysely-sync.ts:@ts-expect-error Kysely checks selected column string literals.",
         "test/type-contracts/kysely-sync.ts:@ts-expect-error Kysely checks table string literals.",
         "test/type-contracts/kysely-sync.ts:@ts-expect-error Kysely checks where-reference string literals.",
