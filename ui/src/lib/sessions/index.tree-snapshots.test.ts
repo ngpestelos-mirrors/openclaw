@@ -86,6 +86,10 @@ describe("tree row snapshots", () => {
     async (event) => {
       vi.useFakeTimers();
       const outcomes: GatewaySessionRow[][] = [];
+      const enrichedParent = {
+        ...settledParent,
+        activitySummary: { state: "stale" as const, canEnsure: true },
+      };
       try {
         for (const references of [false, true]) {
           const h = treeHarness();
@@ -103,7 +107,7 @@ describe("tree row snapshots", () => {
             for (const snapshotAt of [101, 102, 103]) {
               const ancestors = [
                 {
-                  ...settledParent,
+                  ...enrichedParent,
                   totalTokensFresh: false,
                   snapshotAt,
                   ancestorRevision: "parent-revision",
@@ -141,12 +145,40 @@ describe("tree row snapshots", () => {
                 },
               });
               await vi.dynamicImportSettled();
+              if (snapshotAt === 101) {
+                // A narrower managed read must retain the richer primary row and its reference proof.
+                const heldParent = h.sessions.state.result!.sessions.find(
+                  (row) => row.key === parent.key,
+                );
+                const pending = h.holdRead();
+                const page = h.sessions.observeList(
+                  { agentId: "main", includeUnknown: false, limit: 50 },
+                  () => undefined,
+                );
+                const read = page.refresh();
+                pending.resolve(
+                  sessionsResult(
+                    [settledChild, settledParent, settledGrandparent].map((row) => ({
+                      ...row,
+                      snapshotAt: 102,
+                      totalTokensFresh: false,
+                    })),
+                    102,
+                  ),
+                );
+                await read;
+                page.dispose();
+                expect(
+                  h.sessions.state.result!.sessions.find((row) => row.key === parent.key),
+                ).toBe(heldParent);
+                h.request.mockClear();
+              }
             }
             // Snapshot clocks are sampling metadata, not a row-content difference.
             outcomes.push(
               h.sessions.state.result!.sessions.map(({ snapshotAt: _clock, ...row }) => row),
             );
-            expect(observer.row).toMatchObject(settledParent);
+            expect(observer.row).toMatchObject(enrichedParent);
             expect(invalidated).not.toHaveBeenCalled();
             await vi.advanceTimersByTimeAsync(5_000);
             expect(h.request).not.toHaveBeenCalled();
@@ -156,8 +188,8 @@ describe("tree row snapshots", () => {
           }
         }
         expect(outcomes).toEqual([
-          [settledChild, settledParent, settledGrandparent],
-          [settledChild, settledParent, settledGrandparent],
+          [settledChild, enrichedParent, settledGrandparent],
+          [settledChild, enrichedParent, settledGrandparent],
         ]);
       } finally {
         vi.useRealTimers();
@@ -275,11 +307,12 @@ describe("tree row snapshots", () => {
     ).toEqual(expect.arrayContaining(legacyRows));
   });
 
-  it("confirms cleared ancestor fields ahead of an overlapping list read", async () => {
+  it.each(["omitted", "null"])("keeps %s ancestor clears over a stale read", async (clear) => {
     vi.useFakeTimers();
+    const activitySummary = { state: "stale" as const, canEnsure: true };
     const h = treeHarness([
       child,
-      { ...parent, label: "Cleared label", snapshotAt: 100 },
+      { ...parent, label: "Cleared label", activitySummary, snapshotAt: 100 },
       grandparent,
     ]);
     try {
@@ -295,7 +328,12 @@ describe("tree row snapshots", () => {
             ancestorSessions: reference
               ? [settledGrandparent]
               : [
-                  { ...settledParent, ancestorRevision: "parent-revision", snapshotAt: 101 },
+                  {
+                    ...settledParent,
+                    ...(clear === "null" ? { activitySummary: null } : {}),
+                    ancestorRevision: "parent-revision",
+                    snapshotAt: 101,
+                  },
                   settledGrandparent,
                 ],
             ...(reference
@@ -321,7 +359,7 @@ describe("tree row snapshots", () => {
         sessionsResult(
           [
             settledChild,
-            { ...settledParent, label: "Stale read label", snapshotAt: 102 },
+            { ...settledParent, label: "Stale read label", activitySummary, snapshotAt: 102 },
             settledGrandparent,
           ],
           102,
