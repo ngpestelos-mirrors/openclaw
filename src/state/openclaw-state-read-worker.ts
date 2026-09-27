@@ -111,9 +111,6 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
       owners: command.owners.map(({ agentId, sessionKey }) => ({ agentId, sessionKey })),
     };
   }
-  if (command.type === "acpSessions.metadata") {
-    return structuredClone(command);
-  }
   if (command.type === "userProfiles.channelIdentity.resolve") {
     return { type: command.type, identity: structuredClone(command.identity) };
   }
@@ -177,8 +174,10 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
     };
   }
   if (
+    command.type === "acpSessions.metadata" ||
     command.type === "githubPublication.knownPullRequestUrls" ||
-    command.type === "githubRepository.knownPullRequestUrls"
+    command.type === "githubRepository.knownPullRequestUrls" ||
+    command.type === "workers.placementProjection"
   ) {
     return structuredClone(command);
   }
@@ -221,9 +220,6 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
               executionLimit: input.executionLimit,
             },
     };
-  }
-  if (command.type === "workers.placementProjection") {
-    return structuredClone(command);
   }
   if (command.type === "workerEnvironments.pruneCandidates") {
     return {

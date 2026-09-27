@@ -74,12 +74,6 @@ function repairDanglingSkillWorkshopCollectionReviewIndex(database: DatabaseSync
   });
 }
 
-function repairDanglingSkillWorkshopCollectionReviewIndexChanges(database: DatabaseSync): string[] {
-  return repairDanglingSkillWorkshopCollectionReviewIndex(database)
-    ? ["Removed dangling legacy Skill Workshop review index"]
-    : [];
-}
-
 /** Admit the schema before Doctor begins its write transaction. */
 function admitStateDatabaseForSchemaRepair(
   database: DatabaseSync,
@@ -127,7 +121,9 @@ export function prepareStateDatabaseSchemaRepair(
   const danglingWorkshopIndex = admitStateDatabaseForSchemaRepair(database, pathname, env);
   return () => {
     assertStateDatabaseSchemaRepairWriteAllowed(database, pathname, env, danglingWorkshopIndex);
-    return repairDanglingSkillWorkshopCollectionReviewIndexChanges(database);
+    return repairDanglingSkillWorkshopCollectionReviewIndex(database)
+      ? ["Removed dangling legacy Skill Workshop review index"]
+      : [];
   };
 }
 

@@ -1,3 +1,4 @@
+import { throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
 import { SqliteWorkerError, isSqliteWorkerStoreAvailable } from "../infra/sqlite-worker-store.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { getOpenClawStateDatabaseTerminalFailureAsync } from "./openclaw-state-db-cache.js";
@@ -82,14 +83,7 @@ export function retainOpenClawStateWorkerLease(
       } catch (error) {
         errors.push(error);
       }
-      if (errors.length === 1) {
-        throw errors[0];
-      }
-      if (errors.length > 1) {
-        throw new AggregateError(errors, "Shared-state worker lease retirement failed", {
-          cause: errors[0],
-        });
-      }
+      throwSqliteLifecycleErrors(errors, "Shared-state worker lease retirement failed");
     })();
     void retirement.catch(() => undefined);
     return retirement;
@@ -222,14 +216,7 @@ export function retainOpenClawStateWorkerLease(
       } catch (error) {
         errors.push(error);
       }
-      if (errors.length === 1) {
-        throw errors[0];
-      }
-      if (errors.length > 1) {
-        throw new AggregateError(errors, "Shared-state worker lease cleanup failed", {
-          cause: errors[0],
-        });
-      }
+      throwSqliteLifecycleErrors(errors, "Shared-state worker lease cleanup failed");
     })();
     void closing.catch(() => undefined);
     return closing;

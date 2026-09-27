@@ -1,7 +1,10 @@
 // Host-owned SQLite leases serialize trusted work across processes.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import {
+  createSqliteLifecycleAggregateError,
+  throwSqliteLifecycleErrors,
+} from "../infra/sqlite-coordinator.js";
 import {
   getOpenClawDatabaseMaintenanceScope,
   type OpenClawDatabaseMaintenanceScope,
@@ -558,12 +561,7 @@ async function runStateLeaseOwnerInScope<T>(
           errors.push(error);
         }
       }
-      if (errors.length === 1) {
-        throw errors[0];
-      }
-      if (errors.length > 1) {
-        throw createSqliteLifecycleAggregateError(errors, "state lease drainage failed", errors[0]);
-      }
+      throwSqliteLifecycleErrors(errors, "state lease drainage failed");
     };
 
     let result: T;
