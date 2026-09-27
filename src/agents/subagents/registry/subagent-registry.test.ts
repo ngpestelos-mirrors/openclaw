@@ -67,6 +67,7 @@ import {
 } from "./subagent-registry.browser-cleanup.test-support.js";
 import { findRecordCallArg } from "./subagent-registry.mock-call.test-support.js";
 import { registerSubagentRegistrationPersistenceTests } from "./subagent-registry.persistence.test-support.js";
+import { registerRestoredRollbackPublicationTest } from "./subagent-registry.restore-rollback.test-support.js";
 import {
   makeCompletedCollectorRun,
   makeKilledRun,
@@ -81,7 +82,6 @@ import {
   registerRestartDrainCompletionSettlementTest,
   registerProvisionalKillCompletionSettlementTest,
   registerReplacedGenerationTaskSettlementTest,
-  registerRestoredRollbackPublicationTest,
   registerRestoredRunDeadlineSettlementTests,
   registerRestoredRunningTaskSettlementTest,
   registerRestoredTaskSettlementTest,
