@@ -221,9 +221,11 @@ A connected person is **Online**. Activity is a separate, recent-interaction hin
 
 The sidebar ages active people into idle without waiting for another Gateway
 update. The card keeps continuous online duration separate from **Last interaction**.
-The newest observed interaction across a person's live, identity-qualified
-connections determines their activity. Heartbeats and the legacy native input
-recency field do not determine person activity.
+The UI activity label uses the newest OpenClaw interaction across a person's
+live, identity-qualified connections. Heartbeats and native input recency do not
+determine this label. The agent's presence query also exposes native device
+activity with its source, so it can identify the most recently used connected
+machine without treating native input as interaction with OpenClaw.
 
 The Control UI reports its initial foreground visit and throttled keyboard,
 pointer, and scrolling interactions. Automatic reconnects, background tabs,
