@@ -1,6 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { getRuntimeConfig } from "../config/config.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { loadOrCreateProcessDeviceIdentityAsync } from "../infra/device-identity-async.js";
 import { getPairedDevice } from "../infra/device-pairing.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
@@ -412,10 +413,14 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
       const pin = new AbortController();
       try {
         const preparationSignal = signal ? AbortSignal.any([signal, pin.signal]) : pin.signal;
-        const [bootstrapResult, bundleResult] = await Promise.allSettled([
-          prepareNodeArtifact(profileSnapshot, preparationSignal),
-          prepareInstallation("bundle", preparationSignal),
-        ]);
+        // Cancellation releases the caller; the producers retain their shared work.
+        const [bootstrapResult, bundleResult] = await racePromiseWithAbortSignal(
+          Promise.allSettled([
+            prepareNodeArtifact(profileSnapshot, preparationSignal),
+            prepareInstallation("bundle", preparationSignal),
+          ]),
+          signal,
+        );
         signal?.throwIfAborted();
         if (bootstrapResult.status === "rejected") {
           throw bootstrapResult.reason;

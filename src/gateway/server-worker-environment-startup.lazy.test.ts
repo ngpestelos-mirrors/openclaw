@@ -129,9 +129,9 @@ describe("gateway worker session-tool startup", () => {
   });
 });
 
-it.each([false, true])(
-  "cold artifact preparation overlaps and settles before publication (failure=%s)",
-  async (fails) => {
+it.each(["success", "failure", "abort"] as const)(
+  "cold artifact preparation overlaps without late publication (outcome=%s)",
+  async (outcome) => {
     const nodeArtifact = {
       tarballPath: "/synthetic/node.tgz",
       tarballSha256: "a".repeat(64),
@@ -166,14 +166,26 @@ it.each([false, true])(
       prune: async () => {},
     });
     await withWorkerRuntime(async () => {
-      const preparation = mocks.prepareNodeArtifacts!({});
+      const controller = new AbortController();
+      const preparation = mocks.prepareNodeArtifacts!({}, controller.signal);
       const published = vi.fn();
       const rejected = vi.fn();
       void preparation.then(published, rejected);
       const failure = new Error("node artifact failed");
       try {
         await vi.dynamicImportSettled();
-        if (fails) {
+        if (outcome === "abort") {
+          expect(prepareBundle).toHaveBeenCalledOnce();
+          node.resolve(nodeArtifact);
+          await vi.dynamicImportSettled();
+          controller.abort();
+          await vi.dynamicImportSettled();
+          expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ name: "AbortError" }));
+          expect(published).not.toHaveBeenCalled();
+          bundle.reject(new Error("late bundle failure"));
+          await vi.dynamicImportSettled();
+          expect(published).not.toHaveBeenCalled();
+        } else if (outcome === "failure") {
           node.reject(failure);
           await vi.dynamicImportSettled();
           expect(rejected).not.toHaveBeenCalled();

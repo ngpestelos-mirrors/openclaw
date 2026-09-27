@@ -78,10 +78,13 @@ export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOpti
     let installation: WorkerInstallationArtifact | undefined;
     // Replay also identifies the requested bytes; it must not relabel a previously enrolled node.
     try {
-      const [bootstrapResult, installationResult] = await Promise.allSettled([
-        Promise.resolve().then(() => prepareNodeBootstrap(record, signal)),
-        record.profileSnapshot.project ? prepareBundle(undefined, signal) : undefined,
-      ]);
+      const [bootstrapResult, installationResult] = await racePromiseWithAbortSignal(
+        Promise.allSettled([
+          Promise.resolve().then(() => prepareNodeBootstrap(record, signal)),
+          record.profileSnapshot.project ? prepareBundle(undefined, signal) : undefined,
+        ]),
+        signal,
+      );
       signal?.throwIfAborted();
       if (bootstrapResult.status === "rejected") {
         throw bootstrapResult.reason;
