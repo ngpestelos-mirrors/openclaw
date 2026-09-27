@@ -15,10 +15,8 @@ import type {
 import { placementTurnOwner } from "./placement-record.js";
 import type { WorkerSessionTurnClaim } from "./placement-store.js";
 import { completeRecoveredWorkspaceTeardown } from "./placement-teardown.js";
-import {
-  isCurrentWorkerWorkspacePendingResultOwner,
-  type WorkerWorkspacePendingResult,
-} from "./placement-workspace-result.js";
+import { isCurrentWorkerWorkspacePendingResultOwner } from "./placement-workspace-result.js";
+import type { WorkerWorkspacePendingResult } from "./placement-workspace-result.types.js";
 import {
   createWorkerWorkspaceReconcileRequest,
   recoverSessionWorkspaceCheckpoint,
