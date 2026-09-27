@@ -5,6 +5,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { StreamFn } from "../../../agents/runtime/index.js";
 import { streamSimple } from "../../stream.js";
+import { streamWithPayloadPatch } from "./stream-payload-utils.js";
 type AnthropicToolSchemaMode = "openai-functions";
 type AnthropicToolChoiceMode = "openai-string-modes";
 
@@ -494,53 +495,42 @@ export function createAnthropicToolPayloadCompatibilityWrapper(
   options?: AnthropicToolPayloadCompatibilityOptions,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, streamOptions) => {
-    const originalOnPayload = streamOptions?.onPayload;
-    return underlying(model, context, {
-      ...streamOptions,
-      onPayload: (payload) => {
+  return (model, context, streamOptions) =>
+    streamWithPayloadPatch(underlying, model, context, streamOptions, (payloadObj) => {
+      if (requiresAnthropicToolPayloadCompatibilityForModel(model, options)) {
+        let toolProjection: OpenAiFunctionToolsProjection | undefined;
         if (
-          payload &&
-          typeof payload === "object" &&
-          requiresAnthropicToolPayloadCompatibilityForModel(model, options)
+          Array.isArray(payloadObj.tools) &&
+          usesOpenAiFunctionAnthropicToolSchemaForModel(model, options)
         ) {
-          const payloadObj = payload as Record<string, unknown>;
-          let toolProjection: OpenAiFunctionToolsProjection | undefined;
-          if (
-            Array.isArray(payloadObj.tools) &&
-            usesOpenAiFunctionAnthropicToolSchemaForModel(model, options)
-          ) {
-            toolProjection = projectOpenAiFunctionAnthropicTools(payloadObj.tools);
-            if (toolProjection.tools.length > 0) {
-              payloadObj.tools = toolProjection.tools;
-            } else {
-              delete payloadObj.tools;
-            }
-          }
-          if (usesOpenAiStringModeAnthropicToolChoiceForModel(model, options)) {
-            const toolChoice = normalizeOpenAiStringModeAnthropicToolChoice(
-              payloadObj.tool_choice,
-              toolProjection,
-            );
-            if (toolChoice === undefined) {
-              delete payloadObj.tool_choice;
-            } else {
-              payloadObj.tool_choice = toolChoice;
-            }
-          }
-          if (
-            isOpenAIGpt56Model(model) &&
-            toolProjection?.tools.some((tool) => tool.type === "function")
-          ) {
-            // GPT-5.6 Chat Completions rejects function tools while reasoning
-            // is enabled and defaults reasoning on when the field is omitted.
-            payloadObj.reasoning_effort = "none";
+          toolProjection = projectOpenAiFunctionAnthropicTools(payloadObj.tools);
+          if (toolProjection.tools.length > 0) {
+            payloadObj.tools = toolProjection.tools;
+          } else {
+            delete payloadObj.tools;
           }
         }
-        return originalOnPayload?.(payload, model);
-      },
+        if (usesOpenAiStringModeAnthropicToolChoiceForModel(model, options)) {
+          const toolChoice = normalizeOpenAiStringModeAnthropicToolChoice(
+            payloadObj.tool_choice,
+            toolProjection,
+          );
+          if (toolChoice === undefined) {
+            delete payloadObj.tool_choice;
+          } else {
+            payloadObj.tool_choice = toolChoice;
+          }
+        }
+        if (
+          isOpenAIGpt56Model(model) &&
+          toolProjection?.tools.some((tool) => tool.type === "function")
+        ) {
+          // GPT-5.6 Chat Completions rejects function tools while reasoning
+          // is enabled and defaults reasoning on when the field is omitted.
+          payloadObj.reasoning_effort = "none";
+        }
+      }
     });
-  };
 }
 
 /** @deprecated Anthropic-family provider stream helper; do not use from third-party plugins. */
