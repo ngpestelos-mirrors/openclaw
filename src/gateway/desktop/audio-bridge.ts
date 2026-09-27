@@ -3,6 +3,7 @@ import type { Duplex } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { rawDataToString } from "../../../packages/gateway-client/src/websocket-data.js";
 import { WebSocket, WebSocketServer } from "../../../packages/gateway-client/src/websocket.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { createOneTimeTicketStore } from "../../shared/one-time-ticket-store.js";
 import { rejectWebSocketUpgrade } from "../../shared/websocket-upgrade-reject.js";
 import { startWebSocketKeepalive } from "../websocket-keepalive.js";
@@ -30,10 +31,7 @@ export function mintDesktopAudioObserver(params: {
   requester?: DesktopObserveRequester;
 }) {
   const lifetime = new AbortController();
-  let resolveReady!: (ready: boolean) => void;
-  const ready = new Promise<boolean>((resolve) => {
-    resolveReady = resolve;
-  });
+  const { promise: ready, resolve: resolveReady } = createDeferredCore<boolean>();
   let closeSocket: (() => void) | undefined;
   const isCurrent = () => !lifetime.signal.aborted && params.requester?.isCurrent() !== false;
   const close = () => {

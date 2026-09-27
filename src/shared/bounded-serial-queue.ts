@@ -91,7 +91,7 @@ export class BoundedSerialQueue {
       this.pendingWeight += weight;
     } else {
       this.active = true;
-      this.startTask(task);
+      void this.runTask(task);
     }
     return { accepted: true, completion };
   }
@@ -120,10 +120,6 @@ export class BoundedSerialQueue {
     });
   }
 
-  private startTask(task: BoundedSerialQueueTask): void {
-    void this.runTask(task);
-  }
-
   private async runTask(task: BoundedSerialQueueTask): Promise<void> {
     try {
       task.resolve(await task.run());
@@ -134,7 +130,7 @@ export class BoundedSerialQueue {
       const next = this.pending.shift();
       if (next) {
         this.pendingWeight -= next.weight;
-        queueMicrotask(() => this.startTask(next));
+        queueMicrotask(() => void this.runTask(next));
       } else {
         this.active = false;
       }
