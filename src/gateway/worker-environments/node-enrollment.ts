@@ -58,6 +58,7 @@ export function createWorkerNodeEnrollmentManager(options: WorkerNodeEnrollmentM
       env: process.env,
       useLocalGateway: config.gateway?.mode === "remote",
       publicUrl: resolveConfiguredPairingPublicUrl(config),
+      publicOriginPreference: "prefer",
       networkInterfaces: os.networkInterfaces,
       runCommandWithTimeout: commandRunner,
     });
@@ -247,6 +248,7 @@ export function createWorkerNodeEnrollmentManager(options: WorkerNodeEnrollmentM
             env: process.env,
             useLocalGateway: config.gateway?.mode === "remote",
             publicUrl: resolveConfiguredPairingPublicUrl(config),
+            publicOriginPreference: "prefer",
             bootstrapProfile: CLOUD_WORKER_PAIRING_SETUP_BOOTSTRAP_PROFILE,
             issuedBootstrap: issued,
             localTlsFingerprint: options.getLocalTlsFingerprint?.(),
