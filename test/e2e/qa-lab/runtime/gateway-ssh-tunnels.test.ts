@@ -231,7 +231,7 @@ describeOnTestbox("Gateway SSH tunnel QA producer", () => {
     expect(namespacePid).toBeGreaterThan(1);
     await killPrivilegedProcessGroup(namespacePid);
     await expect(killed.completion).rejects.toThrow(
-      /namespaced Gateway SSH tunnel producer exited/,
+      "namespaced Gateway SSH tunnel producer exited null/SIGKILL",
     );
     expect(await readOptionalFile(accountKnownHostsPath)).toEqual(accountKnownHostsBefore);
   }, 180_000);

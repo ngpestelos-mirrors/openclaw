@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { finished } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -414,7 +415,7 @@ exec "$@"
     cwd: options.repoRoot,
     detached: true,
     env: process.env,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: [options.fixtureReadyPath ? "pipe" : "ignore", "ignore", "pipe"],
   });
   if (options.fixtureProcessPath && child.pid) {
     await fs.writeFile(options.fixtureProcessPath, `${child.pid}\n`, "utf8");
@@ -561,8 +562,11 @@ export async function runGatewaySshTunnels(
       root,
       fixtureReadyPath
         ? async () => {
+            // The parent's open pipe keeps this fixture alive until its deliberate SIGKILL.
+            process.stdin.resume();
             await fs.writeFile(fixtureReadyPath, "ready\n", "utf8");
-            await new Promise<void>(() => {});
+            await finished(process.stdin);
+            throw new Error("Gateway SSH tunnel fixture lost its parent before termination");
           }
         : undefined,
     );
