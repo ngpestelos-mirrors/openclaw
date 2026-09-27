@@ -58,10 +58,12 @@ describe("geolocation lookup route", () => {
       }),
     );
     const respond = vi.fn();
+    const response = { writeHead: respond, end: respond };
+    respond.mockReturnValue(response);
     await expect(
       handler(
         { url: "/plugins/geolocation/lookup?ip=8.8.8.8" } as never,
-        { writeHead: respond, end: respond } as unknown as ServerResponse,
+        response as unknown as ServerResponse,
       ),
     ).rejects.toBe(expired);
     expect(respond).not.toHaveBeenCalled();
