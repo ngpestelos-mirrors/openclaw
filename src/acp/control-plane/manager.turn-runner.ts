@@ -220,9 +220,7 @@ export async function runManagerTurn(params: {
     const backendAttempts: BackendAttempt[] = [];
     const recordBackendFailure = async (error: AcpRuntimeError) => {
       await taskExecutionBinding;
-      if (!params.isCurrentActor()) {
-        throw createSupersededActorError(sessionKey);
-      }
+      assertActorCurrent();
       const failedBackends = backendAttempts
         .map((attempt) => `${attempt.backend}: ${attempt.error}`)
         .join(" | ");
@@ -314,7 +312,6 @@ export async function runManagerTurn(params: {
         let retryFreshHandle = false;
         let skipPostTurnCleanup = false;
         let completionEvidenceText = "";
-        let completionEvidenceBytes = 0;
         let completionEvidenceOverflowed = false;
         let modelExecution: ReturnType<typeof bindOperatorModelExecution>;
         const onModelRevoked = () =>
@@ -328,9 +325,7 @@ export async function runManagerTurn(params: {
             selectedBackend: currentBackend,
             isCurrentActor: params.isCurrentActor,
           });
-          if (!params.isCurrentActor()) {
-            throw createSupersededActorError(sessionKey);
-          }
+          assertActorCurrent();
           runtime = ensured.runtime;
           handle = ensured.handle;
           meta = ensured.meta;
@@ -395,9 +390,7 @@ export async function runManagerTurn(params: {
             });
           }
 
-          if (!params.isCurrentActor()) {
-            throw createSupersededActorError(sessionKey);
-          }
+          assertActorCurrent();
           activeTurnStarted = true;
           const turnToCancel = activeTurn;
           const eventGate = { open: true };
@@ -434,9 +427,7 @@ export async function runManagerTurn(params: {
                   taskRecord,
                   input.admittedRunContext,
                   () => {
-                    if (!params.isCurrentActor()) {
-                      throw createSupersededActorError(sessionKey);
-                    }
+                    assertActorCurrent();
                     if (!assertAdmitted) {
                       throw new Error("ACP execution authority closed before owner binding");
                     }
@@ -477,8 +468,10 @@ export async function runManagerTurn(params: {
                 // Keep semantic evidence attempt-local; only the bounded display summary is persisted.
                 if (taskContext && !completionEvidenceOverflowed) {
                   completionEvidenceText += event.text;
-                  completionEvidenceBytes = Buffer.byteLength(completionEvidenceText, "utf8");
-                  if (completionEvidenceBytes > ACP_COMPLETION_EVIDENCE_MAX_BYTES) {
+                  if (
+                    Buffer.byteLength(completionEvidenceText, "utf8") >
+                    ACP_COMPLETION_EVIDENCE_MAX_BYTES
+                  ) {
                     completionEvidenceOverflowed = true;
                     completionEvidenceText = "";
                   }
@@ -531,9 +524,7 @@ export async function runManagerTurn(params: {
               });
             },
           });
-          if (!params.isCurrentActor()) {
-            throw createSupersededActorError(sessionKey);
-          }
+          assertActorCurrent();
           modelExecution?.assertCurrent();
           if (!turnOutcome.terminalStatus) {
             throw new AcpRuntimeError(
@@ -596,9 +587,7 @@ export async function runManagerTurn(params: {
               ? "ACP turn failed before completion."
               : "Could not initialize ACP session runtime.",
           });
-          if (!params.isCurrentActor()) {
-            throw createSupersededActorError(sessionKey);
-          }
+          assertActorCurrent();
           retryFreshHandle = await prepareFreshManagerRuntimeHandleRetry({
             attempt,
             cfg: input.cfg,
@@ -613,9 +602,7 @@ export async function runManagerTurn(params: {
             writeSessionMeta: params.writeSessionMeta,
             isCurrentActor: params.isCurrentActor,
           });
-          if (!params.isCurrentActor()) {
-            throw createSupersededActorError(sessionKey);
-          }
+          assertActorCurrent();
           if (retryFreshHandle) {
             continue;
           }
