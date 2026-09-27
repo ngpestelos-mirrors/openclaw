@@ -102,7 +102,6 @@ async function initializeThreadBindingManager(
   await reconcileTelegramAcpBindingsOnStartup({
     accountId,
     persist,
-    startupBindings: listBindingsForAccount(accountId),
   });
 
   let sweepTimer: NodeJS.Timeout | null = null;

@@ -1,21 +1,17 @@
-import * as acpRuntime from "openclaw/plugin-sdk/acp-runtime";
+import { readAcpSessionEntry } from "openclaw/plugin-sdk/acp-runtime";
 import { isAcpSessionKey } from "openclaw/plugin-sdk/routing";
-import { createSubsystemLogger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
+import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { persistBindingMutation } from "./thread-bindings-persistence.js";
 import { resolveBindingKey } from "./thread-bindings-session.js";
-import { getThreadBindingsState } from "./thread-bindings-state.js";
-import type { TelegramThreadBindingRecord } from "./thread-bindings-store.js";
-
-const log = createSubsystemLogger("telegram/thread-bindings");
+import { getThreadBindingsState, listBindingsForAccount } from "./thread-bindings-state.js";
 
 export async function reconcileTelegramAcpBindingsOnStartup(params: {
   accountId: string;
   persist: boolean;
-  startupBindings: readonly TelegramThreadBindingRecord[];
 }): Promise<void> {
-  const { accountId, persist, startupBindings } = params;
+  const { accountId, persist } = params;
   const acpSessionKeys = new Set<string>();
-  for (const binding of startupBindings) {
+  for (const binding of getThreadBindingsState().bindingsByAccountConversation.values()) {
     if (binding.targetKind !== "acp" || !isAcpSessionKey(binding.targetSessionKey)) {
       continue;
     }
@@ -23,15 +19,8 @@ export async function reconcileTelegramAcpBindingsOnStartup(params: {
   }
 
   const staleSessionKeys = new Set<string>();
-  const readAcpSessionEntryAsync = acpRuntime.readAcpSessionEntryAsync;
-  if (acpSessionKeys.size > 0 && typeof readAcpSessionEntryAsync !== "function") {
-    log.warn(
-      "Skipping ACP thread binding reconciliation: this OpenClaw host lacks asynchronous metadata reads. Existing bindings are retained. Upgrade the OpenClaw host to enable startup cleanup.",
-    );
-    return;
-  }
   for (const targetSessionKey of acpSessionKeys) {
-    const sessionEntry = await readAcpSessionEntryAsync({ sessionKey: targetSessionKey });
+    const sessionEntry = readAcpSessionEntry({ sessionKey: targetSessionKey });
     if (!sessionEntry || sessionEntry.storeReadFailed) {
       continue;
     }
@@ -47,13 +36,13 @@ export async function reconcileTelegramAcpBindingsOnStartup(params: {
   }
 
   for (const sessionKey of staleSessionKeys) {
-    const bindingsToRemove = startupBindings.filter((b) => b.targetSessionKey === sessionKey);
+    const bindingsToRemove = listBindingsForAccount(accountId).filter(
+      (b) => b.targetSessionKey === sessionKey,
+    );
     for (const binding of bindingsToRemove) {
-      const bindingKey = resolveBindingKey({ accountId, conversationId: binding.conversationId });
-      if (getThreadBindingsState().bindingsByAccountConversation.get(bindingKey) !== binding) {
-        continue;
-      }
-      getThreadBindingsState().bindingsByAccountConversation.delete(bindingKey);
+      getThreadBindingsState().bindingsByAccountConversation.delete(
+        resolveBindingKey({ accountId, conversationId: binding.conversationId }),
+      );
       await persistBindingMutation({
         accountId,
         persist,

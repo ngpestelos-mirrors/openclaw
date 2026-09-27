@@ -36,7 +36,7 @@ const hoisted = vi.hoisted(() => {
     },
   }));
   const createThreadDiscord = vi.fn(async (..._args: unknown[]) => ({ id: "thread-created" }));
-  const readAcpSessionEntryAsync = vi.fn();
+  const readAcpSessionEntry = vi.fn();
   return {
     sendMessageDiscord,
     sendWebhookMessageDiscord,
@@ -44,9 +44,7 @@ const hoisted = vi.hoisted(() => {
     restPost,
     createDiscordRestClient,
     createThreadDiscord,
-    readAcpSessionEntryAsync,
-    acpReaderAvailable: true,
-    warn: vi.fn(),
+    readAcpSessionEntry,
   };
 });
 
@@ -70,22 +68,7 @@ vi.mock("openclaw/plugin-sdk/acp-runtime", async () => {
   );
   return {
     ...actual,
-    get readAcpSessionEntryAsync() {
-      return hoisted.acpReaderAvailable ? hoisted.readAcpSessionEntryAsync : undefined;
-    },
-  };
-});
-
-vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/runtime-env")>(
-    "openclaw/plugin-sdk/runtime-env",
-  );
-  return {
-    ...actual,
-    createSubsystemLogger: (...args: Parameters<typeof actual.createSubsystemLogger>) => ({
-      ...actual.createSubsystemLogger(...args),
-      warn: hoisted.warn,
-    }),
+    readAcpSessionEntry: hoisted.readAcpSessionEntry,
   };
 });
 
@@ -181,9 +164,7 @@ export function installThreadBindingLifecycleTestHooks() {
       },
     }));
     hoisted.createThreadDiscord.mockReset().mockResolvedValue({ id: "thread-created" });
-    hoisted.acpReaderAvailable = true;
-    hoisted.warn.mockReset();
-    hoisted.readAcpSessionEntryAsync.mockReset().mockReturnValue(null);
+    hoisted.readAcpSessionEntry.mockReset().mockReturnValue(null);
     vi.spyOn(discordClientModule, "createDiscordRestClient").mockImplementation(
       (...args) =>
         hoisted.createDiscordRestClient(...args) as unknown as ReturnType<

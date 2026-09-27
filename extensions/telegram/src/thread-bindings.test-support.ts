@@ -19,34 +19,17 @@ import {
 import { createTelegramThreadBindingManager } from "./thread-bindings.js";
 
 const acpHost = vi.hoisted(() => ({
-  readerAvailable: true,
   read: vi.fn(),
-  warn: vi.fn(),
 }));
 
 vi.mock("openclaw/plugin-sdk/acp-runtime", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/acp-runtime")>(
     "openclaw/plugin-sdk/acp-runtime",
   );
-  acpHost.read.mockImplementation(actual.readAcpSessionEntryAsync);
+  acpHost.read.mockImplementation(actual.readAcpSessionEntry);
   return {
     ...actual,
-    get readAcpSessionEntryAsync() {
-      return acpHost.readerAvailable ? acpHost.read : undefined;
-    },
-  };
-});
-
-vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/runtime-env")>(
-    "openclaw/plugin-sdk/runtime-env",
-  );
-  return {
-    ...actual,
-    createSubsystemLogger: (...args: Parameters<typeof actual.createSubsystemLogger>) => ({
-      ...actual.createSubsystemLogger(...args),
-      warn: acpHost.warn,
-    }),
+    readAcpSessionEntry: acpHost.read,
   };
 });
 
@@ -89,13 +72,11 @@ export function useTelegramThreadBindingsFixture() {
     );
   };
   beforeEach(async () => {
-    acpHost.readerAvailable = true;
-    acpHost.warn.mockReset();
     acpHost.read.mockReset();
     const acpRuntime = await vi.importActual<typeof import("openclaw/plugin-sdk/acp-runtime")>(
       "openclaw/plugin-sdk/acp-runtime",
     );
-    acpHost.read.mockImplementation(acpRuntime.readAcpSessionEntryAsync);
+    acpHost.read.mockImplementation(acpRuntime.readAcpSessionEntry);
     await stopManagers();
     state = await createOpenClawTestState({
       layout: "state-only",

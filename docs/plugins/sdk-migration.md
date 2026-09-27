@@ -68,8 +68,11 @@ the read and must not be treated as an absent session.
 The synchronous `readAcpSessionEntry` and
 `getAcpSessionManager().resolveSession()` contracts shipped in `v2026.9.4`
 remain available for existing consumers of that compatibility export. They are
-deprecated for runtime use. Bundled callers use `readAcpSessionEntryAsync` and
-`getAcpSessionManager().resolveSessionAsync()` respectively. Removing the synchronous contracts
+deprecated for runtime use. Ordinary ACP manager and Gateway callers use
+`readAcpSessionEntryAsync` and `getAcpSessionManager().resolveSessionAsync()`.
+Discord and Telegram startup binding cleanup retain their existing synchronous
+reader until conditional deletion can validate metadata at the mutation owner.
+That cleanup migration remains unfinished. Removing the synchronous contracts
 requires a separately announced breaking SDK release. Incognito reads retain
 their existing native in-memory owner until that owner's worker migration.
 
