@@ -30,6 +30,7 @@ import { getOptionalBrowserStateRuntime } from "./src/browser-runtime-state.js";
 import { createBrowserToolDefinition } from "./src/browser-tool-description.js";
 import {
   initializeBrowserSessionTabStore,
+  drainBrowserSessionTabStore,
   readBrowserDashboardSessionOwners,
 } from "./src/browser/session-tab-store.js";
 import {
@@ -196,7 +197,9 @@ export const browserSecurityAuditCollectors: OpenClawPluginSecurityAuditCollecto
   },
 ];
 
-function createLazyBrowserPluginService(): OpenClawPluginService {
+function createLazyBrowserPluginService(
+  runtime: ReturnType<typeof initializeBrowserSessionTabStore>,
+): OpenClawPluginService {
   let service: OpenClawPluginService | null = null;
   let stopDashboardEvents: (() => Promise<void>) | undefined;
   return {
@@ -225,18 +228,22 @@ function createLazyBrowserPluginService(): OpenClawPluginService {
       await service.start(ctx);
     },
     stop: async (ctx) => {
-      await stopDashboardEvents?.();
-      stopDashboardEvents = undefined;
-      if (!service) {
-        const loadedRuntime = loadBrowserRegistrationRuntimeModule.peek();
-        if (!loadedRuntime) {
+      try {
+        await stopDashboardEvents?.();
+        stopDashboardEvents = undefined;
+        if (!service) {
+          const loadedRuntime = loadBrowserRegistrationRuntimeModule.peek();
+          if (!loadedRuntime) {
+            return;
+          }
+          const { stopBrowserControlService } = await loadedRuntime;
+          await stopBrowserControlService();
           return;
         }
-        const { stopBrowserControlService } = await loadedRuntime;
-        await stopBrowserControlService();
-        return;
+        await service.stop?.(ctx);
+      } finally {
+        await drainBrowserSessionTabStore(runtime);
       }
-      await service.stop?.(ctx);
     },
   };
 }
@@ -362,5 +369,5 @@ export function registerBrowserPlugin(api: OpenClawPluginApi) {
       return await handleBrowserScreencastUpgrade(req, socket, head);
     },
   });
-  api.registerService(createLazyBrowserPluginService());
+  api.registerService(createLazyBrowserPluginService(runtime));
 }
