@@ -562,9 +562,9 @@ export async function runGatewaySshTunnels(
       root,
       fixtureReadyPath
         ? async () => {
+            await fs.writeFile(fixtureReadyPath, "ready\n", "utf8");
             // The parent's open pipe keeps this fixture alive until its deliberate SIGKILL.
             process.stdin.resume();
-            await fs.writeFile(fixtureReadyPath, "ready\n", "utf8");
             await finished(process.stdin);
             throw new Error("Gateway SSH tunnel fixture lost its parent before termination");
           }
