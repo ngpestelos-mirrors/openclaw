@@ -284,8 +284,13 @@ describe("test-projects args", () => {
       config: "test/vitest/vitest.infra.config.ts",
     },
     {
-      title: "routes reset-heavy acp targets to the acp config",
+      title: "routes worker-backed ACP metadata to the infra config",
       target: "src/acp/runtime/session-meta.test.ts",
+      config: "test/vitest/vitest.infra.config.ts",
+    },
+    {
+      title: "routes non-worker ACP targets to the ACP config",
+      target: "src/acp/runtime/registry.test.ts",
       config: "test/vitest/vitest.acp.config.ts",
     },
     {
