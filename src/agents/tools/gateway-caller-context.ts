@@ -228,10 +228,15 @@ export async function withGatewayPersonalToolUser<T>(
   return await gatewayToolCallerStorage.run({ ...caller, personalToolUser: user }, run);
 }
 
-export function resolveGatewayPersonalToolParticipant(runtimeIdentity?: AgentRuntimeIdentity) {
+export function resolveGatewayPersonalToolParticipant(
+  runtimeIdentity?: AgentRuntimeIdentity,
+  options?: { requireSingleParticipant?: boolean },
+) {
   const caller = getGatewayToolCallerIdentity();
   if (caller?.personalToolParticipants) {
-    return caller.personalToolParticipants.resolve(caller.personalToolUser);
+    return caller.personalToolParticipants.resolve(
+      options?.requireSingleParticipant ? undefined : caller.personalToolUser,
+    );
   }
   if (caller?.personalToolUser !== undefined) {
     throw new Error("Selecting user requires an active personal-tool turn.");

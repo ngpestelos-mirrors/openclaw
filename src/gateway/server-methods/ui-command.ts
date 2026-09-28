@@ -24,11 +24,11 @@ export function dispatchUiCommandToRequester({
   params: commandParams,
   context,
   client,
-  participant,
 }: Pick<GatewayRequestHandlerOptions, "context" | "client"> & {
   params: UiCommandParams;
-  participant?: ReturnType<typeof resolveGatewayPersonalToolParticipant>;
 }): { ok: true } | { ok: false; error: ReturnType<typeof errorShape> } {
+  const runtimeIdentity = client?.internal?.agentRuntimeIdentity;
+  const participant = resolveGatewayPersonalToolParticipant(runtimeIdentity);
   const commandSessionKey =
     "sessionKey" in commandParams.command
       ? commandParams.command.sessionKey
@@ -60,7 +60,6 @@ export function dispatchUiCommandToRequester({
         ? { ...commandParams.command, sessionKey: canonicalSessionKey }
         : commandParams.command,
   };
-  const runtimeIdentity = client?.internal?.agentRuntimeIdentity;
   const target = participant
     ? participant.gatewayUiCommandTarget
     : runtimeIdentity
@@ -100,12 +99,7 @@ export const uiCommandHandlers: GatewayRequestHandlers = {
   "ui.command": defineValidatedGatewayMethod("ui.command", validateUiCommandParams, (options) => {
     try {
       assertActiveAgentRuntimeAuthority(options.client, options.context);
-      const result = dispatchUiCommandToRequester({
-        ...options,
-        participant: resolveGatewayPersonalToolParticipant(
-          options.client?.internal?.agentRuntimeIdentity,
-        ),
-      });
+      const result = dispatchUiCommandToRequester(options);
       if (result.ok) {
         options.respond(true, { ok: true });
       } else {

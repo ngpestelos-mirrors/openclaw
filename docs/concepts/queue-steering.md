@@ -86,6 +86,12 @@ people have steered the turn, the agent must pass that person's verified
 `requester_profile.id` as `user` to choose whose view or appearance to change,
 and ask if it is unclear. Each authenticated Control UI message includes its
 requester's verified profile id in the agent's user-role conversation context.
+Personal instructions and other personal settings without a `user` selector
+cannot be read or changed from a turn several people have steered. The person
+should ask in their own turn with a new Control UI message. For Crabbox open-and-show requests in a
+mixed-person turn, create the environment without `presentation`, then use
+`screen` with `desktop_show` or `portal_show`, its `environmentId`, and the
+requester's `requester_profile.id` as `user`.
 Different permissions (role scopes, session access cap, sandbox requirement,
 allowed agents, model access, access grant, or tool policy) queue the message as
 a followup; changes to execution policy, workspace, or bound tools can also
