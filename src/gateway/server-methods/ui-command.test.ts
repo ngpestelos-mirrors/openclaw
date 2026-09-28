@@ -185,15 +185,16 @@ describe("ui.command gateway method", () => {
         );
         const selectedOwner = expectDefined(resolve(), "turn owner");
         expectTarget(await execute(), "alice-tab");
-        expectTarget(await execute(owner.senderId), "alice-tab");
-        expectRejected(await execute(steerer.senderId));
+        expectTarget(await execute(owner.profileId), "alice-tab");
+        expectRejected(await execute(owner.senderId), "Alice (user: alice)");
+        expectRejected(await execute(steerer.profileId));
 
         expect(await turn.steer(steerer, { scopes: ["operator.read"] })).toMatchObject({
           status: "rejected",
           reason: hiddenQuestion ? "input_visibility_mismatch" : "tool_authority_mismatch",
         });
         expectTarget(await execute(), "alice-tab");
-        expectRejected(await execute(steerer.senderId));
+        expectRejected(await execute(steerer.profileId));
         expect(await turn.steer(steerer, { reject: true })).toMatchObject({
           status: "rejected",
           reason: "runtime_rejected",
@@ -201,13 +202,16 @@ describe("ui.command gateway method", () => {
         expectTarget(await execute(), "alice-tab");
 
         expect(await turn.steer(steerer)).toMatchObject({ status: "accepted" });
-        expect(() => selectedOwner.assertCurrent()).toThrow("Alice (user: alice-sender)");
+        expect(() => selectedOwner.assertCurrent()).toThrow("Alice (user: alice)");
         const ambiguous = await execute();
-        expectRejected(ambiguous, "Alice (user: alice-sender)");
-        expectRejected(ambiguous, "Bob (user: bob-sender)");
-        expectTarget(await execute(steerer.senderId), "bob-tab");
-        expectTarget(await execute(owner.senderId), "alice-tab");
-        expectRejected(await execute("nonparticipant"));
+        expectRejected(ambiguous, "Alice (user: alice)");
+        expectRejected(ambiguous, "Bob (user: bob)");
+        expectTarget(await execute(steerer.profileId), "bob-tab");
+        expectTarget(await execute(owner.profileId), "alice-tab");
+        const unknown = await execute("nonparticipant");
+        expectRejected(unknown, "Alice (user: alice)");
+        expectRejected(unknown, "Bob (user: bob)");
+        expectRejected(await execute(steerer.senderId), "Bob (user: bob)");
 
         expect(
           await turn.steer({
@@ -215,15 +219,15 @@ describe("ui.command gateway method", () => {
             gatewayUiCommandTarget: { connId: "bob-other-tab", profileId: "bob" },
           }),
         ).toMatchObject({ status: "accepted" });
-        expectTarget(await execute(steerer.senderId), "bob-other-tab");
+        expectTarget(await execute(steerer.profileId), "bob-other-tab");
         expect(turn.releaseCounts.get(steerer.profileId)).toBe(1);
 
         turn.revoke(steerer.profileId);
-        expectRejected(await execute(steerer.senderId), "Bob's access changed; ask them again");
-        expectTarget(await execute(owner.senderId), "alice-tab");
+        expectRejected(await execute(steerer.profileId), "Bob's access changed; ask them again");
+        expectTarget(await execute(owner.profileId), "alice-tab");
         turn.complete();
         expect(turn.releaseCounts.get(steerer.profileId)).toBe(2);
-        expectRejected(await execute(owner.senderId));
+        expectRejected(await execute(owner.profileId));
       });
     },
   );
@@ -288,7 +292,7 @@ describe("ui.command gateway method", () => {
         false,
         undefined,
         expect.objectContaining({
-          message: expect.stringMatching(/Alice \(user: alice-sender\).*Bob \(user: bob-sender\)/),
+          message: expect.stringMatching(/Alice \(user: alice\).*Bob \(user: bob\)/),
         }),
       );
       expect(ambiguous.broadcastToConnIds).not.toHaveBeenCalled();

@@ -212,13 +212,11 @@ describe("host-prepared embedded tool authority", () => {
             undefined,
             expect.objectContaining({
               code: "INVALID_REQUEST",
-              message: expect.stringMatching(
-                /Alice \(user: alice-sender\)[\s\S]*Bob \(user: bob-sender\)/,
-              ),
+              message: expect.stringMatching(/Alice \(user: alice\)[\s\S]*Bob \(user: bob\)/),
             }),
           );
           expect(ambiguous.broadcastToConnIds).not.toHaveBeenCalled();
-          const selected = await dispatch("bob-sender");
+          const selected = await dispatch("bob");
           expect(selected.respond).toHaveBeenCalledWith(true, { ok: true });
           expect(selected.broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
             "ui.command",
@@ -244,7 +242,7 @@ describe("host-prepared embedded tool authority", () => {
     );
     expect(retainSteerer).toHaveBeenCalledOnce();
     expect(releaseSteerer).toHaveBeenCalledOnce();
-    const closed = await withGatewayToolCallerIdentity(retained, () => dispatch("bob-sender"));
+    const closed = await withGatewayToolCallerIdentity(retained, () => dispatch("bob"));
     expect(closed.respond).toHaveBeenCalledWith(
       false,
       undefined,

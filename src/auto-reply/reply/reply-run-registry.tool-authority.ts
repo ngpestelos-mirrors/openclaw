@@ -67,14 +67,14 @@ export function createReplyTurnParticipants(
       throw new Error("This turn has ended; ask again in a new turn.");
     }
     const people = [...participants.values()];
-    const choices = people.map((person) => `${person.name} (user: ${person.senderId})`).join(", ");
+    const choices = people.map((person) => `${person.name} (user: ${person.profileId})`).join(", ");
     if (user === undefined && people.length > 1) {
       throw new Error(
         `Several people have steered this turn: ${choices}. Pass the requester's requester_profile.id as user, or ask them if unclear.`,
       );
     }
     const person =
-      user === undefined ? people[0] : people.find((candidate) => candidate.senderId === user);
+      user === undefined ? people[0] : people.find((candidate) => candidate.profileId === user);
     if (user !== undefined && !person) {
       throw new Error(
         `User is not a participant of this turn.${choices ? ` Choose ${choices}.` : " Ask again from your signed-in Control UI."}`,

@@ -254,13 +254,11 @@ describe("ordinary steering into automatic model fallback", () => {
               false,
               undefined,
               expect.objectContaining({
-                message: expect.stringMatching(
-                  /Alice \(user: alice-sender\).*Bob \(user: bob-sender\)/,
-                ),
+                message: expect.stringMatching(/Alice \(user: alice\).*Bob \(user: bob\)/),
               }),
             );
             expect(ambiguous.broadcastToConnIds).not.toHaveBeenCalled();
-            const selected = await dispatch("bob-sender");
+            const selected = await dispatch("bob");
             expect(selected.broadcastToConnIds).toHaveBeenCalledWith(
               "ui.command",
               expect.any(Object),

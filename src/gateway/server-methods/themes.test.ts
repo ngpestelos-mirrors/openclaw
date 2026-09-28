@@ -864,9 +864,12 @@ describe("theme RPC", () => {
       synthetic.internal = { syntheticClient: true, agentRuntimeIdentity: turn.runtimeIdentity };
       const current = { mode: "dark" };
       expect(await execute({ action: "set", mode: "dark" })).toMatchObject({ current });
-      expect(await execute({ action: "get" }, owner.senderId)).toMatchObject({ current });
+      expect(await execute({ action: "get" }, owner.profileId)).toMatchObject({ current });
+      await expect(execute({ action: "get" }, owner.senderId)).rejects.toThrow(
+        `Alice (user: ${owner.profileId})`,
+      );
       for (const action of actions) {
-        await expect(execute(action, steerer.senderId)).rejects.toThrow();
+        await expect(execute(action, steerer.profileId)).rejects.toThrow();
       }
       expect(getUserPreferences(otherProfileId)).toEqual({});
 
@@ -879,7 +882,7 @@ describe("theme RPC", () => {
         },
       );
       await expect(execute({ action: "set", id: "tide" })).rejects.toThrow(
-        "Alice (user: alice-sender)",
+        `Alice (user: ${owner.profileId})`,
       );
       for (const action of actions) {
         for (const call of [
@@ -887,10 +890,15 @@ describe("theme RPC", () => {
           () => withoutGatewayToolCallerIdentity(() => execute(action)),
         ]) {
           await expect(call()).rejects.toThrow(
-            /Alice \(user: alice-sender\)[\s\S]*Bob \(user: bob-sender\)/,
+            `Alice (user: ${owner.profileId}), Bob (user: ${steerer.profileId})`,
           );
         }
-        await expect(execute(action, "nonparticipant")).rejects.toThrow();
+        await expect(execute(action, "nonparticipant")).rejects.toThrow(
+          `Alice (user: ${owner.profileId}), Bob (user: ${steerer.profileId})`,
+        );
+        await expect(execute(action, steerer.senderId)).rejects.toThrow(
+          "User is not a participant",
+        );
       }
       expect(getUserPreferences(requesterProfileId)).toEqual({ "ui.themeMode": "dark" });
       expect(getUserPreferences(otherProfileId)).toEqual({});
@@ -901,7 +909,7 @@ describe("theme RPC", () => {
       ]) {
         for (const action of ["set", "list", "get"]) {
           expect(
-            await execute({ action, ...(action === "set" ? { id, mode } : {}) }, person.senderId),
+            await execute({ action, ...(action === "set" ? { id, mode } : {}) }, person.profileId),
           ).toMatchObject({ current: { id, mode } });
         }
         expect(getUserPreferences(person.profileId)).toEqual({
@@ -910,7 +918,7 @@ describe("theme RPC", () => {
         });
       }
       const imported = expectDefined(actions[3], "import action");
-      expect(await execute(imported, steerer.senderId)).toMatchObject({
+      expect(await execute(imported, steerer.profileId)).toMatchObject({
         current: { id: "user/personal" },
       });
       expect(getUserPreferences(requesterProfileId)).not.toHaveProperty(
@@ -924,22 +932,22 @@ describe("theme RPC", () => {
       const saved = getUserPreferences(otherProfileId);
       const revokeBeforeCommit = vi.fn(() => turn.revoke(steerer.profileId));
       beforeWorkerCommit(revokeBeforeCommit);
-      await expect(execute({ action: "set", id: "claw" }, steerer.senderId)).rejects.toThrow(
+      await expect(execute({ action: "set", id: "claw" }, steerer.profileId)).rejects.toThrow(
         "Bob's access changed; ask them again",
       );
       expect(revokeBeforeCommit).toHaveBeenCalled();
       expect(getUserPreferences(otherProfileId)).toEqual(saved);
       for (const action of actions) {
-        await expect(execute(action, steerer.senderId)).rejects.toThrow(
+        await expect(execute(action, steerer.profileId)).rejects.toThrow(
           "Bob's access changed; ask them again",
         );
       }
-      expect(await execute({ action: "get" }, owner.senderId)).toMatchObject({
+      expect(await execute({ action: "get" }, owner.profileId)).toMatchObject({
         current: { id: "rose" },
       });
       turn.complete();
       expect(turn.releaseCounts.get(steerer.profileId)).toBe(1);
-      await expect(execute({ action: "get" }, owner.senderId)).rejects.toThrow();
+      await expect(execute({ action: "get" }, owner.profileId)).rejects.toThrow();
     });
   });
 
