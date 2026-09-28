@@ -1,5 +1,6 @@
 import { isArtifactPreservingStateRead } from "../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import { resolveInstalledPluginIndexStateDatabaseOptions } from "./installed-plugin-index-store-path.js";
 import type { PluginSourceAdmissionPublication } from "./plugin-source-admission.types.js";
 
@@ -15,8 +16,6 @@ export async function publishPluginSourceAdmission(
   const context = captureOpenClawStateWorkerContext(
     resolveInstalledPluginIndexStateDatabaseOptions({ env, stateDir }),
   );
-  const { runOpenClawStateWorkerOperation } =
-    await import("../state/openclaw-state-worker-store.js");
   return (
     (await runOpenClawStateWorkerOperation(
       context,

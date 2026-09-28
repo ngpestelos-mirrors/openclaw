@@ -180,18 +180,8 @@ export async function runExec(
       const decodedStdout = decodeExecOutput(stdout);
       const decodedStderr = decodeExecOutput(stderr);
       if (acceptingOutput && resolvedOptions?.logOutput !== false) {
-        const [{ shouldLogVerbose }, { logDebug, logError }] = await Promise.all([
-          import("../globals.js"),
-          import("../logger.js"),
-        ]);
-        if (shouldLogVerbose()) {
-          if (decodedStdout.trim()) {
-            logDebug(decodedStdout.trim());
-          }
-          if (decodedStderr.trim()) {
-            logError(decodedStderr.trim());
-          }
-        }
+        const { logExecOutput } = await import("./exec-logging.runtime.js");
+        logExecOutput(decodedStdout, decodedStderr);
       }
       return { stdout: decodedStdout, stderr: decodedStderr };
     })();
@@ -233,15 +223,8 @@ export async function runExec(
     }
     if (resolvedOptions?.logOutput !== false) {
       // Logging imports must not replace the original command failure.
-      const logging = await Promise.all([import("../globals.js"), import("../logger.js")]).catch(
-        () => undefined,
-      );
-      if (logging) {
-        const [{ danger, shouldLogVerbose }, { logError }] = logging;
-        if (shouldLogVerbose()) {
-          logError(danger(`Command failed: ${command}`));
-        }
-      }
+      const logging = await import("./exec-logging.runtime.js").catch(() => undefined);
+      logging?.logExecFailure(command);
     }
     throw err;
   } finally {

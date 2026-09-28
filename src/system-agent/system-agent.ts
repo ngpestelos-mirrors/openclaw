@@ -1,6 +1,8 @@
 // OpenClaw CLI runner selects JSON, one-shot, or interactive setup-helper mode.
 import { stdin as defaultStdin, stdout as defaultStdout } from "node:process";
+import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
 import { withProgress } from "../cli/progress.js";
+import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import type { SystemAgentAssistantPlanner } from "./assistant.js";
 import { resolveSystemAgentOperation } from "./dialogue.js";
@@ -12,11 +14,8 @@ import {
   type SystemAgentCommandDeps,
   type SystemAgentOperation,
 } from "./operations.js";
-import {
-  formatSystemAgentOverview,
-  loadSystemAgentOverview,
-  type SystemAgentOverview,
-} from "./overview.js";
+import { formatSystemAgentOverview } from "./overview-format.js";
+import type { loadSystemAgentOverview, SystemAgentOverview } from "./overview.js";
 import {
   hasCurrentSystemAgentOwnerPluginArtifacts,
   resolveSystemAgentVerifiedInferenceRoute,
@@ -154,8 +153,6 @@ export async function runSystemAgent(
     return await run();
   }
   const { resolveAgentWorkspaceDir } = await import("../agents/agent-scope.js");
-  const { loadAgentRuntimePluginRegistryHandle } = await import("../agents/runtime-plugins.js");
-  const { withPluginLifecycleLease } = await import("../plugins/plugin-lifecycle-lease.js");
   const { createPluginCache, withPluginCache } = await import("../plugins/plugin-cache.js");
   const { withPluginRuntimeRegistryScope } =
     await import("../plugins/runtime/gateway-request-scope.js");
@@ -203,8 +200,10 @@ async function runBoundSystemAgent(
   runtime: RuntimeEnv,
 ): Promise<void> {
   await requireVerifiedInference(boundOpts);
+  const loadOverview =
+    boundOpts.loadOverview ?? (await import("./overview.js")).loadSystemAgentOverview;
   if (boundOpts.json) {
-    const overview = await (boundOpts.loadOverview ?? loadSystemAgentOverview)();
+    const overview = await loadOverview();
     writeRuntimeJson(runtime, overview);
     return;
   }
@@ -224,7 +223,7 @@ async function runBoundSystemAgent(
         delayMs: 0,
         fallback: "none",
       },
-      async () => await (boundOpts.loadOverview ?? loadSystemAgentOverview)(),
+      () => loadOverview(),
     );
     runtime.log((boundOpts.formatOverview ?? formatSystemAgentOverview)(overview));
     runtime.log("");
@@ -237,7 +236,7 @@ async function runBoundSystemAgent(
   }
 
   if (boundOpts.interactive === false) {
-    const overview = await (boundOpts.loadOverview ?? loadSystemAgentOverview)();
+    const overview = await loadOverview();
     runtime.log((boundOpts.formatOverview ?? formatSystemAgentOverview)(overview));
     return;
   }

@@ -11,12 +11,16 @@ import {
   usesCandidateUpdateAdmission,
   type UpdateCommandOptions,
 } from "./shared.js";
-import { withPrivateStagedPackageInstall } from "./update-command-artifact.js";
+import {
+  runFreshUpdateArtifact,
+  withPrivateStagedPackageInstall,
+} from "./update-command-artifact.js";
 import {
   applyUpdateCandidateAdmission,
   assertUpdateAdmissionConfigUnchanged,
   inspectStagedUpdateCandidateAdmission,
 } from "./update-command-candidate-admission.js";
+import { readUpdateChannelConfig } from "./update-command-config.js";
 import type { UpdateCommandExecutorOptions } from "./update-command-executor-options.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import {
@@ -27,6 +31,7 @@ import {
   type InitializedUpdate,
 } from "./update-command-initialization.js";
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
+import { stagePackageInstallUpdate } from "./update-command-package.js";
 import { UnreportedUpdateAdmissionOutcome } from "./update-command-result.js";
 import {
   assertUpdatePackageActivationAdmission,
@@ -220,7 +225,6 @@ export async function initializeAndRunUpdate(
                       )
                     : undefined;
                 const checkSchemas = async (phase?: "before" | "after") => {
-                  const { readUpdateChannelConfig } = await import("./update-command-config.js");
                   const config = await withOwnedManagedUpdateEnv(env, () =>
                     readUpdateChannelConfig(Boolean(opts.channel), {
                       tolerateReadFailure: candidateAdmissionChecks?.includes("config"),
@@ -286,7 +290,6 @@ export async function initializeAndRunUpdate(
                   preflight: true,
                   serviceRoot: target.managedServiceRoot,
                 });
-                const { stagePackageInstallUpdate } = await import("./update-command-package.js");
                 fence.assertCurrent();
                 assertUpdatePackageActivationAdmission(target.root, packageAdmission);
                 const legacyFence = acquireLegacyUpdateInitializationFence({
@@ -340,7 +343,6 @@ export async function initializeAndRunUpdate(
               };
               const runWithSelectedProfile = async () => {
                 if (artifact) {
-                  const { runFreshUpdateArtifact } = await import("./update-command-artifact.js");
                   return await runFreshUpdateArtifact(
                     { initialization, stageParams, json: Boolean(opts.json) },
                     runSelectedTarget,

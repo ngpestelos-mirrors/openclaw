@@ -8,7 +8,7 @@ import {
   parseSystemAgentOperation,
   type SystemAgentOperation,
 } from "./operations.js";
-import { loadSystemAgentOverview, type SystemAgentOverview } from "./overview.js";
+import type { loadSystemAgentOverview, SystemAgentOverview } from "./overview.js";
 import {
   resolveSystemAgentVerifiedInferenceRoute,
   type SystemAgentVerifiedInferenceBinding,
@@ -46,7 +46,8 @@ export async function resolveSystemAgentOperation(
   if (!shouldAskAssistant(input, operation)) {
     return operation;
   }
-  const overview = await (opts.loadOverview ?? loadSystemAgentOverview)();
+  const loadOverview = opts.loadOverview ?? (await import("./overview.js")).loadSystemAgentOverview;
+  const overview = await loadOverview();
   const planner = opts.planWithAssistant ?? (await import("./assistant.js")).planSystemAgentCommand;
   let plan: SystemAgentAssistantPlan | null;
   try {

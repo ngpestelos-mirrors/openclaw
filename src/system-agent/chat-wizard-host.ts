@@ -13,6 +13,7 @@ import {
   type WizardStep,
 } from "../wizard/session.js";
 import type { MemoryImportProviderOutcome } from "../wizard/setup.memory-import.js";
+import { appendSystemAgentAuditEntry } from "./audit.js";
 import type { SystemAgentOperation } from "./operations.js";
 import { classifySystemAgentApprovalText } from "./operator-approval.js";
 
@@ -644,9 +645,7 @@ export class ChatWizardHost {
                 details: { capability: "gateway" },
               };
     try {
-      const append =
-        this.options.dependencies?.appendAuditEntry ??
-        (await import("./audit.js")).appendSystemAgentAuditEntry;
+      const append = this.options.dependencies?.appendAuditEntry ?? appendSystemAgentAuditEntry;
       await append(entry);
     } catch (error) {
       log.warn(`${bridge.kind} setup completed without audit entry: ${formatErrorMessage(error)}`);

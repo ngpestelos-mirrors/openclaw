@@ -6,6 +6,7 @@ import {
   retryMainSessionRecoveryMutation,
   scheduleMainSessionRecoveryMutation,
 } from "./main-session-recovery-lifecycle.js";
+import { scheduleMainSessionRecoveryPendingTarget } from "./main-session-recovery-owner-release.js";
 import {
   isMainRestartRecoveryCandidate,
   isMainSessionRecoveryPending,
@@ -339,13 +340,7 @@ export async function releaseMainSessionRecoveryOwner(
     // Exact-token cleanup survives transient writer outages without blocking its caller.
     scheduleMainSessionRecoveryMutation({
       mutation: () => releaseMainSessionRecoveryOwnerWithRetries(lease),
-      onSuccess: async (pending) => {
-        if (pending) {
-          const { scheduleMainSessionRecoveryPendingTarget } =
-            await import("./main-session-recovery-owner-release.js");
-          scheduleMainSessionRecoveryPendingTarget(pending);
-        }
-      },
+      onSuccess: scheduleMainSessionRecoveryPendingTarget,
     });
     throw error;
   }

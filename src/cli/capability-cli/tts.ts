@@ -1,4 +1,5 @@
 import { Option, type Command } from "commander";
+import { callGateway } from "../../gateway/call.js";
 import { defaultRuntime } from "../../runtime.js";
 import { normalizeSpeechProviderId } from "../../tts/provider-registry-core.js";
 import { runCommandWithRuntime } from "../cli-utils.js";
@@ -119,7 +120,6 @@ export function registerTtsCapabilityCommands(capability: Command): void {
           supported: ["gateway"],
           defaultTransport: "gateway",
         });
-        const { callGateway } = await import("../../gateway/call.js");
         const result = await callGateway({
           method: "tts.status",
           timeoutMs: 30_000,

@@ -5,7 +5,8 @@ import type { UiCommand, UiCommandParams } from "../../../packages/gateway-proto
 import { UiCommandResultSchema } from "../../../packages/gateway-protocol/src/schema/ui-command.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readToolStringParam, ToolInputError } from "./common.js";
-import { callInProcessGatewayTool, type InProcessGatewayCaller } from "./in-process-gateway.js";
+import { callInProcessGatewayTool } from "./gateway.js";
+import type { InProcessGatewayCaller } from "./in-process-gateway.js";
 
 const ACTIONS = [
   "split_right",

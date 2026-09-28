@@ -1,4 +1,5 @@
 import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import { getBrowserControlState } from "./browser-control-state.js";
 import {
   readBrowserDashboardDefinition,
   sameBrowserDashboardDefinition,
@@ -70,10 +71,6 @@ function bindDashboardAuthority(authority: BrowserDashboardAuthority): BrowserDa
   };
 }
 
-function operationKey(definition: BrowserDashboardDefinition): string {
-  return JSON.stringify([definition.sessionKey, definition.agentId, definition.instanceId]);
-}
-
 function responseFor(
   definition: BrowserDashboardDefinition,
   tab?: DashboardTab,
@@ -133,7 +130,6 @@ async function assertDefinitionCurrent(
 }
 
 async function resolveManagedProfile(definition: BrowserDashboardDefinition) {
-  const { getBrowserControlState } = await import("./browser-control-state.js");
   const state = getBrowserControlState();
   const config = state ? undefined : getRuntimeConfig();
   const resolved = state?.resolved ?? resolveBrowserConfig(config?.browser, config);
@@ -441,7 +437,7 @@ async function serializeDashboardOperation(
   const runtime = boundAuthority.runtime;
   const definition = await requireDefinition(request, boundAuthority);
   const operations = runtime.dashboardOperations;
-  const key = operationKey(definition);
+  const key = JSON.stringify([definition.sessionKey, definition.agentId, definition.instanceId]);
   const previous = operations.get(key);
   let materializationFailure: BrowserDashboardOperation["materializationFailure"];
   const promise = (async () => {
@@ -618,9 +614,7 @@ export async function reconcileBrowserDashboards(
       continue;
     }
     try {
-      const definition = await readBrowserDashboardDefinition({
-        ...tab.dashboard,
-      });
+      const definition = await readBrowserDashboardDefinition(tab.dashboard);
       if (!isCurrent()) {
         return closed;
       }

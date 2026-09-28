@@ -5,6 +5,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveCommandOwnerAuthority } from "../auto-reply/command-auth.js";
 import { ensureCliPluginRegistryLoaded } from "../cli/plugin-registry-loader.js";
 import { withUpdateCommandExecutor } from "../cli/update-cli/update-command-executor.js";
+import { createManagedUpdateRequesterContinuationAuthority } from "../cli/update-cli/update-command-managed-context.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { clearActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
@@ -20,7 +21,6 @@ import { runUpdateRepairLoop } from "./update-repair-agent.js";
 import { updateRepairParentMessageSchema } from "./update-repair-protocol.js";
 import {
   createManagedUpdateRequesterAuthority,
-  createManagedUpdateRequesterContinuationAuthority,
   prepareManagedUpdateRequesterIdentity,
   UpdateRequesterRevokedError,
 } from "./update-requester-authority.js";

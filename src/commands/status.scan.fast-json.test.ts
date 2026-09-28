@@ -14,7 +14,7 @@ import {
 
 const mocks = {
   ...createStatusScanSharedMocks("status-fast-json"),
-  callGateway: vi.fn(),
+  callGateway: vi.fn<typeof import("../gateway/call.js").callGateway>(),
   getStatusCommandSecretTargetIds: vi.fn(() => []),
   resolveMemorySearchConfig: vi.fn(),
 };
@@ -44,6 +44,7 @@ function clearStatusJsonChannelEnv(): Record<string, string | undefined> {
 }
 
 function configureFastJsonStatus() {
+  mocks.callGateway.mockReset().mockRejectedValue(new Error("Gateway is unavailable"));
   applyStatusScanDefaults(mocks, {
     sourceConfig: createStatusMemorySearchConfig(),
     resolvedConfig: createStatusMemorySearchConfig(),
@@ -177,6 +178,9 @@ describe("scanStatusJsonFast", () => {
     expect(mocks.buildPluginCompatibilityNotices).toHaveBeenCalledWith({
       config: createStatusMemorySearchConfig(),
     });
+    expect(mocks.callGateway).toHaveBeenCalledWith(expect.objectContaining({ method: "status" }));
+    expect(result.gatewayProbe).toMatchObject({ ok: false, error: "timeout" });
+    expect(result.gatewayReachable).toBe(false);
     expect(result.pluginCompatibility).toEqual([notice]);
   });
 

@@ -20,6 +20,7 @@ import {
   assertSessionStoreReadCandidate,
   type SessionStoreReadCandidate,
 } from "./session-store-read-candidates.js";
+import { resolveSessionSqliteTargetInWorker } from "./session-transcript-read-worker-runtime.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
 /** SQLite database target resolved from a legacy session store path. */
@@ -91,8 +92,6 @@ export async function prepareSqliteTargetFromSessionStorePath(
     defaultAgentId: options.defaultAgentId,
     env,
   };
-  const { resolveSessionSqliteTargetInWorker } =
-    await import("./session-transcript-read-worker-runtime.js");
   let refreshed = false;
   for (;;) {
     signal?.throwIfAborted();

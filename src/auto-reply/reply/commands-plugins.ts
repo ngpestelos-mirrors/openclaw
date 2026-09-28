@@ -16,14 +16,9 @@ import { loadPluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapsh
 import { refreshPluginRegistryAfterConfigMutation } from "../../plugins/registry-refresh.js";
 import type { PluginRecord } from "../../plugins/registry.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
-import {
-  buildAllPluginInspectReports,
-  withPluginDiagnosticsReportForInspection,
-  buildPluginInspectReport,
-  buildPluginRegistrySnapshotReport,
-  formatPluginCompatibilityNotice,
-  type PluginStatusReport,
-} from "../../plugins/status.js";
+import { formatPluginCompatibilityNotice } from "../../plugins/status-compatibility.js";
+import { buildPluginRegistrySnapshotReport } from "../../plugins/status-snapshot.js";
+import type { PluginInspectReport, PluginStatusReport } from "../../plugins/status.js";
 import {
   commandReply,
   defineAuthorizedTextCommand,
@@ -44,7 +39,7 @@ function renderJsonBlock(label: string, value: unknown): string {
 }
 
 function buildPluginInspectJson(
-  inspect: ReturnType<typeof buildAllPluginInspectReports>[number],
+  inspect: PluginInspectReport,
   ownershipResolver: ReturnType<typeof createInstalledPluginOwnershipResolver>,
 ) {
   const ownership = ownershipResolver.resolvePackage(inspect.plugin.id);
@@ -243,6 +238,11 @@ export const handlePluginsCommand: CommandHandler = defineAuthorizedTextCommand(
       const reportParams = { config, workspaceDir: params.workspaceDir };
 
       if (pluginsCommand.action === "inspect") {
+        const {
+          buildAllPluginInspectReports,
+          buildPluginInspectReport,
+          withPluginDiagnosticsReportForInspection,
+        } = await import("../../plugins/status.js");
         const metadataSnapshot = loadPluginMetadataSnapshot(reportParams);
         const text = await withPluginDiagnosticsReportForInspection(
           { ...reportParams, metadataSnapshot },

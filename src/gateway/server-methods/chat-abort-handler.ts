@@ -43,12 +43,14 @@ import {
   descendantAbortError,
 } from "./chat-abort-runtime.js";
 import {
-  abortedPartialPersistenceError,
   captureAbortedPartial,
   deferAbortedPartialPersistence,
   withAbortedPartialPersistenceWarning,
 } from "./chat-aborted-partial.js";
-import { persistAbortedPartials } from "./chat-transcript-persistence.js";
+import {
+  abortedPartialPersistenceError,
+  persistAbortedPartials,
+} from "./chat-transcript-persistence.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { GatewayRequestContext, GatewayRequestHandlerOptions } from "./types.js";

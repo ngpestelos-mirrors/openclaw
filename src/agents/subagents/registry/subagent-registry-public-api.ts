@@ -3,6 +3,7 @@ import {
   leasePendingAgentSteeringItemsFromSubagentRuns,
   releaseLeasedAgentSteeringItemsFromSubagentRuns,
 } from "../../agent-steering-queue.js";
+import { readSubagentRunAnnounceResult } from "../announce/subagent-announce-output.js";
 import type { SubagentLifecycleController } from "./subagent-registry-lifecycle.js";
 import { getSubagentRunsForChildSession } from "./subagent-registry-memory.js";
 import {
@@ -44,11 +45,7 @@ export function createSubagentRegistryPublicApi(config: {
     const leased = await leasePendingAgentSteeringItemsFromSubagentRuns({
       ...params,
       runs,
-      readResult: async (entry) => {
-        const { readSubagentRunAnnounceResult } =
-          await import("../announce/subagent-announce-output.js");
-        return readSubagentRunAnnounceResult(entry);
-      },
+      readResult: readSubagentRunAnnounceResult,
     });
     if (leased) {
       persist(...leased.runIds);

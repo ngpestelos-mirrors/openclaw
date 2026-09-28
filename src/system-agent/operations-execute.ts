@@ -1,5 +1,6 @@
 // Public operation dispatcher. Parsing and mutation helpers live in focused modules.
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { lookupConfigSchema } from "../config/schema.lookup.js";
 import { buildAgentMainSessionKey, normalizeAgentId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { resolveUserPath, shortenHomePath } from "../utils.js";
@@ -29,6 +30,7 @@ import {
   type ExecuteOptions,
 } from "./operations-execution-helpers.js";
 import type { SystemAgentOperation, SystemAgentOperationResult } from "./operations-parse.js";
+import { formatSystemAgentOverview } from "./overview-format.js";
 import { executePluginInstall } from "./plugin-install.js";
 
 // Plugin CLI commands also serve terminals; this operation boundary owns the
@@ -70,7 +72,6 @@ export async function executeSystemAgentOperation(
       if (opts.deps?.formatOverview) {
         runtime.log(opts.deps.formatOverview(overview));
       } else {
-        const { formatSystemAgentOverview } = await import("./overview.js");
         runtime.log(formatSystemAgentOverview(overview));
       }
       return { applied: false };
@@ -171,7 +172,6 @@ export async function executeSystemAgentOperation(
       return { applied: false };
     }
     case "config-schema": {
-      const { lookupConfigSchema } = await import("../config/schema.js");
       const response = resolveSystemAgentConfigSchema();
       const path = operation.path ?? ".";
       const result = lookupConfigSchema(response, path);

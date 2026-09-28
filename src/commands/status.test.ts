@@ -641,7 +641,7 @@ vi.mock("../node-host/config.js", () => ({
 vi.mock("../security/audit.js", () => ({
   runSecurityAudit: mocks.runSecurityAudit,
 }));
-vi.mock("../plugins/status.js", () => ({
+vi.mock("../plugins/status-compatibility.js", () => ({
   buildPluginCompatibilityNotices: mocks.buildPluginCompatibilityNotices,
   summarizePluginCompatibility: (warnings: PluginCompatibilityNotice[]) => ({
     noticeCount: warnings.length,

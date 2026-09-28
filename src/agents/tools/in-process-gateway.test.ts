@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import * as runtimeIdentity from "../../gateway/agent-runtime-identity-token.js";
 import { readInProcessAgentRuntimeIdentity } from "../../gateway/in-process-agent-runtime-identity.js";
 import {
   bindInProcessSessionDeliveryGeneration,
@@ -10,13 +11,13 @@ import {
   readInProcessSubagentResume,
 } from "../../gateway/in-process-subagent-resume.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
+import { createOperationalRunInstanceRef } from "../admitted-run-context.js";
 
 const mocks = vi.hoisted(() => ({
   hasContext: true,
   context: {} as GatewayRequestContext,
   dispatch: vi.fn(),
   callGateway: vi.fn(),
-  callGatewayTool: vi.fn(),
 }));
 
 vi.mock("../../gateway/method-scopes.js", () => ({
@@ -30,16 +31,23 @@ vi.mock("../../gateway/server-plugin-in-process-dispatch.js", () => ({
   runWithOperatorToolGatewayCleanupContext: <T>(run: () => T) => run(),
 }));
 
-vi.mock("./gateway.js", () => ({ callGatewayTool: mocks.callGatewayTool }));
+vi.mock("../../config/config.js", () => ({
+  getRuntimeConfig: () => ({}),
+  resolveGatewayPort: () => 18789,
+}));
 vi.mock("../../gateway/call.js", () => ({ callGateway: mocks.callGateway }));
+beforeEach(() => vi.stubEnv("OPENCLAW_GATEWAY_URL", ""));
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import { getGatewaySessionSpawnContext } from "./gateway-session-spawn-context.js";
+import { callInProcessGatewayTool, callInProcessGatewayToolWithCreation } from "./gateway.js";
 import {
   bindAgentToolGatewayRequest,
   callAgentToolGatewayRequest,
-  callInProcessGatewayTool,
-  callInProcessGatewayToolWithCreation,
   withAgentToolGatewayRuntimeIdentity,
 } from "./in-process-gateway.js";
 
@@ -48,7 +56,6 @@ describe("trusted in-process Gateway session creation", () => {
     mocks.hasContext = true;
     mocks.dispatch.mockReset().mockResolvedValue({ key: "agent:main:dashboard:child" });
     mocks.callGateway.mockReset().mockResolvedValue({ status: "ok" });
-    mocks.callGatewayTool.mockReset().mockResolvedValue({ key: "agent:main:dashboard:child" });
   });
 
   it("keeps task resume authority inside trusted in-process admission and refuses transport fallback", async () => {
@@ -98,16 +105,17 @@ describe("trusted in-process Gateway session creation", () => {
         syntheticScopes: ["operator.write"],
       },
     );
-    expect(mocks.callGatewayTool).not.toHaveBeenCalled();
+    expect(mocks.callGateway).not.toHaveBeenCalled();
 
     mocks.hasContext = false;
     await callInProcessGatewayToolWithCreation("sessions.create", { agentId: "main" }, creation);
 
-    expect(mocks.callGatewayTool).toHaveBeenCalledWith(
-      "sessions.create",
-      {},
-      { agentId: "main" },
-      { scopes: ["operator.write"] },
+    expect(mocks.callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "sessions.create",
+        params: { agentId: "main" },
+        scopes: ["operator.write"],
+      }),
     );
   });
 
@@ -161,7 +169,7 @@ describe("trusted in-process Gateway session creation", () => {
         sessionCreation: creation,
       }),
     );
-    expect(mocks.callGatewayTool).not.toHaveBeenCalled();
+    expect(mocks.callGateway).not.toHaveBeenCalled();
   });
 
   it("carries visible-spawn policy through signed identity on fallback dispatch", async () => {
@@ -174,48 +182,58 @@ describe("trusted in-process Gateway session creation", () => {
     const resolvedModel = { provider: "custom", model: "middle" };
     const spawnModelAutoSelection = { model: "custom/middle", hasFallbackOrigin: true };
 
-    mocks.callGatewayTool.mockImplementationOnce(async () => {
-      expect(getGatewaySessionSpawnContext()).toEqual({
-        completionOwnerSessionKey: "agent:main:discord:direct:alice",
-        inheritedToolPolicy,
-        resolvedModel,
-        spawnModelAutoSelection,
-      });
-      return { key: "agent:main:dashboard:child" };
-    });
-
-    await callInProcessGatewayToolWithCreation(
-      "sessions.create",
-      {
-        agentId: "main",
-        parentSessionKey: "agent:main:main",
-        spawnDepth: 1,
-        model: "custom/middle",
-      },
-      {
-        via: "spawn",
-        actor: { type: "agent", id: "main" },
-        requesterSessionKey: "agent:main:main",
-        completionOwnerSessionKey: "agent:main:discord:direct:alice",
-        inheritedToolPolicy,
-        resolvedModel,
-        spawnModelAutoSelection,
+    vi.spyOn(runtimeIdentity, "mintAgentRuntimeIdentityToken").mockImplementationOnce(
+      async (params) => {
+        expect(params.sessionSpawnContext).toEqual({
+          completionOwnerSessionKey: "agent:main:discord:direct:alice",
+          inheritedToolPolicy,
+          resolvedModel,
+          spawnModelAutoSelection,
+        });
+        return "synthetic-runtime-identity";
       },
     );
 
-    expect(mocks.callGatewayTool).toHaveBeenCalledWith(
-      "sessions.create",
-      {},
+    await withGatewayToolCallerIdentity(
       {
         agentId: "main",
-        parentSessionKey: "agent:main:main",
-        spawnDepth: 1,
-        model: "custom/middle",
+        sessionKey: "agent:main:main",
+        operationalRunInstance: createOperationalRunInstanceRef("synthetic-spawn"),
+        receiptAuthority: () => true,
       },
-      {
+      () =>
+        callInProcessGatewayToolWithCreation(
+          "sessions.create",
+          {
+            agentId: "main",
+            parentSessionKey: "agent:main:main",
+            spawnDepth: 1,
+            model: "custom/middle",
+          },
+          {
+            via: "spawn",
+            actor: { type: "agent", id: "main" },
+            requesterSessionKey: "agent:main:main",
+            completionOwnerSessionKey: "agent:main:discord:direct:alice",
+            inheritedToolPolicy,
+            resolvedModel,
+            spawnModelAutoSelection,
+          },
+        ),
+    );
+
+    expect(mocks.callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "sessions.create",
+        params: {
+          agentId: "main",
+          parentSessionKey: "agent:main:main",
+          spawnDepth: 1,
+          model: "custom/middle",
+        },
         scopes: ["operator.write"],
-        requireAgentRuntimeIdentity: true,
-      },
+        agentRuntimeIdentityToken: "synthetic-runtime-identity",
+      }),
     );
     expect(getGatewaySessionSpawnContext()).toBeUndefined();
   });
@@ -300,7 +318,7 @@ describe("trusted in-process Gateway session creation", () => {
       }),
     ).rejects.toThrow("Gateway instance unavailable for sessions.create");
     expect(mocks.dispatch).toHaveBeenCalledTimes(dispatchesBeforeReplacement);
-    expect(mocks.callGatewayTool).not.toHaveBeenCalled();
+    expect(mocks.callGateway).not.toHaveBeenCalled();
     expect(replacementDispatches).toBe(0);
 
     for (const settlement of ["resolve", "reject"] as const) {
@@ -366,11 +384,14 @@ describe("trusted in-process Gateway session creation", () => {
     mocks.hasContext = false;
     const signal = new AbortController().signal;
     await callInProcessGatewayTool("sessions.list", { limit: 5 }, { timeoutMs: 120_000, signal });
-    expect(mocks.callGatewayTool).toHaveBeenCalledWith(
-      "sessions.list",
-      { timeoutMs: 120_000 },
-      { limit: 5 },
-      { scopes: ["operator.write"], signal },
+    expect(mocks.callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "sessions.list",
+        timeoutMs: 120_000,
+        params: { limit: 5 },
+        scopes: ["operator.write"],
+        signal,
+      }),
     );
   });
 });
@@ -633,7 +654,6 @@ describe("built-in Gateway foreground authority", () => {
     mocks.hasContext = true;
     mocks.dispatch.mockReset().mockResolvedValue({ ok: true });
     mocks.callGateway.mockReset();
-    mocks.callGatewayTool.mockReset();
   });
 
   const callers = [
@@ -673,7 +693,6 @@ describe("built-in Gateway foreground authority", () => {
       );
       expect(mocks.dispatch).not.toHaveBeenCalled();
       expect(mocks.callGateway).not.toHaveBeenCalled();
-      expect(mocks.callGatewayTool).not.toHaveBeenCalled();
     },
   );
 

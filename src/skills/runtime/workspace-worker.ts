@@ -5,6 +5,7 @@ import type { applyExtractedSkillRoot } from "../lifecycle/archive-install.js";
 import type * as Status from "../lifecycle/clawhub-status.js";
 import type * as Store from "../lifecycle/clawhub-store.js";
 import type * as Uninstall from "../lifecycle/clawhub-uninstall.js";
+import { readWorkspaceSkillSources } from "../loading/workspace-skill-loader.js";
 import { normalizeWorkspaceSkillRoots } from "../loading/workspace-skill-roots.js";
 import type { WorkspaceSkillSourceRequest } from "../loading/workspace-skill-sources.js";
 import {
@@ -356,7 +357,6 @@ export async function serveWorkspaceSkills(options: {
       // SAFETY: The adapter serializes the native source plan; workspace identity is checked next.
       const discovery = decoded as WorkspaceSkillSourceRequest;
       assertWorkspace(discovery, workspace);
-      const { readWorkspaceSkillSources } = await import("../loading/workspace-skill-loader.js");
       await write(readWorkspaceSkillSources(discovery));
       return;
     }

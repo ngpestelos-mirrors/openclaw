@@ -3,9 +3,16 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const runtime = vi.hoisted(() => ({
   assertSupportedRuntime: vi.fn<() => Promise<void>>(),
   runWorkerProcess: vi.fn<() => Promise<void>>(),
+  loadWorkerTurnRuntime: vi.fn<() => Promise<void>>(),
+  flushCompileCache: vi.fn<() => void>(),
 }));
 
+vi.mock("node:module", async (importOriginal) => ({
+  createRequire: (await importOriginal<typeof import("node:module")>()).createRequire,
+  flushCompileCache: runtime.flushCompileCache,
+}));
 vi.mock("./worker-deploy-runtime.js", () => ({}));
+vi.mock("./worker.runtime.js", () => ({ loadWorkerTurnRuntime: runtime.loadWorkerTurnRuntime }));
 vi.mock("../process/output-drain.js", () => ({ drainProcessOutput: vi.fn() }));
 vi.mock("../infra/runtime-guard.js", () => ({
   assertSupportedRuntime: runtime.assertSupportedRuntime,
@@ -20,6 +27,8 @@ beforeEach(() => {
   vi.resetModules();
   runtime.assertSupportedRuntime.mockReset().mockResolvedValue();
   runtime.runWorkerProcess.mockReset().mockResolvedValue();
+  runtime.loadWorkerTurnRuntime.mockReset().mockResolvedValue();
+  runtime.flushCompileCache.mockReset();
   process.exitCode = undefined;
   vi.stubEnv("OPENCLAW_DEBUG", undefined);
 });
@@ -36,6 +45,11 @@ it.each([
     stage: "runtime validation",
     args: ["--internal-worker-prewarm"],
     message: "Worker runtime startup failed",
+  },
+  {
+    stage: "runtime prewarm",
+    args: ["--internal-worker-prewarm"],
+    message: "Worker turn runtime load failed",
   },
   {
     stage: "argument validation",
@@ -58,6 +72,8 @@ it.each([
     failure.stack = `${failure.name}: ${failure.message}\n    at worker-bundle-internal-source`;
     if (stage === "runtime validation") {
       runtime.assertSupportedRuntime.mockRejectedValue(failure);
+    } else if (stage === "runtime prewarm") {
+      runtime.loadWorkerTurnRuntime.mockRejectedValue(failure);
     } else if (stage === "worker execution") {
       runtime.runWorkerProcess.mockRejectedValue(failure);
     }
@@ -66,6 +82,7 @@ it.each([
     await expect(import("./worker-deploy-entry.js")).resolves.toBeDefined();
 
     expect(process.exitCode).toBe(1);
+    expect(runtime.flushCompileCache).not.toHaveBeenCalled();
     expect(stderr).toHaveBeenCalledOnce();
     const diagnostic = String(stderr.mock.calls[0]?.[0]);
     expect(diagnostic).toContain(message);
@@ -78,3 +95,23 @@ it.each([
     }
   },
 );
+
+it("prewarms the turn runtime before flushing its compile cache", async () => {
+  const loading = Promise.withResolvers<void>();
+  const loaded = Promise.withResolvers<void>();
+  runtime.loadWorkerTurnRuntime.mockImplementation(() => {
+    loading.resolve();
+    return loaded.promise;
+  });
+  process.argv = [process.execPath, "worker.mjs", "--internal-worker-prewarm"];
+  const entry = import("./worker-deploy-entry.js");
+  await loading.promise;
+  expect(runtime.flushCompileCache).not.toHaveBeenCalled();
+  loaded.resolve();
+  await entry;
+
+  expect(runtime.loadWorkerTurnRuntime).toHaveBeenCalledOnce();
+  expect(runtime.flushCompileCache).toHaveBeenCalledOnce();
+  expect(runtime.runWorkerProcess).not.toHaveBeenCalled();
+  expect(process.exitCode).toBeUndefined();
+});

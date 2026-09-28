@@ -113,16 +113,15 @@ const mockConfig = vi.hoisted(() => {
 });
 
 vi.mock("./probes.js", () => ({
-  probeLocalCommand: vi.fn(async (command: string) => ({
-    command,
-    found: false,
-    error: "not found",
-  })),
+  probeLocalCommand: async (command: string) => ({ command, found: false, error: "not found" }),
   probeGatewayUrl: vi.fn(async (url: string) => ({ reachable: false, url, error: "offline" })),
 }));
 
-vi.mock("./overview.js", () => ({
+vi.mock("./overview-format.js", () => ({
   formatSystemAgentOverview: () => "Default model: openai/gpt-5.5",
+}));
+
+vi.mock("./overview.js", () => ({
   loadSystemAgentOverview: vi.fn(async () => ({
     defaultAgentId: "main",
     defaultModel: undefined,

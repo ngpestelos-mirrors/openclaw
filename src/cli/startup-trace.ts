@@ -87,12 +87,8 @@ export async function measureGatewayBootstrapStep<T>(
     const completedAt = performance.now();
     const facts = metrics?.() ?? {};
     recordGatewayBootstrapStep(name, startedAt, completedAt, facts);
-    const { formatConsoleDiagnosticLine } = await import("../logging/json-console-line.js");
-    const counts = Object.entries(facts)
-      .map(([key, value]) => ` ${key}=${value}`)
-      .join("");
-    const message = `[gateway] startup trace: ${name} ${(completedAt - startedAt).toFixed(1)}ms total=${completedAt.toFixed(1)}ms start=${startedAt.toFixed(1)}ms${counts}`;
-    process.stderr.write(`${formatConsoleDiagnosticLine({ level: "info", message })}\n`);
+    const { writeGatewayBootstrapStep } = await import("./startup-trace.runtime.js");
+    writeGatewayBootstrapStep(name, startedAt, completedAt, facts);
   }
 }
 
@@ -362,9 +358,8 @@ export async function prepareGatewayStartupTraceConsoleFormatting(
   if (!trace.enabled) {
     return () => {};
   }
-  const { formatConsoleDiagnosticLine } = await import("../logging/json-console-line.js");
-  return () =>
-    trace.setLineFormatter((message) => formatConsoleDiagnosticLine({ level: "info", message }));
+  const runtime = await import("./startup-trace.runtime.js");
+  return runtime.prepareGatewayStartupTraceConsoleFormatting(trace);
 }
 
 export async function configureGatewayStartupTraceConsoleFormatting(

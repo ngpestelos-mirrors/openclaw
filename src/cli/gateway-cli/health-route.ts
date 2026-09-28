@@ -1,3 +1,4 @@
+import * as callModule from "../../gateway/call.js";
 // Route-first machine-readable Gateway health command.
 import { type RuntimeEnv, writeRuntimeJson } from "../../runtime.js";
 
@@ -68,16 +69,10 @@ export async function runGatewayHealthJsonRoute(
     if (!rpc) {
       throw error;
     }
-    const [healthModule, callModule] = await Promise.all([
+    const healthModule =
       deps.emitReachableGatewayAuthDiagnostic && deps.readNonObservingHealthConfig
         ? undefined
-        : import("../../commands/health.js"),
-      deps.formatGatewayAuthErrorJson &&
-      deps.formatGatewayClientRequestErrorJson &&
-      deps.formatGatewayTransportErrorJson
-        ? undefined
-        : import("../../gateway/call.js"),
-    ]);
+        : await import("../../commands/health.js");
     const emitReachableGatewayAuthDiagnostic =
       deps.emitReachableGatewayAuthDiagnostic ?? healthModule?.emitReachableGatewayAuthDiagnostic;
     const readNonObservingHealthConfig =

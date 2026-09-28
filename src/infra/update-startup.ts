@@ -46,7 +46,11 @@ import { compareSemverStrings, resolveNpmChannelTag } from "./update-check.js";
 import { devUpdateTargetFromGitTarget } from "./update-dev-target.js";
 import { resolveDevGitCommits } from "./update-git-metadata.js";
 import { resolveStartupInstallStatus, withUpdateInstallStatus } from "./update-install-status.js";
-import { runCampaignUpdate, type AutoUpdateRunner } from "./update-startup-auto-run.js";
+import {
+  runAutoUpdateCommand,
+  runCampaignUpdate,
+  type AutoUpdateRunner,
+} from "./update-startup-auto-run.js";
 import {
   getUpdateSchedule,
   resetUpdateStatusState,
@@ -298,11 +302,7 @@ async function runGatewayUpdateCheckOwned(
   const cfg = params.getConfig();
   const configChannel = normalizeUpdateChannel(cfg.update?.channel);
   const runAuto: AutoUpdateRunner =
-    params.runAutoUpdate ??
-    (async (runParams) => {
-      const { runAutoUpdateCommand } = await import("./update-startup-auto-run.js");
-      return runAutoUpdateCommand(runParams, params.log);
-    });
+    params.runAutoUpdate ?? ((runParams) => runAutoUpdateCommand(runParams, params.log));
   const autoEnabled = Boolean(cfg.update?.auto?.enabled);
   const autoDisabledByEnv = isTruthyEnvValue(process.env.OPENCLAW_NO_AUTO_UPDATE);
   if (cfg.update?.checkOnStart === false || autoDisabledByEnv) {

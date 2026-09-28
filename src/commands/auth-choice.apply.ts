@@ -1,26 +1,13 @@
 // Applies an onboarding auth choice through provider setup flows and legacy normalization.
 import { formatCliCommand } from "../cli/command-format.js";
 import { prepareAuthChoiceLoadedPluginProvider } from "../plugins/provider-auth-choice.js";
+import { resolveLegacyOnboardAuthChoice } from "./auth-choice-legacy.js";
 import type {
   ApplyAuthChoiceParams,
   ApplyAuthChoiceResult,
   PreparedAuthChoiceResult,
 } from "./auth-choice.apply.types.js";
 import type { AuthChoice } from "./onboard-types.js";
-
-async function normalizeLegacyChoice(
-  authChoice: AuthChoice | undefined,
-  params: Pick<ApplyAuthChoiceParams, "config" | "env" | "workspaceDir">,
-): Promise<AuthChoice | undefined> {
-  if (authChoice === "oauth") {
-    return "setup-token";
-  }
-  if (typeof authChoice !== "string") {
-    return authChoice;
-  }
-  const { resolveLegacyOnboardAuthChoice } = await import("./auth-choice-legacy.js");
-  return resolveLegacyOnboardAuthChoice(authChoice, params).authChoice;
-}
 
 async function normalizeTokenProviderChoice(
   authChoice: AuthChoice,
@@ -71,7 +58,7 @@ export async function prepareAuthChoice(
   params: ApplyAuthChoiceParams,
 ): Promise<PreparedAuthChoiceResult> {
   const normalizedAuthChoice =
-    (await normalizeLegacyChoice(params.authChoice, params)) ?? params.authChoice;
+    resolveLegacyOnboardAuthChoice(params.authChoice, params).authChoice ?? params.authChoice;
   const normalizedProviderAuthChoice = await normalizeTokenProviderChoice(
     normalizedAuthChoice,
     params,

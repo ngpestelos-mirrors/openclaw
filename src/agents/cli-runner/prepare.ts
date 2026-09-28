@@ -25,10 +25,6 @@ import {
   createMcpLoopbackServerConfig,
   getActiveMcpLoopbackRuntime,
 } from "../../gateway/mcp-http.loopback-runtime.js";
-import {
-  resolveMcpLoopbackPolicyTools,
-  resolveMcpLoopbackScopedTools,
-} from "../../gateway/mcp-http.runtime.js";
 import { claimHeartbeatContextForUserRun } from "../../infra/heartbeat-outcome-store.js";
 import { buildSystemAgentToolsMcpServerConfig } from "../../mcp/openclaw-tools-serve-config.js";
 import { CliBackendAuthProfilePreparationError } from "../../plugins/cli-backend-errors.js";
@@ -47,6 +43,7 @@ import {
 } from "../../routing/session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { captureAsyncWorkTracker } from "../../shared/async-work-scope.js";
+import { createLazyRuntimeMethod } from "../../shared/lazy-runtime.js";
 import { resolveUserPath } from "../../utils.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import {
@@ -58,7 +55,7 @@ import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import { hasUsableOAuthCredential } from "../auth-profiles/credential-state.js";
 import { externalCliDiscoveryForProviderAuth } from "../auth-profiles/external-cli-discovery.js";
 import { buildOAuthRefreshFailureLoginCommand } from "../auth-profiles/oauth-refresh-failure.js";
-import { resolveApiKeyForProfile } from "../auth-profiles/oauth.js";
+import { resolveApiKeyForProfile } from "../auth-profiles/oauth.runtime.js";
 import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
 import { isSetupCredentialAccessible } from "../auth-profiles/setup-access.js";
 import { loadAuthProfileStoreForRuntime } from "../auth-profiles/store-runtime.js";
@@ -210,8 +207,14 @@ const defaultPrepareDeps = {
   mintMcpLoopbackClientGrant,
   revokeMcpLoopbackClientGrant,
   transferMcpLoopbackClientGrant,
-  resolveMcpLoopbackPolicyTools,
-  resolveMcpLoopbackScopedTools,
+  resolveMcpLoopbackPolicyTools: createLazyRuntimeMethod(
+    () => import("../../gateway/mcp-http.runtime.js"),
+    (runtime) => runtime.resolveMcpLoopbackPolicyTools,
+  ),
+  resolveMcpLoopbackScopedTools: createLazyRuntimeMethod(
+    () => import("../../gateway/mcp-http.runtime.js"),
+    (runtime) => runtime.resolveMcpLoopbackScopedTools,
+  ),
   resolveOpenClawReferencePaths: async (
     params: Parameters<typeof import("../docs-path.js").resolveOpenClawReferencePaths>[0],
   ) => (await import("../docs-path.js")).resolveOpenClawReferencePaths(params),

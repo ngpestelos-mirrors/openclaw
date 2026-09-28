@@ -5,12 +5,11 @@ import type { OpenClawConfig } from "../config/types.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { withPluginCommandExecution } from "./command-execution-lock.js";
 import { createPluginHostRegistryRetirement } from "./host-hook-cleanup.js";
 import { createPluginCache, retirePluginCache } from "./plugin-cache.js";
 import { PluginInstance } from "./plugin-instance.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
-import { getPluginLoaderCacheState } from "./registry-lifecycle.js";
+import { getPluginLoaderCacheState, withPluginCommandExecution } from "./registry-lifecycle.js";
 import {
   clearActivePluginRegistry,
   disposePluginRegistryInstances,

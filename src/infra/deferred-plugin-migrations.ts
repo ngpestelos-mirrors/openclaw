@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { openClawStateDatabaseCache } from "../state/openclaw-state-db-cache.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db-contract.js";
 import {
@@ -20,7 +21,9 @@ import { runManagedStateTransaction } from "../state/openclaw-state-db-transacti
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { runWithOpenClawStateLeaseWorker } from "../state/openclaw-state-lease-worker-storage.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import { isTruthyEnvValue } from "./env.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
@@ -135,8 +138,6 @@ export async function readDeferredPluginMigrationsAsync(
   options: Parameters<typeof readDeferredPluginMigrations>[0] = {},
 ): Promise<readonly DeferredPluginMigration[]> {
   const context = captureOpenClawStateWorkerContext(options);
-  const { runOpenClawStateWorkerOperation } =
-    await import("../state/openclaw-state-worker-store.js");
   context.admission.assertCurrent();
   const pending = await runOpenClawStateWorkerOperation(
     context,
@@ -183,8 +184,6 @@ export async function readDeferredPluginMigrationCompletionsAsync(
   options: Parameters<typeof readDeferredPluginMigrations>[0] = {},
 ) {
   const context = captureOpenClawStateWorkerContext(options);
-  const { runOpenClawStateWorkerOperation } =
-    await import("../state/openclaw-state-worker-store.js");
   context.admission.assertCurrent();
   const completed = await runOpenClawStateWorkerOperation(
     context,
@@ -376,9 +375,6 @@ export async function recordDeferredPluginMigrations(
     resolvedPluginIds: params.resolvedPluginIds,
     expectedPending: params.expectedPending,
   });
-  const { withPluginLifecycleLease } = await import("../plugins/plugin-lifecycle-lease.js");
-  const { runWithOpenClawStateLeaseWorker } =
-    await import("../state/openclaw-state-lease-worker-storage.js");
   return withPluginLifecycleLease({ env: params.env }, async (lease) => {
     const context = captureOpenClawStateWorkerContext({
       env: params.env,

@@ -43,7 +43,7 @@ export async function stageCodexCandidate(
     }
     const ensureCodex =
       ctx.deps.ensureCodexRuntimePlugin ??
-      (await import("../commands/codex-runtime-plugin-install.js"))
+      (await import("../commands/runtime-plugin-install.js"))
         .ensureCodexRuntimePluginForModelSelection;
     const ensured = await ensureCodex({
       cfg: enabled.config,

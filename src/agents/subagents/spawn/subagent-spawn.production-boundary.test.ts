@@ -45,7 +45,7 @@ import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
 } from "../../tools/gateway-caller-context.js";
-import { callInProcessGatewayTool } from "../../tools/in-process-gateway.js";
+import { callInProcessGatewayTool } from "../../tools/gateway.js";
 import { runSubagentAnnounceFlow } from "../announce/subagent-announce.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { settleSubagentRegistryPersistenceWork } from "../registry/subagent-registry.persistence.test-support.js";

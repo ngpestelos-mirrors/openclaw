@@ -10,6 +10,11 @@ import {
   shouldUseInProcessGatewayTool,
   type GatewayCallOptions,
 } from "./gateway.js";
+import {
+  bindAgentToolGatewayRequest,
+  runWithGatewayToolCleanupContext,
+  withAgentToolGatewayRuntimeIdentity,
+} from "./in-process-gateway.js";
 
 export type GatewayComputerStatus =
   | { configured: false; available: false }
@@ -55,11 +60,6 @@ export async function bindGatewayComputerCleanup(params: {
   if (!identity) {
     throw new Error("Gateway computer cleanup requires the admitted run identity");
   }
-  const {
-    bindAgentToolGatewayRequest,
-    runWithGatewayToolCleanupContext,
-    withAgentToolGatewayRuntimeIdentity,
-  } = await import("./in-process-gateway.js");
   const request = runWithGatewayToolCleanupContext(
     () => bindAgentToolGatewayRequest({ resolveGatewayContext: caller.gatewayContextResolver }),
     caller.gatewayContextResolver,

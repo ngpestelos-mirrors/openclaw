@@ -5,8 +5,6 @@ import {
   renderNativeHookRelayUnavailableResponse,
 } from "../agents/harness/native-hook-relay-client.js";
 import type { NativeHookRelayProcessResponse } from "../agents/harness/native-hook-relay-types.js";
-import type { CallGatewayOptions } from "../gateway/call.js";
-import { ADMIN_SCOPE } from "../gateway/operator-scopes.js";
 import { setSafeTimeout } from "../utils/timer-delay.js";
 import { parseTimeoutMsWithFallback } from "./parse-timeout.js";
 
@@ -28,10 +26,8 @@ type NativeHookRelayCliDeps = {
   stdout?: NodeJS.WritableStream;
   stderr?: NodeJS.WritableStream;
   invokeBridge?: typeof invokeNativeHookRelayBridge;
-  callGateway?: CallGateway;
+  invokeGateway?: typeof import("./native-hook-relay-gateway.runtime.js").invokeNativeHookRelayGateway;
 };
-
-type CallGateway = <T = Record<string, unknown>>(opts: CallGatewayOptions) => Promise<T>;
 
 const NATIVE_HOOK_RELAY_VALUE_FLAGS = {
   "--provider": "provider",
@@ -97,7 +93,6 @@ export async function runNativeHookRelayCli(
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
   const invokeBridge = deps.invokeBridge ?? invokeNativeHookRelayBridge;
-  const callGatewayFn = deps.callGateway ?? callGatewayLazy;
   const provider = readRequiredOption(opts.provider, "provider");
   const relayId = readRequiredOption(opts.relayId, "relay-id");
   const generation = opts.generation?.trim() || undefined;
@@ -173,13 +168,16 @@ export async function runNativeHookRelayCli(
     try {
       const response = await withNativeHookRelayDeadline(
         deadline,
-        callGatewayFn<NativeHookRelayProcessResponse>({
-          method: "nativeHook.invoke",
-          params: { provider, relayId, generation, event, rawPayload },
-          timeoutMs: remainingNativeHookRelayDeadlineMs(deadline),
-          signal: deadline.signal,
-          scopes: [ADMIN_SCOPE],
-        }),
+        (async () => {
+          const invokeGateway =
+            deps.invokeGateway ??
+            (await import("./native-hook-relay-gateway.runtime.js")).invokeNativeHookRelayGateway;
+          return invokeGateway({
+            params: { provider, relayId, generation, event, rawPayload },
+            timeoutMs: remainingNativeHookRelayDeadlineMs(deadline),
+            signal: deadline.signal,
+          });
+        })(),
       );
       return writeResponse(response);
     } catch (error) {
@@ -192,11 +190,6 @@ export async function runNativeHookRelayCli(
   } finally {
     deadline.dispose();
   }
-}
-
-async function callGatewayLazy<T = Record<string, unknown>>(opts: CallGatewayOptions): Promise<T> {
-  const { callGateway } = await import("../gateway/call.js");
-  return await callGateway<T>(opts);
 }
 
 function readRequiredOption(value: string | undefined, name: string): string {

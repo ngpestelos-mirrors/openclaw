@@ -8,7 +8,6 @@ import { publishFileExclusive, sha256File } from "./directory-durability.js";
 import { hasErrnoCode } from "./errno.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import { createSqliteLifecycleAggregateError } from "./sqlite-lifecycle-errors.js";
-import { publishVerifiedSqliteFile } from "./sqlite-snapshot.js";
 import { readUpdateDatabaseGenerationsIsolated } from "./update-candidate-state.js";
 import type { UpdateDatabaseBackup } from "./update-database-backup.js";
 import type { UpdateDatabaseGenerations } from "./update-database-generations.js";
@@ -124,6 +123,7 @@ export async function restoreUpdateDatabaseBackup(params: {
     ...new Set([...backup.databases.map((entry) => entry.path), ...backup.missingPaths]),
   ].toSorted();
   const displaced: string[] = [];
+  const { publishVerifiedSqliteFile } = await import("./sqlite-snapshot.js");
   return await withDatabaseExclusion(
     params.env,
     paths,

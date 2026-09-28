@@ -521,6 +521,8 @@ vi.mock("../infra/control-ui-assets.js", () => ({
 
 vi.mock("../plugins/status.js", () => ({
   buildPluginCompatibilitySnapshotNotices,
+}));
+vi.mock("../plugins/status-compatibility.js", () => ({
   formatPluginCompatibilityNotice,
 }));
 

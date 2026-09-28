@@ -48,7 +48,6 @@ import {
   type ChatAbortRequester,
 } from "./chat-abort-authorization.js";
 import {
-  abortedPartialPersistenceError,
   captureAbortedPartial,
   deferAbortedPartialPersistence,
   withQueuedCollectorWarning,
@@ -57,7 +56,10 @@ import {
   type ChatAbortOrigin,
   type ChatAbortSessionSnapshot,
 } from "./chat-aborted-partial.js";
-import { persistAbortedPartials } from "./chat-transcript-persistence.js";
+import {
+  abortedPartialPersistenceError,
+  persistAbortedPartials,
+} from "./chat-transcript-persistence.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import type { GatewayRequestContext } from "./types.js";
 

@@ -2,6 +2,7 @@
 import { normalizeUniqueSingleOrTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import { bindAgentToolGatewayRequest } from "../agents/tools/in-process-gateway.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { quoteCliArg } from "../cli/quote-cli-arg.js";
 import { resolveStateDir } from "../config/paths.js";
@@ -62,7 +63,6 @@ async function loadDoctorPairingSnapshot(params: {
 }): Promise<DoctorPairingSnapshot | null> {
   if (params.healthOk) {
     try {
-      const { bindAgentToolGatewayRequest } = await import("../agents/tools/in-process-gateway.js");
       const requestGateway = bindAgentToolGatewayRequest({ hostedOnly: true });
       const payload = await requestGateway<GatewayDevicePairingPayload>({
         method: "device.pair.list",

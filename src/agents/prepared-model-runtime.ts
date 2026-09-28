@@ -126,7 +126,10 @@ function captureModelRuntimeLifetime(): () => void {
   if (!releaseProcessLifetime) {
     // Completed process teardown ends the previous refresh admission fence.
     refreshCancellation = new AbortController();
-    releaseProcessLifetime = registerPreparedModelRuntimeClose(closeModelRuntime);
+    releaseProcessLifetime = registerPreparedModelRuntimeClose(
+      closeModelRuntime,
+      createPreparedModelRuntimeCatalogRecovery(owners, refreshPreparedModelRuntimeSnapshots),
+    );
   }
   return assertCurrent;
 }
@@ -504,11 +507,6 @@ export function rejectPendingPreparedModelRuntimeReplacement(
   replacement.reject(replacementError);
   notifyPreparedModelRuntimePublication({ phase: "failed", error: replacementError });
 }
-
-export const recoverPreparedModelRuntimeCatalogWorker = createPreparedModelRuntimeCatalogRecovery(
-  owners,
-  refreshPreparedModelRuntimeSnapshots,
-);
 
 /** Serializes config/plugin publications so only the latest completed refresh retires owners. */
 export function refreshPreparedModelRuntimeSnapshots(

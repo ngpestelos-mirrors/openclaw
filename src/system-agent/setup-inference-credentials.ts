@@ -43,10 +43,7 @@ import {
 } from "./setup-inference-core.js";
 import { prepareCustomSetupCredentials } from "./setup-inference-custom.js";
 import { projectSetupInferenceConfig } from "./setup-model-selection.js";
-import {
-  withSetupProviderAuthMethod,
-  type SetupProviderAuthMethod,
-} from "./setup-provider-method.js";
+import type { SetupProviderAuthMethod } from "./setup-provider-method.js";
 
 function assertUtilitySeparation(ctx: StageContext, modelTarget: "utility" | undefined): void {
   if (modelTarget !== "utility") {
@@ -355,9 +352,11 @@ export async function stageSavedAuthCandidate(
       pendingPluginInstalls: config.plugins?.installs,
     });
   };
-  return choice
-    ? withSetupProviderAuthMethod({ ...ctx, choice, activation: ctx.params }, materialize)
-    : materialize();
+  if (!choice) {
+    return materialize();
+  }
+  const { withSetupProviderAuthMethod } = await import("./setup-provider-method.js");
+  return withSetupProviderAuthMethod({ ...ctx, choice, activation: ctx.params }, materialize);
 }
 
 export async function stageProviderAutoCandidate(
@@ -385,6 +384,7 @@ export async function stageProviderAutoCandidate(
     return roleError;
   }
   assertUtilitySeparation(ctx, choice.modelTarget);
+  const { withSetupProviderAuthMethod } = await import("./setup-provider-method.js");
   return await withSetupProviderAuthMethod(
     { ...ctx, choice, activation: ctx.params },
     async (loaded) => {
@@ -555,6 +555,7 @@ export async function stageProviderAuthCandidate(
   ) {
     return { error: unavailable };
   }
+  const { withSetupProviderAuthMethod } = await import("./setup-provider-method.js");
   return await withSetupProviderAuthMethod(
     { ...ctx, choice, activation: params },
     async (loaded) => {

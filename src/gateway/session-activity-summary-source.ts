@@ -8,6 +8,7 @@ import {
   SessionTranscriptProjectionUnavailableError,
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-accessor.js";
+import { readRestoredSessionTranscript } from "../config/sessions/session-cold-storage-read.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
 import {
@@ -21,8 +22,6 @@ export async function readActivitySummarySource(params: {
   previous?: SessionActivitySummary;
   assertCurrent: () => void;
 }) {
-  const { readRestoredSessionTranscript } =
-    await import("../config/sessions/session-cold-storage-read.js");
   params.assertCurrent();
   const read = () => {
     params.assertCurrent();

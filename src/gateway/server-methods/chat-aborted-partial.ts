@@ -2,9 +2,12 @@ import type { Result } from "@openclaw/normalization-core/result";
 import type { ErrorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.types.js";
-import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { broadcastChatError } from "./chat-broadcast.js";
+import {
+  ABORTED_PARTIAL_PERSISTENCE_WARNING,
+  persistAbortedPartial,
+} from "./chat-transcript-persistence.js";
 import type { GatewayRequestContext } from "./types.js";
 
 export type ChatAbortOrigin = "rpc" | "stop-command" | "placement-abandon";
@@ -40,21 +43,7 @@ export function withQueuedCollectorWarning(
     : { ok: false, error: withAbortedPartialPersistenceWarning(outcome.error, warning) };
 }
 
-/** Retain a failed save when a later cancellation or terminal write also fails. */
-export function abortedPartialPersistenceError(
-  error: unknown,
-  warning: string | undefined,
-): unknown {
-  if (!warning) {
-    return error;
-  }
-  const message = `${formatErrorMessage(error)} ${warning}`;
-  return error instanceof SessionMutationAuthorizationChangedError
-    ? new SessionMutationAuthorizationChangedError({ ...error.error, message })
-    : new Error(message, { cause: error });
-}
-
-/** Capture before signaling cancellation, without loading asynchronous transcript writers. */
+/** Capture before signaling cancellation; persistence waits for producer settlement. */
 export function captureAbortedPartial(params: {
   runId: string;
   sessionKey: string;
@@ -138,7 +127,6 @@ export function deferAbortedPartialPersistence(
         await producerCompleted;
         let warning: string | undefined;
         try {
-          const { persistAbortedPartial } = await import("./chat-transcript-persistence.js");
           warning = await persistAbortedPartial({ context, snapshot, producerSettled: true });
         } catch (error) {
           context.logGateway.warn(
@@ -169,6 +157,3 @@ export function deferAbortedPartialPersistence(
     context.logGateway.warn(`chat.abort producer handoff failed: ${formatErrorMessage(error)}`);
   }
 }
-
-export const ABORTED_PARTIAL_PERSISTENCE_WARNING =
-  "Stopped, but a reply could not be saved to history. Copy any visible text before leaving this chat.";

@@ -1,3 +1,5 @@
+import { collectDiskSpaceHealthFindings } from "../commands/doctor-disk-space.js";
+import { runCoreContributionHealth } from "./doctor-health-contribution-core.js";
 import { runInitialConfigWriteHealth } from "./doctor-health-contribution-runners.config.js";
 import {
   runClaudeCliHealth,
@@ -44,14 +46,12 @@ function legacyOwnedRepair(
 }
 
 async function runStaleRuntimeBuildHealth(ctx: DoctorHealthFlowContext): Promise<void> {
-  const { runCoreContributionHealth } = await import("./doctor-health-contribution-core.js");
   await runCoreContributionHealth(ctx, ["core/doctor/stale-runtime-build"]);
 }
 
 async function runTelegramGeneralTopicConversationHealth(
   ctx: DoctorHealthFlowContext,
 ): Promise<void> {
-  const { runCoreContributionHealth } = await import("./doctor-health-contribution-core.js");
   await runCoreContributionHealth(ctx, ["core/doctor/telegram-general-topic-conversations"]);
 }
 
@@ -344,11 +344,7 @@ export function resolveInitialDoctorHealthContributions(params: {
       healthChecks: {
         description: "Low disk space around the OpenClaw state directory is a finding.",
         defaultEnabled: false,
-        async detect() {
-          const { collectDiskSpaceHealthFindings } =
-            await import("../commands/doctor-disk-space.js");
-          return collectDiskSpaceHealthFindings();
-        },
+        detect: async () => collectDiskSpaceHealthFindings(),
       },
       run: runDiskSpaceHealth,
     }),

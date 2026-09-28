@@ -1,4 +1,5 @@
 import { getOwedHarnessCompletionTask } from "../../agents/agent-harness-completion-recovery.js";
+import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
 import type { CommandOwnerAssertion } from "../../auto-reply/command-owner-authority.js";
 import type { SessionWriterDeliveryAuthority } from "../../auto-reply/reply-payload.js";
 import { resolveMessageReceiptPrimaryId } from "../../channels/message/receipt.js";
@@ -330,8 +331,6 @@ export async function settlePendingFinalDelivery(
     });
   }
   if (wakeRecovery) {
-    const { scheduleMainSessionRecoveryPendingTarget } =
-      await import("../../agents/main-session-recovery/main-session-recovery-owner-release.js");
     scheduleMainSessionRecoveryPendingTarget({
       ...(completion.agentId !== undefined ? { agentId: completion.agentId } : {}),
       sessionId: completion.sessionId,

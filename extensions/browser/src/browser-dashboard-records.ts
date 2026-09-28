@@ -1,6 +1,8 @@
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
+import { getBrowserControlState } from "./browser-control-state.js";
 import type { BrowserDashboardDefinition } from "./browser-dashboard.types.js";
-import { closeBrowserDashboardTabs } from "./browser/session-tab-registry.js";
+import type { CloseParams } from "./browser/session-tab-cleanup-claim.js";
+import { closeTrackedTabs } from "./browser/session-tab-registry.js";
 import {
   deleteBrowserSessionTabIf,
   parseBrowserSessionTabRecord,
@@ -137,4 +139,20 @@ export async function closeStoppingTab(
     emitDashboardChanged(definition, authority);
   }
   return closed;
+}
+
+/** Browser dashboard lifetime changes reuse fingerprinted cleanup and its claim owner. */
+async function closeBrowserDashboardTabs(
+  tabs: DashboardTab[],
+  params: CloseParams = {},
+): Promise<number> {
+  return closeTrackedTabs(
+    tabs.map((tab) => ({ ...tab, kind: "durable" as const })),
+    {
+      ...params,
+      getResolvedBrowserConfig:
+        params.getResolvedBrowserConfig ?? (() => getBrowserControlState()?.resolved ?? null),
+      cleanupKind: "lifecycle",
+    },
+  );
 }

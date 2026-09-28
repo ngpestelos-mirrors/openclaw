@@ -7,6 +7,7 @@ import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coerc
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveRuntimeWorkerThreadExecArgv } from "./runtime-worker-url.js";
+import { removeTemporaryArtifacts } from "./temp-artifact-removal.js";
 import {
   attributeWorkerToPool,
   createCpuTrackedWorker,
@@ -376,7 +377,6 @@ class WorkerTaskPoolCore<Input, Output> {
         const releaseResources = slot.releaseResources;
         slot.releaseResources = async () => {
           try {
-            const { removeTemporaryArtifacts } = await import("./temp-artifact-cleanup.js");
             await removeTemporaryArtifacts(temporaryDirectory, "Worker task");
           } finally {
             await releaseResources?.();

@@ -335,7 +335,7 @@ serveOwnedWorkerTasks(
       }
       if (request.kind === "session-entry-read") {
         const { loadSessionEntryReadOnlyResultInScope } =
-          await import("./session-accessor.sqlite-entry.js");
+          await import("./session-accessor.sqlite-exact-read.js");
         return await withHistoryDatabase(request.database, request.kind, () => {
           let source: SessionTranscriptWorkerValues["session-entry-read"]["source"];
           const read = loadSessionEntryReadOnlyResultInScope(
@@ -485,7 +485,7 @@ serveOwnedWorkerTasks(
       }
       if (request.kind === "session-row-presence") {
         const { loadSessionEntryReadOnlyInScope } =
-          await import("./session-accessor.sqlite-entry.js");
+          await import("./session-accessor.sqlite-exact-read.js");
         return await withHistoryDatabase(
           request.database,
           request.kind,

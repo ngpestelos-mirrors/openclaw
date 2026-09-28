@@ -15,7 +15,7 @@ import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import {
   loadSessionEntryReadOnlyInScope,
   loadSessionEntryReadOnlyResultInScope,
-} from "./session-accessor.sqlite-entry.js";
+} from "./session-accessor.sqlite-exact-read.js";
 import { captureCanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import { readSessionStoreTargetResult } from "./session-store-target-inventory.js";

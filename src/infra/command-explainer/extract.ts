@@ -18,7 +18,6 @@ import {
   POSIX_PARSEABLE_SHELL_WRAPPERS,
   resolveShellWrapperTransportArgv,
 } from "../shell-wrapper-resolution.js";
-import { parseBashForCommandExplanation } from "./tree-sitter-runtime.js";
 import type {
   CommandContext,
   CommandExplanation,
@@ -972,6 +971,7 @@ async function visitNode(
           parsed.dynamicArguments,
         );
         if (wrapperPayload && state.wrapperPayloadDepth < MAX_WRAPPER_PAYLOAD_DEPTH) {
+          const { parseBashForCommandExplanation } = await import("./tree-sitter-runtime.js");
           const wrapperTree = await parseBashForCommandExplanation(wrapperPayload.command);
           const wrapperSpanBase = wrapperPayload.spanBase;
           try {
@@ -1197,6 +1197,7 @@ function resolveOperators(
 
 /** Parses a shell command into command steps, shapes, risks, and source spans. */
 export async function explainShellCommand(source: string): Promise<CommandExplanation> {
+  const { parseBashForCommandExplanation } = await import("./tree-sitter-runtime.js");
   const tree = await parseBashForCommandExplanation(source);
   try {
     const output: MutableExplanation = {

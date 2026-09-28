@@ -18,6 +18,7 @@ import {
   SqliteSnapshotCleanupError,
   retireSqliteSnapshotPayload,
 } from "./sqlite-readonly-location-cleanup.js";
+import { runSqliteReadOnlyWorker } from "./sqlite-readonly-worker.js";
 import {
   acquireSqliteSnapshotToken as snapshotToken,
   beginSqliteSnapshotRetirement,
@@ -140,7 +141,6 @@ export function reclaimAbandonedSqliteSnapshotsAsync(
     controller,
     done: (async () => {
       try {
-        const { runSqliteReadOnlyWorker } = await import("./sqlite-readonly-worker.js");
         if (!controller.signal.aborted) {
           for (const message of await runSqliteReadOnlyWorker(root, {
             mode: "reclaim",

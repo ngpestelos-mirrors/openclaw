@@ -16,6 +16,7 @@ import type {
   PreparedModelRuntimeInput,
   PreparedModelRuntimeOwner,
   PreparedModelRuntimeRefreshOptions,
+  PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.types.js";
 
 const log = createSubsystemLogger("agents/prepared-model-runtime");
@@ -188,7 +189,12 @@ export function resolveSafeRefreshAgentIds(
 
 /** A failed shared catalog isolate retires its borrowers through the publication owner. */
 export function createPreparedModelRuntimeCatalogRecovery(
-  owners: ReadonlyMap<string, PreparedModelRuntimeOwner>,
+  owners: ReadonlyMap<
+    string,
+    Pick<PreparedModelRuntimeOwner, "provenance" | "needsRefresh" | "pending" | "input"> & {
+      snapshot?: Pick<PreparedModelRuntimeSnapshot, "isCurrent" | "metadataSnapshot">;
+    }
+  >,
   publish: (config: OpenClawConfig, options: PreparedModelRuntimeRefreshOptions) => Promise<void>,
 ) {
   return async (
@@ -197,7 +203,7 @@ export function createPreparedModelRuntimeCatalogRecovery(
     const failed = new Map(
       borrowers
         .filter((borrower) => borrower.isCurrent())
-        .map((borrower) => [borrower.agentDir, borrower]),
+        .map((borrower) => [borrower.isCurrent, borrower.agentDir]),
     );
     const affected = [...owners.values()].filter(
       (owner) =>
@@ -206,7 +212,8 @@ export function createPreparedModelRuntimeCatalogRecovery(
         !owner.pending &&
         owner.input.agentId &&
         owner.snapshot &&
-        failed.get(owner.input.agentDir)?.isCurrent(),
+        failed.get(owner.snapshot.isCurrent) === owner.input.agentDir &&
+        owner.snapshot.isCurrent(),
     );
     const first = affected[0];
     if (!first?.snapshot) {

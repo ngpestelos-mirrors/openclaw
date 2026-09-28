@@ -12,6 +12,7 @@ import {
   tracePluginLifecyclePhase,
   tracePluginLifecyclePhaseAsync,
 } from "../plugins/plugin-lifecycle-trace.js";
+import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { formatPluginTrustDiagnostic } from "../plugins/plugin-trust.js";
 import type {
   PluginCompatibilityNotice,
@@ -133,7 +134,6 @@ export async function runPluginsInspectCommand(
     buildPluginSnapshotReport,
     formatPluginCompatibilityNotice,
   } = await import("../plugins/status.js");
-  const { loadPluginMetadataSnapshot } = await import("../plugins/plugin-metadata-snapshot.js");
   const cfg = tracePluginLifecyclePhase("config read", () => getRuntimeConfig(), {
     command: "inspect",
   });

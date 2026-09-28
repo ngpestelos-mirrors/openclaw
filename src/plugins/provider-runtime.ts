@@ -13,6 +13,7 @@ import {
   mergePluginTextTransforms,
 } from "../agents/plugin-text-transforms.js";
 import { unwrapSecretSentinelsForProviderEgress } from "../agents/provider-secret-egress.js";
+import { withAgentPluginRegistry } from "../agents/runtime-plugins.js";
 import type { StreamFn } from "../agents/runtime/index.js";
 import type { ProviderSystemPromptContribution } from "../agents/system-prompt-contribution.js";
 import type { ModelProviderConfig } from "../config/types.js";
@@ -25,7 +26,7 @@ import type {
   PluginMetadataRegistryView,
   PluginMetadataSnapshot,
 } from "./plugin-metadata-snapshot.types.js";
-import { resolvePluginDiscoveryProvidersRuntime } from "./provider-discovery.runtime.js";
+import { planPluginDiscoveryRuntime } from "./provider-discovery-plan.runtime.js";
 import {
   resolveProviderAuthProfileId,
   resolveProviderFollowupFallbackRoute,
@@ -620,7 +621,6 @@ export async function resolveProviderUsageSnapshotWithPlugin(
   if (!harness) {
     const workspaceDir =
       params.workspaceDir ?? getActivePluginRegistryWorkspaceDirFromState() ?? process.cwd();
-    const { withAgentPluginRegistry } = await import("../agents/runtime-plugins.js");
     const { ensureSelectedAgentHarnessPlugin } =
       await import("../agents/harness/runtime-plugin.js");
     return await withAgentPluginRegistry({
@@ -813,7 +813,7 @@ function* resolveSyntheticAuthProviders(
   ];
   const discoveryProvider = (
     discoveryPluginIds.length > 0
-      ? resolvePluginDiscoveryProvidersRuntime({
+      ? planPluginDiscoveryRuntime({
           config: params.config,
           workspaceDir: params.workspaceDir,
           env: params.env,
@@ -821,7 +821,7 @@ function* resolveSyntheticAuthProviders(
           discoveryEntriesOnly: true,
           includeSyntheticAuthProviders: true,
           includeManifestModelCatalogProviders: false,
-        })
+        }).providers
       : []
   ).find(matchesSyntheticAuthProvider);
   if (discoveryProvider) {
@@ -842,14 +842,14 @@ function* resolveSyntheticAuthProviders(
     // Last-resort match for custom provider ids with no resolvable owning plugin (e.g. Ollama
     // aliases). Entry modules only: a full plugin-runtime sweep here costs seconds per ref on
     // source checkouts and belongs to explicit control-plane loads.
-    const fallbackProvider = resolvePluginDiscoveryProvidersRuntime({
+    const fallbackProvider = planPluginDiscoveryRuntime({
       config: params.config,
       workspaceDir: params.workspaceDir,
       env: params.env,
       discoveryEntriesOnly: true,
       includeSyntheticAuthProviders: true,
       includeManifestModelCatalogProviders: false,
-    }).find(matchesSyntheticAuthProvider);
+    }).providers.find(matchesSyntheticAuthProvider);
     if (fallbackProvider) {
       yield fallbackProvider;
     }

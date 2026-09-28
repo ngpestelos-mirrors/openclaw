@@ -28,7 +28,7 @@ import {
   isAgentRunRestartAbortReason,
 } from "../agents/run-termination.js";
 import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
-import { callInProcessGatewayTool } from "../agents/tools/in-process-gateway.js";
+import { callInProcessGatewayTool } from "../agents/tools/gateway.js";
 import { ensureAgentWorkspace } from "../agents/workspace.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import { BASE_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";

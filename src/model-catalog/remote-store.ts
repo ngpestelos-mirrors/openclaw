@@ -12,6 +12,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 
 type RemoteModelCatalogStoreRow = {
   id: number;
@@ -54,8 +55,6 @@ export async function readRemoteModelCatalogAsync(
   context: OpenClawStateWorkerContext,
 ): Promise<RemoteModelCatalogStoreRow | undefined> {
   const artifactPreservingReadOnly = isArtifactPreservingStateRead();
-  const { runOpenClawStateWorkerOperation } =
-    await import("../state/openclaw-state-worker-store.js");
   context.admission.assertCurrent();
   return runOpenClawStateWorkerOperation(
     context,

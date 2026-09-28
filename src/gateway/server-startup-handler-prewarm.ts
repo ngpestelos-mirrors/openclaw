@@ -2,6 +2,7 @@ import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope-co
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
+import { prepareWorkspaceSkillEntries } from "../skills/loading/workspace-skill-loader.js";
 import { scheduleGatewayIdleTask, type GatewayIdleTaskHandle } from "./server-idle-task.js";
 
 const GATEWAY_HANDLER_PREWARM_RETRY_DELAY_MS = 250;
@@ -52,12 +53,7 @@ function gatewayPrewarmItems(
     ...listAgentIds(getConfig()).map((agentId) => ({
       name: `skills.${agentId}`,
       load: async () => {
-        const [
-          { prepareWorkspaceSkillEntries },
-          { getAgentWorkspaceAccess },
-          { ensureSkillsWatcher },
-        ] = await Promise.all([
-          import("../skills/loading/workspace-skill-loader.js"),
+        const [{ getAgentWorkspaceAccess }, { ensureSkillsWatcher }] = await Promise.all([
           import("../agents/workspace-access.js"),
           import("../skills/runtime/refresh.js"),
         ]);

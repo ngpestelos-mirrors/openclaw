@@ -7,6 +7,7 @@ import type {
   PluginsInspectResult,
   PluginsReloadResult,
 } from "../../packages/gateway-protocol/src/schema/plugins.js";
+import { callGateway, isGatewayClientRequestError } from "../gateway/call.js";
 import { sleepWithAbort } from "../infra/backoff.js";
 import { readActiveGatewayLockIdentity } from "../infra/gateway-lock.js";
 import type { PluginCapabilityConsentHandler } from "../plugins/capability-consent.js";
@@ -49,7 +50,6 @@ export async function resolvePluginLifecycleGateway(): Promise<PluginLifecycleGa
   if (!owner) {
     return null;
   }
-  const { callGateway, isGatewayClientRequestError } = await import("../gateway/call.js");
   const request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     const deadline = Date.now() + 600_000;
     const controller =

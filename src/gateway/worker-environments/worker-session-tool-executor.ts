@@ -2,9 +2,9 @@ import { isDeepStrictEqual } from "node:util";
 import type { WorkerSessionsSpawnParams } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { buildSubagentExecutionSessionSpawnContext } from "../../agents/subagents/spawn/subagent-spawn-execution-identity.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
+import { callInProcessGatewayToolWithCreation } from "../../agents/tools/gateway.js";
 import {
   callAgentToolGatewayRequest,
-  callInProcessGatewayToolWithCreation,
   type AgentToolGatewayRequestCaller,
   type InProcessGatewayCaller,
   runWithGatewayToolCleanupContext,

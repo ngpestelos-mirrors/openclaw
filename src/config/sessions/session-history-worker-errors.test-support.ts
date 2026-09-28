@@ -138,7 +138,7 @@ vi.mock("./disk-budget-runtime.js", () => ({
 vi.mock("./session-transcript-hydration.worker.js", () => ({
   streamSessionTranscriptHydration: observed.hydrate,
 }));
-vi.mock("./session-accessor.sqlite-entry.js", () => ({
+vi.mock("./session-accessor.sqlite-exact-read.js", () => ({
   loadSessionEntryReadOnlyInScope: () => observed.read(),
 }));
 vi.mock("./session-sharing-store.js", () => ({

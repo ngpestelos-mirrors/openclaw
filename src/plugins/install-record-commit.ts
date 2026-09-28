@@ -46,6 +46,7 @@ import {
   resolveRetainedManagedNpmInstallMarkerPath,
 } from "./managed-npm-retention.js";
 import { withPluginLifecycleLease } from "./plugin-lifecycle-lease.js";
+import { resolvePluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
 import { recordPluginPackageUninstallPlan } from "./uninstall-package-plan.js";
 import { planPluginUninstall } from "./uninstall.js";
 
@@ -367,7 +368,6 @@ async function assertPluginConfigActivationConsent(params: {
   if (Object.keys(records).length === 0) {
     return;
   }
-  const { resolvePluginMetadataSnapshot } = await import("./plugin-metadata-snapshot.js");
   const { resolvePluginCapabilityConsent } = await import("./capability-consent.js");
   const { resolvePluginControlPlaneWorkspace } = await import("./control-plane-workspace.js");
   const snapshot = await readConfigFileSnapshot();

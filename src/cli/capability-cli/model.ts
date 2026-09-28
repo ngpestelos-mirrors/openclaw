@@ -18,6 +18,7 @@ import {
   type ThinkLevel,
 } from "../../auto-reply/thinking.shared.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { callGateway, randomIdempotencyKey } from "../../gateway/call.js";
 import { ADMIN_SCOPE } from "../../gateway/operator-scopes.js";
 import { defaultRuntime } from "../../runtime.js";
 import { AsyncWorkScope, captureAsyncWorkTracker } from "../../shared/async-work-scope.js";
@@ -263,7 +264,6 @@ async function runModelRun(params: {
   }
 
   const { buildExplicitSessionIdSessionKey } = await import("../../agents/command/session.js");
-  const { callGateway, randomIdempotencyKey } = await import("../../gateway/call.js");
   const { provider, model } = requireProviderModelOverride(modelRef) ?? {};
   // Provider/model overrides require trusted-operator scope. Use the backend
   // shared-secret lane so local gateway smokes do not depend on paired CLI device scopes.

@@ -1,7 +1,9 @@
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import type { SqliteWorkerStore } from "../infra/sqlite-worker-contract.js";
+import { createSqliteWorkerWriteAdmission } from "../infra/sqlite-worker-store.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import { wrapPluginStateError } from "./plugin-state-store.database.js";
 import type { PluginStateStoreError } from "./plugin-state-store.types.js";
 import {
@@ -42,11 +44,6 @@ async function execute<Key extends keyof PluginStateWorkerOperations>(
   try {
     const context = captureOpenClawStateWorkerContext({ path: databasePath, env });
     // A write-only await here would let later reads overtake it before broker admission.
-    const [{ runOpenClawStateWorkerOperation }, { createSqliteWorkerWriteAdmission }] =
-      await Promise.all([
-        import("../state/openclaw-state-worker-store.js"),
-        import("../infra/sqlite-worker-store.js"),
-      ]);
     const operation = async (scope: Scope) => {
       dispatched = true;
       const result = await scope.execute<Key>(command);

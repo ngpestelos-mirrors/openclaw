@@ -33,6 +33,7 @@ import {
   assertSessionTranscriptHot,
   SessionTranscriptColdError,
 } from "./session-cold-storage-state.js";
+import { runSessionBranchSummaryWorkerRequest } from "./session-transcript-read-worker-runtime.js";
 
 const SESSION_BRANCH_CACHE_MAX_ENTRIES = 64;
 
@@ -241,8 +242,6 @@ export async function listSessionBranches(
         let pending = pendingBranchReads.get(key);
         if (!pending) {
           pending = (async () => {
-            const { runSessionBranchSummaryWorkerRequest } =
-              await import("./session-transcript-read-worker-runtime.js");
             const read = () => {
               assertCurrent();
               return runSessionBranchSummaryWorkerRequest(request, controller.signal);

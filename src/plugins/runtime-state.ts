@@ -1,4 +1,7 @@
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import type { PluginHostCleanupResult } from "./host-hook-cleanup.types.js";
 import type { PluginInstanceAdmission } from "./plugin-instance.types.js";
+import type { PluginRuntimeCloseRetainedError } from "./runtime-close-error.js";
 import { PLUGIN_REGISTRY_STATE } from "./runtime-state-key.js";
 // Stores plugin runtime registry state for the current process lifecycle.
 import { getActivePluginRegistryWorkspaceDirFromStateCore } from "./runtime-workspace-state.js";
@@ -52,3 +55,23 @@ export function getActivePluginGatewayNodePolicyRegistry(): PluginRegistry | nul
 export function getActivePluginRegistryWorkspaceDirFromState(): string | undefined {
   return getActivePluginRegistryWorkspaceDirFromStateCore();
 }
+
+export type PluginRegistrySnapshot = Pick<
+  RegistryState,
+  "activeRegistry" | "key" | "runtimeSubagentMode" | "workspaceDir"
+>;
+export type RegistryOwnerClose = {
+  promise: Promise<{
+    memoryErrors: readonly unknown[];
+    pluginFailures: PluginHostCleanupResult["failures"];
+  }>;
+  failure?: PluginRuntimeCloseRetainedError;
+};
+export type RegistryOwner = PluginRegistrySnapshot & {
+  activeRegistry: PluginRegistry;
+  closing?: RegistryOwnerClose;
+};
+export const registryOwners = resolveGlobalSingleton(
+  Symbol.for("openclaw.pluginRegistryOwners"),
+  () => new Set<RegistryOwner>(),
+);

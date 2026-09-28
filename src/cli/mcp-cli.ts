@@ -11,6 +11,7 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { normalizeCsvOrLooseStringList } from "@openclaw/normalization-core/string-normalization";
 import { Command } from "commander";
+import { disposeAllSessionMcpRuntimes } from "../agents/agent-bundle-mcp-manager-api.js";
 import type { SessionMcpRuntime } from "../agents/agent-bundle-mcp-types.js";
 import {
   setConfiguredMcpServer,
@@ -52,10 +53,6 @@ import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
 const createSessionMcpRuntime = createLazyRuntimeMethod(
   () => import("../agents/agent-bundle-mcp-runtime.js"),
   (runtime) => runtime.createSessionMcpRuntime,
-);
-const disposeAllSessionMcpRuntimes = createLazyRuntimeMethod(
-  () => import("../agents/agent-bundle-mcp-manager-api.js"),
-  (runtime) => runtime.disposeAllSessionMcpRuntimes,
 );
 
 function fail(message: string, json?: boolean): never {

@@ -25,6 +25,7 @@ import type {
   SqliteSessionReclamationDiagnostics,
 } from "./session-accessor.sqlite-contract.js";
 import { emitArchivedTranscriptUpdates } from "./session-accessor.sqlite-events.js";
+import { deleteDiskBudgetSessionEntryLifecycle } from "./session-accessor.sqlite-lifecycle-delete.js";
 import { planSessionStateDeleteIfUnreferenced } from "./session-accessor.sqlite-lifecycle-state.js";
 import { refreshSqliteSessionPlannerStatisticsBestEffort } from "./session-accessor.sqlite-maintenance.js";
 import { withSqliteSessionPageReclamation } from "./session-accessor.sqlite-page-reclamation.js";
@@ -57,12 +58,13 @@ import {
   type SessionHistoryBudgetKick,
   type SessionHistoryDiskBudgetParams,
 } from "./session-history-budget-state.js";
-import { deleteDiskBudgetArchivedSessionEntry } from "./session-history-entry-eviction.runtime.js";
 import {
-  collectSessionAdmissionReferences,
+  collectAdmissionProtectedSessionIds,
   readDiskEvictableArchivedSessionBatch,
   readHistoricalSessionIdsInDatabase,
 } from "./session-history-eviction-candidates.js";
+import { maintenanceLane } from "./session-transcript-worker-resources.js";
+import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 
 /** Reports the same physical total enforce mode compares, without projecting logical row bytes. */
@@ -143,17 +145,6 @@ function collectCandidateAdditionalProtection(params: {
   return protectedSessionIds;
 }
 
-/** Session ids owned by in-flight work admissions, without live-reference protection. */
-export function collectAdmissionProtectedSessionIds(params: {
-  database: Pick<OpenClawAgentDatabase, "db">;
-  storePath: string;
-}): Set<string> {
-  return collectSessionAdmissionReferences({
-    database: params.database,
-    admissionIdentities: [...(collectActiveSessionWorkAdmissions().get(params.storePath) ?? [])],
-  });
-}
-
 async function readHistoricalSessionIds(params: {
   databaseOptions: OpenClawAgentDatabaseOptions;
   preserveRecentMs?: number | null;
@@ -176,10 +167,6 @@ async function readHistoricalSessionIds(params: {
       database: openOpenClawAgentDatabase(params.databaseOptions),
     });
   }
-  const [{ withSessionHistoryWorkerDatabase }, { maintenanceLane }] = await Promise.all([
-    import("./session-transcript-worker-runtime.js"),
-    import("./session-transcript-worker-resources.js"),
-  ]);
   return withSessionHistoryWorkerDatabase(
     params.databaseOptions,
     (owner) =>
@@ -548,7 +535,7 @@ async function enforceSessionHistoryMaintenanceForDatabase(
           scope: params.storePath,
           identities: [candidate.sessionKey, candidate.entry.sessionId],
           run: async () =>
-            await deleteDiskBudgetArchivedSessionEntry(
+            await deleteDiskBudgetSessionEntryLifecycle(
               {
                 ...(params.agentId ? { agentId: params.agentId } : {}),
                 archiveTranscript: false,

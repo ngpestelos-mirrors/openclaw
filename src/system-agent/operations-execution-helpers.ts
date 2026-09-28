@@ -1,5 +1,9 @@
 // Shared execution helpers keep the public dispatcher small and reviewable.
 import { getAtPath, parseConfigSetPath } from "../cli/config-cli-path.js";
+import {
+  resolveChannelSetupEntries,
+  shouldShowChannelInSetup,
+} from "../commands/channel-setup/discovery.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
@@ -98,13 +102,10 @@ export async function resolveChannelSetupState(deps: SystemAgentCommandDeps | un
   const listPlugins =
     deps?.listChannelSetupPlugins ??
     (await import("../channels/plugins/setup-registry.js")).listChannelSetupPlugins;
-  const resolveEntries =
-    deps?.resolveChannelSetupEntries ??
-    (await import("../commands/channel-setup/discovery.js")).resolveChannelSetupEntries;
+  const resolveEntries = deps?.resolveChannelSetupEntries ?? resolveChannelSetupEntries;
   const isConfigured =
     deps?.isChannelConfigured ??
     (await import("../config/channel-configured-shared.js")).isStaticallyChannelConfigured;
-  const { shouldShowChannelInSetup } = await import("../commands/channel-setup/discovery.js");
   const snapshot = await readConfigFileSnapshotLazy();
   const cfg = snapshot.valid ? (snapshot.runtimeConfig ?? snapshot.config) : {};
   const installedPlugins = listPlugins();

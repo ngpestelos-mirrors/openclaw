@@ -9,6 +9,7 @@ import {
   isSyntheticSourceReplyTurn,
   resolveReplyCompletion,
 } from "../../agents/reply-completion.js";
+import { settleRequesterAfterSessionSpawns } from "../../agents/subagents/registry/subagent-registry.js";
 import {
   deriveContextPromptTokens,
   hasBillableUsage,
@@ -576,8 +577,6 @@ export async function prepareReplyAgentPayloads(state: {
               const presentation = progressPresentation;
               progressPresentation = undefined;
               try {
-                const { settleRequesterAfterSessionSpawns } =
-                  await import("../../agents/subagents/registry/subagent-registry.js");
                 const requester = {
                   requesterSessionKey,
                   requesterAgentId: followupRun.run.agentId,

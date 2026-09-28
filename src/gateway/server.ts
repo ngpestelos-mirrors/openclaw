@@ -5,6 +5,8 @@
  * server types and helpers without paying the full startup dependency graph.
  */
 import { measureGatewayBootstrapStep } from "../cli/startup-trace.js";
+import { createSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 
 export { truncateCloseReason } from "./server/close-reason.js";
 export type { GatewayServer, GatewayServerOptions } from "./server-public.js";
@@ -24,7 +26,6 @@ export async function startGatewayServer(
   const startupStartedAt = opts.startupStartedAt ?? Date.now();
   let stopDatabaseAdmission: (() => Promise<void>) | undefined;
   const start = async () => {
-    const { createSqliteReadOnlyWorkerScope } = await import("../infra/sqlite-readonly-worker.js");
     const readOnlyWorkers = createSqliteReadOnlyWorkerScope();
     const { withAgentDatabaseStartupAdmission } =
       await import("../state/agent-database-startup.js");
@@ -66,7 +67,6 @@ export async function startGatewayServer(
       }
     },
     async onStartupFailure(message) {
-      const { createSubsystemLogger } = await import("../logging/subsystem.js");
       createSubsystemLogger("gateway").error(message);
     },
   });
@@ -79,7 +79,6 @@ export async function startGatewayServer(
     await broker.close();
   };
   try {
-    const { createSubsystemLogger } = await import("../logging/subsystem.js");
     logger = createSubsystemLogger("gateway");
     logger.info(`spawn broker ready pid=${broker.pid}`);
     const server = await runWithSpawnBroker(broker, start);

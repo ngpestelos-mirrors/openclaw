@@ -94,7 +94,7 @@ describe("native hook relay locator worker", () => {
             stdin: Readable.from([JSON.stringify(rawPayload)]),
             stdout,
             stderr,
-            callGateway: gateway,
+            invokeGateway: gateway,
           },
         );
         expect(exitCode).toBe(0);

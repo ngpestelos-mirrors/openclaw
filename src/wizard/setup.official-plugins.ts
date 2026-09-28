@@ -1,8 +1,5 @@
 // Official plugin setup helpers install and configure bundled onboarding plugins.
-import {
-  ensureOnboardingPluginInstalled,
-  type OnboardingPluginInstallEntry,
-} from "../commands/onboarding-plugin-install.js";
+import type { OnboardingPluginInstallEntry } from "../commands/onboarding-plugin-install.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginPackageInstall } from "../plugins/manifest.js";
 import {
@@ -119,6 +116,8 @@ export async function setupOfficialPluginInstalls(params: {
     if (!entry) {
       continue;
     }
+    const { ensureOnboardingPluginInstalled } =
+      await import("../commands/onboarding-plugin-install.js");
     const result = await ensureOnboardingPluginInstalled({
       cfg: next,
       entry,

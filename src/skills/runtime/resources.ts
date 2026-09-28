@@ -16,7 +16,7 @@ import {
   WorkspaceAccessUnavailableError,
 } from "../../agents/workspace-access.js";
 import { isMissingPathError } from "../../infra/errors.js";
-import { removeTemporaryArtifacts } from "../../infra/temp-artifact-cleanup.js";
+import { removeTemporaryArtifacts } from "../../infra/temp-artifact-removal.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import {

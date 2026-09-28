@@ -1253,7 +1253,7 @@ describe("native hook relay registry", () => {
             ]),
             stdout,
             stderr,
-            callGateway,
+            invokeGateway: callGateway,
           }),
         ).resolves.toBe(0);
         expect(callGateway).toHaveBeenCalledOnce();

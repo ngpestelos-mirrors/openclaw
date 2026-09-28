@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import * as targets from "../config/sessions/targets.js";
 import { resolveUserPath } from "../infra/home-dir.js";
 import type { UpdateCandidatePluginCodeLink } from "../infra/update-candidate-plugin-code-links.js";
 import type { PluginDoctorMigrationBackupWarning } from "../plugins/doctor-contract-module.js";
@@ -285,7 +286,6 @@ export async function inspectPreparedDoctorRehearsal(params: {
   const [
     { createConfigIO },
     registryApi,
-    targets,
     stateReader,
     sqlite,
     schema,
@@ -295,7 +295,6 @@ export async function inspectPreparedDoctorRehearsal(params: {
   ] = await Promise.all([
     import("../config/io.factory.js"),
     import("../state/openclaw-agent-db-registry-listing.js"),
-    import("../config/sessions/targets.js"),
     import("../state/openclaw-state-db-readonly.js"),
     import("../infra/kysely-sync.js"),
     import("../state/openclaw-state-db-schema-helpers.js"),

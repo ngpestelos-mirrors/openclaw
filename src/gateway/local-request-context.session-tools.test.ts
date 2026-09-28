@@ -5,9 +5,9 @@ import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope
 import * as modelRuntimeChoice from "../agents/model-runtime-choice.js";
 import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
+import { callInProcessGatewayTool } from "../agents/tools/gateway.js";
 import {
   callAgentToolGatewayRequest,
-  callInProcessGatewayTool,
   type InProcessGatewayCaller,
   type AgentToolGatewayRequestCaller,
   runWithGatewayToolCleanupContext,

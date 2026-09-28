@@ -1,6 +1,8 @@
 import { asFiniteNumber, asFiniteNumberInRange } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+// Runtime LLM helpers adapt plugin provider hooks into the core model runtime.
+import { resolveModelAsync } from "../../agents/embedded-agent-runner/model.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import { normalizeModelRef, type ModelRef } from "../../agents/model-ref-shared.js";
 import type { UsageLike } from "../../agents/usage.js";
@@ -606,8 +608,6 @@ export function createRuntimeLlm(
           signal: requestSignal,
           modelResolver: operatorAuthority
             ? async (...args) => {
-                const { resolveModelAsync } =
-                  await import("../../agents/embedded-agent-runner/model.js");
                 assertCurrent();
                 const resolved = await resolveModelAsync(...args);
                 if (resolved.model) {

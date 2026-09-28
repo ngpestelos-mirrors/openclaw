@@ -46,8 +46,6 @@ import { WizardCancelledError } from "../wizard/prompts.js";
 import { applyAgentBindings, buildChannelBindings, describeBinding } from "./agents.bindings.js";
 import { applyAgentConfig, listAgentEntries } from "./agents.config.js";
 import { promptAuthChoiceGrouped } from "./auth-choice-prompt.js";
-import { prepareAuthChoice } from "./auth-choice.apply.js";
-import { warnIfModelConfigLooksOff } from "./auth-choice.model-check.js";
 import { requireValidConfigForWrite } from "./config-validation.js";
 import {
   ensureOnboardingAgentWorkspace,
@@ -398,6 +396,7 @@ export async function agentsAddCommand(
           config: nextConfig,
         });
 
+        const { prepareAuthChoice } = await import("./auth-choice.apply.js");
         const authResult = await prepareAuthChoice({
           authChoice,
           config: nextConfig,
@@ -429,6 +428,7 @@ export async function agentsAddCommand(
       }
     }
 
+    const { warnIfModelConfigLooksOff } = await import("./auth-choice.model-check.js");
     await warnIfModelConfigLooksOff(nextConfig, prompter, {
       agentId,
       agentDir,

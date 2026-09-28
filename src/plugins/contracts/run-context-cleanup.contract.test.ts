@@ -6,7 +6,6 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetAgentEventsForTest } from "../../infra/agent-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { withPluginCommandExecution } from "../command-execution-lock.js";
 import {
   clearPluginHostRuntimeState,
   getPluginRunContext,
@@ -14,6 +13,7 @@ import {
 } from "../host-hook-runtime.js";
 import { listPluginSessionSchedulerJobs } from "../host-hook-runtime.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../registry-empty.js";
+import { withPluginCommandExecution } from "../registry-lifecycle.js";
 import {
   clearActivePluginRegistry,
   setActivePluginRegistry,

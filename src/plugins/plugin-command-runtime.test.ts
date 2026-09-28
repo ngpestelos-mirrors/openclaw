@@ -8,7 +8,6 @@ vi.mock("./conversation-binding.js", () => ({
   detachPluginConversationBinding: vi.fn(),
 }));
 
-import { getPluginCommandExecutionCount } from "./command-execution-lock.js";
 import { registerPluginCommandInRegistry } from "./command-registration.js";
 import { createPluginRecord } from "./loader-records.js";
 import {
@@ -19,7 +18,7 @@ import {
 } from "./plugin-command-runtime.js";
 import { PluginInstance } from "./plugin-instance.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
-import { markPluginRegistryRetired } from "./registry-lifecycle.js";
+import { getPluginCommandExecutionCount, markPluginRegistryRetired } from "./registry-lifecycle.js";
 import {
   clearActivePluginRegistry,
   prepareActivePluginRegistryShutdown,

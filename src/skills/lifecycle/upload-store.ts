@@ -13,6 +13,7 @@ import { createSqliteWorkerWriteAdmission } from "../../infra/sqlite-worker-stor
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { validateRequestedSkillSlug } from "./install-paths.js";
 import { SkillUploadRequestError } from "./upload-store-error.js";
 import {
@@ -232,8 +233,6 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
       const context = captureOpenClawStateWorkerContext(stateOptions);
       const root = context.admission.databasePath;
       return await withLock(`${root}:begin`, async () => {
-        const { runOpenClawStateWorkerOperation } =
-          await import("../../state/openclaw-state-worker-store.js");
         return runOpenClawStateWorkerOperation(
           context,
           async (scope) => {
@@ -271,8 +270,6 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
       const decoded = decodeBase64Chunk(params.dataBase64);
       const context = captureOpenClawStateWorkerContext(stateOptions);
       const root = context.admission.databasePath;
-      const { runOpenClawStateWorkerOperation } =
-        await import("../../state/openclaw-state-worker-store.js");
       return runOpenClawStateWorkerOperation(
         context,
         async (scope) => {
@@ -293,8 +290,6 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
       const requestedSha = normalizeSkillUploadSha256(params.sha256);
       const context = captureOpenClawStateWorkerContext(stateOptions);
       return await withLock(`${context.admission.databasePath}:upload:${uploadId}`, async () => {
-        const { runOpenClawStateWorkerOperation } =
-          await import("../../state/openclaw-state-worker-store.js");
         const result = await runOpenClawStateWorkerOperation(
           context,
           (scope) =>
@@ -316,8 +311,6 @@ function createSkillUploadStore(options?: SkillUploadStoreOptions) {
       const uploadId = validateUploadId(uploadIdRaw);
       const context = captureOpenClawStateWorkerContext(stateOptions);
       return withLock(`${context.admission.databasePath}:upload:${uploadId}`, async () => {
-        const { runOpenClawStateWorkerOperation } =
-          await import("../../state/openclaw-state-worker-store.js");
         const { withSkillUploadInstallOwner } = await import("./upload-store-install-owner.js");
         const owner = randomUUID();
         return withSkillUploadInstallOwner(context, { uploadId, owner }, (claimStarted) =>

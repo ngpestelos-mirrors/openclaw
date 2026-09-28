@@ -5,6 +5,11 @@ import type { Command } from "commander";
 import { formatDocsLink } from "../../../packages/terminal-core/src/links.js";
 import { colorize, isRich, theme } from "../../../packages/terminal-core/src/theme.js";
 import type { HealthSummary } from "../../commands/health.js";
+import {
+  formatGatewayAuthErrorJson,
+  formatGatewayClientRequestErrorJson,
+  formatGatewayTransportErrorJson,
+} from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { CostUsageSummary } from "../../infra/session-cost-usage.js";
 import type { DiagnosticStabilityBundle } from "../../logging/diagnostic-stability-bundle.js";
@@ -99,11 +104,6 @@ function gatewayAction(action: Parameters<Command["action"]>[0], label?: string)
         rethrowExpectedCliError(err);
       }
       if (json) {
-        const {
-          formatGatewayAuthErrorJson,
-          formatGatewayClientRequestErrorJson,
-          formatGatewayTransportErrorJson,
-        } = await import("../../gateway/call.js");
         defaultRuntime.writeJson(
           formatGatewayAuthErrorJson(err) ??
             formatGatewayClientRequestErrorJson(err) ??

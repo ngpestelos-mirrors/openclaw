@@ -54,9 +54,9 @@ import {
 import { ToolInputError } from "../tool-input-error.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNonNegativeIntegerParam, readToolStringParam } from "./common.js";
+import { callInProcessGatewayToolWithCreation } from "./gateway.js";
 import {
   callAgentToolGatewayRequest,
-  callInProcessGatewayToolWithCreation,
   hasInProcessGatewayToolContext,
   type AgentToolGatewayRequestCaller as GatewayCaller,
 } from "./in-process-gateway.js";
