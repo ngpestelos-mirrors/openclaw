@@ -32,7 +32,7 @@ import {
 import { GatewayClientRegistry } from "../server/client-registry.js";
 import { createGatewayWsTestSocket } from "../server/ws-connection.test-helpers.js";
 import { createOperatorWsClient } from "../server/ws-connection/authenticated-request-dispatch.test-support.js";
-import type { GatewayClient } from "./types.js";
+import type { GatewayClient, GatewayRequestHandler } from "./types.js";
 import { usersHandlers } from "./users.js";
 
 async function invokePreferenceMethod(
@@ -80,17 +80,23 @@ async function withPreferenceToolTurn(
     const scopes = ["operator.read", "operator.write"];
     const client = createOperatorClient({ profileId: owner.id, scopes });
     const context = createContext();
-    const descriptors = createCoreGatewayMethodDescriptors(usersHandlers).filter(
-      ({ name }) => name === "users.prefs.get" || name === "users.prefs.set",
-    );
-    for (const descriptor of descriptors) {
-      const handler = descriptor.handler;
-      descriptor.handler = (options) => {
+    const expectSyntheticOwnerCall = (
+      method: "users.prefs.get" | "users.prefs.set",
+    ): GatewayRequestHandler => {
+      const handler = usersHandlers[method];
+      if (!handler) {
+        throw new Error(`missing ${method} handler`);
+      }
+      return (options) => {
         expect(options.client?.internal?.syntheticClient).toBe(true);
         expect(options.client?.authenticatedUserProfile?.profileId).toBe(owner.id);
         return handler(options);
       };
-    }
+    };
+    const descriptors = createCoreGatewayMethodDescriptors({
+      "users.prefs.get": expectSyntheticOwnerCall("users.prefs.get"),
+      "users.prefs.set": expectSyntheticOwnerCall("users.prefs.set"),
+    });
     context.getGatewayMethodRegistry = () => createGatewayMethodRegistry(descriptors);
     await withOperatorToolGatewayAuthority(
       { authenticatedUserProfile: client.authenticatedUserProfile!, scopes },
