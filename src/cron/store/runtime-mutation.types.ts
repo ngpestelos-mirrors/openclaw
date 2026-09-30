@@ -37,10 +37,11 @@ export type CronRuntimeMutationContracts = {
   };
   "cron.planStartup": {
     input: CronRuntimeMutationInputs["cron.planStartup"];
-    facts: { jobIds: string[] };
+    facts: { jobIds: string[]; notificationNeedsDefault: boolean };
     preparation: {
       nowMs: number;
       skipMissedJobs: boolean;
+      notificationRouting: CronNotificationRouting;
       ownership: CronScheduleOwnershipFacts[];
     };
     outcome: {
@@ -103,10 +104,11 @@ export type CronRuntimeMutationContracts = {
   };
   "cron.releaseReservations": {
     input: CronRuntimeMutationInputs["cron.releaseReservations"];
-    facts: { deletionBlocked: boolean };
+    facts: { deletionBlocked: boolean; notificationNeedsDefault: boolean };
     preparation: {
       nowMs: number;
       defaultAgentId?: string;
+      notificationRouting: CronNotificationRouting;
       reservations: Array<{
         jobId: string;
         markerAtMs: number;

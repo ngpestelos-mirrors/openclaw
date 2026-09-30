@@ -13,6 +13,7 @@ import {
   recomputeJobNextRunAtMs,
   resolveJobErrorBackoffUntilMs,
 } from "../service/jobs-scheduling.js";
+import { resolveCronNotificationQueueOwner } from "../service/notification-intents.js";
 import type { CronJobPolicyContext } from "../service/state.js";
 import { applyJobResult } from "../service/timer-outcomes.js";
 import { hasMissedCronSlotSinceLastRun, isRunnableJob } from "../service/timer-runnable.js";
@@ -165,6 +166,14 @@ export function planCronStartupInWorker(
         mutate({ jobs }) {
           const preparation = prepareCronRuntimeMutation("cron.planStartup", input.nonce, {
             jobIds: [...jobs.keys()],
+            notificationNeedsDefault: [...jobs.values()].some(
+              (job) =>
+                isJobEnabled(job) &&
+                !skipped.has(job.id) &&
+                !hasActiveCronRun(job, false) &&
+                (job.schedule.kind === "cron" || job.schedule.kind === "every") &&
+                !resolveCronNotificationQueueOwner(job, "auto-disabled").agentId,
+            ),
           });
           const outcome: CronRuntimeMutationContracts["cron.planStartup"]["outcome"] = {
             jobs: [],
@@ -240,6 +249,9 @@ export function planCronStartupInWorker(
             } else {
               outcome.missed.push(job);
             }
+          }
+          for (const notification of outcome.notifications) {
+            notification.routing = preparation.notificationRouting;
           }
           return { upsertJobIds: outcome.jobs.map((job) => job.id), value: outcome };
         },

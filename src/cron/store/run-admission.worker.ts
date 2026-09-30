@@ -230,6 +230,7 @@ export function releaseCronReservationsInWorker(
       const { rows, jobs } = loadRuntimeRows(db, input.storeKey, input.jobIds);
       const receiptSchema = prepareCronRunReceiptWriteSchema(db);
       const preparation = prepareCronRuntimeMutation("cron.releaseReservations", input.nonce, {
+        notificationNeedsDefault: false,
         deletionBlocked:
           policy.requireCurrentReceipt === true &&
           policy.terminal !== undefined &&

@@ -4,7 +4,10 @@ import type { CronRunHistorySource } from "../store/run-history.js";
 import type { CronRuntimeMutationContracts } from "../store/runtime-mutation.types.js";
 import type { CronRuntimeMutationInputs } from "../store/runtime-worker.types.js";
 import { resolveFailureAlert } from "./failure-alerts.js";
-import { captureCronNotificationRouting } from "./notification-intents.js";
+import {
+  captureCronNotificationRouting,
+  prepareCronNotificationRouting,
+} from "./notification-intents.js";
 import { runCronRuntimeMutation } from "./runtime-mutation.js";
 import { applyCronRuntimeRowsToState } from "./runtime-publication.js";
 import { prepareCronScheduleOwnership } from "./schedule-maintenance.js";
@@ -150,14 +153,24 @@ export async function planCronStartup(params: {
         skipJobIds: params.skipJobIds ? [...params.skipJobIds] : undefined,
       },
       assertCurrent: () => source.assertCurrent(),
-      prepare({ jobIds }) {
+      prepare({ jobIds, notificationNeedsDefault }) {
         const prepared = prepareCronScheduleOwnership(state, jobIds);
         const skipMissedJobs = state.deps.cronConfig?.skipMissedJobs === true;
+        const notifications = prepareCronNotificationRouting(
+          state.deps,
+          skipMissedJobs && notificationNeedsDefault,
+        );
         return {
-          value: { nowMs: params.nowMs, skipMissedJobs, ownership: prepared.ownership },
+          value: {
+            nowMs: params.nowMs,
+            skipMissedJobs,
+            ownership: prepared.ownership,
+            notificationRouting: notifications.routing,
+          },
           assertCurrent() {
             source.assertCurrent();
             prepared.assertCurrent();
+            notifications.assertCurrent();
             if ((state.deps.cronConfig?.skipMissedJobs === true) !== skipMissedJobs) {
               throw new Error("Cron missed-job policy changed before commit");
             }

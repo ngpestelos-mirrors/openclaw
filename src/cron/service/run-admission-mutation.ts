@@ -20,6 +20,7 @@ import type {
   CronReservationReleasePolicy,
 } from "../store/runtime-worker.types.js";
 import type { CronJob } from "../types.js";
+import { prepareCronNotificationRouting } from "./notification-intents.js";
 import { runCronRuntimeMutation } from "./runtime-mutation.js";
 import { applyCronRuntimeRowsToState } from "./runtime-publication.js";
 import type { CronServiceState } from "./state.js";
@@ -311,6 +312,10 @@ export async function releaseReservedCronRuns(
       },
       prepare(facts) {
         const defaultAgentId = policy.kind === "general" ? currentDefaultAgentId(state) : undefined;
+        const notifications = prepareCronNotificationRouting(
+          state.deps,
+          facts.notificationNeedsDefault,
+        );
         const owners = selections
           .map((reservation) => ({
             ...reservation,
@@ -344,11 +349,13 @@ export async function releaseReservedCronRuns(
           value: {
             nowMs: params.nowMs ?? state.deps.nowMs(),
             defaultAgentId,
+            notificationRouting: notifications.routing,
             reservations,
             deferTerminal: retained?.pending === true,
           },
           assertCurrent() {
             assertAvailable();
+            notifications.assertCurrent();
             if (policy.kind === "general" && currentDefaultAgentId(state) !== defaultAgentId) {
               throw new Error("Cron default owner changed before cleanup");
             }

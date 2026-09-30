@@ -3,6 +3,7 @@ import type { OpenClawStateDatabase } from "../../state/openclaw-state-db-contra
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { tryCronScheduleIdentity } from "../schedule-identity.js";
 import { isJobEnabled } from "../service/jobs-scheduling.js";
+import { resolveCronNotificationQueueOwner } from "../service/notification-intents.js";
 import type { CronJobPolicyContext } from "../service/state.js";
 import { resolveNextRunAtMsOrDisable } from "../service/timer-trigger.js";
 import type { CronJob } from "../types.js";
@@ -64,6 +65,16 @@ export function releaseSchedulerReservationsInWorker(
         mutate({ jobs, receiptSchema }) {
           const preparation = prepareCronRuntimeMutation("cron.releaseReservations", input.nonce, {
             deletionBlocked: false,
+            notificationNeedsDefault:
+              policy.kind === "startup-settlement" &&
+              policy.deferredJobs.some(({ jobId }) => {
+                const job = jobs.get(jobId);
+                return (
+                  job !== undefined &&
+                  isJobEnabled(job) &&
+                  !resolveCronNotificationQueueOwner(job, "auto-disabled").agentId
+                );
+              }),
           });
           const outcome: CronRuntimeMutationContracts["cron.releaseReservations"]["outcome"] = {
             jobs: [],
@@ -164,6 +175,9 @@ export function releaseSchedulerReservationsInWorker(
               }
               outcome.jobs.push(job);
             }
+          }
+          for (const notification of outcome.notifications) {
+            notification.routing = preparation.notificationRouting;
           }
           return { upsertJobIds: outcome.jobs.map((job) => job.id), value: outcome };
         },
