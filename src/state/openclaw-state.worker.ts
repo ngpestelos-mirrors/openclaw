@@ -296,9 +296,9 @@ function createSharedStateWorkerBackend(
         }
       }
     },
-    close() {
+    async close() {
       closed = true;
-      borrow?.release();
+      await borrow?.releaseAsync();
     },
   };
 }

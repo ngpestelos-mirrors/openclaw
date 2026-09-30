@@ -10,6 +10,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { acquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
 import { onSqliteWalCheckpoint } from "../infra/sqlite-wal-checkpoint.js";
+import { observeSqliteWalPeriodicWork } from "../infra/sqlite-wal-scheduler.test-support.js";
 import * as walAdmission from "../infra/sqlite-wal-write-admission.js";
 import { createPluginStateKeyedStore } from "../plugin-state/plugin-state-store.js";
 import {
@@ -42,18 +43,12 @@ beforeAll(() => {
 });
 
 function openWithPeriodicMaintenance(databasePath: string) {
-  const intervals = vi.spyOn(globalThis, "setInterval");
+  const scheduled = observeSqliteWalPeriodicWork();
   try {
     const database = openOpenClawStateDatabase({ path: databasePath });
-    const timers = intervals.mock.calls.filter(([, delay]) => delay === 30 * 60 * 1000);
-    expect(timers).toHaveLength(1);
-    const periodic = timers[0]?.[0];
-    if (typeof periodic !== "function") {
-      throw new Error("Shared-state open did not register periodic WAL maintenance");
-    }
-    return { database, periodic };
+    return { database, periodic: scheduled.periodic };
   } finally {
-    intervals.mockRestore();
+    scheduled.restore();
   }
 }
 

@@ -18,6 +18,7 @@ import {
 import { withEnvAsync } from "../test-utils/env.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { onSqliteWalCheckpoint } from "./sqlite-wal-checkpoint.js";
+import { observeSqliteWalPeriodicWork } from "./sqlite-wal-scheduler.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(async () => {
@@ -32,15 +33,10 @@ it.each(["keep", "close", "replace"] as const)(
     const root = tempDirs.make("openclaw-agent-wal-admission-");
     await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
       openOpenClawStateDatabase();
-      const intervals = vi.spyOn(globalThis, "setInterval");
+      const scheduled = observeSqliteWalPeriodicWork();
       const database = openOpenClawAgentDatabase({ agentId: "main" });
-      const timers = intervals.mock.calls.filter(([, delay]) => delay === 30 * 60 * 1000);
-      intervals.mockRestore();
-      expect(timers).toHaveLength(1);
-      const periodic = timers[0]?.[0];
-      if (typeof periodic !== "function") {
-        throw new Error("Expected the published agent's maintenance timer");
-      }
+      scheduled.restore();
+      const periodic = scheduled.periodic;
       database.db
         .prepare(
           "INSERT INTO cache_entries(scope, key, value_json, blob, updated_at) VALUES ('wal-proof', 'pages', '{}', randomblob(4194304), 1)",
@@ -191,12 +187,8 @@ const workerSource = String.raw`
     const agent = await import(workerData.agentModule);
     const state = await import(workerData.stateModule);
     state.openOpenClawStateDatabase();
-    const nativeInterval = globalThis.setInterval;
-    let periodic;
-    globalThis.setInterval = (callback, delay, ...args) => {
-      if (delay === 30 * 60 * 1000) periodic = () => callback(...args);
-      return nativeInterval(callback, delay, ...args);
-    };
+    const { observeSqliteWalPeriodicWork } = await import(workerData.walTestModule);
+    const scheduled = observeSqliteWalPeriodicWork();
     let phase = "opening";
     let admitted = false;
     let authorized = true;
@@ -220,8 +212,8 @@ const workerSource = String.raw`
     await agent.withOpenClawAgentDatabaseAdmission(workerData.options, withAdmission, (opened) => {
       database = opened;
     });
-    globalThis.setInterval = nativeInterval;
-    if (!periodic) throw new Error("Expected the retained Worker database timer");
+    scheduled.restore();
+    const periodic = scheduled.periodic;
     const nativeExec = database.db.exec.bind(database.db);
     const withinAdmission = [];
     database.db.exec = (sql) => {
@@ -287,6 +279,7 @@ it.each([
           loader: import.meta.resolve("tsx/esm/api"),
           agentModule: new URL("../state/openclaw-agent-db.ts", import.meta.url).href,
           stateModule: new URL("../state/openclaw-state-db.ts", import.meta.url).href,
+          walTestModule: new URL("./sqlite-wal-scheduler.test-support.ts", import.meta.url).href,
         },
       });
       const ready = createDeferredCore();

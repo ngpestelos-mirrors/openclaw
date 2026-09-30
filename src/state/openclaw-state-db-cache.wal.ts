@@ -63,7 +63,7 @@ export function createStateDatabaseWalOwner(
           }
           void cancel();
           // The broker retains native cleanup; this owner joins accepted work before retirement.
-          await pending?.catch(() => {});
+          await database.walMaintenance.stop();
           unregister();
         },
       };
