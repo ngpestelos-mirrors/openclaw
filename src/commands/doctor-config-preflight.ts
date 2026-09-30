@@ -1,5 +1,6 @@
 /** Config preflight for Doctor: legacy migration, recovery, and snapshot loading. */
 import { note } from "../../packages/terminal-core/src/note.js";
+import { tryGetLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import { resolveStateDir } from "../config/paths.js";
 import { inspectShippedPluginInstallConfigRecords } from "../config/plugin-install-config-migration.js";
 import type { ConfigFileSnapshot } from "../config/types.js";
@@ -159,6 +160,7 @@ async function runDoctorConfigPreflightOperation(
   });
   configSnapshotRead = recovery.snapshotRead;
   let snapshot = configSnapshotRead.snapshot;
+  const rosterMigrationSource = snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig;
   const activeConfigRepair = recovery.activeConfigRepair;
   noteDoctorConfigPreflightIssues(snapshot, {
     invalidConfigNote: options.invalidConfigNote,
@@ -224,6 +226,9 @@ async function runDoctorConfigPreflightOperation(
     baseConfig,
     postConvergenceConfig: postConvergenceStateConfig,
   });
+  const rosterMigrationOwnerId = stateMigrationInput?.cfg
+    ? tryGetLegacyDefaultAgentId(stateMigrationInput.cfg)
+    : undefined;
   if (stateDirMigrations) {
     if (options.doctorOnlyStateMigrations === true && !stateMigrationInput?.cfg) {
       const { detectLegacyExecApprovals, migrateLegacyExecApprovals } =
@@ -267,6 +272,7 @@ async function runDoctorConfigPreflightOperation(
           pluginMetadata.run({ config: pluginDoctorConfig ?? migrationConfig }, () =>
             autoMigrateLegacyState({
               cfg: migrationConfig,
+              sourceConfigBeforeMigrations: stateMigrationInput.sourceConfigBeforeMigrations,
               ...(pluginDoctorConfig ? { pluginDoctorConfig } : {}),
               configIncludedPaths: snapshot.includedPaths ?? [],
               env: process.env,
@@ -346,6 +352,8 @@ async function runDoctorConfigPreflightOperation(
   return {
     snapshot,
     baseConfig,
+    rosterMigrationSource,
+    ...(rosterMigrationOwnerId ? { rosterMigrationOwnerId } : {}),
     ...(deferredPluginMigrations.length > 0 ? { deferredPluginMigrations } : {}),
     ...(modelBillingRouteMigrationSource ? { modelBillingRouteMigrationSource } : {}),
     ...(configSnapshotRead.pluginMetadataSnapshot

@@ -14,7 +14,7 @@ import type {
   ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "./io.types.js";
 import { prepareConfigWriteValues } from "./io.write-prepare.js";
-import { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
+import { resolveLegacyAgentRosterOwner } from "./legacy.roster.js";
 import type { OpenClawConfig } from "./types.js";
 import { materializeLegacyAgentOwnershipForActiveChannelsResult } from "./validation.js";
 
@@ -73,11 +73,9 @@ export function prepareConfigWriteTopology(
     explicitSetValueSource: options.explicitSetValueSource,
   });
   let nextConfig = values.resolvedConfig;
-  const sourceRosterMigration = migratePersistedImplicitMainRoster(
+  const retainedLegacyDefaultAgentId = resolveLegacyAgentRosterOwner(
     snapshot.sourceConfigBeforeMigrations ?? snapshot.parsed,
-    { env, homedir },
   );
-  const retainedLegacyDefaultAgentId = sourceRosterMigration.retainedLegacyDefaultAgentId;
   const previousEntries = listAgentEntries(snapshot.config);
   const nextEntries = listAgentEntries(nextConfig);
   const nextAgentIds = new Set(nextEntries.map((entry) => normalizeAgentId(entry.id)));
@@ -103,13 +101,6 @@ export function prepareConfigWriteTopology(
   const stampOwnership =
     (persistOwnership || keepOwnership) && nextConfig.agents?.ownership === undefined;
   if (stampOwnership) {
-    if (nextEntries.some((entry) => entry.default === true)) {
-      // This writer owns role transitions; retire only the submitted roster marker.
-      nextConfig = coerceConfig(
-        migratePersistedImplicitMainRoster(nextConfig, { materializeRoles: false, env, homedir })
-          .config,
-      );
-    }
     nextConfig = {
       ...nextConfig,
       agents: { ...nextConfig.agents, ownership: "explicit" },
@@ -158,18 +149,6 @@ export function prepareConfigWriteTopology(
     : { config: nextConfig, insertedPaths: [] };
   nextConfig = ownershipMaterialization.config;
   const insertedPaths = [
-    ...(persistOwnership || keepOwnership
-      ? (sourceRosterMigration.insertedPaths ?? []).filter(
-          (entry) =>
-            sameFixedSessionStore || entry.join(".") !== "agents.defaults.sessionStore.agentId",
-        )
-      : []),
-    ...((persistOwnership || keepOwnership) &&
-    retainedLegacyDefaultAgentId &&
-    Array.isArray(snapshot.config.bindings) &&
-    !isDeepStrictEqual(snapshot.sourceConfigBeforeMigrations?.bindings, snapshot.config.bindings)
-      ? [["bindings"]]
-      : []),
     ...ownershipMaterialization.insertedPaths.concat(workspaceCollapse.insertedPaths),
     ...authInheritanceOwnership.insertedPaths, // Persisting explicit ownership must replace the authored legacy roster too.
     ...sessionStoreOwnership.ownershipPaths, // Parent writes must not restore a removed fixed-store owner.

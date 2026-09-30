@@ -131,11 +131,14 @@ function planConfigRepair(
       pluginContracts,
     }),
   );
-  const config = preserveDeferredPluginMigrationConfig({
-    sourceConfig: snapshot.sourceConfig,
-    nextConfig: migration.next ?? projected,
-    pending: deferredPluginMigrations ?? [],
-  });
+  const config = inheritLegacyDefaultAgentId(
+    migration.next ?? projected,
+    preserveDeferredPluginMigrationConfig({
+      sourceConfig: snapshot.sourceConfig,
+      nextConfig: migration.next ?? projected,
+      pending: deferredPluginMigrations ?? [],
+    }),
+  );
   if (isDeepStrictEqual(config, snapshot.sourceConfig)) {
     return null;
   }
@@ -257,7 +260,7 @@ async function writeAutomaticConfigRepair(
       skipRuntimeSnapshotRefresh: true,
       // The checked receipt proves these removed records already have a durable owner.
       allowConfigSizeDrop: options.pluginInstallConfigImport !== undefined,
-      // The reader retired legacy markers; persist their canonical owners in this write.
+      // Doctor retired legacy markers; persist their canonical owners in this write.
       // Planning above validates the same writer topology preparation.
       persistCanonicalAgentRoster: true,
     },

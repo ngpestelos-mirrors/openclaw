@@ -13,10 +13,7 @@ import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { CliDeps } from "../cli/deps.types.js";
 import { DEFAULT_CRON_ENABLED } from "../config/cron-limits.js";
 import { getRuntimeConfig } from "../config/io.js";
-import {
-  resolveSessionStoreCompatibilityAgentId,
-  tryGetLegacyDefaultAgentId,
-} from "../config/legacy.default-agent-owner.js";
+import { resolveSessionStoreCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import {
   canonicalizeMainSessionAlias,
   resolveAgentIdFromSessionKey,
@@ -375,7 +372,6 @@ export function buildGatewayCronService(params: {
   };
 
   const defaultAgentId = tryResolveAmbientOwnerAgentId(params.cfg);
-  const legacyDefaultAgentId = tryGetLegacyDefaultAgentId(params.cfg);
   const resolveSessionStorePath = (agentId?: string) =>
     resolveSessionStorePathCore(params.cfg.session?.store, {
       agentId: agentId ?? resolveSessionStoreCompatibilityAgentId(getRuntimeConfig()),
@@ -588,7 +584,6 @@ export function buildGatewayCronService(params: {
     listConfiguredChannels: () => listConfiguredMessageChannels(getRuntimeConfig()),
     ...(scriptRuntime ? { evaluateCronTrigger: scriptRuntime.evaluateTrigger } : {}),
     ...(defaultAgentId ? { defaultAgentId } : {}),
-    ...(legacyDefaultAgentId ? { legacyDefaultAgentId } : {}),
     resolveDefaultAgentId: () => tryResolveAmbientOwnerAgentId(getRuntimeConfig()),
     resolveSessionStoreAgentIds: () => {
       const cfg = getRuntimeConfig();

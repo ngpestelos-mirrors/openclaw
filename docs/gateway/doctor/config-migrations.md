@@ -81,6 +81,37 @@ Runtime config requires typed sender keys or `"*"`. After replacing the binary
 directly, run `openclaw doctor --fix` before starting the Gateway. Explicit
 `id:@user:server` policies and incoming sender-ID matching remain supported.
 
+## Agent roster migration
+
+Ordinary config reads require canonical keyed `agents.entries`; they do not
+convert a populated `agents.list` or remove legacy `default` markers. Run
+`openclaw doctor --fix` before starting a directly replaced binary with those
+inputs. The normal `openclaw update` flow invokes the candidate Doctor. Fresh
+configs without a roster still receive the in-memory `main` default.
+
+Doctor retains the original roster order and historical owner while migrating
+config and persisted state, including ownerless cron jobs. It preserves the
+legacy workspace and materializes the required per-surface owners before
+retiring the marker. Explicit system-agent, auth-inheritance, and other role
+owners remain independent: choosing a different system agent does not change
+which agent owns existing legacy data. Keep the original markers until Doctor
+has completed both the config and state repairs.
+
+Doctor follows the existing [include write constraints](/gateway/config-secrets-env).
+A root-level `$include`, or a repair spanning an included roster and root-owned
+roles, can require manual preparation; repeating `doctor --fix` alone does not
+remove that ownership constraint. Preserve backups of the root config, included
+files, and persisted state. Temporarily consolidate the original include-resolved
+legacy config into one `openclaw.json`, retaining list order, default markers,
+authored environment and secret references, and the meaning of configured paths.
+Do not substitute an already normalized runtime view or remove the legacy marker
+by hand: Doctor still needs that provenance to migrate data ownership.
+
+Run `openclaw doctor --fix` or retry the update with that single-file config.
+After repair completes and `openclaw config validate` succeeds, split the
+canonical config back into includes if desired, then validate it again. Keep
+the backups until the repaired config and migrated state have been verified.
+
 ## Channel webhook listeners
 
 Feishu, Nextcloud Talk, and Telegram receive webhooks on Gateway HTTP routes. Their plugin-owned
@@ -366,7 +397,7 @@ model value into a different embedding model. See [llama.cpp](/plugins/llama-cpp
 
     Per-agent migrations apply to both keyed `agents.entries` and legacy `agents.list` rosters, including rosters that already set `agents.ownership: "explicit"`. For example, Doctor preserves an agent's legacy `memorySearch` settings under `memory.search`. Existing values at the current config paths take precedence.
 
-    For legacy rosters with multiple agents and no resolvable ambient owner, Doctor seeds `agents.defaults.systemAgent.agentId` from a uniquely marked `default: true` agent, or `main` when present. Sole-agent rosters and legacy default markers already honored by the runtime need no owner repair and produce no missing-owner advice. Explicit fleet ownership disables the legacy default-marker fallback, so those rosters may still need repair. Doctor also pins `agents.defaults.heartbeat.agentId` only when heartbeat enrollment would otherwise be unresolved; existing heartbeat owners, shared defaults, and per-agent enrollment are preserved. These changes are reported and saved by `doctor --fix`, including the update-time doctor pass. If no default can be identified, configure the system-agent owner explicitly.
+    For legacy rosters with multiple agents and no resolvable ambient owner, Doctor seeds `agents.defaults.systemAgent.agentId` from a uniquely marked `default: true` agent, or `main` when present. Sole-agent rosters need no owner repair. Doctor converts valid legacy default markers into explicit per-surface owners before runtime admission. Explicit fleet ownership disables the legacy default-marker fallback, so those rosters may still need repair. Doctor also pins `agents.defaults.heartbeat.agentId` only when heartbeat enrollment would otherwise be unresolved; existing heartbeat owners, shared defaults, and per-agent enrollment are preserved. These changes are reported and saved by `doctor --fix`, including the update-time doctor pass. If no default can be identified, configure the system-agent owner explicitly.
 
     <Note>
       Migration retention follows the six-month

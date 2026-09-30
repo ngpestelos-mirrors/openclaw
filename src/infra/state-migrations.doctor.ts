@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listAgentIds } from "../agents/agent-scope-config.js";
+import { listAgentIds, resolveEffectiveAgentDir } from "../agents/agent-scope-config.js";
 import { resolveSharedMainAuthAgentDir } from "../agents/auth-profiles/shared-main-dir.js";
 import { resolveInstallAgentDir } from "../agents/install-agent-dir.js";
 import {
@@ -12,7 +12,11 @@ import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
 import { getChannelPlugin } from "../channels/plugins/registry.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
 import { readCurrentConfigForResolution } from "../config/io.runtime.js";
-import { resolveSessionStoreCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
+import {
+  resolveSessionStoreCompatibilityAgentId,
+  tryGetLegacyDefaultAgentId,
+} from "../config/legacy.default-agent-owner.js";
+import { resolveLegacyAgentRosterOwner } from "../config/legacy.roster.js";
 import { resolveConfigPath, resolveOAuthDir, resolveStateDir } from "../config/paths.js";
 import { migrateLegacyMainSessionKeys } from "../config/sessions/legacy-main-session-migration.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
@@ -233,6 +237,8 @@ function resolveConcreteBindingAccountId(value: unknown): string | undefined {
 
 export async function detectLegacyStateMigrations(params: {
   cfg: OpenClawConfig;
+  /** Doctor's original resolved locators, before roster ownership was materialized. */
+  sourceConfigBeforeMigrations?: OpenClawConfig;
   /** Legacy session file inspection belongs to Doctor, including its read-only preview. */
   mode?: "automatic" | "doctor";
   pluginDoctorConfig?: OpenClawConfig;
@@ -252,14 +258,28 @@ export async function detectLegacyStateMigrations(params: {
   const stateDir = resolveStateDir(env, homedir);
   const oauthDir = resolveOAuthDir(env, stateDir);
   const detectSessionFiles = params.mode !== "automatic";
+  const locatorConfig = params.sourceConfigBeforeMigrations ?? params.cfg;
   const installAgentDir = resolveInstallAgentDir(
-    (resolutionEnv) => readCurrentConfigForResolution({ config: params.cfg, env: resolutionEnv }),
+    (resolutionEnv) =>
+      readCurrentConfigForResolution({ config: locatorConfig, env: resolutionEnv }),
     { env, homedir },
   );
-  const migrationTarget = installAgentDir.migrationTarget;
+  const installedTarget = installAgentDir.migrationTarget;
+  const preimageOwner =
+    tryGetLegacyDefaultAgentId(params.cfg) ?? resolveLegacyAgentRosterOwner(locatorConfig);
+  // Doctor's allocated source identity can differ from both the system agent and raw duplicate ids.
+  const migrationTarget =
+    preimageOwner && listAgentIds(params.cfg).includes(preimageOwner)
+      ? {
+          owner: preimageOwner,
+          dir: hasCustomAgentDirOverride(env)
+            ? installedTarget?.dir
+            : resolveEffectiveAgentDir(params.cfg, preimageOwner, { env, homedir }),
+        }
+      : installedTarget;
   const migrationAgentId = migrationTarget?.owner;
   const sessionMigrationAgentId = tryResolveDoctorSessionMigrationAgentId(
-    params.cfg,
+    locatorConfig,
     migrationAgentId,
   );
   const targetAgentId = migrationAgentId ?? sessionMigrationAgentId ?? LEGACY_IMPLICIT_AGENT_ID;
@@ -2559,6 +2579,7 @@ export async function runLegacyStateMigrations(params: {
 /** Run canonical startup migrations and explicit Doctor-owned file repairs. */
 export async function autoMigrateLegacyState(params: {
   cfg: OpenClawConfig;
+  sourceConfigBeforeMigrations?: OpenClawConfig;
   invocationPurpose?: LegacyStateMigrationInvocationPurpose;
   agentDatabaseMigrationDiscovery?: PreparedAgentDatabaseMigrationDiscovery;
   pluginDoctorConfig?: OpenClawConfig;
@@ -2778,6 +2799,7 @@ async function executeLegacyStateMigrations(
       run: async () => {
         detected = await detectLegacyStateMigrations({
           cfg: params.cfg,
+          sourceConfigBeforeMigrations: params.sourceConfigBeforeMigrations,
           mode,
           pluginDoctorConfig: params.pluginDoctorConfig,
           ...(mode === "doctor" ? { pluginSessionStoreAgentIds } : {}),

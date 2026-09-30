@@ -14,11 +14,11 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { createCanonicalAgentConfigFixture } from "../test-utils/config-roster.js";
 import { resolveDeferredPluginMigrationConfigPaths } from "./deferred-plugin-migration-config.js";
 import { createConfigIO } from "./io.factory.js";
 import { readCurrentConfigForPolicyCheck } from "./io.runtime.js";
 import { resolveSessionStoreCompatibilityAgentId } from "./legacy.default-agent-owner.js";
-import { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
 import { replaceConfigFile } from "./mutate.js";
 import {
   validateConfigObjectRawWithPlugins,
@@ -348,7 +348,7 @@ describe("config IO with deferred plugin migrations", () => {
   });
 
   it("keeps the legacy session owner while excluding a pending plugin field", () => {
-    const source = migratePersistedImplicitMainRoster({
+    const source = createCanonicalAgentConfigFixture({
       agents: { list: [{ id: "operator", default: true }, { id: "worker" }] },
       legacySample: { root: "/srv/sample" },
     }).config;
