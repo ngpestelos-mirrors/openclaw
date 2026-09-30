@@ -30,6 +30,7 @@ import type { EmbeddingProvider } from "./embeddings.js";
 import { memoryCpuProcessEntrypoints } from "./manager-cpu-entrypoints.js";
 import { resetMemoryDatabase } from "./manager-db.js";
 import { memoryPublicationFaultEntrypoint } from "./manager-publication-fault-entrypoint.test-support.js";
+import { observePublishedReservations } from "./manager-publication-observer.test-support.js";
 import { waitForMemoryReindexLock } from "./manager-reindex-lock.js";
 import type { MemoryIndexMeta } from "./manager-reindex-state.js";
 import type { MemoryIndexManager } from "./manager.js";
@@ -166,28 +167,6 @@ describe("memory manager reindex recovery", () => {
     }
     manager = result.manager as unknown as MemoryIndexManager;
     return manager;
-  }
-
-  function observePublishedReservations(publishedDb: DatabaseSync, onReserved: () => void) {
-    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
-    vi.spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore").mockImplementation(
-      async (...args) => {
-        const worker = await open(...args);
-        if (
-          args[1] === publishedDb &&
-          args[2].moduleUrl.href ===
-            resolveRuntimeWorkerUrl(memoryCpuProcessEntrypoints.publication).href
-        ) {
-          const run = worker.run.bind(worker);
-          vi.spyOn(worker, "run").mockImplementation((...runArgs) => {
-            const result = run(...runArgs);
-            onReserved();
-            return result;
-          });
-        }
-        return worker;
-      },
-    );
   }
 
   async function reservePublishedWriter(mutate?: () => void | Promise<void>) {
@@ -750,6 +729,30 @@ describe("memory manager reindex recovery", () => {
   );
 
   it("bounds the shadow cache before any entries reach the primary", async () => {
+    const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
+    const interceptedSources: Array<Parameters<typeof open>[1]> = [];
+    // Install before manager startup can retain its canonical publication client.
+    vi.spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore").mockImplementation(
+      async (...args) => {
+        const [options, source, worker] = args;
+        if (
+          options.agentId !== "main" ||
+          options.path !== databasePath ||
+          worker.moduleUrl.href !==
+            resolveRuntimeWorkerUrl(memoryCpuProcessEntrypoints.publication).href
+        ) {
+          return await open(...args);
+        }
+        const client = await open(options, source, {
+          ...worker,
+          moduleUrl: resolveRuntimeWorkerUrl(memoryPublicationFaultEntrypoint),
+          input: { kind: "cache-capacity", publication: worker.input, maximum: 2 },
+        });
+        interceptedSources.push(source);
+        return client;
+      },
+    );
     const memoryManager = await openManager(createCfg({ sources: ["memory"], cacheEnabled: true }));
     const harness = memoryManager as unknown as ReindexHarness;
     harness.cache.maxEntries = 2;
@@ -758,27 +761,12 @@ describe("memory manager reindex recovery", () => {
     }
     // Reject transient overflow too: checking only the final row count misses
     // primary-file high-water growth followed by post-publication deletion.
-    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
-    vi.spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore").mockImplementation(
-      async (...args) => {
-        const [options, source, worker] = args;
-        if (
-          source !== harness.db ||
-          worker.moduleUrl.href !==
-            resolveRuntimeWorkerUrl(memoryCpuProcessEntrypoints.publication).href
-        ) {
-          return await open(...args);
-        }
-        return await open(options, source, {
-          ...worker,
-          moduleUrl: resolveRuntimeWorkerUrl(memoryPublicationFaultEntrypoint),
-          input: { kind: "cache-capacity", publication: worker.input, maximum: 2 },
-        });
-      },
-    );
-
     await memoryManager.sync({ reason: "cli", force: true });
 
+    expect(interceptedSources.length).toBeGreaterThan(0);
+    for (const source of interceptedSources) {
+      expect(source === harness.db).toBe(true);
+    }
     expect(
       harness.db.prepare("SELECT COUNT(*) AS count FROM memory_embedding_cache").get(),
     ).toEqual({ count: 2 });

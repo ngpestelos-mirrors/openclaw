@@ -67,7 +67,7 @@ export function bindSqliteWorkerBackend(
     database: DatabaseSync;
     admit(stage: "transaction" | "commit"): void;
   },
-): SqliteWorkerBackend<MemoryPublicationOperations> {
+) {
   return createPublicationBackend(input, context.databasePath, context.database, false, (stage) =>
     context.admit(stage),
   );
@@ -79,7 +79,7 @@ function createPublicationBackend(
   db: DatabaseSync,
   ownsConnection: boolean,
   admit: (stage: "transaction" | "commit") => void,
-): SqliteWorkerBackend<MemoryPublicationOperations> {
+) {
   const assertPath = () => assertMemoryShadowIdentity(databasePath, input.fileIdentity);
   let staged:
     | ({
@@ -355,7 +355,7 @@ function createPublicationBackend(
           db.exec("DROP TABLE temp.memory_publication_input");
         }
       },
-    };
+    } satisfies SqliteWorkerBackend<MemoryPublicationOperations>;
   } catch (error) {
     if (ownsConnection) {
       db.close();

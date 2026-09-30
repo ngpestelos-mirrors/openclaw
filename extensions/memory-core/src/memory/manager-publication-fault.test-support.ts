@@ -46,10 +46,10 @@ export function bindSqliteWorkerBackend(
     `);
     return {
       ...backend,
-      async close() {
+      close() {
         const failures: unknown[] = [];
         try {
-          await backend.close();
+          backend.close();
         } catch (error) {
           failures.push(error);
         }
