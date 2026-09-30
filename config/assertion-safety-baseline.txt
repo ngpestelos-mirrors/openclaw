@@ -459,7 +459,6 @@ extensions/line/src/flex-templates/basic-cards.ts	12
 extensions/line/src/flex-templates/media-control-cards.ts	15
 extensions/line/src/flex-templates/schedule-cards.ts	27
 extensions/line/src/gateway.ts	1
-extensions/line/src/markdown-to-line.ts	7
 extensions/line/src/monitor-durable.ts	1
 extensions/line/src/monitor.ts	1
 extensions/line/src/outbound.ts	5
@@ -1060,7 +1059,6 @@ extensions/whatsapp/src/inbound/message-enrichment.ts	3
 extensions/whatsapp/src/inbound/outbound-mentions.ts	1
 extensions/whatsapp/src/qa-driver.runtime.ts	1
 extensions/whatsapp/src/quoted-message.ts	1
-extensions/whatsapp/src/reconnect.ts	1
 extensions/whatsapp/src/security-fix.ts	2
 extensions/whatsapp/src/session-errors.ts	15
 extensions/whatsapp/src/session.ts	1
