@@ -22,11 +22,6 @@ under `plugins.entries.zoom-meetings.config`. Browser participant audio is
 captured separately from native assistant-microphone injection, so Live can
 hear interruptions while speaking.
 
-## Requirements
-
-- OpenClaw 2026.9.8 or newer. Older hosts lack the shared meeting transport
-  helpers this plugin depends on, so install refuses them.
-
 ## Handle Zoom policy and manual actions
 
 The browser adapter chooses **Join from browser**, fills the guest name, turns
