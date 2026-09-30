@@ -129,7 +129,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     result("Completed the requested work."),
   );
   const prepare = vi.fn(async () => prepared);
-  const changed = vi.fn();
+  const changed = vi.fn<Parameters<typeof createSessionActivitySummaries>[0]["onChanged"]>();
   const read = () => loadSessionEntryReadOnly(scope);
   const view = () => projectSessionActivitySummary({ ...target, cfg, entry: read() });
   const createService = (prepareModel: typeof defaultPrepareModel = prepare) =>
@@ -947,13 +947,8 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     service.ensure(target);
     await vi.waitFor(() => expect(view()?.state).toBe("current"));
     await messages(1, 2);
-    let finishOld!: (value: ReturnType<typeof result>) => void;
-    complete.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishOld = resolve;
-        }),
-    );
+    const oldCompletion = createDeferred<ReturnType<typeof result>>();
+    complete.mockImplementationOnce(() => oldCompletion.promise);
     complete.mockImplementationOnce(async () => result("Recap from the relocated store."));
     service.ensure(target);
     await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
@@ -974,15 +969,30 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       const projected = projectSessionActivitySummary({ ...target, cfg, entry: relocatedEntry });
       expect.soft(projected?.state).toBe("stale");
       service.ensure(target);
-      await vi.waitFor(() =>
-        expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.coveredMessages).toBe(3),
-      );
+      try {
+        await vi.waitFor(() =>
+          expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.coveredMessages).toBe(
+            3,
+          ),
+        );
+      } catch (error) {
+        console.error("Activity recap relocation did not publish", {
+          preparedModels: prepare.mock.calls.length,
+          completedModels: complete.mock.calls.length,
+          modelSettlements: complete.mock.settledResults.map(({ type }) => type),
+          relocatedChanges: changed.mock.calls.filter(
+            ([where]) => where.storePath === relocatedPath,
+          ).length,
+          oldRequestAborted: complete.mock.calls[1]?.[0].abortSignal?.aborted,
+        });
+        throw error;
+      }
       expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.text).toBe(
         "Recap from the relocated store.",
       );
       expect(complete.mock.calls[1]![0].abortSignal?.aborted).toBe(true);
     } finally {
-      finishOld(result("Outdated store result."));
+      oldCompletion.resolve(result("Outdated store result."));
     }
     await service.dispose();
     expect(loadSessionEntryReadOnly(relocatedScope)?.activitySummary?.text).toBe(
