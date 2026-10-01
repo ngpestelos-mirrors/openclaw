@@ -4105,7 +4105,12 @@ describe("cron method validation", () => {
       waits: false,
     },
     { name: "isolated", job: { sessionTarget: "isolated" }, waits: true },
-    { name: "other named session", job: { sessionTarget: "session:reports" }, waits: true },
+    {
+      // The automations tool stamps the creator's session onto non-isolated jobs.
+      name: "other named session created from the caller",
+      job: { sessionTarget: "session:reports", sessionKey: "agent:ops:main" },
+      waits: true,
+    },
   ] as const)(
     "waits for a $name run from an agent turn only when it can finish meanwhile",
     async ({ job, mainKey, waits }) => {
