@@ -218,7 +218,7 @@ patchedDependencies:
   '@novnc/novnc@1.7.0': bfde0e1bda172da3525f9f5014d85ad28073325b74f09609084598a65d2f412d
   '@openclaw/proxyline@0.3.12': 9e0969d2dc0abb32610053fba342756afb56f4996c90adfdc34f21ad090fbb0f
   baileys@7.0.0-rc14: 03ae85550381d1bda7d014c9aa9f544ad421d35d745d1167fd5d33f7f715dafb
-  chrome-devtools-mcp@1.9.0: 832ce1d2ff002b44edb93bae88858d6edd8bc833acc87dd0fe82454d8834e340
+  chrome-devtools-mcp@1.10.1: d31d6e7e187ea9fd4dad87ed3ad08073c77ffcfddd52bc4761b39a2dfce0ac1e
   ghostty-web@0.4.0: eb0a0b91bbf843ba8dceeade968072a6c7a6be402fdd1e80d466e54241b62fa6
   matrix-js-sdk@42.4.0: 12d9bb9bdc53b7b96d8d887d0bea6b3072d1fef488b51102caec19fb651c8e92
   vitest@5.0.1: 90ba2969491e095cc2e92a4d38256dfcf64f85078ec29e1762b9429a00b35901
@@ -294,8 +294,8 @@ importers:
         specifier: 6.0.0
         version: 6.0.0
       chrome-devtools-mcp:
-        specifier: 1.9.0
-        version: 1.9.0(patch_hash=832ce1d2ff002b44edb93bae88858d6edd8bc833acc87dd0fe82454d8834e340)
+        specifier: 1.10.1
+        version: 1.10.1(patch_hash=d31d6e7e187ea9fd4dad87ed3ad08073c77ffcfddd52bc4761b39a2dfce0ac1e)
       clawpdf:
         specifier: 0.3.2
         version: 0.3.2
@@ -799,8 +799,8 @@ importers:
         specifier: 1.30.0
         version: 1.30.0(supports-color@10.2.2)(zod@4.6.5)
       chrome-devtools-mcp:
-        specifier: 1.9.0
-        version: 1.9.0(patch_hash=832ce1d2ff002b44edb93bae88858d6edd8bc833acc87dd0fe82454d8834e340)
+        specifier: 1.10.1
+        version: 1.10.1(patch_hash=d31d6e7e187ea9fd4dad87ed3ad08073c77ffcfddd52bc4761b39a2dfce0ac1e)
       express:
         specifier: 5.2.1
         version: 5.2.1(supports-color@10.2.2)
@@ -6683,8 +6683,8 @@ packages:
     resolution: {integrity: sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g==}
     engines: {node: '>=18'}
 
-  chrome-devtools-mcp@1.9.0:
-    resolution: {integrity: sha512-RnzXoJiUQ44hpOihWk90uOhLD/CnwDkDy0ldHMZONJ2nYQ+dWN1fq1luHHqyd+7FuYnyIlCY6uTThbN5ut9kSQ==}
+  chrome-devtools-mcp@1.10.1:
+    resolution: {integrity: sha512-Klw6HWDqHC/XS1JwZldd2r49aUhbUJN9m9Mvcx4SEueIPXtzuQX+QelxAViobv8YUkDZ7HWDrmViR6LeYK0wAw==}
     engines: {node: ^20.19.0 || ^22.12.0 || >=23}
     hasBin: true
     peerDependencies:
@@ -14269,7 +14269,7 @@ snapshots:
 
   chownr@3.0.0: {}
 
-  chrome-devtools-mcp@1.9.0(patch_hash=832ce1d2ff002b44edb93bae88858d6edd8bc833acc87dd0fe82454d8834e340): {}
+  chrome-devtools-mcp@1.10.1(patch_hash=d31d6e7e187ea9fd4dad87ed3ad08073c77ffcfddd52bc4761b39a2dfce0ac1e): {}
 
   cjs-module-lexer@2.2.1: {}
 
