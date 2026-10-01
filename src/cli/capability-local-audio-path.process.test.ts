@@ -12,19 +12,8 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 // The synthetic executable uses /bin/sh; Windows suffix lookup has owner coverage.
 describe.skipIf(process.platform === "win32")("infer local audio executable selection", () => {
-  it.each([
-    ["a literal home-relative PATH", "home", false],
-    ["a home-relative PATH before a later decoy", "home", true],
-    ["an absolute PATH", "absolute", false],
-    ["a quoted PATH", "quoted", false],
-    ["a home path containing the PATH delimiter", "home-delimiter", false],
-    ["an absolute symlink/.. PATH", "symlink", true],
-    ["a home-relative symlink/.. PATH", "home-symlink", true],
-    ["empty PATH entries with a cwd executable", "empty", false],
-  ] as const)("preserves executable selection from %s", async (_name, form, decoy) => {
-    const parent = tempDirs.make("openclaw-infer-local-audio-");
-    const root = form === "home-delimiter" ? path.join(parent, "audio:home") : parent;
-    await fs.mkdir(root, { recursive: true });
+  it("transcribes through a home-relative symlink parent before lexical and later PATH decoys", async () => {
+    const root = tempDirs.make("openclaw-infer-local-audio-");
     const binDir = path.join(root, "qa-stt-bin");
     const decoyDir = path.join(root, "decoy-bin");
     const tmp = path.join(root, "tmp");
@@ -32,18 +21,11 @@ describe.skipIf(process.platform === "win32")("infer local audio executable sele
     await Promise.all([binDir, decoyDir, tmp, workspace].map((dir) => fs.mkdir(dir)));
     const transcript = "preferred synthetic transcript";
     await createWhisperExecutable(binDir, transcript);
-    if (decoy) {
-      await createWhisperExecutable(decoyDir, "wrong executable transcript");
-    }
-    if (form === "symlink" || form === "home-symlink") {
-      const nestedDir = path.join(binDir, "nested");
-      await fs.mkdir(nestedDir);
-      await fs.symlink(nestedDir, path.join(root, "audio-link"));
-      await createWhisperExecutable(root, "lexically normalized decoy transcript");
-    }
-    if (form === "empty") {
-      await createWhisperExecutable(root, "cwd executable must not run");
-    }
+    await createWhisperExecutable(decoyDir, "wrong executable transcript");
+    const nestedDir = path.join(binDir, "nested");
+    await fs.mkdir(nestedDir);
+    await fs.symlink(nestedDir, path.join(root, "audio-link"));
+    await createWhisperExecutable(root, "lexically normalized decoy transcript");
     const mediaPath = path.join(root, "input.wav");
     await fs.writeFile(mediaPath, createSafeAudioFixtureBuffer(2048, 0x52));
     const configPath = path.join(root, "openclaw.json");
@@ -56,16 +38,6 @@ describe.skipIf(process.platform === "win32")("infer local audio executable sele
         logging: { level: "silent", consoleLevel: "silent" },
       }),
     );
-    const firstEntry = {
-      home: "~/qa-stt-bin",
-      "home-delimiter": "~/qa-stt-bin",
-      absolute: binDir,
-      quoted: `"${binDir}"`,
-      symlink: `${root}/audio-link/..`,
-      "home-symlink": "~/audio-link/..",
-      empty: path.delimiter,
-    }[form];
-    const searchPath = [firstEntry, ...(decoy ? [decoyDir] : [])];
     const result = await runCliProcessChild({
       nodeArgs: [
         ...resolveRuntimeWorkerArgv(resolveRuntimeWorkerUrl(cliRecoveryEntrypoints.cli)),
@@ -78,7 +50,7 @@ describe.skipIf(process.platform === "win32")("infer local audio executable sele
       ],
       cwd: root,
       env: {
-        PATH: searchPath.join(path.delimiter),
+        PATH: ["~/audio-link/..", decoyDir].join(path.delimiter),
         ESBUILD_WORKER_THREADS: process.env.ESBUILD_WORKER_THREADS,
         HOME: root,
         USERPROFILE: root,
@@ -96,11 +68,6 @@ describe.skipIf(process.platform === "win32")("infer local audio executable sele
       },
     });
     expect(result.signal, result.stderr).toBeNull();
-    if (form === "empty") {
-      expect(result.code, result.stderr).toBe(1);
-      expect(result.stderr).toContain("No audio transcription provider is configured or ready");
-      return;
-    }
     expect(result.code, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,

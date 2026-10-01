@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  normalizeDatabasePath,
+  readDatabaseIdentityBirthtime,
+} from "../infra/sqlite-worker-identity.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
 type AgentDatabaseOwner = { db: DatabaseSync };
@@ -11,16 +15,26 @@ const identities = resolveGlobalSingleton(
   () =>
     new WeakMap<
       DatabaseSync,
-      { identity: OpenClawAgentDatabaseIdentity; incarnation: string; filename: string }
+      {
+        identity: OpenClawAgentDatabaseIdentity;
+        birthtime: string | undefined;
+        incarnation: string;
+        filename: string;
+      }
     >(),
 );
 
 /** Prepare physical and connection identity once at open; cached aliases are not resolved again. */
 export function registerOpenClawAgentDatabaseIdentity(db: DatabaseSync): void {
-  const filename = db.location() ?? "";
+  const filename = normalizeDatabasePath(db.location() ?? "");
   const file = filename ? statSync(filename, { bigint: true }) : undefined;
   const identity = file ? `${file.dev}:${file.ino}` : Symbol("incognito-agent-database");
-  identities.set(db, { identity, incarnation: randomUUID(), filename });
+  identities.set(db, {
+    identity,
+    birthtime: file ? readDatabaseIdentityBirthtime(file) : undefined,
+    incarnation: randomUUID(),
+    filename,
+  });
 }
 
 /** Reuse facts captured at open; aliases must never be resolved again at a handoff. */
@@ -48,7 +62,7 @@ export function isOpenClawAgentDatabasePathCurrent(
   if (typeof identity === "symbol") {
     return true;
   }
-  if (database.db.location() !== filename) {
+  if (normalizeDatabasePath(database.db.location() ?? "") !== filename) {
     return false;
   }
   const current = statSync(database.path, { bigint: true, throwIfNoEntry: false });
