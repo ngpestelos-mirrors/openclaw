@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { migrateLegacyDefaultCronToolCaps } from "./legacy-default-tool-cap-migration.js";
+import { mergeCronPayload } from "./service/payload-merge.js";
 import { loadCronStore, saveCronStore } from "./store.js";
 import { makeStore } from "./store.test-support.js";
 import type { CronStoreFile } from "./types.js";
@@ -114,6 +115,24 @@ describe("migrateLegacyDefaultCronToolCaps", () => {
 
     await expect(migrateLegacyDefaultCronToolCaps({ storePath })).resolves.toEqual({
       migrated: [],
+    });
+  });
+
+  it("never widens a saved list that was explicitly edited before the migration ran", async () => {
+    const storePath = path.join(fixtureRoot, `case-${caseId++}`, "cron", "jobs.json");
+    const job = legacyDefaultJob("edited", { scheduledPolicy: true });
+    delete job.toolsAllowExecTarget;
+    delete job.toolsAllowExecTargetRequirement;
+    job.payload = mergeCronPayload(job.payload, { kind: "agentTurn", toolsAllow: ["read"] });
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+
+    await expect(migrateLegacyDefaultCronToolCaps({ storePath })).resolves.toEqual({
+      migrated: [],
+    });
+    expect((await loadCronStore(storePath)).jobs[0]?.payload).toEqual({
+      kind: "agentTurn",
+      message: "split",
+      toolsAllow: ["read"],
     });
   });
 });

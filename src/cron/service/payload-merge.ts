@@ -9,6 +9,11 @@ function applyToolsAllowPatch(
   payload: CronPayloadToolAllow,
   patch: CronPayloadToolAllowPatch,
 ): void {
+  if (Array.isArray(patch.toolsAllow) || patch.toolsAllow === null) {
+    // An explicit edit replaces a list older builds saved automatically, so the
+    // startup migration must no longer treat it as inheritable.
+    Reflect.deleteProperty(payload, "toolsAllowIsDefault");
+  }
   if (Array.isArray(patch.toolsAllow)) {
     payload.toolsAllow = patch.toolsAllow;
   } else if (patch.toolsAllow === null) {
