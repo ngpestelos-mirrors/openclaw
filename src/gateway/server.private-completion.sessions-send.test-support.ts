@@ -94,7 +94,7 @@ export function registerSessionsSendPrivateCompletionTests(
         await inputRecorder.persistApproved();
         return { payloads: [], meta: { durationMs: 1 } };
       });
-      startSessionsSendReplyFlow({
+      await startSessionsSendReplyFlow({
         runId: childRunId,
         completion,
         skip: false,

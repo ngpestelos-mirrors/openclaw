@@ -8,6 +8,7 @@ import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-work-admission.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../prepared-model-runtime-generation-scope.js";
 import { waitForAgentRunReply } from "../run-wait.js";
@@ -23,7 +24,7 @@ import {
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 const log = createSubsystemLogger("agents/sessions-send");
 
-/** Legacy peers observe a run; native child followups consume their retained result. */
+/** Await custody transfer before returning the tool; result observation stays detached. */
 export function startSessionsSendReplyFlow(
   params: Parameters<typeof runSessionsSendA2AFlow>[0] & {
     runId: string;
@@ -33,12 +34,11 @@ export function startSessionsSendReplyFlow(
   },
 ) {
   if (params.skip) {
-    return;
+    return Promise.resolve();
   }
   const { completion } = params;
-  const continueOwned = completion
-    ? <T>(run: () => Promise<T>) => completion.request.custody.run(run)
-    : runWithGatewayToolContinuationContext;
+  const continueOwned = async <T>(run: () => Promise<T>) =>
+    completion ? completion.request.custody.run(run) : runWithGatewayToolContinuationContext(run);
   const run = async () => {
     const settledReply = params.reply ?? (await completion?.take());
     const deliverRequesterReply: Parameters<
@@ -170,7 +170,7 @@ export function startSessionsSendReplyFlow(
           }
         }
       : undefined;
-    await runSessionsSendA2AFlow({
+    return runSessionsSendA2AFlow({
       ...params,
       deliverRequesterReply,
       roundOneReply: settledReply?.replyText,
@@ -179,27 +179,27 @@ export function startSessionsSendReplyFlow(
       waitRunId: settledReply || completion ? undefined : params.runId,
       replyRunId: params.runId,
     });
-    completion?.close();
   };
   // No caller-owned transcript/resource scope may survive in the detached turn.
-  const failed = (error: unknown) => {
-    completion?.close(error);
-    log.warn("sessions_send announce flow admission failed", {
-      runId: params.runId,
-      error: formatErrorMessage(error),
+  const admitted = createDeferredCore();
+  void continueOwned(() => {
+    admitted.resolve();
+    return runWithGatewayDetachedWorkContinuation(
+      () =>
+        runOutsidePreparedModelRuntimePluginGenerationScope(() =>
+          runWithoutOwnedSessionTranscriptWrites(run),
+        ),
+      "session:a2a-send",
+    );
+  })
+    .then(() => completion?.close())
+    .catch((error: unknown) => {
+      completion?.close(error);
+      admitted.resolve();
+      log.warn("sessions_send announce flow admission failed", {
+        runId: params.runId,
+        error: formatErrorMessage(error),
+      });
     });
-  };
-  try {
-    void continueOwned(() =>
-      runWithGatewayDetachedWorkContinuation(
-        () =>
-          runOutsidePreparedModelRuntimePluginGenerationScope(() =>
-            runWithoutOwnedSessionTranscriptWrites(run),
-          ),
-        "session:a2a-send",
-      ),
-    ).catch(failed);
-  } catch (error) {
-    failed(error);
-  }
+  return admitted.promise;
 }

@@ -492,16 +492,14 @@ export function resolveInProcessGatewayDispatch(
   return {
     assertSourceCurrent,
     assertInvocationCurrent,
-    // Admission checks the invoking turn; accepted agent work retains its original source.
-    assertContextCurrent:
-      method === "agent"
-        ? assertSourceCurrent
-        : () => {
-            selection?.assertCurrent();
-            runtimeParticipant?.assertCurrent();
-            assertSourceCurrent();
-            assertCallerCurrent?.(method);
-          },
+    assertContextCurrent: () => {
+      selection?.assertCurrent();
+      runtimeParticipant?.assertCurrent();
+      assertSourceCurrent();
+      if (method !== "agent") {
+        assertCallerCurrent?.(method);
+      }
+    },
     ...(transfersCreatedInput ? { assertCreatedInputSourceCurrent: assertSourceCurrent } : {}),
     client,
     context,

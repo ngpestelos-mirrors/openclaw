@@ -187,7 +187,7 @@ describe("child followup requester continuation", () => {
       }),
     );
     try {
-      startSessionsSendReplyFlow({
+      await startSessionsSendReplyFlow({
         completion,
         callGateway: callAgentToolGatewayRequest,
         runId: request!.runId,
@@ -350,7 +350,7 @@ describe("child followup requester continuation", () => {
         assertDispatchCurrent: options?.sessionMutationCommitGuard,
       }),
     );
-    startSessionsSendReplyFlow({
+    await startSessionsSendReplyFlow({
       completion,
       callGateway,
       runId: request!.runId,
