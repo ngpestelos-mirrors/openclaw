@@ -1475,15 +1475,11 @@ function canonicalizeAgentRosterForExplicitWrite(params: {
 }
 
 function restoreAuthoredAgentRoster(value: unknown, rootAuthoredConfig: unknown): unknown {
-  const authoredRoster = readAgentRosterProperty(rootAuthoredConfig);
-  if (authoredRoster) {
-    const next = deletePathValue(value, [
-      "agents",
-      authoredRoster.kind === "entries" ? "list" : "entries",
-    ]);
-    return setPathValue(next, ["agents", authoredRoster.kind], authoredRoster.value, true);
+  const roster = readAgentRosterProperty(rootAuthoredConfig);
+  let next = deletePathValue(value, ["agents", roster?.kind === "entries" ? "list" : "entries"]);
+  if (roster) {
+    return setPathValue(next, ["agents", roster.kind], roster.value, true);
   }
-  let next = deletePathValue(value, ["agents", "entries"]);
   next = deletePathValue(next, ["agents", "list"]);
   // Roster injection must not leave an unauthored parent, but empty authored sections are intent.
   return !hasPathValue(rootAuthoredConfig, ["agents"]) &&
