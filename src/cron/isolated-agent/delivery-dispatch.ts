@@ -61,7 +61,7 @@ import {
   appendCronRunInspectionLink,
   normalizeDirectCronDeliveryPayloads,
 } from "./delivery-payload-normalization.js";
-import { pickSummaryFromOutput } from "./helpers.js";
+import { pickSummaryFromOutput, readAutomationFailedReport } from "./helpers.js";
 import { cleanupCronRunSessionAfterRun } from "./session-cleanup.js";
 import { isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 
@@ -80,6 +80,7 @@ export async function dispatchCronDelivery(
   let outputText = params.outputText;
   let synthesizedText = params.synthesizedText;
   let deliveryPayloads = params.deliveryPayloads;
+  let agentReportedFailure: string | undefined;
 
   const deliveryState: CronResolvedDeliveryState = {
     status: params.deliveryRequested ? "not-delivered" : "not-requested",
@@ -105,7 +106,7 @@ export async function dispatchCronDelivery(
   const buildDeliveryState = async (disposition?: CronDeliveryDisposition) => {
     const completion = resolveAdmittedCronCompletionStatus(
       params.job,
-      disposition?.kind === "error" ? "error" : params.undeliveredRunStatus,
+      disposition?.kind === "error" || agentReportedFailure ? "error" : params.undeliveredRunStatus,
       deliveryState.status,
       deliveryState.deliverySuppressionReason,
     );
@@ -129,6 +130,7 @@ export async function dispatchCronDelivery(
       outputText,
       synthesizedText,
       deliveryPayloads,
+      ...(agentReportedFailure ? { agentReportedFailure } : {}),
     };
   };
   const formatDeliveryTargetError = (error: string) =>
@@ -553,10 +555,14 @@ export async function dispatchCronDelivery(
         abortSignal: params.abortSignal,
       });
     if (finalReply) {
-      outputText = finalReply;
-      summary = pickSummaryFromOutput(finalReply) ?? summary;
-      synthesizedText = finalReply;
-      deliveryPayloads = [{ text: finalReply }];
+      // The settled descendant answer is the run's terminal answer; classify it like the
+      // parent's own reply so a reported failure is never delivered as a token.
+      agentReportedFailure = readAutomationFailedReport(finalReply);
+      const reply = agentReportedFailure ?? finalReply;
+      outputText = reply;
+      summary = pickSummaryFromOutput(reply) ?? summary;
+      synthesizedText = reply;
+      deliveryPayloads = [{ text: reply }];
     }
     if (spawnOnlyHandoff && !synthesizedText?.trim()) {
       // An accepted spawn is the turn's only completion; retiring it without
