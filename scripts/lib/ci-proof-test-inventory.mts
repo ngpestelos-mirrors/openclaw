@@ -2794,7 +2794,6 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "src/gateway/server-methods/sessions-describe-catalog.test.ts",
   "src/gateway/server-methods/sessions-describe-worker.test.ts",
   "src/gateway/server-methods/sessions-files.repository.test.ts",
-  "src/gateway/server-methods/sessions-files.touched-files.test.ts",
   "src/gateway/server-methods/sessions-get.worker.test.ts",
   "src/gateway/server-methods/sessions-github.test.ts",
   "src/gateway/server-methods/sessions-list-archived.test.ts",
