@@ -69,7 +69,6 @@ import type { OpenClawStateLeaseLifecycleOperations } from "./openclaw-state-lea
 import type { RegisteredStateWorkerOperations } from "./openclaw-state-worker-registry.js";
 import type { RepositoryWorkspaceWorkerOperations } from "./session-repository-workspaces.types.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
-import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
 export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; identityKey: string };
 
@@ -84,7 +83,6 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
   SessionUpstreamWorkerOperations &
   PluginStateWorkerOperations &
   UserPreferenceWorkerOperations &
-  UserProfileWorkerOperations &
   CronStateWorkerOperations &
   ProjectRegistryWorkerOperations &
   WorkerEnvironmentWorkerOperations &
