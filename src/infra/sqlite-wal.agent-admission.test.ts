@@ -84,10 +84,11 @@ it.each(["keep", "close", "replace"] as const)(
           await release.promise;
         });
         await entered.promise;
+        const initialPeriodicWork: Promise<unknown>[] = [];
         try {
-          periodic();
-          periodic();
-          periodic();
+          initialPeriodicWork.push(Promise.resolve(periodic()));
+          initialPeriodicWork.push(Promise.resolve(periodic()));
+          initialPeriodicWork.push(Promise.resolve(periodic()));
           expect(vacuumCalls()).toHaveLength(0);
           expect(checkpointCalls()).toHaveLength(0);
           expect(freePages()).toBe(before);
@@ -101,12 +102,16 @@ it.each(["keep", "close", "replace"] as const)(
           }
         } finally {
           release.resolve();
-          await reservation;
-          if (retirement === "keep") {
-            await tickReclaimed.promise;
+          try {
+            await reservation;
+            if (retirement === "keep") {
+              await tickReclaimed.promise;
+            }
+            await runOpenClawAgentWriteAdmission(options, () => undefined);
+            await foreground;
+          } finally {
+            await Promise.all(initialPeriodicWork);
           }
-          await runOpenClawAgentWriteAdmission(options, () => undefined);
-          await foreground;
         }
         if (retirement === "keep") {
           expect(vacuumCalls()).toEqual([]);
@@ -139,8 +144,9 @@ it.each(["keep", "close", "replace"] as const)(
                   observed.resolve();
                 }
               });
+              let periodicWork: Promise<unknown> | undefined;
               try {
-                periodic();
+                periodicWork = Promise.resolve(periodic());
                 await observed.promise;
                 expect(database.walMaintenance.health?.state).toBe(expectedState);
                 if (expectedState === "blocked") {
@@ -148,6 +154,7 @@ it.each(["keep", "close", "replace"] as const)(
                 }
               } finally {
                 stop();
+                await periodicWork;
               }
               // Let the original scheduler settle before triggering the next interval.
               await runOpenClawAgentWriteAdmission(options, () => undefined);
@@ -214,6 +221,7 @@ const workerSource = String.raw`
     });
     scheduled.restore();
     const periodic = scheduled.periodic;
+    const periodicWork = [];
     const nativeExec = database.db.exec.bind(database.db);
     const withinAdmission = [];
     database.db.exec = (sql) => {
@@ -223,13 +231,13 @@ const workerSource = String.raw`
     parentPort.postMessage({ type: "ready" });
     const command = await receive();
     if (command.type !== "tick") throw new Error("Expected timer command");
-    if (!workerData.revoke) { periodic(); periodic(); periodic(); }
+    if (!workerData.revoke) { periodicWork.push(periodic(), periodic(), periodic()); }
     parentPort.postMessage({ type: "ticked", count: withinAdmission.length });
     if (!workerData.retire) {
       phase = "flush";
       await agent.withOpenClawAgentDatabaseAdmission(workerData.options, withAdmission, async () => {
         if (workerData.revoke) {
-          periodic();
+          periodicWork.push(periodic());
           await Promise.resolve();
           authorized = false;
         }
@@ -241,6 +249,7 @@ const workerSource = String.raw`
       if (!cleanup.settled) throw new Error("Worker database cleanup did not settle");
       state.closeOpenClawStateDatabaseForTest();
     });
+    await Promise.all(periodicWork);
     parentPort.postMessage({ type: "result", withinAdmission });
     parentPort.close();
   })().catch((error) => {

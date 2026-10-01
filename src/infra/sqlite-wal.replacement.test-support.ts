@@ -66,12 +66,13 @@ if (role === "worker") {
     fs.writeFileSync(staleCloseMarker, "closed");
     close();
   };
-  process.on("message", (message) => {
-    assert.equal(message, "tick");
-    tick();
-    process.send?.("survived-tick");
-  });
+  const nextMessage = once(process, "message");
   process.stdout.write("stale-ready\n");
+  const [message] = await nextMessage;
+  assert.equal(message, "tick");
+  const maintenance = tick();
+  process.send?.("survived-tick");
+  await maintenance;
 } else {
   const current = new DatabaseSync(databasePath);
   current.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;");

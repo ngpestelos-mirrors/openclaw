@@ -2,9 +2,13 @@ import { GatewayScheduler } from "./gateway-scheduler.js";
 
 /** Capture the maintenance entrypoint while leaving storage admission and execution intact. */
 export function observeSqliteWalPeriodicWork() {
-  const originalScope = GatewayScheduler.prototype.scope;
+  const scopeDescriptor = Object.getOwnPropertyDescriptors(GatewayScheduler.prototype).scope;
+  const originalScope = scopeDescriptor.value;
+  if (!originalScope) {
+    throw new Error("Expected the scheduler's own scope implementation");
+  }
   let periodic: (() => void | Promise<unknown>) | undefined;
-  GatewayScheduler.prototype.scope = function () {
+  GatewayScheduler.prototype.scope = function (this: GatewayScheduler) {
     const scope = originalScope.call(this);
     return {
       ...scope,
@@ -21,7 +25,7 @@ export function observeSqliteWalPeriodicWork() {
   };
   return {
     restore: () => {
-      GatewayScheduler.prototype.scope = originalScope;
+      Object.defineProperty(GatewayScheduler.prototype, "scope", scopeDescriptor);
     },
     get periodic() {
       if (!periodic) {

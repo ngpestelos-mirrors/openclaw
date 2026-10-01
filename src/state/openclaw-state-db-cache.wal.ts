@@ -62,7 +62,7 @@ export function createStateDatabaseWalOwner(
               database.path === pathname ||
               (identity !== undefined && databaseIdentities.get(database.db)?.key === identity.key),
           )
-          .map((database) => database.walMaintenance?.stop()),
+          .flatMap(({ walMaintenance }) => (walMaintenance ? [walMaintenance.stop()] : [])),
       );
     },
     register(
