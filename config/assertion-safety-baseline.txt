@@ -2058,7 +2058,7 @@ src/config/sessions/session-sqlite-target.ts	2
 src/config/sessions/session-store-config.ts	1
 src/config/sessions/session-transcript-reconcile.worker.ts	1
 src/config/sessions/skill-prompt-blobs.ts	5
-src/config/sessions/store-entry-shape.ts	2
+src/config/sessions/store-entry-shape.ts	1
 src/config/sessions/transcript-assistant-message.ts	2
 src/config/sessions/transcript-replay.ts	1
 src/config/sessions/transcript-stream.ts	1
