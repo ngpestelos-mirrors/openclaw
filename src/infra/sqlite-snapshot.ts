@@ -617,18 +617,14 @@ export async function createVerifiedSqliteSnapshot(
     );
   }
   if (options.sourceAcquisition) {
-    const prepared =
-      options.preserveRowIds || options.sourceAcquisition.preserveSourceArtifacts
-        ? await prepareSqliteReadOnlyCopyInProcess(
-            sourcePath,
-            options.sourceAcquisition.stagingRoot,
-          )
-        : await prepareSqliteReadOnlyLocationInProcess(
-            sourcePath,
-            options.sourceAcquisition.stagingRoot,
-            undefined,
-            options.onProgress,
-          );
+    const prepared = options.sourceAcquisition.preserveSourceArtifacts
+      ? await prepareSqliteReadOnlyCopyInProcess(sourcePath, options.sourceAcquisition.stagingRoot)
+      : await prepareSqliteReadOnlyLocationInProcess(
+          sourcePath,
+          options.sourceAcquisition.stagingRoot,
+          undefined,
+          options.onProgress,
+        );
     return withPreparedSqliteSnapshot(prepared, (privateSourcePath) =>
       verifyAndPublishSqliteSnapshot(options, privateSourcePath),
     );
