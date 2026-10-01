@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
+import { migrateLegacyDefaultCronToolCaps } from "../cron/legacy-default-tool-cap-migration.js";
 import {
   deleteCronJobRowInDatabase,
   loadCronRows,
@@ -569,6 +570,52 @@ describe("cron standing grant consumption", () => {
     expect(consume({ databaseOptions, revision, operationBinding: otherBinding }).outcome).toBe(
       "no-grant",
     );
+  });
+
+  it("keeps the same-command grant when the default tool-list migration rewrites the job", async () => {
+    const databaseOptions = createDatabaseOptions();
+    const ownerSessionKey = "agent:main:telegram:group:ops";
+    const revision = seedCronJob(
+      databaseOptions,
+      cronJob({
+        owner: { agentId: "main", sessionKey: ownerSessionKey, accountId: "work" },
+        scheduledToolPolicy: {
+          version: 1,
+          mode: "account",
+          ownerSessionKey,
+          ownerAccountId: "work",
+        },
+        // Older builds saved this automatically captured list with a default marker.
+        payload: Object.assign(
+          { kind: "agentTurn" as const, message: "run the backup", toolsAllow: ["exec", "read"] },
+          { toolsAllowIsDefault: true },
+        ),
+      }),
+    );
+    await mintGrant({ databaseOptions, jobConfigRevision: revision });
+
+    const { migrated } = await migrateLegacyDefaultCronToolCaps({
+      storePath: CRON_STORE_KEY,
+      env: databaseOptions.env,
+    });
+
+    expect(migrated.map(({ jobId }) => jobId)).toEqual(["job-1"]);
+    const database = openOpenClawStateDatabase(databaseOptions);
+    const migratedJob = loadedCronStoreFromRows(loadCronRows(database.db, CRON_STORE_KEY)).store
+      .jobs[0];
+    expect(migratedJob?.payload.toolsAllow).toEqual(["*"]);
+    const migratedRevision = resolveCronJobConfigRevision(migratedJob!);
+    expect(migratedRevision).not.toBe(revision);
+    expect(consume({ databaseOptions, revision: migratedRevision }).outcome).toBe("consumed");
+    const otherBinding = buildCronExecOperationBinding({
+      command: "echo different",
+      cwd: "/work",
+      env: undefined,
+    });
+    expect(
+      consume({ databaseOptions, revision: migratedRevision, operationBinding: otherBinding })
+        .outcome,
+    ).toBe("no-grant");
   });
 
   it("fails closed after a stamped expiry passes", async () => {
