@@ -157,8 +157,10 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
     revoked = true;
     closing ??= (async () => {
       await Promise.allSettled(pending);
-      await drainExecution?.release();
-      drainExecution = undefined;
+      if (drainExecution) {
+        await drainExecution.release();
+        drainExecution = undefined;
+      }
       releaseBorrow?.();
       releaseBorrow = undefined;
       unregisterAgent?.();
