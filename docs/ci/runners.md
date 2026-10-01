@@ -8,6 +8,46 @@ read_when:
 
 ## Runners
 
+### Testbox spending limits
+
+The general, ARM, build-artifact, and Windows Testbox workflows share 32
+concurrency slots. A GitHub-hosted admission job validates the lease ID, runner,
+and runtime before the Blacksmith job becomes eligible. Dispatches wait in their
+assigned slot without canceling an active lease. Each slot retains one pending
+request; a newer request can cancel and replace that pending request. Hash
+collisions can leave other slots unused; this is a ceiling, not a promise of
+32 busy machines.
+
+Admission expires ten minutes after the workflow was created. A request that
+waits longer fails before checkout or hydration when its runner starts; it can
+still incur runner startup cost. This does not remove the queued job immediately.
+Stop an abandoned lease by its exact ID instead of leaving a warmup pending.
+Do not retry in a loop when the pool is full.
+
+Idle requests are capped at 15 minutes. The existing Testbox monitor continues
+to protect active SSH commands. Stop retained leases when their task finishes;
+the idle limit is not a substitute for caller cleanup.
+
+| Testbox               | Allowed runner        | Maximum job runtime |
+| --------------------- | --------------------- | ------------------- |
+| General runtime proof | 32-vCPU Ubuntu x64    | 240 minutes         |
+| ARM proof             | 16-vCPU Ubuntu ARM    | 120 minutes         |
+| Build artifacts       | 16-vCPU Ubuntu x64    | 35 minutes          |
+| Windows               | 8- or 16-vCPU Windows | 75 minutes          |
+
+General proof retains the measured memory allocation and four-hour envelope.
+Its existing `timeout_minutes` input can request a shorter positive integer;
+larger values fail before allocation. Native Blacksmith warmup does not expose
+arbitrary workflow inputs, and Crabbox `--ttl` does not enforce a Testbox lifetime.
+The GitHub job timeout is the wall-clock limit.
+
+These controls cover dispatches using the updated workflows in this repository.
+Historical refs, other repositories, alternate workflows, and Windows probe
+workflows are outside the shared pool. Organization-wide concurrency, per-token
+admission, SKU restrictions, and a hard spending stop require provider controls.
+
+### CI runner routing
+
 Hosted Node 24 setup honors the workflow's existing `NODE_VERSION` pin when the
 setup input is `24.x`. This prevents runner-image refreshes from silently choosing
 a different patch version. Explicit compatibility versions retain their own

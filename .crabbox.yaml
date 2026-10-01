@@ -126,7 +126,7 @@ jobs:
   testbox-changed:
     provider: blacksmith-testbox
     target: linux
-    idleTimeout: 90m
+    idleTimeout: 15m
     hydrate:
       actions: false
     actions:

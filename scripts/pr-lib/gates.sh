@@ -200,7 +200,7 @@ run_remote_testbox_full_test_gate() {
     --blacksmith-workflow .github/workflows/ci-check-testbox.yml \
     --blacksmith-job check \
     --blacksmith-ref main \
-    --idle-timeout 90m \
+    --idle-timeout 15m \
     --ttl 240m \
     --timing-json \
     --label "$lease_label" \
