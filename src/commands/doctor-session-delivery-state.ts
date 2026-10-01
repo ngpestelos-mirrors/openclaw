@@ -1,9 +1,5 @@
 import { note } from "../../packages/terminal-core/src/note.js";
-import {
-  rewriteDoctorSessionEntries,
-  scanDoctorSessionEntriesTolerant,
-} from "../config/sessions/session-accessor.js";
-import { scanDoctorSessionEntryRecords } from "../config/sessions/session-accessor.sqlite-doctor-rewrite.js";
+import { scanDoctorSessionEntriesTolerant } from "../config/sessions/session-accessor.js";
 import { hasLegacySessionEntryState } from "../config/sessions/session-entry-state-format.js";
 import { stripRuntimeOnlySessionSkillsFields } from "../config/sessions/store-entry-shape.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -32,6 +28,10 @@ import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-
 import { runDoctorAgentDatabaseOperation } from "./doctor-agent-database-operation.js";
 import { backupDoctorSqliteDatabases } from "./doctor-migration-backup.js";
 import type { DoctorSqliteMaintenanceAuthority } from "./doctor-sqlite-maintenance-lock.js";
+import {
+  rewriteDoctorSessionEntries,
+  scanDoctorSessionEntryRecords,
+} from "./doctor/shared/session-entry-rewrite.js";
 import { migrateLegacySessionEntryState } from "./doctor/shared/session-entry-shape.js";
 
 export type SessionDeliveryStateRepairReport = {

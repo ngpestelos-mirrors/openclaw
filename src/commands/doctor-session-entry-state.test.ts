@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import * as entryRepairs from "../config/sessions/session-accessor.sqlite-doctor-rewrite.js";
 import { loadExactSessionEntryReadOnly } from "../config/sessions/session-accessor.sqlite-exact-read.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
 import { createSessionSqliteMigrationRun } from "../infra/session-sqlite-migration-manifest.js";
@@ -26,6 +25,7 @@ import {
 import { repairLegacySessionEntryStates } from "./doctor-session-delivery-state.js";
 import { runDoctorSessionSqlite } from "./doctor-session-sqlite.js";
 import { withDoctorSqliteMaintenanceLock } from "./doctor-sqlite-maintenance-lock.js";
+import * as entryRepairs from "./doctor/shared/session-entry-rewrite.js";
 
 let state: OpenClawTestState | undefined;
 

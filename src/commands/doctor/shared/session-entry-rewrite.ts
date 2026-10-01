@@ -1,36 +1,36 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { sql } from "kysely";
-import { executeSqliteQuerySync, iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
-import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js";
-import { assertOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
-import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
-import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
-import { chunkItems } from "../../utils/chunk-items.js";
-import {
-  deliveryContextFromSession,
-  sessionDeliveryChannel,
-} from "../../utils/delivery-context.read.js";
-import type { DoctorSessionScanScope } from "./session-accessor.sqlite-canonical-inventory.js";
+import type { DoctorSessionScanScope } from "../../../config/sessions/session-accessor.sqlite-canonical-inventory.js";
 import {
   publishSessionEntryCacheInvalidation,
   trackSessionEntryCacheWrite,
-} from "./session-accessor.sqlite-entry-cache.js";
-import { invalidateSessionEntryMaintenanceAgeFact } from "./session-accessor.sqlite-maintenance-age.js";
+} from "../../../config/sessions/session-accessor.sqlite-entry-cache.js";
+import { invalidateSessionEntryMaintenanceAgeFact } from "../../../config/sessions/session-accessor.sqlite-maintenance-age.js";
 import {
   getSessionKysely,
   resolveSqliteScope,
   toDatabaseOptions,
-} from "./session-accessor.sqlite-scope.js";
-import { parseSqliteSessionEntryRecord } from "./session-entry-json.js";
+} from "../../../config/sessions/session-accessor.sqlite-scope.js";
+import { parseSqliteSessionEntryRecord } from "../../../config/sessions/session-entry-json.js";
 import {
   attachSessionEntrySnapshots,
   sessionEntrySnapshotColumns,
   splitSessionEntrySnapshots,
   writeSessionEntrySnapshots,
-} from "./session-entry-snapshots.js";
-import { stripRuntimeOnlySessionSkillsFields } from "./store-entry-shape.js";
-import type { SessionEntry } from "./types.js";
+} from "../../../config/sessions/session-entry-snapshots.js";
+import { stripRuntimeOnlySessionSkillsFields } from "../../../config/sessions/store-entry-shape.js";
+import type { SessionEntry } from "../../../config/sessions/types.js";
+import { executeSqliteQuerySync, iterateSqliteQuerySync } from "../../../infra/kysely-sync.js";
+import type { DatabaseFileIdentity } from "../../../infra/sqlite-worker-identity.js";
+import { assertOpenClawAgentDatabaseIdentity } from "../../../state/openclaw-agent-db-identity.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../../../state/openclaw-agent-db-readonly.js";
+import { runOpenClawAgentWriteTransaction } from "../../../state/openclaw-agent-db.js";
+import { chunkItems } from "../../../utils/chunk-items.js";
+import {
+  deliveryContextFromSession,
+  sessionDeliveryChannel,
+} from "../../../utils/delivery-context.read.js";
 
 const DOCTOR_SESSION_REWRITE_BATCH_SIZE = 64;
 
