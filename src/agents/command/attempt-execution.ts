@@ -429,7 +429,7 @@ export function runAgentAttempt(
     (agentHarnessPolicy.runtime === "openclaw" && agentHarnessPolicy.runtimeSource !== "implicit"
       ? "openclaw"
       : undefined);
-  const replyExpectation = resolveCommandReplyExpectation(params, isSubagentAnnounceHandoff);
+  const replyExpectation = resolveCommandReplyExpectation(params);
   // Read session fields at invocation time, after admitted CLI binding recovery.
   const buildCommonRunParams = () =>
     ({

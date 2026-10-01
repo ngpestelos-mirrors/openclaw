@@ -53,11 +53,11 @@ import { buildConfiguredModelCatalog } from "../model-selection-shared.js";
 import { installSessionPlacementAdmissionProvider } from "../session-placement-admission.js";
 import { createAgentAttemptLifecycleCallbacks } from "./attempt-callbacks.js";
 import {
+  createSubagentAnnounceConfig,
   createSubagentAnnounceHandoffOptions,
   createSubagentAnnounceSessionStore,
   SUBAGENT_ANNOUNCE_DELIVERY_CASES,
   SUBAGENT_ANNOUNCE_EMBEDDED_DELIVERY_CASES,
-  type SubagentAnnounceDeliveryCase,
 } from "./attempt-execution.announce.test-support.js";
 import {
   cliRuntimeConfig,
@@ -1957,17 +1957,6 @@ describe("CLI attempt execution", () => {
     });
   });
 
-  function announceConfig({
-    operatorTools,
-    sandboxMode,
-  }: SubagentAnnounceDeliveryCase): OpenClawConfig {
-    return {
-      session: { store: storePath },
-      ...(operatorTools ? { tools: operatorTools } : {}),
-      ...(sandboxMode ? { agents: { defaults: { sandbox: { mode: sandboxMode } } } } : {}),
-    };
-  }
-
   it.each([
     ...SUBAGENT_ANNOUNCE_DELIVERY_CASES.map((testCase) =>
       Object.assign({ provider: "claude-cli" }, testCase),
@@ -1991,7 +1980,7 @@ describe("CLI attempt execution", () => {
     await runStoredAttempt({
       providerOverride: provider,
       modelOverride: model,
-      cfg: announceConfig(testCase),
+      cfg: createSubagentAnnounceConfig(testCase, storePath),
       sessionEntry,
       sessionKey,
       body: "A background task finished. Process the completion update now.",
@@ -2015,7 +2004,7 @@ describe("CLI attempt execution", () => {
         : testCase.requireExplicitMessageTarget,
       toolsAllow: testCase.expectedToolsAllow,
       disableTools: testCase.expectedDisableTools,
-      terminalReplyExpectation: "optional",
+      terminalReplyExpectation: "required",
       ...(!cli
         ? {
             disableMessageTool: testCase.disableMessageTool || undefined,
@@ -2223,17 +2212,27 @@ describe("CLI attempt execution", () => {
   });
 
   it.each(["openai", "claude-cli"])(
-    "requires %s results for internal sessions and children with a channel origin",
+    "applies %s inter-session reply policy to internal, direct, and group sessions",
     async (providerOverride) => {
-      for (const [sessionKey, messageChannel, privateCompletion] of [
+      const selectedRunner = providerOverride === "openai" ? runEmbeddedAgentMock : runCliAgentMock;
+      for (const [
+        sessionKey,
+        messageChannel,
+        privateCompletion,
+        allowSilence,
+        sourceTool = "subagent_settle",
+      ] of [
         ["agent:main:subagent:reply-required", "discord"],
         ["agent:main:direct:reply-required", "webchat"],
         ["agent:main:direct:private-reply-required", "telegram", true],
+        ["agent:main:telegram:direct:reply-required", "telegram"],
+        ["agent:main:telegram:group:optional", "telegram", undefined, true],
+        ["agent:main:telegram:direct:delegated", "telegram", undefined, false, "sessions_send"],
+        ["agent:main:telegram:group:delegated", "telegram", undefined, true, "sessions_send"],
       ] as const) {
         const sessionEntry = makeSessionEntry(`session-${messageChannel}`);
         const sessionStore = await seedSessionStore(sessionKey, sessionEntry);
-        runCliAgentMock.mockResolvedValueOnce(makeCliResult("review complete"));
-        runEmbeddedAgentMock.mockResolvedValueOnce({ meta: { durationMs: 1 } });
+        selectedRunner.mockResolvedValueOnce({ meta: { durationMs: 1 } });
 
         await runStoredAttempt({
           providerOverride,
@@ -2242,17 +2241,19 @@ describe("CLI attempt execution", () => {
           sessionKey,
           sessionStore,
           messageChannel,
+          cfg: { surfaces: { telegram: { silentReply: { group: "allow" } } } },
           opts: {
             privateCompletion,
-            inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
+            inputProvenance: { kind: "inter_session", sourceTool },
           },
         });
 
-        const selectedRunner =
-          providerOverride === "openai" ? runEmbeddedAgentMock : runCliAgentMock;
         expectMockArgFields(
           selectedRunner,
-          { terminalReplyExpectation: "required", silentReplyPromptMode: "none" },
+          {
+            terminalReplyExpectation: allowSilence ? "optional" : "required",
+            silentReplyPromptMode: allowSilence ? undefined : "none",
+          },
           selectedRunner.mock.calls.length - 1,
         );
       }

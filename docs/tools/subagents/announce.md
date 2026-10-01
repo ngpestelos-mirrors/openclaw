@@ -59,6 +59,17 @@ reply. OpenClaw does not automatically send the child result, parent final, or
 generated media to a channel. The parent can still choose to send a message
 through its permitted tools.
 
+If the parent called `sessions_yield` while waiting for private children, the
+yield hands the conversation back to it. When those children settle, the parent
+resumes and answers the original conversation under its normal reply rules: with
+automatic replies its final text is delivered; with `visibleReplies:
+"message_tool"` it must send the answer with the `message` tool, and plain final
+text stays internal. Child results stay internal input, and nothing is sent
+automatically on the child's behalf. The resumed turn stays bound to the parent
+session that spawned the children: if that session is reset (for example with
+`/new`) or replaced before the parent resumes, the results are dropped and
+nothing is sent.
+
 This option supports hidden, native, one-shot runs only. It cannot be combined
 with ACP, `collect: true`, `visible: true`, `thread: true`, `mode: "session"`, or
 `expectsCompletionMessage: false`. It does not change the default completion mode.
@@ -67,8 +78,9 @@ Finished private results remain in the registry until the spawning parent turn
 settles. A normal parent finish releases each ready result for private review;
 `sessions_yield` hands the results to its existing child batch instead. A reset or
 removed parent does not transfer the result to another session. When a settled
-batch contains a private result, its combined review stays private; ordinary
-siblings retain their individual completion delivery.
+batch contains a private result, the child findings stay private input to the
+parent's review or yielded continuation; ordinary siblings retain their individual
+completion delivery.
 
 Inspecting a completed child's status before yielding does not consume or invalidate
 its private result.

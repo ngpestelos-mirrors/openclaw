@@ -10,6 +10,7 @@ import {
   startsWithSilentToken,
   stripLeadingSilentToken,
 } from "../../auto-reply/tokens.js";
+import { normalizeChatType } from "../../channels/chat-type.js";
 import {
   isToolCallBlock,
   resolveToolUseId,
@@ -20,11 +21,15 @@ import {
   type SessionTranscriptRuntimeTarget,
   waitForSessionTranscriptProjection,
 } from "../../config/sessions/session-accessor.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
+import { resolveSilentReplySettings } from "../../config/silent-reply.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   type ClaudeCliFallbackSeed,
   readClaudeCliFallbackSeed,
 } from "../../gateway/cli-session-history.js";
 import { isSubagentSessionKey } from "../../routing/session-key.js";
+import type { InputProvenance } from "../../sessions/input-provenance.js";
 import { isDeliverableMessageChannel } from "../../utils/message-channel.js";
 import { buildAgentRunTerminalReplySnapshot } from "../agent-run-terminal-reply.js";
 import type { AgentRunTerminalReplySnapshot } from "../agent-run-terminal-reply.types.js";
@@ -37,14 +42,13 @@ import { resolveClaudeCliProjectDirForWorkspace } from "./claude-cli-project-dir
 
 const CLAUDE_CLI_TRANSCRIPT_MAX_RECORDS = 500;
 
-export function resolveCommandReplyExpectation(
-  params: {
-    sessionKey?: string;
-    messageChannel?: string;
-    opts: { lane?: string; privateCompletion?: true };
-  },
-  channelCompletionHandoff: boolean,
-): ReplyExpectation | undefined {
+export function resolveCommandReplyExpectation(params: {
+  cfg: OpenClawConfig;
+  sessionKey?: string;
+  sessionEntry?: Pick<SessionEntry, "chatType">;
+  messageChannel?: string;
+  opts: { lane?: string; privateCompletion?: true; inputProvenance?: InputProvenance };
+}): ReplyExpectation | undefined {
   if (
     params.opts.privateCompletion ||
     params.opts.lane === AGENT_LANE_SUBAGENT ||
@@ -53,7 +57,18 @@ export function resolveCommandReplyExpectation(
   ) {
     return "required";
   }
-  return channelCompletionHandoff ? "optional" : undefined;
+  if (params.opts.inputProvenance?.kind !== "inter_session") {
+    return undefined;
+  }
+  const chatType = normalizeChatType(params.sessionEntry?.chatType);
+  return resolveSilentReplySettings({
+    cfg: params.cfg,
+    sessionKey: params.sessionKey,
+    surface: params.messageChannel,
+    conversationType: chatType === "channel" ? "group" : chatType,
+  }).policy === "allow"
+    ? "optional"
+    : "required";
 }
 
 function normalizeClaudeCliSessionId(sessionId: string | undefined): string | undefined {
