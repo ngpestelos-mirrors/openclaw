@@ -253,7 +253,7 @@ describe("local model lean tool filtering", () => {
             gemma: { experimental: { localModelLean: true } },
           },
         },
-      },
+      } satisfies OpenClawConfig,
       "gemma",
     );
 

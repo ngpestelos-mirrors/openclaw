@@ -88,7 +88,7 @@ test("resolves fixed-store and auth compatibility owners", () => {
         entries: { ops: {}, research: {} },
       },
       session: { mainKey: "work", store: "/tmp/openclaw-fixed-sessions.json" },
-    },
+    } satisfies OpenClawConfig,
     "ops",
   );
   expect(resolveSessionStoreKey({ cfg, sessionKey: "incident-42" })).toBe("agent:ops:incident-42");

@@ -352,7 +352,7 @@ describe("agent roster resolution", () => {
 
   it("does not designate a sole explicit agent from migration provenance", () => {
     const config = retainLegacyDefaultAgentId(
-      { agents: { ownership: "explicit", entries: { ops: {} } } },
+      { agents: { ownership: "explicit", entries: { ops: {} } } } satisfies OpenClawConfig,
       "ops",
     );
     expect(tryResolveLegacyCompatibilityAgentId(config)).toBeUndefined();
