@@ -192,6 +192,7 @@ export async function dispatchSessionsSendFollowup(
               runId: start.runId,
               childSessionKey,
               sessionEntry: options.targetSession,
+              childAgentId: params.sessionStoreTarget.agentId,
               requesterSessionKey: options.requesterSessionKey,
               requesterDisplayKey: options.requesterSessionKey,
               requesterAgentId: options.requesterAgentId,
