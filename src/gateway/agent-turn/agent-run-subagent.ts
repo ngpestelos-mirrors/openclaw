@@ -29,6 +29,7 @@ export async function prepareGatewaySubagentRun(params: {
   cfg: OpenClawConfig;
   client: AgentTurnPrincipal | null;
   resolvedSessionKey?: string;
+  activeSessionAgentId?: string;
   inputProvenance?: InputProvenance;
   sessionEntry?: SessionEntry;
   request: Pick<AgentRunRequest, "message">;
@@ -104,6 +105,7 @@ export async function prepareGatewaySubagentRun(params: {
         getLatestLiveSubagentRunByChildSessionKey(
           sessionKey,
           (entry) => entry.pauseReason === "sessions_yield",
+          params.activeSessionAgentId,
         )
       : internalOwner === "plugin_subagent"),
   );
@@ -115,6 +117,7 @@ export async function prepareGatewaySubagentRun(params: {
         cfg: params.cfg,
         runId: params.runId,
         childSessionKey: sessionKey,
+        childAgentId: params.activeSessionAgentId,
         task: params.request.message.trim(),
         requester: params.client?.internal?.pluginSubagentRequester,
         pluginId: normalizeOptionalString(params.client?.internal?.pluginRuntimeOwnerId),

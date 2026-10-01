@@ -136,7 +136,11 @@ export async function prepareAgentRunDispatch(
         params.request.timeout === undefined &&
         !params.isOneShotModelRun &&
         params.resolvedSessionKey
-          ? getLatestLiveSubagentRunByChildSessionKey(params.resolvedSessionKey)
+          ? getLatestLiveSubagentRunByChildSessionKey(
+              params.resolvedSessionKey,
+              undefined,
+              params.activeSessionAgentId,
+            )
           : undefined;
       const registeredSession = registeredRun?.childSessionIdentity;
       // Admission may adopt a replacement; retained rows must match its final identity.

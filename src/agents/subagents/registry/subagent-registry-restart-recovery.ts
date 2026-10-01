@@ -114,8 +114,10 @@ export async function recoverInterruptedSubagentRow(
           .filter(
             (child) =>
               getLatestSubagentRunByChildSessionKeyFromRuns(
-                getSubagentRunsForChildSession(child.childSessionKey),
+                getSubagentRunsForChildSession(child.childSessionKey, child.childAgentId),
                 child.childSessionKey,
+                undefined,
+                child.childAgentId,
               ) === child,
           )
           .map((child) => [child.runId, child]),

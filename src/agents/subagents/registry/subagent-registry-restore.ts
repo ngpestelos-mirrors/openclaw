@@ -576,7 +576,12 @@ export function createSubagentRegistryRestorer(config: {
           isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) &&
           !shouldSuppressSubagentRecoverySessionEffects(current) &&
           isSameSubagentRunOwner(
-            getLatestSubagentRunByChildSessionKeyFromRuns(runs, entry.childSessionKey),
+            getLatestSubagentRunByChildSessionKeyFromRuns(
+              runs,
+              entry.childSessionKey,
+              undefined,
+              entry.childAgentId,
+            ),
             entry,
           )
         );

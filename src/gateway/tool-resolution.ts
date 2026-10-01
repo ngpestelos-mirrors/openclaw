@@ -343,6 +343,7 @@ export function resolveGatewayScopedTools(
   // bound to that same collector session.
   const swarmCollectorAdmission = {
     childSessionKey: params.sessionKey,
+    childAgentId: sessionAgentId,
     admittedRunId: surface === "loopback" ? params.runId : undefined,
   };
   const swarmCollectorContext = resolveSwarmCollectorToolContext(swarmCollectorAdmission);

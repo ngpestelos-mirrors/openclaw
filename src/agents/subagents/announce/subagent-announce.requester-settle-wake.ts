@@ -66,6 +66,7 @@ import {
   readSharedBatchState,
   createRequesterSettleBatchClaim,
   captureRequesterRunOwner,
+  resolveRequesterSettleRun,
   resolvePrivateSettlePolicy,
   retainedYieldIdentity,
   type RequesterSettleWakeBatchState,
@@ -311,12 +312,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     }
     const followup = pauseNotice ? undefined : getFollowupForCohort(settledBatch);
     const getRequesterRun = () =>
-      followup
-        ? undefined
-        : (getLatestLiveSubagentRunByChildSessionKey(
-            requesterSessionKey,
-            (entry) => entry.pauseReason === "sessions_yield",
-          ) ?? getLatestLiveSubagentRunByChildSessionKey(requesterSessionKey));
+      followup ? undefined : resolveRequesterSettleRun(requesterSessionKey, requesterAgentId);
     const requesterRun = getRequesterRun();
     const isRequesterRunCurrent = captureRequesterRunOwner(requesterRun);
     const isBatchDeliveryClosed = () => {

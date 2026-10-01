@@ -16,7 +16,10 @@ import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run
 
 export function createInterruptedRecoveryCoordinator(params: {
   runs: Map<string, SubagentRunRecord>;
-  getRunsForChildSession: (childSessionKey: string) => Iterable<SubagentRunRecord>;
+  getRunsForChildSession: (
+    childSessionKey: string,
+    childAgentId?: string,
+  ) => Iterable<SubagentRunRecord>;
   getGatewayRuntime: () => GatewayRecoveryRuntime | undefined;
   finalizeRun: ReturnType<
     typeof createSubagentRegistryCompletionRuntime
@@ -41,7 +44,7 @@ export function createInterruptedRecoveryCoordinator(params: {
   const observe = () => {
     unsubscribe ??= sessionChanges.subscribe((change) => {
       if ("sessionKey" in change) {
-        for (const entry of params.getRunsForChildSession(change.sessionKey)) {
+        for (const entry of params.getRunsForChildSession(change.sessionKey, change.agentId)) {
           invalidate(entry);
         }
       } else {
@@ -73,8 +76,10 @@ export function createInterruptedRecoveryCoordinator(params: {
       recoveryFacts(current).every((fact, index) => fact === expected[index]) &&
       isSameSubagentRunOwner(
         getLatestSubagentRunByChildSessionKeyFromRuns(
-          params.getRunsForChildSession(entry.childSessionKey),
+          params.getRunsForChildSession(entry.childSessionKey, entry.childAgentId),
           entry.childSessionKey,
+          undefined,
+          entry.childAgentId,
         ),
         entry,
       )
