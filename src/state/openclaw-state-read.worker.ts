@@ -121,16 +121,16 @@ import {
 import { readUserChannelIdentityResult } from "./user-channel-identities.worker.js";
 import { listUserProfileAuthLinksInDatabase } from "./user-model-accounts.js";
 import { selectUserPreferenceValues } from "./user-preferences.store.js";
-import { readUserProfileGitHubCommand } from "./user-profile-github-identity.js";
+import {
+  readUserProfileGitHubCommand,
+  selectProfileAccessEntries,
+} from "./user-profile-github-identity.js";
 import {
   readUserProfileAuthorityInDatabase,
   readUserProfileEmailBindings,
   readUserProfileIdForEmail,
 } from "./user-profile-identity.read.js";
-import {
-  readUserProfileAvatarCommand,
-  selectProfileDisplayEntries,
-} from "./user-profiles-internal.js";
+import { readUserProfileAvatarCommand } from "./user-profiles-internal.js";
 
 serveOwnedWorkerTasks(
   (input): OpenClawStateReadReply => {
@@ -579,7 +579,7 @@ serveOwnedWorkerTasks(
             }
             if (command.type === "userProfiles.reconcile") {
               const facts = runSqliteDeferredTransactionSync(db, () => ({
-                profile: selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
+                profile: selectProfileAccessEntries(db, [command.profileId])[0]?.[1],
                 emailBindings: readUserProfileEmailBindings(db, command.profileId),
               }));
               return { type: command.type, ...facts };
@@ -592,7 +592,7 @@ serveOwnedWorkerTasks(
             }
             if (command.type === "userProfiles.catalog") {
               const facts = runSqliteDeferredTransactionSync(db, () => ({
-                profiles: tableExists(db, "user_profiles") ? selectProfileDisplayEntries(db) : [],
+                profiles: tableExists(db, "user_profiles") ? selectProfileAccessEntries(db) : [],
                 emailBindings: readUserProfileEmailBindings(db),
               }));
               return { type: command.type, ...facts };

@@ -5,16 +5,14 @@ import {
   requestSqliteWorkerOperationAdmission,
 } from "../infra/sqlite-worker-operation-admission.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db.js";
+import { selectProfileAccessEntries } from "./user-profile-github-identity.js";
 import { readUserProfileEmailBindings } from "./user-profile-identity.read.js";
 import { projectUserProfileDisplay } from "./user-profile-list.js";
 import type {
   UserProfileMutationContext,
   UserProfileMutationPublication,
 } from "./user-profile-mutation.js";
-import {
-  selectProfileDisplayEntries,
-  requireResolvedUserProfileMetadataById,
-} from "./user-profiles-internal.js";
+import { requireResolvedUserProfileMetadataById } from "./user-profiles-internal.js";
 import {
   UserProfileMergeError,
   UserProfileNotFoundError,
@@ -124,7 +122,7 @@ export function executeUserProfileWrite(
         const value = operation();
         if (command.type === "userProfiles.linkEmail" || command.type === "userProfiles.merge") {
           const linked = requireResolvedUserProfileMetadataById(db, command.input.targetProfileId);
-          const row = selectProfileDisplayEntries(db, [linked.id])[0]?.[1];
+          const row = selectProfileAccessEntries(db, [linked.id])[0]?.[1];
           if (!row) {
             throw new UserProfileNotFoundError(linked.id);
           }
@@ -153,7 +151,7 @@ export function executeUserProfileWrite(
           return [{ email, before, after }];
         });
         const ids = [...current.display];
-        const after = new Map(ids.length ? selectProfileDisplayEntries(db, ids) : []);
+        const after = new Map(ids.length ? selectProfileAccessEntries(db, ids) : []);
         const publication: UserProfileMutationPublication = {
           kind: "user-profile-mutation",
           sequence: ++sequence,
@@ -188,7 +186,7 @@ export function executeUserProfileWrite(
         throw new Error("Profile mutation requires its original transaction");
       }
       const missing = ids.filter((id) => !current.before.has(id));
-      const rows = new Map(missing.length ? selectProfileDisplayEntries(db, missing) : []);
+      const rows = new Map(missing.length ? selectProfileAccessEntries(db, missing) : []);
       for (const id of missing) {
         current.before.set(id, rows.get(id));
       }
