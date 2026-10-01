@@ -524,7 +524,7 @@ describe("remote testbox gate delegation", () => {
       "--blacksmith-ref",
       "main",
       "--idle-timeout",
-      "90m",
+      "15m",
       "--ttl",
       "240m",
       "--timing-json",
