@@ -24,6 +24,9 @@ export function assertFreshTestboxAdmission(expiresAt, now = Date.now()) {
   }
 }
 
+/**
+ * @param {{ profile: string, id: string, createdAt: string, runner?: string, minutes?: string | number }} request
+ */
 export function planTestboxAdmission(
   { profile, id, runner, minutes, createdAt },
   now = Date.now(),
