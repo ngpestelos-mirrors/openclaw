@@ -9,8 +9,7 @@ const checkTouchedTextModelRefs: typeof checkTouchedTextModelRefsRaw = (params) 
     config: createCanonicalAgentConfigFixture(params.config).config,
     ...(params.previousConfig
       ? {
-          previousConfig: createCanonicalAgentConfigFixture(params.previousConfig)
-            .config as OpenClawConfig,
+          previousConfig: createCanonicalAgentConfigFixture(params.previousConfig).config,
         }
       : {}),
   });
@@ -524,6 +523,7 @@ describe("config model validation", () => {
   it("validates touched fallback and per-agent model refs", async () => {
     const config: OpenClawConfig = {
       agents: {
+        ownership: "explicit",
         defaults: {
           model: {
             primary: "openai/gpt-5.4-mini",
@@ -531,7 +531,7 @@ describe("config model validation", () => {
           },
         },
         entries: {
-          main: { default: true },
+          main: {},
           ops: { model: { primary: "google/gemini-3.1-pro-preview" } },
         },
       },
