@@ -127,8 +127,6 @@ export type AgentCommandOpts = {
   runtimePluginToolGrant?: RuntimePluginToolGrant;
   /** Consumed in-process subagent-completion capability; never accepted from public RPC params. */
   trustedInternalHandoff?: TrustedSubagentCompletionHandoff;
-  /** Internal marker identifying a server-managed default cap. */
-  toolsAllowIsDefault?: boolean;
   /** Trusted server-stamped authority for an explicitly capped scheduled run. */
   scheduledToolPolicy?: ScheduledToolPolicyContext;
   /** Host-authorized dashboard authoring without an originating inline renderer. */

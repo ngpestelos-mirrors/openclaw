@@ -423,11 +423,8 @@ export async function prepareCronRunContext(params: {
       modelApi,
       agentId: modelOwner.agentId,
       agentDir: modelOwner.agentDir,
-      workspaceDir: executionWorkspaceDir,
       sessionKey: agentSessionKey,
       agentPayload,
-      agentRuntime: effectiveAgentRuntime,
-      toolsAllowProvenance: input.job.toolsAllowProvenance,
     });
     const {
       deliveryPlan,
@@ -564,7 +561,6 @@ export async function prepareCronRunContext(params: {
           sandbox,
           thinkingLevel: requestedThinkLevel,
           toolsAllow: agentPayload?.toolsAllow,
-          toolsAllowIsDefault: agentPayload?.toolsAllowIsDefault,
           scheduledToolPolicy: resolveCronScheduledToolPolicy({
             toolsAllow: agentPayload?.toolsAllow,
             scheduledToolPolicy: input.job.scheduledToolPolicy,

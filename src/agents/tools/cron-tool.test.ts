@@ -795,7 +795,7 @@ describe("cron tool", () => {
     expect(materializations).toBe(2);
     expect(callGatewayMock).toHaveBeenCalledOnce();
     expect(readGatewayCall().params).toMatchObject({
-      payload: { toolsAllow: ["read", "configured__lookup"], toolsAllowIsDefault: true },
+      payload: { toolsAllow: ["*"] },
     });
   });
 
@@ -945,21 +945,13 @@ describe("cron tool", () => {
     expect(callGatewayMock).not.toHaveBeenCalled();
   });
 
-  it("fails incomplete inherited and unknown finite adds while preserving known finite tools", async () => {
+  it("fails unknown finite adds with incomplete capture while preserving known finite tools", async () => {
     const captureRef = {};
     const tool = createTestCronTool({
       agentSessionKey: "agent:main:telegram:group:restricted-room",
       creatorToolAllowlist: ["read", "cron"],
       creatorToolAllowlistCaptureRef: captureRef,
     });
-
-    await expect(
-      tool.execute("call-default-capture-unavailable", {
-        action: "add",
-        job: buildReminderAgentTurnJob(),
-      }),
-    ).rejects.toThrow("fresh authenticated direct-local operator turn");
-    expect(callGatewayMock).not.toHaveBeenCalled();
 
     await expect(
       tool.execute("call-unknown-finite-capture-unavailable", {
@@ -988,7 +980,7 @@ describe("cron tool", () => {
     });
   });
 
-  it("caps trigger-script systemEvent updates to the creator tool surface", async () => {
+  it("assigns a wildcard cap to trigger-script systemEvent updates", async () => {
     callGatewayMock
       .mockResolvedValueOnce({
         id: "job-trigger",
@@ -1017,8 +1009,7 @@ describe("cron tool", () => {
           trigger: { script: "return { fire: false }" },
           payload: {
             kind: "systemEvent",
-            toolsAllow: ["read", "automations"],
-            toolsAllowIsDefault: true,
+            toolsAllow: ["*"],
           },
         },
       },
@@ -1485,7 +1476,7 @@ describe("cron tool", () => {
     expect(callGatewayMock).toHaveBeenCalledTimes(0);
   });
 
-  it("keeps the creator tool surface when an agentTurn update clears toolsAllow", async () => {
+  it("restores the wildcard cap when an agentTurn update clears toolsAllow", async () => {
     callGatewayMock
       .mockResolvedValueOnce({
         id: "job-8",
@@ -1512,8 +1503,7 @@ describe("cron tool", () => {
     const params = readGatewayCall(1).params;
     expect(params).toHaveProperty("patch.payload", {
       kind: "agentTurn",
-      toolsAllow: ["read", "automations"],
-      toolsAllowIsDefault: true,
+      toolsAllow: ["*"],
     });
   });
 
@@ -1526,7 +1516,6 @@ describe("cron tool", () => {
           kind: "agentTurn",
           message: "before",
           toolsAllow: ["read", "configured__lookup"],
-          toolsAllowIsDefault: true,
         },
       })
       .mockResolvedValueOnce({ ok: true });
@@ -1634,8 +1623,7 @@ describe("cron tool", () => {
       patch: {
         payload: {
           kind: "agentTurn",
-          toolsAllow: ["read", "configured__lookup"],
-          toolsAllowIsDefault: true,
+          toolsAllow: ["*"],
         },
       },
     });
@@ -1644,8 +1632,7 @@ describe("cron tool", () => {
       patch: {
         payload: {
           kind: "agentTurn",
-          toolsAllow: ["read", "configured__lookup"],
-          toolsAllowIsDefault: true,
+          toolsAllow: ["*"],
         },
       },
     });
@@ -1737,7 +1724,7 @@ describe("cron tool", () => {
     expect(callGatewayMock).toHaveBeenCalledTimes(1);
   });
 
-  it("adds the creator tool surface when converting an existing job to agentTurn", async () => {
+  it("adds a wildcard cap when converting an existing job to agentTurn", async () => {
     callGatewayMock
       .mockResolvedValueOnce({
         id: "job-12",
@@ -1771,8 +1758,7 @@ describe("cron tool", () => {
           payload: {
             kind: "agentTurn",
             message: "run later",
-            toolsAllow: ["read", "automations"],
-            toolsAllowIsDefault: true,
+            toolsAllow: ["*"],
           },
         },
       },

@@ -220,7 +220,6 @@ describe("CronService authenticated channel requester", () => {
         const stored = (await loadCronStore(storePath)).jobs[0]!;
         expect(stored.toolsAllowProvenance).toEqual(provenance);
         expect(stored.payload.toolsAllow).toEqual(["message"]);
-        expect(stored.payload.toolsAllowIsDefault).toBeUndefined();
 
         const nextRequester = { ...channelRequester, senderId: "requester-b" };
         await cron.update(

@@ -39,7 +39,6 @@ import {
   stripExistingContext,
 } from "./cron-tool-context.js";
 import {
-  assertInheritedCronToolCaptureReady,
   capCronJobToolsAllowOnCreate,
   cronCreateRequiresCreatorAuthority,
   resolveCronCreatorExecToolTarget,
@@ -485,11 +484,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 : undefined;
             operationSignal?.throwIfAborted();
             const creatorToolAllowlist = resolvedAuthority?.tools ?? opts?.creatorToolAllowlist;
-            const creatorToolAllowlistCaptureRef = resolvedAuthority
-              ? { value: resolvedAuthority.provenance }
-              : opts?.creatorToolAllowlistCaptureRef;
             capCronJobToolsAllowOnCreate(job, creatorToolAllowlist);
-            assertInheritedCronToolCaptureReady(job, creatorToolAllowlistCaptureRef);
             const { mainKey, alias } = resolveMainSessionAlias(runtimeConfig);
             const resolvedSessionKey = opts?.agentSessionKey
               ? resolveInternalSessionKey({ key: opts.agentSessionKey, alias, mainKey })

@@ -116,10 +116,7 @@ function callGateway(method, params) {
 }
 
 function readAuthority(job) {
-  return {
-    toolsAllow: job.payload?.toolsAllow,
-    toolsAllowIsDefault: job.payload?.toolsAllowIsDefault,
-  };
+  return { toolsAllow: job.payload?.toolsAllow };
 }
 
 function assertAuthority(label, job, expected) {

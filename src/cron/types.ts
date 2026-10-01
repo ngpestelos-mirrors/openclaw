@@ -242,13 +242,10 @@ export function isSystemOwnedCronPayloadKind(kind: unknown): kind is "heartbeat"
 type CronPayloadToolAllow = {
   /** Restricts agentTurn execution, or the trigger runtime for other payload kinds. */
   toolsAllow?: string[];
-  /** Server-managed marker for auto-stamped defaults; explicit restrictions omit it. */
-  toolsAllowIsDefault?: boolean;
 };
 
 type CronPayloadToolAllowPatch = {
   toolsAllow?: string[] | null;
-  toolsAllowIsDefault?: boolean;
 };
 
 type CronPayloadPatchWire = NonNullable<CronUpdateParamsWire["patch"]["payload"]>;

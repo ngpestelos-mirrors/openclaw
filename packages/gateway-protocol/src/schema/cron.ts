@@ -214,7 +214,6 @@ const CronSystemEventPayloadSchema = closedObject({
   kind: Type.Literal("systemEvent"),
   text: NonEmptyString,
   toolsAllow: Type.Optional(Type.Array(Type.String())),
-  toolsAllowIsDefault: Type.Optional(Type.Boolean()),
 });
 const CronAgentTurnPayloadSchema = cronAgentTurnPayloadSchema({
   message: NonEmptyString,
@@ -258,7 +257,6 @@ const CronPayloadPatchSchema = Type.Union([
     kind: Type.Literal("systemEvent"),
     text: Type.Optional(NonEmptyString),
     toolsAllow: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
-    toolsAllowIsDefault: Type.Optional(Type.Boolean()),
   }),
   cronAgentTurnPayloadSchema({
     message: Type.Optional(NonEmptyString),

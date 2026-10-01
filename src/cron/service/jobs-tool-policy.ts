@@ -125,9 +125,7 @@ export function reconcileCronChannelRequesterAuthority(params: {
   const previous = normalizeCronToolsAllowProvenance(previousJob?.toolsAllowProvenance);
   const unchangedCap =
     previousJob !== undefined &&
-    isDeepStrictEqual(previousJob.payload.toolsAllow, job.payload.toolsAllow) &&
-    (previousJob.payload.toolsAllowIsDefault === true) ===
-      (job.payload.toolsAllowIsDefault === true);
+    isDeepStrictEqual(previousJob.payload.toolsAllow, job.payload.toolsAllow);
   const fullSurface =
     current?.source === "final-executable-surface"
       ? current
@@ -288,14 +286,16 @@ function reconcileToolsAllowExecTarget(params: {
   if (!params.explicitlyMutatesToolsAllow) {
     return;
   }
-  const grantsExec =
-    Array.isArray(job.payload.toolsAllow) && job.payload.toolsAllow.includes("exec");
-  if (params.toolsAllowExecTarget && grantsExec) {
+  const toolsAllow = job.payload.toolsAllow;
+  const execIndex = toolsAllow.indexOf("exec");
+  // A wildcard cap carries the creator's exec pin like an explicit exec grant.
+  const grantIndex = execIndex === -1 && toolsAllow.includes("*") ? 0 : execIndex;
+  if (params.toolsAllowExecTarget && grantIndex !== -1) {
     job.toolsAllowExecTarget = structuredClone(params.toolsAllowExecTarget);
     job.toolsAllowExecTargetRequirement = {
       version: 1,
       target: structuredClone(params.toolsAllowExecTarget),
-      grantIndex: job.payload.toolsAllow.indexOf("exec"),
+      grantIndex,
     } satisfies CronToolsAllowExecTargetRequirement;
   } else {
     delete job.toolsAllowExecTarget;

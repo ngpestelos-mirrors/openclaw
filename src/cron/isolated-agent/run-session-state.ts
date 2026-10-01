@@ -298,7 +298,6 @@ export function createCronRunContinuationSession(params: {
   sandbox?: "required";
   thinkingLevel?: string;
   toolsAllow?: string[];
-  toolsAllowIsDefault?: boolean;
   scheduledToolPolicy?: CronScheduledToolPolicy;
   scheduledToolCallerOrigin?: CronScheduledToolCallerOrigin;
   toolsAllowExecTarget?: CronToolsAllowExecTarget;
@@ -333,7 +332,6 @@ export function createCronRunContinuationSession(params: {
     lifecycleRevision: params.cronSession.lifecycleRevision,
     phase: "running" as const,
     ...(storedToolsAllow !== undefined ? { toolsAllow: storedToolsAllow } : {}),
-    ...(params.toolsAllowIsDefault === true ? { toolsAllowIsDefault: true } : {}),
     ...(scheduledToolPolicy ? { scheduledToolPolicy } : {}),
     ...(scheduledToolPolicy?.mode === "account" ? { scheduledToolCallerOrigin } : {}),
     ...(toolsAllowExecTarget ? { toolsAllowExecTarget } : {}),

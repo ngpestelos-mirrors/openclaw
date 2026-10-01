@@ -252,7 +252,7 @@ describe("agent payload patches", () => {
     expect(current.payload).toEqual({ kind: "agentTurn", message: "do it" });
   });
 
-  it("builds a replacement agent payload with authored settings and default tool authority", () => {
+  it("builds a replacement agent payload with authored settings and tool authority", () => {
     const current = job();
     applyJobPatch(current, {
       sessionTarget: "session:agent:main:dingtalk:group:cid3tmd4xb19xjfk/wogxwy2a==",
@@ -262,7 +262,6 @@ describe("agent payload patches", () => {
         lightContext: true,
         fallbacks: ["anthropic/claude-haiku-3-5", "openai/gpt-5"],
         toolsAllow: ["exec", "read"],
-        toolsAllowIsDefault: true,
       },
     });
     expect(current.sessionTarget).toBe(
@@ -274,7 +273,6 @@ describe("agent payload patches", () => {
       lightContext: true,
       fallbacks: ["anthropic/claude-haiku-3-5", "openai/gpt-5"],
       toolsAllow: ["exec", "read"],
-      toolsAllowIsDefault: true,
     });
   });
 
@@ -294,33 +292,18 @@ describe("agent payload patches", () => {
   });
 
   it.each([
-    {
-      patch: { toolsAllow: ["read"], toolsAllowIsDefault: true },
-      toolsAllow: ["read"],
-      marker: undefined,
-    },
-    {
-      patch: { message: "later", toolsAllow: ["exec", "read"] },
-      toolsAllow: ["exec", "read"],
-      marker: true,
-    },
-    { patch: { toolsAllow: null }, toolsAllow: ["*"], marker: undefined },
+    { patch: { toolsAllow: ["read"] }, toolsAllow: ["read"] },
+    { patch: { message: "later" }, toolsAllow: ["exec", "read"] },
+    { patch: { toolsAllow: null }, toolsAllow: ["*"] },
   ] satisfies {
     patch: Omit<Extract<NonNullable<CronJobPatch["payload"]>, { kind: "agentTurn" }>, "kind">;
     toolsAllow: string[];
-    marker: true | undefined;
-  }[])("preserves authority semantics for $patch", ({ patch, toolsAllow, marker }) => {
+  }[])("preserves authority semantics for $patch", ({ patch, toolsAllow }) => {
     const current = agentJob(undefined, {
-      payload: {
-        kind: "agentTurn",
-        message: "do it",
-        toolsAllow: ["exec", "read"],
-        toolsAllowIsDefault: true,
-      },
+      payload: { kind: "agentTurn", message: "do it", toolsAllow: ["exec", "read"] },
     });
     applyJobPatch(current, { payload: { kind: "agentTurn", ...patch } });
     expect(current.payload.toolsAllow).toEqual(toolsAllow);
-    expect(current.payload.toolsAllowIsDefault).toBe(marker);
   });
 });
 
@@ -422,12 +405,7 @@ describe("cron tool authority defaults", () => {
     const explicit = agentJob(
       { mode: "none" },
       {
-        payload: {
-          kind: "agentTurn",
-          message: "explicit",
-          toolsAllow: ["read", "cron"],
-          toolsAllowIsDefault: true,
-        },
+        payload: { kind: "agentTurn", message: "explicit", toolsAllow: ["read", "cron"] },
       },
     );
     const declaration = agentInput({
@@ -437,10 +415,7 @@ describe("cron tool authority defaults", () => {
     applyDeclarativeJobSpec(legacy, declaration, convergence);
     applyDeclarativeJobSpec(explicit, declaration, convergence);
     expect(legacy.payload.toolsAllow).toBeUndefined();
-    expect(explicit.payload).toMatchObject({
-      toolsAllow: ["read", "cron"],
-      toolsAllowIsDefault: true,
-    });
+    expect(explicit.payload).toMatchObject({ toolsAllow: ["read", "cron"] });
   });
 
   it("repairs a missing anchor when converging an unchanged every schedule", () => {

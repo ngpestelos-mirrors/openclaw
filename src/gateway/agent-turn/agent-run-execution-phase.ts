@@ -478,7 +478,6 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
                 runtimePluginToolGrant,
                 trustedInternalHandoff: prepared.trustedInternalHandoff,
                 pinnedWidgetAuthoring: restartRecoveryContext?.pinnedWidgetAuthoring,
-                toolsAllowIsDefault: params.restoredCronContinuation?.toolsAllowIsDefault,
                 scheduledToolPolicy: params.restoredCronContinuation
                   ? resolveScheduledToolPolicyContext({
                       toolsAllow: params.restoredCronContinuation.toolsAllow,

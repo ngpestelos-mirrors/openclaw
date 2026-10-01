@@ -89,7 +89,7 @@ describe("runCronIsolatedAgentTurn — payload.fallbacks", () => {
     expect(requireModelFallbackRequest().fallbacksOverride).toEqual([]);
   });
 
-  it("keeps pre-envelope app-less default caps free of recovery prompt changes", async () => {
+  it("keeps pre-envelope app-less caps free of recovery prompt changes", async () => {
     mockRunCronFallbackPassthrough();
     resolveEffectiveAgentRuntimeMock.mockReturnValue("codex");
 
@@ -97,12 +97,7 @@ describe("runCronIsolatedAgentTurn — payload.fallbacks", () => {
       makeIsolatedAgentParamsFixture({
         job: makeIsolatedAgentJobFixture({
           toolsAllowProvenance: { version: 1, source: "final-executable-surface" },
-          payload: {
-            kind: "agentTurn",
-            message: "use calendar",
-            toolsAllow: ["read", "cron"],
-            toolsAllowIsDefault: true,
-          },
+          payload: { kind: "agentTurn", message: "use calendar", toolsAllow: ["read", "cron"] },
         }),
       }),
     );

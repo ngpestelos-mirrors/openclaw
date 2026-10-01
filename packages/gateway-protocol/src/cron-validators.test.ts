@@ -223,7 +223,6 @@ describe("cron protocol validators", () => {
     const payload = {
       kind: "systemEvent",
       toolsAllow: ["read", "cron"],
-      toolsAllowIsDefault: true,
     };
     expectCases(validateCronAddParams, true, [add({ payload: { ...payload, text: "tick" } })]);
     expectCases(validateCronUpdateParams, true, [update({ payload })]);

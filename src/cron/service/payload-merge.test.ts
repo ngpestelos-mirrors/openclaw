@@ -57,20 +57,6 @@ const kindChangeCases = [
   },
 ] satisfies MergeCase[];
 
-const installDefaultMarkerCases = [
-  {
-    label: "command",
-    existing: { kind: "command", argv: ["echo", "before"] },
-    patch: { kind: "command", toolsAllow: ["read", "cron"], toolsAllowIsDefault: true },
-    expected: {
-      kind: "command",
-      argv: ["echo", "before"],
-      toolsAllow: ["read", "cron"],
-      toolsAllowIsDefault: true,
-    },
-  },
-] satisfies MergeCase[];
-
 describe("mergeCronPayload trigger tool caps", () => {
   it.each(preserveCases)(
     "preserves $label toolsAllow when omitted",
@@ -94,13 +80,6 @@ describe("mergeCronPayload trigger tool caps", () => {
     },
   );
 
-  it.each(installDefaultMarkerCases)(
-    "installs a newly stamped default marker on $label",
-    ({ existing, patch, expected }) => {
-      expect(mergeCronPayload(existing, patch)).toEqual(expected);
-    },
-  );
-
   it("clears toolsAllow explicitly across a kind change", () => {
     expect(
       mergeCronPayload(
@@ -117,24 +96,5 @@ describe("mergeCronPayload trigger tool caps", () => {
         { kind: "agentTurn", message: "after", toolsAllow: undefined },
       ),
     ).toEqual({ kind: "agentTurn", message: "after", toolsAllow: ["read", "cron"] });
-  });
-
-  it("preserves default-cap provenance across a kind change", () => {
-    expect(
-      mergeCronPayload(
-        {
-          kind: "systemEvent",
-          text: "before",
-          toolsAllow: ["read", "cron"],
-          toolsAllowIsDefault: true,
-        },
-        { kind: "agentTurn", message: "after" },
-      ),
-    ).toEqual({
-      kind: "agentTurn",
-      message: "after",
-      toolsAllow: ["read", "cron"],
-      toolsAllowIsDefault: true,
-    });
   });
 });

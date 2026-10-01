@@ -73,7 +73,10 @@ function cronRuntimeAuthorityInputFingerprint(job: CronStoredJob): string {
     version: CRON_RUNTIME_AUTHORITY_FINGERPRINT_VERSION,
     usesToolRuntime: cronJobUsesToolRuntime(job),
     toolsAllow: normalizedToolsAllow(job),
-    toolsAllowIsDefault: job.payload.toolsAllowIsDefault === true,
+    // Persisted v1 fingerprint input: rows written before default caps became
+    // wildcards still carry this marker until the startup migration rebinds them.
+    toolsAllowIsDefault:
+      "toolsAllowIsDefault" in job.payload && job.payload.toolsAllowIsDefault === true,
     scheduledToolPolicy,
     toolsAllowProvenance: normalizedToolsAllowProvenance(job.toolsAllowProvenance),
   };

@@ -46,7 +46,6 @@ describe("resolveSkillCollectionReviewMonitorSpecs", () => {
       delivery: { mode: "none" },
       wakeMode: "next-heartbeat",
     });
-    expect(specs[0]?.input.payload).not.toHaveProperty("toolsAllowIsDefault");
     const repeated = Array.from(
       resolveSkillCollectionReviewMonitorSpecs(cfg, [], { schedulerSeed: "test-seed" }),
     );

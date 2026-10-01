@@ -56,12 +56,10 @@ describe("cron tool creator cap", () => {
     capCronJobToolsAllowOnCreate(triggerJob, ["read", "cron"]);
     capCronJobToolsAllowOnCreate(plainJob, ["read", "cron"]);
 
-    // Legacy "cron" creator allowlists normalize to the canonical tool id.
     expect(triggerJob.payload).toEqual({
       kind: "systemEvent",
       text: "wake",
-      toolsAllow: ["read", "automations"],
-      toolsAllowIsDefault: true,
+      toolsAllow: ["*"],
     });
     expect(plainJob.payload).toEqual({ kind: "systemEvent", text: "wake" });
   });
@@ -104,7 +102,7 @@ describe("cron tool creator cap", () => {
     ).toEqual({ kind: "needs-current-job" });
   });
 
-  it("preserves explicit narrower and default caps through canonical payload merge", () => {
+  it("preserves explicit narrower and wildcard caps through canonical payload merge", () => {
     const storedNarrowerPayload = {
       kind: "agentTurn" as const,
       message: "work",
@@ -117,18 +115,16 @@ describe("cron tool creator cap", () => {
         currentJob: { payload: storedNarrowerPayload },
       }),
     );
-    const storedDefault = readReadyPatch(
+    const storedWildcardPayload = {
+      kind: "agentTurn" as const,
+      message: "work",
+      toolsAllow: ["*"],
+    };
+    const wildcard = readReadyPatch(
       planCronJobUpdatePatch({
         patch: { payload: { message: "updated" } },
         creatorToolAllowlist: ["read", "cron"],
-        currentJob: {
-          payload: {
-            kind: "agentTurn",
-            message: "work",
-            toolsAllow: ["read"],
-            toolsAllowIsDefault: true,
-          },
-        },
+        currentJob: { payload: storedWildcardPayload },
       }),
     );
 
@@ -138,22 +134,11 @@ describe("cron tool creator cap", () => {
       message: "updated",
       toolsAllow: ["read"],
     });
-    expect(storedDefault).toEqual({ payload: { kind: "agentTurn", message: "updated" } });
-    expect(
-      mergeCronPayload(
-        {
-          kind: "agentTurn",
-          message: "work",
-          toolsAllow: ["read"],
-          toolsAllowIsDefault: true,
-        },
-        storedDefault.payload as CronPayloadPatch,
-      ),
-    ).toEqual({
+    expect(wildcard).toEqual({ payload: { kind: "agentTurn", message: "updated" } });
+    expect(mergeCronPayload(storedWildcardPayload, wildcard.payload as CronPayloadPatch)).toEqual({
       kind: "agentTurn",
       message: "updated",
-      toolsAllow: ["read"],
-      toolsAllowIsDefault: true,
+      toolsAllow: ["*"],
     });
   });
 

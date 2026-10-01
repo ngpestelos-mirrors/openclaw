@@ -76,7 +76,7 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
     await runCronIsolatedAgentTurn(
       makeParams(
         ["message"],
-        { toolsAllowIsDefault: true },
+        {},
         {
           toolsAllowProvenance: {
             version: 1,

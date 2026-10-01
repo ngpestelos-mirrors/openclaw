@@ -1,5 +1,6 @@
 import { isAbortError, racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { materializeLegacyDefaultCronJobOwners } from "../legacy-default-agent-owner-migration.js";
+import { migrateLegacyDefaultCronToolCaps } from "../legacy-default-tool-cap-migration.js";
 import type { CronRunRecoveryProposal } from "../store/run-recovery-read.types.js";
 import type { CronRunRecoveryResult, InterruptedStartupRun } from "../store/run-recovery.types.js";
 import {
@@ -202,6 +203,16 @@ export async function start(state: CronServiceState): Promise<void> {
         );
         await ensureLoaded(state, { forceReload: true });
       }
+    }
+    const { migrated, backupPath } = await migrateLegacyDefaultCronToolCaps({
+      storePath: state.deps.storePath,
+    });
+    if (migrated.length > 0) {
+      state.deps.log.info(
+        { storePath: state.deps.storePath, backupPath, jobs: migrated },
+        "cron: automatic tool lists now follow the owner session's current tool policy",
+      );
+      await ensureLoaded(state, { forceReload: true });
     }
     if (state.stopped || state.lifecycleGeneration !== generation) {
       return;

@@ -127,7 +127,6 @@ describe("resolveCronJobConfigRevision", () => {
         kind: "agentTurn",
         message: "Summarize the day",
         toolsAllow: ["read"],
-        toolsAllowIsDefault: false,
       },
       delivery: {
         mode: "announce",
@@ -159,13 +158,9 @@ describe("resolveCronJobConfigRevision", () => {
       },
       {
         ...makeJob(),
-        id: "default-tools-without-list",
+        id: "tools-without-list",
         schedule: { kind: "cron", expr: "0 9 * * *", tz: "" },
-        payload: {
-          kind: "agentTurn",
-          message: "Summarize the day",
-          toolsAllowIsDefault: true,
-        },
+        payload: { kind: "agentTurn", message: "Summarize the day" },
         failureAlert: {},
         trigger: { script: "json({ fire: true })", once: true },
       },
@@ -180,14 +175,9 @@ describe("resolveCronJobConfigRevision", () => {
       },
       {
         ...makeJob(),
-        id: "default-empty-tools",
+        id: "empty-tools",
         schedule: { kind: "at", at: "2027-01-01T00:00:00.000Z" },
-        payload: {
-          kind: "agentTurn",
-          message: "Summarize the day",
-          toolsAllow: [],
-          toolsAllowIsDefault: true,
-        },
+        payload: { kind: "agentTurn", message: "Summarize the day", toolsAllow: [] },
       },
       {
         ...makeJob(),

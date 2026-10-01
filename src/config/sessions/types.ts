@@ -447,7 +447,6 @@ type SessionEntryCore = SessionRestartRecoveryState &
       /** CLI backend whose native session must exist before media work detaches. */
       cliExecutionProvider?: string;
       toolsAllow?: string[];
-      toolsAllowIsDefault?: boolean;
       /** Exact server-stamped authority provenance copied from the owning cron job. */
       scheduledToolPolicy?: CronScheduledToolPolicy;
       /** Restrict-only exec pin copied from the owning cron job's cap. */

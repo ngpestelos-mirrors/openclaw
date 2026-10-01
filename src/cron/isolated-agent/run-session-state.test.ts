@@ -411,7 +411,6 @@ describe("createPersistCronSessionEntry", () => {
       createdActor: { type: "human", source: "profile", id: "profile-ada" },
       thinkingLevel: "high",
       toolsAllow: ["image_generate", "exec", "write"],
-      toolsAllowIsDefault: true,
       scheduledToolPolicy: {
         version: 1,
         mode: "account",
@@ -468,7 +467,6 @@ describe("createPersistCronSessionEntry", () => {
         lifecycleRevision,
         phase: "running",
         toolsAllow: ["image_generate", "write"],
-        toolsAllowIsDefault: true,
       },
     });
 

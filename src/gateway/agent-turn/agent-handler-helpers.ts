@@ -29,7 +29,6 @@ export type RestoredCronContinuation = Pick<
   NonNullable<SessionEntry["cronRunContinuation"]>,
   | "lifecycleRevision"
   | "toolsAllow"
-  | "toolsAllowIsDefault"
   | "scheduledToolPolicy"
   | "scheduledToolCallerOrigin"
   | "toolsAllowExecTarget"

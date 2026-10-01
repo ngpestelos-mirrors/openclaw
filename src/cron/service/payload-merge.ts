@@ -2,40 +2,17 @@
 import type { CronPayload, CronPayloadPatch } from "../types.js";
 
 type CronAgentTurnPayload = Extract<CronPayload, { kind: "agentTurn" }>;
-type CronPayloadToolAllow = Pick<CronPayload, "toolsAllow" | "toolsAllowIsDefault">;
-type CronPayloadToolAllowPatch = Pick<CronPayloadPatch, "toolsAllow" | "toolsAllowIsDefault">;
+type CronPayloadToolAllow = Pick<CronPayload, "toolsAllow">;
+type CronPayloadToolAllowPatch = Pick<CronPayloadPatch, "toolsAllow">;
 
 function applyToolsAllowPatch(
   payload: CronPayloadToolAllow,
   patch: CronPayloadToolAllowPatch,
-  existing?: CronPayloadToolAllow,
 ): void {
   if (Array.isArray(patch.toolsAllow)) {
-    const toolsAllow = patch.toolsAllow;
-    payload.toolsAllow = toolsAllow;
-    // Same-kind edits keep the marker whenever the default-stamped list is
-    // unchanged — even when the patch omits toolsAllowIsDefault, because the
-    // cron tool's model-facing schema never sends it. Dropping the marker on an
-    // echoed list silently reclassifies "default" as an explicit restriction,
-    // which fail-closes the next run on CLI backends that cannot enforce
-    // runtime toolsAllow. Kind replacements (no existing payload) still require
-    // the cron-tool-stamped marker on the patch itself.
-    const existingDefaultUnchanged =
-      existing?.toolsAllowIsDefault === true &&
-      Array.isArray(existing.toolsAllow) &&
-      existing.toolsAllow.length === toolsAllow.length &&
-      existing.toolsAllow.every((toolName, index) => toolName === toolsAllow[index]);
-    const installsDefault =
-      patch.toolsAllowIsDefault === true && existing?.toolsAllowIsDefault !== true;
-    const keepDefaultMarker = existingDefaultUnchanged || installsDefault;
-    if (keepDefaultMarker) {
-      payload.toolsAllowIsDefault = true;
-    } else {
-      delete payload.toolsAllowIsDefault;
-    }
+    payload.toolsAllow = patch.toolsAllow;
   } else if (patch.toolsAllow === null) {
     delete payload.toolsAllow;
-    delete payload.toolsAllowIsDefault;
   }
 }
 
@@ -46,9 +23,6 @@ export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch)
     // reopen a restricted trigger runtime; null remains the explicit clear.
     if (patch.toolsAllow === undefined && Array.isArray(existing.toolsAllow)) {
       next.toolsAllow = [...existing.toolsAllow];
-      if (existing.toolsAllowIsDefault === true) {
-        next.toolsAllowIsDefault = true;
-      }
     }
     return next;
   }
@@ -56,7 +30,7 @@ export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch)
   if (patch.kind === "systemEvent" && existing.kind === "systemEvent") {
     const text = typeof patch.text === "string" ? patch.text : existing.text;
     const next: Extract<CronPayload, { kind: "systemEvent" }> = { ...existing, text };
-    applyToolsAllowPatch(next, patch, existing);
+    applyToolsAllowPatch(next, patch);
     return next;
   }
 
@@ -85,7 +59,7 @@ export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch)
     if (typeof patch.outputMaxBytes === "number") {
       next.outputMaxBytes = patch.outputMaxBytes;
     }
-    applyToolsAllowPatch(next, patch, existing);
+    applyToolsAllowPatch(next, patch);
     return next;
   }
   if (patch.kind === "script" && existing.kind === "script") {
@@ -101,7 +75,7 @@ export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch)
     if (typeof patch.toolBudget === "number") {
       next.toolBudget = patch.toolBudget;
     }
-    applyToolsAllowPatch(next, patch, existing);
+    applyToolsAllowPatch(next, patch);
     return next;
   }
 
@@ -125,7 +99,7 @@ export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch)
   } else if (patch.fallbacks === null) {
     delete next.fallbacks;
   }
-  applyToolsAllowPatch(next, patch, existing);
+  applyToolsAllowPatch(next, patch);
   if (typeof patch.thinking === "string") {
     next.thinking = patch.thinking;
   } else if (patch.thinking === null) {

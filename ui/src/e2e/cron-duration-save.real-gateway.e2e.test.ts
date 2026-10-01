@@ -828,11 +828,9 @@ suite.define(() => {
               .toEqual(value);
             expect.soft(storedPayload[field], `${variant.name}: stored ${field}`).toEqual(value);
           }
-          for (const field of ["toolsAllowIsDefault", "externalContentSource"]) {
-            expect
-              .soft(submittedPayload, `${variant.name}: omitted ${field}`)
-              .not.toHaveProperty(field);
-          }
+          expect
+            .soft(submittedPayload, `${variant.name}: omitted externalContentSource`)
+            .not.toHaveProperty("externalContentSource");
           for (const field of [
             "createdActor",
             "toolsAllowProvenance",

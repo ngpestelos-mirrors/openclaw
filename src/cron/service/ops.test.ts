@@ -178,7 +178,7 @@ describe("scheduled tool policy provenance", () => {
     state.timer?.cancel();
   });
 
-  it("stores final-surface provenance privately and never synthesizes it from the default marker", async () => {
+  it("stores final-surface provenance privately only when the caller supplies it", async () => {
     const { storePath } = await makeStorePath();
     const state = createOkIsolatedCronState({ storePath, now: Date.now() });
     const base = {
@@ -192,12 +192,7 @@ describe("scheduled tool policy provenance", () => {
       {
         ...base,
         name: "proven",
-        payload: {
-          kind: "agentTurn" as const,
-          message: "run",
-          toolsAllow: ["notes__read"],
-          toolsAllowIsDefault: true,
-        },
+        payload: { kind: "agentTurn" as const, message: "run", toolsAllow: ["notes__read"] },
       },
       {
         toolsAllowProvenance: { version: 1, source: "final-executable-surface" },
@@ -211,13 +206,8 @@ describe("scheduled tool policy provenance", () => {
 
     const legacy = await add(state, {
       ...base,
-      name: "legacy-default",
-      payload: {
-        kind: "agentTurn",
-        message: "run",
-        toolsAllow: ["notes__read"],
-        toolsAllowIsDefault: true,
-      },
+      name: "legacy",
+      payload: { kind: "agentTurn", message: "run", toolsAllow: ["notes__read"] },
     });
     expect(legacy.toolsAllowProvenance).toBeUndefined();
 

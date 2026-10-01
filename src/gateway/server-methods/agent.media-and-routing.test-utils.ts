@@ -1198,7 +1198,6 @@ describe("gateway agent handler", () => {
         phase: "ready" as const,
         basePersisted: true,
         toolsAllow: ["image_generate", "write"],
-        toolsAllowIsDefault: true,
         scheduledToolPolicy: { version: 1, mode: "trusted" },
         toolsAllowExecTarget: { version: 1, host: "gateway", ask: "always" },
         toolsAllowExecTargetRequirement: {
@@ -1249,7 +1248,6 @@ describe("gateway agent handler", () => {
       thinking?: string;
       sessionId?: string;
       toolsAllow?: string[];
-      toolsAllowIsDefault?: boolean;
       scheduledToolPolicy?: {
         version: 1;
         mode: "trusted";
@@ -1270,7 +1268,6 @@ describe("gateway agent handler", () => {
     expect(callArgs.thinking).toBe("high");
     expect(callArgs.bootstrapContextRunKind).toBe("cron");
     expect(callArgs.toolsAllow).toEqual(["image_generate", "exec", "write"]);
-    expect(callArgs.toolsAllowIsDefault).toBe(true);
     expect(callArgs.scheduledToolPolicy).toEqual({
       version: 1,
       mode: "trusted",

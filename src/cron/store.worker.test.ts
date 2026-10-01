@@ -432,7 +432,6 @@ it.each(["add", "update", "remove", "authority invalidation", "runtime update"] 
           kind: "agentTurn",
           message: "scheduled continuation",
           toolsAllow: ["read", "cron"],
-          toolsAllowIsDefault: true,
         };
         job.toolsAllowProvenance = { version: 1, source: "final-executable-surface" };
         job.runtimeAuthority = {

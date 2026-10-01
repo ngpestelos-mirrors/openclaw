@@ -57,12 +57,19 @@ Skill collection review runs every 7 days. It is enabled when `skills.workshop.a
   Restrict which tools the job can use, for example `--tools exec,read`. Pass `--tools ""` for an empty allowlist that disables all agent tools, including tools used by a condition trigger.
 </ParamField>
 
-New jobs that can run tools always store an explicit tool policy. Jobs created by an agent
-are capped to the tools available to that creating turn, and the agent cannot widen the
-stored list. Jobs created by an authenticated operator without `--tools` store an
-unrestricted `*` policy; `automations edit --clear-tools` restores that explicit unrestricted
-policy. Existing jobs that predate an explicit tool policy retain their current behavior
-until their tool policy is explicitly edited or the job is recreated.
+New jobs that can run tools always store an explicit tool policy. A job created without
+`--tools` (or with `*`) stores `*`: each run uses the owner session's current tool policy,
+including its group, agent, sandbox, and runtime restrictions. An agent that requests a
+finite list is capped to the tools available to its creating turn and cannot widen the
+stored list. `automations edit --clear-tools` restores `*`. Existing jobs that predate an
+explicit tool policy retain their current behavior until their tool policy is explicitly
+edited or the job is recreated.
+
+Earlier releases saved a copy of the creating turn's tool list on agent-created jobs. That
+copy could miss tools the creator had, such as the native shell. On the first Gateway start
+after updating, agent-turn jobs with a saved owner policy switch from that copy to `*`; other
+copies stay as explicit lists. Before changing them, the Gateway writes a verified copy of the
+state database next to it (`openclaw.sqlite.cron-default-tool-caps-<timestamp>.bak`).
 
 Changing an account-bound job to a payload that does not run tools and later back
 to an agent turn preserves its account restriction. A payload conversion does not

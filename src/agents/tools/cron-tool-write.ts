@@ -2,7 +2,6 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { isRecord } from "../../utils.js";
 import {
-  assertInheritedCronToolCaptureReady,
   CRON_CREATOR_AUTHORITY_RECOVERY_MESSAGE,
   INCOMPLETE_CRON_CREATOR_AUTHORITY_MESSAGE,
   isCronCreatorToolCaptureComplete,
@@ -168,12 +167,6 @@ export async function updateCronJobFromAgentTool(params: {
       // edits, but not a toolsAllow cap synthesized internally.
       assertNoCronShellExecution(prepared.patch);
     }
-    assertInheritedCronToolCaptureReady(
-      prepared.patch,
-      prepared.resolvedAuthority
-        ? { value: prepared.resolvedAuthority.provenance }
-        : params.creatorToolAllowlistCaptureRef,
-    );
     if (prepared.resolvedAuthority && !params.withCreatorAuthorityProvenance) {
       throw new Error(
         "fresh configured MCP cron authority requires an authenticated local agent run",

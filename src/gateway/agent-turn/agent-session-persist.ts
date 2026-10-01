@@ -281,7 +281,6 @@ export async function persistAgentSessionPhase(params: {
                 model,
                 ...(freshEntry.thinkingLevel ? { thinking: freshEntry.thinkingLevel } : {}),
                 ...(restoredToolsAllow !== undefined ? { toolsAllow: restoredToolsAllow } : {}),
-                ...(marker.toolsAllowIsDefault === true ? { toolsAllowIsDefault: true } : {}),
                 ...(scheduledToolPolicy ? { scheduledToolPolicy } : {}),
                 ...(scheduledToolPolicy?.mode === "account"
                   ? {

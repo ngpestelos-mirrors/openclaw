@@ -466,7 +466,6 @@ export function applyDeclarativeJobSpec(
   const previouslyUsedToolRuntime = cronJobUsesToolRuntime(job);
   const explicitlyDeclaresToolsAllow = input.payload.toolsAllow !== undefined;
   const previousToolsAllow = job.payload.toolsAllow;
-  const previousToolsAllowIsDefault = job.payload.toolsAllowIsDefault;
   // Name, target, routing, owner, and run policy remain outside declaration
   // convergence; changing those uses cron.update and cannot retarget an identity.
   const displayName = normalizeDeclarativeLabel(input.displayName, "displayName");
@@ -498,12 +497,8 @@ export function applyDeclarativeJobSpec(
   }
   if (cronJobUsesToolRuntime(job) && job.payload.toolsAllow === undefined) {
     if (previousToolsAllow !== undefined) {
-      // Omitted declaration fields preserve explicit authority already stored
-      // on the job, including the server-managed creator-default marker.
+      // Omitted declaration fields preserve explicit authority already stored on the job.
       job.payload.toolsAllow = [...previousToolsAllow];
-      if (previousToolsAllowIsDefault === true) {
-        job.payload.toolsAllowIsDefault = true;
-      }
     } else if (!previouslyUsedToolRuntime) {
       // A declaration that newly becomes tool-bearing adopts current explicit semantics.
       applyDefaultCronToolsAllow(job);

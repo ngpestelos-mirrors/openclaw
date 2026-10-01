@@ -904,10 +904,9 @@ describe("cron controller", () => {
       },
     },
     {
-      name: "restricted default",
+      name: "restricted",
       policy: {
         toolsAllow: ["read"],
-        toolsAllowIsDefault: true,
         fallbacks: ["openai/gpt-5.5"],
         allowUnsafeExternalContent: true,
         lightContext: true,
@@ -917,7 +916,7 @@ describe("cron controller", () => {
   ] satisfies Array<{
     name: string;
     policy: Partial<Extract<CronJob["payload"], { kind: "agentTurn" }>>;
-  }>)("clones $name payload policy without its capture marker", async ({ policy }) => {
+  }>)("clones $name payload policy", async ({ policy }) => {
     const source = createCronJob({
       id: "source",
       name: "Policy source",
@@ -929,13 +928,11 @@ describe("cron controller", () => {
     startCronClone(state, source);
     expect(await addCronJob(state)).toEqual({ saved: true, jobId: "clone" });
     const submitted = requestPayload(findRequestCall(request.mock.calls, "cron.add"));
-    const expected: Extract<CronJob["payload"], { kind: "agentTurn" }> = {
+    expect(submitted.payload).toEqual({
       kind: "agentTurn",
       message: "Synthetic task",
       ...policy,
-    };
-    delete expected.toolsAllowIsDefault;
-    expect(submitted.payload).toEqual(expected);
+    });
     expect(validateCronAddParams(submitted)).toBe(true);
     expect(source).toEqual(original);
   });
@@ -1071,7 +1068,6 @@ describe("cron controller", () => {
         kind: "agentTurn",
         message: "Synthetic task",
         toolsAllow: ["read"],
-        toolsAllowIsDefault: true,
         fallbacks: [],
         allowUnsafeExternalContent: true,
         lightContext: false,

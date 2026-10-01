@@ -67,17 +67,6 @@ export function isCronCreatorToolCaptureComplete(
   return captureRef === undefined || captureRef.value?.source === "final-executable-surface";
 }
 
-export function assertInheritedCronToolCaptureReady(
-  value: unknown,
-  captureRef: CronToolsAllowCaptureRef | undefined,
-): void {
-  const payload = isRecord(value) && isRecord(value.payload) ? value.payload : undefined;
-  if (payload?.toolsAllowIsDefault !== true || isCronCreatorToolCaptureComplete(captureRef)) {
-    return;
-  }
-  throw new Error(INCOMPLETE_CRON_CREATOR_AUTHORITY_MESSAGE);
-}
-
 export function replaceWithEffectiveCronCreatorToolAllowlist<T extends { name: string }>(
   target: CronCreatorToolAllowlistEntry[],
   tools: readonly T[],
@@ -271,7 +260,6 @@ function capCronJobToolsAllow(params: {
   payload: Record<string, unknown>;
   trigger?: unknown;
   creatorToolAllowlist: readonly CronCreatorToolAllowlistEntry[];
-  defaultToolsAllow?: unknown;
 }): void {
   const writesToolsAllow = Object.hasOwn(params.payload, "toolsAllow");
   if (
@@ -284,25 +272,19 @@ function capCronJobToolsAllow(params: {
   }
 
   const creatorToolsAllow = normalizeCronCreatorToolsAllow(params.creatorToolAllowlist);
-  const creatorToolNames = creatorToolsAllow.map((tool) => tool.name);
-  const requestedRaw = writesToolsAllow ? params.payload.toolsAllow : params.defaultToolsAllow;
-  if (!Array.isArray(requestedRaw)) {
-    params.payload.toolsAllow = creatorToolNames;
-    params.payload.toolsAllowIsDefault = true;
-    return;
-  }
-
-  const requestedToolsAllow = expandToolGroups(
-    requestedRaw.filter((entry): entry is string => typeof entry === "string"),
-  );
+  const requestedToolsAllow =
+    writesToolsAllow && Array.isArray(params.payload.toolsAllow)
+      ? expandToolGroups(
+          params.payload.toolsAllow.filter((entry): entry is string => typeof entry === "string"),
+        )
+      : ["*"];
+  // An omitted or wildcard cap inherits the owner session's policy at run time.
   if (requestedToolsAllow.includes("*")) {
-    params.payload.toolsAllow = creatorToolNames;
-    params.payload.toolsAllowIsDefault = true;
+    params.payload.toolsAllow = ["*"];
     return;
   }
   if (requestedToolsAllow.length === 0 || creatorToolsAllow.length === 0) {
     params.payload.toolsAllow = [];
-    delete params.payload.toolsAllowIsDefault;
     return;
   }
 
@@ -322,7 +304,6 @@ function capCronJobToolsAllow(params: {
       (tool) => matches(tool.name) || (tool.aliasName !== undefined && matches(tool.aliasName)),
     )
     .map((tool) => tool.name);
-  delete params.payload.toolsAllowIsDefault;
 }
 
 export function capCronJobToolsAllowOnCreate(
@@ -411,8 +392,7 @@ export function planCronJobUpdatePatch(params: {
   const reusesDefaultAuthority =
     explicitToolsAllow === "absent" &&
     (startsToolPayload || startsToolTrigger) &&
-    (existingPayloadRecord?.toolsAllowIsDefault === true ||
-      !Array.isArray(existingPayloadRecord?.toolsAllow));
+    !Array.isArray(existingPayloadRecord?.toolsAllow);
   const needsResolvedAuthority =
     explicitToolsAllow === "resolved" ||
     reusesDefaultAuthority ||
@@ -445,10 +425,6 @@ export function planCronJobUpdatePatch(params: {
     payload: nextPayload,
     trigger,
     creatorToolAllowlist: params.creatorToolAllowlist,
-    defaultToolsAllow:
-      existingPayloadRecord && existingPayloadRecord.toolsAllowIsDefault !== true
-        ? existingPayloadRecord.toolsAllow
-        : undefined,
   });
   return { kind: "ready", patch };
 }

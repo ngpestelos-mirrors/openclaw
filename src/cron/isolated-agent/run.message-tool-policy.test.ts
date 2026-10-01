@@ -1,7 +1,6 @@
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockCall } from "../../test-utils/mock-call-assertions.js";
-import { applyJobPatch } from "../service/jobs.js";
 import { makeIsolatedAgentParamsFixture } from "./job-fixtures.js";
 import {
   buildSafeExternalPromptMock,
@@ -403,31 +402,6 @@ describe("runCronIsolatedAgentTurn delivery policy", () => {
       const cliRun = expectFields(mockCall(runCliAgentMock)[0], {}, "CLI run params");
       expect(cliRun.toolsAllow).toBeUndefined();
       expect(runPrompt(cliRun, true)).toContain("Message delivery destination metadata");
-    });
-
-    it("keeps a cron-tool default toolsAllow marker after a self-edit before CLI execution", async () => {
-      mockCliAnnounce();
-      const job = makeJob(announce, {
-        toolsAllow: ["read", "cron"],
-        toolsAllowIsDefault: true,
-      });
-      applyJobPatch(job, {
-        payload: {
-          kind: "agentTurn",
-          message: "send a clearer message",
-          toolsAllow: ["read", "cron"],
-        },
-      });
-      await runCronIsolatedAgentTurn(makeParams(job));
-      const cliRun = expectFields(
-        mockCall(runCliAgentMock)[0],
-        {
-          toolsAllow: ["read", "cron"],
-        },
-        "CLI run params",
-      );
-      expect(runPrompt(cliRun)).not.toContain("Message delivery destination metadata");
-      expect(cliRun.transcriptPrompt).toBeUndefined();
     });
 
     it("keeps automatic exec completion notifications when webhook delivery is active", async () => {

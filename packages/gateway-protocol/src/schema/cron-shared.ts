@@ -35,9 +35,6 @@ export function cronAgentTurnPayloadSchema<
     allowUnsafeExternalContent: Type.Optional(Type.Boolean()),
     lightContext: Type.Optional(Type.Boolean()),
     toolsAllow: Type.Optional(params.toolsAllow),
-    // Server-managed marker for auto-stamped defaults; persisted so CLI cron
-    // runs can drop only the cap that was never user-explicit.
-    toolsAllowIsDefault: Type.Optional(Type.Boolean()),
   });
 }
 
@@ -57,7 +54,6 @@ export function cronCommandPayloadSchema<
     noOutputTimeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
     outputMaxBytes: Type.Optional(Type.Integer({ minimum: 1 })),
     toolsAllow: Type.Optional(params.toolsAllow),
-    toolsAllowIsDefault: Type.Optional(Type.Boolean()),
   });
 }
 
@@ -72,6 +68,5 @@ export function cronScriptPayloadSchema<
     timeoutSeconds: Type.Optional(params.timeoutSeconds),
     toolBudget: Type.Optional(Type.Integer({ minimum: 1 })),
     toolsAllow: Type.Optional(params.toolsAllow),
-    toolsAllowIsDefault: Type.Optional(Type.Boolean()),
   });
 }

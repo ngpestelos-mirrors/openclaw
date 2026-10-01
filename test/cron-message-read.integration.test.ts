@@ -813,7 +813,6 @@ describe("scheduled message actions", () => {
             createdActor: { id: originalCreatorId },
           });
           expect(job.payload.toolsAllow).toEqual(["message"]);
-          expect(job.payload.toolsAllowIsDefault).toBeUndefined();
         } else if (creator === "trusted") {
           expect(job.scheduledToolPolicy).toEqual({ version: 1, mode: "trusted" });
         } else {
