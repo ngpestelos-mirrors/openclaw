@@ -7,6 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { classifyReleaseTrain, parseReleaseVersion } from "../../../lib/release-version.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const [candidateArg, artifactsArg, driverTag = "latest"] = process.argv.slice(2);
@@ -15,7 +16,11 @@ assert(fs.existsSync("/.dockerenv"), "Run through the bare Docker E2E runner");
 const accountHome = os.userInfo().homedir;
 assert.equal(accountHome, "/home/appuser", "Expected the disposable E2E account");
 assert(candidateArg && artifactsArg, "Expected candidate tarball and artifact directory");
-assert(/^(?:latest|\d{4}\.\d+\.\d+)$/.test(driverTag), "Driver must be a published stable version");
+const requestedDriver = parseReleaseVersion(driverTag);
+assert(
+  driverTag === "latest" || (requestedDriver && classifyReleaseTrain(requestedDriver) === "stable"),
+  "Driver must be a published stable version",
+);
 const candidate = fs.realpathSync(candidateArg);
 const artifacts = path.resolve(artifactsArg);
 fs.mkdirSync(artifacts, { recursive: true });
@@ -92,9 +97,9 @@ async function freePort() {
     server.listen(0, "127.0.0.1", resolve);
   });
   const port = server.address().port;
-  await new Promise((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
   return port;
 }
 
@@ -119,7 +124,11 @@ try {
   const driverVersion = JSON.parse(
     fs.readFileSync(path.join(artifacts, "resolve-driver.stdout"), "utf8"),
   );
-  assert(/^\d{4}\.\d+\.\d+$/.test(driverVersion), "npm latest must resolve to stable");
+  const driverRelease = parseReleaseVersion(driverVersion);
+  assert(
+    driverRelease && classifyReleaseTrain(driverRelease) === "stable",
+    "npm latest must resolve to stable",
+  );
   run("install-driver", "npm", [
     "install",
     "-g",
@@ -144,14 +153,15 @@ try {
     },
     plugins: { enabled: false },
     agents: {
-      list: ["main", "second"].map((id) => ({
-        id,
-        ...(id === "main" ? { default: true } : {}),
-        workspace: path.join(runtime, "workspaces", id),
-      })),
+      list: [
+        { id: "main", default: true, workspace: path.join(runtime, "workspaces", "main") },
+        { id: "second", workspace: path.join(runtime, "workspaces", "second") },
+      ],
     },
   };
-  for (const agent of config.agents.list) fs.mkdirSync(agent.workspace, { recursive: true });
+  for (const agent of config.agents.list) {
+    fs.mkdirSync(agent.workspace, { recursive: true });
+  }
   fs.writeFileSync(env.OPENCLAW_CONFIG_PATH, `${JSON.stringify(config)}\n`);
   run("fixture", "bash", [
     "-c",
