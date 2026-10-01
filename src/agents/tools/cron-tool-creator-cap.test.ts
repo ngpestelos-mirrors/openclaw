@@ -50,12 +50,14 @@ describe("cron tool creator cap", () => {
       payload: { kind: "systemEvent", text: "wake" },
     };
     const agentJob = { payload: { kind: "agentTurn", message: "work" } };
+    const codexAppJob = { payload: { kind: "agentTurn", message: "work" } };
     const plainJob = {
       payload: { kind: "systemEvent", text: "wake" },
     };
 
     capCronJobToolsAllowOnCreate(triggerJob, ["read", "cron"]);
     capCronJobToolsAllowOnCreate(agentJob, ["read", "cron"]);
+    capCronJobToolsAllowOnCreate(codexAppJob, ["read", "cron"], true);
     capCronJobToolsAllowOnCreate(plainJob, ["read", "cron"]);
 
     // Scripts reach MCP only through named servers, so they keep concrete names.
@@ -65,6 +67,12 @@ describe("cron tool creator cap", () => {
       toolsAllow: ["read", "automations"],
     });
     expect(agentJob.payload).toEqual({ kind: "agentTurn", message: "work", toolsAllow: ["*"] });
+    // Codex app authority is captured against the concrete list, as on earlier builds.
+    expect(codexAppJob.payload).toEqual({
+      kind: "agentTurn",
+      message: "work",
+      toolsAllow: ["read", "automations"],
+    });
     expect(plainJob.payload).toEqual({ kind: "systemEvent", text: "wake" });
   });
 

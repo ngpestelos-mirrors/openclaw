@@ -484,7 +484,11 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 : undefined;
             operationSignal?.throwIfAborted();
             const creatorToolAllowlist = resolvedAuthority?.tools ?? opts?.creatorToolAllowlist;
-            capCronJobToolsAllowOnCreate(job, creatorToolAllowlist);
+            capCronJobToolsAllowOnCreate(
+              job,
+              creatorToolAllowlist,
+              resolvedAuthority?.holdsRuntimeAuthority,
+            );
             const { mainKey, alias } = resolveMainSessionAlias(runtimeConfig);
             const resolvedSessionKey = opts?.agentSessionKey
               ? resolveInternalSessionKey({ key: opts.agentSessionKey, alias, mainKey })

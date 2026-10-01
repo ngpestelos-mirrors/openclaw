@@ -32,7 +32,7 @@ type CronJobUpdatePatchPlan =
  * Anything else is a backend contract bug and fails closed at capture time so a
  * raw harness tool name can never become a persisted cron capability.
  */
-export const NATIVE_CRON_CREATOR_CAPABILITIES: ReadonlySet<string> = new Set([
+const NATIVE_CRON_CREATOR_CAPABILITIES: ReadonlySet<string> = new Set([
   "read",
   "write",
   "edit",
@@ -260,6 +260,8 @@ function capCronJobToolsAllow(params: {
   payload: Record<string, unknown>;
   trigger?: unknown;
   creatorToolAllowlist: readonly CronCreatorToolAllowlistEntry[];
+  /** Codex app authority is bound to the captured list, so its jobs keep that list. */
+  creatorHoldsRuntimeAuthority?: boolean;
 }): void {
   const writesToolsAllow = Object.hasOwn(params.payload, "toolsAllow");
   if (
@@ -279,11 +281,13 @@ function capCronJobToolsAllow(params: {
         )
       : ["*"];
   // An omitted or wildcard cap inherits the owner session's policy at run time.
-  // Script runtimes reach MCP only through servers named in their list, so they
-  // keep the creator's concrete tools.
+  // Script runtimes reach MCP only through servers named in their list, and
+  // runtime app authority was captured against the concrete list, so both keep it.
   if (requestedToolsAllow.includes("*")) {
     params.payload.toolsAllow =
-      params.payload.kind === "script" || hasCronTriggerScript(params.trigger)
+      params.payload.kind === "script" ||
+      hasCronTriggerScript(params.trigger) ||
+      params.creatorHoldsRuntimeAuthority
         ? creatorToolsAllow.map((tool) => tool.name)
         : ["*"];
     return;
@@ -314,6 +318,7 @@ function capCronJobToolsAllow(params: {
 export function capCronJobToolsAllowOnCreate(
   value: unknown,
   creatorToolAllowlist: readonly CronCreatorToolAllowlistEntry[] | undefined,
+  creatorHoldsRuntimeAuthority?: boolean,
 ): void {
   if (!isRecord(value) || !isRecord(value.payload) || !creatorToolAllowlist) {
     return;
@@ -322,6 +327,7 @@ export function capCronJobToolsAllowOnCreate(
     payload: value.payload,
     trigger: value.trigger,
     creatorToolAllowlist,
+    creatorHoldsRuntimeAuthority,
   });
 }
 
@@ -335,6 +341,7 @@ export function planCronJobUpdatePatch(params: {
   creatorToolAllowlist: readonly CronCreatorToolAllowlistEntry[] | undefined;
   currentJob?: Record<string, unknown>;
   creatorAuthorityComplete?: boolean;
+  creatorHoldsRuntimeAuthority?: boolean;
 }): CronJobUpdatePatchPlan {
   const patch = structuredClone(params.patch);
   const payload = isRecord(patch.payload) ? patch.payload : undefined;
@@ -432,6 +439,7 @@ export function planCronJobUpdatePatch(params: {
     payload: nextPayload,
     trigger,
     creatorToolAllowlist: params.creatorToolAllowlist,
+    creatorHoldsRuntimeAuthority: params.creatorHoldsRuntimeAuthority,
   });
   return { kind: "ready", patch };
 }

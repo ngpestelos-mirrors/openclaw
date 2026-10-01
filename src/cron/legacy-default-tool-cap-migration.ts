@@ -19,10 +19,7 @@ import {
   resolveCronJobGrantDefinitionRevision,
   upsertCronJobRow,
 } from "./store/row-codec.js";
-import {
-  loadCronRuntimeAuthorities,
-  replaceCronRuntimeAuthorityRows,
-} from "./store/runtime-authority-store.js";
+import { loadCronRuntimeAuthorities } from "./store/runtime-authority-store.js";
 import { tryParseJsonObject } from "./store/scalar-codec.js";
 import { getCronStoreKysely } from "./store/schema.js";
 
@@ -34,8 +31,9 @@ export type MigratedDefaultCronToolCap = {
 
 /**
  * Marked agent turns with a scheduled owner policy. Script runtimes reach MCP only
- * through servers named in the list, and policy-less jobs have no owner session to
- * inherit from, so their rows stay untouched.
+ * through servers named in the list, policy-less jobs have no owner session to
+ * inherit from, and Codex app authority is bound to the captured list, so those
+ * rows stay byte-for-byte untouched.
  */
 function loadInheritingDefaultCapRows(db: DatabaseSync, storeKey: string) {
   const rows = loadCronRows(db, storeKey, undefined, {
@@ -44,14 +42,16 @@ function loadInheritingDefaultCapRows(db: DatabaseSync, storeKey: string) {
     const payload = tryParseJsonObject(row.job_json)?.payload;
     return isRecord(payload) && payload.toolsAllowIsDefault === true;
   });
-  const jobsById = new Map(
-    loadedCronStoreFromRows(rows).store.jobs.map((job) => [job.id, job] as const),
-  );
+  const jobs = loadedCronStoreFromRows(rows).store.jobs;
+  loadCronRuntimeAuthorities({ db, storeKey, jobs });
+  const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
   return rows.flatMap((row) => {
     const job = jobsById.get(row.job_id);
     return job &&
       job.payload.kind === "agentTurn" &&
       !job.trigger?.script.trim() &&
+      !job.runtimeAuthority &&
+      !job.runtimeAuthorityRecoveryRequired &&
       resolveCronScheduledToolPolicy({
         toolsAllow: job.payload.toolsAllow,
         scheduledToolPolicy: job.scheduledToolPolicy,
@@ -114,9 +114,9 @@ function rebindCronJobStandingGrants(
 
 /**
  * Older builds froze the creator's tool list into agent-created jobs and marked
- * it `toolsAllowIsDefault`. Agent turns with a scheduled owner policy now store
- * `*`, so runs inherit the owner session's current policy. Runtime authority is
- * rebound in the same transaction, after a verified state-database backup.
+ * it `toolsAllowIsDefault`. Eligible agent turns now store `*`, so runs inherit
+ * the owner session's current policy. Standing exec grants follow the rewrite in
+ * the same transaction, after a verified state-database backup.
  */
 export async function migrateLegacyDefaultCronToolCaps(params: {
   storePath: string;
@@ -169,7 +169,6 @@ export async function migrateLegacyDefaultCronToolCaps(params: {
               }
             : undefined,
       }));
-      loadCronRuntimeAuthorities({ db, storeKey, jobs: entries.map(({ job }) => job) });
       const result: MigratedDefaultCronToolCap[] = [];
       for (const { row, job, previousGrantBinding } of entries) {
         const previousToolsAllow = job.payload.toolsAllow ?? [];
@@ -178,8 +177,7 @@ export async function migrateLegacyDefaultCronToolCaps(params: {
         if (job.toolsAllowExecTargetRequirement?.target) {
           job.toolsAllowExecTargetRequirement.grantIndex = 0;
         }
-        const persisted = upsertCronJobRow(db, storeKey, job, row.sort_order);
-        replaceCronRuntimeAuthorityRows({ db, storeKey, jobs: [persisted] });
+        upsertCronJobRow(db, storeKey, job, row.sort_order);
         const nextRows = loadCronRows(db, storeKey, new Set([job.id]), {
           includeGrantDefinitionProjection: true,
         });

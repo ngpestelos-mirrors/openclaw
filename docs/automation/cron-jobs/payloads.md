@@ -63,14 +63,15 @@ including its group, agent, sandbox, and runtime restrictions. An agent that req
 finite list is capped to the tools available to its creating turn and cannot widen the
 stored list. `automations edit --clear-tools` restores `*`. Existing jobs that predate an
 explicit tool policy retain their current behavior until their tool policy is explicitly
-edited or the job is recreated. Agent-created script payloads and condition triggers
-without `--tools` instead store the creating turn's tools, because scripts reach MCP only
-through servers their list names.
+edited or the job is recreated. Agent-created script payloads, condition triggers, and jobs
+whose creator captured Codex app authority store the creating turn's tools instead: scripts
+reach MCP only through servers their list names, and app authority is bound to that list.
 
 Earlier releases saved a copy of the creating turn's tool list on agent-created jobs. That
 copy could miss tools the creator had, such as the native shell. On the first Gateway start
-after updating, agent-turn jobs with a saved owner policy switch from that copy to `*`; other
-jobs keep their copy unchanged. Before changing them, the Gateway writes a verified copy of
+after updating, agent-turn jobs with a saved owner policy and no captured Codex app authority
+switch from that copy to `*`; other jobs keep their copy unchanged. Before changing them, the
+Gateway writes a verified copy of
 the state database next to it (`openclaw.sqlite.cron-default-tool-caps-<timestamp>.bak`).
 Standing exec approvals for the same command stay valid.
 
