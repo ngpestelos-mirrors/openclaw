@@ -39,7 +39,6 @@ import { readOpenClawDatabaseQuarantineFailure } from "./openclaw-quarantine-sto
 import {
   createOpenClawStateDatabaseAsyncLifecycle,
   getOpenClawDatabaseMaintenanceScope,
-  getOpenClawDatabaseMaintenanceResourceScope,
   isOpenClawDatabaseMaintenanceResourceOwned,
   observeOpenClawDatabaseMaintenanceResource,
   type OpenClawDatabaseMaintenanceScope,
@@ -102,8 +101,16 @@ const {
 
 const { touch: touchStateDatabase, retain: retainOpenClawStateDatabaseForIdle } =
   createStateDatabaseIdleRetirement(stateDatabaseLifecycle, retireOpenClawStateDatabaseHandle);
-const { register: registerStateDatabaseWalAdmission, readHealth: readOpenClawStateWalHealth } =
-  createStateDatabaseWalOwner(stateDatabaseLifecycle, retainOpenClawStateDatabaseForIdle);
+const {
+  register: registerStateDatabaseWalAdmission,
+  readHealth: readOpenClawStateWalHealth,
+  ownRetirement: ownStateDatabaseRetirement,
+  stop: stopOpenClawStateDatabaseMaintenance,
+} = createStateDatabaseWalOwner(
+  stateDatabaseLifecycle,
+  retainOpenClawStateDatabaseForIdle,
+  requireOpenClawStateDatabaseIdentity,
+);
 export { readOpenClawStateWalHealth, retainOpenClawStateDatabaseForIdle };
 
 function notifyOpenClawStateDatabaseLifecycle(event: OpenClawStateDatabaseLifecycleEvent): void {
@@ -218,23 +225,7 @@ export const {
   capture: (pathname) => asyncResources.capture(pathname),
   retire: retireOpenClawStateDatabaseHandle,
   retainFailed: retainStateDatabaseClose,
-  ownRetirement(database, close) {
-    const identity = requireOpenClawStateDatabaseIdentity(database);
-    const resource = {
-      async close(selected?: DatabasePathIdentity) {
-        if (!selected || selected.key === identity.key) {
-          await close();
-        }
-      },
-    };
-    const unregister = asyncResources.register(resource);
-    getOpenClawDatabaseMaintenanceResourceScope(database.db)?.own(
-      resource,
-      "shared-references",
-      () => resource.close(),
-    );
-    return unregister;
-  },
+  ownRetirement: ownStateDatabaseRetirement,
   touch: touchStateDatabase,
 });
 
@@ -575,23 +566,6 @@ function retireOpenClawStateDatabaseHandles(
   }
   throwSqliteLifecycleErrors(errors, "OpenClaw state database cleanup failed.");
   return found;
-}
-
-async function stopOpenClawStateDatabaseMaintenance(
-  pathname?: string,
-  identity?: DatabasePathIdentity,
-): Promise<void> {
-  const databases = new Set([...retainedDatabaseHandles.values(), ...cachedDatabases.values()]);
-  await Promise.all(
-    [...databases]
-      .filter(
-        (database) =>
-          pathname === undefined ||
-          database.path === pathname ||
-          (identity !== undefined && databaseIdentities.get(database.db)?.key === identity.key),
-      )
-      .map((database) => database.walMaintenance?.stop()),
-  );
 }
 
 /** Close one cached shared state database handle by exact pathname. */
