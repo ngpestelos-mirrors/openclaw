@@ -47,7 +47,6 @@ import {
   type SessionSqliteMigrationMoveKind,
 } from "../infra/session-sqlite-migration-manifest.js";
 import {
-  projectExistingAgentDatabaseTargets,
   readOnlySqliteValidationSnapshot,
   readSqliteEntryCount,
   resolveTargetSqlitePath,
@@ -90,6 +89,7 @@ import { settleDuplicateSessionSqliteArchives } from "./doctor-session-sqlite-re
 import {
   createMigrationTargetInput,
   filterLegacySessionStoreTargets,
+  prepareDoctorSessionSqliteTargets,
   resolveDoctorSessionSqliteConfig,
   resolveDoctorSessionSqliteMaintenancePaths,
   resolveDoctorSessionSqliteMaintenanceRoots,
@@ -109,7 +109,6 @@ import {
 import { validateLegacySessionRecords } from "./doctor-session-sqlite-verification.js";
 import {
   assertDoctorSqliteMaintenancePathsNotAliased,
-  isDestructiveDoctorSessionSqliteMode,
   type DoctorSqliteMaintenanceAuthority,
 } from "./doctor-sqlite-maintenance-lock.js";
 export type {
@@ -138,33 +137,11 @@ export async function runDoctorSessionSqlite(
   const configuredAgentIds = new Set(listAgentIds(cfg));
   const pendingPlugins = readDeferredPluginMigrations({ env });
   const verifyMissingIndex = createMissingSessionIndexVerifier({ cfg, env });
-  const { targets: candidates, knownTargets } = resolveDoctorSessionSqliteTargets({
-    ...options,
-    cfg,
-    env,
-  });
-  if (isDestructiveDoctorSessionSqliteMode(options.mode)) {
-    assertDoctorSqliteMaintenancePathsNotAliased(
-      `session SQLite ${options.mode}`,
-      resolveDoctorSessionSqliteMaintenancePaths(candidates),
-      resolveDoctorSessionSqliteMaintenanceRoots(candidates, env),
-    );
-  }
-  const repairEntryStates = async (selectedTargets: readonly SessionStoreTarget[]) => {
-    authority?.assertCurrent();
-    const { repairLegacySessionEntryStates } = await import("./doctor-session-delivery-state.js");
-    return await repairLegacySessionEntryStates({
-      apply: true,
-      cfg,
-      env,
-      authority,
-      targets: projectExistingAgentDatabaseTargets(selectedTargets, env, cfg),
-      deferSchemaRepair: options.mode === "import",
-    });
-  };
-  if (options.mode === "import") {
-    await repairEntryStates(candidates);
-  }
+  const {
+    targets: candidates,
+    knownTargets,
+    repairEntryStates,
+  } = await prepareDoctorSessionSqliteTargets({ ...options, cfg, env, authority });
   const settlements =
     options.mode === "import" || options.mode === "recover"
       ? await settleDuplicateSessionSqliteArchives({

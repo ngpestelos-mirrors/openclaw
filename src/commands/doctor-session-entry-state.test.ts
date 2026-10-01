@@ -415,7 +415,11 @@ it.each(["preparation", "native open"] as const)(
           pendingFinalDelivery: { kind: "transport-only", createdAt: 42 },
         }),
       }),
-    ).toThrow(/changed during repair admission/);
+    ).toThrow(
+      boundary === "preparation"
+        ? /SQLite database file identity changed before existing-only open/
+        : /changed during repair admission/,
+    );
     expect(replaced).toBe(true);
     expect(fs.readFileSync(legacy.databasePath)).toEqual(originalBytes);
     if (process.platform !== "win32") {

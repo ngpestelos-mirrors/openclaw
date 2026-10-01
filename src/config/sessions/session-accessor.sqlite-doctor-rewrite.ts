@@ -225,7 +225,7 @@ export function rewriteDoctorSessionEntries(
           });
           publishSessionEntryCacheInvalidation(
             database,
-            { sessionKey, ...(nextEntry ? { entry: nextEntry, entryJson } : {}) },
+            nextEntry ? { sessionKey, entry: nextEntry, entryJson } : { sessionKey },
             writeGeneration,
           );
           batchRewritten += 1;

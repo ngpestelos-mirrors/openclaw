@@ -18,12 +18,7 @@ import {
   type SqliteIntegrityOperation,
   type SqliteIntegrityConfirmation,
 } from "../infra/sqlite-integrity.js";
-import { withSqlitePostCommitPublications } from "../infra/sqlite-post-commit.js";
 import { admitSqliteSchema } from "../infra/sqlite-schema-facts.js";
-import {
-  runSqliteImmediateTransactionSync,
-  type SqliteTransactionOptions,
-} from "../infra/sqlite-transaction.js";
 import { isSqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
 import { prepareSqliteDatabaseDirectory } from "../infra/sqlite-wal-filesystem.js";
 import { createSqliteWalReclamationResult } from "../infra/sqlite-wal-reclamation.js";
@@ -193,14 +188,12 @@ export function clearOpenClawAgentDatabaseOpenFailure(
 }
 
 export type { OpenClawAgentDatabaseWriteAdmission } from "./openclaw-agent-db-admission.js";
-const agentDatabaseAdmission = createOpenClawAgentDatabaseAdmissionOwner(
-  openOpenClawAgentDatabaseSteps,
-);
 export const {
   openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
   withOpenClawAgentDatabaseAsync,
   withOpenClawAgentDatabaseAdmission,
-} = agentDatabaseAdmission;
+} = createOpenClawAgentDatabaseAdmissionOwner(openOpenClawAgentDatabaseSteps);
 
 function* openOpenClawAgentDatabaseSteps(
   options: OpenClawAgentDatabaseOptions,
@@ -588,57 +581,6 @@ function* openOpenClawAgentDatabaseSteps(
     }
     throw closeError ?? error;
   }
-}
-
-export function runOpenClawAgentWriteTransaction<T>(
-  operation: (database: OpenClawAgentDatabase) => T,
-  options: OpenClawAgentDatabaseOptions,
-  transactionOptions: Pick<
-    SqliteTransactionOptions,
-    "busyTimeoutMs" | "operationLabel" | "slowTransactionHoldMs"
-  > & { repairAdmission?: OpenClawAgentDatabaseRepairAdmission } = {},
-): T {
-  const { repairAdmission, ...writeOptions } = transactionOptions;
-  const database = repairAdmission
-    ? agentDatabaseAdmission.openForRepair(options, repairAdmission)
-    : openOpenClawAgentDatabase(options);
-  const deletionCommit = getAgentDeletionDatabaseCleanup(options)?.withCommit;
-  const withCommit = repairAdmission
-    ? (commit: () => void) => {
-        repairAdmission.assertCurrent?.();
-        if (repairAdmission.expectedIdentity) {
-          assertOpenClawAgentDatabaseIdentity(database, repairAdmission.expectedIdentity);
-        }
-        if (deletionCommit) {
-          deletionCommit(commit);
-        } else {
-          commit();
-        }
-      }
-    : deletionCommit;
-  const enteredNestedTransaction = database.db.isTransaction;
-  return withSqlitePostCommitPublications(database.db, () =>
-    runSqliteImmediateTransactionSync(
-      database.db,
-      () => {
-        assertAgentDeletionDatabaseCleanupAccess(database, options);
-        const operationResult = operation(database);
-        if (!enteredNestedTransaction && !cache.incognito.has(database)) {
-          // Permission failure must roll back with the write. Repairing after
-          // COMMIT could make callers retry a transaction already durable in SQLite.
-          ensureOpenClawAgentDatabasePermissions(database.path, options);
-        }
-        return operationResult;
-      },
-      {
-        busyTimeoutMs: writeOptions.busyTimeoutMs ?? OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-        databaseLabel: database.path,
-        ...writeOptions,
-        operationLabel: writeOptions.operationLabel ?? "agent.write",
-        withCommit,
-      },
-    ),
-  );
 }
 
 /** Retain the exact verified connection across awaits; explicit disposal still revokes it. */
