@@ -92,7 +92,7 @@ function prepareSessionEntryRepairs(params: PreparedSessionEntryRepairParams) {
   const targets = params.targets ?? listExistingAgentDatabaseTargets(params.cfg, params.env);
   const pending = targets.flatMap((target) => {
     const sessionKeys: string[] = [];
-    const scope = { agentId: target.agentId, env: params.env, storePath: target.storePath };
+    const scope = { agentId: target.agentId, env: params.env, storePath: target.sqlitePath };
     const scan = () => {
       const identity = readDatabasePathIdentitySync(target.sqlitePath);
       if (params.source === "raw") {

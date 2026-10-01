@@ -70,7 +70,7 @@ function seedEntry(key: string, fields: Record<string, unknown>) {
     readRaw,
     sessionKey,
     databasePath: database.path,
-    scope: { agentId: "main", env, sessionKey },
+    scope: { agentId: "main", env, sessionKey, storePath: database.path },
   };
 }
 
