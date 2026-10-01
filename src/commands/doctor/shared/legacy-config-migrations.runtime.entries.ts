@@ -100,8 +100,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_ENTRIES: LegacyConfigMigrationSpec
       const legacyOwner = roster.length > 1 ? marked[0]?.[0] : undefined;
       if (legacyOwner) {
         const materialized = materializeLegacyDefaultAgentRoles(
-          // SAFETY: The roster guards establish record entries; the repair preserves other raw
-          // fields for the validating migration wrapper instead of admitting them to runtime.
+          // SAFETY: Roster entries are records; the helper guards raw sections until later validation.
           raw as OpenClawConfig,
           legacyOwner,
           { ...context, materializeWorkspace: true },
