@@ -29,7 +29,7 @@ export async function prepareUpdateDatabaseRestoreSourceInProcess(params: {
       await copySqliteFile(
         params.baseline.snapshotPath,
         params.targetPath,
-        await fs.lstat(params.baseline.snapshotPath),
+        await fs.lstat(params.baseline.snapshotPath, { bigint: true }),
       );
       const copied = await sha256File(params.targetPath);
       if (copied.digest !== params.baseline.sha256 || copied.bytes !== params.baseline.sizeBytes) {

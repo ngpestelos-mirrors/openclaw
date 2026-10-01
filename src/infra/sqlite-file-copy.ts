@@ -1,4 +1,4 @@
-import type { BigIntStats, Stats } from "node:fs";
+import type { BigIntStats } from "node:fs";
 import path from "node:path";
 import { sameFileIdentity } from "@openclaw/fs-safe/advanced";
 import type { RootCopyPublicationReceipt } from "@openclaw/fs-safe/root";
@@ -8,7 +8,7 @@ import { root } from "./fs-safe.js";
 export async function copySqliteFile(
   sourcePath: string,
   targetPath: string,
-  expectedIdentity: Stats | BigIntStats,
+  expectedIdentity: BigIntStats,
 ): Promise<RootCopyPublicationReceipt> {
   const sourceRoot = await root(path.dirname(sourcePath));
   const targetRoot = await root(path.dirname(targetPath));

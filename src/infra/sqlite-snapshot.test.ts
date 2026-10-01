@@ -705,7 +705,6 @@ describe("createVerifiedSqliteSnapshot", () => {
           identityObservation === "staging-transition" &&
           replaced &&
           !stagingReplaced &&
-          typeof identity.ino === "number" &&
           path.basename(filePath) === "database.sqlite" &&
           path.basename(path.dirname(filePath)).startsWith(".sqlite-publish-")
         ) {
