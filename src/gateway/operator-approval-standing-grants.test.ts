@@ -606,7 +606,8 @@ describe("cron standing grant consumption", () => {
     expect(migratedJob?.payload.toolsAllow).toEqual(["*"]);
     const migratedRevision = resolveCronJobConfigRevision(migratedJob!);
     expect(migratedRevision).not.toBe(revision);
-    expect(consume({ databaseOptions, revision: migratedRevision }).outcome).toBe("consumed");
+    const carried = consume({ databaseOptions, revision: migratedRevision });
+    expect(carried.outcome).toBe("consumed");
     const otherBinding = buildCronExecOperationBinding({
       command: "echo different",
       cwd: "/work",
@@ -616,6 +617,15 @@ describe("cron standing grant consumption", () => {
       consume({ databaseOptions, revision: migratedRevision, operationBinding: otherBinding })
         .outcome,
     ).toBe("no-grant");
+    if (carried.outcome !== "consumed") {
+      throw new Error("expected consumed");
+    }
+    revokeCronStandingGrant({
+      grantId: carried.grant.grantId,
+      revokedBy: "operator",
+      databaseOptions,
+    });
+    expect(consume({ databaseOptions, revision: migratedRevision }).outcome).toBe("revoked");
   });
 
   it("fails closed after a stamped expiry passes", async () => {
