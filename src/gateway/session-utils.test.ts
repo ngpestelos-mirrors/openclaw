@@ -76,7 +76,7 @@ const { getSessionProviderArtifactMocks, resetSessionProviderArtifacts } =
   await import("./session-utils-provider.test-support.js");
 const providerArtifactMocks = getSessionProviderArtifactMocks();
 
-test("resolves fixed-store and auth compatibility owners", () => {
+test("resolves fixed-store and auth owners independently of retained Doctor ownership", () => {
   const cfg = retainLegacyDefaultAgentId(
     {
       agents: {
@@ -106,7 +106,7 @@ test("resolves fixed-store and auth compatibility owners", () => {
     }),
   ).toBe("saved");
   expect(resolveLegacyInheritedAuthAgentId(explicit)).toBe("main");
-  expect(resolveLegacyInheritedAuthAgentId(retainLegacyDefaultAgentId(explicit, "a"))).toBe("a");
+  expect(resolveLegacyInheritedAuthAgentId(retainLegacyDefaultAgentId(explicit, "a"))).toBe("main");
   expect(resolveLegacyInheritedAuthAgentId({ agents: { entries: { solo: {} } } })).toBe("solo");
 });
 
