@@ -29,10 +29,6 @@ export type ConsumeCronStandingGrantResult =
         | "approval-not-allow-always";
     };
 
-export type CronStandingGrantLookupParams = CronStandingGrantMintSpec & {
-  nowMs?: number;
-};
-
 /** One grant row projected for operator surfaces (list, CLI, cards). */
 export type CronStandingGrantListing = CronStandingGrantRecord & {
   /** Display name from the owning cron job row; null when the job is gone. */

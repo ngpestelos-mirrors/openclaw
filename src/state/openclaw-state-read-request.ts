@@ -127,7 +127,6 @@ export function captureCommand(command: OpenClawStateReadCommand): OpenClawState
   }
   if (
     command.type === "operatorApprovals.history" ||
-    command.type === "operatorApprovals.validateCronGrant" ||
     command.type === "operatorApprovals.listCronGrants"
   ) {
     return structuredClone(command);
@@ -373,9 +372,6 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       Buffer.byteLength(command.input.kind ?? "", "utf8") +
       16
     );
-  }
-  if (command.type === "operatorApprovals.validateCronGrant") {
-    return bytes + Buffer.byteLength(JSON.stringify(command.input));
   }
   if (command.type === "operatorApprovals.listCronGrants") {
     return bytes + 8;

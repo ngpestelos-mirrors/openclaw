@@ -87,10 +87,6 @@ export const operatorApprovalOperations = {
     input: Input<typeof transitions.consumeOperatorApprovalAllowOnceInDatabase>,
     context,
   ) => transact(input, context, transitions.consumeOperatorApprovalAllowOnceInDatabase),
-  "operatorApprovals.consumeCronGrant": (
-    input: Input<typeof grants.consumeCronStandingGrantInDatabase>,
-    context,
-  ) => transact(input, context, grants.consumeCronStandingGrantInDatabase),
   "operatorApprovals.revokeCronGrant": (
     input: Input<typeof grants.revokeCronStandingGrantInDatabase>,
     context,

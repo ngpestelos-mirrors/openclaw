@@ -9,29 +9,6 @@ import { parseExecApprovalResultText } from "./exec-approval-result.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import { DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS } from "./tool-result-limits.js";
 
-export function buildGatewayExecApprovalDeniedToolResult(params: {
-  approvalId?: string;
-  deniedReason: string;
-  command: string;
-  cwd: string;
-}): AgentToolResult<ExecToolDetails> {
-  const denialContext = params.approvalId
-    ? `gateway id=${params.approvalId}, ${params.deniedReason}`
-    : params.deniedReason;
-  const text = `Exec denied (${denialContext}): ${params.command}`;
-  return {
-    content: [{ type: "text", text }],
-    details: {
-      status: "failed",
-      exitCode: null,
-      durationMs: 0,
-      aggregated: text,
-      timedOut: params.deniedReason.includes("timeout"),
-      cwd: params.cwd,
-    },
-  };
-}
-
 /** Renders automatic denials consistently for gateway and node tool transports. */
 export function buildExecAutoReviewDeniedToolResult(params: {
   command: string;

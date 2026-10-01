@@ -29,7 +29,6 @@ import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worke
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerOperationOptions } from "../state/openclaw-state-worker-contract.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
-import type { CronStandingGrantLookupParams } from "./operator-approval-standing-grants.types.js";
 import { decodeOperatorApprovalHistoryCursor } from "./operator-approval-store.rows.js";
 import type {
   ListTerminalOperatorApprovalsInput,
@@ -288,15 +287,6 @@ export async function listTerminalOperatorApprovals(
   );
 }
 
-export function validateCronStandingGrant(params: CronStandingGrantLookupParams & Options) {
-  const { databaseOptions, assertCurrent, guard, ...input } = params;
-  return readApprovalStore(
-    { type: "operatorApprovals.validateCronGrant", input },
-    { databaseOptions, assertCurrent, guard },
-    (result) => (result.type === "operatorApprovals.validateCronGrant" ? result.grant : undefined),
-  );
-}
-
 export function listCronStandingGrants(params: { limit?: number } & Options = {}) {
   const { databaseOptions, assertCurrent, guard, ...input } = params;
   return readApprovalStore(
@@ -304,15 +294,6 @@ export function listCronStandingGrants(params: { limit?: number } & Options = {}
     { databaseOptions, assertCurrent, guard },
     (result) => (result.type === "operatorApprovals.listCronGrants" ? result.grants : undefined),
   );
-}
-
-export function consumeCronStandingGrant(params: Input<"operatorApprovals.consumeCronGrant">) {
-  const { databaseOptions, assertCurrent, guard, ...input } = params;
-  return execute("operatorApprovals.consumeCronGrant", input, {
-    databaseOptions,
-    assertCurrent,
-    guard,
-  });
 }
 
 export function revokeCronStandingGrant(params: Input<"operatorApprovals.revokeCronGrant">) {

@@ -990,7 +990,6 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "src/agents/bash-tools.exec-authorization.integration.test.ts",
   "src/agents/bash-tools.exec-github-credential.test.ts",
   "src/agents/bash-tools.exec-host-gateway.test.ts",
-  "src/agents/bash-tools.exec-host-gateway.cron-grants.test.ts",
   "src/agents/bash-tools.exec-host-node.integration.test.ts",
   "src/agents/bash-tools.exec-host-node.test.ts",
   "src/agents/bash-tools.exec-runtime-output.test.ts",

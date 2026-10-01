@@ -292,10 +292,12 @@ export function snapshotFromExecApprovalsDatabase(
 }
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.execApprovalsStoreTestApi")] = {
-    reset(): void {
-      resetExecApprovalsMigrationGateForTest();
-      lastWarnAt = undefined;
+  Object.assign(globalThis, {
+    [Symbol.for("openclaw.execApprovalsStoreTestApi")]: {
+      reset(): void {
+        resetExecApprovalsMigrationGateForTest();
+        lastWarnAt = undefined;
+      },
     },
-  };
+  });
 }

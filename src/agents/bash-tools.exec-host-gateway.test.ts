@@ -3,63 +3,241 @@
  * Covers allowlist misses, auto-review, strict inline eval, diagnostics
  * follow-ups, and gateway approval result routing.
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { quoteCliArg } from "../cli/quote-cli-arg.js";
+import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
+import {
+  loadCronRows,
+  loadedCronStoreFromRows,
+  upsertCronJobRow,
+} from "../cron/store/row-codec.js";
+import type { CronStoredJob } from "../cron/types.js";
+import { buildCronExecOperationBinding } from "../gateway/operator-approval-standing-grants.js";
+import {
+  insertOperatorApproval,
+  resolveOperatorApproval,
+} from "../gateway/operator-approval-store.js";
 import { onAgentEvent } from "../infra/agent-events.js";
+import { registerCronRunExecSource } from "../infra/cron-run-exec-source.js";
+import {
+  onInternalDiagnosticEvent,
+  resetDiagnosticEventsForTest,
+  type DiagnosticSecurityEvent,
+} from "../infra/diagnostic-events.js";
 import type {
   ExecAllowlistEntry,
   ExecApprovalDecision,
+  ExecApprovalsDefaults,
+  ExecApprovalsFile,
+  ExecAsk,
+  ExecCommandSegment,
   ExecSecurity,
   ExecSegmentSatisfiedBy,
 } from "../infra/exec-approvals.js";
-import { planShellAuthorization } from "../infra/exec-authorization-plan.js";
+import {
+  planShellAuthorization,
+  type ExecAuthorizationPlan,
+} from "../infra/exec-authorization-plan.js";
 import { buildAuthorizedShellCommandFromPlan } from "../infra/exec-authorization-render.js";
 import {
   buildCwdBoundHashedArgPattern,
   resolvePolicyTargetCandidatePath,
 } from "../infra/exec-command-resolution.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import {
   getActiveGatewayRootWorkCount,
   markGatewayRestartDraining,
+  resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
 import { createProcessSupervisor } from "../process/supervisor/supervisor.js";
+import type { ProcessSupervisor } from "../process/supervisor/types.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
-  INLINE_EVAL_HIT,
-  exactCommandMarker,
-  buildExecApprovalPendingToolResultMock,
-  buildExecApprovalFollowupTargetMock,
-  hasDurableExecApprovalMock,
-  hasExactCommandDurableExecApprovalMock,
-  requiresExecApprovalMock,
-  buildEnforcedShellCommandMock,
-  defaultExecAutoReviewerMock,
-  commitExecAuthorizationMock,
-  approvalDecisionMock,
-  runAbortedApprovalError,
-  approvalRouteFixture,
-  runExecProcessMock,
-  startupCancellationMocks,
-  markBackgroundedMock,
-  sendExecApprovalFollowupResultMock,
-  createExecApprovalRequestRouteMock,
-  detectInterpreterInlineEvalArgvMock,
-  captureSecurityEvents,
-  mockHostPolicy,
-  mockAllowlist,
-  runGatewayAllowlist,
-  installGatewayAllowlistFixture,
-  type ExecAutoReviewer,
-} from "./bash-tools.exec-host-gateway.test-support.js";
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
+import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
 import type {
   ExecApprovalFollowupFactory,
   ExecApprovalFollowupOutcome,
 } from "./bash-tools.exec-types.js";
+
+type SendExecApprovalFollowupResult =
+  typeof import("./bash-tools.exec-host-shared.js").sendExecApprovalFollowupResult;
+type ExecAutoReviewer = typeof import("../infra/exec-auto-review.js").defaultExecAutoReviewer;
+type MockAllowlistSegment = Omit<ExecCommandSegment, "raw"> & { raw?: string };
+type MockAllowlistResult = {
+  allowlistMatches: unknown[];
+  analysisOk: boolean;
+  allowlistSatisfied: boolean;
+  segments: MockAllowlistSegment[];
+  segmentAllowlistEntries: unknown[];
+  segmentSatisfiedBy?: ExecSegmentSatisfiedBy[];
+  authorizationPlan?: ExecAuthorizationPlan;
+};
+type MockExecHostApprovalContext = {
+  approvals: {
+    allowlist: ExecAllowlistEntry[];
+    file: ExecApprovalsFile;
+    agent?: Required<ExecApprovalsDefaults>;
+  };
+  hostSecurity: ExecSecurity;
+  hostAsk: ExecAsk;
+  askFallback?: ExecSecurity;
+};
+
+const INLINE_EVAL_HIT = {
+  executable: "python3",
+  normalizedExecutable: "python3",
+  flag: "-c",
+  argv: ["python3", "-c", "print(1)"],
+};
+
+function exactCommandMarker(command: string): string {
+  return `=command:${crypto.createHash("sha256").update(command.trim()).digest("hex").slice(0, 16)}`;
+}
+
+const buildExecApprovalPendingToolResultMock = vi.hoisted(() => vi.fn());
+const buildExecApprovalFollowupTargetMock = vi.hoisted(() =>
+  vi.fn<typeof import("./bash-tools.exec-host-shared.js").buildExecApprovalFollowupTarget>(),
+);
+const evaluateShellAllowlistWithAuthorizationMock = vi.hoisted(() =>
+  vi.fn<() => MockAllowlistResult>(),
+);
+const hasDurableExecApprovalMock = vi.hoisted(() => vi.fn(() => true));
+const hasExactCommandDurableExecApprovalMock = vi.hoisted(() => vi.fn(() => false));
+const requiresExecApprovalMock = vi.hoisted(() => vi.fn(() => false));
+const buildEnforcedShellCommandMock = vi.hoisted(() =>
+  vi.fn<() => { ok: boolean; reason?: string; command?: string }>(),
+);
+const defaultExecAutoReviewerMock = vi.hoisted(() => vi.fn<ExecAutoReviewer>());
+const commitExecAuthorizationMock = vi.hoisted(() =>
+  vi.fn<typeof import("../infra/exec-approvals.js").commitExecAuthorizationLocked>(
+    async () => () => {},
+  ),
+);
+const approvalDecisionMock = vi.hoisted(() =>
+  vi.fn<() => Promise<string | null | undefined>>(async () => undefined),
+);
+const runAbortedApprovalError = vi.hoisted(() => new Error("run aborted"));
+const approvalRouteFixture = vi.hoisted(() => ({ inline: false, id: "" }));
+const callGatewayToolMock = vi.hoisted(() =>
+  vi.fn(async (method: string, _options: unknown, params: { id: string }) => {
+    if (method === "exec.approval.request") {
+      approvalRouteFixture.id = params.id;
+      return approvalRouteFixture.inline ? { decision: null } : { status: "accepted" };
+    }
+    if (method !== "exec.approval.waitDecision") {
+      throw new Error(`Unexpected gateway method: ${method}`);
+    }
+    try {
+      const decision = await approvalDecisionMock();
+      if (decision === undefined) {
+        throw new Error("approval request failed");
+      }
+      return { decision };
+    } catch (error) {
+      if (error === runAbortedApprovalError) {
+        return { terminalReason: "run-aborted" };
+      }
+      throw error;
+    }
+  }),
+);
+const resolveExecHostApprovalContextMock = vi.hoisted(() =>
+  vi.fn<() => MockExecHostApprovalContext>(),
+);
+const runExecProcessMock = vi.hoisted(() => vi.fn());
+const startupCancellationMocks = vi.hoisted(() => ({
+  spawn: vi.fn<ProcessSupervisor["spawn"]>(),
+  prepare: vi.fn<() => void>(),
+}));
+
+vi.mock("../process/supervisor/index.js", () => ({
+  getProcessSupervisor: () => ({ spawn: startupCancellationMocks.spawn }),
+}));
+
+vi.mock("./shell-snapshot.js", () => ({
+  maybeWrapCommandWithShellSnapshot: async (input: { command: string }) => {
+    startupCancellationMocks.prepare();
+    return input.command;
+  },
+}));
+
+const markBackgroundedMock = vi.hoisted(() => vi.fn());
+const sendExecApprovalFollowupResultMock = vi.hoisted(() =>
+  vi.fn<SendExecApprovalFollowupResult>(async () => undefined),
+);
+const createExecApprovalRequestRouteMock = vi.hoisted(() =>
+  vi.fn<typeof import("./bash-tools.exec-host-shared.js").createExecApprovalRequestRoute>(),
+);
+const detectInterpreterInlineEvalArgvMock = vi.hoisted(() =>
+  vi.fn<() => typeof INLINE_EVAL_HIT | null>(),
+);
+
+vi.mock("../infra/exec-approvals.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/exec-approvals.js")>()),
+  evaluateShellAllowlistWithAuthorization: evaluateShellAllowlistWithAuthorizationMock,
+  hasDurableExecApproval: hasDurableExecApprovalMock,
+  hasExactCommandDurableExecApproval: hasExactCommandDurableExecApprovalMock,
+  buildEnforcedShellCommand: buildEnforcedShellCommandMock,
+  requiresExecApproval: requiresExecApprovalMock,
+  commitExecAuthorizationLocked: commitExecAuthorizationMock,
+  resolveApprovalAuditTrustPath: vi.fn(() => null),
+  resolveAllowAlwaysPatterns: vi.fn(() => []),
+}));
+
+vi.mock("../infra/exec-auto-review.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/exec-auto-review.js")>()),
+  defaultExecAutoReviewer: defaultExecAutoReviewerMock,
+}));
+
+vi.mock("./tools/gateway.js", () => ({
+  callGatewayTool: callGatewayToolMock,
+  readGatewayCallOptions: vi.fn(() => ({})),
+}));
+
+vi.mock("./bash-tools.exec-host-shared.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./bash-tools.exec-host-shared.js")>();
+  createExecApprovalRequestRouteMock.mockImplementation(actual.createExecApprovalRequestRoute);
+  buildExecApprovalFollowupTargetMock.mockImplementation(actual.buildExecApprovalFollowupTarget);
+  return {
+    ...actual,
+    resolveExecHostApprovalContext: resolveExecHostApprovalContextMock,
+    buildExecApprovalFollowupTarget: buildExecApprovalFollowupTargetMock,
+    buildExecApprovalPendingToolResult: buildExecApprovalPendingToolResultMock,
+    createExecApprovalRequestRoute: createExecApprovalRequestRouteMock,
+    sendExecApprovalFollowupResult: sendExecApprovalFollowupResultMock,
+  };
+});
+
+vi.mock("./bash-tools.exec-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./bash-tools.exec-runtime.js")>()),
+  runExecProcess: runExecProcessMock,
+}));
+
+vi.mock("./bash-process-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./bash-process-registry.js")>()),
+  getActiveBackgroundExecSessionCount: vi.fn(() => 0),
+  markBackgrounded: markBackgroundedMock,
+  tail: vi.fn((value) => value),
+}));
+
+vi.mock("../infra/command-analysis/inline-eval.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/command-analysis/inline-eval.js")>()),
+  describeInterpreterInlineEval: vi.fn(() => "python -c"),
+  detectInterpreterInlineEvalArgv: detectInterpreterInlineEvalArgvMock,
+}));
+
+let processGatewayAllowlist: typeof import("./bash-tools.exec-host-gateway.js").processGatewayAllowlist;
+type GatewayAllowlistParams = Parameters<typeof processGatewayAllowlist>[0];
 
 function requireSentFollowupText(callIndex = 0): string {
   return sendExecApprovalFollowupResultMock.mock.calls[callIndex]?.[1] ?? "";
@@ -78,8 +256,122 @@ function captureProcessUnhandledRejections() {
   return { reasons, restore: () => processEmit.mockRestore() };
 }
 
+function captureSecurityEvents(): {
+  events: DiagnosticSecurityEvent[];
+  stop: () => void;
+} {
+  const events: DiagnosticSecurityEvent[] = [];
+  const stop = onInternalDiagnosticEvent((event, metadata) => {
+    if (metadata.trusted && event.type === "security.event") {
+      events.push(event);
+    }
+  });
+  return { events, stop };
+}
+
 describe("processGatewayAllowlist", () => {
-  installGatewayAllowlistFixture();
+  beforeAll(async () => {
+    ({ processGatewayAllowlist } = await import("./bash-tools.exec-host-gateway.js"));
+  });
+
+  beforeEach(() => {
+    resetGatewayWorkAdmission();
+    resetDiagnosticEventsForTest();
+    buildExecApprovalPendingToolResultMock.mockReset();
+    buildExecApprovalFollowupTargetMock.mockClear();
+    evaluateShellAllowlistWithAuthorizationMock.mockReset();
+    mockAllowlist({
+      allowlistSatisfied: true,
+      segments: [{ resolution: null, argv: ["echo", "ok"] }],
+      segmentAllowlistEntries: [{ pattern: "/usr/bin/echo", source: "allow-always" }],
+      segmentSatisfiedBy: [],
+    });
+    hasDurableExecApprovalMock.mockReset();
+    hasDurableExecApprovalMock.mockReturnValue(true);
+    hasExactCommandDurableExecApprovalMock.mockReset();
+    hasExactCommandDurableExecApprovalMock.mockReturnValue(false);
+    requiresExecApprovalMock.mockReset();
+    requiresExecApprovalMock.mockReturnValue(false);
+    buildEnforcedShellCommandMock.mockReset();
+    buildEnforcedShellCommandMock.mockReturnValue({
+      ok: false,
+      reason: "segment execution plan unavailable",
+    });
+    defaultExecAutoReviewerMock.mockReset();
+    defaultExecAutoReviewerMock.mockResolvedValue({
+      decision: "allow-once",
+      risk: "low",
+      rationale: "allowed",
+    });
+    commitExecAuthorizationMock.mockReset();
+    approvalDecisionMock.mockReset();
+    approvalDecisionMock.mockResolvedValue(undefined);
+    approvalRouteFixture.inline = false;
+    callGatewayToolMock.mockClear();
+    approvalRouteFixture.id = "";
+    resolveExecHostApprovalContextMock.mockReset();
+    mockHostPolicy();
+    runExecProcessMock.mockReset();
+    startupCancellationMocks.spawn.mockReset();
+    startupCancellationMocks.prepare.mockReset();
+    markBackgroundedMock.mockReset();
+    sendExecApprovalFollowupResultMock.mockReset();
+    detectInterpreterInlineEvalArgvMock.mockReset();
+    detectInterpreterInlineEvalArgvMock.mockReturnValue(null);
+    buildExecApprovalPendingToolResultMock.mockReturnValue({
+      details: { status: "approval-pending" },
+      content: [],
+    });
+    createExecApprovalRequestRouteMock.mockClear();
+  });
+
+  afterEach(() => {
+    resetProcessRegistryForTests();
+    resetGatewayWorkAdmission();
+  });
+
+  function mockHostPolicy(overrides: Partial<MockExecHostApprovalContext> = {}) {
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "allowlist",
+      hostAsk: "off",
+      askFallback: "deny",
+      ...overrides,
+    });
+  }
+
+  function mockAllowlist(overrides: Partial<MockAllowlistResult> = {}) {
+    evaluateShellAllowlistWithAuthorizationMock.mockReturnValue({
+      allowlistMatches: [],
+      analysisOk: true,
+      allowlistSatisfied: false,
+      segments: [],
+      segmentAllowlistEntries: [],
+      ...overrides,
+    });
+  }
+
+  function runGatewayAllowlist(
+    overrides: Partial<GatewayAllowlistParams> & Pick<GatewayAllowlistParams, "command">,
+  ) {
+    const { command, ...rest } = overrides;
+    return processGatewayAllowlist({
+      command,
+      workdir: process.cwd(),
+      env: process.env as Record<string, string>,
+      pty: false,
+      defaultTimeoutSec: 30,
+      security: "allowlist",
+      ask: "off",
+      safeBins: new Set(),
+      safeBinProfiles: {},
+      warnings: [],
+      approvalRunningNoticeMs: 0,
+      maxOutput: 1000,
+      pendingMaxOutput: 1000,
+      ...rest,
+    });
+  }
 
   function mockApprovedDetachedExec(params: {
     outcome: ExecApprovalFollowupOutcome;
@@ -1437,6 +1729,212 @@ describe("processGatewayAllowlist", () => {
       text: expect.stringContaining("approval-timeout: execution-plan-miss"),
     });
     expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
+  });
+
+  describe("cron standing grants", () => {
+    const CRON_STORE_KEY = "/tmp/openclaw-exec-host-cron-store";
+    const grantCommand = "run-nightly-backup --verbose";
+    const grantTempDirs: string[] = [];
+    let stateDirBackup: string | undefined;
+    let hadStateDirBackup = false;
+    let workdir: string;
+    let unregisterCronSource: (() => void) | undefined;
+
+    beforeEach(() => {
+      hadStateDirBackup = "OPENCLAW_STATE_DIR" in process.env;
+      stateDirBackup = process.env.OPENCLAW_STATE_DIR;
+      const stateDir = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-cron-grant-state-")),
+      );
+      grantTempDirs.push(stateDir);
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      workdir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-cron-grant-cwd-")));
+      grantTempDirs.push(workdir);
+      // Grants are consulted only when policy would otherwise prompt, before
+      // any JSON allowlist digest can satisfy the command.
+      requiresExecApprovalMock.mockReturnValue(true);
+      hasDurableExecApprovalMock.mockReturnValue(false);
+      mockHostPolicy({ hostAsk: "on-miss" });
+    });
+
+    afterEach(() => {
+      unregisterCronSource?.();
+      unregisterCronSource = undefined;
+      closeOpenClawStateDatabaseForTest();
+      if (hadStateDirBackup) {
+        process.env.OPENCLAW_STATE_DIR = stateDirBackup;
+      } else {
+        delete process.env.OPENCLAW_STATE_DIR;
+      }
+      for (const dir of grantTempDirs.splice(0)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    function databaseOptions() {
+      return { env: { ...process.env } };
+    }
+
+    function seedCronJobRow(): string {
+      const database = openOpenClawStateDatabase(databaseOptions());
+      // SAFETY: minimal valid cron job shape for the storage codec round-trip.
+      const job = {
+        id: "job-1",
+        agentId: "main",
+        name: "Nightly backup",
+        enabled: true,
+        createdAtMs: Date.now() - 1_000,
+        updatedAtMs: Date.now() - 1_000,
+        schedule: { kind: "cron", expr: "* * * * *", tz: "UTC" },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: { kind: "agentTurn", message: "run the backup" },
+      } as CronStoredJob;
+      upsertCronJobRow(database.db, CRON_STORE_KEY, job, 0);
+      const loaded = loadedCronStoreFromRows(loadCronRows(database.db, CRON_STORE_KEY));
+      const loadedJob = loaded.store.jobs.find((entry) => entry.id === "job-1");
+      if (!loadedJob) {
+        throw new Error("seeded cron job did not load back");
+      }
+      return resolveCronJobConfigRevision(loadedJob);
+    }
+
+    async function mintStandingGrant(revision: string): Promise<void> {
+      await insertOperatorApproval({
+        approval: {
+          id: "cron-approval-1",
+          kind: "exec",
+          presentation: {
+            kind: "exec",
+            commandText: grantCommand,
+            commandPreview: grantCommand,
+            warningText: null,
+            host: "gateway",
+            nodeId: null,
+            agentId: "main",
+            allowedDecisions: ["allow-once", "allow-always", "deny"],
+          },
+          reviewerDeviceIds: [],
+          source: {
+            agentId: "main",
+            sessionKey: "agent:main:cron:job-1",
+            sessionId: "session-1",
+            runId: "cron-run-0",
+            toolCallId: null,
+            toolName: "exec",
+          },
+          audienceSessionKeys: [],
+          runtimeEpoch: "epoch-1",
+          createdAtMs: Date.now() - 500,
+          expiresAtMs: Date.now() + 60_000,
+        },
+        databaseOptions: databaseOptions(),
+      });
+      const resolved = await resolveOperatorApproval({
+        id: "cron-approval-1",
+        decision: "allow-always",
+        resolver: { kind: "device", id: "reviewer-1" },
+        databaseOptions: databaseOptions(),
+        standingGrant: {
+          kind: "cron",
+          agentId: "main",
+          cronJobId: "job-1",
+          jobConfigRevision: revision,
+          operationBinding: buildCronExecOperationBinding({
+            command: grantCommand,
+            cwd: workdir,
+            env: undefined,
+          }),
+          expiresAtMs: null,
+        },
+      });
+      expect(resolved.outcome).toBe("resolved");
+    }
+
+    function readGrantUseCounts(): number[] {
+      const database = openOpenClawStateDatabase(databaseOptions());
+      const stateDb = getNodeSqliteKysely<
+        Pick<OpenClawStateKyselyDatabase, "operator_approval_standing_grants">
+      >(database.db);
+      return executeSqliteQuerySync(
+        database.db,
+        stateDb.selectFrom("operator_approval_standing_grants").select(["use_count"]),
+      ).rows.map((row) => row.use_count);
+    }
+
+    async function prepareCronRun(mintGrant: boolean) {
+      const revision = seedCronJobRow();
+      if (mintGrant) {
+        await mintStandingGrant(revision);
+      }
+      unregisterCronSource = registerCronRunExecSource("cron-run-1", {
+        agentId: "main",
+        jobId: "job-1",
+        jobConfigRevision: revision,
+        jobName: "Nightly backup",
+      });
+    }
+
+    function runCron() {
+      return runGatewayAllowlist({
+        command: grantCommand,
+        workdir,
+        agentId: "main",
+        runId: "cron-run-1",
+        ask: "on-miss",
+      });
+    }
+
+    it("executes a cron occurrence via a standing grant without prompting", async () => {
+      await prepareCronRun(true);
+      const security = captureSecurityEvents();
+      const result = await runCron();
+      expect(result.pendingResult).toBeUndefined();
+      expect(result.deniedResult).toBeUndefined();
+      expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+      // Authority is recorded at the final effect: validation skips the prompt
+      // but the use is consumed only by the pre-spawn revalidation closure.
+      expect(readGrantUseCounts()).toEqual([0]);
+      expect(result.revalidateBeforeExecution).toBeDefined();
+      await expect(result.revalidateBeforeExecution?.()).resolves.toBeUndefined();
+      security.stop();
+      expect(JSON.stringify(security.events)).toContain("standing-grant");
+      expect(readGrantUseCounts()).toEqual([1]);
+    });
+
+    it("denies at the spawn boundary when the grant is invalidated after consult", async () => {
+      await prepareCronRun(true);
+      const security = captureSecurityEvents();
+      const result = await runCron();
+      expect(result.pendingResult).toBeUndefined();
+      expect(result.deniedResult).toBeUndefined();
+      expect(result.revalidateBeforeExecution).toBeDefined();
+      // Revoke the parent approval between consult and spawn: the closure
+      // must deny instead of executing on the stale authority.
+      const database = openOpenClawStateDatabase(databaseOptions());
+      // sqlite-allow-raw -- test-only reversal of the minting approval row.
+      database.db
+        .prepare("update operator_approvals set status = 'denied', decision = 'deny'")
+        .run();
+      const denied = await result.revalidateBeforeExecution?.();
+      security.stop();
+      expect(denied?.details.status).toBe("failed");
+      expect(denied?.content[0]).toMatchObject({
+        text: expect.stringContaining("standing grant no longer valid"),
+      });
+      expect(readGrantUseCounts()).toEqual([0]);
+      expect(JSON.stringify(security.events)).toContain("standing-grant-invalidated");
+    });
+
+    it("skips the JSON allowlist digest when a cron allow-always resolves", async () => {
+      await prepareCronRun(false);
+      approvalDecisionMock.mockResolvedValue("allow-always");
+      const result = await runCron();
+      expect(result.pendingResult).toBeUndefined();
+      expect(result.deniedResult).toBeUndefined();
+      await vi.waitFor(() => expect(commitExecAuthorizationMock).toHaveBeenCalledOnce());
+      expect(commitExecAuthorizationMock.mock.calls[0]?.[0].allowAlwaysDecision).toBeUndefined();
+    });
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
