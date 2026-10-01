@@ -25,10 +25,7 @@ import { resolveCronJobBoundSessionKeys } from "../../cron/job-session-bindings.
 import type { CronRuntimeAuthority } from "../../cron/runtime-authority.js";
 import type { CronListPageResult } from "../../cron/service/list-page-types.js";
 import type { CronUpdateOptions } from "../../cron/service/state.js";
-import {
-  isInvalidCronSessionTargetIdError,
-  resolveCronSessionTargetSessionKey,
-} from "../../cron/session-target.js";
+import { isInvalidCronSessionTargetIdError } from "../../cron/session-target.js";
 import { cronJobUsesToolRuntime } from "../../cron/tools-allow.js";
 import type {
   CronDeliveryPreview,
@@ -899,12 +896,15 @@ export const cronHandlers: GatewayRequestHandlers = {
       }
       const ack = { ...result, processInstanceId: getGatewayProcessInstanceId() };
       const callerSessionKey = client?.internal?.agentRuntimeIdentity?.sessionKey;
-      // An agent turn holds the main lane and its own session lane until it ends, so a
-      // run that executes there cannot finish while this request waits for it.
+      // An agent turn holds the main lane and its own session lane until it ends, so a run
+      // that executes or commits its result there cannot finish while this request waits.
       const runQueuesBehindCaller =
         callerSessionKey !== undefined &&
         (job.sessionTarget === "main" ||
-          resolveCronSessionTargetSessionKey(job.sessionTarget) === callerSessionKey);
+          resolveCronJobBoundSessionKeys(job, {
+            cfg: context.getRuntimeConfig(),
+            defaultAgentId: context.cron.getDefaultAgentId(),
+          }).has(callerSessionKey));
       let run: unknown;
       let finished = false;
       // cron.run stays an enqueue (#40192); waiting is opt-in and bounded by the caller.

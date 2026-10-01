@@ -4087,20 +4087,38 @@ describe("cron method validation", () => {
   });
 
   it.each([
-    { sessionTarget: "main", waits: false },
-    { sessionTarget: "session:agent:ops:main", waits: false },
-    { sessionTarget: "isolated", waits: true },
+    { name: "main", job: { sessionTarget: "main" }, waits: false },
+    { name: "named own session", job: { sessionTarget: "session:main" }, waits: false },
+    {
+      name: "aliased own session",
+      job: { sessionTarget: "session:agent:ops:main" },
+      mainKey: "work",
+      waits: false,
+    },
+    {
+      name: "current-session announce into the caller",
+      job: {
+        sessionTarget: "current",
+        sessionKey: "agent:ops:main",
+        delivery: { mode: "announce" },
+      },
+      waits: false,
+    },
+    { name: "isolated", job: { sessionTarget: "isolated" }, waits: true },
+    { name: "other named session", job: { sessionTarget: "session:reports" }, waits: true },
   ] as const)(
-    "waits for a $sessionTarget run from an agent turn only when it can finish meanwhile",
-    async ({ sessionTarget, waits }) => {
-      const context = createCronContext(
-        createCronJob({ id: "cron-1", agentId: "ops", sessionTarget }),
-      );
+    "waits for a $name run from an agent turn only when it can finish meanwhile",
+    async ({ job, mainKey, waits }) => {
+      setRuntimeConfig(mainKey ? { session: { mainKey } } : {});
+      const context = createCronContext(createCronJob({ id: "cron-1", agentId: "ops", ...job }));
 
       const { respond } = await invokeCron(
         "cron.run",
         { id: "cron-1", waitTimeoutMs: 60_000 },
-        { context, client: callerClient("ops") },
+        {
+          context,
+          client: callerClient("ops", undefined, mainKey ? `agent:ops:${mainKey}` : undefined),
+        },
       );
 
       // The caller's turn holds the main lane and its own session lane, so those runs
