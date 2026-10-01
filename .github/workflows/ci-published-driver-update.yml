@@ -23,7 +23,7 @@ jobs:
       - uses: ./.github/actions/setup-node-env
         with:
           install-bun: "false"
-          cache-mode: restore
+          cache-mode: "off"
       - name: Build candidate package
         run: |
           pnpm build:ci-artifacts
