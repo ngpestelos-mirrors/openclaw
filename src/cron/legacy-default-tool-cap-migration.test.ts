@@ -78,11 +78,7 @@ describe("migrateLegacyDefaultCronToolCaps", () => {
 
     const { migrated, backupPath } = await migrateLegacyDefaultCronToolCaps({ storePath });
 
-    expect(migrated.map(({ jobId, inherits }) => ({ jobId, inherits }))).toEqual([
-      { jobId: "inherits", inherits: true },
-      { jobId: "legacy", inherits: false },
-      { jobId: "scripted", inherits: false },
-    ]);
+    expect(migrated.map(({ jobId }) => jobId)).toEqual(["inherits"]);
     const after = new Map((await loadCronStore(storePath)).jobs.map((job) => [job.id, job]));
     const inherits = after.get("inherits");
     expect(inherits?.payload).toEqual({ kind: "agentTurn", message: "split", toolsAllow: ["*"] });
@@ -98,17 +94,18 @@ describe("migrateLegacyDefaultCronToolCaps", () => {
         kind: "agentTurn",
         message: "split",
         toolsAllow: ["message", "read", "exec"],
+        toolsAllowIsDefault: true,
       });
+      expect(after.get(id)?.runtimeAuthority).toEqual(beforeAuthority);
     }
     expect(after.get("explicit")?.payload).toEqual(explicit.payload);
 
     const backup = new DatabaseSync(String(backupPath), { readOnly: true });
     try {
       const rows = backup
-        .prepare("SELECT job_id, job_json FROM cron_jobs WHERE job_id IN ('inherits', 'scripted')")
+        .prepare("SELECT job_id, job_json FROM cron_jobs WHERE job_id = 'inherits'")
         .all() as Array<{ job_id: string; job_json: string }>;
       expect(rows.map((row) => JSON.parse(row.job_json).payload.toolsAllowIsDefault)).toEqual([
-        true,
         true,
       ]);
     } finally {

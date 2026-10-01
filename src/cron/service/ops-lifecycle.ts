@@ -204,12 +204,24 @@ export async function start(state: CronServiceState): Promise<void> {
         await ensureLoaded(state, { forceReload: true });
       }
     }
-    const { migrated, backupPath } = await migrateLegacyDefaultCronToolCaps({
+    // The migration commits nothing before its backup and row checks pass, so a
+    // failure leaves the saved lists unchanged and scheduling continues.
+    const toolCapMigration = await migrateLegacyDefaultCronToolCaps({
       storePath: state.deps.storePath,
+    }).catch((error: unknown) => {
+      state.deps.log.warn(
+        { storePath: state.deps.storePath, err: String(error) },
+        "cron: automatic tool lists were not migrated; retrying on the next start",
+      );
+      return undefined;
     });
-    if (migrated.length > 0) {
+    if (toolCapMigration && toolCapMigration.migrated.length > 0) {
       state.deps.log.info(
-        { storePath: state.deps.storePath, backupPath, jobs: migrated },
+        {
+          storePath: state.deps.storePath,
+          backupPath: toolCapMigration.backupPath,
+          jobs: toolCapMigration.migrated,
+        },
         "cron: automatic tool lists now follow the owner session's current tool policy",
       );
       await ensureLoaded(state, { forceReload: true });

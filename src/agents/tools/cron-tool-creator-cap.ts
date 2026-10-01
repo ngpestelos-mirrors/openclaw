@@ -279,8 +279,13 @@ function capCronJobToolsAllow(params: {
         )
       : ["*"];
   // An omitted or wildcard cap inherits the owner session's policy at run time.
+  // Script runtimes reach MCP only through servers named in their list, so they
+  // keep the creator's concrete tools.
   if (requestedToolsAllow.includes("*")) {
-    params.payload.toolsAllow = ["*"];
+    params.payload.toolsAllow =
+      params.payload.kind === "script" || hasCronTriggerScript(params.trigger)
+        ? creatorToolsAllow.map((tool) => tool.name)
+        : ["*"];
     return;
   }
   if (requestedToolsAllow.length === 0 || creatorToolsAllow.length === 0) {
@@ -389,10 +394,12 @@ export function planCronJobUpdatePatch(params: {
     Object.hasOwn(patch, "trigger") &&
     hasCronTriggerScript(trigger) &&
     !hasCronTriggerScript(params.currentJob.trigger);
+  const existingToolsAllow = existingPayloadRecord?.toolsAllow;
   const reusesDefaultAuthority =
     explicitToolsAllow === "absent" &&
     (startsToolPayload || startsToolTrigger) &&
-    !Array.isArray(existingPayloadRecord?.toolsAllow);
+    (!Array.isArray(existingToolsAllow) ||
+      (existingToolsAllow.includes("*") && (payloadKind === "script" || startsToolTrigger)));
   const needsResolvedAuthority =
     explicitToolsAllow === "resolved" ||
     reusesDefaultAuthority ||

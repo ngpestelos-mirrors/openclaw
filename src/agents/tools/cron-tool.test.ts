@@ -980,7 +980,7 @@ describe("cron tool", () => {
     });
   });
 
-  it("assigns a wildcard cap to trigger-script systemEvent updates", async () => {
+  it("caps trigger-script systemEvent updates to the creator's tools", async () => {
     callGatewayMock
       .mockResolvedValueOnce({
         id: "job-trigger",
@@ -1009,7 +1009,7 @@ describe("cron tool", () => {
           trigger: { script: "return { fire: false }" },
           payload: {
             kind: "systemEvent",
-            toolsAllow: ["*"],
+            toolsAllow: ["read", "automations"],
           },
         },
       },

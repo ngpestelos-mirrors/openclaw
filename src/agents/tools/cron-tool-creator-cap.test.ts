@@ -44,23 +44,27 @@ function readReadyPatch(plan: CronJobUpdatePatchPlan): Record<string, unknown> {
 }
 
 describe("cron tool creator cap", () => {
-  it("caps trigger-script creates without changing transport-only jobs", () => {
+  it("lets omitted agent-turn caps inherit while script runtimes keep the creator's tools", () => {
     const triggerJob = {
       trigger: { script: "return true" },
       payload: { kind: "systemEvent", text: "wake" },
     };
+    const agentJob = { payload: { kind: "agentTurn", message: "work" } };
     const plainJob = {
       payload: { kind: "systemEvent", text: "wake" },
     };
 
     capCronJobToolsAllowOnCreate(triggerJob, ["read", "cron"]);
+    capCronJobToolsAllowOnCreate(agentJob, ["read", "cron"]);
     capCronJobToolsAllowOnCreate(plainJob, ["read", "cron"]);
 
+    // Scripts reach MCP only through named servers, so they keep concrete names.
     expect(triggerJob.payload).toEqual({
       kind: "systemEvent",
       text: "wake",
-      toolsAllow: ["*"],
+      toolsAllow: ["read", "automations"],
     });
+    expect(agentJob.payload).toEqual({ kind: "agentTurn", message: "work", toolsAllow: ["*"] });
     expect(plainJob.payload).toEqual({ kind: "systemEvent", text: "wake" });
   });
 
