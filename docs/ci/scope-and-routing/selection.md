@@ -32,8 +32,10 @@ Unrelated PRs omit the job; an unavailable diff retains it. Current main-tier
 and ordinary manual/release CI select it, while frozen targets predating the
 harness omit it.
 
-The reusable workflow installs the latest stable npm package as the driver and
-builds the candidate package from the selected CI revision. It performs one
+The reusable workflow builds the candidate package from the selected CI revision
+with the existing CI artifact profile and validates its tarball. The shared bare
+Docker runner installs the latest stable npm package as the driver and supplies
+a disposable OS account for managed-service ownership. It performs one
 managed update with two synthetic agents and isolated state, requiring a
 finished update, the running candidate version, HTTP 200 from `/readyz`, no
 canary/identity/lease warnings, and no candidate-startup or authority-check

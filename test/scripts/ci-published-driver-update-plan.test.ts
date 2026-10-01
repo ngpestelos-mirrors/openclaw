@@ -27,7 +27,7 @@ describe("published-driver update selection", () => {
     "scripts/test-update-cli-startup-bench.mts",
     "scripts/doctor-config-upgrade-replay.mjs",
     "scripts/package-openclaw-for-docker.mts",
-    "scripts/ci-published-driver-update.mjs",
+    "scripts/e2e/published-driver-update-docker.sh",
     "scripts/lib/ci-published-driver-update-plan.mts",
     ".github/workflows/ci-published-driver-update.yml",
     ".github/workflows/ci.yml",

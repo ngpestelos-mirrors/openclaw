@@ -8,9 +8,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const [candidateArg, artifactsArg, driverTag = "latest"] = process.argv.slice(2);
 assert.equal(process.platform, "linux", "The managed-service fixture requires Linux");
+assert(fs.existsSync("/.dockerenv"), "Run through the bare Docker E2E runner");
+const accountHome = os.userInfo().homedir;
+assert.equal(accountHome, "/home/appuser", "Expected the disposable E2E account");
 assert(candidateArg && artifactsArg, "Expected candidate tarball and artifact directory");
 assert(/^(?:latest|\d{4}\.\d+\.\d+)$/.test(driverTag), "Driver must be a published stable version");
 const candidate = fs.realpathSync(candidateArg);
@@ -18,12 +21,13 @@ const artifacts = path.resolve(artifactsArg);
 fs.mkdirSync(artifacts, { recursive: true });
 const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-published-driver-"));
 const prefix = path.join(runtime, "npm");
-const state = path.join(runtime, "state");
+const state = path.join(accountHome, ".openclaw");
+assert(!fs.existsSync(state), "The published-driver cell requires a fresh account home");
 const packageRoot = path.join(prefix, "lib/node_modules/openclaw");
 const bin = path.join(prefix, "bin");
 const env = {
   PATH: `${bin}:${process.env.PATH}`,
-  HOME: path.join(runtime, "home"),
+  HOME: accountHome,
   TMPDIR: path.join(runtime, "tmp"),
   CI: "true",
   OPENCLAW_STATE_DIR: state,
@@ -142,6 +146,7 @@ try {
     agents: {
       list: ["main", "second"].map((id) => ({
         id,
+        ...(id === "main" ? { default: true } : {}),
         workspace: path.join(runtime, "workspaces", id),
       })),
     },
@@ -155,6 +160,7 @@ try {
     "scripts/e2e/lib/upgrade-survivor/update-restart-auth.sh",
   ]);
   fixtureInstalled = true;
+  run("seed-state", "openclaw", ["doctor", "--fix", "--non-interactive"]);
   run("install-service", "openclaw", ["gateway", "install", "--force", "--json"]);
   ready("before-ready", port);
   const beforePid = fs.readFileSync(env.OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE, "utf8");
