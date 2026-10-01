@@ -898,7 +898,6 @@ describe("plugin suspension admission", () => {
           auth: "gateway",
           gatewayRuntimeScopeSurface: "trusted-operator",
           gatewayMethodDispatchAllowed: true,
-          handler: () => true,
         }),
       ]);
       const suspension = tryBeginGatewaySuspendAdmission(() => {});
