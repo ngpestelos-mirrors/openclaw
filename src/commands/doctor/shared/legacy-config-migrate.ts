@@ -38,7 +38,7 @@ export function migrateLegacyConfig(
     return { config: next as OpenClawConfig, ...diagnostics, partiallyValid: true };
   }
   return {
-    config: inheritLegacyDefaultAgentId(resolvedCandidate as OpenClawConfig, validated.config),
+    config: inheritLegacyDefaultAgentId(resolvedCandidate, validated.config),
     sourceConfig: next as OpenClawConfig,
     ...diagnostics,
   };

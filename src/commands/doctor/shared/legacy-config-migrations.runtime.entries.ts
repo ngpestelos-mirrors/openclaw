@@ -100,12 +100,14 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_ENTRIES: LegacyConfigMigrationSpec
       const legacyOwner = roster.length > 1 ? marked[0]?.[0] : undefined;
       if (legacyOwner) {
         const materialized = materializeLegacyDefaultAgentRoles(
+          // SAFETY: The roster guards establish record entries; the repair preserves other raw
+          // fields for the validating migration wrapper instead of admitting them to runtime.
           raw as OpenClawConfig,
           legacyOwner,
           { ...context, materializeWorkspace: true },
         );
         Object.assign(raw, materialized.config);
-        retainLegacyDefaultAgentId(raw as OpenClawConfig, legacyOwner);
+        retainLegacyDefaultAgentId(raw, legacyOwner);
         changes.push("Preserved legacy per-surface agent ownership and workspace.");
       }
       const nextAgents = getRecord(raw.agents)!;

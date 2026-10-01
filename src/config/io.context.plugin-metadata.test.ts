@@ -168,7 +168,7 @@ describe("config IO plugin metadata snapshots", () => {
     mocks.resolvePluginMetadataSnapshotInput.mockImplementation(
       ({ workspaceDir }: { workspaceDir: string }) => snapshots.get(workspaceDir),
     );
-    const nextConfig = legacyConfig("research");
+    const nextConfig = createCanonicalAgentConfigFixture(legacyConfig("research")).config;
     const loader = createConfigIoContext({
       env: {},
       observe: false,

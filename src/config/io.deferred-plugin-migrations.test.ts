@@ -347,11 +347,13 @@ describe("config IO with deferred plugin migrations", () => {
     }
   });
 
-  it("keeps the legacy session owner while excluding a pending plugin field", () => {
+  it("keeps the migrated fixed-store owner while excluding a pending plugin field", () => {
     const source = createCanonicalAgentConfigFixture({
       agents: { list: [{ id: "operator", default: true }, { id: "worker" }] },
+      session: { store: "/srv/shared/sessions.json" },
       legacySample: { root: "/srv/sample" },
     }).config;
+    expect(source.agents?.defaults?.sessionStore?.agentId).toBe("operator");
     const result = validateConfigObjectWithPlugins(source, {
       pluginValidation: "core-only",
       deferredPluginMigrations: [
@@ -366,6 +368,8 @@ describe("config IO with deferred plugin migrations", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
+      expect(result.config).not.toHaveProperty("legacySample");
+      expect(result.config.session?.store).toBe(source.session?.store);
       expect(resolveSessionStoreCompatibilityAgentId(result.config)).toBe("operator");
     }
   });
