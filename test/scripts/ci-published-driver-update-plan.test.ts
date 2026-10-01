@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { shouldRunPublishedDriverUpdate } from "../../scripts/lib/ci-published-driver-update-plan.mts";
 import { runCiManifestFixture } from "./ci-workflow-manifest.test-support.js";
-import { evaluateWorkflowExpression, readCiWorkflow } from "./ci-workflow.test-support.js";
+import {
+  evaluateWorkflowExpression,
+  readCiWorkflow,
+  readWorkflow,
+  type WorkflowStep,
+} from "./ci-workflow.test-support.js";
 
 describe("published-driver update selection", () => {
   it.each([
@@ -69,14 +74,64 @@ describe("published-driver update selection", () => {
     expect(result.status, result.output).toBe(0);
     expect(result.outputs.run_published_driver_update).toBe(String(selected));
     const job = readCiWorkflow().jobs["published-driver-update"];
+    const revision = "a".repeat(40);
     expect(
       evaluateWorkflowExpression(`\${{ ${job.if} }}`, {
         eventName,
         repository: "openclaw/openclaw",
         runAttempt: 1,
-        preflightOutputs: result.outputs,
+        sha: revision,
+        preflightOutputs: { ...result.outputs, checkout_revision: revision },
       }),
     ).toBe(selected);
+  });
+
+  it("keeps candidate execution in the caller revision and cache scope", () => {
+    const workflow = readWorkflow(".github/workflows/ci-published-driver-update.yml");
+    const job = workflow.jobs.update;
+    const checkout = job.steps.find((step: WorkflowStep) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    const revision = "a".repeat(40);
+    expect(
+      evaluateWorkflowExpression(checkout.with.ref, {
+        eventName: "workflow_dispatch",
+        repository: "openclaw/openclaw",
+        runAttempt: 1,
+        sha: revision,
+        targetRef: "b".repeat(40),
+      }),
+    ).toBe(revision);
+    expect(workflow.on.workflow_call?.inputs).toBeUndefined();
+    expect(workflow.permissions).toEqual({ contents: "read" });
+    expect(checkout.with["persist-credentials"]).toBe(false);
+    expect(
+      job.steps.find((step: WorkflowStep) => step.uses === "./.github/actions/setup-node-env").with[
+        "cache-mode"
+      ],
+    ).toBe("off");
+  });
+
+  it("records the omitted cell when a dispatch fallback selects a different revision", () => {
+    const workflow = readCiWorkflow();
+    const context = {
+      eventName: "workflow_dispatch" as const,
+      repository: "openclaw/openclaw",
+      runAttempt: 1,
+      sha: "a".repeat(40),
+      preflightOutputs: {
+        run_published_driver_update: "true",
+        checkout_revision: "b".repeat(40),
+      },
+    };
+    expect(
+      evaluateWorkflowExpression(`\${{ ${workflow.jobs["published-driver-update"].if} }}`, context),
+    ).toBe(false);
+    const notice = workflow.jobs["ci-gate"].steps.find(
+      (step: WorkflowStep) => step.name === "Record published-driver dispatch limitation",
+    );
+    expect(evaluateWorkflowExpression(`\${{ ${notice.if} }}`, context)).toBe(true);
+    expect(notice.run).toContain("no published-driver cell proof for the selected revision");
   });
 
   it("omits the cell for frozen targets that predate its harness", () => {

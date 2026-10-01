@@ -2,10 +2,6 @@ name: Published driver update
 
 on:
   workflow_call:
-    inputs:
-      target_sha:
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -18,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.target_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-node-env
         with:

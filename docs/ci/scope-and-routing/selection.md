@@ -30,11 +30,16 @@ identity, native-plugin assignments, both startup-trace owners, and updater
 scripts. Changes to the selector, cell harness, or CI workflow select it too.
 Unrelated PRs omit the job; an unavailable diff retains it. Current main-tier
 and ordinary manual/release CI select it, while frozen targets predating the
-harness omit it.
+harness omit it. Execution also requires the selected checkout revision to equal
+the caller's `github.sha`. Exact-head dispatch fallbacks and other target-ref
+dispatches selecting a different revision skip this cell and record the reason
+in the CI gate summary; they do not provide published-driver proof for that target.
 
-The reusable workflow builds the candidate package from the selected CI revision
-with the existing CI artifact profile and validates its tarball. The shared bare
-Docker runner installs the latest stable npm package as the driver and supplies
+The reusable workflow checks out only `github.sha`, with credentials disabled,
+read-only contents permission, no inherited secrets, and caching off. It cannot
+accept a caller-selected checkout ref in a different cache scope. It builds the
+candidate package with the existing CI artifact profile and validates its tarball.
+The shared bare Docker runner installs the latest stable npm package as the driver and supplies
 a disposable OS account for managed-service ownership. It performs one
 managed update with two synthetic agents and isolated state, requiring a
 finished update, the running candidate version, HTTP 200 from `/readyz`, no
