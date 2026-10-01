@@ -681,6 +681,8 @@ describe("AgentSession queue and next-turn lifecycle correctness", () => {
 
   it("does not answer a steer in place of a failed request", async () => {
     const requests: Context[] = [];
+    const requestStarted = createDeferredCore();
+    const steerAccepted = createDeferredCore();
     let failInitialResponse: (() => void) | undefined;
     streamMocks.streamSimple.mockImplementation((activeModel: Model, context: Context) => {
       requests.push(context);
@@ -694,6 +696,7 @@ describe("AgentSession queue and next-turn lifecycle correctness", () => {
           stream.push({ type: "error", reason: "error", error: message });
           stream.end();
         };
+        requestStarted.resolve();
         return stream;
       }
       return createAssistantResultStream(
@@ -702,12 +705,14 @@ describe("AgentSession queue and next-turn lifecycle correctness", () => {
     });
     const { session } = await createTestSession();
     const prompt = session.prompt("first question");
-    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await requestStarted.promise;
     const delivery = steerActiveSessionWithOptionalDeliveryWait(session, "second question", {
       deliveryTimeoutMs: 10_000,
       waitForTranscriptCommit: true,
+      onQueueAccepted: () => steerAccepted.resolve(),
     });
-    await vi.waitFor(() => expect(session.getSteeringMessages()).toEqual(["second question"]));
+    await steerAccepted.promise;
+    expect(session.getSteeringMessages()).toEqual(["second question"]);
 
     failInitialResponse?.();
     // The run owner retries the failed request; the caller re-queues the steer.
