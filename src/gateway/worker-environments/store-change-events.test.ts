@@ -66,6 +66,7 @@ it.each(["reopening the store", "reconciling an unchanged host"] as const)(
       const request = { limit: 1, archived: "all" as const };
       const initial = await listSessions({ context, client, request });
       const projection = getSessionRowProjection(context)!;
+      await projection.ensureMaterialized();
       const before = projection.materializedCount;
       const environment = store.get(environmentId);
       if (operation === "reopening the store") {

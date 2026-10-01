@@ -907,9 +907,9 @@ describe("resident sessions.list", () => {
         });
         const readiness = vi
           .spyOn(projection, "prepareSelection")
-          .mockImplementationOnce(async () => {
+          .mockImplementationOnce(async (...args) => {
             await gate;
-            await ensure();
+            await ensure(...args);
           });
 
         const firstPage = listSessions({
@@ -954,13 +954,14 @@ describe("resident sessions.list", () => {
       const request = { archived: "all" as const, limit: 100 };
       await initializeSessionReadContext(context);
       const projection = getSessionRowProjection(context)!;
-      vi.spyOn(projection, "prepareSelection").mockRejectedValueOnce(
-        new Error("synthetic materialization failure"),
-      );
+      const readiness = vi
+        .spyOn(projection, "prepareSelection")
+        .mockRejectedValueOnce(new Error("synthetic materialization failure"));
 
       await expect(listSessions({ client, context, request })).rejects.toThrow(
         "synthetic materialization failure",
       );
+      expect(readiness).toHaveBeenCalledOnce();
       await expect(listSessions({ client, context, request })).resolves.toMatchObject({
         sessions: expect.any(Array),
       });
