@@ -46,7 +46,7 @@ export function hasDurableExecApproval(params: {
 // Digest input is the trimmed command text only. Shipped approvals files
 // already hold `=command:` entries in this format; changing the input
 // silently orphans every persisted exact-command grant.
-export function buildDurableCommandApprovalPattern(commandText: string): string {
+function buildDurableCommandApprovalPattern(commandText: string): string {
   return `=command:${sha256HexPrefixCore(commandText, 16)}`;
 }
 
@@ -184,7 +184,7 @@ export function isExecApprovalPolicySnapshotCurrent(
   );
 }
 
-export function applyAllowlistEntryUpdate(params: {
+function applyAllowlistEntryUpdate(params: {
   file: ExecApprovalsFile;
   agentId: string | undefined;
   pattern: string;

@@ -240,10 +240,6 @@ export function updateExecApprovalsSync(params: ExecApprovalsUpdate): ExecApprov
   return updateExecApprovalsInTransaction(params);
 }
 
-export function saveExecApprovals(file: ExecApprovalsFile): void {
-  updateExecApprovalsSync({ update: () => file });
-}
-
 export async function updateExecApprovals(
   params: ExecApprovalsUpdate,
 ): Promise<ExecApprovalsSnapshot | null> {
@@ -413,31 +409,6 @@ export async function withAgentExecApprovalsRemoved<T>(
   }
 }
 
-function restoreExecApprovalsSnapshotInTransaction(snapshot: ExecApprovalsSnapshot): void {
-  runOpenClawStateWriteTransaction(
-    ({ db }) => {
-      const current = snapshotFromExecApprovalsRow({
-        path: resolveExecApprovalsDisplayPath(),
-        row: readExecApprovalsConfigRow(db),
-      });
-      assertExecApprovalsMutationAllowed({ db, current: current.file, next: snapshot.file });
-      if (!snapshot.exists) {
-        deleteExecApprovalsConfigRow(db);
-        return;
-      }
-      const raw = snapshot.raw ?? serializeExecApprovals(snapshot.file);
-      writeExecApprovalsConfigRow({ db, file: snapshot.file, raw });
-    },
-    {},
-    { operationLabel: "exec-approvals.restore" },
-  );
-}
-
-export function restoreExecApprovalsSnapshot(snapshot: ExecApprovalsSnapshot): void {
-  assertNoPendingLegacyExecApprovals();
-  restoreExecApprovalsSnapshotInTransaction(snapshot);
-}
-
 export async function restoreExecApprovalsSnapshotLocked(
   snapshot: ExecApprovalsSnapshot,
   baseHash: string,
@@ -504,8 +475,4 @@ function ensureExecApprovalsSnapshotSync(): ExecApprovalsSnapshot {
 
 export async function ensureExecApprovalsSnapshot(): Promise<ExecApprovalsSnapshot> {
   return ensureExecApprovalsSnapshotSync();
-}
-
-export function ensureExecApprovals(): ExecApprovalsFile {
-  return ensureExecApprovalsSnapshotSync().file;
 }
