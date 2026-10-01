@@ -3035,8 +3035,6 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "src/gateway/server/hooks.agent-trust.test.ts",
   "src/gateway/server/plugin-legacy-listeners.test.ts",
   "src/gateway/server/plugins-http.ownership.test.ts",
-  "src/gateway/server/plugins-http.runtime-scopes.test.ts",
-  "src/gateway/server/plugins-http.suspension-admission.test.ts",
   "src/gateway/server/plugins-http.test.ts",
   "src/gateway/server/skill-library-read.test.ts",
   "src/gateway/server/ws-connection.startup.test.ts",
