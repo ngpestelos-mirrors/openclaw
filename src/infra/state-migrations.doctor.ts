@@ -697,7 +697,10 @@ export async function detectLegacyStateMigrations(params: {
       deviceIdentity.hasInvalidCanonical && !deviceIdentity.hasLegacy,
       "- Primary device identity: invalid SQLite row → new device identity",
     ],
-    [execApprovals.hasLegacy, "- Exec approvals: legacy JSON → shared SQLite state"],
+    [
+      execApprovals.hasLegacy,
+      "- Exec approvals: normalize legacy policy into canonical SQLite state",
+    ],
     [mcpOauth.hasLegacy, "- MCP OAuth credentials: legacy JSON → shared SQLite state"],
     [
       meetingTranscripts.hasLegacy,
@@ -1292,7 +1295,7 @@ function buildLegacyStateMigrationSteps(
       detected.deviceIdentity.hasLegacy || detected.deviceIdentity.hasInvalidCanonical,
     ],
     "exec-approvals": [
-      pathEndpoints(detected.execApprovals.sourcePath),
+      [...pathEndpoints(detected.execApprovals.sourcePath), stateDatabase],
       detected.execApprovals.hasLegacy,
     ],
     "mcp-oauth": [

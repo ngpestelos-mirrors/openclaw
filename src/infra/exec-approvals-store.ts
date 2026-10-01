@@ -241,10 +241,11 @@ function updateExecApprovalsInTransaction(
       if (params.baseHash !== undefined && current.hash !== params.baseHash) {
         return null;
       }
-      const next = params.update(structuredClone(current.file));
-      if (next === null) {
+      const updated = params.update(structuredClone(current.file));
+      if (updated === null) {
         return current;
       }
+      const next = normalizeExecApprovalsInternal(updated);
       assertExecApprovalsMutationAllowed({
         db,
         current: current.file,
