@@ -22,7 +22,6 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { runOutsideGatewayRootWorkAdmission } from "../../process/gateway-work-admission.js";
 import { runWithProcessCleanupBudget } from "../../process/supervisor/cleanup-budget.js";
 import type { RuntimeEnv } from "../../runtime.js";
-import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { formatCliCommand } from "../command-format.js";
 import { createGatewayHostLifecycle } from "./host-lifecycle.js";
 import { installGatewayHostLifeline } from "./host-lifeline.js";
@@ -59,10 +58,6 @@ const HARD_EXIT_WATCHDOG_GRACE_MS = 2_000;
 
 type ShutdownFailure = { step: string; error: unknown };
 
-const gatewayLifecycleRuntimeLoader = createLazyImportLoader(
-  () => import("./lifecycle.runtime.js"),
-);
-
 export async function runGatewayLoop(params: {
   start: (
     params?: GatewayRunLoopStartOptions,
@@ -86,7 +81,7 @@ export async function runGatewayLoop(params: {
   // Prime the lifecycle graph before signals can run. An in-place update rotates
   // dist chunks; a late import can fail and leave the restart token unconsumed,
   // coalescing every subsequent restart.
-  const eagerLifecycleRuntime = await gatewayLifecycleRuntimeLoader.load();
+  const eagerLifecycleRuntime = await import("./lifecycle.runtime.js");
   // Keep admission transitions synchronous through this primed runtime so an
   // accepted signal cannot yield between token handling and closing root admission.
   const supervisor = eagerLifecycleRuntime.detectGatewayRespawnSupervisorIdentity(
@@ -1079,13 +1074,8 @@ export async function runGatewayLoop(params: {
       updateSuccessor.stop("SIGTERM");
       return;
     }
-    void (async () => {
-      const { consumeGatewayRestartIntentPayloadSync } = await gatewayLifecycleRuntimeLoader.load();
-      if (foregroundUpdateClosed) {
-        updateSuccessor.stop("SIGTERM");
-        return;
-      }
-      const restartIntent = consumeGatewayRestartIntentPayloadSync();
+    try {
+      const restartIntent = eagerLifecycleRuntime.consumeGatewayRestartIntentPayloadSync();
       // SIGTERM hands replacement to the caller (e.g. systemctl restart).
       // Drain as a restart, then exit even when in-process respawn is configured.
       request(
@@ -1094,10 +1084,10 @@ export async function runGatewayLoop(params: {
         restartIntent?.reason,
         restartIntent ?? undefined,
       );
-    })().catch((err: unknown) => {
+    } catch (err) {
       gatewayLog.error(`failed to handle SIGTERM: ${String(err)}`);
       request("stop", "SIGTERM");
-    });
+    }
   };
   const onSigint = () => {
     observeSignal("SIGINT");
@@ -1110,7 +1100,7 @@ export async function runGatewayLoop(params: {
     if (foregroundUpdateClosed) {
       return;
     }
-    void (async () => {
+    try {
       const {
         abortPendingChannelReloads,
         consumeGatewayRestartIntentPayloadSync,
@@ -1120,10 +1110,7 @@ export async function runGatewayLoop(params: {
         markGatewayRestartHandled,
         peekGatewayRestartReason,
         scheduleGatewayRestart,
-      } = await gatewayLifecycleRuntimeLoader.load();
-      if (foregroundUpdateClosed) {
-        return;
-      }
+      } = eagerLifecycleRuntime;
       const restartIntent = consumeGatewayRestartIntentPayloadSync();
       if (restartIntent) {
         abortPendingChannelReloads();
@@ -1182,8 +1169,8 @@ export async function runGatewayLoop(params: {
         signalRestartIntent?.reason ?? restartReason,
         signalRestartIntent ?? undefined,
       );
-    })().catch((err: unknown) => {
-      // Defense in depth: if anything in the listener body rejects, the
+    } catch (err) {
+      // Defense in depth: if anything in the listener body throws, the
       // SIGUSR2 emit has already advanced emittedRestartToken but no one
       // called markGatewayRestartHandled. Without unsticking the
       // token here, every subsequent scheduleGatewayRestart() would
@@ -1203,7 +1190,7 @@ export async function runGatewayLoop(params: {
       } catch {
         // Keep admission recovery independent from restart-token recovery.
       }
-    });
+    }
   };
 
   process.on("SIGTERM", onSigterm);
@@ -1255,10 +1242,7 @@ export async function runGatewayLoop(params: {
       isFirstIteration = false;
       try {
         if (isRestartIteration) {
-          await prepareGatewayRestartIteration(
-            await gatewayLifecycleRuntimeLoader.load(),
-            gatewayLog,
-          );
+          await prepareGatewayRestartIteration(eagerLifecycleRuntime, gatewayLog);
         }
         if (installationReplacement) {
           await exitReplacedInstallation(installationReplacement);
