@@ -21,6 +21,27 @@ the release-only proofs described in the scheduled-workflow guide.
 
 Scope logic lives in `scripts/ci-changed-scope.mjs` and is covered by unit tests in `src/scripts/ci-changed-scope.test.ts`. Ordinary manual dispatch skips changed-scope detection and makes the preflight manifest act as if every scoped area changed. The exact-head `release_gate` exception evaluates the fetched pull request merge tree and retains its macOS, iOS-build, and generated-native-locale decisions while still verifying native sources.
 
+### Published-driver update cell
+
+`scripts/lib/ci-published-driver-update-plan.mts` selects the required
+`published-driver-update` job for changes to `src/infra/update-*`,
+`src/cli/update-cli/**`, state leases, state database admission, SQLite file
+identity, native-plugin assignments, both startup-trace owners, and updater
+scripts. Changes to the selector, cell harness, or CI workflow select it too.
+Unrelated PRs omit the job; an unavailable diff retains it. Current main-tier
+and ordinary manual/release CI select it, while frozen targets predating the
+harness omit it.
+
+The reusable workflow installs the latest stable npm package as the driver and
+builds the candidate package from the selected CI revision. It performs one
+managed update with two synthetic agents and isolated state, requiring a
+finished update, the running candidate version, HTTP 200 from `/readyz`, no
+canary/identity/lease warnings, and no candidate-startup or authority-check
+failure in the recorded run. This catches compatibility failures hidden by
+tests that use the same source for both driver and candidate. The selected job
+is required by `openclaw/ci-gate`, reserves one GitHub-hosted runner in the
+existing capacity accounting, and has a ten-minute job budget.
+
 Labeler skips PR edits without title or base-branch changes. These ignored edits use isolated per-run concurrency groups so they cannot cancel running labeling or replace useful pending work. Opened, reopened, synchronize, and title/base-edit events retain the shared per-PR group and supersede older labeling runs. Issue labeling and manual backfills retain their existing non-cancelling ref group.
 
 Affected pull requests, `main` pushes, and exact-head `release_gate` fallbacks retain one required `ios-build (smoke)` phase and its Xcode, Swift, and Watch Rust tooling. Current smoke always runs Swift lint and compiles the app and test bundles once with `build-for-testing`. On ordinary PRs, `scripts/lib/ci-ios-smoke-plan.mjs` selects the existing voice/media/typography and Access/chat lifecycle simulator groups from their source owners. Both groups own the app's real hosted startup and linked runtime sources; the voice group also audits Watch and ActivityWidget typography. Their selected test files and fixtures select their respective group. Build/test configuration and unavailable path metadata retain both groups.

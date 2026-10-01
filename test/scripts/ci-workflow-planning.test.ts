@@ -915,6 +915,7 @@ describe("release fast lane", () => {
       "run_sqlite_session_lifecycle",
       "run_qa_smoke_ci",
       "run_docker_seed_e2e",
+      "run_published_driver_update",
     ]) {
       expect(outputs[key], key).toBe("false");
     }
@@ -2772,6 +2773,7 @@ describe("ci workflow guards", () => {
       for (const [name, job] of Object.entries(readCiWorkflow().jobs)) {
         const definition = job as {
           if?: string;
+          uses?: string;
           "runs-on": string;
           strategy?: {
             matrix: string | { include?: Record<string, unknown>[]; [key: string]: unknown };
@@ -2801,9 +2803,16 @@ describe("ci workflow guards", () => {
             );
           }
         }
+        const runners = definition.uses?.startsWith("./.github/workflows/")
+          ? Object.values(readWorkflow(definition.uses.slice(2)).jobs).map(
+              (child) => (child as { "runs-on": string })["runs-on"],
+            )
+          : [definition["runs-on"]];
         for (const row of selectedRows) {
-          if (allSelected || hostedLabels.has(String(evaluate(definition["runs-on"], row)))) {
-            rows.push(name);
+          for (const runner of runners) {
+            if (allSelected || hostedLabels.has(String(evaluate(runner, row)))) {
+              rows.push(name);
+            }
           }
         }
       }
@@ -11009,6 +11018,7 @@ describe("ci workflow guards", () => {
       "android",
       "android-access-native",
       "docker-seed-e2e",
+      "published-driver-update",
       "pr-fail-fast",
     ];
 
