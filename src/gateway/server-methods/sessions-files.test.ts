@@ -602,6 +602,27 @@ describe("sessions.files RPC handlers", () => {
     }
   });
 
+  it("round-trips a UTF-8 BOM through get and set", async () => {
+    const original = "\uFEFFexport default {};\n";
+    writeWorkspaceFile(workspaceRoot, "bom.ts", original);
+
+    const preview = expectOkPayload(await getFile("bom.ts"));
+    expect(preview.file.content).toBe(original);
+    expect(preview.file.hash).toBe(hashContent(original));
+
+    const next = "\uFEFFexport default { bom: true };\n";
+    expectOkPayload(
+      await saveFile({
+        path: "bom.ts",
+        content: next,
+        expectedHash: preview.file.hash,
+      }),
+    );
+    const bytes = fs.readFileSync(path.join(workspaceRoot, "bom.ts"));
+    expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(bytes.toString("utf8")).toBe(next);
+  });
+
   it("rejects replacement content containing NUL bytes", async () => {
     const error = expectError(
       await saveFile({
