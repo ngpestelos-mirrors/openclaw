@@ -695,7 +695,7 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
                 notifyRequesterOnWaitFailure && !isIsolatedCronRequester,
             });
           if (timeoutSeconds === 0) {
-            startReplyFlow(true);
+            await startReplyFlow(true);
             return accepted();
           }
 
@@ -703,14 +703,14 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
             ? await completion.take(timeoutMs)
             : await waitForAgentRunReply({ runId, timeoutMs, callGateway: gatewayCall });
           if (!result) {
-            startReplyFlow(true);
+            await startReplyFlow(true);
             return accepted();
           }
           completion?.close();
 
           if (result.status === "timeout") {
             if (result.pendingError === true && result.error?.trim()) {
-              startReplyFlow(targetIsSubagent);
+              await startReplyFlow(targetIsSubagent);
               return jsonResult({
                 runId,
                 status: "timeout",
@@ -722,7 +722,7 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
               });
             }
             if (!isTerminalAgentWaitTimeout(result)) {
-              startReplyFlow(true);
+              await startReplyFlow(true);
               return accepted();
             }
           }

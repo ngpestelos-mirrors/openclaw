@@ -142,14 +142,6 @@ export type ChildCompletionRow = Pick<
   >;
 };
 
-function hasCapturedChildCompletionReply(child: ChildCompletionRow): boolean {
-  return Boolean(
-    child.completion?.terminalReply ||
-    child.completion?.resultText?.trim() ||
-    child.completion?.fallbackResultText?.trim(),
-  );
-}
-
 export function buildChildCompletionFindings(
   children: Array<ChildCompletionRow>,
 ): string | undefined {
@@ -181,7 +173,10 @@ export function buildChildCompletionFindings(
       child.execution.outcome?.status === "ok" &&
       !resultText &&
       child.completion?.required !== true &&
-      hasCapturedChildCompletionReply(child)
+      child.completion?.terminalReply?.disposition !== "empty" &&
+      (child.completion?.terminalReply ||
+        child.completion?.resultText?.trim() ||
+        child.completion?.fallbackResultText?.trim())
     ) {
       continue;
     }

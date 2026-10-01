@@ -283,6 +283,10 @@ not authentication or isolation from other processes running as the same OS user
 
 Peers and Control UI requesters receive the settled reply once. The requester response is not fed back into the target, and no target announcement turn is generated. Delivery to the target's own channel does not suppress a distinct requester's reply.
 
+Nonblocking sends retain the requester's reply authority before returning. Finishing
+the requester turn does not cancel the accepted reply; access revocation or Gateway
+replacement still stops it.
+
 A child report also goes to its recipient once, without an automatic acknowledgment turn in the child. An explicitly waiting caller can still receive the recipient's reply inline. For a new child turn, the child's reply returns inline or is delivered once after the wait expires, with subagent completion provenance and custody preserved.
 
 Isolated scheduled jobs can wait for an inline reply, but receive no detached reply turns or failure notifications. A send from such a job does not generate a target announcement either; separately registered task completion retains its own delivery owner.

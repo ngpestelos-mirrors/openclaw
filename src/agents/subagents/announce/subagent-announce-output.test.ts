@@ -626,33 +626,43 @@ describe("buildChildCompletionFindings", () => {
 
   it.each([
     {
-      name: "visible",
+      name: "required visible",
+      required: true,
       terminalReply: { disposition: "visible", text: "authoritative final output" } as const,
       resultText: "older captured output",
       expected: "authoritative final output",
     },
     {
-      name: "silent",
+      name: "required silent",
+      required: true,
       terminalReply: { disposition: "silent" } as const,
       resultText: "NO_REPLY",
       expected: "(no output)",
     },
     {
-      name: "empty",
+      name: "required empty",
+      required: true,
+      terminalReply: { disposition: "empty" } as const,
+      resultText: null,
+      expected: "(no output)",
+    },
+    {
+      name: "optional empty",
+      required: false,
       terminalReply: { disposition: "empty" } as const,
       resultText: null,
       expected: "(no output)",
     },
   ])(
-    "preserves required $name terminal evidence as a child finding",
-    ({ terminalReply, resultText, expected }) => {
+    "preserves $name terminal evidence as a child finding",
+    ({ required, terminalReply, resultText, expected }) => {
       const findings = buildChildCompletionFindings([
         {
           childSessionKey: "agent:main:subagent:child",
           task: "child task",
           createdAt: 1,
           completion: {
-            required: true,
+            required,
             resultText,
             fallbackResultText: "older captured fallback",
             terminalReply,
