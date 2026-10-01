@@ -2445,7 +2445,7 @@ ${mounts === "failed" ? "exit 1" : mounts === "mounted" ? `printf '/dev/disk9 on
   it("embeds the canonical CLI installer as a signed app resource", () => {
     const script = readFileSync(scriptPath, "utf8");
 
-    expect(script).toContain('INSTALL_CLI_SRC="$ROOT_DIR/scripts/install-cli.sh"');
+    expect(script).toContain('INSTALL_CLI_SRC="$APP_STAGE_DIR/installers/install-cli.sh"');
     expect(script).toContain('cp "$INSTALL_CLI_SRC" "$APP_ROOT/Contents/Resources/install-cli.sh"');
     expect(script).toContain('chmod 0644 "$APP_ROOT/Contents/Resources/install-cli.sh"');
     expect(script.indexOf("Copying CLI installer")).toBeLessThan(
