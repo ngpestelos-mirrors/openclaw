@@ -14,6 +14,7 @@ import {
 import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
 import { getChannelPlugin } from "../channels/plugins/registry.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
+import { listLegacyOAuthSidecarPaths } from "../commands/doctor-auth-legacy-paths.js";
 import { readCurrentConfigForResolution } from "../config/io.runtime.js";
 import { resolveSessionStoreCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import { resolveConfigPath, resolveOAuthDir, resolveStateDir } from "../config/paths.js";
@@ -163,6 +164,7 @@ import {
   detectLegacyRestartSentinel,
   migrateLegacyRestartSentinel,
 } from "./state-migrations.restart-sentinel.js";
+import { assertNoRetiredStateFiles } from "./state-migrations.retired-files.js";
 import {
   migrateLegacyConfigHealth,
   migrateLegacyCurrentConversationBindings,
@@ -2434,6 +2436,10 @@ export async function runLegacyStateMigrations(params: {
   const detected = params.detected;
   const env = params.env ?? process.env;
   const config = params.config ?? ({} as OpenClawConfig);
+  assertNoRetiredStateFiles(
+    "OAuth credential sidecars",
+    listLegacyOAuthSidecarPaths(env, config, detected.stateDir),
+  );
   const legacySessionSurfaces = params.legacySessionSurfaces;
   const buildSteps = (pluginStateMigrationInventory?: PluginDoctorStateMigrationInventory) =>
     buildLegacyStateMigrationSteps({
@@ -2567,6 +2573,10 @@ async function executeLegacyStateMigrations(
     ),
   };
   const initialStateDir = resolveStateDir(env, homedir);
+  assertNoRetiredStateFiles(
+    "OAuth credential sidecars",
+    listLegacyOAuthSidecarPaths(env, params.cfg, initialStateDir),
+  );
   const checkKey = `${path.resolve(initialStateDir)}\0${mode}`;
   // An earlier attempt may leave post-session work or a refusal unresolved.
   // Explicit Doctor calls need fresh receipts and handoffs, not startup's once-cache.

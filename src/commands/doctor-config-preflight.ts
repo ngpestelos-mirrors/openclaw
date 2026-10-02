@@ -1,8 +1,10 @@
 /** Config preflight for Doctor: legacy migration, recovery, and snapshot loading. */
 import { note } from "../../packages/terminal-core/src/note.js";
+import { readCurrentConfigForResolution } from "../config/io.runtime.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { throwIfDoctorStateMigrationRefused } from "../infra/state-migrations.messages.js";
+import { assertNoRetiredStateFiles } from "../infra/state-migrations.retired-files.js";
 import type {
   LegacyStateMigrationStepReceipt,
   MigrationMessages,
@@ -15,6 +17,7 @@ import {
   readConfigPreflightSnapshot,
   type ConfigPreflightSnapshotRead,
 } from "./config-preflight-snapshot.js";
+import { listLegacyOAuthSidecarPaths } from "./doctor-auth-legacy-paths.js";
 import { noteDoctorConfigPreflightIssues } from "./doctor-config-analysis.js";
 import {
   createDoctorConfigRepairPlanner,
@@ -58,6 +61,11 @@ export async function runDoctorConfigPreflight(
 async function runDoctorConfigPreflightOperation(
   options: DoctorConfigPreflightOptions,
 ): Promise<DoctorConfigPreflightResult> {
+  const { env: inspectionEnv } = readCurrentConfigForResolution();
+  assertNoRetiredStateFiles(
+    "OAuth credential sidecars",
+    listLegacyOAuthSidecarPaths(inspectionEnv),
+  );
   const stateMigrationsRequested = options.migrateState !== false;
   const skipLegacyParentConfigWrite = shouldSkipLegacyUpdateDoctorConfigWrite(process.env);
   const measurePreflightStep = <T>(name: string, run: () => T | Promise<T>) =>
