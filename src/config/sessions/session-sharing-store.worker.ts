@@ -7,7 +7,7 @@ import {
 } from "../../infra/sqlite-transaction.js";
 import type { SqliteWorkerBackend } from "../../infra/sqlite-worker-contract.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
-import { sessionChanges, type SessionRowFacts } from "../../sessions/session-row-changes.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import {
   getOpenClawAgentDatabaseIfOpen,
   resolveOpenClawAgentSqlitePath,
@@ -24,77 +24,17 @@ import {
   prepareSessionGroupCategoryMutation,
 } from "./session-group-categories.kernel.js";
 import { addSessionMember, removeSessionMember } from "./session-sharing-store.native.js";
+import type {
+  MembershipPublication,
+  SessionSharingWorkerOperations,
+} from "./session-sharing-store.types.js";
 import {
   addSessionSuggestion,
   claimSessionSuggestionDispatch,
   finalizeSessionSuggestionClaim,
   releaseSessionSuggestionDispatch,
 } from "./session-suggestion-store.js";
-
-type MembershipPublication = { facts?: Extract<SessionRowFacts, { kind: "member" }> };
-type OwnerPublication = { facts?: Extract<SessionRowFacts, { kind: "owner" }> };
-type ParticipantPublication = {
-  projectionChanged: boolean;
-  participants: ReturnType<typeof readSqliteSessionParticipantProjection>;
-};
-
-export type SessionSharingWorkerOperations = {
-  "owner.assign": {
-    input: {
-      scope: SessionAccessScope;
-      params: Omit<Parameters<typeof assignSessionOwner>[1], "assertCurrent">;
-    };
-    output: { value: ReturnType<typeof assignSessionOwner> } & OwnerPublication;
-  };
-  "suggestion.add": {
-    input: { scope: SessionAccessScope; params: Parameters<typeof addSessionSuggestion>[1] };
-    output: ReturnType<typeof addSessionSuggestion>;
-  };
-  "suggestion.claim": {
-    input: {
-      scope: SessionAccessScope;
-      params: Parameters<typeof claimSessionSuggestionDispatch>[1];
-    };
-    output: ReturnType<typeof claimSessionSuggestionDispatch>;
-  };
-  "suggestion.release": {
-    input: {
-      scope: SessionAccessScope;
-      params: Parameters<typeof releaseSessionSuggestionDispatch>[1];
-    };
-    output: ReturnType<typeof releaseSessionSuggestionDispatch>;
-  };
-  "suggestion.finalize": {
-    input: {
-      scope: SessionAccessScope;
-      params: Parameters<typeof finalizeSessionSuggestionClaim>[1];
-    };
-    output: ReturnType<typeof finalizeSessionSuggestionClaim>;
-  };
-  "category.prepare": { input: { scope: SessionAccessScope; from: string }; output: string[] };
-  "category.apply": {
-    input: { scope: SessionAccessScope; from: string; to?: string };
-    output: Array<{ sessionKey: string; sessionId: string }>;
-  };
-  add: {
-    input: { scope: SessionAccessScope; params: Parameters<typeof addSessionMember>[1] };
-    output: { value: ReturnType<typeof addSessionMember> } & MembershipPublication;
-  };
-  remove: {
-    input: {
-      scope: SessionAccessScope;
-      identityId: string;
-      expected?: Parameters<typeof removeSessionMember>[2];
-      expectedSessionId?: string;
-      expectedEntry?: Parameters<typeof removeSessionMember>[4];
-    };
-    output: { value: ReturnType<typeof removeSessionMember> } & MembershipPublication;
-  };
-  participant: {
-    input: { scope: SessionAccessScope; params: Parameters<typeof recordSessionParticipant>[1] };
-    output: { value: ReturnType<typeof recordSessionParticipant> } & ParticipantPublication;
-  };
-};
+export type { SessionSharingWorkerOperations } from "./session-sharing-store.types.js";
 
 /** The canonical agent executor retains the connection and both live admission checks. */
 export function bindSqliteWorkerBackend(
@@ -124,7 +64,11 @@ export function bindSqliteWorkerBackend(
     execute(command) {
       const scope = { ...command.input.scope };
       const target = resolveOpenClawAgentSqlitePath(toDatabaseOptions(resolveSqliteScope(scope)));
-      if (readDatabasePathIdentitySync(target).canonicalPath !== context.databasePath) {
+      const sameOwner = db.location()
+        ? readDatabasePathIdentitySync(target).canonicalPath === context.databasePath
+        : target === context.databasePath &&
+          getOpenClawAgentDatabaseIfOpen(toDatabaseOptions(resolveSqliteScope(scope)))?.db === db;
+      if (!sameOwner) {
         throw new Error("Session collaboration target changed its database owner");
       }
       scope.storePath = context.databasePath;

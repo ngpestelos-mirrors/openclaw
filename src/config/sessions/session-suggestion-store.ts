@@ -6,25 +6,27 @@ import {
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
-import {
-  sessionMetadataExpectedEntryMatches,
-  type SessionMetadataExpectedEntry,
-} from "./session-accessor.sqlite-owner.js";
+import { sessionMetadataExpectedEntryMatches } from "./session-accessor.sqlite-owner.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import type {
+  SessionMetadataExpectedEntry,
+  SessionSuggestionAddParams,
+  SessionSuggestionClaimParams,
+  SessionSuggestionFinalizeParams,
+  SessionSuggestionReleaseParams,
+  StoredSessionSuggestion,
+} from "./session-sharing-store.types.js";
 import {
   addSessionSuggestionInDatabase,
   claimSessionSuggestionDispatchInDatabase,
   finalizeSessionSuggestionClaimInDatabase,
   listSessionSuggestionsInDatabase,
   releaseSessionSuggestionDispatchInDatabase,
-  type StoredSessionSuggestion,
 } from "./session-suggestion-store.kernel.js";
 import { SessionWorkStartInvalidatedError } from "./work-start-error.js";
 
-export {
-  SESSION_SUGGESTION_DISPATCH_CLAIM_TTL_MS,
-  type StoredSessionSuggestion,
-} from "./session-suggestion-store.kernel.js";
+export type { StoredSessionSuggestion } from "./session-sharing-store.types.js";
+export { SESSION_SUGGESTION_DISPATCH_CLAIM_TTL_MS } from "./session-suggestion-store.kernel.js";
 
 function resolveDatabaseOptions(scope: SessionAccessScope): OpenClawAgentDatabaseOptions {
   return toDatabaseOptions(resolveSqliteScope(scope));
@@ -46,15 +48,7 @@ function assertSuggestionExpectedEntry(
 
 export function addSessionSuggestion(
   scope: SessionAccessScope,
-  params: {
-    authorId: string;
-    authorLabel?: string;
-    text: string;
-    createdAt?: number;
-    id?: string;
-    expectedSessionId?: string;
-    expectedEntry?: SessionMetadataExpectedEntry;
-  },
+  params: SessionSuggestionAddParams,
 ): StoredSessionSuggestion {
   const authorId = params.authorId.trim();
   const authorLabel = params.authorLabel?.trim() || undefined;
@@ -98,9 +92,7 @@ export function listSessionSuggestions(
 
 export function claimSessionSuggestionDispatch(
   scope: SessionAccessScope,
-  params: Parameters<typeof claimSessionSuggestionDispatchInDatabase>[2] & {
-    expectedEntry?: SessionMetadataExpectedEntry;
-  },
+  params: SessionSuggestionClaimParams,
 ): ReturnType<typeof claimSessionSuggestionDispatchInDatabase> {
   const options = resolveDatabaseOptions(scope);
   const sessionKey = resolveSqliteScope(scope).sessionKey;
@@ -116,7 +108,7 @@ export function claimSessionSuggestionDispatch(
 
 export function releaseSessionSuggestionDispatch(
   scope: SessionAccessScope,
-  params: Parameters<typeof releaseSessionSuggestionDispatchInDatabase>[2],
+  params: SessionSuggestionReleaseParams,
 ): boolean {
   const options = resolveDatabaseOptions(scope);
   const sessionKey = resolveSqliteScope(scope).sessionKey;
@@ -129,9 +121,7 @@ export function releaseSessionSuggestionDispatch(
 
 export function finalizeSessionSuggestionClaim(
   scope: SessionAccessScope,
-  params: Parameters<typeof finalizeSessionSuggestionClaimInDatabase>[2] & {
-    expectedEntry?: SessionMetadataExpectedEntry;
-  },
+  params: SessionSuggestionFinalizeParams,
 ): StoredSessionSuggestion | null {
   const options = resolveDatabaseOptions(scope);
   const sessionKey = resolveSqliteScope(scope).sessionKey;

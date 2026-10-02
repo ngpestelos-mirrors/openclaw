@@ -1,5 +1,5 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
-import type { StoredSessionSuggestion } from "../../config/sessions/session-suggestion-store.kernel.js";
+import type { StoredSessionSuggestion } from "../../config/sessions/session-sharing-store.types.js";
 import {
   isSessionWorkStartInvalidatedError,
   SessionWorkStartInvalidatedError,

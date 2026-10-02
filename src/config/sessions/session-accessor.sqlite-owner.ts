@@ -22,12 +22,11 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
-import type { SessionActor, SessionOwnerAssignment } from "./session-entry-provenance.js";
-import type { SessionSharingExpectedEntry } from "./session-sharing-store.native.js";
-import type { SessionEntry } from "./types.js";
-
-export type SessionMetadataExpectedEntry = SessionSharingExpectedEntry &
-  Pick<SessionEntry, "lifecycleRevision">;
+import type { SessionOwnerAssignment } from "./session-entry-provenance.js";
+import type {
+  SessionMetadataExpectedEntry,
+  SessionOwnerAssignParams,
+} from "./session-sharing-store.types.js";
 
 function metadataAuthorityEntry(entry: SessionMetadataExpectedEntry): SessionMetadataExpectedEntry {
   return {
@@ -116,14 +115,7 @@ export function replaceSessionOwnerInTransaction(
 
 export function assignSessionOwner(
   scope: SessionAccessScope,
-  params: {
-    owner: SessionActor & { id: string };
-    assignedBy: SessionActor & { id: string };
-    assignedAt?: number;
-    expectedSessionId?: string;
-    expectedEntry?: SessionMetadataExpectedEntry;
-    assertCurrent?: () => void;
-  },
+  params: SessionOwnerAssignParams & { assertCurrent?: () => void },
 ): SessionOwnerAssignment | null {
   const resolved = resolveSqliteScope(scope);
   const options = toDatabaseOptions(resolved);
