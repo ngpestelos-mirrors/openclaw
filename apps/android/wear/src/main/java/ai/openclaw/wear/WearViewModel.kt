@@ -2047,8 +2047,14 @@ internal fun reconcileWearStreamSnapshot(
   if (snapshot.isNullOrEmpty()) return live
   val merged =
     when {
-      snapshot.startsWith(live) -> snapshot
-      liveComplete -> live
+      snapshot.startsWith(live) -> {
+        snapshot
+      }
+
+      liveComplete -> {
+        live
+      }
+
       else -> {
         val maxOverlap = minOf(snapshot.length, live.length)
         val overlap =
