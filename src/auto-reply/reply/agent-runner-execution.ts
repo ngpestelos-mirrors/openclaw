@@ -92,7 +92,7 @@ async function executeAgentTurnInternalLoop(
   inputParams: AppContextTurnParams,
   runId: string,
   commitTerminalOutcome: () => void,
-  commitMcpAppModelContext: () => void,
+  prepareMcpAppModelContext: () => Promise<AppContextTurnParams["mcpAppContextLease"]>,
   preparedRunAdmission: PreparedAgentRunAdmission,
   admittedRunContext: { current?: AdmittedRunContext },
   deferredLifecycle: DeferredEmbeddedRunLifecycleManager,
@@ -218,6 +218,10 @@ async function executeAgentTurnInternalLoop(
             imageOrder: params.opts?.imageOrder,
           }),
         );
+    const modelContextLease = await prepareMcpAppModelContext();
+    if (modelContextLease) {
+      params = { ...params, mcpAppContextLease: modelContextLease };
+    }
     ({ params, currentTurnImages } = applyMcpAppModelContext(params, currentTurnImages));
   } catch (error) {
     clearAgentRunContext(runId, lifecycleGeneration);
@@ -254,7 +258,7 @@ async function executeAgentTurnInternalLoop(
       info.phase === "model_call_started" ||
       info.phase === "process_spawned"
     ) {
-      commitMcpAppModelContext();
+      params.mcpAppContextLease?.commit();
     }
     const isUserVisibleExecutionActivity =
       info.phase === "turn_accepted" ||
@@ -477,7 +481,7 @@ async function executeAgentTurnInternal(
   params: AppContextTurnParams,
   runId: string,
   commitTerminalOutcome: () => void,
-  commitMcpAppModelContext: () => void,
+  prepareMcpAppModelContext: () => Promise<AppContextTurnParams["mcpAppContextLease"]>,
   compaction: AgentTurnCompaction,
 ): Promise<AgentTurnInternalResult> {
   const admittedRunContext: { current?: AdmittedRunContext } = {};
@@ -519,7 +523,7 @@ async function executeAgentTurnInternal(
       params,
       runId,
       commitTerminalOutcome,
-      commitMcpAppModelContext,
+      prepareMcpAppModelContext,
       preparedRunAdmission,
       admittedRunContext,
       deferredLifecycle,
@@ -546,20 +550,20 @@ async function executeAgentTurnOutcome(
     assertAdmittedRunOperatorAuthority(requester);
     requester.assertCurrent();
   }
-  const modelContextLease = executionParams.isHeartbeat
-    ? undefined
-    : await leaseMcpAppModelContextForSessionTurn({
-        agentId: executionParams.followupRun.run.agentId,
-        sessionId: executionParams.followupRun.run.sessionId,
-        sessionKey: executionParams.sessionKey ?? executionParams.followupRun.run.sessionKey,
-        requesterId: requester?.profileId,
-      });
-  const turnParams: AppContextTurnParams = modelContextLease
-    ? {
-        ...executionParams,
-        mcpAppContextLease: modelContextLease,
-      }
-    : executionParams;
+  let modelContextLease: AppContextTurnParams["mcpAppContextLease"];
+  const prepareMcpAppModelContext = async () => {
+    requester?.assertCurrent();
+    modelContextLease = executionParams.isHeartbeat
+      ? undefined
+      : await leaseMcpAppModelContextForSessionTurn({
+          agentId: executionParams.followupRun.run.agentId,
+          sessionId: executionParams.followupRun.run.sessionId,
+          sessionKey: executionParams.sessionKey ?? executionParams.followupRun.run.sessionKey,
+          requesterId: requester?.profileId,
+        });
+    requester?.assertCurrent();
+    return modelContextLease;
+  };
   // Keep committed facts outside cleanup so a restart cannot erase them.
   const compaction: AgentTurnCompaction = { count: 0, durable: [] };
   const completedCompaction = () =>
@@ -580,10 +584,10 @@ async function executeAgentTurnOutcome(
     const internal = await withAgentRunLifecycleGeneration(lifecycleGeneration, async () => {
       try {
         return await executeAgentTurnInternal(
-          turnParams,
+          executionParams,
           runId,
           commitTerminalOutcome,
-          modelContextLease?.commit ?? (() => undefined),
+          prepareMcpAppModelContext,
           compaction,
         );
       } finally {
