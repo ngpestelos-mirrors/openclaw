@@ -1,5 +1,6 @@
 import type { LookupFn } from "openclaw/plugin-sdk/ssrf-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeCompatibilityConfig } from "../../doctor-contract.js";
 import { getMatrixScopedEnvVarNames } from "../../env-vars.js";
 import { installMatrixTestRuntime } from "../../test-runtime.js";
 import type { CoreConfig, MatrixConfig } from "../../types.js";
@@ -626,6 +627,47 @@ describe("Matrix auth/config live surfaces", () => {
         allowPrivateNetwork: true,
       }),
     ).toBe("http://matrix-synapse:8008");
+  });
+
+  it.each(["channel", "account"] as const)(
+    "requires Doctor before a %s private-network alias enables requests",
+    (scope) => {
+      const legacy = { enabled: true, allowPrivateNetwork: true };
+      const cfg = matrixConfig({
+        homeserver: "https://matrix.example.org",
+        accessToken: "synthetic-token",
+        ...(scope === "channel" ? legacy : {}),
+        accounts: { ops: scope === "account" ? legacy : {} },
+      });
+
+      expect(resolveMatrixConfigForAccount(cfg, "ops", {}).ssrfPolicy).toBeUndefined();
+      const repaired = normalizeCompatibilityConfig({ cfg });
+      expect(resolveMatrixConfigForAccount(repaired.config, "ops", {}).ssrfPolicy).toEqual({
+        allowPrivateNetwork: true,
+      });
+    },
+  );
+
+  it.each([
+    { channel: false, account: false, expected: undefined },
+    { channel: true, account: false, expected: true },
+    { channel: false, account: true, expected: true },
+  ])("uses only canonical Matrix network opt-ins: %j", ({ channel, account, expected }) => {
+    const matrix = {
+      homeserver: "https://matrix.example.org",
+      accessToken: "synthetic-token",
+      allowPrivateNetwork: true,
+      network: { dangerouslyAllowPrivateNetwork: channel },
+      accounts: {
+        ops: {
+          allowPrivateNetwork: true,
+          network: { dangerouslyAllowPrivateNetwork: account },
+        },
+      },
+    };
+    const cfg = matrixConfig(matrix);
+
+    expect(resolveMatrixConfigForAccount(cfg, "ops", {}).allowPrivateNetwork).toBe(expected);
   });
 
   it("resolves an explicit proxy dispatcher from top-level Matrix config", () => {

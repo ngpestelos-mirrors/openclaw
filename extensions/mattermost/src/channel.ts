@@ -37,7 +37,6 @@ import {
 } from "openclaw/plugin-sdk/interactive-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { resolvePayloadMediaUrls, sendTextMediaPayload } from "openclaw/plugin-sdk/reply-payload";
-import { isPrivateNetworkOptInEnabled } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   createComputedAccountStatusAdapter,
   createDefaultChannelRuntimeState,
@@ -724,7 +723,12 @@ export const mattermostPlugin: ChannelPlugin<ResolvedMattermostAccount> = create
         }
         return await (
           await loadMattermostChannelRuntime()
-        ).probeMattermost(baseUrl, token, timeoutMs, isPrivateNetworkOptInEnabled(account.config));
+        ).probeMattermost(
+          baseUrl,
+          token,
+          timeoutMs,
+          account.config.network?.dangerouslyAllowPrivateNetwork === true,
+        );
       },
       resolveAccountSnapshot: ({ account, runtime }) => ({
         accountId: account.accountId,

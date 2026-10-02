@@ -1,9 +1,12 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { SsrFBlockedError } from "openclaw/plugin-sdk/ssrf-runtime";
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
 import { resolveNextcloudTalkAccount } from "./accounts.js";
 import { probeNextcloudTalkBotResponseFeature } from "./bot-preflight.js";
+import { normalizeCompatibilityConfig } from "./doctor-contract.js";
 import * as guardedResponse from "./guarded-response.js";
+import { resolveNextcloudTalkRoomKind } from "./room-info.js";
 import { sendMessageNextcloudTalk, sendReactionNextcloudTalk } from "./send.js";
 import type { CoreConfig } from "./types.js";
 
@@ -122,6 +125,69 @@ function captureStalledErrorBodyDeadline() {
 }
 
 describe("nextcloud-talk send error responses", () => {
+  it("requires Doctor before legacy private-network config reaches the server", async () => {
+    const requests: string[] = [];
+    await withServer(
+      (request, response) => {
+        request.resume();
+        const url = request.url ?? "";
+        requests.push(url);
+        response.setHeader("content-type", "application/json");
+        const data = url.endsWith("/bot/admin")
+          ? [{ id: 7, name: "OpenClaw", url: "https://bot.example.test/hook", features: 2 }]
+          : url.includes("/api/v4/room/")
+            ? { type: 1 }
+            : { id: 42 };
+        response.end(JSON.stringify({ ocs: { data } }));
+      },
+      async (baseUrl) => {
+        const cfg = {
+          channels: {
+            "nextcloud-talk": {
+              baseUrl,
+              botSecret: "synthetic-secret",
+              apiUser: "synthetic-admin",
+              apiPassword: "synthetic-password",
+              webhookPublicUrl: "https://bot.example.test/hook",
+              allowPrivateNetwork: true,
+            },
+          },
+        };
+        const account = resolveNextcloudTalkAccount({ cfg });
+        await expect(sendMessageNextcloudTalk("room:before", "blocked", { cfg })).rejects.toThrow(
+          SsrFBlockedError,
+        );
+        await expect(sendReactionNextcloudTalk("before", "42", "👍", { cfg })).rejects.toThrow(
+          SsrFBlockedError,
+        );
+        await expect(probeNextcloudTalkBotResponseFeature({ account })).resolves.toMatchObject({
+          ok: false,
+          code: "request_failed",
+        });
+        await expect(
+          resolveNextcloudTalkRoomKind({ account, roomToken: "before" }),
+        ).resolves.toBeUndefined();
+        expect(requests).toEqual([]);
+
+        const repaired = normalizeCompatibilityConfig({ cfg });
+        const repairedAccount = resolveNextcloudTalkAccount({ cfg: repaired.config });
+        await expect(
+          sendMessageNextcloudTalk("room:after", "migrated", { cfg: repaired.config }),
+        ).resolves.toMatchObject({ messageId: "42" });
+        await expect(
+          sendReactionNextcloudTalk("after", "42", "👍", { cfg: repaired.config }),
+        ).resolves.toEqual({ ok: true });
+        await expect(
+          probeNextcloudTalkBotResponseFeature({ account: repairedAccount }),
+        ).resolves.toMatchObject({ ok: true, code: "ok" });
+        await expect(
+          resolveNextcloudTalkRoomKind({ account: repairedAccount, roomToken: "after" }),
+        ).resolves.toBe("direct");
+        expect(requests).toHaveLength(4);
+      },
+    );
+  });
+
   it.each(["message", "reaction", "preflight"])(
     "redacts reflected credentials and drops incomplete %s error bodies",
     async (operation) => {
