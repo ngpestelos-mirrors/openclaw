@@ -184,6 +184,7 @@ export function replaceSessionWithBranchedTranscriptInTransaction(
   branch: { sessionId: string; events: TranscriptEvent[] },
   expectedLifecycleRevision: SessionTranscriptWriteScope["expectedLifecycleRevision"],
   assertActive?: () => void,
+  projection?: { scheduleProjectionReconcile?: boolean; onProjectionReconcileNeeded?: () => void },
 ) {
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fencedScope);
@@ -212,7 +213,7 @@ export function replaceSessionWithBranchedTranscriptInTransaction(
     updatedAt: Date.now(),
   });
   assertLockedTranscriptWriteAllowed(database, nextResolved, nextScope);
-  replaceSqliteTranscriptEventsInTransaction(database, nextResolved, branch.events);
+  replaceSqliteTranscriptEventsInTransaction(database, nextResolved, branch.events, projection);
   assertActive?.();
   return {
     identity: { previous, current: readSessionIdentitySnapshot(database, identityKeys) },

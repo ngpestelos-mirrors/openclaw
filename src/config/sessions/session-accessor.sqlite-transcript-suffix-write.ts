@@ -37,6 +37,7 @@ export function replaceTranscriptSuffixEventsSync(
   eventsStartAtPersistedPrefix = false,
   retainedCustomDataIds: readonly string[] = [],
   admit?: (stage: "transaction" | "commit") => void,
+  projection?: { scheduleProjectionReconcile?: boolean; onProjectionReconcileNeeded?: () => void },
 ): boolean {
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fencedScope);
@@ -62,7 +63,7 @@ export function replaceTranscriptSuffixEventsSync(
       if (!transcriptWriteScopeIsCurrent(fresh?.entry, resolved.sessionId, fencedScope)) {
         return;
       }
-      replaceSqliteTranscriptSuffixInTransaction(database, resolved, plan);
+      replaceSqliteTranscriptSuffixInTransaction(database, resolved, plan, projection);
       const committedVersion = readTranscriptContextVersionInTransaction(
         database,
         resolved.sessionId,

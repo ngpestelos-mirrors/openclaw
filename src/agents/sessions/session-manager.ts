@@ -31,6 +31,7 @@ import {
   withSessionContextAdmission,
 } from "../../config/sessions/session-transcript-read-fence.js";
 import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-read-worker-runtime.js";
+import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import {
   sameSessionTranscriptTargetBinding,
@@ -280,6 +281,12 @@ export class SessionManager extends SessionManagerBranching {
                   },
                 }),
             );
+            if (committed.projectionNeedsReconcile) {
+              startSessionTranscriptIndexReconcile({
+                ...admission.options,
+                preferredSessionId: identity.sessionId,
+              });
+            }
             try {
               assertCurrent();
               for (const [index, entry] of committed.entries.entries()) {

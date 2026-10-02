@@ -19,6 +19,7 @@ import type {
   SessionTranscriptMaintenanceRead,
   SessionTranscriptMaintenanceFacts,
 } from "../../config/sessions/session-transcript-maintenance-read.js";
+import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import {
   captureOwnedTranscriptWriteAssertion,
@@ -100,6 +101,12 @@ export class SessionManagerSuffixPersistence extends SessionManagerPersistence {
                   type: "session.transcript.replaceSuffix",
                   input: { scope: { ...scope, storePath: admission.database.path }, args },
                 });
+                if (result.projectionNeedsReconcile) {
+                  startSessionTranscriptIndexReconcile({
+                    ...admission.options,
+                    preferredSessionId: identity.sessionId,
+                  });
+                }
                 try {
                   assertCurrent();
                 } catch (cause) {

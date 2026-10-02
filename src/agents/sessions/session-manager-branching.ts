@@ -3,6 +3,7 @@ import { replaceSessionWithBranchedTranscript } from "../../config/sessions/sess
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { publishCommittedSessionIdentity } from "../../config/sessions/session-accessor.sqlite-identity.js";
 import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
+import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import {
   captureOwnedTranscriptWriteAssertion,
@@ -218,6 +219,12 @@ export class SessionManagerBranching extends SessionManagerMetadata {
               },
             }),
         );
+        if (committed.projectionNeedsReconcile) {
+          startSessionTranscriptIndexReconcile({
+            ...admission.options,
+            preferredSessionId: newSessionId,
+          });
+        }
         let failure: { cause: unknown } | undefined;
         try {
           assertCurrent();

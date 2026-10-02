@@ -1010,6 +1010,7 @@ src/plugins/compat/media-legacy-projection.ts
 src/plugins/compat/plugin-sdk-subpath-records.ts
 src/plugins/compat/registry-records.ts
 src/plugins/compat/registry.ts
+src/plugins/compat/session-persistence-records.ts
 src/plugins/config-activation-shared.ts
 src/plugins/config-contract-matches.ts
 src/plugins/config-normalization-shared.ts

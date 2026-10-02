@@ -27,7 +27,9 @@ export type SessionMaintenanceOperations = {
       branch: { sessionId: string; events: unknown[] };
       expectedLifecycleRevision: SessionTranscriptWriteScope["expectedLifecycleRevision"];
     };
-    output: ReturnType<typeof replaceSessionWithBranchedTranscriptInTransaction>;
+    output: ReturnType<typeof replaceSessionWithBranchedTranscriptInTransaction> & {
+      projectionNeedsReconcile: boolean;
+    };
   };
   "session.transcript.replaceSuffix": {
     input: {
@@ -41,7 +43,11 @@ export type SessionMaintenanceOperations = {
         retainedCustomDataIds: readonly string[],
       ];
     };
-    output: { replaced: boolean; version?: SessionTranscriptContextVersion };
+    output: {
+      replaced: boolean;
+      version?: SessionTranscriptContextVersion;
+      projectionNeedsReconcile: boolean;
+    };
   };
   "session.transcript.rewrite": {
     input: {
@@ -56,6 +62,7 @@ export type SessionMaintenanceOperations = {
       version: SessionTranscriptContextVersion;
       entries: Array<SessionEntry | SessionLeafControl>;
       pendingInputReceipt?: SessionPendingInputWorkerReceipt;
+      projectionNeedsReconcile: boolean;
     };
   };
 };
@@ -94,6 +101,14 @@ export function executeSessionMaintenance(
   scope: SessionTranscriptWriteScope,
   context: SessionMaintenanceContext,
 ): SessionMaintenanceOperations[keyof SessionMaintenanceOperations]["output"] {
+  // The host retains reconciliation beyond this worker command's lifetime.
+  let projectionNeedsReconcile = false;
+  const projection = {
+    scheduleProjectionReconcile: false,
+    onProjectionReconcileNeeded: () => {
+      projectionNeedsReconcile = true;
+    },
+  };
   if (command.type === "session.transcript.branch") {
     return runOpenClawAgentWriteTransaction(
       (database) => {
@@ -106,9 +121,11 @@ export function executeSessionMaintenance(
           scope,
           command.input.branch,
           command.input.expectedLifecycleRevision,
+          undefined,
+          projection,
         );
         context.admit("commit");
-        return result;
+        return { ...result, projectionNeedsReconcile };
       },
       toDatabaseOptions(resolveSqliteTranscriptScope(scope)),
       { operationLabel: command.type },
@@ -129,8 +146,9 @@ export function executeSessionMaintenance(
       startsAtPrefix,
       retained,
       (stage) => context.admit(stage),
+      projection,
     );
-    return { replaced, version };
+    return { replaced, version, projectionNeedsReconcile };
   }
   let version: SessionTranscriptContextVersion | undefined;
   const publish = prepareTranscriptRewriteSync(
@@ -139,7 +157,7 @@ export function executeSessionMaintenance(
     () => {},
     command.input.version,
     (stage) => context.admit(stage),
-    { messagesAlreadyRedacted: true },
+    { messagesAlreadyRedacted: true, ...projection },
   );
   publish(command.input.entries, new Map(command.input.sources), (committed) => {
     version = committed;
@@ -147,5 +165,5 @@ export function executeSessionMaintenance(
   if (!version) {
     throw new Error("Session rewrite did not return its committed version");
   }
-  return { version, entries: command.input.entries };
+  return { version, entries: command.input.entries, projectionNeedsReconcile };
 }

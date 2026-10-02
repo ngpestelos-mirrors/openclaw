@@ -42,7 +42,11 @@ export function prepareTranscriptRewriteSync(
   assertActive: () => void,
   loadedVersion: SessionTranscriptContextVersion | undefined,
   admit?: (stage: "transaction" | "commit") => void,
-  preparation?: { messagesAlreadyRedacted: true },
+  preparation?: {
+    messagesAlreadyRedacted: true;
+    scheduleProjectionReconcile?: boolean;
+    onProjectionReconcileNeeded?: () => void;
+  },
 ): (
   entries: Array<SessionEntry | SessionLeafControl>,
   sources: ReadonlyMap<string, SessionEntry>,
@@ -141,21 +145,27 @@ export function prepareTranscriptRewriteSync(
               throw new Error("Transcript rewrite message has no source entry");
             }
             const result = withSessionPendingInputRelocation(source.id, entry.message, () =>
-              appendTranscriptMessageInTransaction(current, resolved, {
-                eventId: entry.id,
-                parentId: entry.parentId,
-                now: Date.parse(entry.timestamp),
-                message: entry.message,
-                messageAlreadyRedacted: true,
-                appendMode: entry.appendMode,
-                idempotencyLookup: "caller-checked",
-              }),
+              appendTranscriptMessageInTransaction(
+                current,
+                resolved,
+                {
+                  eventId: entry.id,
+                  parentId: entry.parentId,
+                  now: Date.parse(entry.timestamp),
+                  message: entry.message,
+                  messageAlreadyRedacted: true,
+                  appendMode: entry.appendMode,
+                  idempotencyLookup: "caller-checked",
+                },
+                undefined,
+                preparation,
+              ),
             );
             if (!result?.appended || result.messageId !== entry.id) {
               throw new Error("Transcript rewrite message was not appended");
             }
             entry.message = result.message;
-          } else if (!appendTranscriptEventInTransaction(current, resolved, entry)) {
+          } else if (!appendTranscriptEventInTransaction(current, resolved, entry, preparation)) {
             throw new Error("Transcript rewrite entry was not appended");
           }
         }

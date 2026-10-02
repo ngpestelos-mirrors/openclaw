@@ -5,11 +5,17 @@ import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
+  resolveSessionTranscriptDatabasePath,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import * as transcriptHydration from "../../config/sessions/session-transcript-hydration.js";
+import { markSessionTranscriptIndexDirtyInTransaction } from "../../config/sessions/session-transcript-index.js";
+import { waitForSessionTranscriptProjection } from "../../config/sessions/session-transcript-reconcile.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
-import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  runOpenClawAgentWriteTransaction,
+} from "../../state/openclaw-agent-db.js";
 import { isRecordedModelFallbackStop } from "../model-fallback-stop.js";
 import * as metadataRuntime from "./session-manager-metadata-runtime.js";
 import { SessionManager } from "./session-manager.js";
@@ -43,10 +49,14 @@ async function appendUser(manager: SessionManager, text: string): Promise<string
   return (await manager.appendMessageWithTranscriptAnchorAsync(makeUserMessage(text, 1))).entryId;
 }
 
-it("settles queued suffix removals in order and publishes the committed branch", async () => {
+it("settles queued suffix removals in order and rebuilds the pending branch projection", async () => {
   const { scope, manager } = await openSession();
   const retained = await appendUser(manager, "keep");
   const removed = await manager.appendCustomEntryAsync("temporary", { bytes: "exact" });
+  runOpenClawAgentWriteTransaction(
+    (database) => markSessionTranscriptIndexDirtyInTransaction(database.db, scope.sessionId),
+    { agentId: scope.agentId, path: resolveSessionTranscriptDatabasePath(scope) },
+  );
   vi.spyOn(manager, "removeTrailingEntries").mockImplementation(() => {
     throw new Error("sync compatibility adapter used");
   });
@@ -54,6 +64,10 @@ it("settles queued suffix removals in order and publishes the committed branch",
   const second = manager.removeTrailingEntriesAsync((entry) => entry.id === removed);
   expect(await Promise.all([first, second])).toEqual([1, 0]);
   expect(manager.getLeafId()).toBe(retained);
+  await waitForSessionTranscriptProjection(scope);
+  expect(
+    SessionManager.openBounded(scope, { maxEvents: 10, maxBytes: 64_000 }).buildSessionContext(),
+  ).toEqual(manager.buildSessionContext());
   const reopened = await SessionManager.openAsync(scope);
   expect(reopened.getBranch()).toEqual(manager.getBranch());
   expect(reopened.getLeafId()).toBe(retained);
@@ -247,9 +261,13 @@ it.each(["append", "identity", "label", "leaf"] as const)(
   },
 );
 
-it("branches to a committed new session identity with only the selected path", async () => {
+it("branches a large selected path and rebuilds its new session projection", async () => {
   const { manager } = await openSession("branch-source-v1");
-  const selected = await appendUser(manager, "selected");
+  await appendUser(manager, "selected");
+  // Exceed inline projection rebuilding without thousands of fixture writes.
+  const selected = await manager.appendCustomEntryAsync("retained", {
+    bytes: "x".repeat(4 * 1024 * 1024),
+  });
   const omitted = await manager.appendCustomEntryAsync("omit", {});
   const previousSessionId = manager.getSessionId();
   const sessionId = await manager.createBranchedSession(selected);
@@ -258,6 +276,13 @@ it("branches to a committed new session identity with only the selected path", a
   expect(manager.getEntry(omitted)).toBeUndefined();
   const target = manager.getSessionTarget();
   expect(target).toBeDefined();
+  await waitForSessionTranscriptProjection(target!);
+  expect(
+    SessionManager.openBounded(target!, {
+      maxEvents: 10,
+      maxBytes: 8 * 1024 * 1024,
+    }).buildSessionContext(),
+  ).toEqual(manager.buildSessionContext());
   const reopened = await SessionManager.openAsync(target!);
   expect(reopened.getHeader()?.parentSession).toBe(previousSessionId);
   expect(reopened.getBranch()).toEqual(manager.getBranch());
