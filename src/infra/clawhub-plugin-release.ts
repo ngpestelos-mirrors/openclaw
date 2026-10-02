@@ -13,11 +13,16 @@ import {
   parseClawHubPackageSecurityResponse,
   type ClawHubPackageSecurityResponse,
 } from "./clawhub-packages.js";
-import type { ClawHubPluginDetail } from "./clawhub-plugin-catalog.js";
+export type ClawHubPluginSecurity = {
+  status: string;
+  auditUrl?: string;
+  verdict?: string;
+  summary?: string;
+  guidance?: string;
+  checkedAt?: number;
+};
 
-function projectSecurity(
-  value: ClawHubPackageSecurityResponse,
-): NonNullable<ClawHubPluginDetail["security"]> {
+function projectSecurity(value: ClawHubPackageSecurityResponse): ClawHubPluginSecurity {
   const trust = value.trust;
   const moderationStatus =
     trust.moderationState && trust.moderationState !== "approved"
@@ -80,7 +85,7 @@ export async function readClawHubPluginReleaseFacts(params: {
   if (readme && Buffer.byteLength(readme, "utf8") > 512 * 1024) {
     throw new Error("ClawHub plugin README exceeded 524288 bytes.");
   }
-  let security: ClawHubPluginDetail["security"];
+  let security: ClawHubPluginSecurity | undefined;
   let trust: PluginInstallTrust | undefined;
   let downloadability: ClawHubDownloadability = selectedRelease
     ? {

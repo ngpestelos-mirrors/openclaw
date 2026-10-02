@@ -23,7 +23,10 @@ import {
   type ClawHubPluginCompatibility,
   type ClawHubPluginCapabilities,
 } from "./clawhub-plugin-manifest.js";
-import { readClawHubPluginReleaseFacts } from "./clawhub-plugin-release.js";
+import {
+  readClawHubPluginReleaseFacts,
+  type ClawHubPluginSecurity,
+} from "./clawhub-plugin-release.js";
 
 export type ClawHubPluginCatalogEntry = {
   packageName: string;
@@ -94,15 +97,6 @@ type ClawHubPluginVerification = {
   sourceCommit?: string;
   sourcePath?: string;
   scanStatus?: string;
-};
-
-type ClawHubPluginSecurity = {
-  status: string;
-  auditUrl?: string;
-  verdict?: string;
-  summary?: string;
-  guidance?: string;
-  checkedAt?: number;
 };
 
 export type ClawHubPluginCategory = {
