@@ -3800,6 +3800,7 @@ describe("runCodexAppServerAttempt", () => {
       "config/read",
       "configRequirements/read",
       "thread/start",
+      "model/list",
       "turn/start",
       "thread/unsubscribe",
     ]);
@@ -3825,6 +3826,7 @@ describe("runCodexAppServerAttempt", () => {
       "thread/read",
       "thread/resume",
       "thread/inject_items",
+      "model/list",
       "turn/start",
       "thread/unsubscribe",
     ]);
@@ -3885,7 +3887,9 @@ describe("runCodexAppServerAttempt", () => {
       "thread/read",
       "thread/resume",
       "thread/inject_items",
+      "model/list",
       "turn/start",
+      "model/list",
       "turn/start",
     ]);
     await expectRetainedSuccessfulThread(harness.client, "thread-existing");
@@ -3951,6 +3955,7 @@ describe("runCodexAppServerAttempt", () => {
       "thread/read",
       "thread/resume",
       "thread/inject_items",
+      "model/list",
       "turn/start",
     ]);
     await expectRetainedSuccessfulThread(harness.client, "thread-existing");
@@ -3985,6 +3990,7 @@ describe("runCodexAppServerAttempt", () => {
       "thread/read",
       "thread/resume",
       "thread/inject_items",
+      "model/list",
       "turn/start",
       "thread/unsubscribe",
     ]);
@@ -5051,6 +5057,7 @@ describe("runCodexAppServerAttempt", () => {
         "thread/read",
         "thread/resume",
         "thread/inject_items",
+        "model/list",
         "turn/start",
       ],
     ]);
