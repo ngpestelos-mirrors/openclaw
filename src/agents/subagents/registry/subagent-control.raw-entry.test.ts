@@ -1,8 +1,8 @@
 // The shared fixture installs registry mocks before these consumers are evaluated.
 // oxfmt-ignore
-import { useSubagentControlFixture } from "./subagent-control.test-support.js";
+import { runSubagentStateWorkerOperation, useSubagentControlFixture } from "./subagent-control.test-support.js";
 import { expect, it, vi } from "vitest";
-import { createDeferred } from "../../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
 import { enqueueFollowupRun } from "../../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../../auto-reply/reply/queue.test-helpers.js";
 import {
@@ -21,11 +21,11 @@ import { resolveSessionAgentId } from "../../agent-scope.js";
 import { resolveEmbeddedSessionLane } from "../../embedded-agent-runner/lanes.js";
 import { clearActiveEmbeddedRun, setActiveEmbeddedRun } from "../../embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
+import { isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
 import type { AgentToolGatewayRequestCaller } from "../../tools/in-process-gateway.js";
 import { createSessionsSendTool } from "../../tools/sessions-send-tool.js";
 import { createSubagentsTool } from "../../tools/subagents-tool.js";
 import { killAllControlledSubagentRuns, killSubagentRunAdmin } from "./subagent-control.js";
-import { persistSubagentRunsToDiskAsyncOrThrow } from "./subagent-registry-state.js";
 import { registerSubagentRun } from "./subagent-registry.js";
 import { writeSubagentSessionEntry } from "./subagent-registry.persistence.test-support.js";
 import { getSubagentRunByRunId } from "./subagent-registry.test-helpers.js";
@@ -300,20 +300,34 @@ it("cancels its selected raw child while another agent has a newer watched row",
 
 it("keeps a watched registration current while the other raw owner commits", async () => {
   const { send } = await prepareWatchedRawChildren();
-  const persist = vi.mocked(persistSubagentRunsToDiskAsyncOrThrow);
-  const original = persist.getMockImplementation()!;
   const entered = createDeferred();
   const release = createDeferred();
-  persist.mockImplementation(async (runs, ids, options) => {
-    if (ids?.includes("main-3")) {
-      entered.resolve();
-      await release.promise;
-    }
-    return original(runs, ids, options);
-  });
+  fixture.worker.mockImplementation((context, operation, options) =>
+    runSubagentStateWorkerOperation(
+      context,
+      (scope) =>
+        operation({
+          execute: async (command, commandOptions) => {
+            if (
+              isSubagentRegistryWriteCommand(command) &&
+              command.input.values.some((row) => row.run_id === "main-3")
+            ) {
+              entered.resolve();
+              await release.promise;
+            }
+            return scope.execute(command, commandOptions);
+          },
+        }),
+      options,
+    ),
+  );
   const pending = send("main", "main-concurrent-turn");
   try {
-    await entered.promise;
+    await awaitGateBeforeSettlement(
+      entered.promise,
+      pending,
+      "Watched registration settled before its registry write",
+    );
     expect((await send("research", "research-concurrent-turn")).details).toMatchObject({
       status: "accepted",
     });
