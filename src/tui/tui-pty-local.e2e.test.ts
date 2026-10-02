@@ -29,6 +29,7 @@ import {
 import { listUsageCountedTranscriptStats } from "../infra/session-cost-usage-collection.js";
 import { runExec } from "../process/exec.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
+import { createCanonicalAgentConfigFixture } from "../test-utils/config-roster.js";
 import { withEnv, withEnvAsync } from "../test-utils/env.js";
 import { killPidIfAlive } from "../test-utils/process-tree.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
@@ -496,7 +497,6 @@ function buildLocalModeConfig(params: {
       },
       entries: {
         main: {
-          default: true,
           skills: [],
           model: { primary: "tui-pty-mock/gpt-5.5" },
         },
@@ -685,7 +685,7 @@ function buildGatewayModeConfig(params: { tempDir: string; providerBaseUrl: stri
     workspaceDir: path.join(params.tempDir, defaultScenario.agentId),
     providerBaseUrl: params.providerBaseUrl,
   });
-  return {
+  return createCanonicalAgentConfigFixture({
     ...base,
     agents: {
       defaults: {
@@ -724,7 +724,7 @@ function buildGatewayModeConfig(params: { tempDir: string; providerBaseUrl: stri
         mode: "followup",
       },
     },
-  } satisfies OpenClawConfig;
+  } satisfies OpenClawConfig).config;
 }
 
 async function startSharedGatewayFixture(): Promise<SharedGatewayFixture> {

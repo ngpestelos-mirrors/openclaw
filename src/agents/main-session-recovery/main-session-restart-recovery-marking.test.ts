@@ -37,6 +37,7 @@ import {
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { assertOpenClawDatabasesReady } from "../../state/openclaw-database-preflight.js";
+import { createCanonicalAgentConfigFixture } from "../../test-utils/config-roster.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { readStartupRecoveryWarning } from "./main-session-restart-recovery-diagnostics.js";
@@ -50,7 +51,10 @@ const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-restart-owner-")
 
 it("keeps healthy stores recoverable when an earlier startup mark fails", async () => {
   await withOpenClawTestState({ label: "recovery-mark-failure" }, async (state) => {
-    const cfg = { agents: { entries: { main: { default: true }, worker: {} } } };
+    const { config: cfg } = createCanonicalAgentConfigFixture(
+      { agents: { entries: { main: { default: true }, worker: {} } } },
+      { env: state.env, homedir: () => state.home },
+    );
     await state.writeConfig(cfg);
     for (const agentId of ["main", "worker"]) {
       const sessionKey = `agent:${agentId}:main`;
@@ -211,7 +215,10 @@ it("recovers an orphan after its owner releases retained run metadata", async ()
 
 it("marks healthy startup orphans while leaving a refused secondary database untouched", async () => {
   await withOpenClawTestState({ label: "recovery-admission" }, async (state) => {
-    const cfg = { agents: { entries: { main: { default: true }, cleaner: {} } } };
+    const { config: cfg } = createCanonicalAgentConfigFixture(
+      { agents: { entries: { main: { default: true }, cleaner: {} } } },
+      { env: state.env, homedir: () => state.home },
+    );
     for (const agentId of ["main", "cleaner"]) {
       await replaceSessionEntry(
         { agentId, sessionKey: `agent:${agentId}:main` },

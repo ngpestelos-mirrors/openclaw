@@ -18,6 +18,7 @@ import {
 } from "../../../../src/config/sessions/session-accessor.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../../../src/state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseAsync } from "../../../../src/state/openclaw-state-db.js";
+import { createCanonicalAgentConfigFixture } from "../../../../src/test-utils/config-roster.js";
 import { makeUserMessage } from "../../../../test/helpers/user-message.js";
 import {
   buildSessionEntry,
@@ -726,10 +727,10 @@ describe("listSessionTranscriptCorpusEntriesForAgent", () => {
         },
       }),
     );
-    fsSync.writeFileSync(
-      configPath,
-      JSON.stringify({ agents: { entries: { ops: { default: true } } } }),
-    );
+    const { config } = createCanonicalAgentConfigFixture({
+      agents: { entries: { ops: { default: true } } },
+    });
+    fsSync.writeFileSync(configPath, JSON.stringify(config));
     Reflect.set(process.env, "OPENCLAW_CONFIG_PATH", configPath);
     clearRuntimeConfigSnapshot();
     clearConfigCache();
