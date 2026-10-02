@@ -346,9 +346,11 @@ module.exports = {
       });
       expect(requests.at(-1)?.model).toBe(override.modelId);
 
+      const sideQuestionFailure =
+        "⚠️ Couldn't answer that side question. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.";
       rejectNativeRequest = true;
       expect(await send(sessionKey, "/btw Explain the failure.", "native-failure")).toMatchObject({
-        text: expect.stringContaining("The selected native model is unavailable."),
+        text: sideQuestionFailure,
         isError: true,
       });
       expect(requests.at(-1)?.model).toBe(override.modelId);
@@ -378,12 +380,9 @@ module.exports = {
         "native-missing-auth",
       );
       expect(missingAuthReply).toMatchObject({
-        text: expect.stringContaining(
-          `No API key found for provider "${MISSING_AUTH_PROVIDER_ID}"`,
-        ),
+        text: sideQuestionFailure,
         isError: true,
       });
-      expect(missingAuthReply?.text).toContain("openclaw models auth paste-api-key");
       expect(requests).toHaveLength(requestCount);
       expect(
         await send(sessionKey, "Continue after the missing native auth.", "acp-after-missing-auth"),

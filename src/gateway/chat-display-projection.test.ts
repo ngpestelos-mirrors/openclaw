@@ -634,3 +634,201 @@ it("keeps tool output whitespace and UTF-16 intact without adding a sentinel", (
     },
   ]);
 });
+
+describe("projectChatDisplayMessages", () => {
+  const safeFailureContent = [
+    { type: "text", text: "The agent run failed before producing a reply." },
+  ];
+  const networkFailureText =
+    "Couldn't connect to the AI service. Check your connection, then try again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.";
+  const networkFailureContent = (reply?: string, type = "text") => [
+    { type, text: [networkFailureText, reply].filter(Boolean).join("\n\n") },
+  ];
+  const privateError = "private upstream at secret.internal.example failed";
+  const displayErrorCases: Array<{
+    name: string;
+    message: Record<string, unknown>;
+    content: Array<Record<string, unknown>>;
+  }> = [
+    {
+      name: "projects provider refusals before classifying their explanation text",
+      message: {
+        content: [],
+        errorMessage: "Anthropic refusal: prompt is too long.",
+        diagnostics: [
+          {
+            type: "provider_refusal",
+            timestamp: 1,
+            details: { category: "reasoning_extraction", explanation: "private upstream" },
+          },
+        ],
+      },
+      content: [
+        {
+          type: "text",
+          text: "The provider refused this request (category: reasoning_extraction). Revise the request and try again.",
+        },
+      ],
+    },
+    {
+      name: "preserves visible output_text from a failed assistant turn",
+      message: {
+        content: [{ type: "output_text", text: "A partial reply before the run failed." }],
+        errorMessage: "Connection error.",
+      },
+      content: networkFailureContent("A partial reply before the run failed.", "output_text"),
+    },
+    {
+      name: "projects reasoning-text-only assistant errors as a generic safe failure",
+      message: {
+        content: [{ type: "reasoning", text: "private upstream details" }],
+        errorMessage: privateError,
+      },
+      content: safeFailureContent,
+    },
+    {
+      name: "projects redacted-thinking-only assistant errors as a generic safe failure",
+      message: {
+        content: [{ type: "redacted_thinking", data: "private upstream details" }],
+        errorMessage: privateError,
+      },
+      content: safeFailureContent,
+    },
+    {
+      name: "projects commentary-phase assistant errors as a visible safe network failure",
+      message: {
+        phase: "commentary",
+        content: [],
+        text: "private upstream details",
+        errorMessage: "Connection error.",
+      },
+      content: networkFailureContent(),
+    },
+    {
+      name: "preserves legacy top-level assistant text with safe network failure details",
+      message: {
+        content: [],
+        text: "A real reply before the run failed.",
+        errorMessage: "Connection error.",
+      },
+      content: networkFailureContent("A real reply before the run failed."),
+    },
+    {
+      name: "projects signature-only commentary errors as a visible generic safe failure",
+      message: {
+        content: [
+          {
+            type: "text",
+            text: "private upstream details",
+            textSignature: JSON.stringify({ v: 1, id: "msg-commentary", phase: "commentary" }),
+          },
+        ],
+        errorMessage: privateError,
+        errorCode: "private_error_code",
+        errorType: "private_error_type",
+        errorBody: "private response body from secret.internal.example",
+        diagnostics: [
+          {
+            type: "provider-error",
+            timestamp: 1,
+            error: { message: "private diagnostic from secret.internal.example" },
+          },
+        ],
+      },
+      content: safeFailureContent,
+    },
+    {
+      name: "preserves tool-bearing assistant errors without hidden reasoning or diagnostics",
+      message: {
+        content: [
+          { type: "thinking", thinking: "private upstream reasoning" },
+          { type: "text", text: "I read the requested file before the run failed." },
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "read",
+            arguments: { path: "README.md" },
+          },
+        ],
+        errorMessage: privateError,
+        errorBody: "private response body",
+      },
+      content: [
+        { type: "text", text: "I read the requested file before the run failed." },
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "read",
+          arguments: { path: "README.md" },
+        },
+      ],
+    },
+    {
+      name: "projects suppressed error text accompanied by hidden reasoning",
+      message: {
+        content: [
+          { type: "thinking", thinking: "private upstream details" },
+          { type: "text", text: "NO_REPLY" },
+        ],
+        errorMessage: privateError,
+      },
+      content: safeFailureContent,
+    },
+  ];
+
+  it.each(displayErrorCases)("$name", ({ message, content }) => {
+    const result = projectChatDisplayMessages([
+      { role: "assistant", stopReason: "error", timestamp: 1, ...message },
+    ]);
+    expect(result).toEqual([
+      {
+        role: "assistant",
+        content,
+        stopReason: "error",
+        timestamp: 1,
+      },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("secret.internal.example");
+    expect(JSON.stringify(result)).not.toContain("private upstream");
+    expect(JSON.stringify(result)).not.toContain("private_error");
+  });
+
+  it.each([
+    {
+      name: "structured context_overflow code",
+      fields: {
+        errorCode: "context_overflow",
+        errorMessage: "400 The prompt is too long: 203557, model maximum context length: 196607",
+      },
+    },
+  ])(
+    "projects empty context-overflow assistant errors with recovery guidance: $name",
+    ({ fields }) => {
+      const result = projectChatDisplayMessages([
+        {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          ...fields,
+          timestamp: 1,
+        },
+      ]);
+
+      expect(result).toEqual([
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "This conversation is too long for the model. Try /compact, or start a new conversation with /new.",
+            },
+          ],
+          stopReason: "error",
+          timestamp: 1,
+        },
+      ]);
+      expect(JSON.stringify(result)).not.toContain("203557");
+      expect(JSON.stringify(result)).not.toContain("196607");
+    },
+  );
+});
