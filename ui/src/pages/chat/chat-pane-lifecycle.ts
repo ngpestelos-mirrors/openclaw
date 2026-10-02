@@ -83,6 +83,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
             renderRoot: this.renderRoot,
             state,
             linkReaders: availableLinkReaders(this.context.gateway.snapshot),
+            pluginPanels: this.context.plugins.registrations("panels").map((entry) => entry.key),
             updateComplete: this.updateComplete,
           }
         : null;
