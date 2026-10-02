@@ -284,11 +284,11 @@ describe("durable pre-reply run failure", () => {
         event: { ...event, data: { ...event.data, error: providerError } },
       });
       const [report] = await reports();
-      const authenticationFailure =
+      const failureCopy =
         "⚠️ Couldn't sign in to the AI service. Sign in again under Models in the Control UI or run `openclaw configure`.";
       expect(report).toMatchObject({
-        content: `Your request couldn't be completed: ${authenticationFailure}`,
-        details: { runId, error: authenticationFailure },
+        content: `Your request couldn't be completed: ${failureCopy}`,
+        details: { runId, error: failureCopy },
       });
       expect(JSON.stringify(report)).not.toContain("Missing bearer");
     });
