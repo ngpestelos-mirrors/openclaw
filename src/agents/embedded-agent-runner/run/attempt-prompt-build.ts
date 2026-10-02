@@ -576,6 +576,7 @@ export async function prepareEmbeddedAttemptPromptContext(input: {
   const runtimeContextMessageForCurrentTurn = buildRuntimeContextCustomMessage(
     runtimeContextForHook,
     contextFragments,
+    input.inHistorySystemUpdates,
   );
   const messagesForCurrentPrompt = runtimeContextMessageForCurrentTurn
     ? [...sessionMessages, runtimeContextMessageForCurrentTurn]
