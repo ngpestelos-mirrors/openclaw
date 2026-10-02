@@ -4,7 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import {
@@ -1766,6 +1766,7 @@ describe("runCliAgent reliability", () => {
   });
 
   it("blocks CLI runs before llm_input and model execution when before_agent_run blocks", async () => {
+    const agentEndStarted = createDeferred<void>();
     let releaseAgentEnd: () => void = () => undefined;
     const agentEndSettled = new Promise<void>((resolve) => {
       releaseAgentEnd = resolve;
@@ -1783,7 +1784,10 @@ describe("runCliAgent reliability", () => {
         },
       })),
       runLlmInput: vi.fn(async () => undefined),
-      runAgentEnd: vi.fn(() => agentEndSettled),
+      runAgentEnd: vi.fn(() => {
+        agentEndStarted.resolve();
+        return agentEndSettled;
+      }),
     };
     setHookRunnerForTest(hookRunner);
     const { dir, sessionTarget, storePath } = createSessionFixture({
@@ -1807,9 +1811,12 @@ describe("runCliAgent reliability", () => {
       return result;
     });
 
-    await vi.waitFor(() => {
-      expect(hookRunner.runAgentEnd).toHaveBeenCalledTimes(1);
-    });
+    await awaitGateBeforeSettlement(
+      agentEndStarted.promise,
+      run,
+      "Blocked CLI run settled before agent_end",
+    );
+    expect(hookRunner.runAgentEnd).toHaveBeenCalledTimes(1);
     await Promise.resolve();
     expect(resolved).toBe(false);
 
