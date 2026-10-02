@@ -3,7 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, expect, it, vi } from "vitest";
+import { matrixSetupPlugin } from "../../extensions/matrix/setup-plugin-api.js";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
+import { resolveChannelSetupWizardAdapterForPlugin } from "../commands/channel-setup/registry.js";
 import { resetConfigRuntimeState } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
@@ -63,6 +65,7 @@ vi.mock("../commands/onboard-helpers.js", async (importOriginal) => ({
 }));
 
 import { runSetupWizard } from "./setup.js";
+import { readSetupConfigFileSnapshot } from "./setup.shared.js";
 
 const runtime = {
   log: vi.fn(),
@@ -80,6 +83,71 @@ afterEach(() => {
   resetConfigRuntimeState();
   vi.unstubAllEnvs();
 });
+
+it.each([
+  { scope: "channel", interactive: false },
+  { scope: "account", interactive: false },
+  { scope: "channel", interactive: true },
+  { scope: "account", interactive: true },
+])(
+  "requires Doctor before configuring Matrix legacy private-network settings ($scope, interactive=$interactive)",
+  async ({ scope, interactive }) => {
+    await withTempHome(async (home) => {
+      const stateDir = path.join(home, ".openclaw");
+      const configPath = path.join(stateDir, "openclaw.json");
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+      vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+      const legacy = {
+        homeserver: "https://matrix.example.org",
+        accessToken: "synthetic-token",
+        allowPrivateNetwork: true,
+      };
+      const raw = JSON.stringify({
+        channels: { matrix: scope === "channel" ? legacy : { accounts: { work: legacy } } },
+      });
+      await fs.mkdir(stateDir, { recursive: true });
+      await fs.writeFile(configPath, raw);
+      resetConfigRuntimeState();
+
+      const snapshot = await readSetupConfigFileSnapshot();
+      expect(snapshot.valid).toBe(true);
+      expect(snapshot.sourceConfig.channels?.matrix).toEqual(
+        scope === "channel" ? legacy : { accounts: { work: legacy } },
+      );
+      const prompter = createWizardPrompter(
+        {
+          text: vi.fn(async () => {
+            throw new Error("Unexpected Matrix setup prompt");
+          }),
+          confirm: vi.fn(async () => {
+            throw new Error("Unexpected Matrix setup confirmation");
+          }),
+        },
+        { defaultSelect: "skip" },
+      );
+      const adapter = resolveChannelSetupWizardAdapterForPlugin(matrixSetupPlugin);
+      if (!adapter?.configureInteractive) {
+        throw new Error("Matrix setup must expose interactive configure");
+      }
+      const params = {
+        cfg: snapshot.sourceConfig,
+        runtime,
+        prompter,
+        forceAllowFrom: false,
+        shouldPromptAccountIds: false,
+        accountOverrides: {},
+      };
+      const result = interactive
+        ? adapter.configureInteractive({ ...params, configured: true, label: "Matrix" })
+        : adapter.configure(params);
+      await expect(result).rejects.toThrow("openclaw doctor --fix");
+      expect(prompter.select).not.toHaveBeenCalled();
+      expect(prompter.text).not.toHaveBeenCalled();
+      expect(prompter.confirm).not.toHaveBeenCalled();
+      expect(await fs.readFile(configPath, "utf8")).toBe(raw);
+    });
+  },
+);
 
 it("preserves consent and authored values after rebasing the agent roster", async () => {
   await withTempHome(async (home) => {
