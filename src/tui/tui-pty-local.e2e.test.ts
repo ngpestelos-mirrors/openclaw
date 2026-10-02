@@ -29,7 +29,6 @@ import {
 import { listUsageCountedTranscriptStats } from "../infra/session-cost-usage-collection.js";
 import { runExec } from "../process/exec.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
-import { createCanonicalAgentConfigFixture } from "../test-utils/config-roster.js";
 import { withEnv, withEnvAsync } from "../test-utils/env.js";
 import { killPidIfAlive } from "../test-utils/process-tree.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
@@ -685,9 +684,10 @@ function buildGatewayModeConfig(params: { tempDir: string; providerBaseUrl: stri
     workspaceDir: path.join(params.tempDir, defaultScenario.agentId),
     providerBaseUrl: params.providerBaseUrl,
   });
-  return createCanonicalAgentConfigFixture({
+  return {
     ...base,
     agents: {
+      ownership: "explicit",
       defaults: {
         workspace: path.join(params.tempDir, defaultScenario.agentId),
         model: { primary: defaultModelRef },
@@ -696,12 +696,14 @@ function buildGatewayModeConfig(params: { tempDir: string; providerBaseUrl: stri
         ),
         skills: [],
         skipBootstrap: true,
+        heartbeat: { agentId: defaultScenario.agentId },
+        systemAgent: { agentId: defaultScenario.agentId },
+        authInheritance: { agentId: defaultScenario.agentId },
       },
       entries: Object.fromEntries(
-        agentScenarios.map((scenario, index) => [
+        agentScenarios.map((scenario) => [
           scenario.agentId,
           {
-            ...(index === 0 ? { default: true } : {}),
             workspace: path.join(params.tempDir, scenario.agentId),
             skills: [],
             model: { primary: `tui-pty-mock/${scenario.modelId}` },
@@ -710,6 +712,7 @@ function buildGatewayModeConfig(params: { tempDir: string; providerBaseUrl: stri
         ]),
       ),
     },
+    talk: { agentId: defaultScenario.agentId },
     models: {
       mode: "replace",
       providers: {
@@ -724,7 +727,7 @@ function buildGatewayModeConfig(params: { tempDir: string; providerBaseUrl: stri
         mode: "followup",
       },
     },
-  } satisfies OpenClawConfig).config;
+  } satisfies OpenClawConfig;
 }
 
 async function startSharedGatewayFixture(): Promise<SharedGatewayFixture> {

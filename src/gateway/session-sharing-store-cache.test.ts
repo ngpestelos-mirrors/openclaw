@@ -7,7 +7,6 @@ import {
 } from "../config/sessions/session-sharing-store.native.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { createCanonicalAgentConfigFixture } from "../test-utils/config-roster.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   initializeSessionReadContext,
@@ -225,13 +224,19 @@ describe("session mutation authorization store caches", () => {
     { key: "agent:main:main", agentId: " ", expectedAgent: "ops" },
   ])("preserves the requested owner for $key with explicit agent $agentId", async (target) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { config: cfg } = createCanonicalAgentConfigFixture(
-        {
-          session: { scope: "global" },
-          agents: { entries: { ops: { default: true }, research: {} } },
+      const cfg: OpenClawConfig = {
+        session: { scope: "global" },
+        agents: {
+          ownership: "explicit",
+          defaults: {
+            heartbeat: { agentId: "ops" },
+            systemAgent: { agentId: "ops" },
+            authInheritance: { agentId: "ops" },
+          },
+          entries: { ops: { workspace: state.statePath("workspace") }, research: {} },
         },
-        { env: state.env, homedir: () => state.home },
-      );
+        talk: { agentId: "ops" },
+      };
       await state.writeConfig(cfg);
       for (const agentId of ["ops", "research"]) {
         await sessionAccessor.upsertSessionEntryCore(
@@ -267,13 +272,19 @@ describe("session mutation authorization store caches", () => {
     "checks %s participation in the selected global publication",
     async (viewer) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { config: cfg } = createCanonicalAgentConfigFixture(
-          {
-            session: { scope: "global" },
-            agents: { entries: { ops: { default: true }, research: {} } },
+        const cfg: OpenClawConfig = {
+          session: { scope: "global" },
+          agents: {
+            ownership: "explicit",
+            defaults: {
+              heartbeat: { agentId: "ops" },
+              systemAgent: { agentId: "ops" },
+              authInheritance: { agentId: "ops" },
+            },
+            entries: { ops: { workspace: state.statePath("workspace") }, research: {} },
           },
-          { env: state.env, homedir: () => state.home },
-        );
+          talk: { agentId: "ops" },
+        };
         await state.writeConfig(cfg);
         for (const agentId of ["ops", "research"]) {
           await sessionAccessor.upsertSessionEntryCore(
