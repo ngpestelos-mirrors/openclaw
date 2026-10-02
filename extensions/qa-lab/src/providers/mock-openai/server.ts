@@ -143,7 +143,7 @@ import {
   extractPlannedToolIdentity,
   splitMockStreamingText,
   buildChannelStreamingFixtureEvents,
-  QA_TELEGRAM_PREPARED_DELIVERY_RE,
+  resolveTelegramChannelStreamingPause,
   buildAssistantThenToolCallEvents,
   buildAssistantEvents,
   buildStreamingFinalAnswerEvents,
@@ -2010,6 +2010,7 @@ export async function startQaMockOpenAiServer(params?: QaMockOpenAiServerOptions
   const sessionIdentity = createQaSessionIdentityResolver();
   const host = params?.host ?? "127.0.0.1";
   const finalOnlyMarkerPauseMs = params?.finalOnlyMarkerPauseMs ?? 1_500;
+  const telegramChannelStreamingPauseMs = params?.telegramChannelStreamingPauseMs ?? 3_000;
   const repeatedRequestResponsePauseMs =
     params?.repeatedRequestResponsePauseMs ?? QA_REPEATED_REQUEST_RESPONSE_PAUSE_MS;
   const repeatedRequestStalledResponsePauseMs =
@@ -2221,11 +2222,13 @@ export async function startQaMockOpenAiServer(params?: QaMockOpenAiServerOptions
           }
         : {}),
       ...(failure ? { failure } : {}),
-      ...(QA_TELEGRAM_PREPARED_DELIVERY_RE.test(splitMockConversationContext(prompt).current)
-        ? { previewPauseMs: 3_000 }
-        : QA_FINAL_ONLY_MARKER_STREAMING_PROMPT_RE.test(allInputText)
+      ...(resolveTelegramChannelStreamingPause(
+        splitMockConversationContext(prompt).current,
+        telegramChannelStreamingPauseMs,
+      ) ??
+        (QA_FINAL_ONLY_MARKER_STREAMING_PROMPT_RE.test(allInputText)
           ? { previewPauseMs: finalOnlyMarkerPauseMs }
-          : {}),
+          : {})),
       // Stall one request; later failures let the normal retry budget settle the turn.
       ...(repeatedRequestRecovery &&
       scenarioState.repeatedRequestRecoveryAttempts <= QA_REPEATED_REQUEST_STALL_ATTEMPT
