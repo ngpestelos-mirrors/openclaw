@@ -46,6 +46,7 @@ export type SqliteSessionReclamationDiagnostics = {
     | "maintenance-plan"
     | "maintenance-finalize"
     | "maintenance-statistics"
+    | "maintenance-age"
     | "maintenance-pages"
     | "cold-batch"
     | "cold-maintain"

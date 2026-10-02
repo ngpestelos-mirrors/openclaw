@@ -44,6 +44,7 @@ import {
   publishIncognitoSessionEntryChange,
   stageIncognitoSharingPublication,
 } from "./session-accessor.sqlite-incognito-sharing.js";
+import { publishSessionEntryMaintenanceAgeChanges } from "./session-accessor.sqlite-maintenance-age.js";
 import {
   publishRetainedSessionGeneration,
   updateSessionSharingField,
@@ -671,6 +672,14 @@ export function retainSessionEntryWorkerPublication(params: {
       }
       owner.settled = true;
       try {
+        if (replacement) {
+          publishSessionEntryMaintenanceAgeChanges(
+            params.databaseIdentity,
+            replacement.ageChanges.filter(
+              ({ sessionKey }) => current(sessionKey) && !owner.metadataSuperseded.has(sessionKey),
+            ),
+          );
+        }
         sessionChanges.emitBatch(changes);
         return replacement
           ? {

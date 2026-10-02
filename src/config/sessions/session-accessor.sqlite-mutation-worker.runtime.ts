@@ -297,13 +297,6 @@ export async function runReclamationWorkerPort(
               request.type === "reclaim" && request.plan.kind === "maintenance-plan"
                 ? await import("./session-accessor.sqlite-maintenance-transaction.js")
                 : undefined;
-            const maintenance =
-              request.type === "reclaim" && request.plan.kind === "maintenance-plan"
-                ? maintenanceOwner?.prepareSessionMaintenanceInWorker({
-                    ...request.plan,
-                    databaseOptions: options,
-                  })
-                : undefined;
             const assertExpectedSource =
               request.type === "prepare"
                 ? () =>
@@ -348,6 +341,13 @@ export async function runReclamationWorkerPort(
                     "SQLite reclamation native source differs from its opening expectation",
                   );
                 }
+                const maintenance =
+                  request.type === "reclaim" && request.plan.kind === "maintenance-plan"
+                    ? maintenanceOwner?.prepareSessionMaintenanceInWorker(database, {
+                        ...request.plan,
+                        databaseOptions: options,
+                      })
+                    : undefined;
                 try {
                   if (request.type === "prepare") {
                     if (typeof nativeIdentity.identity !== "string") {
@@ -450,7 +450,7 @@ export async function runReclamationWorkerPort(
                   }
                 : undefined,
               assertExpectedSource,
-            ).finally(() => maintenance?.release());
+            );
             return {
               type: "reclaimed",
               operationId,
