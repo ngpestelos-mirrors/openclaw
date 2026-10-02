@@ -53,11 +53,11 @@ export function createSessionHistoryWorkerReaders(
       );
   }
   return {
-    readLifecycleArtifactPlan: reader(
-      "lifecycle-artifact-plan",
-      "lifecycle artifact plan",
-      (input) => ({ kind: "lifecycle-artifact-plan", ...input }),
-      (value) => value,
+    readConversations: reader(
+      "conversation-rows",
+      "conversations",
+      (input) => ({ kind: "conversation-rows", ...input }),
+      (value) => value.rows,
     ),
     prewarm: reader(
       "prewarm",
@@ -70,6 +70,12 @@ export function createSessionHistoryWorkerReaders(
       "pending archives",
       (input) => ({ kind: "session-pending-archives", ...input }),
       (value) => value.pending,
+    ),
+    readLifecycleArtifactPlan: reader(
+      "lifecycle-artifact-plan",
+      "lifecycle artifact plan",
+      (input) => ({ kind: "lifecycle-artifact-plan", ...input }),
+      (value) => value,
     ),
     readMemorySessionTargets: reader(
       "memory-session-targets",

@@ -355,6 +355,11 @@ export type LifecycleArtifactCleanupRequest = {
   input: LifecycleArtifactCleanupInput;
   expectedSource: DatabaseFileIdentity;
 };
+export type LifecycleArtifactCleanupWorkerResult = {
+  kind: "lifecycle-artifact-plan";
+  plan: LifecycleArtifactCleanupPlan;
+  diagnostics: LifecycleArtifactCleanupInput["diagnostics"];
+};
 export type ProjectedLifecycleMutation = {
   archiveRecovery?: { pending: boolean; databaseIdentity: string };
   deletePlans: SessionStateDeletePlan[];

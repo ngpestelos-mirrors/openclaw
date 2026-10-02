@@ -23,6 +23,10 @@ import type {
 } from "./activity-summary-source.types.js";
 import type { ConversationDeliveryRecord } from "./conversation-delivery-store.types.js";
 import type {
+  ConversationRowsWorkerInput,
+  ConversationRecord,
+} from "./conversation-registry.types.js";
+import type {
   ArchivedSessionEvictionBatch,
   ArchivedSessionEvictionQuery,
 } from "./disk-budget.types.js";
@@ -47,9 +51,8 @@ import type {
   SessionIdentityEvidenceResult,
 } from "./session-accessor.sqlite-entry-availability.js";
 import type {
-  LifecycleArtifactCleanupInput,
-  LifecycleArtifactCleanupPlan,
   LifecycleArtifactCleanupRequest,
+  LifecycleArtifactCleanupWorkerResult,
 } from "./session-accessor.sqlite-lifecycle-types.js";
 import type {
   readSessionTranscriptModelContext,
@@ -496,6 +499,7 @@ export type SessionHistoryWorkerInput =
   | SessionProgressCardWorkerInput
   | SessionPendingInputReceiptsWorkerInput
   | SessionGoalOperationReceiptWorkerInput
+  | ConversationRowsWorkerInput
   | ConversationDeliveryWorkerInput
   | SessionEntryListWorkerInput
   | SessionEntryReadWorkerInput
@@ -526,14 +530,11 @@ export type SessionHistoryWorkerPreparedInput =
   PreparedHistoryInput<SessionHistoryDatabaseWorkerInput>;
 
 export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValues & {
-  "lifecycle-artifact-plan": {
-    kind: "lifecycle-artifact-plan";
-    plan: LifecycleArtifactCleanupPlan;
-    diagnostics: LifecycleArtifactCleanupInput["diagnostics"];
-  };
+  "conversation-rows": { kind: "conversation-rows"; rows: ConversationRecord[] };
   "conversation-delivery": { kind: "conversation-delivery"; record?: ConversationDeliveryRecord };
   prewarm: { kind: "prewarm" };
   "session-pending-archives": { kind: "session-pending-archives"; pending: boolean };
+  "lifecycle-artifact-plan": LifecycleArtifactCleanupWorkerResult;
   "historical-eviction-candidates": { kind: "historical-eviction-candidates" } & (
     | { sessionIds: string[] }
     | { batch: ArchivedSessionEvictionBatch }
@@ -648,9 +649,10 @@ type CancellableSessionHistoryReader<
 > = (input: Omit<Input, "kind" | "database">, signal?: AbortSignal) => Promise<Value>;
 
 export type SessionHistoryWorkerDatabase = SessionTranscriptInventoryReaders & {
-  readLifecycleArtifactPlan: CancellableSessionHistoryReader<LifecycleArtifactCleanupRequest>;
+  readConversations: SessionHistoryReader<ConversationRowsWorkerInput, ConversationRecord[]>;
   prewarm: (input: { env: NodeJS.ProcessEnv }) => Promise<void>;
   readPendingArchives: CancellableSessionHistoryReader<SessionPendingArchivesWorkerInput, boolean>;
+  readLifecycleArtifactPlan: CancellableSessionHistoryReader<LifecycleArtifactCleanupRequest>;
   findTranscriptEvent: (
     request: SessionTranscriptMatchWorkerInput["request"],
   ) => Promise<{ event: TranscriptEvent } | undefined>;
