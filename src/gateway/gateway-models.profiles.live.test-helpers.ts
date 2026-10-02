@@ -1,6 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { clampThinkingLevel, type Model, type ModelThinkingLevel } from "openclaw/plugin-sdk/llm";
 import type { OpenClawConfig } from "../config/types.js";
+import { clampThinkingLevel, type Model, type ModelThinkingLevel } from "../plugin-sdk/llm.js";
 import { resolveEffectiveThinkingProfile } from "../plugins/provider-thinking.js";
 import type { ProviderDefaultThinkingPolicyContext } from "../plugins/provider-thinking.types.js";
 
