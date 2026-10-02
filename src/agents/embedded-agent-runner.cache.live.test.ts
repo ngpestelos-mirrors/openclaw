@@ -2,12 +2,14 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { supportsClaudeInHistorySystemMessages } from "@openclaw/llm-core/model-contracts/anthropic";
+import { expectDefined } from "@openclaw/normalization-core";
 import type { AssistantMessage, Message, Tool } from "openclaw/plugin-sdk/llm";
 import { Type } from "typebox";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { disposeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db.js";
-import { deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
+import { deleteTestEnvValue, setTestEnvValue, withEnvAsync } from "../test-utils/env.js";
 import { prepareSystemAgentRunAdmission } from "./admitted-run-context.js";
 import { runEmbeddedAgent } from "./embedded-agent-runner.js";
 import { compactEmbeddedAgentSessionOnDemand } from "./embedded-agent-runner/compact.runtime.js";
@@ -1329,6 +1331,106 @@ describeCacheLive("embedded agent runner prompt caching (live)", () => {
         await expectCacheTraceStages(sessionId, ["cache:state", "cache:result"]);
       },
       8 * 60_000,
+    );
+
+    it(
+      "keeps the cached prefix when workspace instructions change between embedded turns",
+      async ({ skip }) => {
+        if (!supportsClaudeInHistorySystemMessages(fixture.model)) {
+          skip();
+        }
+        const sessionId = `${ANTHROPIC_SESSION_ID}-system-update`;
+        const { workspaceDir } = buildRunnerSessionPaths(sessionId);
+        await fs.mkdir(workspaceDir, { recursive: true });
+        const instructionsFile = path.join(workspaceDir, "AGENTS.md");
+        const payloadFile = path.join(workspaceDir, "anthropic-payload.jsonl");
+        const stableInstructions = buildStableCachePrefix("anthropic-system-update", 96);
+        const originalRule = "Workspace cache probe revision: initial.";
+        const updatedRule = "Workspace cache probe revision: updated.";
+        await fs.writeFile(
+          instructionsFile,
+          `${stableInstructions}\n\n## Cache probe rule\n${originalRule}\n`,
+        );
+
+        await withEnvAsync(
+          {
+            OPENCLAW_ANTHROPIC_PAYLOAD_LOG: "1",
+            OPENCLAW_ANTHROPIC_PAYLOAD_LOG_FILE: payloadFile,
+          },
+          async () => {
+            const probe = {
+              ...fixture,
+              cacheRetention: "short" as const,
+              prefix: ANTHROPIC_PREFIX,
+              providerTag: "anthropic" as const,
+              sessionId,
+            };
+            const warmup = await runEmbeddedCacheProbe({
+              ...probe,
+              suffix: "system-update-warmup",
+            });
+            await fs.writeFile(
+              instructionsFile,
+              `${stableInstructions}\n\n## Cache probe rule\n${updatedRule}\n`,
+            );
+            const hit = await runEmbeddedCacheProbe({ ...probe, suffix: "system-update-hit" });
+            const cachedPrefixTokens =
+              (warmup.usage.cacheRead ?? 0) + (warmup.usage.cacheWrite ?? 0);
+            logLiveCache(
+              `anthropic system update prefix=${cachedPrefixTokens} hit=${hit.usage.cacheRead} input=${hit.usage.input}`,
+            );
+            expect(cachedPrefixTokens).toBeGreaterThan(4_096);
+            expect(hit.usage.cacheRead ?? 0).toBeGreaterThanOrEqual(cachedPrefixTokens);
+
+            type RequestEvent = {
+              stage: string;
+              payload: {
+                system: Array<{ type: string; text: string; cache_control?: unknown }>;
+                messages: Array<{
+                  role: string;
+                  content: string | Array<{ type: string; text?: string }>;
+                  clear_at?: string;
+                }>;
+              };
+            };
+            const requests = (await fs.readFile(payloadFile, "utf8"))
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(line) as RequestEvent)
+              .filter((event) => event.stage === "request")
+              .map((event) => event.payload);
+            expect(requests).toHaveLength(2);
+            const firstRequest = expectDefined(requests[0], "warmup request");
+            const secondRequest = expectDefined(requests[1], "follow-up request");
+            const firstPrefix = firstRequest.system.find((block) => block.cache_control)?.text;
+            expect(firstPrefix).toContain(originalRule);
+            expect(secondRequest.system.find((block) => block.cache_control)?.text).toBe(
+              firstPrefix,
+            );
+            expect(secondRequest.system.map((block) => block.text).join("\n")).not.toContain(
+              updatedRule,
+            );
+            const lastUserIndex = secondRequest.messages.findLastIndex(
+              (message) => message.role === "user",
+            );
+            expect(lastUserIndex).toBeGreaterThanOrEqual(0);
+            const operatorMessages = secondRequest.messages.slice(lastUserIndex + 1);
+            expect(operatorMessages.length).toBeGreaterThan(0);
+            expect(operatorMessages.every((message) => message.role === "system")).toBe(true);
+            expect(operatorMessages).toContainEqual({
+              role: "system",
+              content: [
+                {
+                  type: "text",
+                  text: expect.stringContaining(`## Cache probe rule\n${updatedRule}`),
+                },
+              ],
+            });
+            await expectCacheTraceStages(sessionId, ["cache:state", "cache:result"]);
+          },
+        );
+      },
+      6 * 60_000,
     );
 
     it(

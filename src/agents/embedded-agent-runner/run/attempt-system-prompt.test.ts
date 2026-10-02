@@ -270,6 +270,23 @@ describe("buildAttemptSystemPrompt", () => {
       expect(providerRegistryMocks.resolvePluginProvidersCore).not.toHaveBeenCalled();
     },
   );
+  it("marks rebuilt prompts as fresh even when restoring the original bytes", async () => {
+    const { prepared, read } = await preparePermissionPrompt();
+    const original = prepared.systemPromptText;
+    const unchanged = await prepared.prepareToolPrompt!();
+    expect(unchanged.freshlyRendered).toBeUndefined();
+    expect(unchanged("Already projected prompt")).toBe("Already projected prompt");
+
+    const restrict = await prepared.prepareToolPrompt!([read]);
+    expect(restrict.freshlyRendered).toBe(true);
+    const restricted = restrict(original);
+    expect(restricted).not.toBe(original);
+
+    const restore = await prepared.prepareToolPrompt!();
+    expect(restore.freshlyRendered).toBe(true);
+    expect(restore(restricted)).toBe(original);
+  });
+
   it("replaces an intermediate permission prompt after later changes", async () => {
     const fixture = await preparePermissionPrompt();
     const { attempt, capabilityToolNames, prepared, read, refreshSystemPrompt, write } = fixture;
@@ -369,10 +386,10 @@ describe("buildAttemptSystemPrompt", () => {
 
   it.each(["/tmp/openclaw", "/tmp/open\u202eclaw\n"])(
     "injects workspace identity context from %j",
-    (workspaceDir) => {
+    async (workspaceDir) => {
       // Workspace identity files are part of the base system prompt and must
       // survive provider transformation.
-      const result = buildAttemptSystemPrompt({
+      const result = await buildAttemptSystemPrompt({
         isRawModelRun: false,
         transformProviderSystemPrompt,
         embeddedSystemPrompt: {
@@ -406,8 +423,8 @@ describe("buildAttemptSystemPrompt", () => {
     },
   );
 
-  it("filters first-turn curated context to global and active-project entries", () => {
-    const result = buildAttemptSystemPrompt({
+  it("filters first-turn curated context to global and active-project entries", async () => {
+    const result = await buildAttemptSystemPrompt({
       isRawModelRun: false,
       transformProviderSystemPrompt,
       embeddedSystemPrompt: {
@@ -445,8 +462,8 @@ describe("buildAttemptSystemPrompt", () => {
     expect(result.systemPrompt).not.toContain("Beta fact");
   });
 
-  it("preserves bootstrap Project Context", () => {
-    const result = buildAttemptSystemPrompt({
+  it("preserves bootstrap Project Context", async () => {
+    const result = await buildAttemptSystemPrompt({
       isRawModelRun: false,
       transformProviderSystemPrompt,
       embeddedSystemPrompt: {
@@ -495,8 +512,8 @@ describe("buildAttemptSystemPrompt", () => {
     expect(result.systemPrompt).toContain("Reply with BOOTSTRAP_OK.");
   });
 
-  it("preserves runtime extra system prompt context", () => {
-    const result = buildAttemptSystemPrompt({
+  it("preserves runtime extra system prompt context", async () => {
+    const result = await buildAttemptSystemPrompt({
       isRawModelRun: false,
       transformProviderSystemPrompt,
       embeddedSystemPrompt: {
@@ -527,10 +544,10 @@ describe("buildAttemptSystemPrompt", () => {
     expect(result.systemPrompt).toContain("RUN_MODE_TASK_77950");
   });
 
-  it("omits system prompts for raw model probes", () => {
+  it("omits system prompts for raw model probes", async () => {
     // Raw model probes still build a base prompt for diagnostics, but the final
     // provider prompt must be empty.
-    const result = buildAttemptSystemPrompt({
+    const result = await buildAttemptSystemPrompt({
       isRawModelRun: true,
       transformProviderSystemPrompt,
       embeddedSystemPrompt: {

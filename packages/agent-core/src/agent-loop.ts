@@ -13,10 +13,12 @@ import {
   copyInternalToolResultState,
   getInternalToolExecutionPreparer,
   getInternalSyncSteeringGetter,
+  getInternalSteeringQueueObserver,
   type InternalToolExecutionPreparation,
   takeInternalToolBatchLifecycle,
   type InternalToolBatchLifecycle,
 } from "./internal-hooks.js";
+import { isOpenClawSystemUpdateMessage, orderSystemUpdateMessages } from "./operator-messages.js";
 import { resolveAgentReasoningOption } from "./reasoning.js";
 import type { AgentCoreStreamRuntimeDeps } from "./runtime-deps.js";
 import {
@@ -38,6 +40,7 @@ import type {
   ToolResultContentSource,
   AgentContext,
   AgentLoopConfig,
+  AgentLoopTurnUpdate,
   AgentMessage,
   AgentTool,
   AgentToolCall,
@@ -82,9 +85,11 @@ export async function runAgentLoop(
 ): Promise<AgentMessage[]> {
   const newMessages: AgentMessage[] = [];
   const state = { context: { ...context, messages: [...context.messages] } };
+  const promptContext = prompts.filter(isOpenClawSystemUpdateMessage);
+  const inputPrompts = prompts.filter((message) => !isOpenClawSystemUpdateMessage(message));
   await emit({ type: "agent_start" });
   await emit({ type: "turn_start" });
-  for (const prompt of prompts) {
+  for (const prompt of inputPrompts) {
     if (config.consumeQueuedMessageCancellation?.(prompt)) {
       continue;
     }
@@ -96,13 +101,13 @@ export async function runAgentLoop(
     state.context.messages.push(prompt);
     newMessages.push(prompt);
   }
-  if (prompts.length > 0 && newMessages.length === 0) {
+  if (inputPrompts.length > 0 && newMessages.length === 0) {
     // A drained queue batch can be cancelled while turn_start listeners settle.
     // Close without a provider call so cancelled input cannot become an empty continuation.
     await emit({ type: "agent_end", messages: [] });
     return [];
   }
-  return runLoop(state, newMessages, config, signal, emit, streamFn, runtime);
+  return runLoop(state, newMessages, config, signal, emit, streamFn, runtime, promptContext);
 }
 
 /** Continue an existing loop context and emit only newly produced messages. */
@@ -140,9 +145,12 @@ async function runLoop(
   emit: AgentEventSink,
   streamFn?: StreamFn,
   runtime?: AgentCoreStreamRuntimeDeps,
+  initialPromptContext: AgentMessage[] = [],
 ): Promise<AgentMessage[]> {
   let config = initialConfig;
+  let promptContext = initialPromptContext;
   let firstTurn = true;
+  let prepareContinuation: AgentLoopTurnUpdate["prepareContinuation"];
   let turnOpen = true;
   let turnTainted = isActiveTurnTainted(state.context.messages);
   const toolLoopRecoveryState = initialConfig.toolLoopRecoveryState ?? {
@@ -183,7 +191,7 @@ async function runLoop(
   };
 
   const commitPendingMessages = async () => {
-    const messagesToInject = pendingMessages;
+    const messagesToInject = orderSystemUpdateMessages(pendingMessages);
     pendingMessages = [];
     let injectedMessage = false;
     for (const message of messagesToInject) {
@@ -204,9 +212,8 @@ async function runLoop(
     }
     return injectedMessage;
   };
-
   while (true) {
-    let hasMoreToolCalls = true;
+    let hasMoreToolCalls = firstTurn || !prepareContinuation;
 
     while (hasMoreToolCalls || pendingMessages.length > 0) {
       if (await stopIfAborted()) {
@@ -231,6 +238,30 @@ async function runLoop(
 
       if (await stopIfAborted()) {
         return newMessages;
+      }
+
+      if (prepareContinuation) {
+        const prepare = prepareContinuation;
+        const update = await prepare(state.context);
+        state.context = {
+          ...state.context,
+          systemPrompt: update.systemPrompt,
+          tools: update.tools,
+        };
+        if (await stopIfAborted()) {
+          return newMessages;
+        }
+      }
+
+      const queuedContext =
+        getInternalSteeringQueueObserver(config.getSteeringMessages)?.drainContext?.() ?? [];
+      if (promptContext.length > 0 || queuedContext.length > 0) {
+        pendingMessages = [...promptContext, ...queuedContext];
+        promptContext = [];
+        await commitPendingMessages();
+        if (await stopIfAborted()) {
+          return newMessages;
+        }
       }
 
       let streamedSteering: AgentMessage[] = [];
@@ -370,6 +401,7 @@ async function runLoop(
         context: state.context,
         newMessages,
       });
+      prepareContinuation = nextTurnSnapshot?.prepareContinuation;
       if (nextTurnSnapshot) {
         state.context = nextTurnSnapshot.context ?? state.context;
         const nextModel = nextTurnSnapshot.model ?? config.model;
