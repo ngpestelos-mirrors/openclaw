@@ -63,24 +63,8 @@ describe("Codex-native workspace runtime tool fixtures", () => {
           "utf8",
         );
       }
-      await writeQaSessionTranscript(env, `agent:qa:runtime-tool:${runtimeToolName}:happy`, [
-        transcriptToolCall(behavior.nativeToolName, "happy", happyArguments),
-        transcriptToolResult(
-          behavior.nativeToolName,
-          "happy",
-          behavior.happyOutputMarker ?? "native workspace change completed",
-        ),
-      ]);
-      await writeQaSessionTranscript(env, `agent:qa:runtime-tool:${runtimeToolName}:failure`, [
-        transcriptToolCall(behavior.nativeToolName, "failure", failureArguments),
-        transcriptToolResult(
-          behavior.nativeToolName,
-          "failure",
-          behavior.failureOutputMarker ?? "path escapes workspace root",
-          true,
-        ),
-      ]);
 
+      let generatedSessionIndex = 0;
       const promptEvidence: Array<{
         transcriptToolName?: string;
         requireSuccessfulTranscriptToolResult?: boolean;
@@ -97,14 +81,41 @@ describe("Codex-native workspace runtime tool fixtures", () => {
           },
         },
         {
-          createSession: vi.fn(async (_env, _label, key) => key!),
+          createSession: vi.fn(async (_env, label, key) => {
+            expect(key).toBeUndefined();
+            const phase = label.endsWith(" happy") ? "happy" : "failure";
+            generatedSessionIndex += 1;
+            return `agent:qa:native-workspace:${runtimeToolName}:${generatedSessionIndex}:${phase}`;
+          }),
           readEffectiveTools: vi.fn(async () => new Set<string>()),
           runAgentPrompt: vi.fn(async (_env, params) => {
             promptEvidence.push({
               transcriptToolName: params.transcriptToolName,
               requireSuccessfulTranscriptToolResult: params.requireSuccessfulTranscriptToolResult,
             });
-            if (params.sessionKey.endsWith(":happy") && behavior.happyMutation) {
+            const phase = params.sessionKey.endsWith(":happy") ? "happy" : "failure";
+            const transcriptArguments = phase === "happy" ? happyArguments : failureArguments;
+            await writeQaSessionTranscript(env, params.sessionKey, [
+              transcriptToolCall(behavior.nativeToolName, phase, transcriptArguments),
+              transcriptToolResult(
+                behavior.nativeToolName,
+                phase,
+                phase === "happy"
+                  ? (behavior.happyOutputMarker ?? "native workspace change completed")
+                  : (behavior.failureOutputMarker ?? "path escapes workspace root"),
+                phase === "failure" ? true : undefined,
+              ),
+            ]);
+            if (behaviorId === "fs-write" && phase === "failure") {
+              const sentinel = behavior.failureSentinel;
+              if (!sentinel) {
+                throw new Error("fs-write failure must use an outside-workspace sentinel");
+              }
+              await expect(
+                fs.readFile(path.resolve(env.gateway.workspaceDir, sentinel.path), "utf8"),
+              ).resolves.toBe(sentinel.contents);
+            }
+            if (phase === "happy" && behavior.happyMutation) {
               const mutationPath = path.join(env.gateway.workspaceDir, behavior.happyMutation.path);
               if (behaviorId === "fs-write") {
                 await expect(fs.readFile(mutationPath, "utf8")).rejects.toThrow();
@@ -144,4 +155,81 @@ describe("Codex-native workspace runtime tool fixtures", () => {
       }
     },
   );
+  it("uses fresh sessions for sequential native behaviors and repeated invocations", async () => {
+    const env = await makeEnv();
+    env.gateway.runtimeEnv.OPENCLAW_QA_FORCE_RUNTIME = "codex";
+    let sessionIndex = 0;
+    const requestedKeys: Array<string | undefined> = [];
+    const createdKeys: string[] = [];
+    const nativeBehaviorIds = ["bash", "exec", "grep"] as const;
+    const createSession = vi.fn(async (_env: unknown, label: string, key?: string) => {
+      requestedKeys.push(key);
+      const phase = label.endsWith(" happy") ? "happy" : "failure";
+      sessionIndex += 1;
+      const sessionKey = `agent:qa:native-workspace:sequence:${sessionIndex}:${phase}`;
+      createdKeys.push(sessionKey);
+      return sessionKey;
+    });
+    const runAgentPrompt = vi.fn(
+      async (
+        _env: unknown,
+        params: {
+          sessionKey: string;
+          message: string;
+        },
+      ) => {
+        const behaviorId = nativeBehaviorIds.find((candidate) =>
+          params.message.includes(`native-workspace-behavior=${candidate}.`),
+        );
+        if (!behaviorId) {
+          throw new Error("native workspace behavior missing from prompt");
+        }
+        const behavior = getQaNativeWorkspaceBehavior(behaviorId);
+        const phase = params.sessionKey.endsWith(":happy") ? "happy" : "failure";
+        const args = phase === "happy" ? behavior.happyArgs : behavior.failureArgs;
+        await writeQaSessionTranscript(env, params.sessionKey, [
+          transcriptToolCall(behavior.nativeToolName, phase, {
+            command: `/bin/zsh -lc ${JSON.stringify(args.cmd)}`,
+          }),
+          transcriptToolResult(
+            behavior.nativeToolName,
+            phase,
+            phase === "happy"
+              ? (behavior.happyOutputMarker ?? "native workspace command completed")
+              : (behavior.failureOutputMarker ?? "path escapes workspace root"),
+            phase === "failure" ? true : undefined,
+          ),
+        ]);
+        return {};
+      },
+    );
+    const deps = {
+      createSession,
+      readEffectiveTools: vi.fn(async () => new Set<string>()),
+      runAgentPrompt,
+      fetchJson: vi.fn(),
+      ensureImageGenerationConfigured: vi.fn(),
+    };
+
+    for (const behaviorId of ["bash", "exec", "grep", "bash"] as const) {
+      await expect(
+        runRuntimeToolFixture(
+          env,
+          {
+            toolName: OPENCLAW_TOOL_BY_BEHAVIOR[behaviorId],
+            nativeWorkspaceBehavior: behaviorId,
+            toolCoverage: {
+              bucket: "codex-native-workspace",
+              expectedLayer: "codex-native-workspace",
+              required: true,
+            },
+          },
+          deps,
+        ),
+      ).resolves.toContain(`codex-native ${behaviorId} behavior passed`);
+    }
+
+    expect(requestedKeys).toEqual(Array.from({ length: 8 }, () => undefined));
+    expect(new Set(createdKeys).size).toBe(8);
+  });
 });

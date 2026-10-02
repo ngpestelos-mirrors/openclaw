@@ -135,16 +135,24 @@ const BEHAVIORS: Record<QaNativeWorkspaceBehaviorId, QaNativeWorkspaceBehavior> 
     },
     failureArgs: {
       cmd: nodeCommand(
-        "require('node:fs').writeFileSync('runtime-tool-fixture-missing-dir/write.txt', 'must not exist\\n')",
+        "require('node:fs').writeFileSync('../runtime-tool-fixture-native-write-denied.txt', 'must not change\\n')",
       ),
     },
     happyMutation: {
       path: "runtime-tool-fixture-native-write.txt",
       contents: "runtime native write\n",
     },
+    failureSentinel: {
+      path: "../runtime-tool-fixture-native-write-denied.txt",
+      contents: "outside write original\n",
+    },
     commandReceiptSignatures: {
       happy: ["writeFileSync", "runtime-tool-fixture-native-write.txt", "runtime native write"],
-      failure: ["writeFileSync", "runtime-tool-fixture-missing-dir/write.txt", "must not exist"],
+      failure: [
+        "writeFileSync",
+        "../runtime-tool-fixture-native-write-denied.txt",
+        "must not change",
+      ],
     },
   },
   grep: {

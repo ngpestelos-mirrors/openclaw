@@ -56,7 +56,9 @@ function matchesNativeWorkspaceArguments(params: {
   phase: "happy" | "failure";
   workspaceDir: string;
 }) {
-  if (!isRecord(params.args)) return false;
+  if (!isRecord(params.args)) {
+    return false;
+  }
   const expectedArgs =
     params.phase === "happy" ? params.behavior.happyArgs : params.behavior.failureArgs;
   if (params.behavior.nativeToolName === "bash") {
@@ -66,7 +68,9 @@ function matchesNativeWorkspaceArguments(params: {
       signature && typeof command === "string" && signature.every((part) => command.includes(part)),
     );
   }
-  if (params.args.input === expectedArgs.input) return true;
+  if (params.args.input === expectedArgs.input) {
+    return true;
+  }
   const expectedFile =
     params.phase === "happy"
       ? params.behavior.happyMutation?.path
@@ -76,8 +80,12 @@ function matchesNativeWorkspaceArguments(params: {
     return false;
   }
   const kind = changes[0].kind;
+  const changePath = changes[0].path;
+  if (typeof changePath !== "string") {
+    return false;
+  }
   return (
-    canonicalWorkspacePath(params.workspaceDir, String(changes[0].path ?? "")) ===
+    canonicalWorkspacePath(params.workspaceDir, changePath) ===
       canonicalWorkspacePath(params.workspaceDir, expectedFile) &&
     (isRecord(kind) ? kind.type : kind) === "update"
   );
@@ -85,7 +93,9 @@ function matchesNativeWorkspaceArguments(params: {
 
 async function readOptionalUtf8(filePath: string) {
   return fs.readFile(filePath, "utf8").catch((error: unknown) => {
-    if (isRecord(error) && error.code === "ENOENT") return undefined;
+    if (isRecord(error) && error.code === "ENOENT") {
+      return undefined;
+    }
     throw error;
   });
 }
@@ -104,7 +114,9 @@ export async function runCodexNativeWorkspaceFixture(
   params: NativeWorkspaceFixtureParams,
 ): Promise<string | undefined> {
   const behaviorId = readQaNativeWorkspaceBehaviorId(params.behaviorId);
-  if (!behaviorId) return undefined;
+  if (!behaviorId) {
+    return undefined;
+  }
   const behavior = getQaNativeWorkspaceBehavior(behaviorId);
   const runOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
     try {
@@ -124,7 +136,9 @@ export async function runCodexNativeWorkspaceFixture(
     await runOperation(async () => {
       const parentRealPath = await fs.realpath(path.dirname(seedPath));
       const existing = await fs.lstat(seedPath).catch((error: unknown) => {
-        if (isRecord(error) && error.code === "ENOENT") return undefined;
+        if (isRecord(error) && error.code === "ENOENT") {
+          return undefined;
+        }
         throw error;
       });
       if (!isPathInside(workspaceRealPath, parentRealPath) || existing?.isSymbolicLink()) {
@@ -196,7 +210,9 @@ export async function runCodexNativeWorkspaceFixture(
       }
     }
   } finally {
-    if (sentinelPath) await fs.rm(sentinelPath, { force: true });
+    if (sentinelPath) {
+      await fs.rm(sentinelPath, { force: true });
+    }
   }
 
   for (const phase of ["happy", "failure"] as const) {

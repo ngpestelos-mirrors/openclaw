@@ -10,6 +10,7 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { QaSuiteInfraError, QaSuiteScenarioSkipError } from "./errors.js";
 import { resolveQaLiveTurnTimeoutMs as liveTurnTimeoutMs } from "./live-timeout.js";
+import { readQaNativeWorkspaceBehaviorId } from "./native-workspace-behavior.js";
 import {
   qaMockRequestCursorUrl,
   qaMockRequestsAfterUrl,
@@ -509,21 +510,32 @@ export async function runRuntimeToolFixture(
   if (config.ensureImageGeneration === true) {
     await deps.ensureImageGenerationConfigured(env);
   }
+  const metadata = readRuntimeToolCoverageMetadata({ config });
+  const forcedCodexNativeWorkspace =
+    env.gateway.runtimeEnv.OPENCLAW_QA_FORCE_RUNTIME === "codex" &&
+    metadata.expectedLayer === "codex-native-workspace";
+
+  const nativeWorkspaceBehaviorId = forcedCodexNativeWorkspace
+    ? readQaNativeWorkspaceBehaviorId(config.nativeWorkspaceBehavior)
+    : undefined;
   await fs.writeFile(
     path.join(env.gateway.workspaceDir, "runtime-tool-fixture-edit.txt"),
     "before edit\n",
     "utf8",
   );
 
+  const stableSessionKeyPrefix = nativeWorkspaceBehaviorId
+    ? undefined
+    : `agent:qa:runtime-tool:${toolName}`;
   const happySessionKey = await deps.createSession(
     env,
     `Runtime tool fixture: ${toolName} happy`,
-    `agent:qa:runtime-tool:${toolName}:happy`,
+    stableSessionKeyPrefix ? `${stableSessionKeyPrefix}:happy` : undefined,
   );
   const failureSessionKey = await deps.createSession(
     env,
     `Runtime tool fixture: ${toolName} failure`,
-    `agent:qa:runtime-tool:${toolName}:failure`,
+    stableSessionKeyPrefix ? `${stableSessionKeyPrefix}:failure` : undefined,
   );
   const sessionKeys = [happySessionKey, failureSessionKey] as const;
   const withSessionDetails = (details: string) =>
@@ -546,16 +558,10 @@ export async function runRuntimeToolFixture(
     }
   };
   const tools = await runFixtureOperation(() => deps.readEffectiveTools(env, happySessionKey));
-  const metadata = readRuntimeToolCoverageMetadata({
-    config,
-  });
-  const forcedCodexNativeWorkspace =
-    env.gateway.runtimeEnv.OPENCLAW_QA_FORCE_RUNTIME === "codex" &&
-    metadata.expectedLayer === "codex-native-workspace";
   if (forcedCodexNativeWorkspace) {
     const nativeDetails = await runCodexNativeWorkspaceFixture({
       env,
-      behaviorId: config.nativeWorkspaceBehavior,
+      behaviorId: nativeWorkspaceBehaviorId,
       required: metadata.required,
       happySessionKey,
       failureSessionKey,
