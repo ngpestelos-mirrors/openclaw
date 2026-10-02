@@ -104,13 +104,6 @@ public final class OpenClawQuestionCardModel: Identifiable {
         max(0, Int(ceil(Double(self.record.expiresatms) / 1000 - date.timeIntervalSince1970)))
     }
 
-    public func toggleOption(questionID: String, label: String) {
-        guard let question = self.record.questions.first(where: { $0.questionid == questionID }) else { return }
-        let matches = question.options.filter { $0.label == label }
-        guard matches.count == 1, let option = matches.first else { return }
-        self.toggleOption(questionID: questionID, value: option.value ?? option.label)
-    }
-
     public func toggleOption(questionID: String, value: String) {
         guard let question = self.record.questions.first(where: { $0.questionid == questionID }),
               question.options.contains(where: { ($0.value ?? $0.label) == value }),
