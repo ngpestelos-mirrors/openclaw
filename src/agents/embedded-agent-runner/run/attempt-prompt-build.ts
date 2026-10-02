@@ -517,7 +517,7 @@ export async function prepareEmbeddedAttemptPromptContext(input: {
 
   const escapedProjection = !input.isRawModelRun && usesEscapedRuntimeContext(input.sessionVersion);
   const eventFragments: RuntimeContextFragment[] = [
-    ...buildAgentInternalEventContext(attempt.internalEvents, !escapedProjection),
+    ...buildAgentInternalEventContext(attempt.internalEvents),
     ...(attempt.runtimeContextFragments ?? []),
     ...(input.prompt.originContext
       ? escapedProjection
@@ -565,6 +565,7 @@ export async function prepareEmbeddedAttemptPromptContext(input: {
           sessionKey: attempt.sessionKey,
           sessionId: attempt.sessionId,
           agentId: input.sessionAgentId,
+          includeEmptySnapshots: input.appendOnlyRuntimeContext === true,
         });
   const contextFragments = promptSubmission.runtimeOnly
     ? [...eventFragments, ...runtimeFacts]

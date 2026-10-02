@@ -151,7 +151,9 @@ describe("buildSessionContext", () => {
           customType: runtimeContextCarrier ? "openclaw.runtime-context" : "extension-context",
           content: "metadata ".repeat(100),
           display: false,
-          details: { runtimeContextCarrier },
+          details: runtimeContextCarrier
+            ? { source: "openclaw-runtime-context", runtimeContextCarrier }
+            : { runtimeContextCarrier },
         },
         assistantEntry("entry-2", "entry-1", "done"),
       ];
@@ -180,7 +182,9 @@ describe("buildSessionContext", () => {
               role: "custom",
               customType: runtimeContextCarrier ? "openclaw.runtime-context" : "extension-context",
               content: "metadata ".repeat(100),
-              details: { runtimeContextCarrier },
+              details: runtimeContextCarrier
+                ? { source: "openclaw-runtime-context", runtimeContextCarrier }
+                : { runtimeContextCarrier },
             },
             { role: "assistant", content: [{ type: "text", text: "done" }] },
           ].slice(expectedIndex),
@@ -203,7 +207,7 @@ describe("buildSessionContext", () => {
       customType: "openclaw.runtime-context",
       content: "Model-visible runtime context",
       display: false,
-      details: { runtimeContextCarrier: true },
+      details: { source: "openclaw-runtime-context", runtimeContextCarrier: true },
       timestamp: Date.parse(timestamp),
     };
     const activityEntry: SessionTreeEntry = {
@@ -238,8 +242,9 @@ describe("buildSessionContext", () => {
       { role: "user", content: "original request" },
       {
         role: "user",
-        content: [{ type: "text", text: "Model-visible runtime context" }],
-        runtimeContextCarrier: true,
+        content:
+          "OpenClaw runtime context:\nModel-visible runtime context\nEnd OpenClaw runtime context.",
+        runtimeContext: {},
       },
       { role: "user", content: "continue" },
     ]);

@@ -5,6 +5,7 @@
  */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { truncateWithMarker } from "@openclaw/normalization-core/utf16-slice";
+import { labelRuntimeContextText } from "../llm/types.js";
 import {
   annotateInterSessionPromptText,
   type InputProvenance,
@@ -23,8 +24,6 @@ import {
 } from "./internal-event-contract.js";
 import {
   escapeInternalRuntimeContextDelimiters,
-  INTERNAL_RUNTIME_CONTEXT_BEGIN,
-  INTERNAL_RUNTIME_CONTEXT_END,
   type RuntimeContextFragment,
 } from "./internal-runtime-context.js";
 import { wrapPromptDataBlock } from "./sanitize-for-prompt.js";
@@ -228,12 +227,7 @@ function formatTaskCompletionEvent(
 /** Provenance comes from the producer event; child output and labels remain data. */
 export function buildAgentInternalEventContext(
   events?: AgentInternalEvent[],
-  legacy = false,
 ): RuntimeContextFragment[] {
-  if (legacy) {
-    const text = formatAgentInternalEventsForPrompt(events);
-    return text ? [{ kind: "runtime-instruction", text }] : [];
-  }
   return (events ?? []).flatMap((event): RuntimeContextFragment[] => [
     {
       kind: "runtime-instruction",
@@ -270,14 +264,13 @@ export function formatAgentInternalEventsForPrompt(events?: AgentInternalEvent[]
   if (blocks.length === 0) {
     return "";
   }
-  return [
-    INTERNAL_RUNTIME_CONTEXT_BEGIN,
-    "OpenClaw runtime context (internal):",
-    "This context is runtime-generated, not user-authored. Keep internal details private.",
-    "",
-    blocks.join("\n\n---\n\n"),
-    INTERNAL_RUNTIME_CONTEXT_END,
-  ].join("\n");
+  return labelRuntimeContextText(
+    [
+      "This context is runtime-generated, not user-authored. Keep internal details private.",
+      "",
+      blocks.join("\n\n---\n\n"),
+    ].join("\n"),
+  );
 }
 
 /** Build a protected follow-up that can retry only media proven missing from a partial send. */
@@ -290,20 +283,19 @@ export function formatGeneratedMediaDeliveryRetryForPrompt(mediaUrls: string[]):
   if (mediaDirectiveLines.length === 0) {
     return "";
   }
-  return [
-    INTERNAL_RUNTIME_CONTEXT_BEGIN,
-    "OpenClaw runtime context (internal):",
-    "This context is runtime-generated, not user-authored. Keep internal details private.",
-    "",
-    "[Generated media delivery retry]",
-    "A previous agent turn delivered only part of this generated-media result.",
-    "",
-    ...mediaDirectiveLines,
-    "",
-    "Action:",
-    "Deliver only the generated media listed above. Do not resend any other attachment.",
-    INTERNAL_RUNTIME_CONTEXT_END,
-  ].join("\n");
+  return labelRuntimeContextText(
+    [
+      "This context is runtime-generated, not user-authored. Keep internal details private.",
+      "",
+      "[Generated media delivery retry]",
+      "A previous agent turn delivered only part of this generated-media result.",
+      "",
+      ...mediaDirectiveLines,
+      "",
+      "Action:",
+      "Deliver only the generated media listed above. Do not resend any other attachment.",
+    ].join("\n"),
+  );
 }
 
 /** Format internal runtime events for plain prompts that lack context delimiters. */

@@ -599,7 +599,12 @@ describe("convertMessages relocatable region", () => {
           isError: false,
           timestamp: 3,
         },
-        { role: "user", content: "later context", runtimeContextCarrier: true, timestamp: 4 },
+        {
+          role: "user",
+          content: "OpenClaw runtime context:\nlater context",
+          timestamp: 4,
+          runtimeContext: {},
+        },
       ],
     };
     const cacheOptOutIndexes = new Set<number>();
@@ -628,7 +633,7 @@ describe("convertMessages relocatable region", () => {
           { type: "text", text: "Runtime facts" },
         ],
       },
-      { role: "user", content: "later context" },
+      { role: "system", content: "OpenClaw runtime context:\nlater context" },
     ]);
     expect(cacheOptOutIndexes).toEqual(new Set([3, 4]));
   });

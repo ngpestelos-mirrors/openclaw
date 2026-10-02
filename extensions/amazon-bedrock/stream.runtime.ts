@@ -957,7 +957,7 @@ function convertMessages(
           continue;
         }
         if (
-          m.runtimeContextCarrier === true &&
+          m.runtimeContext !== undefined &&
           !bindsClaudeThinkingPrefix(model) &&
           firstVolatileMessageIndex === undefined
         ) {

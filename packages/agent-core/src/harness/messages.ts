@@ -1,4 +1,12 @@
-import type { ImageContent, Message, TextContent } from "@openclaw/llm-core";
+import {
+  labelRuntimeContextContent,
+  RUNTIME_CONTEXT_BEGIN_MARKER,
+  RUNTIME_CONTEXT_CUSTOM_TYPE,
+  RUNTIME_CONTEXT_END_MARKER,
+  type ImageContent,
+  type Message,
+  type TextContent,
+} from "@openclaw/llm-core";
 import { parseDateStringTimestampMs as parseSessionTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
@@ -114,10 +122,22 @@ export function createCustomMessage(
 }
 
 /** Recognize the structured carrier marker shared with provider replay. */
-export function isRuntimeContextCarrier(message: AgentMessage): boolean {
+export function isRuntimeContextCarrier(message: AgentMessage): message is CustomMessage {
+  const details = message.role === "custom" ? asOptionalRecord(message.details) : undefined;
   return (
-    message.role === "custom" && asOptionalRecord(message.details)?.runtimeContextCarrier === true
+    message.role === "custom" &&
+    message.customType === RUNTIME_CONTEXT_CUSTOM_TYPE &&
+    details?.source === "openclaw-runtime-context" &&
+    details.runtimeContextCarrier !== false
   );
+}
+
+function stripLegacyRuntimeContextEnvelope(content: string): string {
+  const prefix = `${RUNTIME_CONTEXT_BEGIN_MARKER}\n`;
+  const suffix = `\n${RUNTIME_CONTEXT_END_MARKER}`;
+  return content.startsWith(prefix) && content.endsWith(suffix)
+    ? content.slice(prefix.length, -suffix.length)
+    : content;
 }
 
 /** Convert harness transcript messages into the LLM-facing message sequence. */
@@ -163,17 +183,24 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
       default:
         return;
     }
-    // Preserve carrier identity so provider-owned replay and cache policy can
-    // distinguish transient context from append-only context.
-    llmMessages.push({
-      role: "user",
-      content,
-      timestamp:
-        message.role === "compactionSummary"
-          ? normalizeCompactionSummaryTimestamp(message.timestamp)
-          : message.timestamp,
-      ...(isRuntimeContextCarrier(message) ? { runtimeContextCarrier: true } : {}),
-    });
+    const timestamp =
+      message.role === "compactionSummary"
+        ? normalizeCompactionSummaryTimestamp(message.timestamp)
+        : message.timestamp;
+    if (isRuntimeContextCarrier(message)) {
+      const runtimeContent =
+        typeof message.content === "string"
+          ? stripLegacyRuntimeContextEnvelope(message.content)
+          : content.filter((block): block is TextContent => block.type === "text");
+      llmMessages.push({
+        role: "user",
+        content: labelRuntimeContextContent(runtimeContent),
+        timestamp,
+        runtimeContext: {},
+      });
+    } else {
+      llmMessages.push({ role: "user", content, timestamp });
+    }
   });
   return llmMessages;
 }

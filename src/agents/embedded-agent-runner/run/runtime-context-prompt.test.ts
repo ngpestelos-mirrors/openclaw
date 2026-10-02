@@ -1,7 +1,6 @@
 // Producer context stays separate from literal user and hook text.
 import { describe, expect, it } from "vitest";
-import { stripInternalMetadataForDisplay } from "../../../auto-reply/reply/display-text-sanitize.js";
-import type { Context, UserMessage } from "../../../llm/types.js";
+import type { Context, RuntimeContextMessage } from "../../../llm/types.js";
 import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
   stripInternalRuntimeContext,
@@ -100,39 +99,54 @@ describe("runtime context prompt submission", () => {
       display: false,
       details: { source: "openclaw-runtime-context", runtimeContextCarrier: true, fragments },
     });
-    expect(stripInternalMetadataForDisplay(message.content)).toBe("");
+    expect(message.content).toBe(text);
+    expect(message.content).not.toContain(INTERNAL_RUNTIME_CONTEXT_BEGIN);
     expect(buildRuntimeContextCustomMessage(" ")).toBeUndefined();
   });
 });
 
 describe("per-request runtime instructions", () => {
   it.each([false, true])("preserves carrier position and parts (array=%s)", (arrayContent) => {
-    const body =
-      "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nCurrent facts\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>";
-    const image = { type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" };
-    const carrier: UserMessage = {
+    const body = "Current facts";
+    const carrier: RuntimeContextMessage = {
       role: "user",
       timestamp: 2,
-      runtimeContextCarrier: true,
-      content: arrayContent ? [{ type: "text", text: body }, image] : body,
+      content: arrayContent
+        ? [
+            {
+              type: "text",
+              text: `OpenClaw runtime context:\n${body}\nEnd OpenClaw runtime context.`,
+            },
+          ]
+        : `OpenClaw runtime context:\n${body}\nEnd OpenClaw runtime context.`,
+      runtimeContext: {},
     };
     const messages: Context["messages"] = [
       { role: "user", content: "Question", timestamp: 1 },
       carrier,
       { role: "user", content: "Steering", timestamp: 3 },
     ];
-    const nested =
-      "Date B\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nRuntime event\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>";
+    const nested = "Date B\nRuntime event";
     const projected = prependRuntimeContextForModel(messages, nested);
-    const expected = `<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n${nested}\n\nCurrent facts\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>`;
+    const expected =
+      "OpenClaw runtime context:\nDate B\nRuntime event\n\nCurrent facts\nEnd OpenClaw runtime context.";
     expect(projected).toEqual([
       messages[0],
-      { ...carrier, content: arrayContent ? [{ type: "text", text: expected }, image] : expected },
+      { ...carrier, content: arrayContent ? [{ type: "text", text: expected }] : expected },
       messages[2],
     ]);
     expect(stripInternalRuntimeContext(expected)).toBe("");
     expect(messages[1]).toBe(carrier);
-    expect(carrier.content).toEqual(arrayContent ? [{ type: "text", text: body }, image] : body);
+    expect(carrier.content).toEqual(
+      arrayContent
+        ? [
+            {
+              type: "text",
+              text: `OpenClaw runtime context:\n${body}\nEnd OpenClaw runtime context.`,
+            },
+          ]
+        : `OpenClaw runtime context:\n${body}\nEnd OpenClaw runtime context.`,
+    );
     expect(prependRuntimeContextForModel(messages, nested)).toEqual(projected);
   });
 
@@ -143,9 +157,8 @@ describe("per-request runtime instructions", () => {
       {
         role: "user",
         timestamp: 1,
-        runtimeContextCarrier: true,
-        content:
-          "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nDate A\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
+        content: "OpenClaw runtime context:\nDate A\nEnd OpenClaw runtime context.",
+        runtimeContext: {},
       },
     ]);
     expect(messages).toHaveLength(1);

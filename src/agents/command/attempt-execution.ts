@@ -631,6 +631,7 @@ export function runAgentAttempt(
             persistAssistantTranscript:
               params.storePath !== undefined && params.sessionStore !== undefined,
             prompt: cliPrompt,
+            runtimeContextFragments: params.opts.runtimeContextFragments,
             transcriptPrompt: cliTranscriptPrompt,
             modelProvider: params.providerOverride,
             requesterModel: { provider: params.providerOverride, model: params.modelOverride },
@@ -678,9 +679,8 @@ export function runAgentAttempt(
               cliRuntimeToolsAllow,
               params.opts.toolsAllowIsDefault,
             ),
-            // This loop is the command-origin sibling of the auto-reply fallback
-            // candidate, so its CLI grant needs the same delegation gate; the
-            // inputs match the tool state this invocation actually runs with.
+            // This command-origin fallback needs the same delegation gate as auto-reply;
+            // the inputs match the tool state this invocation actually runs with.
             ...buildCliMcpDelegationCapabilityBinding(
               resolveDelegationCapability({
                 fallbackActive: params.isFallbackRetry,
@@ -702,9 +702,7 @@ export function runAgentAttempt(
                     );
 
                     const armed = await restoreCliSessionForkInStore(forkStoreParams);
-                    if (armed) {
-                      params.sessionEntry = armed;
-                    }
+                    params.sessionEntry = armed ?? params.sessionEntry;
                     return Boolean(armed);
                   },
                 }

@@ -367,14 +367,67 @@ export interface UserMessage {
   role: "user";
   content: string | (TextContent | ImageContent)[];
   timestamp: number; // Unix timestamp in milliseconds
-  /**
-   * Marks a user message carrying runtime context. Provider replay policy decides
-   * whether the carrier is transient or retained append-only; only retained
-   * carriers are stable prompt-cache anchors.
-   */
-  runtimeContextCarrier?: boolean;
-  /** Explicit replay-policy retention decision; absent preserves model-derived behavior. */
-  runtimeContextCarrierRetained?: boolean;
+  /** Trusted runtime-context metadata; ordinary user messages omit it. */
+  runtimeContext?: {
+    /** Prefix-bound providers retain these messages across turns. */
+    retained?: boolean;
+  };
+}
+
+export const RUNTIME_CONTEXT_CUSTOM_TYPE = "openclaw.runtime-context";
+export const RUNTIME_CONTEXT_BEGIN_MARKER = "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>";
+export const RUNTIME_CONTEXT_END_MARKER = "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>";
+export const RUNTIME_CONTEXT_HEADER = "OpenClaw runtime context:";
+export const RUNTIME_CONTEXT_FOOTER = "End OpenClaw runtime context.";
+const ESCAPED_RUNTIME_CONTEXT_FOOTER = "[[OPENCLAW_RUNTIME_CONTEXT_FOOTER]]";
+
+/** Prevent untrusted carrier content from terminating its provider projection. */
+export function escapeRuntimeContextFooter(content: string): string {
+  return content.replaceAll(RUNTIME_CONTEXT_FOOTER, ESCAPED_RUNTIME_CONTEXT_FOOTER);
+}
+
+/** Builds the human-readable projection used only at provider boundaries. */
+export function labelRuntimeContextText(content: string): string {
+  return `${RUNTIME_CONTEXT_HEADER}\n${escapeRuntimeContextFooter(content)}\n${RUNTIME_CONTEXT_FOOTER}`;
+}
+
+/** Labels runtime context once while preserving structured text blocks. */
+export function labelRuntimeContextContent(
+  content: string | TextContent[],
+): string | TextContent[] {
+  if (typeof content === "string") {
+    return labelRuntimeContextText(content);
+  }
+  if (content.length === 0) {
+    return [{ type: "text", text: `${RUNTIME_CONTEXT_HEADER}\n${RUNTIME_CONTEXT_FOOTER}` }];
+  }
+  return content.map((block, index) => ({
+    ...block,
+    text: [
+      ...(index === 0 ? [RUNTIME_CONTEXT_HEADER] : []),
+      escapeRuntimeContextFooter(block.text),
+      ...(index === content.length - 1 ? [RUNTIME_CONTEXT_FOOTER] : []),
+    ].join("\n"),
+  }));
+}
+
+/** Flattens already-labeled runtime context for string-only provider messages. */
+export function runtimeContextContentToText(content: string | TextContent[]): string {
+  return typeof content === "string" ? content : content.map((block) => block.text).join("\n");
+}
+
+/** Trusted per-turn OpenClaw context, projected by each provider at its valid authority level. */
+export interface RuntimeContextMessage extends UserMessage {
+  content: string | TextContent[];
+  runtimeContext: NonNullable<UserMessage["runtimeContext"]>;
+}
+
+/** Distinguishes trusted runtime context while preserving user-role plugin compatibility. */
+export function isRuntimeContextMessage(message: {
+  role: string;
+  runtimeContext?: unknown;
+}): message is RuntimeContextMessage {
+  return message.role === "user" && message.runtimeContext !== undefined;
 }
 
 /** Assistant turn, including provider identity and final stop state. */

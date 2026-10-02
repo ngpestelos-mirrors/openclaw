@@ -275,10 +275,10 @@ describe("prepareEmbeddedAttemptSessionBoundary", () => {
         appendOnlyRuntimeContext ? [user, carrier] : [carrier, user],
       );
       const message = converted.at(-1);
-      expect(message).toMatchObject({ role: "user", runtimeContextCarrier: true });
-      expect(
-        (message as { runtimeContextCarrierRetained?: boolean }).runtimeContextCarrierRetained,
-      ).toBe(appendOnlyRuntimeContext);
+      expect(message).toMatchObject({
+        role: "user",
+        runtimeContext: { retained: appendOnlyRuntimeContext },
+      });
     },
   );
 

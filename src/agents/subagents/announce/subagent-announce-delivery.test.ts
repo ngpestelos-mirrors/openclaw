@@ -1682,20 +1682,20 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
     expect(callGateway).toHaveBeenCalledTimes(1);
     expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(2);
-    for (const attempt of [1, 2]) {
-      expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenNthCalledWith(
-        attempt,
-        "requester-session-4",
-        "child done",
-        expect.objectContaining({
-          debounceMs: 500,
-          deliveryTimeoutMs: 120_000,
-          steeringMode: "all",
-          waitForTranscriptCommit: true,
-          userTurnTranscriptRecorder: expect.any(Object),
-        }),
-      );
+    const calls = queueEmbeddedAgentMessageWithOutcome.mock.calls;
+    expect(calls.map(([session, prompt]) => [session, prompt])).toEqual([
+      ["requester-session-4", "child done"],
+      ["requester-session-4", "Continue the OpenClaw runtime event."],
+    ]);
+    for (const call of calls) {
+      expect(call[2]).toMatchObject({
+        waitForTranscriptCommit: true,
+        userTurnTranscriptRecorder: expect.any(Object),
+      });
     }
+    expect(calls[1]?.[2]?.currentInboundContext?.fragments).toContainEqual(
+      expect.objectContaining({ kind: "runtime-instruction" }),
+    );
     expect(callOrder).toEqual(["queue", "gateway", "queue"]);
     expect(sendMessage).not.toHaveBeenCalled();
   });

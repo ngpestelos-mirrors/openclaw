@@ -8,6 +8,7 @@ import { buildLateMediaAttachedProjection } from "../../../sessions/user-turn-tr
 import {
   escapeInternalRuntimeContextDelimiters,
   OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE,
+  projectRuntimeContextFragments,
   resolveRuntimeContextPromptOwner,
   retainRuntimeContextMessageForPrompt,
   stripHistoricalRuntimeContextCustomMessages,
@@ -27,11 +28,7 @@ import {
   type CurrentUserTimestampMatch,
   type UserTranscriptContext,
 } from "./attempt-history.js";
-import {
-  buildRuntimeContextMessageContent,
-  projectRuntimeContextFragments,
-  type RuntimeContextCustomMessage,
-} from "./runtime-context-prompt.js";
+import type { RuntimeContextCustomMessage } from "./runtime-context-prompt.js";
 
 const runtimeContextDetailsSchema = z.object({
   source: z.literal("openclaw-runtime-context"),
@@ -72,9 +69,8 @@ function projectRuntimeContextMessages(messages: AgentMessage[]): AgentMessage[]
       if (details.success) {
         return {
           ...message,
-          content: buildRuntimeContextMessageContent(
-            projectRuntimeContextFragments(details.data.fragments),
-          ),
+          content: projectRuntimeContextFragments(details.data.fragments),
+          details: details.data,
         };
       }
     }

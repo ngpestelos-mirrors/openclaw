@@ -229,7 +229,10 @@ describe("explicit direct Responses continuation", () => {
         customType: "openclaw.runtime-context",
         content: "Runtime context must survive continuation.\n",
         display: false,
-        details: { runtimeContextCarrier: true },
+        details: {
+          source: "openclaw-runtime-context",
+          runtimeContextCarrier: true,
+        },
         timestamp: 3,
       };
       const messages = convertToLlm([...context.messages, carrier]);
@@ -261,10 +264,19 @@ describe("explicit direct Responses continuation", () => {
       expect(f.requests[0]?.input).toEqual([
         { type: "message", role: "user", content: [{ type: "input_text", text: "old history" }] },
         { type: "message", role: "user", content: [{ type: "input_text", text: steer }] },
-        { type: "message", role: "user", content: [{ type: "input_text", text: carrier.content }] },
+        {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `OpenClaw runtime context:\n${carrier.content}\nEnd OpenClaw runtime context.`,
+            },
+          ],
+        },
       ]);
       expect(JSON.stringify(messages)).toBe(before);
-      expect(messages.at(-1)).toMatchObject({ runtimeContextCarrier: true });
+      expect(messages.at(-1)).toMatchObject({ role: "user", runtimeContext: {} });
       expect(store.entry?.providerReview).toBeUndefined();
     },
   );
@@ -645,7 +657,12 @@ describe("explicit direct Responses continuation", () => {
       const f = await fixture("sse");
       const messages: Context["messages"] = [
         ...context.messages,
-        { role: "user", content: "Runtime context", timestamp: 3, runtimeContextCarrier: true },
+        {
+          role: "user",
+          content: "OpenClaw runtime context:\nRuntime context",
+          timestamp: 3,
+          runtimeContext: {},
+        },
       ];
       const stream = await f.stream(
         model,

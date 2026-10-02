@@ -23,10 +23,15 @@ import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-w
 import { INTERNAL_MESSAGE_CHANNEL } from "../../../utils/message-channel.js";
 import { hasGeneratedMediaCompletionEvent } from "../../internal-event-contract.js";
 import {
+  buildAgentInternalEventContext,
   collectAgentInternalEventMedia,
-  formatAgentInternalEventsForPrompt,
+  resolveAcpPromptBody,
   type AgentInternalEvent,
 } from "../../internal-events.js";
+import {
+  RUNTIME_EVENT_USER_PROMPT,
+  projectRuntimeContextFragments,
+} from "../../internal-runtime-context.js";
 import { admitCorrelatedSubagentSessionDelivery } from "../completion/subagent-completion-delivery.js";
 import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
 import { maybeSteerSubagentAnnounce } from "./subagent-announce-active-wake.js";
@@ -187,7 +192,7 @@ export async function deliverSubagentAnnouncement(
       const queuePayload = {
         kind: "agentTurn",
         sessionKey: canonicalSessionKey,
-        message: formatAgentInternalEventsForPrompt(params.internalEvents) || params.triggerMessage,
+        message: resolveAcpPromptBody("", params.internalEvents) || params.triggerMessage,
         messageId: `${params.directIdempotencyKey}:agent-loop`,
         route: queuedRoute.route,
         ...(queuedRoute.deliveryContext ? { deliveryContext: queuedRoute.deliveryContext } : {}),
@@ -292,11 +297,22 @@ export async function deliverSubagentAnnouncement(
       if (sourceOwnerChanged()) {
         return { status: "source_owner_changed" };
       }
+      const runtimeContextFragments = buildAgentInternalEventContext(params.internalEvents);
       return await maybeSteerSubagentAnnounce({
         deliveryTimeoutMs: resolveSubagentAnnounceTimeoutMs(getSubagentAnnounceRuntimeConfig()),
         requesterSessionKey: params.requesterSessionKey,
         requesterAgentId: params.requesterAgentId,
-        steerMessage: params.triggerMessage,
+        steerMessage: runtimeContextFragments.length
+          ? RUNTIME_EVENT_USER_PROMPT
+          : params.triggerMessage,
+        ...(runtimeContextFragments.length
+          ? {
+              currentInboundContext: {
+                text: projectRuntimeContextFragments(runtimeContextFragments),
+                fragments: runtimeContextFragments,
+              },
+            }
+          : {}),
         createUserTurnTranscriptRecorder: createCompletionUserTurnTranscriptRecorder,
         signal: params.signal,
         isSourceSessionEffectsAllowed: params.isSourceSessionEffectsAllowed,
