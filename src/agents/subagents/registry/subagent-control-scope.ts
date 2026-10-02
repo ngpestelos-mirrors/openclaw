@@ -299,7 +299,7 @@ export function ensureSubagentControllerOwnsRun(params: {
 export function getLatestOwnedSubagentRun(
   childSessionKey: string,
   agentId: string | undefined,
-  cfg?: OpenClawConfig,
+  cfg: OpenClawConfig,
 ): SubagentRunRecord | undefined {
   const key = childSessionKey.trim();
   // Qualified keys own their namespace; legacy raw rows retain requester-agent separation.
