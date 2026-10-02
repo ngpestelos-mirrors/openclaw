@@ -11,7 +11,7 @@ scenario:
   successCriteria:
     - OpenClaw may expose OpenClaw write while Codex app-server mode may omit duplicate OpenClaw dynamic write.
     - Codex writes through its native command tool and projects a correlated bash receipt.
-    - The fixture validates exact file bytes and a correlated failed write to a missing directory.
+    - The fixture validates exact happy-path file bytes, correlates a failed outside-workspace write, and verifies the existing sentinel's exact contents remain unchanged.
   docsRefs:
     - qa/scenarios/index.yaml
   codeRefs:
