@@ -286,6 +286,7 @@ async function runPendingMaintenance(
   owner.activeSessionKeys.clear();
   let nextMaintenanceAt: number | undefined = Infinity;
   let planningChanged = false;
+  let finalized = false;
   try {
     owner.execution ??= owner.captureExecution();
     const prepared = await runExclusiveSqliteSessionWrite(
@@ -417,6 +418,7 @@ async function runPendingMaintenance(
       assertInputsCurrent();
       const pending = capturePendingAgeChanges(owner);
       const age = await runSqliteSessionReclamation({
+        diagnostics: { kind: "maintenance-age" },
         assertCommitAllowed: assertInputsCurrent,
         forceInProcess: false,
         plan: {
@@ -448,6 +450,9 @@ async function runPendingMaintenance(
     await finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort(owner.scope, [plan], {
       isCurrent,
     });
+    finalized = true;
+    // A deadline-probe retry cannot restore a completed pass's write protection.
+    activeSessionKeys = [];
     if (isCurrent() && owner.generation === generation) {
       nextMaintenanceAt = await readAge(false);
       if (owner.ageChanges.size > 0) {
@@ -460,6 +465,11 @@ async function runPendingMaintenance(
     owner.rejections = 0;
   } catch (error) {
     if (planningChanged && isCurrent()) {
+      if (finalized && owner.generation !== generation) {
+        owner.rejections = 0;
+        scheduleMaintenanceAfterWriteQuiet(databasePath, owner);
+        return;
+      }
       activeSessionKeys.forEach((key) => owner.activeSessionKeys.add(key));
       owner.rejections += 1;
       owner.running = false;
