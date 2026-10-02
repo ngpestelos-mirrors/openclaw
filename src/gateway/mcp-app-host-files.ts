@@ -350,10 +350,10 @@ export async function subscribeMcpAppHostFile(
         if (hasErrnoCode(error, "ENOENT")) {
           polling = true;
           watchFile(filePath, { persistent: false, interval: 250 }, rearm);
-          stat(filePath, (error, curr) => {
-            if (!error) {
-              rearm(curr);
-            } else if (!hasErrnoCode(error, "ENOENT")) {
+          stat(filePath, (statError, currentStats) => {
+            if (!statError) {
+              rearm(currentStats);
+            } else if (!hasErrnoCode(statError, "ENOENT")) {
               close();
             }
           });

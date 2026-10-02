@@ -217,7 +217,9 @@ describe("registered MCP App host-file routes", () => {
       if (kind === "rename gap") {
         await rename(file, `${file}.bak`);
         await notified.promise;
-        await new Promise<void>((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
         expect(getMcpAppViewLease(viewId, runtime)?.disposeCallbacks?.size).toBe(1);
         notified = createDeferred();
         publish.mockClear();

@@ -13,13 +13,15 @@ export function applyMcpAppModelContext(
   params: AppContextTurnParams,
   currentTurnImages: CurrentTurnImages,
 ): { params: AppContextTurnParams; currentTurnImages: CurrentTurnImages } {
+  let nextParams = params;
+  let nextImages = currentTurnImages;
   const appContext = params.mcpAppContextLease;
   if (appContext) {
     appContext.assertCurrent();
     const existingImages = currentTurnImages.images ?? [];
     // Project indices only after current-turn image admission owns their order.
     const input = appContext.project(existingImages.length);
-    params = {
+    nextParams = {
       ...params,
       followupRun: {
         ...params.followupRun,
@@ -32,7 +34,7 @@ export function applyMcpAppModelContext(
     };
     const appended = input.images;
     if (appended.length) {
-      currentTurnImages = {
+      nextImages = {
         ...currentTurnImages,
         images: [...existingImages, ...appended],
         imageOrder: [
@@ -53,5 +55,5 @@ export function applyMcpAppModelContext(
       };
     }
   }
-  return { params, currentTurnImages };
+  return { params: nextParams, currentTurnImages: nextImages };
 }
