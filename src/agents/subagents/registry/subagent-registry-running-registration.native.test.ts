@@ -12,7 +12,7 @@ import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { holdStateDatabaseWriteTransaction } from "../../../test-utils/state-database-contention.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
-import * as registryState from "./subagent-registry-state.js";
+import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
 import { registerSubagentRun } from "./subagent-registry.js";
 import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
 
@@ -69,7 +69,11 @@ it("keeps ordinary subagent registration responsive while a SQLite writer is hel
   const failures: unknown[] = [];
   try {
     // Warm the real worker before the independent holder starts its existing release deadline.
-    await registryState.persistSubagentRunsToDiskAsyncOrThrow(new Map(), [], { context });
+    await mutateSubagentRuns(
+      ["registration-worker-warmup"],
+      () => ({ value: undefined, postimages: new Map([["registration-worker-warmup", null]]) }),
+      { context },
+    );
     holder = holdStateDatabaseWriteTransaction(context.admission.databasePath, 1_000);
     await holder.ready;
     Atomics.store(nativeBegin, 0, 1);

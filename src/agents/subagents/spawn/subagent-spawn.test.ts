@@ -104,15 +104,15 @@ describe("spawnSubagentDirect seam flow", () => {
     ({ closeSwarmScheduler } = await import("../swarm/swarm-scheduler.js"));
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     swarmSchedulerTesting.reset();
-    resetSubagentRegistryForTests();
+    await resetSubagentRegistryForTests();
     for (const mock of Object.values(hoisted)) {
       mock.mockReset();
     }
     hoisted.prepareModelChoiceMock.mockImplementation(supportedSpawnModelChoice);
-    hoisted.startQueuedSubagentRunMock.mockReturnValue(true);
-    hoisted.settleFailedQueuedSubagentLaunchMock.mockReturnValue(true);
+    hoisted.startQueuedSubagentRunMock.mockResolvedValue(true);
+    hoisted.settleFailedQueuedSubagentLaunchMock.mockResolvedValue(true);
     hoisted.hasInProcessGatewayContextMock.mockReturnValue(false);
     hoisted.resolveContextEngineMock.mockResolvedValue({});
     hoisted.countActiveRunsForSessionMock.mockReturnValue(0);
@@ -450,7 +450,7 @@ describe("spawnSubagentDirect seam flow", () => {
     configOverride = createConfigOverride({
       tools: { swarm: { enabled: true, maxConcurrent: 1 } },
     });
-    hoisted.startQueuedSubagentRunMock.mockReturnValueOnce(false).mockReturnValue(true);
+    hoisted.startQueuedSubagentRunMock.mockResolvedValueOnce(false).mockResolvedValue(true);
     let stopAllowed = false;
     let agentCalls = 0;
     let abortCalls = 0;
@@ -504,7 +504,7 @@ describe("spawnSubagentDirect seam flow", () => {
     configOverride = createConfigOverride({
       tools: { swarm: { enabled: true, maxConcurrent: 1 } },
     });
-    hoisted.startQueuedSubagentRunMock.mockReturnValueOnce(false).mockReturnValue(true);
+    hoisted.startQueuedSubagentRunMock.mockResolvedValueOnce(false).mockResolvedValue(true);
     const publication = createDeferred();
     const waitEntered = createDeferred();
     const retryEntered = createDeferred();
@@ -529,7 +529,7 @@ describe("spawnSubagentDirect seam flow", () => {
               return publication.promise;
             },
             settleFailedLaunch: async (error) => {
-              hoisted.settleFailedQueuedSubagentLaunchMock(record.runId, error);
+              await hoisted.settleFailedQueuedSubagentLaunchMock(record.runId, error);
             },
           }),
         );

@@ -31,8 +31,9 @@ cancelling eligible same-repository work. Fork monitoring is read-only. Exact
 known hourly-main test and supported static failures can remain advisory when the PR leaves their
 subjects unchanged and all remaining checks finish. Canonical PR reruns let every
 Node matrix leg finish so inherited failures do not cancel the remaining proof
-needed for an explicit admin landing. Native matrix fail-fast applies only to PRs
-in other repositories. Main and manual runs retain complete matrices. See
+needed for an explicit admin landing. Add the `ci:no-fail-fast` label before a PR
+run to keep its complete matrix running after a failure. Native matrix fail-fast
+applies only to unlabeled PRs in other repositories. Main and manual runs retain complete matrices. See
 [failure cancellation](/ci/pipeline#fail-fast-order).
 
 First-hop compatibility uses a 3,200-second container budget and a 3,500-second lane
@@ -126,8 +127,11 @@ Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capaci
 
 Source-only Linux Node shards can reuse content-validated compiled workers from the protected warmer; [fixed preparation costs](/ci/capacity#fixed-job-preparation) remain separate from test execution and runner capacity.
 
-Changed-target shards containing canonical E2E tests prepare the private-QA
-runtime once before launching test children. Only a successful preparation step
+Changed-target shards whose executed file routes use the E2E config prepare the
+private-QA runtime once before launching test children, even when selection maps
+those files to a canonical unit-suite owner. Preparation builds runtime JavaScript
+and assets without global declaration emission; the AI package test separately
+prepares its required declarations. Only a successful preparation step
 enables prebuilt consumption, so the children reuse its JavaScript, assets, and
 freshness stamps instead of starting another full build.
 

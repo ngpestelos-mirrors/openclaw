@@ -12,10 +12,13 @@ import type { createGatewayInstanceRuntime } from "../../../gateway/server-insta
 import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
 import { prepareGatewayRunShutdown } from "../../../gateway/server-run-shutdown.js";
 import { withTimeout } from "../../../infra/fs-safe.js";
+import type { SqliteWorkerCommand } from "../../../infra/sqlite-worker-contract.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../../../state/openclaw-state-db-cache.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
+import type { OpenClawStateWorkerOperations } from "../../../state/openclaw-state-worker-contract.js";
+import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import {
   createOperationalRunInstanceRef,
   type AdmittedRunOperatorAuthority,
@@ -23,7 +26,6 @@ import {
 import { reserveChildAdmissionSlot, resolveChildAdmission } from "../../child-admission.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { SubagentRegistryWriteError } from "../registry/subagent-registry-persistence.js";
-import { persistSubagentRunsToDiskAsyncOrThrow } from "../registry/subagent-registry-state.js";
 import { settleSubagentRegistryPersistenceWork } from "../registry/subagent-registry.persistence.test-support.js";
 import { resetSubagentRegistryForTests } from "../registry/subagent-registry.test-helpers.js";
 import {
@@ -35,6 +37,51 @@ import { testing as spawnTesting } from "./subagent-spawn.test-support.js";
 
 type BoundParent = Awaited<ReturnType<typeof createSpawnBoundaryParent>>;
 type GatewayRuntime = ReturnType<typeof createGatewayInstanceRuntime>;
+type RegistryWrite = Extract<
+  SqliteWorkerCommand<OpenClawStateWorkerOperations>,
+  { type: "subagents.persistChanges" }
+>;
+
+function interceptChildRegistrationWrite(
+  requesterSessionKey: string,
+  fail: (
+    row: RegistryWrite["input"]["values"][number],
+    context: OpenClawStateWorkerContext,
+  ) => Promise<never>,
+) {
+  const failure = vi.fn(fail);
+  const runWorkerOperation = stateWorker.runOpenClawStateWorkerOperation;
+  let intercepted = false;
+  const spy = vi
+    .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
+    .mockImplementation((workerContext, operation, workerOptions) =>
+      runWorkerOperation(
+        workerContext,
+        (scope) =>
+          operation({
+            execute: vi
+              .fn()
+              .mockImplementation(
+                async (command: SqliteWorkerCommand<OpenClawStateWorkerOperations>) => {
+                  const row =
+                    !intercepted && command.type === "subagents.persistChanges"
+                      ? command.input.values.find(
+                          (entry) => entry.requester_session_key === requesterSessionKey,
+                        )
+                      : undefined;
+                  if (!row) {
+                    return scope.execute(command);
+                  }
+                  intercepted = true;
+                  return failure(row, workerContext);
+                },
+              ),
+          }),
+        workerOptions,
+      ),
+    );
+  return { failure, restore: () => spy.mockRestore() };
+}
 
 export function registerOperatorSpawnRollbackCases(options: {
   createBoundParent: (
@@ -71,6 +118,7 @@ export function registerOperatorSpawnRollbackCases(options: {
       const embeddedStarted = createDeferred();
       let invocation: Promise<unknown> | undefined;
       let registrationUncertain = false;
+      let registrationWrite: ReturnType<typeof interceptChildRegistrationWrite> | undefined;
       let retainedChildIdentity: { sessionId: string; lifecycleRevision?: string } | undefined;
       const cleanupAttemptSettled = createDeferred();
       const dispatchSessionMethod = runtime.recovery.dispatchSessionMethod;
@@ -113,50 +161,49 @@ export function registerOperatorSpawnRollbackCases(options: {
             embeddedSettled = true;
           }
         });
-        vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockImplementationOnce(async (runs) => {
-          const record = expectDefined(
-            [...runs.values()].find(
-              (entry) => entry.requesterSessionKey === bound.parentSessionKey,
-            ),
-            "ordinary child registration",
-          );
-          childSessionKey = record.childSessionKey;
-          childRunId = record.runId;
-          expect(subagentRuns.has(record.runId)).toBe(false);
-          const acceptedRun = expectDefined(
-            context.chatAbortControllers.get(record.runId),
-            "accepted child execution owner",
-          );
-          expect(acceptedRun.sessionKey).toBe(record.childSessionKey);
-          if (phase === "uncertain registration") {
-            await embeddedStarted.promise;
-            expect(expectDefined(embeddedSignal, "running child abort signal").aborted).toBe(false);
-            expect(context.chatAbortControllers.get(record.runId)).toBe(acceptedRun);
-            const childEntry = expectDefined(
-              loadSessionEntry({
-                storePath: bound.storePath,
-                sessionKey: record.childSessionKey,
-              }),
-              "uncertain registration child session",
+        registrationWrite = interceptChildRegistrationWrite(
+          bound.parentSessionKey,
+          async (record) => {
+            childSessionKey = record.child_session_key;
+            childRunId = record.run_id;
+            expect(subagentRuns.has(record.run_id)).toBe(false);
+            const acceptedRun = expectDefined(
+              context.chatAbortControllers.get(record.run_id),
+              "accepted child execution owner",
             );
-            retainedChildIdentity = {
-              sessionId: childEntry.sessionId,
-              lifecycleRevision: childEntry.lifecycleRevision,
-            };
-            expect(acceptedRun).toMatchObject({
-              sessionKey: record.childSessionKey,
-              sessionId: childEntry.sessionId,
-            });
-            registrationUncertain = true;
-          }
-          if (phase === "accepted registration") {
-            source.revoke();
-          }
-          throw new SubagentRegistryWriteError(
-            phase === "uncertain registration" ? "unknown" : "not-committed",
-            new Error("ordinary child registry write failed"),
-          );
-        });
+            expect(acceptedRun.sessionKey).toBe(record.child_session_key);
+            if (phase === "uncertain registration") {
+              await embeddedStarted.promise;
+              expect(expectDefined(embeddedSignal, "running child abort signal").aborted).toBe(
+                false,
+              );
+              expect(context.chatAbortControllers.get(record.run_id)).toBe(acceptedRun);
+              const childEntry = expectDefined(
+                loadSessionEntry({
+                  storePath: bound.storePath,
+                  sessionKey: record.child_session_key,
+                }),
+                "uncertain registration child session",
+              );
+              retainedChildIdentity = {
+                sessionId: childEntry.sessionId,
+                lifecycleRevision: childEntry.lifecycleRevision,
+              };
+              expect(acceptedRun).toMatchObject({
+                sessionKey: record.child_session_key,
+                sessionId: childEntry.sessionId,
+              });
+              registrationUncertain = true;
+            }
+            if (phase === "accepted registration") {
+              source.revoke();
+            }
+            throw new SubagentRegistryWriteError(
+              phase === "uncertain registration" ? "unknown" : "not-committed",
+              new Error("ordinary child registry write failed"),
+            );
+          },
+        );
       }
       try {
         const pending = createBoundSpawnInvocation(bound, {
@@ -198,7 +245,7 @@ export function registerOperatorSpawnRollbackCases(options: {
           expect(options.runEmbeddedAgent).toHaveBeenCalledOnce();
           expect(embeddedSignal).toBeDefined();
           if (phase === "uncertain registration") {
-            expect(persistSubagentRunsToDiskAsyncOrThrow).toHaveBeenCalledOnce();
+            expect(registrationWrite?.failure).toHaveBeenCalledOnce();
           }
         } else {
           expect(
@@ -229,7 +276,7 @@ export function registerOperatorSpawnRollbackCases(options: {
       } finally {
         embeddedStarted.resolve();
         spawnTesting.setDepsForTest();
-        vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockReset();
+        registrationWrite?.restore();
         for (const entry of context.chatAbortControllers.values()) {
           if (entry !== bound.parent.entry) {
             entry.controller.abort(new Error("spawn rollback fixture cleanup"));
@@ -248,7 +295,7 @@ export function registerOperatorSpawnRollbackCases(options: {
         }
         cleanupDispatch?.mockRestore();
         try {
-          resetSubagentRegistryForTests({ persist: false });
+          await resetSubagentRegistryForTests({ persist: false });
           expect(source.holds).toBe(0);
         } catch (error) {
           failures.push(error);
@@ -365,26 +412,21 @@ export function registerOperatorSpawnRollbackCases(options: {
           embeddedSettled = true;
         }
       });
-      vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockImplementationOnce(
-        async (runs, _ids, writeOptions) => {
-          registrationAdmission = writeOptions.context.admission;
-          const record = expectDefined(
-            [...runs.values()].find(
-              (entry) => entry.requesterSessionKey === bound.parentSessionKey,
-            ),
-            "ordinary child registration",
-          );
+      const registrationWrite = interceptChildRegistrationWrite(
+        bound.parentSessionKey,
+        async (record, workerContext) => {
+          registrationAdmission = workerContext.admission;
           const entry = expectDefined(
-            context.chatAbortControllers.get(record.runId),
+            context.chatAbortControllers.get(record.run_id),
             "accepted child execution owner",
           );
           const session = expectDefined(
-            loadSessionEntry({ storePath: bound.storePath, sessionKey: record.childSessionKey }),
+            loadSessionEntry({ storePath: bound.storePath, sessionKey: record.child_session_key }),
             "uncertain registration child session",
           );
           child = {
-            runId: record.runId,
-            sessionKey: record.childSessionKey,
+            runId: record.run_id,
+            sessionKey: record.child_session_key,
             entry,
             sessionIdentity: {
               sessionId: session.sessionId,
@@ -429,7 +471,7 @@ export function registerOperatorSpawnRollbackCases(options: {
           error: expect.stringContaining("max active children"),
         });
         expect(options.runEmbeddedAgent).toHaveBeenCalledOnce();
-        expect(persistSubagentRunsToDiskAsyncOrThrow).toHaveBeenCalledOnce();
+        expect(registrationWrite.failure).toHaveBeenCalledOnce();
 
         if (transition === "reassign") {
           replacement = {
@@ -542,7 +584,7 @@ export function registerOperatorSpawnRollbackCases(options: {
         if (child && replacement) {
           removeChatAbortControllerEntry(context.chatAbortControllers, child.runId, replacement);
         }
-        vi.mocked(persistSubagentRunsToDiskAsyncOrThrow).mockReset();
+        registrationWrite.restore();
         const settled = await Promise.allSettled(invocations);
         failures.push(
           ...settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
@@ -556,7 +598,7 @@ export function registerOperatorSpawnRollbackCases(options: {
         cleanupDispatch.mockRestore();
         cleanupWarning.mockRestore();
         try {
-          resetSubagentRegistryForTests({ persist: false });
+          await resetSubagentRegistryForTests({ persist: false });
           expect(source?.holds ?? 0).toBe(0);
         } catch (error) {
           failures.push(error);
