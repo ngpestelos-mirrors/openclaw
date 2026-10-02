@@ -14,6 +14,7 @@ import {
 } from "vitest";
 import { resolveAgentDir } from "../agents/agent-scope.js";
 import { upsertAuthProfile } from "../agents/auth-profiles.js";
+import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../agents/failover/user-copy.js";
 import { withFullRuntimeReplyConfig } from "../auto-reply/reply/get-reply-fast-path.js";
 import * as replyRun from "../auto-reply/reply/get-reply-run.js";
 import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
@@ -103,12 +104,7 @@ it("reports an adopted pre-model failure as one visible failure over the Gateway
     expect(accepted.ok).toBe(true);
     expect(accepted.payload).toMatchObject({ runId, status: "started" });
     const failed = await terminal;
-    expect(failed).toMatchObject({
-      payload: {
-        errorMessage:
-          "⚠️ OpenClaw couldn't finish this request. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.",
-      },
-    });
+    expect(JSON.stringify(failed)).toContain(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
     expect(JSON.stringify(failed)).not.toContain(originalError.message);
     const replay = await rpcReq(socket, "chat.send", request);
     expect(replay.ok).toBe(false);
