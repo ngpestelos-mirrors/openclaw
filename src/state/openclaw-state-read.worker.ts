@@ -107,6 +107,7 @@ import {
   isStateDiagnosticCommand,
   readStateDiagnosticCommand,
 } from "./openclaw-state-read-diagnostics.js";
+import { stateReadRegistry } from "./openclaw-state-read-operation-registry.js";
 import { readStateRegistryCommand } from "./openclaw-state-read-registry.js";
 import type {
   OpenClawStateReadReply,
@@ -134,12 +135,16 @@ import {
 import { readUserProfileAvatarCommand } from "./user-profiles-internal.js";
 
 serveOwnedWorkerTasks(
-  (input): OpenClawStateReadReply => {
+  function read(input): OpenClawStateReadReply | Promise<OpenClawStateReadReply> {
     let sourceAdmitted: true | undefined;
     let nativeCleanupFailure: OpenClawStateReadReply["nativeCleanupFailure"];
     try {
       if (!isReadRequest(input)) {
         throw new Error("Shared-state reader requires a captured state location and read command");
+      }
+      const prepared = stateReadRegistry.prepare(input.command.type);
+      if (prepared) {
+        return prepared.then(() => read(input));
       }
       const reply = runWithSqliteWorkerStateContext(input.context, (): OpenClawStateReadReply => {
         if (input.checkFreshAdmission) {
@@ -264,6 +269,9 @@ serveOwnedWorkerTasks(
             }
             if (isChannelIngressReadCommand(command)) {
               return readChannelIngressInDatabase(db, command);
+            }
+            if ("input" in command && stateReadRegistry.has(command)) {
+              return stateReadRegistry.execute(command, db);
             }
             if (command.type === "subagents.runs") {
               if (command.scope.kind === "all") {

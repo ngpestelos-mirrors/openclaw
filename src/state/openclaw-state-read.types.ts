@@ -74,6 +74,8 @@ import type {
   ConversationRef,
   SessionBindingRecord,
 } from "../infra/outbound/session-binding.types.js";
+import type { DiagnosticReadOperations } from "../infra/sqlite-audit-record.read-contract.js";
+import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type {
   readInterruptedUpdateCandidate,
@@ -145,6 +147,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | SqliteWorkerCommand<DiagnosticReadOperations>
   | { type: "backup.runs" }
   | TuiLastSessionReadCommand
   | ChannelIngressReadCommand
@@ -272,6 +275,7 @@ export type OpenClawStateReadRequest = {
 type ReadResult<Reply> = Reply extends { ok: true } ? Omit<Reply, "ok" | "sourceAdmitted"> : never;
 
 export type OpenClawStateReadResult =
+  | DiagnosticReadOperations[keyof DiagnosticReadOperations]["output"]
   | { type: "backup.runs"; runs: BackupRunRecord[] }
   | { type: "doctor.gatewayOwnerLease.read"; lease: GatewayOwnerLeaseIdentity | undefined }
   | {

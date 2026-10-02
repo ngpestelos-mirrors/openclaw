@@ -60,22 +60,21 @@ export function materializeDeclarationPackages(root: string, unified: boolean) {
     }
   };
   // Physical package inputs keep relocation independent of absolute junction targets.
-  // The build fence needs these real workspace helpers before any package build.
+  // The build fence needs this real workspace helper before any package build.
   const normalizationCore = path.join(root, "node_modules/@openclaw/normalization-core");
   const normalizationSource = path.resolve("packages/normalization-core");
   const normalizationManifest = JSON.parse(
     fs.readFileSync(path.join(normalizationSource, "package.json"), "utf8"),
   );
   fs.mkdirSync(normalizationCore, { recursive: true });
-  const normalizationExports: Record<string, { types: string; default: string }> = {};
-  for (const name of ["error-coercion", "record-coerce"]) {
-    const source = fs.readFileSync(path.join(normalizationSource, `src/${name}.ts`), "utf8");
-    fs.writeFileSync(path.join(normalizationCore, `${name}.ts`), source);
-    fs.writeFileSync(path.join(normalizationCore, `${name}.mjs`), stripNodeTypeScriptTypes(source));
-    normalizationExports[`./${name}`] = {
-      types: `./${name}.ts`,
-      default: `./${name}.mjs`,
-    };
+  const normalizationEntries = ["error-coercion", "record-coerce"];
+  for (const entry of normalizationEntries) {
+    const source = fs.readFileSync(path.join(normalizationSource, `src/${entry}.ts`), "utf8");
+    fs.writeFileSync(path.join(normalizationCore, `${entry}.ts`), source);
+    fs.writeFileSync(
+      path.join(normalizationCore, `${entry}.mjs`),
+      stripNodeTypeScriptTypes(source),
+    );
   }
   fs.writeFileSync(
     path.join(normalizationCore, "package.json"),
@@ -83,7 +82,12 @@ export function materializeDeclarationPackages(root: string, unified: boolean) {
       name: normalizationManifest.name,
       version: normalizationManifest.version,
       type: "module",
-      exports: normalizationExports,
+      exports: Object.fromEntries(
+        normalizationEntries.map((entry) => [
+          `./${entry}`,
+          { types: `./${entry}.ts`, default: `./${entry}.mjs` },
+        ]),
+      ),
     }),
   );
   for (const name of [
