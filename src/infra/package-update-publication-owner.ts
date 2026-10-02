@@ -31,7 +31,6 @@ import {
   createPackageIntegrityReader,
   packageIntegrityDifferences,
   PackageIntegrityMismatchError,
-  type PackageIntegrityFingerprint,
 } from "./package-update-integrity.js";
 import { assertManagedUpdateLeaseDatabaseIdentity } from "./update-managed-service-handoff-database.js";
 
@@ -156,11 +155,14 @@ export function createPublicationOwner(
     assertCurrent();
     record = journal.transition(record, phase, intent, assertion, publications);
   };
-  const matches = async (file: string, expected: PackageIntegrityFingerprint, logical: string) => {
+  const matches = async (file: string, generation: "previous" | "candidate", logical: string) => {
     if (!(await packagePathEntryExists(file))) {
       return false;
     }
-    const observed = await createPackageIntegrityReader().tree(file, logical);
+    // A prepared descriptor carries its in-process observation, so settled unchanged
+    // files are not re-read. A recovery process parses one without and re-reads all.
+    const expected = descriptor[generation];
+    const observed = await createPackageIntegrityReader().tree(file, logical, expected);
     if (!isDeepStrictEqual(observed, expected)) {
       throw new PackageIntegrityMismatchError(
         `Package publication object changed: ${file}`,
@@ -184,18 +186,10 @@ export function createPublicationOwner(
       if (!selected) {
         throw new Error("The installed package is not either recorded generation.");
       }
-      await matches(
-        live,
-        descriptor[selected],
-        selected === "previous" ? live : descriptor.originalStageRoot,
-      );
+      await matches(live, selected, selected === "previous" ? live : descriptor.originalStageRoot);
     }
-    const previous = await matches(root("previous"), descriptor.previous, live);
-    const candidate = await matches(
-      root("candidate"),
-      descriptor.candidate,
-      descriptor.originalStageRoot,
-    );
+    const previous = await matches(root("previous"), "previous", live);
+    const candidate = await matches(root("candidate"), "candidate", descriptor.originalStageRoot);
     if ((selected === "previous") === previous || (selected === "candidate") === candidate) {
       throw new Error("Package publication generation roles are ambiguous.");
     }
@@ -277,7 +271,7 @@ export function createPublicationOwner(
       if (
         !(await matches(
           live,
-          descriptor[selected],
+          selected,
           selected === "previous" ? live : descriptor.originalStageRoot,
         ))
       ) {
@@ -443,11 +437,7 @@ export function createPublicationOwner(
     await verifyClosure();
     assertActionAllowed("retire");
     const selected = selectedRetirementGeneration();
-    await matches(
-      live,
-      descriptor[selected],
-      selected === "previous" ? live : descriptor.originalStageRoot,
-    );
+    await matches(live, selected, selected === "previous" ? live : descriptor.originalStageRoot);
     if (!(await packagePathEntryExists(live))) {
       throw new Error("Selected package is missing.");
     }
@@ -458,7 +448,7 @@ export function createPublicationOwner(
       for (const name of ["previous", "candidate", "previous.candidate"] as const) {
         await matches(
           root(name),
-          name === "previous" ? descriptor.previous : descriptor.candidate,
+          name === "previous" ? "previous" : "candidate",
           name === "previous" ? live : descriptor.originalStageRoot,
         );
       }

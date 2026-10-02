@@ -142,6 +142,18 @@ path to inspect before retrying recovery. Sibling `.openclaw.update-stage-*`
 directories are outside that package fingerprint; do not remove stages that
 another updater may still be using.
 
+Within one updater process, publication and retirement checks still walk every
+entry to verify identity, metadata, directory listings, links, and a final metadata
+sweep. A file's content digest from the earlier baseline or staged-package scan is
+reused only when its complete metadata, including inode, link count, size,
+modification time, and change time, is unchanged and its change time predates that
+earlier read by at least five seconds. Recovery helpers and later commands re-read
+file contents. Like the metadata sweep, these checks observe the package rather
+than lock it: writes through an already-modified shared memory mapping may not
+update file times. Keep other package managers and tools that modify the
+installation stopped during an update. This applies to updates driven by an
+installed updater containing the change.
+
 An older installed updater that stops with `Package rollback verification byte
 limit exceeded` cannot obtain this repair from its staged candidate. Use the
 installation's [manual package update method](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun),
