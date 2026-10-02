@@ -679,8 +679,18 @@ describe("session accessor readonly listing", () => {
       { agentId, env, sessionKey: invalidSessionKey },
       { sessionId: "invalid-session", updatedAt: 1 },
     );
-    openOpenClawAgentDatabase({ agentId, env })
-      .db.prepare("UPDATE session_nodes SET entry_valid = 0 WHERE session_key = ?")
+    const database = openOpenClawAgentDatabase({ agentId, env });
+    expect(
+      readSessionIdentityEvidenceBatch([
+        { agentId, env, sessionId, sessionKey, storePath },
+        { agentId, env, sessionId: "invalid-session", sessionKey: invalidSessionKey, storePath },
+      ]),
+    ).toEqual([
+      { status: "current", sessionKey },
+      { status: "current", sessionKey: invalidSessionKey },
+    ]);
+    database.db
+      .prepare("UPDATE session_nodes SET entry_valid = 0 WHERE session_key = ?")
       .run(invalidSessionKey);
     const migrationInvalidAgentId = "migration-invalid";
     const migrationInvalidSessionKey = "agent:migration-invalid:main";
@@ -702,34 +712,39 @@ describe("session accessor readonly listing", () => {
 
     expect(
       readSessionIdentityEvidenceBatch([
-        { agentId, sessionId, sessionKey, storePath },
+        { agentId, env, sessionId, sessionKey, storePath },
         {
           agentId,
+          env,
           sessionId,
           sessionKey: "agent:worker-1:old-key",
           storePath,
         },
-        { agentId, sessionId: "missing-session", sessionKey, storePath },
+        { agentId, env, sessionId: "missing-session", sessionKey, storePath },
         {
           agentId,
+          env,
           sessionId: "invalid-session",
           sessionKey: invalidSessionKey,
           storePath,
         },
         {
           agentId: missingAgentId,
+          env,
           sessionId: "missing-session",
           sessionKey: "agent:missing:main",
           storePath: missingStorePath,
         },
         {
           agentId: migrationInvalidAgentId,
+          env,
           sessionId: "migration-invalid-session",
           sessionKey: migrationInvalidSessionKey,
           storePath: invalidStorePath,
         },
         {
           agentId: unreadableAgentId,
+          env,
           sessionId: "unreadable-session",
           sessionKey: "agent:unreadable:main",
           storePath: unreadableStorePath,
@@ -788,6 +803,11 @@ describe("session accessor readonly listing", () => {
         { sessionId: readableSessionId, updatedAt: 1 },
       );
       const database = openOpenClawAgentDatabase({ agentId, env });
+      expect(
+        readSessionIdentityEvidenceBatch([
+          { agentId, env, sessionId, sessionKey, storePath: database.path },
+        ]),
+      ).toEqual([{ status: "current", sessionKey }]);
       if (corruption === "participant" || corruption === "participant-integer") {
         recordSessionParticipant(
           { agentId, env, sessionKey },
@@ -826,15 +846,17 @@ describe("session accessor readonly listing", () => {
 
       expect(
         readSessionIdentityEvidenceBatch([
-          { agentId, sessionId, sessionKey, storePath: database.path },
+          { agentId, env, sessionId, sessionKey, storePath: database.path },
           {
             agentId,
+            env,
             sessionId,
             sessionKey: "agent:worker-1:old-key",
             storePath: database.path,
           },
           {
             agentId,
+            env,
             sessionId: readableSessionId,
             sessionKey: readableSessionKey,
             storePath: database.path,

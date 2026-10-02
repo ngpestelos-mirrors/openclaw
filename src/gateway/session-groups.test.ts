@@ -11,6 +11,7 @@ import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   runOpenClawAgentWriteTransaction,
 } from "../state/openclaw-agent-db.js";
@@ -50,6 +51,7 @@ describe("session groups catalog", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await closeOpenClawAgentDatabasesAsync(root);
     closeOpenClawAgentDatabasesForTest();
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
@@ -62,7 +64,7 @@ describe("session groups catalog", () => {
   ): Promise<string> {
     const storePath = path.join(root, "agents", agentId, "sessions", "sessions.json");
     for (const [sessionKey, entry] of Object.entries(entries)) {
-      await replaceSessionEntry({ agentId, storePath, sessionKey }, entry);
+      await replaceSessionEntry({ agentId, env, storePath, sessionKey }, entry);
     }
     return storePath;
   }
