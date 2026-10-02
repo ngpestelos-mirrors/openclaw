@@ -60,11 +60,10 @@ function matchesNativeWorkspaceArguments(params: {
   const expectedArgs =
     params.phase === "happy" ? params.behavior.happyArgs : params.behavior.failureArgs;
   if (params.behavior.nativeToolName === "bash") {
+    const command = params.args.command;
     const signature = params.behavior.commandReceiptSignatures?.[params.phase];
     return Boolean(
-      signature &&
-      typeof params.args.command === "string" &&
-      signature.every((part) => params.args.command.includes(part)),
+      signature && typeof command === "string" && signature.every((part) => command.includes(part)),
     );
   }
   if (params.args.input === expectedArgs.input) return true;
