@@ -6,7 +6,7 @@ import {
 import { sessionChanges } from "../../../sessions/session-row-changes.js";
 import type { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
 import { SubagentRegistryMutationRejectedError } from "./subagent-registry-persistence.js";
-import { getLatestSubagentRunByChildSessionKeyFromRuns } from "./subagent-registry-queries.js";
+import { getLatestSubagentRunForChild } from "./subagent-registry-queries.js";
 import type {
   RestartRecoveryParams,
   RestartRecoveryResult,
@@ -75,11 +75,9 @@ export function createInterruptedRecoveryCoordinator(params: {
       isSameSubagentRunOwner(current, entry) &&
       recoveryFacts(current).every((fact, index) => fact === expected[index]) &&
       isSameSubagentRunOwner(
-        getLatestSubagentRunByChildSessionKeyFromRuns(
+        getLatestSubagentRunForChild(
           params.getRunsForChildSession(entry.childSessionKey, entry.childAgentId),
-          entry.childSessionKey,
-          undefined,
-          entry.childAgentId,
+          entry,
         ),
         entry,
       )

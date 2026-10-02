@@ -7,7 +7,7 @@ import {
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { transferFollowupCohort } from "../completion/session-followup-cohort.js";
-import { matchesSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import {
   publishSubagentRunChanges,

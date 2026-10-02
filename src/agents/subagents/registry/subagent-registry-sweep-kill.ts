@@ -6,10 +6,8 @@ import {
   isSessionLifecycleMutationActive,
   runExclusiveSessionLifecycleMutation,
 } from "../../../sessions/session-lifecycle-admission.js";
-import {
-  matchesSubagentChildSessionOwner,
-  resolveSubagentChildSessionOwner,
-} from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
+import { resolveSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
 import {
   prepareSubagentKillSession,
   type SubagentKillSession,
@@ -20,7 +18,7 @@ import {
 } from "./subagent-lifecycle-events.js";
 import { PROVISIONAL_KILL_RECONCILIATION_MS } from "./subagent-registry-helpers.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
-import { getLatestSubagentRunByChildSessionKeyFromRuns } from "./subagent-registry-queries.js";
+import { getLatestSubagentRunForChild } from "./subagent-registry-queries.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 import { compareSubagentRunGeneration, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 import {
@@ -72,12 +70,7 @@ export async function reconcileDurableSubagentKillIntent(params: {
   }
   const childRuns = () =>
     params.getRunsForChildSession(params.entry.childSessionKey, params.entry.childAgentId);
-  const latest = getLatestSubagentRunByChildSessionKeyFromRuns(
-    childRuns(),
-    params.entry.childSessionKey,
-    undefined,
-    params.entry.childAgentId,
-  );
+  const latest = getLatestSubagentRunForChild(childRuns(), params.entry);
   if (!isSameSubagentRunOwner(latest, params.entry)) {
     try {
       await params.retireSupersededRun(params.runId, params.entry);
@@ -96,15 +89,7 @@ export async function reconcileDurableSubagentKillIntent(params: {
     JSON.stringify(params.runs.get(params.runId)?.killIntent) === JSON.stringify(killIntent) &&
     killIntent.lifecycleGeneration !== undefined &&
     isAgentEventLifecycleGenerationCurrent(killIntent.lifecycleGeneration) &&
-    isSameSubagentRunOwner(
-      getLatestSubagentRunByChildSessionKeyFromRuns(
-        childRuns(),
-        params.entry.childSessionKey,
-        undefined,
-        params.entry.childAgentId,
-      ),
-      params.entry,
-    );
+    isSameSubagentRunOwner(getLatestSubagentRunForChild(childRuns(), params.entry), params.entry);
   const cfg = getRuntimeConfig();
   const { agentId, storePath } = resolveSubagentChildSessionOwner(params.entry, cfg);
   let session: SubagentKillSession | undefined;

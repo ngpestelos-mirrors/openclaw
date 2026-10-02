@@ -14,7 +14,7 @@ import {
 } from "../../tools/sessions-helpers.js";
 import { resolveStoredSubagentCapabilities } from "../spawn/subagent-capabilities.js";
 import type { SessionCapabilityLookup } from "../spawn/subagent-session-store.js";
-import { matchesSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import { observeSubagentExecution } from "./subagent-execution-observation.js";
 import { captureSubagentListReadContext, type SubagentListReadContext } from "./subagent-list.js";
 import { getSubagentRunsForRequesterSession, subagentRuns } from "./subagent-registry-memory.js";

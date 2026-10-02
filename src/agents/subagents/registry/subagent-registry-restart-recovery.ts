@@ -12,7 +12,7 @@ import {
   getSubagentRunsForChildSession,
 } from "./subagent-registry-memory.js";
 import { SubagentRegistryMutationRejectedError } from "./subagent-registry-persistence.js";
-import { getLatestSubagentRunByChildSessionKeyFromRuns } from "./subagent-registry-queries.js";
+import { getLatestSubagentRunForChild } from "./subagent-registry-queries.js";
 import {
   getRestartRecoveryReplayError,
   isRestartRecoveryLifecycleCurrent,
@@ -113,11 +113,9 @@ export async function recoverInterruptedSubagentRow(
         [...getSubagentRunsForRequesterSession(childSessionKey)]
           .filter(
             (child) =>
-              getLatestSubagentRunByChildSessionKeyFromRuns(
+              getLatestSubagentRunForChild(
                 getSubagentRunsForChildSession(child.childSessionKey, child.childAgentId),
-                child.childSessionKey,
-                undefined,
-                child.childAgentId,
+                child,
               ) === child,
           )
           .map((child) => [child.runId, child]),

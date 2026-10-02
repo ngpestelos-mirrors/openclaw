@@ -1,5 +1,5 @@
 import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
-import { matchesSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import { isDeliverySuspended } from "./subagent-delivery-state.js";
 import {
   buildSubagentRunReadTopology,
@@ -443,6 +443,19 @@ export function getLatestSubagentRunByChildSessionKeyFromRuns(
     runs instanceof Map ? runs.values() : runs,
     (entry) =>
       matchesSubagentChildSessionOwner(entry, key, childAgentId) && (!matches || matches(entry)),
+  );
+}
+
+/** Latest run for a record's child session, scoped to the owner that record captured. */
+export function getLatestSubagentRunForChild(
+  runs: Map<string, SubagentRunRecord> | Iterable<SubagentRunRecord>,
+  child: Pick<SubagentRunRecord, "childSessionKey" | "childAgentId">,
+): SubagentRunRecord | undefined {
+  return getLatestSubagentRunByChildSessionKeyFromRuns(
+    runs,
+    child.childSessionKey,
+    undefined,
+    child.childAgentId,
   );
 }
 

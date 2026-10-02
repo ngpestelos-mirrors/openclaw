@@ -1,4 +1,4 @@
-import { matchesSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 
 type ComparableSubagentRun = {
   runId: string;

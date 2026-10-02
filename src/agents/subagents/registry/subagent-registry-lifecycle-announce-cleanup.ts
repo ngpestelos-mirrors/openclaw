@@ -5,7 +5,7 @@ import { defaultRuntime } from "../../../runtime.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { loadSessionEntryByKey } from "../announce/subagent-announce-delivery.runtime.js";
-import { matchesSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import {
   ensureDeliveryState,
   getDeliveryLastError,

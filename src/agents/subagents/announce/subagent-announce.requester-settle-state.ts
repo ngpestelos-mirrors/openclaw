@@ -1,4 +1,3 @@
-import { getLatestLiveSubagentRunByChildSessionKey } from "../registry/subagent-registry-read.js";
 import type {
   RequesterSettleWakeState,
   SubagentRunRecord,
@@ -152,14 +151,4 @@ export function resolvePrivateSettlePolicy(
   // requester choose silence.
   const requireVisibleReply = requesterYielded && !hasPrivateRows;
   return { privateRows, requireVisibleReply, parentOnly, privateBinding, admissionMarker };
-}
-
-export function resolveRequesterSettleRun(sessionKey: string, agentId?: string) {
-  return (
-    getLatestLiveSubagentRunByChildSessionKey(
-      sessionKey,
-      (entry) => entry.pauseReason === "sessions_yield",
-      agentId,
-    ) ?? getLatestLiveSubagentRunByChildSessionKey(sessionKey, undefined, agentId)
-  );
 }

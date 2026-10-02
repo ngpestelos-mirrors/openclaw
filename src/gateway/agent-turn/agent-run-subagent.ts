@@ -201,3 +201,24 @@ export async function settleUnstartedGatewayFollowup(params: {
     ).warning(`failed to settle unstarted follow-up ${params.runId}`)(error);
   }
 }
+
+/** A registered subagent run passes its timeout only to the turn admitted for its own session. */
+export function resolveRegisteredSubagentTimeoutSeconds(params: {
+  sessionKey?: string;
+  agentId?: string;
+  admittedSessionId: string;
+  admittedSessionEntry: SessionEntry | undefined;
+}): number | undefined {
+  const registeredRun = params.sessionKey
+    ? getLatestLiveSubagentRunByChildSessionKey(params.sessionKey, undefined, params.agentId)
+    : undefined;
+  const registeredSession = registeredRun?.childSessionIdentity;
+  // Admission may adopt a replacement; retained rows must match its final identity.
+  const inherits =
+    registeredRun &&
+    !registeredRun.execution.suppressSessionEffects &&
+    registeredSession?.sessionId === params.admittedSessionId &&
+    registeredSession.sessionId === params.admittedSessionEntry?.sessionId &&
+    registeredSession.lifecycleRevision === params.admittedSessionEntry.lifecycleRevision;
+  return inherits ? (registeredRun.runTimeoutSeconds ?? 0) : undefined;
+}

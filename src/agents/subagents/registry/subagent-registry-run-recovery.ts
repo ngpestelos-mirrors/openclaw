@@ -13,7 +13,7 @@ import { runWithGatewayDetachedWorkContinuation } from "../../../process/gateway
 import { removeInternalSessionEffectsSession } from "../../internal-session-effects.js";
 import type { AgentRunSessionTarget } from "../../run-session-target.types.js";
 import { replaceRequesterCronAuthorityEntry } from "../requester-cron-authority.js";
-import { matchesSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import {
   clearDeliveryState,
   normalizeSubagentRunState,

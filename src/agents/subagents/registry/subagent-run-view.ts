@@ -1,5 +1,5 @@
 /** Canonical ordering and visibility for numbered subagent lists and targets. */
-import { matchesSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isRetainedUnendedSubagentRun } from "./subagent-run-liveness.js";
 

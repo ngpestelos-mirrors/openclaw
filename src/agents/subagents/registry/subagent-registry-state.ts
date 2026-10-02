@@ -9,7 +9,7 @@ import {
   prepareOpenClawStateReadSource,
 } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
-import { matchesSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
+import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import {
   projectSubagentRunForMaintenance,
   projectSubagentRunForSessionList,
