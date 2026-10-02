@@ -19,6 +19,7 @@ import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerOperations } from "../../../state/openclaw-state-worker-contract.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
+import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import {
   createOperationalRunInstanceRef,
   type AdmittedRunOperatorAuthority,
@@ -86,7 +87,7 @@ function interceptChildRegistrationWrite(
 export function registerOperatorSpawnRollbackCases(options: {
   createBoundParent: (
     authority?: AdmittedRunOperatorAuthority,
-    maxChildrenPerAgent?: number,
+    settings?: { maxChildrenPerAgent?: number; guestProfileId?: string },
   ) => Promise<BoundParent>;
   createBoundGateway: (bound: BoundParent) => Promise<{
     context: GatewayRequestContext;
@@ -101,14 +102,29 @@ export function registerOperatorSpawnRollbackCases(options: {
   runEmbeddedAgent: Mock<typeof import("../../embedded-agent.js").runEmbeddedAgent>;
 }) {
   it.each([
-    { phase: "preparation", label: "revoked-source preparation" },
-    { phase: "accepted registration", label: "revoked-source accepted registration" },
-    { phase: "uncertain registration", label: "uncertain registration" },
+    { phase: "preparation", label: "revoked-source preparation", scope: "operator.write" },
+    {
+      phase: "accepted registration",
+      label: "revoked-source accepted registration",
+      scope: "operator.write",
+    },
+    { phase: "uncertain registration", label: "uncertain registration", scope: "operator.write" },
+    {
+      phase: "accepted registration",
+      label: "guest revoked-source accepted registration",
+      scope: "operator.sessions.write",
+    },
   ] as const)(
     "rolls back an ordinary operator spawn and joins cleanup after $label failure",
-    async ({ phase }) => {
-      const source = createSpawnOperatorSource();
-      const bound = await options.createBoundParent(source.authority);
+    async ({ phase, scope: operatorScope }) => {
+      const guest = operatorScope === "operator.sessions.write";
+      const source = createSpawnOperatorSource(
+        guest ? ensureProfileForEmail("rollback-guest@example.test").id : "spawn-operator",
+        [operatorScope],
+      );
+      const bound = await options.createBoundParent(source.authority, {
+        guestProfileId: guest ? source.authority.profileId : undefined,
+      });
       const { context, runtime } = await options.createBoundGateway(bound);
       const preserveSession = phase === "uncertain registration";
       let childSessionKey: string | undefined;
@@ -319,7 +335,7 @@ export function registerOperatorSpawnRollbackCases(options: {
     "returns an uncertain registration error while retaining cleanup for $label",
     async ({ operator, transition }) => {
       const source = operator ? createSpawnOperatorSource() : undefined;
-      const bound = await options.createBoundParent(source?.authority, 1);
+      const bound = await options.createBoundParent(source?.authority, { maxChildrenPerAgent: 1 });
       const { context, runtime } = await options.createBoundGateway(bound);
       const embeddedStarted = createDeferred();
       const retryEntered = createDeferred();

@@ -49,10 +49,7 @@ import {
 } from "./subagent-spawn-execution-identity.js";
 import { callNativeSubagentGateway, readGatewayRunId } from "./subagent-spawn-gateway.js";
 import { buildSubagentLaunchRequest } from "./subagent-spawn-launch-request.js";
-import {
-  createSubagentSpawnLifecycleEmitter,
-  emitSubagentSpawnFailedHook,
-} from "./subagent-spawn-lifecycle.js";
+import { createSubagentSpawnLifecycleEmitter } from "./subagent-spawn-lifecycle.js";
 import { resolveSubagentSpawnRequest } from "./subagent-spawn-request.js";
 import { createInitialSubagentSession } from "./subagent-spawn-session-patch.js";
 import { bindThreadForSubagentSpawn } from "./subagent-spawn-thread-binding.js";
@@ -422,15 +419,24 @@ export async function spawnSubagentDirect(
         ),
         childLaunch.authorization,
         gatewayContextResolver,
+        childEntry?.sessionId && childEntry.lifecycleRevision
+          ? {
+              sessionKey: childSessionKey,
+              sessionId: childEntry.sessionId,
+              lifecycleRevision: childEntry.lifecycleRevision,
+              runId: childIdem,
+            }
+          : undefined,
       );
       acceptedChildRunId = readGatewayRunId(launch.response) ?? childIdem;
       cleanupOwner?.bindAcceptedRun(acceptedChildRunId);
       return launch;
     };
 
-    const emitSpawnLifecycleHooks = createSubagentSpawnLifecycleEmitter({
+    const spawnLifecycle = createSubagentSpawnLifecycleEmitter({
       hookRunner,
       childSessionKey,
+      childSessionOrigin,
       requesterInternalKey,
       progressOrigin,
       targetAgentId,
@@ -520,13 +526,7 @@ export async function spawnSubagentDirect(
         }
         let emitLifecycleHooks = threadBindingReady;
         if (phase === "dispatch" && threadBindingReady) {
-          emitLifecycleHooks = !(await emitSubagentSpawnFailedHook({
-            hookRunner,
-            childSessionKey,
-            requesterInternalKey,
-            runId: childIdem,
-            accountId: childSessionOrigin?.accountId,
-          }));
+          emitLifecycleHooks = !(await spawnLifecycle.failed(childIdem));
         }
         await cleanupCreatedSession(emitLifecycleHooks);
       },
@@ -644,7 +644,7 @@ export async function spawnSubagentDirect(
               provisionalSessionIdentity,
               launchChildRun,
               recordParticipant: recordRequesterParticipation,
-              emitSpawnLifecycleHooks,
+              emitSpawnLifecycleHooks: spawnLifecycle.spawned,
               cleanupFailedSpawn,
             }),
           }),
@@ -664,7 +664,7 @@ export async function spawnSubagentDirect(
       swarmReservationPending = false;
       collectorSessionKey = childSessionKey;
     } else {
-      await emitSpawnLifecycleHooks(childRunId);
+      await spawnLifecycle.spawned(childRunId);
     }
 
     // Publish only after preparation releases its hold and exposes the scheduler's capacity state.
