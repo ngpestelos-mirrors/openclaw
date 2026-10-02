@@ -22,9 +22,6 @@ import { setVoiceCallStateRuntime } from "../runtime-state.js";
 import { CallRecordSchema } from "../types.js";
 import { MAX_CALL_REPLAY_KEYS } from "./replay-keys.js";
 import {
-  CALL_RECORD_EVENT_CHUNKS_NAMESPACE,
-  CALL_RECORD_EVENTS_NAMESPACE,
-  CALL_RECORD_CHUNK_MAX_ENTRIES,
   findCallInStore,
   getCallHistoryFromStore,
   loadActiveCallsFromStore,
@@ -37,6 +34,9 @@ vi.mock("../../api.js", async (importOriginal) => ({
   sleep: sleepMock,
 }));
 
+const CALL_RECORD_EVENTS_NAMESPACE = "call-record-events";
+const CALL_RECORD_EVENT_CHUNKS_NAMESPACE = "call-record-event-chunks";
+const CALL_RECORD_CHUNK_MAX_ENTRIES = 48_048;
 const MANAGER_REPLAY_KEY_LIMIT = 10_000;
 
 function installStateRuntime({
