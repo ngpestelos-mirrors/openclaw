@@ -344,11 +344,7 @@ export function matchesStringFormat(value: string, format: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
   }
   if (format === "uri") {
-    try {
-      return Boolean(new URL(value).protocol);
-    } catch {
-      return false;
-    }
+    return Boolean(URL.parse(value)?.protocol);
   }
   if (format === "date") {
     if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) {

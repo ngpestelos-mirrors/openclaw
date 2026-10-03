@@ -37,25 +37,24 @@ export function parseProjectGitUrl(raw: string): ParsedProjectGitUrl | null {
   if (scp) {
     parts = githubPathParts(scp[1] ?? "");
   } else {
-    try {
-      const url = new URL(trimmed);
-      const isHttps = url.protocol === "https:";
-      const isDefaultSsh =
-        url.protocol === "ssh:" && url.username === "git" && (!url.port || url.port === "22");
-      if (
-        (!isHttps && !isDefaultSsh) ||
-        url.hostname.toLowerCase() !== "github.com" ||
-        url.password ||
-        (isHttps && url.username) ||
-        url.search ||
-        url.hash
-      ) {
-        return null;
-      }
-      parts = githubPathParts(url.pathname);
-    } catch {
+    const url = URL.parse(trimmed);
+    if (!url) {
       return null;
     }
+    const isHttps = url.protocol === "https:";
+    const isDefaultSsh =
+      url.protocol === "ssh:" && url.username === "git" && (!url.port || url.port === "22");
+    if (
+      (!isHttps && !isDefaultSsh) ||
+      url.hostname.toLowerCase() !== "github.com" ||
+      url.password ||
+      (isHttps && url.username) ||
+      url.search ||
+      url.hash
+    ) {
+      return null;
+    }
+    parts = githubPathParts(url.pathname);
   }
   if (!parts) {
     return null;

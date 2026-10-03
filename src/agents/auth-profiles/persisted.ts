@@ -3,7 +3,11 @@
  */
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeOptionalLowercaseString,
+  normalizeOptionalString,
+  readNonBlankString,
+} from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { coerceSecretRef } from "../../config/types.secrets.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
@@ -13,12 +17,7 @@ import { oauthCredentialMetadataSchema } from "./credential-schema.js";
 import { hasUsableOAuthCredential } from "./credential-state.js";
 import { isLegacyOAuthRef } from "./legacy-oauth-ref.js";
 import { hasOidcRegistration, isSafeToCopyOAuthIdentity } from "./oauth-identity.js";
-import {
-  hasOAuthIdentity,
-  isSafeToAdoptMainStoreOAuthIdentity,
-  normalizeAuthEmailToken,
-  normalizeAuthIdentityToken,
-} from "./oauth-shared.js";
+import { hasOAuthIdentity, isSafeToAdoptMainStoreOAuthIdentity } from "./oauth-shared.js";
 import {
   getRuntimeExternalCliProfileIds,
   removePersonalAuthProfileReferences,
@@ -378,8 +377,8 @@ function hasComparableOAuthIdentityConflict(
   if (hasOidcRegistration(existing) || hasOidcRegistration(candidate)) {
     return !isSafeToCopyOAuthIdentity(existing, candidate);
   }
-  const existingAccountId = normalizeAuthIdentityToken(existing.accountId);
-  const candidateAccountId = normalizeAuthIdentityToken(candidate.accountId);
+  const existingAccountId = normalizeOptionalString(existing.accountId);
+  const candidateAccountId = normalizeOptionalString(candidate.accountId);
   if (
     existingAccountId !== undefined &&
     candidateAccountId !== undefined &&
@@ -388,8 +387,8 @@ function hasComparableOAuthIdentityConflict(
     return true;
   }
 
-  const existingEmail = normalizeAuthEmailToken(existing.email);
-  const candidateEmail = normalizeAuthEmailToken(candidate.email);
+  const existingEmail = normalizeOptionalLowercaseString(existing.email);
+  const candidateEmail = normalizeOptionalLowercaseString(candidate.email);
   return (
     existingEmail !== undefined && candidateEmail !== undefined && existingEmail !== candidateEmail
   );
