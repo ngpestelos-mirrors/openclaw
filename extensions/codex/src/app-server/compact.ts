@@ -374,7 +374,7 @@ export async function maybeCompactCodexAppServerSession(
               // owns the row; a successor may need it as its recorded predecessor.
               const bindingCleared = await options.bindingStore.mutate(
                 bindingIdentity,
-                { kind: "clear", threadId: binding.threadId },
+                { kind: "clear", threadId: binding.threadId, clientId: binding.clientId },
                 assertSettlementCurrent,
                 settlementAuthority,
               );
@@ -382,7 +382,10 @@ export async function maybeCompactCodexAppServerSession(
                 return;
               }
               const currentBinding = options.bindingStore.read(bindingIdentity);
-              if (currentBinding?.threadId !== binding.threadId) {
+              if (
+                currentBinding?.threadId !== binding.threadId ||
+                currentBinding.clientId !== binding.clientId
+              ) {
                 return;
               }
               throw new Error("failed to detach unconfirmed codex app-server thread binding");

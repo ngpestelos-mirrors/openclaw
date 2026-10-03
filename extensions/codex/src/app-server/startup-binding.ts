@@ -318,6 +318,20 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
   if (binding.connectionScope === "supervision") {
     return { binding };
   }
+  const clearBinding = async () => {
+    const cleared = await params.bindingStore.mutate(
+      params.identity,
+      { kind: "clear", threadId: binding.threadId, clientId: binding.clientId },
+      params.assertCurrent,
+      params.authority,
+    );
+    if (!cleared) {
+      throw new Error(
+        "Codex startup binding changed during rotation; retry with its current owner.",
+      );
+    }
+    return { binding: undefined };
+  };
   const rolloutFiles = await listCodexAppServerRolloutFilesForThread(
     params.agentDir,
     binding.threadId,
@@ -361,16 +375,7 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
           files: oversizedFiles.map((file) => ({ path: file.path, bytes: file.bytes })),
         },
       );
-      await params.bindingStore.mutate(
-        params.identity,
-        {
-          kind: "clear",
-          threadId: binding.threadId,
-        },
-        params.assertCurrent,
-        params.authority,
-      );
-      return { binding: undefined };
+      return await clearBinding();
     }
   }
   const nativeTokenSnapshots = await Promise.all(
@@ -407,16 +412,7 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
         projectedTurnTokens: params.projectedTurnTokens,
       },
     );
-    await params.bindingStore.mutate(
-      params.identity,
-      {
-        kind: "clear",
-        threadId: binding.threadId,
-      },
-      params.assertCurrent,
-      params.authority,
-    );
-    return { binding: undefined };
+    return await clearBinding();
   }
   return {
     binding,

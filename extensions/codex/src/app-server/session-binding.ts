@@ -124,6 +124,7 @@ type CodexAppServerBindingMutation =
   | {
       kind: "patch";
       threadId: string;
+      clientId?: string;
       patch: Partial<Omit<CodexAppServerThreadBinding, "threadId">>;
     }
   | {
@@ -149,9 +150,28 @@ type CodexAppServerBindingMutation =
   | {
       kind: "clear";
       threadId?: string;
+      clientId?: string;
     };
 
 export type CodexSessionGenerationRetirementResult = "applied" | "absent" | "conflict";
+
+/** Attempt cleanup may only clear the physical owner captured before its awaited work. */
+export async function clearCodexBindingForClient(
+  store: CodexAppServerBindingStore,
+  identity: CodexAppServerBindingIdentity,
+  thread: Pick<CodexAppServerThreadBinding, "threadId" | "clientId">,
+  authority: CodexBindingAuthority,
+): Promise<boolean> {
+  if (!thread.clientId) {
+    return false;
+  }
+  return await store.mutate(
+    identity,
+    { kind: "clear", threadId: thread.threadId, clientId: thread.clientId },
+    authority.assertCurrent,
+    authority,
+  );
+}
 
 export type CodexBindingStateStore = NativeSessionBindingStateStore<StoredCodexAppServerBinding> &
   Pick<PluginStateSyncKeyedStore<StoredCodexAppServerBinding>, "entries"> & {
@@ -527,6 +547,11 @@ export function createCodexAppServerBindingStore(
               mutation.binding.connectionScope !== "supervision" &&
               mutation.binding.threadId !== mutation.expectedThreadId;
             if (
+              // Check the physical owner again on every CAS retry. Session and
+              // thread IDs survive a client replacement; they cannot authorize it.
+              ((mutation.kind === "patch" || mutation.kind === "clear") &&
+                mutation.clientId !== undefined &&
+                mutation.clientId !== active?.binding.clientId) ||
               (mutation.kind === "set" &&
                 ((mutation.if?.kind === "absent" && storedActive) ||
                   (current !== undefined && !ownsGeneration) ||

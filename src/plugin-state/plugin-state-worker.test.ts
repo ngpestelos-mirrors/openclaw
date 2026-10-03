@@ -75,7 +75,7 @@ describe("worker plugin state", () => {
         assertCurrent: read.assertSourceCurrent,
         sessionEntryCurrent: {
           source: read.source,
-          assertCurrent(current) {
+          assertCurrent(current: SessionEntryCurrentFacts | undefined) {
             facts.push(current);
             if (current?.lifecycleRevision !== "original") {
               throw new Error("Session no longer owns this claim");
@@ -144,7 +144,7 @@ describe("worker plugin state", () => {
         assertCurrent: () => {},
         sessionEntryCurrent: {
           sources: checks.map((check) => check.source),
-          assertCurrent: (entries) => {
+          assertCurrent: (entries: readonly (SessionEntryCurrentFacts | undefined)[]) => {
             checks.forEach((check, index) => check.assertCurrent(entries[index]));
           },
         },

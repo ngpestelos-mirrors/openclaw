@@ -3,6 +3,7 @@ import {
   runAgentCleanupStep,
   type AgentHarnessRuntimeArtifactBinding,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createNativeSessionBindingAuthority } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import { isIncognitoSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import {
@@ -38,6 +39,7 @@ import {
   type CodexSandboxExecEnvironment,
 } from "./sandbox-exec-server.js";
 import { matchesCodexNativeSubagentSubmissionBinding } from "./session-binding-record.js";
+import { clearCodexBindingForClient } from "./session-binding.js";
 import {
   clearSharedCodexAppServerClientIfCurrentAndUnclaimed,
   createIsolatedCodexAppServerClient,
@@ -87,6 +89,21 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     modelAdmissionSource?.release();
   }
   let nativeProcessAuthorityReleased = false;
+  // Cancellation still owes cleanup. Keep host/lineage authority until this
+  // resource owner closes, without inheriting the foreground abort signal.
+  const cleanupAuthority = createNativeSessionBindingAuthority(connection.authority.lineage, () => {
+    params.hostCapabilities.assertActive();
+    if (nativeProcessAuthorityReleased) {
+      throw new Error("Codex attempt cleanup authority has ended");
+    }
+  });
+  const clearThreadBinding = () =>
+    clearCodexBindingForClient(
+      connection.bindingStore,
+      connection.bindingIdentity,
+      state.thread,
+      cleanupAuthority,
+    );
   const releaseNativeProcessAuthority = () => {
     if (!nativeProcessAuthorityReleased) {
       nativeProcessAuthorityReleased = true;
@@ -511,14 +528,16 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
         );
       } finally {
         if (!retained) {
-          const bindingReleased =
-            !isIncognitoSessionKey(params.sessionKey) ||
-            (await connection.bindingStore.mutate(connection.bindingIdentity, {
-              kind: "clear",
-              threadId: thread.threadId,
-            }));
-          if (bindingReleased) {
-            await releaseThreadSubscription();
+          try {
+            const bindingReleased =
+              !isIncognitoSessionKey(params.sessionKey) || (await clearThreadBinding());
+            if (bindingReleased) {
+              await releaseThreadSubscription();
+            }
+          } finally {
+            if (thread.liveThreadOwnership) {
+              await releaseThreadSubscription();
+            }
           }
         }
       }
@@ -687,6 +706,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     runCleanupStep,
     registerNativeSubagentMonitor,
     releaseCurrentRoute,
+    clearThreadBinding,
     retainThreadSubscription,
     releaseThreadSubscription,
     cleanupBeforeActiveTurn,

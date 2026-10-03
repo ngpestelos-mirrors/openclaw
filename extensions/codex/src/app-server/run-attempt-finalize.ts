@@ -34,6 +34,7 @@ import {
 } from "./run-attempt-state.js";
 import type { prepareCodexAttemptTurnRequest } from "./run-attempt-turn-request.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
+import { clearCodexBindingForClient } from "./session-binding.js";
 import { captureCodexSettledTurnFinalizationContext } from "./settled-turn-context.js";
 import { normalizeCodexTrajectoryError, recordCodexTrajectoryCompletion } from "./trajectory.js";
 import { codexTranscriptMirrorRuntime } from "./transcript-mirror.js";
@@ -159,9 +160,11 @@ export async function finalizeCodexAttempt(
         {
           phase: "turn_completed",
           threadId: resourceState.thread.threadId,
+          clientId: resourceState.thread.clientId,
           turnId: activeTurnId,
           error: enrichedPromptErrorMessage,
         },
+        connection.authority,
         params.expectedSessionRuntimeOwnership,
       );
     }
@@ -182,10 +185,12 @@ export async function finalizeCodexAttempt(
           error: enrichedPromptErrorMessage,
         },
       );
-      await bindingStore.mutate(bindingIdentity, {
-        kind: "clear",
-        threadId: resourceState.thread.threadId,
-      });
+      await clearCodexBindingForClient(
+        bindingStore,
+        bindingIdentity,
+        resourceState.thread,
+        connection.authority,
+      );
     }
     const refreshedUsageLimitPromptError = await refreshCodexUsageLimitPromptError({
       client: resourceState.client,
@@ -560,6 +565,7 @@ export async function finalizeCodexAttempt(
           {
             kind: "patch",
             threadId: resourceState.thread.threadId,
+            clientId: resourceState.thread.clientId,
             patch: {
               historyCoveredThrough: new Date().toISOString(),
               ...(continuityCalibration ? { continuityCalibration } : {}),
@@ -573,10 +579,10 @@ export async function finalizeCodexAttempt(
           throw error;
         }
         if (canClearBindingForRecovery("clearing native coverage after a completed turn")) {
-          const cleared = await bindingStore.mutate(
+          const cleared = await clearCodexBindingForClient(
+            bindingStore,
             bindingIdentity,
-            { kind: "clear", threadId: resourceState.thread.threadId },
-            connection.assertCurrent,
+            resourceState.thread,
             connection.authority,
           );
           if (!cleared) {

@@ -7,6 +7,7 @@ import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-co
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
 import type { prepareCodexAttemptTurnRequest } from "./run-attempt-turn-request.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
+import { clearCodexBindingForClient } from "./session-binding.js";
 import {
   isSameCodexAppServerThreadOwner,
   withExclusiveCodexAppServerThread,
@@ -150,13 +151,10 @@ export async function cleanupCodexAttempt(
                 throw new Error("Plugin reload could not release the previous Codex thread.");
               }
               if (
-                !(await bindingStore.mutate(
+                !(await clearCodexBindingForClient(
+                  bindingStore,
                   bindingIdentity,
-                  {
-                    kind: "clear",
-                    threadId: resourceState.thread.threadId,
-                  },
-                  connection.assertCurrent,
+                  resourceState.thread,
                   connection.authority,
                 ))
               ) {
@@ -171,10 +169,7 @@ export async function cleanupCodexAttempt(
       // must retain their own subscriptions instead of evicting one another.
       const bindingReleased =
         isIncognitoSessionKey(params.sessionKey) && !retainLiveThread
-          ? await bindingStore.mutate(bindingIdentity, {
-              kind: "clear",
-              threadId: resourceState.thread.threadId,
-            })
+          ? await resources.clearThreadBinding()
           : true;
       // Clear first: a newer binding owner keeps its live subscription.
       if (
