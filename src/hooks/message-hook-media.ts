@@ -15,29 +15,13 @@ export type MessageHookMediaFact = {
 export function projectMessageHookMediaFacts(
   media: readonly MediaFact[] | null | undefined,
 ): MessageHookMediaFact[] {
-  return (media ?? []).map((fact) => {
-    const projected: MessageHookMediaFact = {};
-    if (fact.path !== undefined) {
-      projected.path = fact.path;
-    }
-    if (fact.url !== undefined) {
-      projected.url = fact.url;
-    }
-    if (fact.contentType !== undefined) {
-      projected.contentType = fact.contentType;
-    }
-    if (fact.kind !== undefined) {
-      projected.kind = fact.kind;
-    }
-    if (fact.transcribed === true) {
-      projected.transcribed = true;
-    }
-    if (fact.messageId !== undefined) {
-      projected.messageId = fact.messageId;
-    }
-    if (fact.workspaceDir !== undefined) {
-      projected.workspaceDir = fact.workspaceDir;
-    }
-    return projected;
-  });
+  return (media ?? []).map((fact): MessageHookMediaFact => ({
+    ...(fact.path !== undefined ? { path: fact.path } : {}),
+    ...(fact.url !== undefined ? { url: fact.url } : {}),
+    ...(fact.contentType !== undefined ? { contentType: fact.contentType } : {}),
+    ...(fact.kind !== undefined ? { kind: fact.kind } : {}),
+    ...(fact.transcribed === true ? { transcribed: true } : {}),
+    ...(fact.messageId !== undefined ? { messageId: fact.messageId } : {}),
+    ...(fact.workspaceDir !== undefined ? { workspaceDir: fact.workspaceDir } : {}),
+  }));
 }
