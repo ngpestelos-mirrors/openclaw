@@ -622,7 +622,9 @@ describe("Codex app-server main thread cleanup", () => {
           mayHaveWritten: false,
         }),
       },
-    ].flatMap((failure) => ["current", "successor"].map((owner) => ({ ...failure, owner }))),
+    ].flatMap(({ reason, error }) =>
+      ["current", "successor"].map((owner) => ({ reason, error, owner })),
+    ),
   )(
     "settles rejected incognito startup for the $owner physical owner when turn start $reason",
     async ({ error, owner }) => {

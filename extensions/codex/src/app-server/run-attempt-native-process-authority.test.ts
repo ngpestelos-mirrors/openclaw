@@ -189,6 +189,21 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
         turns.push(turnId);
         return turnStartResult(turnId);
       }
+      if (method === "turn/interrupt") {
+        expect(input.threadId).toBe(threadId);
+        expect(input.turnId).toBe(turns.at(-1));
+        // Codex acknowledges the interrupt before publishing its matching terminal.
+        void nextTurn().then(() =>
+          harness.notify({
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: { id: String(input.turnId), status: "interrupted", items: [] },
+            },
+          }),
+        );
+        return {};
+      }
       if (method === "thread/backgroundTerminals/list") {
         expect(input.threadId).toBe(threadId);
         const data = [...terminals.values()]
@@ -212,13 +227,17 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
     { persistedThreads: [threadId] },
   );
 
-  const begin = async (actor: Actor, nativeChild?: { threadId: string; turnId: string }) => {
+  const begin = async (
+    actor: Actor,
+    nativeChild?: { threadId: string; turnId: string },
+    replay?: Pick<Terminal, "itemId" | "processId">,
+  ) => {
     const controller = new AbortController();
     const source = new AbortController();
     let completed = false;
     const admitted = createDeferred<void>();
     const attemptId = ++attemptSequence;
-    const itemId = `${actor}-command-${attemptId}`;
+    const itemId = replay?.itemId ?? `${actor}-command-${attemptId}`;
     const params = createParams(sessionFile, workspaceDir, {
       runId: `${actor}-run-${attemptId}`,
       prompt: `${actor} qualification turn`,
@@ -301,7 +320,8 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
       throw new Error("Expected the real local sandbox exec-server owner");
     }
     const previousChildren = new Set(server.children);
-    const processId = String((actor === "maintainer" ? 1000 : 2000) + attemptId);
+    const processId =
+      replay?.processId ?? String((actor === "maintainer" ? 1000 : 2000) + attemptId);
     const relay = await invokeNativeHookRelay({
       provider: "codex",
       relayId: buildCodexNativeHookRelayId({
@@ -548,7 +568,9 @@ describe("native background process source authority", () => {
         }),
       );
       expect(guest.terminal.alive).toBe(false);
-      await expect(f.begin("guest")).rejects.toThrow("unsettled native command identity");
+      await expect(f.begin("guest", undefined, guest.terminal)).rejects.toThrow(
+        "unsettled native command identity",
+      );
     } finally {
       await f.dispose();
     }
