@@ -21,7 +21,6 @@ import {
   classifyGatewayLockProcessNamespace,
   GATEWAY_OWNER_HEARTBEAT_MS,
   GatewayLockNamespaceError,
-  type GatewayLockRole,
   type LockPayload,
   parseGatewayLockPayload,
   readGatewayLockProcessNamespace,
@@ -148,6 +147,8 @@ function verifyOwnerLock(owner: ProcessOwner, lock: StateOwnerFile | undefined):
 const log = createSubsystemLogger("gateway/state");
 
 function startOwnerHeartbeat(owner: ProcessOwner) {
+  // Root custody is first; a changed root stops renewal of all retained projections.
+  // Projection removal can race a beat without ending the worker's next interval.
   const locks: Record<string, string> = {};
   for (const lock of owner.locks) {
     locks[lock.lockPath] = fs.readFileSync(lock.lockPath, "utf8");
@@ -256,10 +257,7 @@ export function withStateDatabaseColdAdmission<T>(
   }
 }
 
-function defaultPayload(
-  databasePath: string,
-  role: GatewayLockRole = "sqlite-maintenance",
-): LockPayload {
+function defaultPayload(databasePath: string): LockPayload {
   const stateDir = resolveOpenClawStateDirForDatabasePath(databasePath);
   const startTime = getFileLockProcessStartTime(process.pid);
   return {
@@ -268,7 +266,7 @@ function defaultPayload(
     createdAt: new Date().toISOString(),
     stateDir,
     configPath: path.join(stateDir, "openclaw.json"),
-    role,
+    role: "sqlite-maintenance",
     processNamespace: readGatewayLockProcessNamespace(),
     ...(startTime === null ? {} : { startTime }),
   };
@@ -604,6 +602,29 @@ export function hasActiveGatewayStateOwner(databasePath: string): boolean {
     (owner.payload.role ?? "gateway") === "gateway" &&
     hasPhysicalOwnership(owner)
   );
+}
+
+/** Capture registered process custody; a PID or copied lock payload grants no authority. */
+export function captureGatewayStateOwner(databasePath: string) {
+  const pathname = resolveGatewayStateOwnerPath(databasePath);
+  const owner = owners.get(pathname);
+  if (!owner || owner.kind !== "process") {
+    return undefined;
+  }
+  const assertCurrent = () => {
+    if (
+      owners.get(pathname) !== owner ||
+      !owner.accepting ||
+      resolveGatewayStateOwnerPath(databasePath) !== pathname ||
+      !hasPhysicalOwnership(owner) ||
+      (owner.getProjection && !owner.getProjection()?.verifyStillHeld())
+    ) {
+      throw new GatewayStateOwnerContentionError(databasePath);
+    }
+    assertStateDatabaseAccessAllowed(databasePath);
+  };
+  assertCurrent();
+  return { ownerId: owner.payload.ownerId, role: owner.payload.role ?? "gateway", assertCurrent };
 }
 
 function hasRecentVerification(verifiedAt: number | undefined, now: number): boolean {

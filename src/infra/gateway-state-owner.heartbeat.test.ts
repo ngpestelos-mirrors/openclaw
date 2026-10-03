@@ -88,3 +88,44 @@ it("renews retained custody during synchronous work and never touches a successo
     await Promise.all(workers.map((worker) => worker.terminate()));
   }
 });
+
+it("keeps renewing the root when a projection disappears during its heartbeat", async () => {
+  const root = tempDirs.make("openclaw-owner-heartbeat-release-");
+  const rootPath = path.join(root, "root.lock");
+  const projectionPath = path.join(root, "projection.lock");
+  const locks = { [rootPath]: "root-owner", [projectionPath]: "projection-owner" };
+  for (const [lockPath, raw] of Object.entries(locks)) {
+    fs.writeFileSync(lockPath, raw);
+  }
+  const namespace = readGatewayLockProcessNamespace();
+  expect(namespace).not.toBeNull();
+  const touch = fs.utimesSync;
+  vi.spyOn(fs, "utimesSync").mockImplementation((lockPath, atime, mtime) => {
+    if (lockPath === projectionPath) {
+      fs.unlinkSync(projectionPath);
+    }
+    touch(lockPath, atime, mtime);
+  });
+  vi.useFakeTimers();
+  vi.resetModules();
+  vi.doMock("node:worker_threads", () => ({
+    parentPort: { on: vi.fn(), close: vi.fn(), postMessage: vi.fn() },
+    workerData: { locks, intervalMs: 1_000 },
+  }));
+  try {
+    await import("./gateway-state-owner-heartbeat.worker.js");
+    expect(() => vi.advanceTimersByTime(GATEWAY_OWNER_HEARTBEAT_STALE_MS + 2_000)).not.toThrow();
+    expect(fs.existsSync(projectionPath)).toBe(false);
+    expect(
+      classifyGatewayLockProcessNamespace(
+        { ...namespace, pidNamespace: "foreign-observer" },
+        rootPath,
+      ),
+    ).toBe("unknown");
+  } finally {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.doUnmock("node:worker_threads");
+    vi.resetModules();
+  }
+});

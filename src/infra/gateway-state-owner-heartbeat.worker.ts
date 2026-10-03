@@ -1,25 +1,25 @@
 import fs from "node:fs";
-import { parentPort, workerData } from "node:worker_threads";
-const params: { locks: Record<string, string>; intervalMs: number } = workerData;
-const rootPath = Object.keys(params.locks)[0];
-const timer = setInterval(() => {
-  for (const [lockPath, raw] of Object.entries(params.locks)) {
-    if (!fs.existsSync(lockPath) || fs.readFileSync(lockPath, "utf8") !== raw) {
-      if (lockPath === rootPath) {
-        return;
+import { parentPort as port, workerData } from "node:worker_threads";
+import { hasErrnoCode } from "./errno.js";
+const { locks, intervalMs }: { locks: Record<string, string>; intervalMs: number } = workerData;
+const rootPath = Object.keys(locks)[0];
+setInterval(() => {
+  try {
+    Object.entries(locks).every(([lockPath, raw]) => {
+      if (fs.existsSync(lockPath) && fs.readFileSync(lockPath, "utf8") === raw) {
+        const now = new Date();
+        fs.utimesSync(lockPath, now, now);
+        return true;
       }
-      continue;
+      return lockPath !== rootPath;
+    });
+  } catch (error) {
+    if (!hasErrnoCode(error, "ENOENT")) {
+      throw error;
     }
-    const now = new Date();
-    fs.utimesSync(lockPath, now, now);
   }
-}, params.intervalMs);
-parentPort?.on("message", (message: "stop" | [string, string]) => {
-  if (message === "stop") {
-    parentPort?.close();
-  } else {
-    params.locks[message[0]] = message[1];
-  }
-});
-parentPort?.on("close", () => clearInterval(timer));
-parentPort?.postMessage(null);
+}, intervalMs).unref();
+port?.on("message", (message: "stop" | [string, string]) =>
+  message === "stop" ? port?.close() : Object.assign(locks, { [message[0]]: message[1] }),
+);
+port?.postMessage(null);
