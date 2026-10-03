@@ -1,4 +1,4 @@
-import type { EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness-runtime";
+import type { AgentHarnessSessionRuntimeParamsV1 } from "openclaw/plugin-sdk/codex-mcp-projection";
 import type {
   CodexAppServerLiveThreadOwnership,
   CodexEphemeralThreadPolicy,
@@ -74,7 +74,7 @@ export type CodexStartOrResumeThreadParams = Omit<
   abandonClient?: () => Promise<void>;
   reserveResumeThread?: (threadId: string) => { release: () => void };
   bindingStore: CodexAppServerBindingStore;
-  params: EmbeddedRunAttemptParams;
+  params: AgentHarnessSessionRuntimeParamsV1;
   authority?: CodexBindingAuthority;
   /** Caller liveness; durable lineage is owned by authority. */
   assertCurrent?: () => void;

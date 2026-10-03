@@ -6,11 +6,32 @@ import {
 import { CodexAppServerRpcError } from "./client.js";
 import { neutralizeCodexExplicitMentionSigils } from "./context-engine-projection.js";
 import { isJsonObject } from "./protocol.js";
-import type {
-  CodexAppServerBindingIdentity,
-  CodexAppServerBindingStore,
+import {
+  assertCodexBindingMayBeReplaced,
+  type CodexAppServerBindingIdentity,
+  type CodexAppServerBindingStore,
 } from "./session-binding.js";
 import type { CodexAppServerThreadLifecycleBinding } from "./thread-lifecycle-types.js";
+
+export function canClearCodexBindingForRecovery(
+  thread: NonNullable<Parameters<typeof assertCodexBindingMayBeReplaced>[0]>,
+  expectedSessionRuntimeOwnership: boolean,
+  operation: string,
+): boolean {
+  if (expectedSessionRuntimeOwnership) {
+    // Optional recovery preserves both native ownership and the completed turn's outcome.
+    embeddedAgentLog.warn(
+      "codex app-server preserved native binding instead of recovery rotation",
+      {
+        threadId: thread.threadId,
+        operation,
+      },
+    );
+    return false;
+  }
+  assertCodexBindingMayBeReplaced(thread, operation);
+  return true;
+}
 
 export async function clearCodexBindingAfterInvalidImagePayload(
   bindingStore: CodexAppServerBindingStore,

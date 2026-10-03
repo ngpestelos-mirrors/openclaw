@@ -22,7 +22,10 @@ import {
 import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import { CODEX_TURN_START_TEXT_INPUT_MAX_CHARS } from "./context-engine-projection.js";
 import { CodexAppServerEventProjector } from "./event-projector.js";
-import { createCodexNativeMcpAppResultDetailsPreparer } from "./native-mcp-app.js";
+import {
+  createCodexNativeMcpAppResultDetailsPreparer,
+  prepareCodexNativeMcpFormResourceContext,
+} from "./native-mcp-app.js";
 import {
   canonicalizeNativeProgressCardInput,
   type CodexNativePlan,
@@ -613,6 +616,14 @@ export function activateCodexAttemptTurn(
       emitExecutionPhaseOnce("turn_accepted", { phase: "turn_accepted" });
       userInputBridgeRef.current = createCodexUserInputBridge({
         paramsForRun: params,
+        prepareResourceContext: (request) =>
+          prepareCodexNativeMcpFormResourceContext({
+            client: resourceState.client,
+            threadId: resourceState.thread.threadId,
+            attempt: params,
+            request,
+            readOrigin: (serverName) => activeProjector.getActiveMcpToolCall(serverName),
+          }),
         onOrdinaryResponse: (response) => activeProjector.recordUserInputResponse(response),
         threadId: resourceState.thread.threadId,
         turnId: activeTurnId,

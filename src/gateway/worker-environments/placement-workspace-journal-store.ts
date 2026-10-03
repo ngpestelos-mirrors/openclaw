@@ -12,15 +12,15 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
-import { stagePlacementWorkspaceResultWorkerPublication } from "./placement-turn-authority.js";
+import { stagePlacementWorkspaceJournalWorkerPublication } from "./placement-turn-authority.js";
 import {
   isWorkspaceJournalReceipt,
   type WorkerWorkspaceJournalOwner,
   type WorkspaceJournalReadCommand,
   type WorkspaceJournalReadResult,
   type WorkspaceJournalReceipt,
-  type WorkspaceJournalWorkerOperations,
-} from "./placement-workspace-journal.worker-contract.js";
+} from "./placement-workspace-journal.types.js";
+import type { WorkspaceJournalWorkerOperations } from "./placement-workspace-journal.worker-contract.js";
 import type { WorkerWorkspaceReconciliationJournal } from "./workspace-manifest.js";
 
 export function createPlacementWorkspaceJournalWorkerOps(runtime: {
@@ -57,7 +57,7 @@ export function createPlacementWorkspaceJournalWorkerOps(runtime: {
     preparation?: SqliteWorkerInputPreparation,
   ): Promise<WorkspaceJournalReceipt> {
     let admission: SqliteWorkerOperationAdmission | undefined;
-    const publications: ReturnType<typeof stagePlacementWorkspaceResultWorkerPublication>[] = [];
+    const publications: ReturnType<typeof stagePlacementWorkspaceJournalWorkerPublication>[] = [];
     let granted = false;
     let published = false;
     const check = () => {
@@ -98,7 +98,7 @@ export function createPlacementWorkspaceJournalWorkerOps(runtime: {
                 }
                 for (const owner of request.facts.owners) {
                   publications.push(
-                    stagePlacementWorkspaceResultWorkerPublication(
+                    stagePlacementWorkspaceJournalWorkerPublication(
                       context.admission.identity,
                       owner.sessionId,
                     ),

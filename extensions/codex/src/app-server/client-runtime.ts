@@ -1,5 +1,6 @@
 /** Client-scoped Codex auth and account observers. */
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { defineCodexBuildState } from "../build-state.js";
 import { refreshCodexAppServerAuthTokens } from "./auth-bridge.js";
 import { fingerprintTokenAuthProfileCacheKey } from "./auth-cache-key.js";
 import type { CodexAppServerAuthRuntimeContext as ClientRuntimeContext } from "./auth-profile.js";
@@ -11,7 +12,7 @@ import {
   hasSiblingThreadWork,
   hasThreadOwnership,
   invalidateThreadOwnership,
-  revertRetainedThreadSkillsCatalog,
+  revertRetainedThreadInstructions,
   type RetainedLiveThread,
   type CodexEphemeralThreadPolicy,
   type CodexAppServerLiveThreadOwnership,
@@ -29,6 +30,8 @@ import { isJsonObject, type CodexServiceTier, type JsonObject } from "./protocol
 import { mergeCodexRateLimitsUpdate } from "./rate-limit-cache.js";
 import { withTimeout } from "./timeout.js";
 
+type ThreadRelease = CodexAppServerLiveThreadOwnership["release"];
+
 type ClientRuntime = ThreadOwnershipState &
   CodexClientWorkspaceState & {
     context: ClientRuntimeContext;
@@ -43,15 +46,14 @@ const CODEX_APP_SERVER_LIVE_THREAD_MAX_IDLE = 64;
 /** Return a deterministic error before Codex cancels its ten-second external-auth request. */
 const CODEX_EXTERNAL_AUTH_REFRESH_TIMEOUT_MS = 9_000;
 
-const configuredClients = new WeakMap<CodexAppServerClient, ClientRuntime>();
-const physicalThreadReleases = new WeakMap<
-  CodexAppServerLiveThreadOwnership["release"],
-  CodexAppServerLiveThreadOwnership["release"]
->();
-const claimedThreadReleaseTokens = new WeakMap<
-  CodexAppServerLiveThreadOwnership["release"],
-  ThreadOwnerToken
->();
+// The shared app-server client is build-scoped. Its retained and claimed owners
+// must follow the same physical client across duplicate plugin module copies.
+const { configuredClients, physicalThreadReleases, claimedThreadReleaseTokens } =
+  defineCodexBuildState("openclaw.codexAppServerClientRuntime", () => ({
+    configuredClients: new WeakMap<CodexAppServerClient, ClientRuntime>(),
+    physicalThreadReleases: new WeakMap<ThreadRelease, ThreadRelease>(),
+    claimedThreadReleaseTokens: new WeakMap<ThreadRelease, ThreadOwnerToken>(),
+  }))();
 
 /** Only an initialized, still-open physical client can own retained native subscriptions. */
 export function isCodexAppServerClientRuntimeLive(client: CodexAppServerClient): boolean {
@@ -630,13 +632,13 @@ function claimCodexAppServerThreadOwnership(
 }
 
 /** Standalone incognito compaction retains its separately owned subscription. */
-export function revertCodexAppServerLiveThreadSkillsCatalog(
+export function revertCodexAppServerLiveThreadInstructions(
   client: CodexAppServerClient,
   threadId: string,
 ): void {
   const runtime = configuredClients.get(client);
   if (runtime && !runtime.closed) {
-    revertRetainedThreadSkillsCatalog(runtime, threadId);
+    revertRetainedThreadInstructions(runtime, threadId);
   }
 }
 

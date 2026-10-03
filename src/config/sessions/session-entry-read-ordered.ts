@@ -2,22 +2,25 @@ import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { runOpenClawAgentWriteAdmissions } from "../../state/openclaw-agent-write-admission.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
-import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
-import { captureSessionStoreReadCandidate } from "./session-store-read-candidates.js";
 import type {
   PreparedSessionEntryWorkerRead,
   SessionEntryWorkerRead,
+} from "./session-entry-read-runtime.types.js";
+import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
+import { captureSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import type {
+  SessionExactEntriesWorkerSelection,
   SessionHistoryWorkerDatabase,
 } from "./session-transcript-worker.types.js";
 
 type ReadSessionStore = <T>(
   input: SessionEntryWorkerRead,
-  consume: (
-    owner: SessionHistoryWorkerDatabase,
-    database: PreparedSessionEntryWorkerRead["database"],
-    continuation: CanonicalSessionReaderContinuation | undefined,
-    assertCurrent: () => void,
-  ) => Promise<T>,
+  consume: (source: {
+    reader: SessionHistoryWorkerDatabase;
+    database: PreparedSessionEntryWorkerRead["database"];
+    continuation?: CanonicalSessionReaderContinuation;
+    assertCurrent: () => void;
+  }) => Promise<T>,
 ) => Promise<T>;
 
 /** Native effects retain existing writer FIFO order through their synchronous consumer. */
@@ -36,8 +39,8 @@ export async function withOrderedSessionEntriesInWorker<T>(
   const enter = (index: number): Promise<T> => {
     const input = inputs[index];
     if (input) {
-      return readStore(input, async (owner, database, continuation, assertCurrent) => {
-        selected.push({ input, owner, database, continuation, assertCurrent });
+      return readStore(input, async ({ reader, database, continuation, assertCurrent }) => {
+        selected.push({ input, owner: reader, database, continuation, assertCurrent });
         try {
           return await enter(index + 1);
         } finally {
@@ -103,10 +106,15 @@ export async function withOrderedSessionEntriesInWorker<T>(
           const reads: PreparedSessionEntryWorkerRead[] = [];
           for (const { input: selectedInput, owner, database, continuation } of selected) {
             assertCurrent();
+            const selection: SessionExactEntriesWorkerSelection = selectedInput.selection
+              ? { selection: selectedInput.selection, projection: selectedInput.projection }
+              : {
+                  sessionKeys: [...new Set(selectedInput.sessionKeys)],
+                  projection: selectedInput.projection,
+                };
             const result = await owner.readExactEntries({
-              sessionKeys: [...new Set(selectedInput.sessionKeys)],
+              ...selection,
               lifecycleSessionKey: selectedInput.lifecycleSessionKey,
-              projection: selectedInput.projection,
               includeMembers: selectedInput.includeMembers,
               includeParticipantRecords: selectedInput.includeParticipantRecords,
               includeAuthorization: selectedInput.includeAuthorization,

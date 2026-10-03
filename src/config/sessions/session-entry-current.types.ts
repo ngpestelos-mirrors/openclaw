@@ -8,6 +8,14 @@ export type SessionEntryCurrentFacts = {
   lifecycleRevision?: unknown;
   lifecycleRunId?: unknown;
   activeWriterRunId?: unknown;
+  spawnedBy?: unknown;
+  spawnDepth?: unknown;
+  completionOwnerSessionKey?: unknown;
+  subagentRole?: unknown;
+  subagentControlScope?: unknown;
+  inheritedToolPolicyVersion?: unknown;
+  inheritedToolAllow?: unknown;
+  inheritedToolDeny?: unknown;
   subagentRecovery?: {
     lastRunId?: unknown;
     sessionLifecycleRunId?: unknown;
@@ -18,13 +26,20 @@ export type SessionEntryCurrentSource = CapturedSessionEntryReadSource &
   Readonly<{
     databaseIdentity: string;
     sessionKey: string;
+    sessionIdLookup?: string;
+    projection?: "capability";
   }>;
 
 /** A current-row restriction; the caller's existing admission still supplies authority. */
 export type SessionEntryCurrentCheck = Readonly<{
   source: SessionEntryCurrentSource;
   assertCurrent(facts: SessionEntryCurrentFacts | undefined): void;
-  additional?: readonly SessionEntryCurrentCheck[];
+}>;
+
+/** One predicate can depend on several source-bound rows, including absent exact-key probes. */
+export type SessionEntriesCurrentCheck = Readonly<{
+  sources: readonly SessionEntryCurrentSource[];
+  assertCurrent(entries: readonly (SessionEntryCurrentFacts | undefined)[]): void;
 }>;
 
 export type SessionEntryCurrentPreparation =

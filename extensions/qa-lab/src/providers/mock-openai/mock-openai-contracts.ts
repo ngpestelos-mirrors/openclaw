@@ -42,6 +42,7 @@ export type QaMockProviderDispatchResult = {
   failure?: QaMockProviderFailure;
   onResponseSent?: () => void;
   previewPauseMs?: number;
+  previewPause?: () => Promise<void>;
   responsePauseMs?: number;
 };
 
@@ -244,6 +245,7 @@ export const QA_TOOL_PROGRESS_PROMPT_RE = /tool progress( error)? qa check/i;
 export const QA_TOOL_LOOP_GLOBAL_BREAKER_PROMPT_RE = /global tool loop breaker qa check/i;
 export const QA_PROVIDER_HTTP_503_AFTER_TOOL_PROMPT_RE = /provider http 503 after tool qa check/i;
 export const QA_GROUP_VISIBLE_REPLY_TOOL_PROMPT_RE = /qa group visible reply tool check/i;
+export const QA_GROUP_PROGRESS_THEN_EMPTY_PROMPT_RE = /qa group progress then empty check/i;
 export const QA_MSTEAMS_THREAD_DEDUPE_PROMPT_RE = /qa msteams thread message-tool final dedupe/i;
 export const QA_THREAD_REPLY_RECEIPT_PROMPT_RE =
   /qa thread reply receipt check[\s\S]*channel id: `([^`]+)`[\s\S]*thread id: `([^`]+)`/i;
@@ -463,13 +465,14 @@ export async function writeSse(
   events: Array<StreamEvent | AnthropicStreamEvent>,
   protocol: "responses" | "anthropic",
   pauseMs?: number,
+  pause?: () => Promise<void>,
 ) {
   const frames = events.map(
     (event) =>
       `${protocol === "anthropic" ? `event: ${event.type}\n` : ""}data: ${JSON.stringify(event)}\n\n`,
   );
   const completionIndex =
-    pauseMs === undefined
+    pauseMs === undefined && pause === undefined
       ? -1
       : events.findIndex((event, index) => isPreviewCompletion(event, events[index - 1]));
   const body =
@@ -484,7 +487,11 @@ export async function writeSse(
   if (completionIndex >= 0) {
     // Flush preview deltas before delaying the final text and completion frames.
     res.write(frames.slice(0, completionIndex).join(""));
-    await sleep(pauseMs);
+    if (pause) {
+      await pause();
+    } else {
+      await sleep(pauseMs);
+    }
   }
   res.end(body);
 }

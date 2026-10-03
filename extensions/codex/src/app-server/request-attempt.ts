@@ -31,6 +31,11 @@ type AttemptDiagnostics = Pick<
   | "wireObservedAtMs"
 >;
 
+export type CodexRequestAttemptObservation =
+  | { kind: "possible-write" }
+  | { kind: "wire"; outcome: CodexRequestWireOutcome }
+  | { kind: "waiter"; outcome: CodexRequestWaiterOutcome };
+
 export type CodexRequestAttempt = {
   readonly method: string;
   readonly pending: boolean;
@@ -48,6 +53,7 @@ export function createCodexRequestAttempt(params: {
   retainWritten: boolean;
   /** Only catalog requests retain these scalar facts across unobserved waiters. */
   diagnosticIdentity?: Pick<CodexRequestWaiterSummary, "clientInstanceId" | "rpcId">;
+  observe?: (event: CodexRequestAttemptObservation) => void;
   onSettled: () => void;
   onIngressRejected?: () => void;
   /** A correlated native response, never local cancellation or transport closure. */
@@ -62,6 +68,13 @@ export function createCodexRequestAttempt(params: {
   let pending = true;
   let mayHaveWritten = false;
   let waiter: RequestWaiter | undefined;
+  const observeAttempt = (event: CodexRequestAttemptObservation) => {
+    try {
+      params.observe?.(event);
+    } catch {
+      // Observation cannot change request settlement or transport ownership.
+    }
+  };
   const diagnostics: AttemptDiagnostics | undefined = params.diagnosticIdentity
     ? {
         ...params.diagnosticIdentity,
@@ -76,6 +89,7 @@ export function createCodexRequestAttempt(params: {
       return false;
     }
     pending = false;
+    observeAttempt({ kind: "wire", outcome });
     if (diagnostics) {
       diagnostics.wireOutcomeAtWaiterSettlement = outcome;
       diagnostics.wireObservedAtMs = performance.now();
@@ -129,6 +143,7 @@ export function createCodexRequestAttempt(params: {
           if (!params.retainWritten || !mayHaveWritten) {
             finish(mayHaveWritten ? "correlation-closed" : "not-written");
           }
+          observeAttempt({ kind: "waiter", outcome: waiterOutcome });
           const callback = observe;
           observe = undefined;
           if (diagnostics && callback) {
@@ -246,6 +261,7 @@ export function createCodexRequestAttempt(params: {
     },
     markWritten() {
       mayHaveWritten = true;
+      observeAttempt({ kind: "possible-write" });
       if (diagnostics && diagnostics.firstPossibleWriteAtMs === null) {
         diagnostics.firstPossibleWriteAtMs = performance.now();
       }

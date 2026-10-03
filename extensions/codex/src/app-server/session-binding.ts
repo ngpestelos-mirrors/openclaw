@@ -6,19 +6,22 @@ import {
   type AgentHarnessSessionDeletionMutation,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
-  captureNativeSessionGenerationAuthority,
+  prepareNativeSessionGenerationAuthority,
   type NativeSessionBindingAuthority,
   createNativeSessionBindingLifecycle,
-  reclaimNativeSessionGeneration,
-  resolveNativeSessionBinding,
+  reclaimNativeSessionGenerationWithAuthority,
+  resolveNativeSessionBindingWithAuthority,
   type NativeSessionBindingLeaseOptions,
   type NativeSessionBindingStateStore,
   type NativeSessionGenerationAdoptionResult,
-  type NativeSessionGenerationOperations,
+  type NativeSessionGenerationOperationsV2,
   type NativeSessionGenerationReclaimPlan,
 } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  PluginStateKeyedStore,
+  PluginStateSyncKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import type { CodexManagedThreadStore } from "./managed-thread-store.js";
 import type { CodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
 import type { CodexNativeSubagentPendingAssignment } from "./native-subagent-pending-assignments.js";
@@ -92,9 +95,9 @@ export async function resolveCodexRunSessionBindingAuthority(params: {
   identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>;
   config?: OpenClawConfig;
   storePath?: string;
-}): Promise<Awaited<ReturnType<typeof captureNativeSessionGenerationAuthority>>["state"]> {
+}): Promise<Awaited<ReturnType<typeof prepareNativeSessionGenerationAuthority>>["state"]> {
   return (
-    await captureNativeSessionGenerationAuthority({
+    await prepareNativeSessionGenerationAuthority({
       ...params,
       target: params.identity,
       createSupersededError: createCodexSessionGenerationSupersededError,
@@ -151,7 +154,9 @@ type CodexAppServerBindingMutation =
 export type CodexSessionGenerationRetirementResult = "applied" | "absent" | "conflict";
 
 export type CodexBindingStateStore = NativeSessionBindingStateStore<StoredCodexAppServerBinding> &
-  Pick<PluginStateSyncKeyedStore<StoredCodexAppServerBinding>, "entries" | "lookupMany">;
+  Pick<PluginStateSyncKeyedStore<StoredCodexAppServerBinding>, "entries"> & {
+    asyncReads: Pick<PluginStateKeyedStore<StoredCodexAppServerBinding>, "lookup" | "lookupMany">;
+  };
 
 function bindingLeaseLostError(key: string, cause?: unknown): Error {
   return new Error(`Lost Codex binding lease: ${key}`, cause === undefined ? undefined : { cause });
@@ -161,10 +166,10 @@ export type CodexAppServerBindingStore = {
   /** Durable ownership rows kept separate from replaceable session bindings. */
   managedThreads?: CodexManagedThreadStore;
   read(identity: CodexAppServerBindingIdentity): CodexAppServerThreadBinding | undefined;
-  /** Available when the host provides positional bulk state reads. */
-  readMany?: (
+  /** Fresh worker-backed acquisition with row-ordered binding validation. */
+  readMany: (
     identities: readonly CodexAppServerBindingIdentity[],
-  ) => Generator<CodexAppServerThreadBinding | undefined, undefined, void>;
+  ) => AsyncGenerator<CodexAppServerThreadBinding | undefined, undefined, void>;
   readNativeSubagentAssignments?(
     identity: CodexAppServerBindingIdentity,
     owner: CodexNativeSubagentHistoryOwner,
@@ -219,7 +224,6 @@ type CodexSessionGenerationReclaimParams = {
   config?: OpenClawConfig;
   storePath?: string;
   assertCurrent?: () => void;
-  onHostGenerationVerified?: (assertHostGeneration: () => void) => void;
   bindingStore: CodexAppServerBindingStore;
   reclaimStale?: boolean;
 };
@@ -228,7 +232,7 @@ type CodexSessionGenerationReclaimParams = {
 export async function reclaimCurrentCodexSessionGeneration(
   params: CodexSessionGenerationReclaimParams,
 ): Promise<boolean> {
-  return await reclaimNativeSessionGeneration({
+  return await reclaimNativeSessionGenerationWithAuthority({
     ...params,
     target: params.identity,
     generation: codexSessionGenerationOperations(params.bindingStore, params.identity),
@@ -249,12 +253,10 @@ export async function resolveCodexSessionBinding(params: {
   authority?: CodexBindingAuthority;
 }): Promise<{
   binding: CodexAppServerThreadBinding | undefined;
-  assertCurrent: () => void;
-  assertLegacyCurrent: () => void;
   authority: CodexBindingAuthority;
 }> {
   const identity = params.identity;
-  return await resolveNativeSessionBinding({
+  return await resolveNativeSessionBindingWithAuthority({
     ...params,
     ...(identity.kind === "session"
       ? {
@@ -391,12 +393,7 @@ export function createCodexAppServerBindingStore(
 
   return {
     read: (identity) => readCurrentCodexAppServerBinding(state, identity),
-    ...(state.lookupMany
-      ? {
-          readMany: (identities: readonly CodexAppServerBindingIdentity[]) =>
-            readCurrentCodexAppServerBindings(state, identities),
-        }
-      : {}),
+    readMany: (identities) => readCurrentCodexAppServerBindings(state.asyncReads, identities),
     readNativeSubagentAssignments: (identity, owner) =>
       readCurrentNativePendingAssignments(state, identity, owner),
     readNativeSubagentSubmissions: (identity, owner) =>
@@ -705,16 +702,21 @@ export function createCodexAppServerBindingStore(
 function codexSessionGenerationOperations(
   store: CodexAppServerBindingStore,
   identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
-): NativeSessionGenerationOperations {
+): NativeSessionGenerationOperationsV2 {
   return {
     prepareReclaim: () => store.prepareSessionGenerationReclaim(identity),
-    adopt: (expectedPreviousSessionId, assertCurrent, authority) =>
-      store.adoptSessionGeneration(identity, expectedPreviousSessionId, assertCurrent, authority),
-    reclaim: (expectedPreviousSessionId, assertCurrent, authority) =>
+    adopt: (expectedPreviousSessionId, authority) =>
+      store.adoptSessionGeneration(
+        identity,
+        expectedPreviousSessionId,
+        authority.assertCurrent,
+        authority,
+      ),
+    reclaim: (expectedPreviousSessionId, authority) =>
       store.mutate(
         identity,
         { kind: "reclaim-generation", expectedPreviousSessionId },
-        assertCurrent,
+        authority.assertCurrent,
         authority,
       ),
   };

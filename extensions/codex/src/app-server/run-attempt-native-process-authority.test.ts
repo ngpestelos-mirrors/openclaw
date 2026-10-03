@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { invokeNativeHookRelay } from "openclaw/plugin-sdk/agent-harness-runtime";
@@ -98,6 +99,15 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
   const activeRuns: Array<{ controller: AbortController; run: Promise<unknown> }> = [];
   const events: Array<{ stream: string; data: Record<string, unknown> }> = [];
   const backgroundCleanupFailed = createDeferred<void>();
+  const settlementFailure = options.failSettlement
+    ? new Error("fixture backend settlement failed")
+    : undefined;
+  const isExpectedSettlementFailure = (error: unknown): boolean =>
+    settlementFailure !== undefined &&
+    (error === settlementFailure ||
+      (error instanceof AggregateError &&
+        error.errors.length > 0 &&
+        error.errors.every(isExpectedSettlementFailure)));
   const turns: string[] = [];
   let attemptSequence = 0;
   let socket: WebSocket | undefined;
@@ -125,10 +135,10 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
     );
   const bindingStore = { ...testCodexAppServerBindingStore, withLease };
   const sandbox = createSandboxContext({
-    ...(options.failSettlement
+    ...(settlementFailure
       ? {
           finalizeExec: async () => {
-            throw new Error("fixture backend settlement failed");
+            throw settlementFailure;
           },
         }
       : {}),
@@ -452,20 +462,43 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
       });
     },
     dispose: async () => {
-      try {
-        for (const { controller } of activeRuns) {
-          controller.abort(new Error("fixture cleanup"));
+      const errors: unknown[] = [];
+      for (const cleanup of [
+        async () => {
+          for (const { controller } of activeRuns) {
+            controller.abort(new Error("fixture cleanup"));
+          }
+          await Promise.allSettled(activeRuns.map(({ run }) => run));
+        },
+        async () => {
+          if (retainedEnvironment) {
+            const environment = retainedEnvironment;
+            retainedEnvironment = undefined;
+            await releaseCodexSandboxExecServerEnvironment(sandbox, environment);
+          }
+        },
+        () => sandboxExecServerRegistry.closeAll(),
+        async () => {
+          if (socket && socket.readyState !== socket.CLOSED) {
+            const closed = once(socket, "close");
+            socket.terminate();
+            await closed;
+          }
+        },
+        () => harness.close(),
+        () => vi.useRealTimers(),
+      ]) {
+        try {
+          await Promise.resolve(cleanup());
+        } catch (error) {
+          // Only this fixture's induced backend failure may recur during disposal.
+          if (!isExpectedSettlementFailure(error)) {
+            errors.push(error);
+          }
         }
-        await Promise.allSettled(activeRuns.map(({ run }) => run));
-        if (retainedEnvironment) {
-          await releaseCodexSandboxExecServerEnvironment(sandbox, retainedEnvironment);
-          retainedEnvironment = undefined;
-        }
-        await sandboxExecServerRegistry.closeAll();
-        socket?.terminate();
-        harness.close();
-      } finally {
-        vi.useRealTimers();
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "Native process fixture cleanup failed");
       }
     },
   };

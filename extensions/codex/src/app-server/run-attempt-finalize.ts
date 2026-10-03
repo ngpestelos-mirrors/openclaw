@@ -17,7 +17,6 @@ import { buildCodexContinuityCalibration } from "./context-engine-projection.js"
 import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import { readCodexRateLimitsRevision, readRecentCodexRateLimits } from "./rate-limit-cache.js";
 import type { CodexAttemptActiveTurn } from "./run-attempt-active-turn.js";
-import { canClearCodexBindingForRecovery } from "./run-attempt-binding-recovery.js";
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
 import {
   emitCodexAppServerEvent,
@@ -29,6 +28,7 @@ import { settleReplyMedia } from "./run-attempt-reply-media.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
 import { beginCodexAttemptSettlement } from "./run-attempt-settlement.js";
 import {
+  canClearCodexBindingForRecovery,
   clearCodexBindingAfterInvalidImagePayload,
   shouldUseFreshCodexThreadAfterContextEngineOverflow,
 } from "./run-attempt-state.js";

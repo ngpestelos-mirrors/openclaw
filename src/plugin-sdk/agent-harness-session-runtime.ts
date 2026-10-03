@@ -12,6 +12,12 @@ export {
   type NativeSessionGenerationReclaimPlan,
   type NativeSessionGenerationAdoptionResult,
 } from "../agents/harness/native-session/binding-generation.js";
+export {
+  prepareNativeSessionGenerationAuthority,
+  reclaimNativeSessionGenerationWithAuthority,
+  resolveNativeSessionBindingWithAuthority,
+  type NativeSessionGenerationOperationsV2,
+} from "../agents/harness/native-session/binding-generation-authority.js";
 export { createNativeSessionInitializationOwner } from "../agents/harness/native-session/initialization.js";
 
 export {

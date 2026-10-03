@@ -357,9 +357,11 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
   const restrictedToolSurface =
     ringZeroActive ||
     messageOnlySourceReply ||
+    params.params.requireWorkspaceOnly === true ||
     params.params.pluginHarnessToolPolicyRestricted === true;
   const allowConfiguredManagedHooks =
     params.params.pluginHarnessToolPolicyRestricted === true &&
+    params.params.requireWorkspaceOnly !== true &&
     !ringZeroActive &&
     !messageOnlySourceReply &&
     params.params.scheduledRuntimeAuthority === undefined;
@@ -394,9 +396,11 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
           requiredNativeShell: params.nativeCodeModeEnabled !== false,
           additionalDeniedFeatures: imageGenerationDenied ? ["image_generation"] : undefined,
           allowedManagedRequirementsFingerprint:
-            readScheduledCodexAppManagedRequirementsFingerprint(
-              params.params.scheduledRuntimeAuthority,
-            ),
+            params.params.requireWorkspaceOnly === true
+              ? undefined
+              : readScheduledCodexAppManagedRequirementsFingerprint(
+                  params.params.scheduledRuntimeAuthority,
+                ),
           // Plugin policy restricts model-visible tools, while configured hooks are
           // administrator policy. Stricter and detached surfaces remain fail closed.
           allowConfiguredManagedHooks,

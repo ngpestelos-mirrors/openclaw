@@ -19,8 +19,6 @@ import { resolveCodexBindingAppServerConnection } from "./binding-connection.js"
 import {
   consumeCodexAppServerLiveThread,
   protectCodexAppServerLiveThread,
-  retainCodexAppServerLiveThread,
-  revertCodexAppServerLiveThreadSkillsCatalog,
 } from "./client-runtime.js";
 import type { CodexAppServerLiveThreadOwnership } from "./client-thread-owner.js";
 import {
@@ -31,6 +29,7 @@ import {
 import {
   clearContextEngineProjectionBeforeNativeCompaction,
   resolveCodexCompactionExecutionBlock,
+  settleCodexCompactionSubscription,
   warnIfIgnoringOpenClawCompactionOverrides,
   isCodexThreadNotFoundError,
   isSameNativeCompactionBinding,
@@ -62,10 +61,7 @@ import {
   retainSharedCodexAppServerClientIfCurrent,
   type CodexAppServerClientFactory,
 } from "./shared-client.js";
-import {
-  isSameCodexAppServerThreadOwner,
-  withCodexAppServerThreadMutationHold,
-} from "./thread-ownership.js";
+import { withCodexAppServerThreadMutationHold } from "./thread-ownership.js";
 import { assertCodexSupervisionThreadLineage } from "./thread-policy.js";
 import { resumeCodexAppServerThread } from "./thread-resume.js";
 
@@ -156,7 +152,7 @@ export async function maybeCompactCodexAppServerSession(
   // Native admission uses caller authority; terminal settlement keeps captured
   // lineage after cancellation without reusing the caller's aborted signal.
   const settlementAuthority = createNativeSessionBindingAuthority(authority.lineage, () => {});
-  const assertSettlementCurrent = settlementAuthority.assertLegacyCurrent;
+  const assertSettlementCurrent = settlementAuthority.assertCurrent;
   if (!initialBinding?.threadId) {
     return failedCodexThreadBindingCompactionResult(params, {
       reason: "no codex app-server thread binding",
@@ -264,13 +260,16 @@ export async function maybeCompactCodexAppServerSession(
       return await withCodexAppServerThreadMutationHold(
         binding.threadId,
         async (hold, start) => {
-          assertAdmissionCurrent();
+          await authority.withCurrent(assertAdmissionCurrent);
           const boundClientLease = await retainSharedCodexAppServerClientByInstanceId(
             binding.clientId,
           );
-          if (attempt.abortSignal.aborted) {
-            await boundClientLease?.release();
+          try {
+            await authority.withCurrent(assertAdmissionCurrent);
             attempt.abortSignal.throwIfAborted();
+          } catch (error) {
+            await boundClientLease?.release();
+            throw error;
           }
           const client =
             boundClientLease?.client ??
@@ -376,8 +375,8 @@ export async function maybeCompactCodexAppServerSession(
               const bindingCleared = await options.bindingStore.mutate(
                 bindingIdentity,
                 { kind: "clear", threadId: binding.threadId },
-                assertCurrent,
-                authority,
+                assertSettlementCurrent,
+                settlementAuthority,
               );
               if (bindingCleared) {
                 return;
@@ -608,7 +607,7 @@ export async function maybeCompactCodexAppServerSession(
             });
             const completion = await completionWatch.completion;
             nativeRequestNeedsSettlement = false;
-            assertSettlementCurrent();
+            await settlementAuthority.withCurrent(assertSettlementCurrent);
             if (!completion.completed) {
               throw new Error(completion.reason);
             }
@@ -626,7 +625,7 @@ export async function maybeCompactCodexAppServerSession(
                 timestamp: Date.now(),
               });
             }
-            assertSettlementCurrent();
+            await settlementAuthority.withCurrent(assertSettlementCurrent);
             embeddedAgentLog.info("completed codex app-server compaction", {
               sessionId: attempt.sessionId,
               threadId: binding.threadId,
@@ -662,50 +661,16 @@ export async function maybeCompactCodexAppServerSession(
           } finally {
             completionWatch.cancel();
             try {
-              if (compactionSucceeded) {
-                // An incognito thread keeps its separately owned subscription, so
-                // it never reaches the re-retain below. Correct its record in place
-                // or the discarded catalog refresh is never delivered again.
-                revertCodexAppServerLiveThreadSkillsCatalog(client, binding.threadId);
-              }
-              if (canRetainThreadOwnership && retainedThreadOwnership) {
-                const ownership = retainedThreadOwnership;
-                const currentBinding = options.bindingStore.read(bindingIdentity);
-                // Reset uses this same generation lease; without it compaction
-                // could return an obsolete subscription after its owner ended.
-                const retained =
-                  isSameCodexAppServerThreadOwner(currentBinding, binding) &&
-                  (await options.bindingStore.withLease(bindingIdentity, async () => {
-                    const leasedBinding = options.bindingStore.read(bindingIdentity);
-                    if (!isSameCodexAppServerThreadOwner(leasedBinding, binding)) {
-                      return false;
-                    }
-                    return await retainCodexAppServerLiveThread(
-                      client,
-                      binding.threadId,
-                      ownership.release,
-                      ownership.configFingerprint,
-                      ownership.serviceTier,
-                      // Creation policy has to survive standalone compaction, or the
-                      // next turn reads a live ephemeral thread as policy drift. A
-                      // completed compaction rebuilt initial context from the
-                      // creation-time developer instructions and discarded the
-                      // injected catalog refresh, so record that reversion and let
-                      // the next turn deliver the current catalog again.
-                      ownership.ephemeralPolicy && compactionSucceeded
-                        ? {
-                            ...ownership.ephemeralPolicy,
-                            skillsInstructions: ownership.ephemeralPolicy.nativeSkillsInstructions,
-                          }
-                        : ownership.ephemeralPolicy,
-                    );
-                  }));
-                if (!retained) {
-                  await releaseThreadSubscription?.();
-                }
-              } else {
-                await releaseThreadSubscription?.();
-              }
+              await settleCodexCompactionSubscription({
+                client,
+                bindingStore: options.bindingStore,
+                identity: bindingIdentity,
+                binding,
+                authority: settlementAuthority,
+                ownership: canRetainThreadOwnership ? retainedThreadOwnership : undefined,
+                compacted: compactionSucceeded,
+                release: releaseThreadSubscription,
+              });
             } finally {
               try {
                 await modelOwner?.unregister();

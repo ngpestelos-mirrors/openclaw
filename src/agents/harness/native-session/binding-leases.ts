@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type {
+  SessionEntryCurrentCheck,
+  SessionEntriesCurrentCheck,
+} from "../../../config/sessions/session-entry-current.types.js";
+import type {
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
 } from "../../../plugin-state/plugin-state-store.js";
@@ -345,7 +349,7 @@ export type NativeSessionBindingStateStore<TRecord extends NativeSessionBindingR
 > & {
   withCurrent(authority: {
     assertCurrent: () => void;
-    sessionEntryCurrent?: import("../../../config/sessions/session-entry-current.types.js").SessionEntryCurrentCheck;
+    sessionEntryCurrent?: SessionEntryCurrentCheck | SessionEntriesCurrentCheck;
   }): Pick<PluginStateKeyedStore<TRecord, 2>, "observe" | "compareAndApply">;
 };
 

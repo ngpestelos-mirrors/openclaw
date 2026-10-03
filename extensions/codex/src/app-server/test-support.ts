@@ -174,6 +174,7 @@ export function createClientHarness(
   options: {
     autoEmitExit?: boolean;
     maxFrameBytes?: number;
+    onWriteCallback?: (callback: (error?: Error | null) => void) => void;
     onWrite?: (line: string, send: (message: unknown) => void) => void;
   } = {},
 ) {
@@ -201,7 +202,11 @@ export function createClientHarness(
   const stdin = new Writable({
     write(chunk, _encoding, callback) {
       writes.push(chunk.toString());
-      callback();
+      if (options.onWriteCallback) {
+        options.onWriteCallback(callback);
+      } else {
+        callback();
+      }
       writeEvents.emit("write");
       options.onWrite?.(chunk.toString(), (message) =>
         stdout.write(`${JSON.stringify(message)}\n`),

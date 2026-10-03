@@ -1,8 +1,12 @@
 import { loadSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
-import { captureSessionEntryCurrentRead } from "../../../config/sessions/session-entry-current-runtime.js";
+import {
+  captureNativeSessionEntryCurrentRead,
+  captureSessionEntryCurrentRead,
+} from "../../../config/sessions/session-entry-current-runtime.js";
 import type {
   SessionEntryCurrentCheck,
   SessionEntryCurrentFacts,
+  SessionEntriesCurrentCheck,
 } from "../../../config/sessions/session-entry-current.types.js";
 import {
   withSessionEntryReadOnlyInWorker,
@@ -41,13 +45,15 @@ export type NativeSessionBindingAuthority = {
   withCurrent: NativeSessionBindingWithCurrent;
   prepareMutation: () => Promise<{
     assertCurrent: () => void;
-    sessionEntryCurrent?: SessionEntryCurrentCheck;
+    sessionEntryCurrent?: SessionEntriesCurrentCheck;
   }>;
 };
 
 export function readNativeSessionBindingEntries<T>(
   reads: readonly NativeSessionBindingRead[],
-  consume: (entries: readonly (SessionEntry | undefined)[]) => T,
+  consume: (
+    entries: readonly (Pick<SessionEntry, "sessionId" | "previousSessionId"> | undefined)[],
+  ) => T,
 ): Promise<T> {
   const sameRead = (left: NativeSessionBindingRead, right: NativeSessionBindingRead) =>
     left.agentId === right.agentId &&
@@ -58,7 +64,13 @@ export function readNativeSessionBindingEntries<T>(
   const unique = reads.filter(
     (read, index) => reads.findIndex((candidate) => sameRead(candidate, read)) === index,
   );
-  const durable = unique.filter((read) => !isIncognitoSessionKey(read.sessionKey));
+  // Pin process-owned incarnations before any durable read yields.
+  const native = new Map(
+    unique
+      .filter((read) => isIncognitoSessionKey(read.sessionKey))
+      .map((read) => [read, captureNativeSessionEntryCurrentRead(read)] as const),
+  );
+  const durable = unique.filter((read) => !native.has(read));
   return withSessionEntriesFromStoresInWorker(
     durable.map((read) => ({
       ...read,
@@ -72,15 +84,10 @@ export function readNativeSessionBindingEntries<T>(
     (prepared) => {
       const entries = unique.map((read) => {
         const index = durable.indexOf(read);
-        // Process-owned incognito handles cannot be reopened in a durable reader worker.
         return index < 0
-          ? loadSessionEntryReadOnly({
-              ...read,
-              readConsistency: "latest",
-              hydrateSkillPromptRefs: false,
-            })
+          ? readNativeBindingLineage(native.get(read)!)
           : resolveSessionEntryCandidates({
-              entries: prepared[index]?.result.entries ?? [],
+              entries: prepared[index]!.result.entries,
               sessionKey: read.sessionKey,
               canonicalKeys: true,
             }).existing?.entry;
@@ -131,9 +138,23 @@ export function createNativeSessionBindingAuthority(
     },
     prepareMutation: async () => {
       assertCurrent();
-      let restriction: SessionEntryCurrentCheck | undefined;
+      const checks: SessionEntryCurrentCheck[] = [];
       const nativeChecks: Array<() => void> = [];
+      const native = new Map(
+        lineage
+          .filter(({ read }) => isIncognitoSessionKey(read.sessionKey))
+          .map(
+            (expected) => [expected, captureNativeSessionEntryCurrentRead(expected.read)] as const,
+          ),
+      );
       for (const expected of lineage) {
+        const nativeRead = native.get(expected);
+        if (nativeRead) {
+          const check = () => assertEntry(expected, readNativeBindingLineage(nativeRead));
+          check();
+          nativeChecks.push(check);
+          continue;
+        }
         await withSessionEntryReadOnlyInWorker(
           expected.read,
           assertCurrent,
@@ -147,16 +168,13 @@ export function createNativeSessionBindingAuthority(
               nativeChecks.push(() => assertEntry(expected, captured.readCurrent()));
               return;
             }
-            const next: SessionEntryCurrentCheck = {
+            checks.push({
               source: captured.source,
               assertCurrent: (facts) => {
                 captured.assertSourceCurrent();
                 assertEntry(expected, facts);
               },
-            };
-            restriction = restriction
-              ? { ...restriction, additional: [...(restriction.additional ?? []), next] }
-              : next;
+            });
           },
         );
       }
@@ -167,18 +185,28 @@ export function createNativeSessionBindingAuthority(
         }
       };
       assertMutationCurrent();
+      const restriction: SessionEntriesCurrentCheck | undefined = checks.length
+        ? {
+            sources: checks.map((check) => check.source),
+            assertCurrent: (entries) => {
+              checks.forEach((check, index) => check.assertCurrent(entries[index]));
+            },
+          }
+        : undefined;
       return { assertCurrent: assertMutationCurrent, sessionEntryCurrent: restriction };
     },
     assertLegacyCurrent: () => {
       assertCurrent();
       for (const expected of lineage) {
-        let entry: SessionEntry | undefined;
+        let entry: Pick<SessionEntry, "sessionId" | "previousSessionId"> | undefined;
         try {
-          entry = loadSessionEntryReadOnly({
-            ...expected.read,
-            readConsistency: "latest",
-            hydrateSkillPromptRefs: false,
-          });
+          entry = isIncognitoSessionKey(expected.read.sessionKey)
+            ? readNativeBindingLineage(captureNativeSessionEntryCurrentRead(expected.read))
+            : loadSessionEntryReadOnly({
+                ...expected.read,
+                readConsistency: "latest",
+                hydrateSkillPromptRefs: false,
+              });
         } catch {
           throw expected.createSupersededError(expected.sessionId);
         }
@@ -186,6 +214,20 @@ export function createNativeSessionBindingAuthority(
       }
     },
   };
+}
+
+function readNativeBindingLineage(
+  captured: ReturnType<typeof captureNativeSessionEntryCurrentRead>,
+) {
+  const entry = captured.readCurrent();
+  if (!entry) {
+    return undefined;
+  }
+  const previousSessionId = entry.previousSessionId;
+  if (previousSessionId !== undefined && typeof previousSessionId !== "string") {
+    throw new Error("Native session lineage has an invalid predecessor");
+  }
+  return { sessionId: entry.sessionId, previousSessionId };
 }
 
 /** Batch every owner into one retained read rather than nesting writer admissions. */

@@ -102,7 +102,7 @@ export async function resolvePreparedCodexCommandAuthority(
     : undefined;
   // Manual control commands retain the existing synchronous authority contract.
   // Native turn execution uses the worker-backed authority separately.
-  const assertHostCurrent = currentSession?.assertLegacyCurrent ?? (() => {});
+  const assertHostCurrent = currentSession?.authority.assertLegacyCurrent ?? (() => {});
   const resolvedTarget =
     target && (!sessionIdentity || !isDeepStrictEqual(target.identity, sessionIdentity))
       ? await resolveCodexSessionBinding({

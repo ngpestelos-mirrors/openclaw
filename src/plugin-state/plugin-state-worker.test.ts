@@ -142,7 +142,12 @@ describe("worker plugin state", () => {
       await store.register("tab", "open");
       const guarded = store.withCurrent!({
         assertCurrent: () => {},
-        sessionEntryCurrent: { ...checks[0]!, additional: checks.slice(1) },
+        sessionEntryCurrent: {
+          sources: checks.map((check) => check.source),
+          assertCurrent: (entries) => {
+            checks.forEach((check, index) => check.assertCurrent(entries[index]));
+          },
+        },
       });
       const first = await store.observe!("tab");
       await expect(
