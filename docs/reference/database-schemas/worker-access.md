@@ -600,6 +600,17 @@ owners, so a nested scope cannot close an executor retained by its parent.
 
 ## Carry facts, publish after commit
 
+Sandbox-browser workspace reservations, activity/port upserts, and browser row
+removal use the existing shared-state writer. Exact-generation retirement shares
+that queue and validates the inspected allocation inside its transaction. Each command captures its database
+and input before yielding; the worker rereads the current row and preserves its
+creation and image fields. Removal shares the writer FIFO so an earlier queued
+activity update cannot restore a removed row. Browser allocation awaits the
+reservation, and transaction/commit grants retain the live workspace assertion.
+That assertion still performs the existing synchronous session and worktree
+authority reads; those other owners remain separate migration work. Schemas,
+stored bytes, retention, and update behavior are unchanged.
+
 Workspace snapshots and conditional alias registration, first-writer setup merges,
 and exact expired-state deletion use the shared-state writer. Read-only snapshots
 retain the existing reader. The host captures the physical database and filesystem
@@ -1441,8 +1452,16 @@ shutdown stops scheduling and joins accepted cleanup. An OpenClaw chat that save
 a key for a config path writes its store entry in the same worker: one
 transaction mints a random entry name, inserts a new row without touching
 existing ones, and admits the write through the requester's live
-authority at transaction and commit. Other secret-store set/delete operations
-remain separate synchronous migration debt.
+authority at transaction and commit. Ordinary settings set, batch import, delete,
+and exact-writer rollback now use that same writer, and metadata listings use the
+existing reader. Store-bound questions retain authority through persistence and
+publish only an acknowledged safe answer. Reset hides their public entries
+immediately while accepted work settles privately. Runtime refresh follows the
+commit; failed refresh never invites replay of a saved answer. The released
+synchronous question SDK methods retain their contracts. Runtime value and exec
+environment reads, hidden GitHub operations, and the CLI allowed-host setter
+remain with their existing owners. Schemas, retention, stored bytes, and update
+behavior are unchanged.
 
 Placement change reporting reads its before/after snapshots in the shared-state
 read worker using the placement store's row codec. It transfers only session
