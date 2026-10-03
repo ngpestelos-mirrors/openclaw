@@ -86,9 +86,7 @@ export async function resolveNextcloudTalkRoomKind(params: {
         },
       },
       auditContext: "nextcloud-talk.room-info",
-      policy: ssrfPolicyFromPrivateNetworkOptIn(
-        account.config.network?.dangerouslyAllowPrivateNetwork,
-      ),
+      policy: ssrfPolicyFromPrivateNetworkOptIn(account.config),
       timeoutMs: params.timeoutMs ?? NEXTCLOUD_TALK_ROOM_INFO_TIMEOUT_MS,
     });
   } catch (error) {

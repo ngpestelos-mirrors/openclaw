@@ -123,9 +123,7 @@ export async function sendMessageNextcloudTalk(
       body: bodyStr,
     },
     auditContext: "nextcloud-talk-send",
-    policy: ssrfPolicyFromPrivateNetworkOptIn(
-      account.config.network?.dangerouslyAllowPrivateNetwork,
-    ),
+    policy: ssrfPolicyFromPrivateNetworkOptIn(account.config),
     timeoutMs: opts.timeoutMs ?? NEXTCLOUD_TALK_SEND_TIMEOUT_MS,
   });
 
@@ -239,9 +237,7 @@ export async function sendReactionNextcloudTalk(
       body,
     },
     auditContext: "nextcloud-talk-reaction",
-    policy: ssrfPolicyFromPrivateNetworkOptIn(
-      account.config.network?.dangerouslyAllowPrivateNetwork,
-    ),
+    policy: ssrfPolicyFromPrivateNetworkOptIn(account.config),
     timeoutMs: opts.timeoutMs ?? NEXTCLOUD_TALK_SEND_TIMEOUT_MS,
   });
 

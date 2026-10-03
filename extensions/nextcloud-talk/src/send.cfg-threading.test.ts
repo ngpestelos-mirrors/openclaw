@@ -65,7 +65,6 @@ describe("nextcloud-talk send cfg threading", () => {
     accountId: "default",
     baseUrl: "https://nextcloud.example.com",
     secret: "secret-value",
-    config: {},
   };
 
   function mockNextcloudMessageResponse(messageId: number, timestamp: number): void {

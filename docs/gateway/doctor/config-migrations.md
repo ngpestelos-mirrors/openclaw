@@ -354,12 +354,12 @@ the backups until the repaired config and migrated state have been verified.
 
 ## Channel private-network opt-ins
 
-Matrix, Mattermost, Nextcloud Talk, and Tlon runtime paths read only
+Matrix, Mattermost, and Tlon runtime paths read only
 `network.dangerouslyAllowPrivateNetwork` at the channel or account scope.
-Nextcloud Talk and Tlon retain plugin-owned Doctor transforms for the older flat
-`allowPrivateNetwork` key. They preserve an explicit canonical boolean, including
-`false`. Run `openclaw doctor --fix` before using those legacy configs with a
-directly replaced binary. Updates invoke the same transforms through Doctor and
+Tlon retains its plugin-owned Doctor transform for the older flat
+`allowPrivateNetwork` key. It preserves an explicit canonical boolean, including
+`false`. Run `openclaw doctor --fix` before using that legacy config with a
+directly replaced binary. Updates invoke the same transform through Doctor and
 the normal config backup flow. Deferred plugin migrations retain their inputs
 for Doctor after installation; those inputs do not enable runtime private-network
 access.
