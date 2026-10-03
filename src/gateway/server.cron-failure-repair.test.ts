@@ -1,4 +1,4 @@
-// A failing owned job's repair runs as an ordinary owner-conversation turn, never a heartbeat.
+// A failing owned job's repair runs as an ordinary owner-conversation turn.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -41,7 +41,7 @@ async function runAndWaitForFinished(ws: WebSocket, jobId: string) {
   await finished;
 }
 
-test("repairs an owned job with an ordinary owner-topic turn whatever the heartbeat config", async () => {
+test("repairs an isolated job with an ordinary owner-topic turn", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-cron-repair-"));
   const prevSkipCron = process.env.OPENCLAW_SKIP_CRON;
   process.env.OPENCLAW_SKIP_CRON = "0";
@@ -58,21 +58,6 @@ test("repairs an owned job with an ordinary owner-topic turn whatever the heartb
   await saveCronStore(testState.cronStorePath, { version: 1, jobs: [] });
   const group = "-100155462274";
   const ownerSessionKey = `agent:main:telegram:group:${group}:topic:42`;
-  const hour = new Date().getUTCHours();
-  // Our production heartbeat shape: none of it may apply to the repair turn.
-  testState.agentConfig = {
-    heartbeat: {
-      every: "1h",
-      target: "none",
-      isolatedSession: true,
-      lightContext: true,
-      activeHours: {
-        start: `${String((hour + 2) % 24).padStart(2, "0")}:00`,
-        end: `${String((hour + 3) % 24).padStart(2, "0")}:00`,
-        timezone: "UTC",
-      },
-    },
-  };
   testState.sessionStorePath = path.join(dir, "sessions.json");
   await writeSessionStore({
     agentId: "main",
@@ -116,8 +101,8 @@ test("repairs an owned job with an ordinary owner-topic turn whatever the heartb
   await runAndWaitForFinished(ws, jobId);
 
   await vi.waitFor(() => expect(agentCommandMock).toHaveBeenCalledOnce());
-  // The owner topic's own session and route: no `:heartbeat` side session, no dropped reply,
-  // and only the turn's authored reply is delivered (no runtime timeout warning).
+  // Repair uses the owner topic's session and route, not the job's isolated session.
+  // Only the turn's authored reply is delivered, without runtime failure notices.
   expect(agentCommandMock.mock.calls[0]?.[0]).toMatchObject({
     sessionKey: ownerSessionKey,
     deliver: true,

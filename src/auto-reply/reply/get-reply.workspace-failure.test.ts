@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   initSessionState: vi.fn(),
 }));
 registerGetReplyRuntimeOverrides(mocks);
-const { getReplyFromConfig } = await import("./get-reply.js");
+const { getReplyFromConfigInternal } = await import("./get-reply.js");
 const { getRuntimeConfig } = await import("../../config/config.js");
 const { ensureAgentWorkspace } = await import("../../agents/workspace.js");
 const aliasError = new WorkspaceAliasRepointedError({
@@ -29,7 +29,7 @@ afterEach(() => vi.unstubAllEnvs());
 
 it("returns a visible repair notice without sending workspace paths to the channel", async () => {
   vi.mocked(ensureAgentWorkspace).mockRejectedValueOnce(aliasError);
-  const reply = await getReplyFromConfig(buildGetReplyCtx(), undefined, {});
+  const reply = await getReplyFromConfigInternal(buildGetReplyCtx(), undefined, {});
   expect(reply).toMatchObject({ text: expect.stringContaining("openclaw doctor") });
   const text = [reply].flat()[0]?.text;
   expect(text).toContain("⚠️");
@@ -42,19 +42,16 @@ it("turns a vanished workspace into a visible terminal reply", async () => {
   vi.mocked(ensureAgentWorkspace).mockRejectedValueOnce(
     new WorkspaceVanishedError({ workspaceDir: "/home/user/clawd" }),
   );
-  await expect(getReplyFromConfig(buildGetReplyCtx(), undefined, {})).resolves.toMatchObject({
+  await expect(
+    getReplyFromConfigInternal(buildGetReplyCtx(), undefined, {}),
+  ).resolves.toMatchObject({
     text: expect.stringContaining("workspace is missing"),
   });
 });
 
-it("keeps heartbeat workspace failures throwing for heartbeat-owned logging", async () => {
-  vi.mocked(ensureAgentWorkspace).mockRejectedValueOnce(aliasError);
-  await expect(getReplyFromConfig(buildGetReplyCtx(), { isHeartbeat: true }, {})).rejects.toBe(
-    aliasError,
-  );
-});
-
 it("rethrows other workspace provisioning failures unchanged", async () => {
   vi.mocked(ensureAgentWorkspace).mockRejectedValueOnce(new Error("EACCES: permission denied"));
-  await expect(getReplyFromConfig(buildGetReplyCtx(), undefined, {})).rejects.toThrow(/EACCES/u);
+  await expect(getReplyFromConfigInternal(buildGetReplyCtx(), undefined, {})).rejects.toThrow(
+    /EACCES/u,
+  );
 });

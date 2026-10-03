@@ -166,56 +166,19 @@ describe("resolveCronSession", () => {
     ).toThrow('Session "agent:main:main" is archived. Restore it before starting new work.');
   });
 
-  it("rolls an archived isolated heartbeat session into a fresh run", () => {
-    const result = resolveWithStoredEntry({
-      sessionKey: "agent:main:main:heartbeat",
-      entry: {
-        sessionId: "archived-heartbeat-session-id",
-        updatedAt: NOW_MS - 1000,
-        archivedAt: NOW_MS,
-        heartbeatIsolatedBaseSessionKey: "agent:main:main",
-      },
-      forceNew: true,
-    });
-
-    expect(result.isNewSession).toBe(true);
-    expect(result.previousSessionId).toBe("archived-heartbeat-session-id");
-    expect(result.sessionEntry.sessionId).not.toBe("archived-heartbeat-session-id");
-    expect(result.sessionEntry.archivedAt).toBeUndefined();
-    expect(result.sessionEntry.heartbeatIsolatedBaseSessionKey).toBeUndefined();
-  });
-
-  it("keeps an initializing isolated heartbeat blocked during forced rollover", () => {
+  it("keeps an initializing isolated session blocked during forced rollover", () => {
     expect(() =>
       resolveWithStoredEntry({
-        sessionKey: "agent:main:main:heartbeat",
+        sessionKey: "agent:main:cron:initializing",
         entry: {
-          sessionId: "initializing-heartbeat-session-id",
+          sessionId: "initializing-session-id",
           updatedAt: NOW_MS - 1000,
-          archivedAt: NOW_MS,
           initializationPending: true,
-          heartbeatIsolatedBaseSessionKey: "agent:main:main",
         },
         forceNew: true,
       }),
     ).toThrow(
-      'Session "agent:main:main:heartbeat" is still initializing. Retry after initialization completes.',
-    );
-  });
-
-  it("keeps an archived isolated heartbeat read-only without forceNew", () => {
-    expect(() =>
-      resolveWithStoredEntry({
-        sessionKey: "agent:main:main:heartbeat",
-        entry: {
-          sessionId: "archived-heartbeat-session-id",
-          updatedAt: NOW_MS - 1000,
-          archivedAt: NOW_MS,
-          heartbeatIsolatedBaseSessionKey: "agent:main:main",
-        },
-      }),
-    ).toThrow(
-      'Session "agent:main:main:heartbeat" is archived. Restore it before starting new work.',
+      'Session "agent:main:cron:initializing" is still initializing. Retry after initialization completes.',
     );
   });
 
@@ -492,9 +455,6 @@ describe("resolveCronSession", () => {
           startedAt: NOW_MS - 10_000,
           endedAt: NOW_MS - 1_000,
           runtimeMs: 9_000,
-          lastHeartbeatText: "old heartbeat",
-          lastHeartbeatSentAt: NOW_MS - 1_000,
-          heartbeatIsolatedBaseSessionKey: "agent:main:cron:old",
           model: "claude-opus-4-6",
           modelProvider: "anthropic",
           agentHarnessId: "claude-cli",
@@ -581,9 +541,6 @@ describe("resolveCronSession", () => {
       expect(result.sessionEntry.startedAt).toBeUndefined();
       expect(result.sessionEntry.endedAt).toBeUndefined();
       expect(result.sessionEntry.runtimeMs).toBeUndefined();
-      expect(result.sessionEntry.lastHeartbeatText).toBeUndefined();
-      expect(result.sessionEntry.lastHeartbeatSentAt).toBeUndefined();
-      expect(result.sessionEntry.heartbeatIsolatedBaseSessionKey).toBeUndefined();
       expect(result.sessionEntry.model).toBeUndefined();
       expect(result.sessionEntry.modelProvider).toBeUndefined();
       expect(result.sessionEntry.agentHarnessId).toBeUndefined();

@@ -55,7 +55,7 @@ export function resolveEmbeddedRunSessionLanePolicy(
       triggerPriority = "foreground";
       break;
     case "cron":
-    case "heartbeat":
+    case "event":
     case "memory":
     case "overflow":
       triggerPriority = "background";

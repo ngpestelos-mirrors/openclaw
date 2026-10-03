@@ -42,6 +42,8 @@ export function describeStateSchemaMigration(
       return "prepared workers → one-use capacity and fixed workspace ownership";
     case "github-publication-requester-authority-v18":
       return "GitHub publication receipts → original requesting authority";
+    case "automation-policy-fence-v21":
+      return "Heartbeat monitors → ordinary automation timing and delivery policy fence";
     case "operator-approvals-system-agent":
       return "operator approvals → OpenClaw system changes";
     case "session-watch-cursor-provenance-v4":

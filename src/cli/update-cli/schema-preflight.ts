@@ -6,7 +6,7 @@ import { cloneEnvWithPlatformSemantics } from "../../config/env-vars.js";
 import { createConfigIO } from "../../config/io.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolveConfiguredAgentDatabaseCandidatePaths } from "../../config/sessions/targets.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   OPENCLAW_DATABASE_SCHEMA_DOCS_URL,
@@ -28,9 +28,20 @@ type TargetDatabaseSchemaContext = {
 
 export type TargetDatabaseSchemaContextOptions = {
   legacyConfigPlan?: LegacyConfigUpdatePlan;
-  /** Candidate admission owns schema validation; the installed process still pins source bytes. */
-  configValidation?: "candidate";
-};
+} & (
+  | {
+      /** Read-only candidate validation; the result must never become a config write plan. */
+      validateConfigForAdmission: (
+        snapshot: ConfigFileSnapshot,
+      ) => Promise<OpenClawConfig | undefined>;
+      configValidation?: never;
+    }
+  | {
+      validateConfigForAdmission?: never;
+      /** Candidate admission owns schema validation; the installed process still pins source bytes. */
+      configValidation?: "candidate";
+    }
+);
 
 /** Candidate admission sees only the invoking process's config and shared-state selectors. */
 export function isCandidateAdmissionContextCovered(
@@ -142,8 +153,20 @@ export async function captureTargetDatabaseSchemaContext(
       legacyConfigPlan = planLegacyConfigForUpdateChannel(snapshot, writeOptions);
     }
   }
+  const validateConfigForAdmission = options?.validateConfigForAdmission;
+  if (validateConfigForAdmission && !isArtifactPreservingStateRead()) {
+    throw new Error("Candidate config projection requires artifact-preserving admission.");
+  }
+  // Validate the freshly read source, never a projection captured before an awaited read.
+  const admissionConfig =
+    validateConfigForAdmission && !legacyConfigPlan
+      ? await validateConfigForAdmission(snapshot)
+      : undefined;
   if (
-    (!snapshot.valid && !legacyConfigPlan && configValidation !== "candidate") ||
+    ((!snapshot.valid || validateConfigForAdmission) &&
+      !legacyConfigPlan &&
+      !admissionConfig &&
+      configValidation !== "candidate") ||
     snapshot.readError
   ) {
     throw createUpdateConfigFailure(snapshot);
@@ -153,10 +176,13 @@ export async function captureTargetDatabaseSchemaContext(
     config:
       configValidation === "candidate"
         ? snapshot.sourceConfig
-        : (legacyConfigPlan?.config ?? snapshot.sourceConfig ?? snapshot.config),
+        : (legacyConfigPlan?.config ?? admissionConfig ?? snapshot.sourceConfig ?? snapshot.config),
     configSnapshot: snapshot,
     readEnv,
     ...(legacyConfigPlan ? { legacyConfigPlan } : {}),
+    ...(admissionConfig && !isDeepStrictEqual(admissionConfig, snapshot.sourceConfig)
+      ? { configProjectedForAdmission: true }
+      : {}),
     ...(configValidation ? { configValidation } : {}),
   };
 }

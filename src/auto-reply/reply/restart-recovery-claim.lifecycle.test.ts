@@ -115,7 +115,6 @@ it.each([
           }
           const reply = await handleReplyAgentRunError(new Error("Backend stopped"), {
             resolveVisibleReplyDelivery: async () => false,
-            isHeartbeat: false,
             replyExpectation: "required",
             isRestartRecoveryArmed: controller.isArmed,
             replyOperation: operation,
@@ -160,7 +159,6 @@ it("does not arm an old claim from a same-generation successor row", async () =>
       operation.abortForRestart();
       const reply = await handleReplyAgentRunError(new Error("Backend stopped"), {
         resolveVisibleReplyDelivery: async () => false,
-        isHeartbeat: false,
         replyExpectation: "required",
         isRestartRecoveryArmed: controller.isArmed,
         replyOperation: operation,
@@ -214,7 +212,6 @@ it.each([false, true])(
         operation.abortForRestart();
         const settled = await handleReplyAgentRunError(new Error("Backend stopped"), {
           resolveVisibleReplyDelivery: async () => false,
-          isHeartbeat: false,
           replyExpectation: "required",
           isRestartRecoveryArmed: controller.isArmed,
           replyOperation: operation,

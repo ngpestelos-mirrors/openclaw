@@ -79,7 +79,6 @@ describe("createBlockReplyDeliveryHandler", () => {
 
         const { replyPayloads } = await buildReplyPayloads({
           payloads: [{ text: "The list contains Casey." }, { text: "The audit is complete." }],
-          isHeartbeat: false,
           didLogHeartbeatStrip: false,
           blockStreamingEnabled,
           blockReplyPipeline: pipeline,
@@ -209,7 +208,6 @@ describe("createBlockReplyDeliveryHandler", () => {
       await handler({ text: "Same answer", [flag]: true });
       const { replyPayloads } = await buildReplyPayloads({
         payloads: [{ text: "Same answer" }],
-        isHeartbeat: false,
         didLogHeartbeatStrip: false,
         blockStreamingEnabled,
         blockReplyPipeline: null,
@@ -243,7 +241,6 @@ describe("createBlockReplyDeliveryHandler", () => {
     );
     const { replyPayloads } = await buildReplyPayloads({
       payloads: [finalPayload],
-      isHeartbeat: false,
       didLogHeartbeatStrip: false,
       blockStreamingEnabled: true,
       blockReplyPipeline: null,
@@ -793,7 +790,6 @@ it.each([true, false])(
     }
     const { replyPayloads } = await buildReplyPayloads({
       payloads: [{ text: "First answer." }, { text: "Final answer." }],
-      isHeartbeat: false,
       didLogHeartbeatStrip: false,
       blockStreamingEnabled: false,
       blockReplyPipeline: null,
@@ -837,7 +833,6 @@ it("keeps completed CLI segments distinct through coalescing and final dedupe", 
         prepareCliReplyPayload("Alpha", undefined, 0),
         prepareCliReplyPayload("Beta", undefined, 1),
       ],
-      isHeartbeat: false,
       didLogHeartbeatStrip: false,
       blockStreamingEnabled: true,
       blockReplyPipeline: pipeline,
@@ -884,7 +879,6 @@ it("retains deferred-tail recovery after multiple completed CLI replies", async 
       prepareCliReplyPayload("First", undefined, 0),
       prepareCliReplyPayload("See [", undefined, 1),
     ],
-    isHeartbeat: false,
     didLogHeartbeatStrip: false,
     blockStreamingEnabled: false,
     blockReplyPipeline: null,

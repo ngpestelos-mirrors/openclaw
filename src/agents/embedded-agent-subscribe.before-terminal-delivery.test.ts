@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { HEARTBEAT_RESPONSE_TOOL_NAME } from "../auto-reply/heartbeat-tool-response.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { AssistantMessage } from "../llm/types.js";
 import { buildEmbeddedRunPayloads } from "./embedded-agent-runner/run/payloads.js";
@@ -353,35 +352,16 @@ describe("delivery failures", () => {
     expect(rejected).toHaveBeenCalled();
   });
 
-  it.each(["presentation", "heartbeat"] as const)(
-    "contains rejected %s callbacks",
-    async (kind) => {
-      const rejected = vi.fn().mockRejectedValue(new Error("callback failed"));
-      const h = setup({
-        onToolResult: kind === "presentation" ? rejected : undefined,
-        onHeartbeatToolResponse: kind === "heartbeat" ? rejected : undefined,
-        verboseLevel: "full",
-      });
-      h.tool(
-        kind === "heartbeat" ? HEARTBEAT_RESPONSE_TOOL_NAME : "read",
-        kind === "heartbeat"
-          ? {
-              details: {
-                status: "accepted",
-                outcome: "no_change",
-                notify: false,
-                summary: "Nothing needs attention.",
-              },
-            }
-          : { content: [{ type: "text", text: "file contents" }] },
-      );
-      await h.drain();
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      expect(rejected).toHaveBeenCalled();
-    },
-  );
+  it("contains rejected presentation callbacks", async () => {
+    const rejected = vi.fn().mockRejectedValue(new Error("callback failed"));
+    const h = setup({ onToolResult: rejected, verboseLevel: "full" });
+    h.tool("read", { content: [{ type: "text", text: "file contents" }] });
+    await h.drain();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(rejected).toHaveBeenCalled();
+  });
 });
 
 describe("deferred reply supersession", () => {

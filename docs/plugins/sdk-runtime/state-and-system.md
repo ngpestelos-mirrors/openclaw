@@ -53,21 +53,33 @@ closing the connection.
     System-level utilities.
 
     ```typescript
-    const accepted = api.runtime.system.enqueueSystemEvent(text, options);
-    api.runtime.system.requestHeartbeat({
-      source: "other",
-      intent: "event",
-      reason: "plugin-event",
+    const expectedTarget = await api.runtime.system.captureSessionEventTarget(agentId, sessionKey);
+    const result = await performPluginWork();
+    const receipt = api.runtime.system.enqueueSessionEvent(result.summary, {
+      agentId,
+      sessionKey,
+      expectedTarget,
     });
-    api.runtime.system.requestHeartbeatNow({ reason: "plugin-event" }); // Deprecated compatibility alias.
-    const heartbeatResult = await api.runtime.system.runHeartbeatOnce({
-      reason: "plugin-triggered-check",
-    });
+    const outcome = await receipt.settled;
     const output = await api.runtime.system.runCommandWithTimeout(cmd, args, opts);
     const hint = api.runtime.system.formatNativeDependencyHint(pkg);
     ```
 
-    `requestHeartbeatNow(...)` is tracked as `plugin-runtime-api-compat-aliases` in the [compatibility registry](/plugins/compatibility#current-compatibility-areas) with a `removeAfter` date of 2026-10-01; use `requestHeartbeat({ source, intent, reason })` in new code.
+    `enqueueSessionEvent(...)` admits an ordinary internal session turn and returns
+    an `{ id, cancel, settled }` receipt. Inspect `settled` for completed, failed,
+    or cancelled outcomes; admission alone does not prove execution or delivery.
+    Capture the destination before asynchronous work when the result belongs to
+    the original session. Captured targets are opaque, reusable snapshots; copies
+    are rejected, and the host revalidates the original session and plugin/Gateway
+    owner before execution and delivery. Omitting `expectedTarget` captures the
+    destination when the new event is admitted. Optional `deliveryContext` selects
+    the event's channel destination within normal delivery policy.
+
+    Use ordinary automations for recurring work. `requestHeartbeat(...)`,
+    `requestHeartbeatNow(...)`, and `runHeartbeatOnce(...)` are deprecated SDK
+    adapters retained through at least one stable replacement release. They
+    require a live Gateway and delegate to ordinary session events or migrated
+    automation jobs; they do not run a separate heartbeat scheduler.
 
     The `openclaw/plugin-sdk/system-event-runtime` helpers resolve legacy session
     aliases at the SDK boundary. Pass a resolved `agentId` alongside `sessionKey`
@@ -79,7 +91,11 @@ closing the connection.
     configured-owner alias resolution and reject ambiguous agent selection.
     Explicit owners that cannot normalize to an agent ID are rejected.
 
-    `runHeartbeatOnce(...)` runs a single heartbeat cycle immediately, bypassing the normal coalesce timer. Delivery defaults to the configured operator DM (`commands.ownerAllowFrom`, then channel `allowFrom`); pass `{ heartbeat: { target: "none" } }` for an internal-only run.
+    `runHeartbeatOnce(...)` selects one receipt-owned migrated/default automation
+    and reports that occurrence's terminal result. It refuses ambiguous selection
+    or missing/deleted jobs instead of recreating them. Its deprecated
+    `heartbeat.target` argument selects per-run delivery (`"none"` keeps it
+    internal) while ordinary job restrictions still apply.
 
     `runCommandWithTimeout(...)` returns captured `stdout` and `stderr`, optional
     truncation counts, `code`, `signal`, `killed`, `termination`, and

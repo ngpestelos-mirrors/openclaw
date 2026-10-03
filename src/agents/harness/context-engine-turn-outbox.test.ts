@@ -76,7 +76,6 @@ function createPayload(params: {
   } satisfies TranscriptTurnBoundary;
   return {
     boundary,
-    isHeartbeat: false,
     messages: [],
   };
 }
@@ -232,7 +231,6 @@ describe("context-engine turn outbox", () => {
       admission,
       database,
       engineId: "test",
-      isHeartbeat: true,
     });
     const terminal = await appendTranscriptMessage(target, {
       message: { role: "assistant", content: "first answer" },
@@ -249,7 +247,6 @@ describe("context-engine turn outbox", () => {
       },
       database,
       engineId: "test",
-      isHeartbeat: true,
       runtimeContext: {
         provider: "anthropic",
         modelId: "claude-sonnet-4-6",
@@ -308,7 +305,6 @@ describe("context-engine turn outbox", () => {
 
     await drainPendingContextEngineTurnsBeforeRun({
       admission: undefined,
-      isHeartbeat: false,
       lease,
       recorder,
       sessionTarget: target,
@@ -318,7 +314,6 @@ describe("context-engine turn outbox", () => {
     expect(commitTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         advancementKey: admission.logicalTurnId,
-        isHeartbeat: true,
         runtimeContext: {
           provider: "anthropic",
           modelId: "claude-sonnet-4-6",
@@ -348,7 +343,6 @@ describe("context-engine turn outbox", () => {
     expect(queued[0]?.advancement_key).toBe(currentAdmission.logicalTurnId);
     expect(JSON.parse(queued[0]?.payload_json ?? "{}")).toMatchObject({
       state: "admitted",
-      isHeartbeat: false,
     });
     expect(lease.degradeBeforeStart).not.toHaveBeenCalled();
 
@@ -386,7 +380,6 @@ describe("context-engine turn outbox", () => {
       admission,
       database,
       engineId: "test",
-      isHeartbeat: false,
     });
     const rejected = await appendTranscriptMessage(target, {
       message: { role: "assistant", content: "rejected fallback" },
@@ -437,7 +430,6 @@ describe("context-engine turn outbox", () => {
 
     await drainPendingContextEngineTurnsBeforeRun({
       admission: currentAdmission,
-      isHeartbeat: false,
       lease,
     });
 
@@ -449,7 +441,6 @@ describe("context-engine turn outbox", () => {
     expect(queued[0]?.advancement_key).toBe(currentAdmission.logicalTurnId);
     expect(JSON.parse(queued[0]?.payload_json ?? "{}")).toMatchObject({
       state: "admitted",
-      isHeartbeat: false,
     });
   });
 
@@ -470,13 +461,11 @@ describe("context-engine turn outbox", () => {
       admission: payload.boundary.admission,
       database,
       engineId: "test",
-      isHeartbeat: false,
     });
     acceptContextEngineTurnIntent({
       boundary: payload.boundary,
       database,
       engineId: "test",
-      isHeartbeat: false,
     });
     const warn = vi.fn();
 

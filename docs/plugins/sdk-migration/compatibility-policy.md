@@ -21,6 +21,29 @@ External-plugin compatibility work follows this order:
 6. Remove only after the announced migration window, usually in a major
    release.
 
+### Heartbeat execution replacement
+
+Heartbeat schedules migrate through Doctor to ordinary automations. The shipped
+`heartbeat-runtime.requestHeartbeat` and injected runtime
+`requestHeartbeat`, `requestHeartbeatNow`, and `runHeartbeatOnce` names remain
+narrow deprecated adapters through at least one stable replacement release.
+Removal requires a separately approved SDK change. New plugins use
+`api.runtime.system.enqueueSessionEvent` for immediate follow-ups and ordinary
+automations for scheduled work. See [system utilities](/plugins/sdk-runtime/state-and-system#state-config-and-system-namespaces)
+for captured session targets and settlement receipts.
+
+The historical `heartbeat_prompt_contribution` hook applies only to migrated
+or default proactive jobs recorded by the migration/provisioning owner. Other
+ordinary automations do not invoke it. Hooks can select `event` for immediate
+internal session turns; scheduled automation turns use `cron`.
+
+The public `reply-runtime.GetReplyOptions` type retains `isHeartbeat`,
+`useHeartbeatFailureCopy`, `heartbeatModelOverride`, `enableHeartbeatTool`, and
+`forceHeartbeatTool` as deprecated ignored fields during the same window.
+`typingPolicy: "heartbeat"` maps to ordinary system-event typing suppression.
+These options cannot inject scheduler or session admission authority, and do
+not restore the retired heartbeat execution path.
+
 ### Retained helper contracts
 
 Discord and llama.cpp retain their declared OpenClaw 2026.9.2 host support.

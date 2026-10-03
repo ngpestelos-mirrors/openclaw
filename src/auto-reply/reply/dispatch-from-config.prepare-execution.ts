@@ -334,7 +334,7 @@ export async function prepareDispatchExecution(state: ChooseDispatchRouteReadySt
       await state.traceReplyPhase("reply.load_reply_resolver", () =>
         loadGetReplyFromConfigRuntime(),
       )
-    ).getReplyFromConfig;
+    ).getReplyFromConfigInternal;
   const runtimeReplyConfig = state.preparedReplyDispatchRuntime?.config ?? cfg;
   const replyConfig = withFullRuntimeReplyConfig(
     params.configOverride

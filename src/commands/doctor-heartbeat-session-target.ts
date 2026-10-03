@@ -5,11 +5,11 @@ import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveHeartbeatAgents, resolveHeartbeatIntervalMs } from "../infra/heartbeat-config.js";
-import { resolveHeartbeatDeliveryTarget } from "../infra/outbound/targets.js";
+import { resolveProactiveDeliveryTarget } from "../infra/outbound/targets.js";
 import { loadLegacySessionStore } from "../infra/state-migrations.legacy-session-store.js";
 import { resolveAgentIdFromSessionKey, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { isSubagentSessionKey } from "../sessions/session-key-utils.js";
+import { resolveHeartbeatAgents, resolveHeartbeatIntervalMs } from "./doctor-heartbeat-legacy.js";
 
 /**
  * Detect heartbeat configs that pin a non-existent session. The runtime
@@ -54,10 +54,10 @@ export async function describeHeartbeatSessionTargetIssues(cfg: OpenClawConfig):
     if (target === "none") {
       continue;
     }
-    const deliveryWithoutSession = await resolveHeartbeatDeliveryTarget({
+    const deliveryWithoutSession = await resolveProactiveDeliveryTarget({
       cfg,
       agentId,
-      heartbeat: heartbeatConfig,
+      policy: heartbeatConfig,
     });
     if (deliveryWithoutSession.channel !== "none" && deliveryWithoutSession.to) {
       continue;

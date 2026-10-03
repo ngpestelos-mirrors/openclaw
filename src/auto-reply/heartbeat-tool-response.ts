@@ -1,16 +1,14 @@
+// Historical report parser retained for the stable SDK; never produces runtime replies.
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString as readString } from "@openclaw/normalization-core/string-coerce";
 import { assertCronJobScratchContent } from "../cron/scratch-contract.js";
 import { readTrimmedStringAlias } from "../utils/string-readers.js";
-import { setReplyPayloadMetadata, type ReplyPayload } from "./reply-payload.js";
-import { HEARTBEAT_TOKEN } from "./tokens.js";
 
 /** Tool name used by heartbeat runs to report visible or silent progress. */
 export const HEARTBEAT_RESPONSE_TOOL_NAME = "heartbeat_respond";
-const HEARTBEAT_RESPONSE_CHANNEL_DATA_KEY = "openclawHeartbeatResponse";
 
 /** Allowed heartbeat response outcomes. */
-export const HEARTBEAT_TOOL_OUTCOMES = [
+const HEARTBEAT_TOOL_OUTCOMES = [
   "no_change",
   "progress",
   "done",
@@ -20,7 +18,7 @@ export const HEARTBEAT_TOOL_OUTCOMES = [
 type HeartbeatToolOutcome = (typeof HEARTBEAT_TOOL_OUTCOMES)[number];
 
 /** Allowed heartbeat notification priorities. */
-export const HEARTBEAT_TOOL_PRIORITIES = ["low", "normal", "high"] as const;
+const HEARTBEAT_TOOL_PRIORITIES = ["low", "normal", "high"] as const;
 type HeartbeatToolPriority = (typeof HEARTBEAT_TOOL_PRIORITIES)[number];
 
 /** Normalized response emitted by the heartbeat response tool. */
@@ -75,44 +73,4 @@ export function normalizeHeartbeatToolResponse(value: unknown): HeartbeatToolRes
     ...(nextCheck ? { nextCheck } : {}),
     ...(scratch !== undefined ? { scratch } : {}),
   };
-}
-
-/** Resolve the user-visible notification text for a heartbeat response. */
-export function getHeartbeatToolNotificationText(response: HeartbeatToolResponse): string {
-  return response.notify ? (response.notificationText ?? response.summary).trim() : "";
-}
-
-/** Store public heartbeat response metadata while keeping scratch process-private. */
-export function createHeartbeatToolResponsePayload(response: HeartbeatToolResponse): ReplyPayload {
-  const { scratch, ...publicResponse } = response;
-  const payload: ReplyPayload = {
-    text: response.notify ? getHeartbeatToolNotificationText(response) : HEARTBEAT_TOKEN,
-    channelData: {
-      [HEARTBEAT_RESPONSE_CHANNEL_DATA_KEY]: publicResponse,
-    },
-  };
-  if (scratch !== undefined) {
-    setReplyPayloadMetadata(payload, { heartbeatScratchProposal: scratch });
-  }
-  return payload;
-}
-
-/** Select the newest valid response and retain its private metadata carrier. */
-export function selectHeartbeatToolResponse(
-  replyResult: ReplyPayload | ReplyPayload[] | undefined,
-): { response: HeartbeatToolResponse; payload: ReplyPayload } | undefined {
-  if (!replyResult) {
-    return undefined;
-  }
-  const payloads = Array.isArray(replyResult) ? replyResult : [replyResult];
-  for (let idx = payloads.length - 1; idx >= 0; idx -= 1) {
-    const payload = payloads[idx];
-    const response = normalizeHeartbeatToolResponse(
-      payload?.channelData?.[HEARTBEAT_RESPONSE_CHANNEL_DATA_KEY],
-    );
-    if (response && payload) {
-      return { response, payload };
-    }
-  }
-  return undefined;
 }

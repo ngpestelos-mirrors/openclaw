@@ -25,14 +25,14 @@ import { createTypingController } from "./typing.js";
 
 function normalizeStreamingTextReference(
   payload: ReplyPayload,
-  options: { isHeartbeat?: boolean; silentExpected?: boolean } = {},
+  options: { silentExpected?: boolean } = {},
 ): { text?: string; skip: boolean } {
   let text = payload.text;
   const reply = resolveSendableOutboundReplyParts(payload);
   if (options.silentExpected || text?.trim() === "N") {
     return { skip: true };
   }
-  if (!options.isHeartbeat && text?.includes("HEARTBEAT_OK")) {
+  if (text?.includes("HEARTBEAT_OK")) {
     const stripped = stripHeartbeatToken(text, { mode: "message" });
     if (stripped.shouldSkip && !reply.hasMedia) {
       return { skip: true };
@@ -60,7 +60,6 @@ function normalizeStreamingTextReference(
 
 function createPresentation(
   options: {
-    isHeartbeat?: boolean;
     silentExpected?: boolean;
     conversationContext?: string;
     normalizeMediaPaths?: (payload: ReplyPayload) => Promise<ReplyPayload>;
@@ -73,7 +72,6 @@ function createPresentation(
 ) {
   const turn = {
     followupRun: { run: { silentExpected: options.silentExpected === true } },
-    isHeartbeat: options.isHeartbeat === true,
     sessionCtx: { agentText: options.conversationContext },
     opts: undefined,
     replyOperation: options.replyOperation,
@@ -124,7 +122,7 @@ describe("agent runner streaming presentation", () => {
         blockStreamingEnabled: true,
         blockReplyPipeline: null,
         applyReplyToMode: (payload) => payload,
-        typingSignals: createTypingSignaler({ typing, mode: "never", isHeartbeat: false }),
+        typingSignals: createTypingSignaler({ typing, mode: "never" }),
       },
     });
     const handler = presentation.blockReplyHandler;
@@ -183,7 +181,7 @@ describe("agent runner streaming presentation", () => {
           blockStreamingEnabled: true,
           blockReplyPipeline: pipeline,
           applyReplyToMode: (payload) => payload,
-          typingSignals: createTypingSignaler({ typing, mode: "never", isHeartbeat: false }),
+          typingSignals: createTypingSignaler({ typing, mode: "never" }),
         },
       });
       const handler = presentation.blockReplyHandler;
@@ -595,17 +593,17 @@ describe("agent runner streaming presentation", () => {
     expect(presentation.normalizeStreamingText({ text: "N" })).toEqual({ text: "N", skip: false });
   });
 
-  it("keeps silent-expected and heartbeat-run classification eager", () => {
+  it("keeps silent-expected and legacy acknowledgement classification eager", () => {
     const silentPresentation = createPresentation({ silentExpected: true });
     expect(silentPresentation.classifyStreamingPartial({ text: "visible" })).toEqual({
       skip: true,
     });
 
-    const heartbeatPresentation = createPresentation({ isHeartbeat: true });
+    const heartbeatPresentation = createPresentation({});
     expect(
       heartbeatPresentation.classifyStreamingPartial({ text: "HEARTBEAT_OK details" }),
     ).toEqual({
-      text: "HEARTBEAT_OK details",
+      text: "details",
       skip: false,
     });
   });

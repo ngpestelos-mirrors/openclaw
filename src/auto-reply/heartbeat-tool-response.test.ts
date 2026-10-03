@@ -1,30 +1,18 @@
-import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
-import {
-  createHeartbeatToolResponsePayload,
-  selectHeartbeatToolResponse,
-} from "./heartbeat-tool-response.js";
-import { getReplyPayloadMetadata } from "./reply-payload.js";
+import { normalizeHeartbeatToolResponse } from "./heartbeat-tool-response.js";
 
-describe("heartbeat scratch proposal resolution", () => {
-  it("lets a later heartbeat response clear an earlier scratch proposal", () => {
-    const first = createHeartbeatToolResponsePayload({
-      outcome: "progress",
-      notify: false,
-      summary: "first",
-      scratch: "stale scratch",
-    });
-    const corrected = createHeartbeatToolResponsePayload({
-      outcome: "no_change",
-      notify: false,
-      summary: "corrected",
-    });
-
-    const selected = expectDefined(
-      selectHeartbeatToolResponse([first, corrected]),
-      "expected the corrected heartbeat response",
-    );
-    expect(selected.response.summary).toBe("corrected");
-    expect(getReplyPayloadMetadata(selected.payload)?.heartbeatScratchProposal).toBeUndefined();
+describe("historical SDK heartbeat response parser", () => {
+  it("normalizes the shipped report shape", () => {
+    expect(
+      normalizeHeartbeatToolResponse({
+        outcome: "progress",
+        notify: false,
+        summary: "checked",
+        next_check: "15m",
+      }),
+    ).toEqual({ outcome: "progress", notify: false, summary: "checked", nextCheck: "15m" });
+    expect(
+      normalizeHeartbeatToolResponse({ outcome: "made-up", notify: true, summary: "bad" }),
+    ).toBeUndefined();
   });
 });

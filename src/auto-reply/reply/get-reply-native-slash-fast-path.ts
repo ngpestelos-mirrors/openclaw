@@ -393,7 +393,7 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     aliasIndex: params.aliasIndex,
     provider: params.provider,
     model: params.model,
-    hasResolvedHeartbeatModelOverride: false,
+    hasResolvedTurnModelOverride: false,
     // Native selections reuse the admitted catalog just like ordinary turns.
     preparedModelCatalog: params.preparedModelCatalog,
     typing: params.typing,

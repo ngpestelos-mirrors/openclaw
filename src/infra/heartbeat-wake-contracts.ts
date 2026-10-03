@@ -3,9 +3,9 @@ export type HeartbeatRunResult =
   | { status: "skipped"; reason: string; retryAtMs?: number }
   | { status: "failed"; reason: string };
 
-export type HeartbeatWakeIntent = "scheduled" | "task" | "event" | "immediate" | "manual";
+type HeartbeatWakeIntent = "scheduled" | "task" | "event" | "immediate" | "manual";
 
-export type HeartbeatWakeSource =
+type HeartbeatWakeSource =
   | "interval"
   | "manual"
   | "exec-event"
@@ -21,14 +21,14 @@ export type HeartbeatWakeSource =
   | "retry"
   | "other";
 
-type HeartbeatWakeOverride = {
+export type HeartbeatWakeOverride = {
   target?: string;
   to?: string | undefined;
   accountId?: string | undefined;
 };
 
 /** Cron-owned periodic work carried directly into a guarded heartbeat turn. */
-export type HeartbeatScheduledTask = {
+type HeartbeatScheduledTask = {
   jobId: string;
   name: string;
   prompt: string;
@@ -48,5 +48,3 @@ export type HeartbeatWakeRequest = {
   /** Internal marker for work retained after a spacing/cooldown deferral. */
   retainedWork?: boolean;
 };
-
-export type HeartbeatWakeHandler = (opts: HeartbeatWakeRequest) => Promise<HeartbeatRunResult>;

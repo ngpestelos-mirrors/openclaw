@@ -9,6 +9,18 @@ export function captureCommand(command: OpenClawStateReadCommand): OpenClawState
   if (command.type === "sessionState.versions" || command.type === "sessionState.events") {
     return structuredClone(command);
   }
+  if (
+    command.type === "clawMonitorCleanup.snapshot" ||
+    command.type === "clawMonitorCleanup.portable"
+  ) {
+    return structuredClone(command);
+  }
+  if (
+    command.type === "automationProactive.receipts" ||
+    command.type === "automationProactive.jobs"
+  ) {
+    return { ...command, input: { ...command.input, agentIds: [...command.input.agentIds] } };
+  }
   if (isWorkspaceJournalReadCommand(command)) {
     return command.type === "placementJournals.owners"
       ? { ...command }
@@ -205,7 +217,14 @@ export function captureCommand(command: OpenClawStateReadCommand): OpenClawState
 }
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
-  if (command.type === "sessionState.versions" || command.type === "sessionState.events") {
+  if (
+    command.type === "clawMonitorCleanup.snapshot" ||
+    command.type === "clawMonitorCleanup.portable" ||
+    command.type === "automationProactive.receipts" ||
+    command.type === "automationProactive.jobs" ||
+    command.type === "sessionState.versions" ||
+    command.type === "sessionState.events"
+  ) {
     return Buffer.byteLength(JSON.stringify(command), "utf8");
   }
   if (isWorkspaceJournalReadCommand(command)) {
@@ -344,11 +363,8 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       bytes +
       Buffer.byteLength(command.storeKey, "utf8") +
       Buffer.byteLength(command.selector.kind, "utf8") +
-      (command.selector.kind === "job" ? 8 : 0) +
-      Buffer.byteLength(
-        command.selector.kind === "job" ? command.selector.jobId : command.selector.agentId,
-        "utf8",
-      )
+      8 +
+      Buffer.byteLength(command.selector.jobId, "utf8")
     );
   }
   if (command.type === "devicePairing.bootstrapContext") {

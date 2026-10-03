@@ -84,7 +84,6 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
     summaryLine?: string;
     strandedReplyRetry?: boolean;
     sendPolicyDenied?: boolean;
-    isHeartbeat?: boolean;
     terminalReplyExpectation?: "required" | "optional";
     pendingContinuation?: boolean;
     onDeliberateSilentTerminalReply?: () => void;
@@ -161,9 +160,7 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
         sourceReplyDeliveryMode: "message_tool_only",
         terminalReplyExpectation:
           params.terminalReplyExpectation ??
-          (params.isHeartbeat || params.inboundEventKind === "room_event"
-            ? "optional"
-            : "required"),
+          (params.inboundEventKind === "room_event" ? "optional" : "required"),
       },
     });
 
@@ -201,7 +198,6 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
         typingMode: "instant",
         opts: {
           runId,
-          isHeartbeat: params.isHeartbeat,
           onDeliberateSilentTerminalReply: params.onDeliberateSilentTerminalReply,
           onObservedReplyDelivery: params.onObservedReplyDelivery,
         },
@@ -438,8 +434,10 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
     expectNoRecovery();
   });
 
-  it("does not warn, enqueue retry, or emit diagnostic for heartbeat runs", async () => {
-    const { result, terminalEvent } = await runPrivateFinalCase({ isHeartbeat: true });
+  it("does not warn, enqueue retry, or emit diagnostic when a reply is optional", async () => {
+    const { result, terminalEvent } = await runPrivateFinalCase({
+      terminalReplyExpectation: "optional",
+    });
     expect((terminalEvent?.data.terminalReply as { code?: unknown } | undefined)?.code).not.toBe(
       "message-tool-not-called",
     );

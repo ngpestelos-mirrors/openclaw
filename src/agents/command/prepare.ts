@@ -312,7 +312,6 @@ export async function prepareAgentCommandExecution(
     sessionEntryRaw &&
     isSyntheticSourceReplyTurn({
       inputProvenance: commandOpts.inputProvenance,
-      isHeartbeat: commandOpts.bootstrapContextRunKind === "heartbeat",
     })
   ) {
     const sessionStableReplyMode = resolveSessionStableReplyMode({

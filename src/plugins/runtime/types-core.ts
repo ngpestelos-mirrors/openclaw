@@ -2,7 +2,10 @@ import type { CreateChannelIngressDrainOptions } from "../../channels/message/in
 import type { CreateChannelIngressQueueOptions } from "../../channels/message/ingress-queue.types.js";
 import type { ConfigMutationBase } from "../../config/mutation-types.js";
 import type { SessionPluginJsonValue } from "../../config/sessions/types.js";
-import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
+import type {
+  HeartbeatRunResult,
+  HeartbeatWakeRequest,
+} from "../../infra/heartbeat-wake-contracts.js";
 import type { LogLevel } from "../../logging/levels.js";
 import type { MediaUnderstandingRuntime } from "../../media-understanding/runtime-types.js";
 import type { OpenAsyncKeyedStoreOptions } from "../../plugin-state/plugin-state-store.types.js";
@@ -14,12 +17,8 @@ type TextToSpeech = typeof import("../../tts/tts.js").textToSpeech;
 type TextToSpeechStream = TtsRuntimeApi["textToSpeechStream"];
 type TextToSpeechTelephony = TtsRuntimeApi["textToSpeechTelephony"];
 
-type RuntimeRequestHeartbeatOptions = Parameters<
-  typeof import("../../infra/heartbeat-wake.js").requestHeartbeat
->[0];
-
-type RuntimeRequestHeartbeatNowOptions = Omit<RuntimeRequestHeartbeatOptions, "source" | "intent"> &
-  Partial<Pick<RuntimeRequestHeartbeatOptions, "source" | "intent">>;
+type RuntimeRequestHeartbeatNowOptions = Omit<HeartbeatWakeRequest, "source" | "intent"> &
+  Partial<Pick<HeartbeatWakeRequest, "source" | "intent">>;
 
 type RuntimeWriteConfigOptions = {
   /** Revalidate caller authority at guarded publication; accepted writes still settle. */
@@ -427,17 +426,19 @@ export type PluginRuntimeCore = {
     }) => Promise<{ ok: true; runId: string } | { ok: false; reason: string }>;
   };
   system: {
+    captureSessionEventTarget: typeof import("./runtime-session-events.js").captureSessionEventTarget;
+    enqueueSessionEvent: typeof import("./runtime-session-events.js").enqueueSessionEvent;
     enqueueSystemEvent: typeof import("./system-events.js").enqueueSystemEventFromSdk;
-    requestHeartbeat: typeof import("../../infra/heartbeat-wake.js").requestHeartbeat;
+    /** @deprecated Use enqueueSessionEvent or ordinary automations; retained through the stable SDK migration window. */
+    requestHeartbeat: (opts: HeartbeatWakeRequest) => void;
     /**
-     * @deprecated Use `requestHeartbeat({ source, intent, reason })` so wake producers declare
-     * scheduler intent explicitly.
+     * @deprecated Use enqueueSessionEvent with an explicit agent and session.
+     * Retained through at least one stable replacement release.
      */
     requestHeartbeatNow: (opts?: RuntimeRequestHeartbeatNowOptions) => void;
     /**
-     * Run a single heartbeat cycle immediately (bypassing the coalesce timer).
-     * Accepts an optional `heartbeat` config override so callers can choose
-     * an explicit destination or opt into internal-only `target: "none"` runs.
+     * @deprecated Executes a migrated ordinary automation with per-run delivery selection.
+     * Use the automation API; retained through at least one stable replacement release.
      */
     runHeartbeatOnce: (opts?: RunHeartbeatOnceOptions) => Promise<HeartbeatRunResult>;
     runCommandWithTimeout: typeof import("../../process/exec.js").runCommandWithTimeout;

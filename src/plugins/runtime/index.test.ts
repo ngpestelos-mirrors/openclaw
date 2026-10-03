@@ -8,7 +8,6 @@ import {
   setRuntimeConfigSnapshot,
   type OpenClawConfig,
 } from "../../config/config.js";
-import { requestHeartbeat, setHeartbeatWakeHandler } from "../../infra/heartbeat-wake.js";
 import { VERSION } from "../../version.js";
 
 const runtimeModelAuthMocks = vi.hoisted(() => ({
@@ -102,31 +101,6 @@ describe("plugin runtime command execution", () => {
   it("exposes reset freshness resolver on the host channel runtime", () => {
     const sessionRuntime = createPluginRuntime().channel.session as Record<string, unknown>;
     expect(typeof sessionRuntime.resolveEntryResetFreshness).toBe("function");
-  });
-
-  it("maps deprecated runtime.system.requestHeartbeatNow to an immediate compatibility wake", async () => {
-    vi.useFakeTimers();
-    const handler = vi.fn(async (_request: Parameters<typeof requestHeartbeat>[0]) => ({
-      status: "skipped" as const,
-      reason: "disabled",
-    }));
-    const dispose = setHeartbeatWakeHandler(handler);
-    try {
-      createPluginRuntime().system.requestHeartbeatNow({
-        reason: "legacy-plugin",
-        coalesceMs: 0,
-      });
-      await vi.advanceTimersByTimeAsync(1);
-      const request = handler.mock.calls[0]?.[0] as
-        | { source?: string; intent?: string; reason?: string }
-        | undefined;
-      expect(request?.source).toBe("other");
-      expect(request?.intent).toBe("immediate");
-      expect(request?.reason).toBe("legacy-plugin");
-    } finally {
-      dispose();
-      vi.useRealTimers();
-    }
   });
 
   it("resolves thinking policy with configured model compat from runtime config", () => {

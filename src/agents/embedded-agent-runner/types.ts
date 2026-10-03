@@ -300,7 +300,7 @@ export type EmbeddedAgentRunResult = {
   asyncWorkStarted?: true;
   /** Completed core yield settlement, not a requester-visible final reply. */
   requesterContinuationSettled?: true;
-  // Structured heartbeat outcome recorded by the heartbeat response tool.
+  /** @deprecated External SDK result only; ordinary automations record results through their run owner. */
   heartbeatToolResponse?: HeartbeatToolResponse;
   successfulCronAdds?: number;
 };

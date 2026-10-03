@@ -139,7 +139,7 @@ it("keeps OpenClaw control-path tools direct when code-mode-only is enabled", ()
   const tools = [
     createRuntimeDynamicTool("message"),
     createRuntimeDynamicTool("web_search"),
-    createRuntimeDynamicTool("heartbeat_respond"),
+    createRuntimeDynamicTool("automations"),
     createRuntimeDynamicTool("agents_list"),
     createRuntimeDynamicTool("sessions_spawn"),
     createRuntimeDynamicTool("sessions_yield"),
@@ -152,7 +152,7 @@ it("keeps OpenClaw control-path tools direct when code-mode-only is enabled", ()
   const specs = flattenSpecsWithNamespace(toolBridge.specs);
   const message = specs.find((tool) => tool.name === "message");
   const webSearch = specs.find((tool) => tool.name === "web_search");
-  const heartbeat = specs.find((tool) => tool.name === "heartbeat_respond");
+  const automation = specs.find((tool) => tool.name === "automations");
   const agentsList = specs.find((tool) => tool.name === "agents_list");
   const sessionsSpawn = specs.find((tool) => tool.name === "sessions_spawn");
   const sessionsYield = specs.find((tool) => tool.name === "sessions_yield");
@@ -160,8 +160,8 @@ it("keeps OpenClaw control-path tools direct when code-mode-only is enabled", ()
   expect(message).not.toHaveProperty("deferLoading");
   expect(webSearch?.namespace).toBe("openclaw");
   expect(webSearch?.deferLoading).toBe(true);
-  expect(heartbeat?.namespace).toBe("openclaw");
-  expect(heartbeat?.deferLoading).toBe(true);
+  expect(automation?.namespace).toBe("openclaw");
+  expect(automation?.deferLoading).toBe(true);
   expect(agentsList).not.toHaveProperty("namespace");
   expect(agentsList).not.toHaveProperty("deferLoading");
   expect(sessionsSpawn).not.toHaveProperty("namespace");
@@ -215,30 +215,30 @@ it("keeps message in the registered schema when disabled for an internal turn", 
   });
 });
 
-it("keeps the persistent dynamic schema stable across heartbeat-only turns", async () => {
-  const createHeartbeatRunParams = (trigger?: EmbeddedRunAttemptParams["trigger"]) =>
+it("keeps the persistent dynamic schema stable across restricted scheduled turns", async () => {
+  const createScheduledRunParams = (trigger?: EmbeddedRunAttemptParams["trigger"]) =>
     createAttemptParams({ disableTools: false, ...(trigger ? { trigger } : {}) });
   const registeredTools = [
     createRuntimeDynamicTool("message"),
     createRuntimeDynamicTool("web_search"),
-    createRuntimeDynamicTool("heartbeat_respond"),
+    createRuntimeDynamicTool("automations"),
   ];
   const normalBridge = createCodexToolBridgeForTest(
-    createHeartbeatRunParams(),
+    createScheduledRunParams(),
     registeredTools,
     registeredTools,
   );
-  const heartbeatBridge = createCodexToolBridgeForTest(
-    createHeartbeatRunParams("heartbeat"),
-    [createRuntimeDynamicTool("heartbeat_respond")],
+  const scheduledBridge = createCodexToolBridgeForTest(
+    createScheduledRunParams("cron"),
+    [createRuntimeDynamicTool("automations")],
     registeredTools,
   );
   const nextNormalBridge = createCodexToolBridgeForTest(
-    createHeartbeatRunParams(),
+    createScheduledRunParams(),
     registeredTools,
     registeredTools,
   );
-  expect(specNames(heartbeatBridge.availableSpecs)).toEqual(["heartbeat_respond"]);
-  expect(specNames(heartbeatBridge.specs)).toEqual(specNames(normalBridge.specs));
+  expect(specNames(scheduledBridge.availableSpecs)).toEqual(["automations"]);
+  expect(specNames(scheduledBridge.specs)).toEqual(specNames(normalBridge.specs));
   expect(specNames(nextNormalBridge.specs)).toEqual(specNames(normalBridge.specs));
 });

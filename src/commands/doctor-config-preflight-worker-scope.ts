@@ -5,7 +5,10 @@ export async function withDoctorConfigPreflightWorkerScope<T>(
   run: (options: DoctorConfigPreflightOptions) => Promise<T>,
 ): Promise<T> {
   // Reuse child imports for this state operation; every read still acquires fresh admission.
-  if (options.migrateState !== false && options.doctorOnlyStateMigrations === true) {
+  if (
+    options.migrateState !== false &&
+    (options.doctorOnlyStateMigrations === true || options.automaticHeartbeatRepair)
+  ) {
     const { withSqliteReadOnlyWorkerScope } = await import("../infra/sqlite-readonly-worker.js");
     return await withSqliteReadOnlyWorkerScope(() => run(options));
   }

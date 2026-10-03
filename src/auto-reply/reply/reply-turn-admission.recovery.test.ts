@@ -422,7 +422,7 @@ it("admits monitoring without claiming foreground recovery from current delivery
       { runId: "completed-recovery", lifecycleGeneration: getAgentEventLifecycleGeneration() },
     ],
   });
-  const result = await f.admit({ kind: "heartbeat" });
+  const result = await f.admit({ kind: "background" });
   expect(result.status).toBe("owned");
   expect(f.read()).toMatchObject(f.entry);
   expect(f.read()?.mainRestartRecovery).toBeUndefined();
@@ -435,7 +435,7 @@ it("leaves a named live recovery owner intact and skips the monitor", async () =
   void owner.released.then(() => {
     released = true;
   });
-  const result = await f.admit({ kind: "heartbeat" });
+  const result = await f.admit({ kind: "background" });
   expect(result).toMatchObject({ status: "skipped", reason: "active-run" });
   expect(released).toBe(false);
   expect(f.read()?.sessionId).toBe(sessionId);

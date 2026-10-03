@@ -572,6 +572,8 @@ describe("normalizeCronJobCreate", () => {
       thinking: " high ",
       timeoutSeconds: 45,
       lightContext: true,
+      skipIfScratchEmpty: true,
+      includeReasoning: false,
       toolsAllow: [" read "],
       allowUnsafeExternalContent: true,
     });
@@ -585,6 +587,8 @@ describe("normalizeCronJobCreate", () => {
       thinking: "high",
       timeoutSeconds: 45,
       lightContext: true,
+      skipIfScratchEmpty: true,
+      includeReasoning: false,
       toolsAllow: ["read"],
       allowUnsafeExternalContent: true,
     });
@@ -602,6 +606,8 @@ describe("normalizeCronJobCreate", () => {
         thinking: "high",
         timeoutSeconds: 45,
         lightContext: true,
+        skipIfScratchEmpty: true,
+        includeReasoning: false,
         toolsAllow: ["exec"],
         allowUnsafeExternalContent: true,
       },
@@ -708,9 +714,9 @@ describe("normalizeCronJobPatch", () => {
       expected: { message: "", text: "" },
     },
     {
-      label: "trimmed text",
-      input: { message: " message ", text: " text " },
-      expected: { message: "message", text: "text" },
+      label: "verbatim agent prompt and trimmed event text",
+      input: { message: " \tCheck the inbox.\r\n  NO_REPLY when quiet.\n ", text: " text " },
+      expected: { message: " \tCheck the inbox.\r\n  NO_REPLY when quiet.\n ", text: "text" },
     },
     {
       label: "explicit clears",
@@ -898,6 +904,8 @@ describe("normalizeCronJobPatch", () => {
         thinking: "high",
         timeoutSeconds: 15,
         lightContext: true,
+        skipIfScratchEmpty: true,
+        includeReasoning: false,
         toolsAllow: ["exec"],
         allowUnsafeExternalContent: true,
       },

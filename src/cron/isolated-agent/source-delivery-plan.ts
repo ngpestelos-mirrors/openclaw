@@ -4,7 +4,10 @@ import type { CronDeliveryPlan } from "../delivery-plan.js";
 
 export function resolveCronSourceDeliveryPlan(params: {
   deliveryPlan: CronDeliveryPlan;
-  resolvedDelivery: SourceDeliveryPlan["target"] & { ok?: boolean };
+  resolvedDelivery: SourceDeliveryPlan["target"] & {
+    ok?: boolean;
+    deliverySuppressionReason?: "channel_transform";
+  };
 }): SourceDeliveryPlan {
   const target = {
     channel: params.resolvedDelivery.channel,
@@ -27,7 +30,7 @@ export function resolveCronSourceDeliveryPlan(params: {
       owner: "none",
       reason: "cron_none",
       target,
-      messageToolEnabled: true,
+      messageToolEnabled: !params.resolvedDelivery.deliverySuppressionReason,
       messageToolForced: false,
       directFallback: false,
     });
@@ -37,7 +40,9 @@ export function resolveCronSourceDeliveryPlan(params: {
     owner: "direct_fallback",
     reason: "cron_announce",
     target,
-    messageToolEnabled: true,
+    messageToolEnabled:
+      !params.resolvedDelivery.deliverySuppressionReason &&
+      (params.deliveryPlan.target !== "owner" || params.resolvedDelivery.ok === true),
     messageToolForced: false,
     requireExplicitMessageTarget: true,
     requireExplicitMessageTargetEvidence: true,

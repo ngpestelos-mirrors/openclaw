@@ -11,6 +11,7 @@ import {
   type PreparedModelThinkingCapability,
 } from "../../agents/model-catalog-lookup.js";
 import { modelTransportRoutesMatch } from "../../agents/model-compat-catalog.js";
+import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
 import {
   needsThinkHydration,
   normalizeThinkingCatalogProviders,
@@ -20,9 +21,32 @@ import {
   resolveMergedModelProviderConfig,
 } from "../../config/model-provider-config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveCronScheduledToolPolicy } from "../../cron/scheduled-tool-policy.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import type { resolveProviderScopedAuthProfile } from "./agent-runner-auth-profile.js";
 import type { FollowupRun } from "./queue.js";
+
+export function resolveReplyScheduledToolPolicy(
+  run: Pick<FollowupRun["run"], "scheduledAutomation" | "scheduledToolPolicy">,
+) {
+  const automation = run.scheduledAutomation;
+  automation?.assertCurrent();
+  if (!automation || run.scheduledToolPolicy) {
+    return run.scheduledToolPolicy;
+  }
+  const job = automation.job;
+  const toolsAllow = job.payload.kind === "agentTurn" ? job.payload.toolsAllow : undefined;
+  return resolveScheduledToolPolicyContext({
+    toolsAllow,
+    scheduledToolPolicy: resolveCronScheduledToolPolicy({
+      toolsAllow,
+      scheduledToolPolicy: job.scheduledToolPolicy,
+      owner: job.owner,
+    }),
+    callerOrigin: job.toolsAllowProvenance?.callerOrigin,
+    execTarget: job.toolsAllowExecTarget,
+  });
+}
 
 /** Builds model fallback options for an embedded follow-up run. */
 export function resolveModelFallbackOptions(
@@ -137,6 +161,10 @@ export async function buildEmbeddedRunBaseParams(params: {
   allowTransientCooldownProbe?: boolean;
 }) {
   const config = params.run.config;
+  const automation = params.run.scheduledAutomation;
+  automation?.assertCurrent();
+  const job = automation?.job;
+  const scheduledToolPolicy = resolveReplyScheduledToolPolicy(params.run);
   const { modelFallbackAvailability, fallbacksOverride: modelFallbacksOverride } =
     resolveModelFallbackOptions(params.run);
   const modelThinkingCapability = params.agentRuntime
@@ -159,6 +187,8 @@ export async function buildEmbeddedRunBaseParams(params: {
         workspaceDir: params.run.workspaceDir,
         modelId: params.model,
       }));
+  const modelHasVision = await resolveRunModelHasVision(params);
+  automation?.assertCurrent();
   // Runtime policy keys may differ from session keys for direct-message scoped policy.
   return {
     providerReviewAcknowledgment: params.run.providerReviewAcknowledgment,
@@ -174,7 +204,14 @@ export async function buildEmbeddedRunBaseParams(params: {
     ownerNumbers: params.run.ownerNumbers,
     inputProvenance: params.run.inputProvenance,
     trustedInternalHandoff: params.run.trustedInternalHandoff,
-    scheduledToolPolicy: params.run.scheduledToolPolicy,
+    scheduledToolPolicy,
+    ...(job
+      ? {
+          jobId: job.id,
+          scheduledRuntimeAuthority: job.runtimeAuthority,
+          scheduledRuntimeAuthorityRecoveryRequired: job.runtimeAuthorityRecoveryRequired === true,
+        }
+      : {}),
     runtimePluginToolGrant: params.run.runtimePluginToolGrant,
     senderIsOwner: params.run.senderIsOwner,
     conversationToolPolicy: params.run.conversationToolPolicy,
@@ -194,7 +231,7 @@ export async function buildEmbeddedRunBaseParams(params: {
     skillLibraryAuthoring: params.run.skillLibraryAuthoring,
     provider: params.provider,
     model: params.model,
-    modelHasVision: await resolveRunModelHasVision(params),
+    modelHasVision,
     ...(modelThinkingCapability ? { modelThinkingCapability } : {}),
     requestedRouteResolution: "resolved" as const,
     modelSelectionLocked: params.run.modelSelectionLocked,

@@ -122,7 +122,6 @@ async function resolveHelloWithModelDefaults(params: {
       prepareReplyConversation({
         ctx: sessionCtx,
         sessionEntry: params.sessionStore?.["agent:main:whatsapp:+2000"] ?? sessionEntry,
-        isHeartbeat: params.opts?.isHeartbeat,
       }),
     isGroup: false,
     triggerBodyNormalized: "hello",
@@ -134,7 +133,7 @@ async function resolveHelloWithModelDefaults(params: {
     provider: params.provider ?? "openai",
     model: params.model ?? "gpt-4o-mini",
     hasOneTurnModelOverride: params.hasOneTurnModelOverride,
-    hasResolvedHeartbeatModelOverride: false,
+    hasResolvedTurnModelOverride: false,
     typing,
     opts: params.opts,
     skillFilter: undefined,
@@ -310,8 +309,8 @@ describe("resolveReplyDirectives", () => {
     await resolveHelloWithModelDefaults({
       sessionEntry: wrapperSessionEntry,
       sessionStore: { "agent:main:whatsapp:+2000": targetSessionEntry },
-      ctx: { InternalTurnSource: "heartbeat" },
-      sessionCtx: { InternalTurnSource: "heartbeat", Provider: undefined },
+      ctx: { InternalTurnSource: "event" },
+      sessionCtx: { InternalTurnSource: "event", Provider: undefined },
     });
 
     expect(mockCallInput(mocks.resolveGroupRequireMention).group).toMatchObject({
@@ -320,7 +319,7 @@ describe("resolveReplyDirectives", () => {
     });
   });
 
-  it("uses the base room identity for isolated heartbeat group activation", async () => {
+  it("uses the base room identity for a captured event conversation", async () => {
     const baseSessionKey = "agent:main:slack:channel:C123";
     const baseSessionEntry = makeSessionEntry({
       sessionId: "base-session",
@@ -331,20 +330,19 @@ describe("resolveReplyDirectives", () => {
     });
     const isolatedSessionEntry = makeSessionEntry({
       sessionId: "isolated-session",
-      heartbeatIsolatedBaseSessionKey: baseSessionKey,
     });
 
     await resolveHelloWithModelDefaults({
       conversation: prepareReplyConversation({
-        ctx: { InternalTurnSource: "heartbeat" },
+        ctx: { InternalTurnSource: "event" },
         sessionEntry: baseSessionEntry,
       }),
       sessionStore: {
         "agent:main:whatsapp:+2000": isolatedSessionEntry,
         [baseSessionKey]: baseSessionEntry,
       },
-      ctx: { InternalTurnSource: "heartbeat" },
-      sessionCtx: { InternalTurnSource: "heartbeat", Provider: undefined },
+      ctx: { InternalTurnSource: "event" },
+      sessionCtx: { InternalTurnSource: "event", Provider: undefined },
     });
 
     expect(mockCallInput(mocks.resolveGroupRequireMention).group).toMatchObject({
@@ -816,7 +814,7 @@ describe("resolveReplyDirectives", () => {
       aliasIndex: { byAlias: new Map(), byKey: new Map() },
       provider: "openai",
       model: "gpt-4o-mini",
-      hasResolvedHeartbeatModelOverride: false,
+      hasResolvedTurnModelOverride: false,
       typing: makeTypingController(),
       opts: undefined,
       skillFilter: undefined,
@@ -870,7 +868,7 @@ describe("resolveReplyDirectives", () => {
       aliasIndex: { byAlias: new Map(), byKey: new Map() },
       provider: "openai",
       model: "gpt-4o-mini",
-      hasResolvedHeartbeatModelOverride: false,
+      hasResolvedTurnModelOverride: false,
       typing: makeTypingController(),
     });
 
