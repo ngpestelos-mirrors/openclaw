@@ -28,13 +28,33 @@ async function collect<T>(values: AsyncIterable<T>): Promise<T[]> {
 
 describe("Codex app-server binding reads", () => {
   it.each([
-    { changed: "thread", threadId: "thread-new", clientId: "client-old" },
-    { changed: "physical client", threadId: "thread-old", clientId: "client-new" },
+    {
+      changed: "thread",
+      threadId: "thread-new",
+      clientId: "client-old",
+      initialClientId: "client-old",
+    },
+    {
+      changed: "physical client",
+      threadId: "thread-old",
+      clientId: "client-new",
+      initialClientId: "client-old",
+    },
+    {
+      changed: "previously absent client",
+      threadId: "thread-old",
+      clientId: "client-new",
+      initialClientId: undefined,
+    },
   ])("keeps a replacement $changed when stale mutations complete later", async (successorOwner) => {
     const state = createCodexTestBindingStateStore();
     const store = createCodexAppServerBindingStore(state);
     const identity = { kind: "session" as const, agentId: "main", sessionId: "session-1" };
-    const original = { threadId: "thread-old", clientId: "client-old", cwd: "/repo" };
+    const original = {
+      threadId: "thread-old",
+      clientId: successorOwner.initialClientId,
+      cwd: "/repo",
+    };
     const successor = {
       threadId: successorOwner.threadId,
       clientId: successorOwner.clientId,
@@ -44,6 +64,14 @@ describe("Codex app-server binding reads", () => {
       kind: "set",
       binding: original,
     });
+    await expect(
+      store.mutate(identity, {
+        kind: "patch",
+        threadId: original.threadId,
+        clientId: original.clientId,
+        patch: { cwd: original.cwd },
+      }),
+    ).resolves.toBe(true);
     await store.mutate(identity, {
       kind: "set",
       binding: successor,

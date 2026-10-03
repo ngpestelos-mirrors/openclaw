@@ -547,10 +547,10 @@ export function createCodexAppServerBindingStore(
               mutation.binding.connectionScope !== "supervision" &&
               mutation.binding.threadId !== mutation.expectedThreadId;
             if (
-              // Check the physical owner again on every CAS retry. Session and
-              // thread IDs survive a client replacement; they cannot authorize it.
+              // Recheck the physical owner on every CAS retry. Explicit undefined
+              // pins an absent legacy client ID; lifecycle operations omit the field.
               ((mutation.kind === "patch" || mutation.kind === "clear") &&
-                mutation.clientId !== undefined &&
+                Object.hasOwn(mutation, "clientId") &&
                 mutation.clientId !== active?.binding.clientId) ||
               (mutation.kind === "set" &&
                 ((mutation.if?.kind === "absent" && storedActive) ||
