@@ -233,7 +233,7 @@ describe("skill library worker reads and prepared selection authority", () => {
     const original = workerStore.runSqliteWorkerStoreOperation;
     let executed = 0;
     let admission: workerAdmission.SqliteWorkerOperationAdmission | undefined;
-    const lostReceipt = createDeferredCore<void>();
+    const lostReceipt = createDeferredCore();
     let receiptFault: { mockRestore(): void } | undefined;
     const delivery = vi
       .spyOn(workerStore, "runSqliteWorkerStoreOperation")

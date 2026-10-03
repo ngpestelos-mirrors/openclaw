@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { constants } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { SKILL_LIBRARY_MAX_FILE_BYTES } from "../../../packages/gateway-protocol/src/schema/skill-library.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { declareAgentWorkspaceAccess } from "../../agents/workspace-access.js";
@@ -38,7 +38,6 @@ import {
   saveSkillLibrary,
 } from "./service.js";
 import { beginZipUpload, content, draft, useSkillLibraryFixture } from "./service.test-support.js";
-import type { SkillLibraryAuthority } from "./store.js";
 
 const { fixture, tempDirs } = useSkillLibraryFixture();
 
