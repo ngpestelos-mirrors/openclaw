@@ -21,6 +21,7 @@ import {
   StartupMaintenanceRequiredError,
 } from "../infra/startup-maintenance-required.js";
 import { PluginBlobStoreError } from "../plugin-state/plugin-blob-store.types.js";
+import { SkillLibraryError, type SkillLibraryErrorCode } from "../skills/library/errors.js";
 import { SkillUploadRequestError } from "../skills/lifecycle/upload-store-error.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
@@ -64,6 +65,7 @@ export type ErrorIdentity =
   | { type: "ownership-metadata"; databasePath: string }
   | { type: "external-ownership"; databasePath: string; managerId: string }
   | { type: "state-lease"; leaseCode: OpenClawStateLeaseErrorCode }
+  | { type: "skill-library"; libraryCode: SkillLibraryErrorCode; currentRevision?: string }
   | {
       type: "plugin-blob";
       blobCode: PluginBlobStoreError["code"];
@@ -80,6 +82,13 @@ export type ErrorIdentity =
   | { type: "agent-media-migration"; pathname: string; schemaVersion: number };
 
 export function identifyError(error: Error): ErrorIdentity {
+  if (error instanceof SkillLibraryError) {
+    return {
+      type: "skill-library",
+      libraryCode: error.code,
+      ...(error.currentRevision === undefined ? {} : { currentRevision: error.currentRevision }),
+    };
+  }
   if (error instanceof DuplicateAgentError) {
     return { type: "duplicate-agent" };
   }
@@ -198,8 +207,34 @@ function isBlobOperation(value: unknown): value is PluginBlobStoreError["operati
   );
 }
 
+function isSkillLibraryCode(value: unknown): value is SkillLibraryErrorCode {
+  return (
+    value === "IDENTITY_REQUIRED" ||
+    value === "FORBIDDEN" ||
+    value === "NOT_FOUND" ||
+    value === "CONFLICT" ||
+    value === "NAME_CONFLICT" ||
+    value === "INVALID_BUNDLE" ||
+    value === "POLICY_BLOCKED" ||
+    value === "AUTHORITY_EXPIRED" ||
+    value === "LIMIT"
+  );
+}
+
 export function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined {
   switch (node.type) {
+    case "skill-library":
+      return isSkillLibraryCode(node.libraryCode) &&
+        node.code === node.libraryCode &&
+        (node.currentRevision === undefined || typeof node.currentRevision === "string")
+        ? {
+            type: node.type,
+            libraryCode: node.libraryCode,
+            ...(typeof node.currentRevision === "string"
+              ? { currentRevision: node.currentRevision }
+              : {}),
+          }
+        : undefined;
     case "worker-session-already-attached":
       return typeof node.sessionId === "string" && typeof node.environmentId === "string"
         ? { type: node.type, sessionId: node.sessionId, environmentId: node.environmentId }
@@ -290,6 +325,8 @@ function unreachableErrorNode(node: never): never {
 
 export function createError(node: ErrorIdentity & { message: string }): Error {
   switch (node.type) {
+    case "skill-library":
+      return new SkillLibraryError(node.libraryCode, node.message, node.currentRevision);
     case "duplicate-agent":
       return new DuplicateAgentError(node.message);
     case "worker-session-already-attached":

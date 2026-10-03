@@ -3,15 +3,19 @@ import type { RestartSentinelReadOperations } from "../infra/restart-sentinel.re
 import type { DiagnosticReadOperations } from "../infra/sqlite-audit-record.read-contract.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import type { SessionStateReadOperations } from "../sessions/session-state-events.read.worker-contract.js";
+import type { SkillLibraryReadOperations } from "../skills/library/read.contract.js";
 import { createWorkerOperationRegistry } from "./worker-operation-registry.js";
 
 type Operations = DiagnosticReadOperations &
+  SkillLibraryReadOperations &
   RestartSentinelReadOperations &
   SessionStateReadOperations;
 export type RegisteredStateReadCommand = SqliteWorkerCommand<Operations>;
 export type RegisteredStateReadResult = Operations[keyof Operations]["output"];
 
 export const stateReadRegistry = createWorkerOperationRegistry<Operations, DatabaseSync>({
+  skillLibrary: () =>
+    import("../skills/library/read.kernel.js").then((m) => m.skillLibraryReadOperations),
   sessionState: () =>
     import("../sessions/session-state-events.read.worker.js").then(
       (m) => m.sessionStateReadOperations,
