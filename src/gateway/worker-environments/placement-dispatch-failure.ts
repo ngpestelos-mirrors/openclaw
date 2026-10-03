@@ -315,14 +315,12 @@ export function createPlacementFailureActions(deps: {
         RECOVERY_ERROR_LIMIT,
       );
       if (recoveryError !== placement.recoveryError) {
-        await placements.fail(
-          {
-            sessionId: placement.sessionId,
-            expectedGeneration: placement.generation,
-            recoveryError,
-          },
-          authorize,
-        );
+        // Settle the admitted teardown even if caller authority closed during destroy.
+        await placements.fail({
+          sessionId: placement.sessionId,
+          expectedGeneration: placement.generation,
+          recoveryError,
+        });
       }
     }
     // The persisted failure may intentionally retain an earlier terminal cause.

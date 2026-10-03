@@ -386,7 +386,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
                 to: "local",
                 expectedGeneration: failed.generation,
               },
-              reauthorize,
+              request.recoverToGateway ? reauthorize : undefined,
             );
             if (local.state !== "local") {
               throw new Error("Failed cloud worker reclaim did not produce a local placement");
