@@ -36,7 +36,7 @@ export function resolvePluginPackageMapTarget(
   specifier: string,
   importer: string,
   conditions: readonly string[],
-): string | undefined {
+): URL | undefined {
   let selected: URL;
   try {
     selected = moduleResolve(specifier, pathToFileURL(importer), new Set(conditions));
@@ -50,7 +50,7 @@ export function resolvePluginPackageMapTarget(
     // Node chose this target from immutable metadata; only its body is still uncaptured.
     selected = new URL(error.url);
   }
-  return selected.protocol === "file:" ? fileURLToPath(selected) : undefined;
+  return selected.protocol === "file:" ? selected : undefined;
 }
 
 /** Missing physical inputs stay absent without poisoning another condition's selected target. */

@@ -334,8 +334,33 @@ describe("captured module conditions", () => {
     fs.writeFileSync(path.join(root, "index.cjs"), "exports.read = name => require(name).value;");
     const plugin = load(root, "index.cjs", true).value as { read(name: string): number };
     fs.writeFileSync(path.join(dependency, "real.cjs"), "exports.value = 84;");
+    // Selecting the physical alias first must promote the retained package too.
+    expect(plugin.read("#direct")).toBe(42);
     expect(plugin.read("#selected")).toBe(42);
     expect(plugin.read("#direct")).toBe(42);
+  });
+  it.each(["import", "require"])("preserves wildcard trailer precedence for %s", async (mode) => {
+    const root = temp.make("plugin-import-trailer-");
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        imports: { "#selected/*": "./broad.cjs", "#selected/*.js": "./specific.cjs" },
+      }),
+    );
+    fs.writeFileSync(path.join(root, "broad.cjs"), "exports.value = 'broad';");
+    fs.writeFileSync(path.join(root, "specific.cjs"), "exports.value = 'specific';");
+    // Retain both local branches before testing native wildcard precedence.
+    const entry = mode === "import" ? "index.mjs" : "index.cjs";
+    fs.writeFileSync(
+      path.join(root, entry),
+      mode === "import"
+        ? "import './broad.cjs'; import './specific.cjs'; export const read = async name => (await import(name)).value;"
+        : "require('./broad.cjs'); require('./specific.cjs'); exports.read = name => require(name).value;",
+    );
+    const plugin = load(root, entry, true).value as {
+      read(name: string): string | Promise<string>;
+    };
+    expect(await plugin.read("#selected/leaf.js")).toBe("specific");
   });
 });
 
@@ -552,6 +577,8 @@ it.each(["declared", "alias", "undeclared"])(
     fs.writeFileSync(body, "exports.value = 'before-selection';");
     const selected = plugin.select();
     fs.writeFileSync(body, "exports.value = 'after-selection';");
+    expect(selected.read()).toBe(kind === "declared" ? "before-selection" : "after-selection");
+    fs.writeFileSync(body, "exports.value = 'after-first-read';");
     expect(selected.read()).toBe(kind === "declared" ? "before-selection" : "after-selection");
   },
 );
