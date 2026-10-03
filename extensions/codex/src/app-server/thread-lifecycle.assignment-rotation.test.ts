@@ -10,6 +10,7 @@ import {
 import type { RetainedLiveThread } from "./client-thread-owner.js";
 import { createCodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
 import type { CodexNativeSubagentPendingAssignment } from "./native-subagent-pending-assignments.js";
+import type { RpcRequest } from "./protocol.js";
 import {
   bindProductionHarnessHostCapabilitiesForTest,
   setupRunAttemptTestHooks,
@@ -304,8 +305,16 @@ describe("native assignment custody across ordinary parent rotation", () => {
       undefined,
       expect.any(Function),
     );
-    expect(f.request.mock.calls.filter(([method]) => method === "thread/unsubscribe")).toEqual([]);
-    expect(f.request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
+    expect(f.request.mock.calls.filter(([method]) => method === "thread/unsubscribe")).toEqual([
+      [
+        "thread/unsubscribe",
+        { threadId: f.parent.threadId },
+        { assertCurrent: undefined, withCurrent: expect.any(Function) },
+      ],
+    ]);
+    const methods = f.writes.map((line) => (JSON.parse(line) as RpcRequest).method);
+    expect(methods.filter((method) => method === "thread/unsubscribe")).toEqual([]);
+    expect(methods.filter((method) => method === "thread/start")).toHaveLength(1);
     expect(f.readState()).toEqual(before);
     expect(f.readAssignments(f.parent.threadId)).toEqual(f.assignments);
   });
