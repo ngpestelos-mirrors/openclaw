@@ -984,7 +984,7 @@ extensions/tlon/src/monitor/index.ts	5
 extensions/tlon/src/settings.ts	7
 extensions/tlon/src/setup-core.ts	3
 extensions/tlon/src/tlon-api.ts	2
-extensions/tlon/src/types.ts	3
+extensions/tlon/src/types.ts	1
 extensions/tlon/src/urbit/sse-client.ts	4
 extensions/tokenjuice/tool-result-middleware.ts	1
 extensions/twitch/src/config.ts	6
