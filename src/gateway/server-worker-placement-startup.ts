@@ -229,9 +229,9 @@ export function createGatewayWorkerPlacementRuntime(
           getConfig: getRuntimeConfig,
           ...identity,
           action: "activation",
-          run: () => {
+          run: (_workspace, assertCurrent) => {
             authorize?.();
-            return activate();
+            return activate(assertCurrent);
           },
         }),
       runRecoveryBarrier: async ({ environmentId, expectedGeneration, run, ...identity }) =>
@@ -240,7 +240,7 @@ export function createGatewayWorkerPlacementRuntime(
           getConfig: getRuntimeConfig,
           ...identity,
           action: "recovery",
-          run: async (workspace) => {
+          run: async (workspace, assertCurrent) => {
             const placement = params.placements.get(identity.sessionId);
             if (
               placement?.state !== "provisioning" ||
@@ -251,7 +251,7 @@ export function createGatewayWorkerPlacementRuntime(
                 `Session ${identity.sessionKey} placement changed before cloud worker recovery. Retry.`,
               );
             }
-            await run(workspace);
+            await run(workspace, assertCurrent);
           },
         }),
       onActivated: ({ sessionId }) => {

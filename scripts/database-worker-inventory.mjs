@@ -194,6 +194,9 @@ const reviewedOperations = new Map([
       {
         tier: "W",
         operations: [
+          "assertNoRunningWorkerSessionToolOperations",
+          "closeWorkerTurnToolAdmission",
+          "clearWorkerTurnToolState",
           "createPlacementSessionToolOperationKernel.hasToolAuthority",
           "createPlacementSessionToolOperationKernel.settleWorkerSessionToolOperation",
           "createPlacementSessionToolOperationKernel.authorize",
@@ -203,7 +206,18 @@ const reviewedOperations = new Map([
           "createPlacementSessionToolOperationKernel.recover",
         ],
         evidence:
-          "Factory only constructed by placement-session-tool-operations.worker.ts:27; shared native transaction helpers stay T1",
+          "Factory runs in placement-session-tool-operations.worker.ts; claim, reconcile and terminal-failure cleanup now only run through placement-turn-claims.worker.ts",
+      },
+    ],
+  ],
+  [
+    "src/gateway/worker-environments/placement-pending-failure.ts",
+    [
+      {
+        tier: "W",
+        operations: ["createPlacementPendingFailureOps.failWorkspaceResultAndReleaseTurn"],
+        evidence:
+          "Only placementTurns.failResult in placement-turn-claims.worker.ts constructs the terminal-failure kernel; all runtime callers await its worker facade",
       },
     ],
   ],

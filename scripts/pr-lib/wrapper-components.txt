@@ -645,6 +645,7 @@ src/gateway/server-methods/workspace-fs.ts
 src/gateway/worker-environments/placement-record.ts
 src/gateway/worker-environments/placement-row-codec.ts
 src/gateway/worker-environments/placement-state.ts
+src/gateway/worker-environments/placement-transitions.worker.ts
 src/gateway/worker-environments/placement-turn-authority.ts
 src/gateway/worker-environments/placement-workspace-journal.ts
 src/gateway/worker-environments/placement-workspace-journal.types.ts

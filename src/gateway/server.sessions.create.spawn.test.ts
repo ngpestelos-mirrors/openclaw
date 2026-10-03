@@ -364,7 +364,7 @@ test("sessions.create commits no child after its worker turn closes", async () =
     ],
     ["starting", "active", { activeOwnerEpoch: 7 }],
   ] as const) {
-    placement = placements.transition({
+    placement = await placements.transition({
       sessionId: placement.sessionId,
       from,
       to,
