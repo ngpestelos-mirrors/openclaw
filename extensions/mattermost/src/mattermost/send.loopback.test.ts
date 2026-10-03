@@ -1,7 +1,6 @@
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
-import { normalizeCompatibilityConfig } from "../doctor-contract.js";
 import { sendMessageMattermost } from "./send.js";
 
 vi.mock("../runtime.js", () => ({
@@ -52,13 +51,7 @@ describe("Mattermost send target policy over real HTTP", () => {
                   botToken: "synthetic-selected",
                   network: { dangerouslyAllowPrivateNetwork: true },
                 },
-                restricted: {
-                  baseUrl,
-                  botToken: "synthetic-selected",
-                  allowPrivateNetwork: true,
-                  network: { dangerouslyAllowPrivateNetwork: false },
-                },
-                legacy: { baseUrl, botToken: "synthetic-selected", allowPrivateNetwork: true },
+                restricted: { baseUrl, botToken: "synthetic-selected" },
               },
             },
           },
@@ -99,20 +92,6 @@ describe("Mattermost send target policy over real HTTP", () => {
           ).rejects.toThrow();
         }
         expect(requests).toHaveLength(count);
-
-        await expect(
-          sendMessageMattermost(`channel:${CHANNEL_ID}`, "blocked", { cfg, accountId: "legacy" }),
-        ).rejects.toThrow();
-        expect(requests).toHaveLength(count);
-
-        const repaired = normalizeCompatibilityConfig({ cfg });
-        await expect(
-          sendMessageMattermost(`channel:${CHANNEL_ID}`, "migrated", {
-            cfg: repaired.config,
-            accountId: "legacy",
-          }),
-        ).resolves.toMatchObject({ messageId: "post-1", channelId: CHANNEL_ID });
-        expect(requests).toHaveLength(count + 1);
       },
     );
   });

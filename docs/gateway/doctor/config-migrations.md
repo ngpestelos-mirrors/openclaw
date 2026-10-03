@@ -356,13 +356,16 @@ the backups until the repaired config and migrated state have been verified.
 
 Matrix, Mattermost, Nextcloud Talk, and Tlon runtime paths read only
 `network.dangerouslyAllowPrivateNetwork` at the channel or account scope.
-Their plugin-owned Doctor transforms move the older flat `allowPrivateNetwork`
-key to that setting, preserving an explicit canonical boolean, including `false`.
-Run `openclaw doctor --fix` before using legacy config with a directly replaced
-binary. Updates invoke the same transforms through Doctor and the normal config
-backup flow. When a plugin migration is deferred, its legacy input remains
-available for Doctor after the plugin is installed; it does not enable runtime
-private-network access in the meantime.
+Nextcloud Talk and Tlon retain plugin-owned Doctor transforms for the older flat
+`allowPrivateNetwork` key. They preserve an explicit canonical boolean, including
+`false`. Run `openclaw doctor --fix` before using those legacy configs with a
+directly replaced binary. Updates invoke the same transforms through Doctor and
+the normal config backup flow. Deferred plugin migrations retain their inputs
+for Doctor after installation; those inputs do not enable runtime private-network
+access.
+
+The Matrix and Mattermost flat-key migrations are retired. Repair their old
+config with `openclaw doctor --fix` on `2026.9.7` before upgrading.
 
 ## Channel webhook listeners
 

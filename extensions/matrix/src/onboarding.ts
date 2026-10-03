@@ -1,5 +1,4 @@
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-id";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import {
   type ChannelSetupWizardAdapter,
@@ -21,7 +20,6 @@ import {
   normalizeUniqueStringEntries,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { requiresExplicitMatrixDefaultAccount } from "./account-selection.js";
-import { normalizeCompatibilityConfig } from "./doctor-contract.js";
 import {
   listMatrixAccountIds,
   resolveDefaultMatrixAccountId,
@@ -379,12 +377,6 @@ const dmPolicy = createMatrixSetupDmPolicy(promptMatrixAllowFrom);
 
 type MatrixConfigureIntent = "update" | "add-account";
 
-function assertCanonicalMatrixSetupConfig(cfg: OpenClawConfig): void {
-  if (normalizeCompatibilityConfig({ cfg }).changes.length > 0) {
-    throw new Error('Run "openclaw doctor --fix" before configuring Matrix legacy settings.');
-  }
-}
-
 async function runMatrixConfigure(params: {
   cfg: CoreConfig;
   runtime: RuntimeEnv;
@@ -614,16 +606,13 @@ export const matrixOnboardingAdapter: ChannelSetupWizardAdapter = {
       selectionHint: !sdkReady ? "install Matrix deps" : configured ? "configured" : "needs auth",
     };
   },
-  configure: async (params) => {
-    assertCanonicalMatrixSetupConfig(params.cfg);
-    return await runMatrixConfigure({
+  configure: async (params) =>
+    await runMatrixConfigure({
       ...params,
       cfg: params.cfg as CoreConfig,
       intent: "update",
-    });
-  },
+    }),
   configureInteractive: async (params) => {
-    assertCanonicalMatrixSetupConfig(params.cfg);
     if (!params.configured) {
       return await runMatrixConfigure({
         ...params,
