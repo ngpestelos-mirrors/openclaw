@@ -161,6 +161,16 @@ Docker recipe:
 pnpm test:docker:live-codex-harness
 ```
 
+The Docker lane uses a seccomp profile based on Docker's default policy with
+the namespace setup operations required by Codex's native Bubblewrap sandbox.
+It keeps `no-new-privileges` enabled and checks native sandbox startup before
+making provider requests. The runner's kernel and AppArmor policy must also
+permit nested sandbox setup. On disposable CI/Testbox runners with AppArmor,
+the lane loads a temporary profile for its own container and removes it after
+the container exits. It preserves Docker's other restrictions and does not
+change the default profile or kernel settings. Loading requires an available
+`apparmor_parser` and noninteractive permission to load profiles.
+
 Restart and history stress:
 
 ```bash
