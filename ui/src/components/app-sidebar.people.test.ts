@@ -11,3 +11,4 @@ import "../test-helpers/app-sidebar-cases/attention-details.ts";
 import "../test-helpers/app-sidebar-cases/identity-menu.ts";
 import "../test-helpers/app-sidebar-cases/presence.ts";
 import "../test-helpers/app-sidebar-cases/presence-card.ts";
+import "../test-helpers/app-sidebar-cases/roster-subagents.ts";

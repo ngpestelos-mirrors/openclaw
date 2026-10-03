@@ -26,6 +26,7 @@ type SidebarSubtitleValue = ReturnType<typeof resolveSidebarSessionSubtitle>;
 
 type SidebarProjectionInput = {
   rows: SidebarRecentSession[];
+  navigationTrees?: readonly SidebarRecentSession[];
   sections?: SidebarSessionSection<SidebarRecentSession>[];
   grouping: SidebarSessionsGrouping;
   knownGroups: string[] | undefined;
@@ -213,6 +214,7 @@ export class SidebarSessionProjection {
       }
     };
     input.rows.forEach(observeTree);
+    input.navigationTrees?.forEach(observeTree);
     for (const key of staleKeys) {
       this.childModes.delete(key);
       this.heldSubtitles.delete(key);

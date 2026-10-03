@@ -25,13 +25,17 @@ function recoveredChild(key: string, parentKey: string, label: string) {
 
 describe("AppSidebar child-session load errors", () => {
   it.each([false, true])(
-    "retries a failed child load after collapsing and reopening the parent (intervening run: %s)",
+    "retries a failed child load after collapsing and reopening the parent (hidden Swarm ancestor: %s)",
     async (interveningRun) => {
       const parentKey = "agent:main:parent";
       const runKey = "agent:main:subagent:delegating-run";
       const childKey = "agent:worker:child";
       const loadParentKey = interveningRun ? runKey : parentKey;
-      const run = { ...parentSession(runKey, childKey), spawnedBy: parentKey };
+      const run = {
+        ...parentSession(runKey, childKey),
+        spawnedBy: parentKey,
+        swarmGroupId: "parallel-review",
+      };
       const gateway = createGateway({} as GatewayBrowserClient);
       const harness = createSessionsHarness("main", [parentKey]);
       let attempts = 0;

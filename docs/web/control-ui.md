@@ -96,8 +96,10 @@ When an incoming message causes an unstarted tool call to be skipped, its card
 and work summary show **Skipped**, including after reloading the conversation.
 Approval blocks and tool failures keep their separate outcomes.
 
-Subagent runs appear in their session transcripts, outside sidebar navigation.
-Inspect them from the parent conversation with `/subagents list`,
+Ordinary subagent runs appear beneath their parent in the sidebar with a robot marker.
+Swarm members remain in the parent’s parallel-tasks view.
+Expand the parent and select a run to open its transcript. You can also inspect
+them from the parent conversation with `/subagents list`,
 `/subagents info <id|#>`, and `/subagents log <id|#>`. Opening a child transcript
 is view-only; continue the conversation in its parent session.
 
@@ -120,7 +122,8 @@ changes still reconcile through session events.
 The sidebar keeps unread child failures visible on their ancestors. These warnings
 name the child session that failed, even when its parent has finished or continues
 working. Select the warning to open the child session and acknowledge its failure;
-a subagent chat opens without adding a sidebar row.
+an ordinary subagent chat opens in its existing nested sidebar row. Swarm members
+remain outside sidebar navigation.
 
 Choose **New agent** in the sidebar or Agents home to open the custodian chat.
 It recommends a chief of staff, researcher, writer, reviewer, or a small team

@@ -17,6 +17,7 @@ import type { SidebarVisibleSections } from "./app-sidebar-session-projection.ts
 import {
   renderChildSessionLoadError,
   renderSessionTree,
+  renderSidebarSessionChildren,
   type SessionListHost,
 } from "./app-sidebar-session-row-render.ts";
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
@@ -242,6 +243,7 @@ class SidebarAgentRoster extends AgentRosterElement {
                   collapsed
                     ? nothing
                     : html`${homeLoadKeys.map((key) => renderChildSessionLoadError(this.host, key))}
+                      ${home ? renderSidebarSessionChildren({ host: this.host, session: home, expanded: true, listItem: false, showLoadErrors: false }) : nothing}
                       ${sections.map((section) =>
                         renderSessionSection({
                           host: this.host,

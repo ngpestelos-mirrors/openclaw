@@ -9,59 +9,64 @@ import { waitForFast } from "../wait-for.ts";
 import { mountRoster, roster, session } from "./roster.test-support.ts";
 
 describe("AppSidebar delegated activity", () => {
-  it("loads hidden subagent activity for the selected parent without adding navigation rows", async () => {
-    const parentKey = "agent:main:review-parent";
-    const childKey = "agent:main:subagent:review-child";
-    const sessions = createSessionsHarness("main", [parentKey]);
-    const result = sessions.sessions.state.result!;
-    const parentRow = result.sessions[0]!;
-    Object.assign(parentRow, {
-      label: "Review release",
-      status: "done",
-      hasActiveRun: false,
-      childSessions: [childKey],
-    });
-    const child: GatewaySessionRow = {
-      key: childKey,
-      kind: "direct",
-      spawnedBy: parentKey,
-      updatedAt: 2,
-      status: "running",
-      hasActiveRun: true,
-    };
-    sessions.list.mockResolvedValue({ ...result, sessions: [child] });
-    const gateway = createGatewayHarness(
-      createTestGatewayClient(async () => ({ session: parentRow })),
-    );
-    const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
-    sidebar.activeRouteId = "chat";
-    sidebar.sessionKey = parentKey;
-    const parent = () => sidebar.querySelector(`[data-session-key="${parentKey}"]`)!;
-    await waitForFast(() =>
-      expect(
-        parent().querySelector('.session-glyph__ring[aria-label="Subagents working"]'),
-      ).not.toBeNull(),
-    );
-    expect(sidebar.querySelector(`[data-session-key="${childKey}"]`)).toBeNull();
-    expect(sidebar.querySelector("[data-child-session-toggle]")).toBeNull();
+  it.each([false, true])(
+    "loads delegated activity and exposes only ordinary runs (Swarm: %s)",
+    async (swarm) => {
+      const parentKey = "agent:main:review-parent";
+      const childKey = "agent:main:subagent:review-child";
+      const sessions = createSessionsHarness("main", [parentKey]);
+      const result = sessions.sessions.state.result!;
+      const parentRow = result.sessions[0]!;
+      Object.assign(parentRow, {
+        label: "Review release",
+        status: "done",
+        hasActiveRun: false,
+        childSessions: [childKey],
+      });
+      const child: GatewaySessionRow = {
+        key: childKey,
+        kind: "direct",
+        spawnedBy: parentKey,
+        updatedAt: 2,
+        status: "running",
+        hasActiveRun: true,
+        ...(swarm ? { swarmGroupId: "parallel-review" } : {}),
+      };
+      sessions.list.mockResolvedValue({ ...result, sessions: [child] });
+      const gateway = createGatewayHarness(
+        createTestGatewayClient(async () => ({ session: parentRow })),
+      );
+      const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
+      expect(sidebar.querySelector(".sidebar-child-session-toggle__count")).toBeNull();
+      sidebar.activeRouteId = "chat";
+      sidebar.sessionKey = parentKey;
+      const parent = () => sidebar.querySelector(`[data-session-key="${parentKey}"]`)!;
+      await waitForFast(() =>
+        expect(
+          parent().querySelector('.session-glyph__ring[aria-label="Subagents working"]'),
+        ).not.toBeNull(),
+      );
+      expect(sidebar.querySelector(`[data-session-key="${childKey}"]`)).toBeNull();
+      expect(Boolean(sidebar.querySelector("[data-child-session-toggle]"))).toBe(!swarm);
 
-    const finished: GatewaySessionRow = {
-      ...child,
-      status: "done",
-      hasActiveRun: false,
-      updatedAt: 3,
-    };
-    sessions.list.mockResolvedValue({ ...result, ts: 3, sessions: [finished] });
-    vi.useFakeTimers();
-    gateway.publishEvent("sessions.changed", {
-      sessionKey: childKey,
-      session: finished,
-    });
-    await vi.advanceTimersByTimeAsync(5_000);
-    await waitForFast(() => expect(parent().querySelector(".session-glyph__ring")).toBeNull());
-  });
+      const finished: GatewaySessionRow = {
+        ...child,
+        status: "done",
+        hasActiveRun: false,
+        updatedAt: 3,
+      };
+      sessions.list.mockResolvedValue({ ...result, ts: 3, sessions: [finished] });
+      vi.useFakeTimers();
+      gateway.publishEvent("sessions.changed", {
+        sessionKey: childKey,
+        session: finished,
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await waitForFast(() => expect(parent().querySelector(".session-glyph__ring")).toBeNull());
+    },
+  );
 
-  it("keeps subagent runs out of the session tree while preserving parent activity and failure attention", async () => {
+  it("navigates subagent rows while preserving parent activity and failure attention", async () => {
     const parentKey = "agent:main:dashboard:release";
     const childKey = "agent:main:subagent:review";
     const sessions = createSessionsHarness("main", [parentKey, childKey]);
@@ -90,9 +95,7 @@ describe("AppSidebar delegated activity", () => {
     ).not.toBeNull();
     expect(parent().classList.contains("session-row-host--running")).toBe(true);
     expect(sidebar.querySelector(`[data-session-key="${childKey}"]`)).toBeNull();
-    expect(
-      sidebar.querySelector("[data-child-session-toggle], [data-show-more-children]"),
-    ).toBeNull();
+    expect(sidebar.querySelector("[data-child-session-toggle]")).not.toBeNull();
     expect(sessions.list).not.toHaveBeenCalled();
 
     const failedRun: GatewaySessionRow = {
@@ -115,9 +118,7 @@ describe("AppSidebar delegated activity", () => {
     expect(parent().querySelector('[data-session-attention="error"]')).not.toBeNull();
     expect(parent().textContent).toContain("Child session Review changes failed: Review failed");
     expect(sidebar.querySelector(`[data-session-key="${childKey}"]`)).toBeNull();
-    expect(
-      sidebar.querySelector("[data-child-session-toggle], [data-show-more-children]"),
-    ).toBeNull();
+    expect(sidebar.querySelector("[data-child-session-toggle]")).not.toBeNull();
     expect(sessions.list).not.toHaveBeenCalled();
     provider.remove();
 
@@ -166,8 +167,10 @@ describe("AppSidebar delegated activity", () => {
       rosterParent().querySelector(".sidebar-session-team-state .session-glyph__ring"),
     ).not.toBeNull();
     expect(rosterParent().querySelector('[aria-label="Unread"]')).not.toBeNull();
-    expect(mixed.sidebar.querySelector(`[data-session-key="${childKey}"]`)).toBeNull();
-    expect(mixed.sidebar.querySelectorAll(".sidebar-recent-session--child")).toHaveLength(1);
+    const childRow = mixed.sidebar.querySelector(`[data-session-key="${childKey}"]`)!;
+    expect(childRow.querySelector('[aria-label="View-only subagent"]')).not.toBeNull();
+    expect(childRow.querySelector(".session-glyph__ring")).not.toBeNull();
+    expect(mixed.sidebar.querySelectorAll(".sidebar-recent-session--child")).toHaveLength(2);
 
     const navigation = vi.fn();
     mixed.sidebar.onNavigate = navigation;
@@ -188,19 +191,20 @@ describe("AppSidebar delegated activity", () => {
     mixed.sessions.publishList({ result: mixed.result });
     await rosterActivityStore(mixed.context).refresh();
     await waitForFast(() =>
-      expect(rosterParent().querySelector('[data-session-attention="error"]')).not.toBeNull(),
+      expect(
+        mixed.sidebar.querySelector(
+          `[data-session-key="${childKey}"] [data-session-attention="error"]`,
+        ),
+      ).not.toBeNull(),
     );
     expect(rosterParent().querySelector(".session-glyph__ring")).toBeNull();
     expect(rosterParent().querySelector('[aria-label="Unread"]')).not.toBeNull();
-    expect(rosterParent().textContent).toContain(
-      "Child session Review changes failed: Review failed",
-    );
-    expect(mixed.sidebar.querySelector(`[data-session-key="${childKey}"]`)).toBeNull();
-    expect(mixed.sidebar.querySelectorAll(".sidebar-recent-session--child")).toHaveLength(1);
+    expect(mixed.sidebar.querySelector(`[data-session-key="${childKey}"]`)).not.toBeNull();
+    expect(mixed.sidebar.querySelectorAll(".sidebar-recent-session--child")).toHaveLength(2);
   });
 
   it.each(["plain", "icon", "owner"])(
-    "rings an idle %s parent until its hidden child finishes",
+    "rings an idle %s parent until its unloaded child finishes",
     async (appearance) => {
       const parentKey = "agent:main:idle-parent";
       const sessions = createSessionsHarness("main", [parentKey]);
@@ -225,7 +229,8 @@ describe("AppSidebar delegated activity", () => {
       ).not.toBeNull();
       expect(parent.classList.contains("session-row-host--running")).toBe(true);
       expect(parent.querySelector(".session-unread-dot, .session-glyph__badge--unread")).toBeNull();
-      expect(parent.querySelector("[data-child-session-toggle]")).toBeNull();
+      expect(parent.querySelector("[data-child-session-toggle]")).not.toBeNull();
+      expect(parent.querySelector(".sidebar-child-session-toggle__count")).toBeNull();
       sessions.publish({
         result: reconcileSessionChanged(sessions.sessions.state.result, {
           sessionKey: parentKey,

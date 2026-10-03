@@ -553,80 +553,93 @@ describe("AppSidebar agent chip", () => {
     { key: "agent:main:main", mainKey: "main", pinned: true },
     { key: "agent:main:workspace", mainKey: "workspace", pinned: false },
     { key: "global", mainKey: "main", pinned: true, scope: "global" },
-  ])("shows only Home for $key even with subagents", async ({ key, mainKey, pinned, scope }) => {
-    const gateway = createGateway({} as GatewayBrowserClient);
-    const harness = createSessionsHarness("main", [key]);
-    const { sidebar } = await mountSidebar(gateway, harness.sessions, "panel", {
-      defaultId: "main",
-      mainKey,
-      scope: scope === "global" ? "global" : "per-sender",
-      agents: [{ id: "main", identity: { name: "Molty" } }],
-    });
-    harness.publishList({
-      result: {
-        ts: 2,
-        path: "",
-        count: 2,
-        defaults: { modelProvider: null, model: null, contextTokens: null },
-        sessions: [
-          {
-            key,
-            kind: scope === "global" ? "global" : "direct",
-            label: "[OpenClaw heartbeat poll]",
-            category: "Team",
-            pinned,
-            updatedAt: 5,
-            childSessions: ["agent:main:subagent:thread-a"],
-          },
-          {
-            key: "agent:main:subagent:thread-a",
-            spawnedBy: key,
-            kind: "direct",
-            label: "Spawned thread",
-            updatedAt: 4,
-            hasActiveRun: true,
-            status: "running",
-          },
-        ],
-      },
-    });
-    await sidebar.updateComplete;
+  ])(
+    "keeps one Home entry and expands its subagents for $key",
+    async ({ key, mainKey, pinned, scope }) => {
+      const gateway = createGateway({} as GatewayBrowserClient);
+      const harness = createSessionsHarness("main", [key]);
+      const { sidebar } = await mountSidebar(gateway, harness.sessions, "panel", {
+        defaultId: "main",
+        mainKey,
+        scope: scope === "global" ? "global" : "per-sender",
+        agents: [{ id: "main", identity: { name: "Molty" } }],
+      });
+      harness.publishList({
+        result: {
+          ts: 2,
+          path: "",
+          count: 2,
+          defaults: { modelProvider: null, model: null, contextTokens: null },
+          sessions: [
+            {
+              key,
+              kind: scope === "global" ? "global" : "direct",
+              label: "[OpenClaw heartbeat poll]",
+              category: "Team",
+              pinned,
+              updatedAt: 5,
+              childSessions: ["agent:main:subagent:thread-a"],
+            },
+            {
+              key: "agent:main:subagent:thread-a",
+              spawnedBy: key,
+              kind: "direct",
+              label: "Spawned thread",
+              updatedAt: 4,
+              hasActiveRun: true,
+              status: "running",
+            },
+          ],
+        },
+      });
+      await sidebar.updateComplete;
 
-    expect(sidebar.querySelectorAll('.nav-item--home[href="/chat/main"]')).toHaveLength(1);
-    expect(sidebar.querySelector(`[data-session-key="${key}"]`)).toBeNull();
-    expect(sidebar.querySelector(`[data-child-session-toggle="${key}"]`)).toBeNull();
-    expect(sidebar.querySelector('[data-session-key="agent:main:subagent:thread-a"]')).toBeNull();
-    expect(
-      sidebar.querySelector('.nav-item--home .session-glyph__ring[aria-label="Subagents working"]'),
-    ).not.toBeNull();
-
-    const result = harness.sessions.state.result!;
-    harness.publishList({
-      result: {
-        ...result,
-        ts: 3,
-        sessions: result.sessions.map((row) =>
-          row.key === "agent:main:subagent:thread-a"
-            ? Object.assign({}, row, {
-                hasActiveRun: false,
-                status: "failed",
-                endedAt: 6,
-                updatedAt: 6,
-                lastRunError: "Review failed",
-              })
-            : row,
+      expect(sidebar.querySelectorAll('.nav-item--home[href="/chat/main"]')).toHaveLength(1);
+      expect(sidebar.querySelector(`[data-session-key="${key}"]`)).toBeNull();
+      const toggle = sidebar.querySelector<HTMLButtonElement>(
+        `[data-child-session-toggle="${key}"]`,
+      )!;
+      expect(toggle).not.toBeNull();
+      toggle.click();
+      await sidebar.updateComplete;
+      expect(
+        sidebar.querySelector('[data-session-key="agent:main:subagent:thread-a"]'),
+      ).not.toBeNull();
+      expect(sidebar.querySelector('[aria-label="View-only subagent"]')).not.toBeNull();
+      expect(
+        sidebar.querySelector(
+          '.nav-item--home .session-glyph__ring[aria-label="Subagents working"]',
         ),
-      },
-    });
-    await sidebar.updateComplete;
-    expect(sidebar.querySelectorAll(".nav-item--home")).toHaveLength(1);
-    expect(sidebar.querySelector(`[data-session-key="${key}"]`)).toBeNull();
-    expect(sidebar.querySelector(".nav-item--home .session-glyph__ring")).toBeNull();
-    expect(
-      sidebar.querySelector('.nav-item--home [data-session-attention="error"]'),
-    ).not.toBeNull();
-    expect(sidebar.querySelector(".nav-item--home")?.textContent).toContain(
-      "Child session Spawned thread failed: Review failed",
-    );
-  });
+      ).not.toBeNull();
+
+      const result = harness.sessions.state.result!;
+      harness.publishList({
+        result: {
+          ...result,
+          ts: 3,
+          sessions: result.sessions.map((row) =>
+            row.key === "agent:main:subagent:thread-a"
+              ? Object.assign({}, row, {
+                  hasActiveRun: false,
+                  status: "failed",
+                  endedAt: 6,
+                  updatedAt: 6,
+                  lastRunError: "Review failed",
+                })
+              : row,
+          ),
+        },
+      });
+      await sidebar.updateComplete;
+      expect(sidebar.querySelectorAll(".nav-item--home")).toHaveLength(1);
+      expect(sidebar.querySelector(`[data-session-key="${key}"]`)).toBeNull();
+      expect(sidebar.querySelector(".nav-item--home .session-glyph__ring")).toBeNull();
+      expect(
+        sidebar.querySelector('.nav-item--home [data-session-attention="error"]'),
+      ).not.toBeNull();
+      expect(sidebar.querySelector(".nav-item--home")?.textContent).toContain(
+        "Child session Spawned thread failed: Review failed",
+      );
+    },
+  );
 });

@@ -59,6 +59,8 @@ export type SidebarProjectionHost = {
   expandedAgentId(): string;
   sessionNavigationAgentId(session: Pick<SidebarRecentSession, "key" | "agentId">): string;
   selectedAgentMainSessionKey(agentId: string): string;
+  mainSessionRow(agentId: string): GatewaySessionRow | null;
+  projectHomeSession(row: GatewaySessionRow, agentId: string): SidebarRecentSession;
   knownSessionGroups(): string[];
   knownSectionOrder(): string[];
   visibleSessionCatalogs(): SessionDataController["sessionCatalogs"];
@@ -159,6 +161,10 @@ export function memoizedSidebarSections(
       }
       return host.sessionProjection.project({
         rows,
+        navigationTrees: (roster?.agentIds ?? [host.expandedAgentId()]).flatMap((agentId) => {
+          const row = host.mainSessionRow(agentId);
+          return row ? [host.projectHomeSession(row, agentId)] : [];
+        }),
         sections,
         grouping,
         knownGroups: grouping === "category" ? host.knownSessionGroups() : [],
@@ -288,6 +294,9 @@ export function memoizedSidebarHome(
       navigationState,
       host.sessionData.loadedChildSessionKeys,
       host.sessionData.childSessionErrorsByParent,
+      host.sessionOwnerFilterId,
+      host.sessionInvolvingMeFilterActive,
+      host.sessionDataContext?.gateway.snapshot.selfUser,
     ],
     () =>
       projectSidebarHomeSession({

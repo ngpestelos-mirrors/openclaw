@@ -122,8 +122,14 @@ export async function mountRoster(
   patchSettings({ gatewayUrl });
   const sessions = createSessionsHarness("main", ["agent:main:main"]);
   sessions.list.mockImplementation((options) => {
+    const linkedChildren = new Set(
+      result.sessions.find((row) => row.key === options?.spawnedBy)?.childSessions,
+    );
     const children = options?.spawnedBy
-      ? (childRows ?? result.sessions.filter((row) => row.spawnedBy === options.spawnedBy))
+      ? (childRows ??
+        result.sessions.filter(
+          (row) => row.spawnedBy === options.spawnedBy || linkedChildren.has(row.key),
+        ))
       : undefined;
     return Promise.resolve(
       children

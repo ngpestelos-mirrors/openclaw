@@ -36,8 +36,11 @@ The Control UI shows the assigned task without model-only subagent instructions.
 Named subagent sessions use their task title without an automatic “Subagent:”
 prefix; their parent relationship and view-only state still identify the run.
 
-A subagent run ends; a session does not. When you open a subagent run in the
-Control UI, its transcript is view-only. Use **Open parent session** in the
+A subagent run ends; a session does not. Ordinary subagent runs appear beneath
+their parent in the Control UI sidebar, marked with a robot icon beside the task
+name. Swarm members stay in the parent’s parallel-tasks view instead of adding
+sidebar rows. Expand the parent to inspect its runs. When you
+open a subagent run, its transcript is view-only. Use **Open parent session** in the
 composer area to continue the conversation with the parent. You can still use
 **Stop** when the Gateway reports an abortable run. Persistent sessions created
 with `visible: true` are ordinary sessions in the session tree: they keep their

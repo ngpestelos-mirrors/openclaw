@@ -93,7 +93,18 @@ export function projectSessionTree(params: {
     row.category.trim().length > 0 &&
     !isSubagentSessionKey(row.key);
 
-  const nestedKeys = new Set<string>();
+  const swarmKeys = new Set<string>();
+  for (const row of rowsByKey.values()) {
+    if (row.swarmGroupId?.trim()) {
+      swarmKeys.add(row.key);
+    }
+    // Selected-parent summaries can identify a member before child details load.
+    for (const group of row.swarm?.groups ?? []) {
+      for (const child of group.children ?? []) {
+        swarmKeys.add(child.sessionKey);
+      }
+    }
+  }
   const build = (
     row: GatewaySessionRow,
     isChild: boolean,
@@ -109,27 +120,11 @@ export function projectSessionTree(params: {
           );
     const ownsAncestor = !ancestors.has(row.key);
     ancestors.add(row.key);
-    const navigationChildKeys: string[] = [];
-    const childLoadParentKeys = new Set<string>([row.key]);
-    const descendants = childSessionKeys.flatMap((key) => {
+    const children = childSessionKeys.flatMap((key) => {
       const child = rowsByKey.get(key);
       const projectedChild = child && !ancestors.has(key) ? build(child, true, ancestors) : null;
-      navigationChildKeys.push(
-        ...(isSubagentSessionKey(key) ? (projectedChild?.childSessionKeys ?? []) : [key]),
-      );
-      if (isSubagentSessionKey(key)) {
-        for (const parentKey of projectedChild?.childLoadParentKeys ?? []) {
-          childLoadParentKeys.add(parentKey);
-        }
-      }
       return projectedChild ? [projectedChild] : [];
     });
-    // Runs contribute to the same transitive fold as persistent children, but
-    // only persistent sessions participate in sidebar navigation and expansion.
-    const children = descendants.flatMap((child) =>
-      isSubagentSessionKey(child.key) ? child.children : [child],
-    );
-    children.forEach((child) => nestedKeys.add(child.key));
     // Aliased map entries can share row.key with an ancestor; only remove our own entry.
     if (ownsAncestor) {
       ancestors.delete(row.key);
@@ -146,11 +141,11 @@ export function projectSessionTree(params: {
       }),
     }));
     const summary = summarizeChildren(
-      descendants,
+      children,
       unloadedAttention.map((entry) => entry.attention),
     );
     const subagentSummary = summarizeChildren(
-      descendants,
+      children,
       unloadedAttention
         .filter((entry) => isSubagentSessionKey(entry.key))
         .map((entry) => entry.attention),
@@ -170,6 +165,21 @@ export function projectSessionTree(params: {
       subagentSummary.runningChildCount,
       hasUnloadedDescendantRun && summary.runningChildCount === 0 ? 1 : 0,
     );
+    // Swarm members keep contributing activity, but their navigation lives in
+    // the parent's parallel-tasks view, including after completion.
+    const navigationChildren = children.flatMap((child) =>
+      swarmKeys.has(child.key) ? child.children : [child],
+    );
+    const navigationKeys = childSessionKeys.filter((key) => !swarmKeys.has(key));
+    const childLoadParentKeys = new Set(childSessionKeys.length > 0 ? [row.key] : []);
+    for (const child of children) {
+      if (swarmKeys.has(child.key)) {
+        navigationKeys.push(...child.childSessionKeys);
+        for (const key of child.childLoadParentKeys ?? []) {
+          childLoadParentKeys.add(key);
+        }
+      }
+    }
     return {
       ...projected,
       ...summary,
@@ -177,12 +187,11 @@ export function projectSessionTree(params: {
       ownWorkspaceConflictCount: projected.workspaceConflictCount,
       subagentSummary,
       attention,
-      childSessionKeys: navigationChildKeys,
-      // Hidden runs still need reads to discover their persistent descendants.
-      childLoadParentKeys: childSessionKeys.length > 0 ? [...childLoadParentKeys] : [],
-      children,
+      childSessionKeys: [...new Set(navigationKeys)],
+      childLoadParentKeys: [...childLoadParentKeys],
+      children: navigationChildren,
       loadingChildren: [...childLoadParentKeys].some((key) => loadingChildKeys.has(key)),
-      containsActiveDescendant: children.some(
+      containsActiveDescendant: navigationChildren.some(
         (child) => child.active || child.visuallyActive || child.containsActiveDescendant,
       ),
       workspaceConflictCount: workspaceConflictCount || undefined,
@@ -208,6 +217,16 @@ export function projectSessionTree(params: {
       return !parentKey || !rootKeys.has(parentKey);
     })
     .map((row) => build(row, false, new Set()));
+  const nestedKeys = new Set<string>();
+  const collectNestedKeys = (rows: readonly SidebarRecentSession[]) => {
+    for (const row of rows) {
+      for (const child of row.children) {
+        nestedKeys.add(child.key);
+      }
+      collectNestedKeys(row.children);
+    }
+  };
+  collectNestedKeys(projectedRoots);
   // A missing or archived ancestor cannot reattach a row; keep its existing root fallback.
   return projectedRoots.filter((row) => !reattachedRoots.has(row.key) || !nestedKeys.has(row.key));
 }

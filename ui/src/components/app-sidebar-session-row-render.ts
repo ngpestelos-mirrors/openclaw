@@ -20,7 +20,11 @@ import type {
 } from "../lib/session-method-access.ts";
 import { writeSessionDragData } from "../lib/sessions/drag.ts";
 import type { SidebarSessionsGrouping } from "../lib/sessions/grouping.ts";
-import { canArchiveSessionRow, resolveUiConfiguredMainKey } from "../lib/sessions/session-key.ts";
+import {
+  canArchiveSessionRow,
+  isSubagentSessionKey,
+  resolveUiConfiguredMainKey,
+} from "../lib/sessions/session-key.ts";
 import { formatSessionSnoozeWakeTime, isSessionSnoozed } from "../lib/sessions/session-snooze.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
 import type {
@@ -47,14 +51,18 @@ import { renderSessionRowBadges } from "./session-row-badges.ts";
 import { renderSidebarSessionSubtitle } from "./session-row-subtitle.ts";
 import { sessionRunVisibility } from "./session-run-visibility.ts";
 import type { SidebarMenusController } from "./sidebar-menus-controller.ts";
+import {
+  renderSessionChildrenToggle,
+  resolvedChildSessionCount,
+  type SessionChildrenHost,
+} from "./sidebar-session-children-toggle.ts";
 import { EMPTY_VIEWER_IDENTITIES } from "./viewer-facepile.ts";
 import "./elapsed-time.ts";
 import "./tooltip.ts";
 
 const SIDEBAR_VISIBLE_CHILD_SESSION_LIMIT = 4;
 
-export interface SessionListHost {
-  readonly sidebarAgentsMode?: "chip" | "roster";
+export interface SessionListHost extends SessionChildrenHost {
   readonly basePath: string;
   readonly sessionDataContext:
     | Pick<ApplicationContext, "gateway" | "agentSelection" | "agents" | "sessions">
@@ -135,11 +143,9 @@ export interface SessionListHost {
   readonly sessionPullRequests: Pick<SessionPullRequestIndicatorsController, "summary">;
   mainSessionRow(): GatewaySessionRow | null;
   setSessionOwnerFilter(ownerId: string | null, involvingMe?: boolean): void;
-  isSessionChildrenExpanded(session: SidebarRecentSession): boolean;
   isSessionChildrenFullyShown(sessionKey: string): boolean;
   sidebarSessionHref(session: SidebarRecentSession): string;
   handleSessionRowClick(event: MouseEvent, session: SidebarRecentSession): void;
-  toggleSessionChildren(session: SidebarRecentSession): void;
   toggleSessionPin(session: SidebarRecentSession): void;
   toggleSessionMenu(
     session: SidebarRecentSession,
@@ -321,7 +327,7 @@ function renderSidebarSessionIndicators(
           ? renderTeamSessionSlots(
               [session],
               !childrenExpanded,
-              session.childSessionKeys.length,
+              resolvedChildSessionCount(session),
               0,
               runVisibility,
             )
@@ -380,8 +386,7 @@ export function renderRecentSession(params: {
     observerDigest: host.sidebarObserverDigests.get(session.key) ?? null,
   });
   const indicators = renderSidebarSessionIndicators(host, session, display, icon);
-  const { running, stateId, metaId, pullRequest, persistentIndicator, childrenExpanded } =
-    indicators;
+  const { running, stateId, metaId, pullRequest, persistentIndicator } = indicators;
   const openMenuFromEvent = (event: MouseEvent | KeyboardEvent) =>
     handleContextMenuEvent(
       event,
@@ -440,7 +445,7 @@ export function renderRecentSession(params: {
   });
   const rowDraggable = !session.isChild && groupWriteAccess.allowed;
   const marqueeLabelTemplate = renderHoverMarquee(
-    html`${team ? nothing : indicators.originIndicators}${label}`,
+    html`${team ? nothing : indicators.originIndicators}${isSubagentSessionKey(session.key) ? html`<span class="sidebar-session-subagent-indicator" role="img" aria-label=${t("chat.subagentViewOnly")} title=${t("chat.subagentViewOnly")}>${icons.bot}</span>` : nothing}${label}`,
     "sidebar-recent-session__name",
   );
   const marqueeLabel = display
@@ -513,45 +518,7 @@ export function renderRecentSession(params: {
           </span>
         </span>
       </a>
-      ${
-        session.childSessionKeys.length > 0
-          ? html`<button
-              class="sidebar-child-session-toggle ${
-                !team && session.runningChildCount > 0
-                  ? "sidebar-child-session-toggle--running"
-                  : !team && session.failedChildCount > 0
-                    ? "sidebar-child-session-toggle--failed"
-                    : ""
-              }"
-              type="button"
-              data-child-session-toggle=${session.key}
-              aria-expanded=${String(childrenExpanded)}
-              aria-label=${t(
-                childrenExpanded
-                  ? "sessionsView.hideChildSessions"
-                  : "sessionsView.showChildSessions",
-                { count: String(session.childSessionKeys.length), session: label },
-              )}
-              aria-description=${
-                !team && !childrenExpanded && session.runningChildCount > 0
-                  ? t("sessionsView.activeRun")
-                  : nothing
-              }
-              @click=${() => host.toggleSessionChildren(session)}
-            >
-              <span class="sidebar-child-session-toggle__icon" aria-hidden="true"
-                >${childrenExpanded ? icons.chevronDown : icons.chevronRight}</span
-              >
-              ${
-                childrenExpanded || team
-                  ? nothing
-                  : html`<span class="sidebar-child-session-toggle__count"
-                      >${session.childSessionKeys.length}</span
-                    >`
-              }
-            </button>`
-          : nothing
-      }
+      ${renderSessionChildrenToggle(host, session)}
       <span class="sidebar-recent-session__aside session-row-aside">
         <span class="session-row-actions">
           ${
@@ -651,66 +618,85 @@ export function renderSessionTree(params: {
   session: SidebarRecentSession;
   listItem?: boolean;
   icon?: TemplateResult;
+  showLoadErrors?: boolean;
 }): TemplateResult {
-  const { host, session, listItem = true, icon } = params;
-  const expanded = host.isSessionChildrenExpanded(session);
-  const visibleChildren = visibleSessionChildren({
-    session,
-    fullyShown: host.isSessionChildrenFullyShown(session.key),
-  });
-  const hiddenChildCount = session.children.length - visibleChildren.length;
+  const { host, session, listItem = true, icon, showLoadErrors = true } = params;
   return html`<div
     class="sidebar-session-tree"
     data-session-tree=${session.key}
     role=${ifDefined(listItem ? "listitem" : undefined)}
   >
     ${renderRecentSession({ host, session, listItem: false, icon })}
-    ${
-      expanded
-        ? html`<div class="sidebar-session-tree__children">
-            ${
-              visibleChildren.length > 0
-                ? html`<div
-                    class="sidebar-session-tree__list"
-                    role=${ifDefined(listItem ? "list" : undefined)}
-                    aria-label=${ifDefined(listItem ? t("sessionsView.childSessions") : undefined)}
-                  >
-                    ${repeat(
-                      visibleChildren,
-                      (child) => child.key,
-                      (child) => renderSessionTree({ host, session: child, listItem }),
-                    )}
-                  </div>`
-                : nothing
-            }
-            ${
-              hiddenChildCount > 0
-                ? html`<button
-                    class="sidebar-session-tree__show-more"
-                    type="button"
-                    data-show-more-children=${session.key}
-                    aria-label=${t("sessionsView.showMoreChildren", {
-                      count: String(hiddenChildCount),
-                    })}
-                    @click=${() => host.showMoreChildren(session.key)}
-                  >
-                    ${t("sessionsView.showMoreChildren", { count: String(hiddenChildCount) })}
-                  </button>`
-                : nothing
-            }
-            ${(session.childLoadParentKeys ?? [session.key]).map((key) => renderChildSessionLoadError(host, key))}
-            ${
-              session.loadingChildren && session.children.length === 0
-                ? html`<span
-                    class="sidebar-session-tree__loading skeleton skeleton-line skeleton-line--medium"
-                    role="status"
-                    aria-busy="true"
-                    aria-label=${t("common.loading")}
-                  ></span>`
-                : nothing
-            }
-          </div>`
-        : nothing
-    }
+    ${renderSidebarSessionChildren({ host, session, listItem, showLoadErrors })}
   </div>`;
+}
+
+export function renderSidebarSessionChildren({
+  host,
+  session,
+  listItem = true,
+  expanded = host.isSessionChildrenExpanded(session),
+  showLoadErrors = true,
+}: {
+  host: SessionListHost;
+  session: SidebarRecentSession;
+  listItem?: boolean;
+  expanded?: boolean;
+  showLoadErrors?: boolean;
+}) {
+  const visibleChildren = visibleSessionChildren({
+    session,
+    fullyShown: host.isSessionChildrenFullyShown(session.key),
+  });
+  const hiddenChildCount = session.children.length - visibleChildren.length;
+  return expanded
+    ? html`<div class="sidebar-session-tree__children">
+        ${
+          visibleChildren.length > 0
+            ? html`<div
+                class="sidebar-session-tree__list"
+                role=${ifDefined(listItem ? "list" : undefined)}
+                aria-label=${ifDefined(listItem ? t("sessionsView.childSessions") : undefined)}
+              >
+                ${repeat(
+                  visibleChildren,
+                  (child) => child.key,
+                  (child) => renderSessionTree({ host, session: child, listItem, showLoadErrors }),
+                )}
+              </div>`
+            : nothing
+        }
+        ${
+          hiddenChildCount > 0
+            ? html`<button
+                class="sidebar-session-tree__show-more"
+                type="button"
+                data-show-more-children=${session.key}
+                aria-label=${t("sessionsView.showMoreChildren", {
+                  count: String(hiddenChildCount),
+                })}
+                @click=${() => {
+                  if (!host.isSessionChildrenExpanded(session)) {
+                    host.toggleSessionChildren(session);
+                  }
+                  host.showMoreChildren(session.key);
+                }}
+              >
+                ${t("sessionsView.showMoreChildren", { count: String(hiddenChildCount) })}
+              </button>`
+            : nothing
+        }
+        ${showLoadErrors ? (session.childLoadParentKeys ?? [session.key]).map((key) => renderChildSessionLoadError(host, key)) : nothing}
+        ${
+          session.loadingChildren && session.children.length === 0
+            ? html`<span
+                class="sidebar-session-tree__loading skeleton skeleton-line skeleton-line--medium"
+                role="status"
+                aria-busy="true"
+                aria-label=${t("common.loading")}
+              ></span>`
+            : nothing
+        }
+      </div>`
+    : nothing;
 }

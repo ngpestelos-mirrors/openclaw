@@ -267,10 +267,7 @@ export function buildSidebarSessionNavigationState(input: {
       endedAt: row.endedAt,
       runtimeMs: row.runtimeMs,
       runtimeSampledAt,
-      childSessionKeys:
-        row.archived === true
-          ? []
-          : (row.childSessions ?? []).filter((key) => !isSubagentSessionKey(key)),
+      childSessionKeys: row.archived === true ? [] : (row.childSessions ?? []),
       children: [],
       isChild,
       loadingChildren: input.loadingChildSessionKeys.has(row.key),

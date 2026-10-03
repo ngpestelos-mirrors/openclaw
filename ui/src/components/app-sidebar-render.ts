@@ -30,6 +30,10 @@ import { pluginTabKey } from "../pages/plugin/route.ts";
 import { renderSidebarPluginTab } from "./app-sidebar-nav-menus.ts";
 import { renderSidebarSessionFilter } from "./app-sidebar-session-filter-summary.ts";
 import type { AppSidebarSessionNavigationElement } from "./app-sidebar-session-navigation.ts";
+import {
+  renderSidebarSessionChildren,
+  type SessionListHost,
+} from "./app-sidebar-session-row-render.ts";
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
 import { renderGatewayStatus } from "./gateway-status.ts";
 import { icons } from "./icons.ts";
@@ -44,15 +48,17 @@ import { renderSessionGlyph, renderSessionUnreadBadge } from "./session-glyph.ts
 import { renderSessionRowBadges } from "./session-row-badges.ts";
 import { formatSidebarBuildSubtitle } from "./sidebar-build-chip-format.ts";
 import { renderSidebarReorderMenu } from "./sidebar-reorder.ts";
+import { renderSessionChildrenToggle } from "./sidebar-session-children-toggle.ts";
 
-export type AppSidebarRenderHost = AppSidebarSessionNavigationElement & {
-  activePluginTabId: string;
-  teamOnlineExpanded: boolean;
-  readonly people: import("./sidebar-people-controller.ts").SidebarPeopleController;
-  getRouteSessionKey(): string;
-  renderPinnedSidebarSession(session: SidebarRecentSession): unknown;
-  toggleSection(sectionId: string): void;
-};
+export type AppSidebarRenderHost = AppSidebarSessionNavigationElement &
+  SessionListHost & {
+    activePluginTabId: string;
+    teamOnlineExpanded: boolean;
+    readonly people: import("./sidebar-people-controller.ts").SidebarPeopleController;
+    getRouteSessionKey(): string;
+    renderPinnedSidebarSession(session: SidebarRecentSession): unknown;
+    toggleSection(sectionId: string): void;
+  };
 
 // Display-only: read the injected global directly; the capability module must stay
 // lazy to protect the startup budget.
@@ -291,44 +297,48 @@ export function renderAppSidebarHomeRow(host: AppSidebarRenderHost) {
     runningLabel: activeRunLabel,
     badge: unread && !running ? renderSessionUnreadBadge() : nothing,
   });
-  return html`
-    <a
-      href=${
-        sessionNavigationTarget({
-          face: resolveSessionPreferredFace(mainRow),
-          sessionKey: mainKey,
-          fallbackAgentId: agentId,
-          basePath: host.basePath,
-          row: mainRow ?? undefined,
-          mainKey: parseAgentSessionKey(mainKey)?.rest,
-          preferenceDerivedFace: true,
-        }).href
-      }
-      class="nav-item nav-item--home ${active ? "nav-item--active" : ""}"
-      aria-label=${homeDescription ? `${t("nav.home")} · ${homeDescription}` : nothing}
-      aria-current=${active ? "page" : nothing}
-      @click=${(event: MouseEvent) => {
-        if (!shouldHandleNavigationClick(event)) {
-          return;
+  return html`<div class="sidebar-home-session-tree">
+    <div class="sidebar-home-session-row session-row-host">
+      <a
+        href=${
+          sessionNavigationTarget({
+            face: resolveSessionPreferredFace(mainRow),
+            sessionKey: mainKey,
+            fallbackAgentId: agentId,
+            basePath: host.basePath,
+            row: mainRow ?? undefined,
+            mainKey: parseAgentSessionKey(mainKey)?.rest,
+            preferenceDerivedFace: true,
+          }).href
         }
-        event.preventDefault();
-        host.openMainSession(agentId);
-      }}
-    >
-      ${homeGlyph}
-      <span class="nav-item__text">${t("nav.home")}</span>
-      ${
-        outboxAttentionCount > 0 || hasComposerDraft
-          ? html`<span class="nav-item__state sidebar-home-session-states">
-              ${renderSessionRowBadges({
-                outboxAttentionCount,
-                hasComposerDraft,
-              })}
-            </span>`
-          : nothing
-      }
-    </a>
-  `;
+        class="nav-item nav-item--home ${active ? "nav-item--active" : ""}"
+        aria-label=${homeDescription ? `${t("nav.home")} · ${homeDescription}` : nothing}
+        aria-current=${active ? "page" : nothing}
+        @click=${(event: MouseEvent) => {
+          if (!shouldHandleNavigationClick(event)) {
+            return;
+          }
+          event.preventDefault();
+          host.openMainSession(agentId);
+        }}
+      >
+        ${homeGlyph}
+        <span class="nav-item__text">${t("nav.home")}</span>
+        ${
+          outboxAttentionCount > 0 || hasComposerDraft
+            ? html`<span class="nav-item__state sidebar-home-session-states">
+                ${renderSessionRowBadges({
+                  outboxAttentionCount,
+                  hasComposerDraft,
+                })}
+              </span>`
+            : nothing
+        }
+      </a>
+      ${session ? renderSessionChildrenToggle(host, session) : nothing}
+    </div>
+    ${session ? renderSidebarSessionChildren({ host, session, listItem: false, showLoadErrors: false }) : nothing}
+  </div>`;
 }
 
 export function renderAppSidebarPagesHead(host: AppSidebarRenderHost) {

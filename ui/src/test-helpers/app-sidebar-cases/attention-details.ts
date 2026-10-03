@@ -305,7 +305,7 @@ describe("AppSidebar session attention details", () => {
       expect(attention(parentKey)).toBe(
         "2 questions need your answer\nWhich environment?\n+1 more",
       );
-      expect(sidebar.querySelector(`[data-session-key="${childKey}"]`)).toBeNull();
+      expect(attention(childKey)).toBe("Waiting for your answer\nWhich environment?");
       sidebar
         .querySelector<HTMLButtonElement>(
           isHome ? '[data-agent-collapse="main"]' : `[data-child-session-toggle="${parentKey}"]`,

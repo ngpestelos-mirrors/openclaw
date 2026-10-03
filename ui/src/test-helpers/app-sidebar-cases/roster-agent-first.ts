@@ -163,7 +163,7 @@ describe("AppSidebar agent roster", () => {
       [false, true].map((viaRun) => ({ mode, viaRun })),
     ),
   )(
-    "loads Home descendants and exposes their retry ($mode, hidden run=$viaRun)",
+    "loads Home descendants and exposes their retry ($mode, subagent=$viaRun)",
     async ({ mode, viaRun }) => {
       const agentId = mode === "chip" ? "main" : "working";
       const homeKey = `agent:${agentId}:main`;
@@ -213,10 +213,17 @@ describe("AppSidebar agent roster", () => {
       await vi.waitFor(() =>
         expect(sidebar.querySelector(`[data-retry-child-sessions="${parentKey}"]`)).not.toBeNull(),
       );
+      expect(sidebar.querySelectorAll(`[data-retry-child-sessions="${parentKey}"]`)).toHaveLength(
+        1,
+      );
       sidebar
         .querySelector<HTMLButtonElement>(`[data-retry-child-sessions="${parentKey}"]`)!
         .click();
-      await vi.waitFor(() => expect(sessionKeys(sidebar)).toEqual([childKey]));
+      await vi.waitFor(() =>
+        expect(sessionKeys(sidebar)).toEqual(
+          mode === "roster" && viaRun ? [runKey, childKey] : [childKey],
+        ),
+      );
       expect(sidebar.querySelector("[data-child-session-error]")).toBeNull();
       expect(sidebar.querySelector(`[data-session-key="${homeKey}"]`)).toBeNull();
     },
@@ -436,7 +443,9 @@ describe("AppSidebar agent roster", () => {
       sidebar.sessionKey = homeKey;
       sidebar.sidebarAgentsMode = "roster";
       await vi.waitFor(() => expect(agentIds(sidebar)).toEqual(["main"]));
-      await vi.waitFor(() => expect(sessionKeys(sidebar)).toEqual([childKey]));
+      await vi.waitFor(() =>
+        expect(sessionKeys(sidebar)).toEqual(viaRun ? [runKey, childKey] : [childKey]),
+      );
       expect(
         sidebar.querySelector(
           '[data-agent-group="main"] .sidebar-agent-roster__signals .session-glyph__ring',

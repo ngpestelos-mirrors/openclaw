@@ -1,5 +1,6 @@
 import type { SessionsListResult } from "../api/types.ts";
 import { sessionParticipantIdentityKey } from "../lib/chat/sender-label.ts";
+import { isSubagentSessionKey } from "../lib/sessions/session-key.ts";
 import { findSidebarSessionInTree } from "./app-sidebar-session-navigation-logic.ts";
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
 import { sessionSelfOwner, type SessionOwnerOption } from "./session-owner-chip.ts";
@@ -77,6 +78,14 @@ export function applySidebarSessionOwnerFilter(input: {
     (input.ownerFacet === undefined || ownerOptions.some((owner) => owner.id === selectedOwnerId))
       ? selectedOwnerId
       : null;
+  const promotePersistentRows = (
+    treeRows: readonly SidebarRecentSession[],
+  ): SidebarRecentSession[] =>
+    treeRows.flatMap((row) =>
+      isSubagentSessionKey(row.key)
+        ? promotePersistentRows(row.children)
+        : [{ ...row, isChild: false }],
+    );
   const filterTree = (treeRows: readonly SidebarRecentSession[]): SidebarRecentSession[] => {
     const filtered: SidebarRecentSession[] = [];
     for (const row of treeRows) {
@@ -85,9 +94,7 @@ export function applySidebarSessionOwnerFilter(input: {
       if (ownerId === activeOwnerId) {
         filtered.push({ ...row, children });
       } else {
-        for (const child of children) {
-          filtered.push({ ...child, isChild: false });
-        }
+        filtered.push(...promotePersistentRows(children));
       }
     }
     return filtered;

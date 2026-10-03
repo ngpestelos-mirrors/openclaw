@@ -527,9 +527,13 @@ describe("AppSidebar agent chip", () => {
           expect(sidebar.querySelectorAll(`[data-session-key="${childKey}"]`)).toHaveLength(1),
         );
         await waitForFast(() =>
-          expect(sidebar.querySelectorAll(".sidebar-recent-session")).toHaveLength(2),
+          expect(sidebar.querySelectorAll(".sidebar-recent-session")).toHaveLength(
+            interveningRun ? 3 : 2,
+          ),
         );
-        expect(sidebar.querySelector(`[data-session-key="${runKey}"]`)).toBeNull();
+        expect(Boolean(sidebar.querySelector(`[data-session-key="${runKey}"]`))).toBe(
+          interveningRun,
+        );
         expect(
           sidebar
             .querySelector(`[data-child-session-toggle="${parentKey}"]`)
@@ -562,7 +566,9 @@ describe("AppSidebar agent chip", () => {
             ),
           ).not.toBeNull(),
         );
-        expect(sidebar.querySelector(`[data-session-key="${runKey}"]`)).toBeNull();
+        expect(Boolean(sidebar.querySelector(`[data-session-key="${runKey}"]`))).toBe(
+          interveningRun,
+        );
         expect(
           sidebar
             .querySelector(`[data-child-session-toggle="${parentKey}"]`)

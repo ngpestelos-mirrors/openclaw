@@ -37,7 +37,50 @@ function project(roots: GatewaySessionRow[], rows = roots) {
 }
 
 describe("Home-linked conversation placement", () => {
-  it("reattaches a persistent session through hidden runs and reveals its visible ancestor", () => {
+  it("keeps Swarm activity without navigation rows or hiding persistent descendants", () => {
+    const swarmKey = "agent:main:subagent:swarm-review";
+    const parent: GatewaySessionRow = {
+      key: homeKey,
+      kind: "direct",
+      childSessions: [workerKey, swarmKey],
+    };
+    const ordinary: GatewaySessionRow = {
+      key: workerKey,
+      kind: "direct",
+      spawnedBy: homeKey,
+    };
+    const swarm: GatewaySessionRow = {
+      key: swarmKey,
+      kind: "direct",
+      spawnedBy: homeKey,
+      swarmGroupId: "parallel-review",
+      hasActiveRun: true,
+      unread: true,
+      childSessions: [conversationKey],
+    };
+    const persistent: GatewaySessionRow = {
+      key: conversationKey,
+      kind: "direct",
+      spawnedBy: swarmKey,
+    };
+    const rows = [parent, ordinary, swarm, persistent];
+    const tree = project(rows);
+    expect(tree.map((row) => row.key)).toEqual([homeKey]);
+    expect(tree[0]?.children.map((row) => row.key)).toEqual([workerKey, conversationKey]);
+    expect(tree[0]).toMatchObject({
+      childSessionKeys: [workerKey, conversationKey],
+      runningChildCount: 1,
+      unreadChildCount: 1,
+      containsActiveDescendant: true,
+    });
+    swarm.hasActiveRun = false;
+    expect(project(rows)[0]?.childSessionKeys).toEqual([workerKey, conversationKey]);
+    parent.childSessions = [swarmKey];
+    swarm.childSessions = [];
+    expect(project([parent, swarm])[0]).toMatchObject({ children: [], childSessionKeys: [] });
+  });
+
+  it("retains subagent ancestry and reveals the selected persistent descendant", () => {
     const parent: GatewaySessionRow = {
       key: homeKey,
       kind: "direct",
@@ -61,9 +104,10 @@ describe("Home-linked conversation placement", () => {
     const rows = [parent, run, child];
     const tree = project(rows);
     expect(tree.map((row) => row.key)).toEqual([homeKey]);
-    expect(tree[0]?.children.map((row) => row.key)).toEqual([conversationKey]);
+    expect(tree[0]?.children.map((row) => row.key)).toEqual([workerKey]);
+    expect(tree[0]?.children[0]?.children.map((row) => row.key)).toEqual([conversationKey]);
     expect(tree[0]).toMatchObject({
-      childSessionKeys: [conversationKey],
+      childSessionKeys: [workerKey],
       containsActiveDescendant: true,
       runningChildCount: 2,
       unreadChildCount: 1,
@@ -91,7 +135,10 @@ describe("Home-linked conversation placement", () => {
     const nestedParent = { ...parent, spawnedBy: outer.key };
     const nestedTree = project([outer, child], [outer, nestedParent, run, child]);
     expect(nestedTree.map((row) => row.key)).toEqual([outer.key]);
-    expect(nestedTree[0]?.children[0]?.children.map((row) => row.key)).toEqual([conversationKey]);
+    expect(nestedTree[0]?.children[0]?.children.map((row) => row.key)).toEqual([workerKey]);
+    expect(nestedTree[0]?.children[0]?.children[0]?.children.map((row) => row.key)).toEqual([
+      conversationKey,
+    ]);
 
     // The Gateway flag is transitive; visible child work must not ring twice.
     run.hasActiveRun = false;
@@ -105,7 +152,7 @@ describe("Home-linked conversation placement", () => {
     delete run.spawnedBy;
     const listedTree = project(rows);
     expect(listedTree.map((row) => row.key)).toEqual([homeKey]);
-    expect(listedTree[0]?.children.map((row) => row.key)).toEqual([conversationKey]);
+    expect(listedTree[0]?.children.map((row) => row.key)).toEqual([workerKey]);
 
     // With no loaded persistent ancestor, retain the ordinary root candidate.
     const fallback = project([run, child]);
@@ -138,7 +185,7 @@ describe("Home-linked conversation placement", () => {
     };
     const tree = project([home, conversation, worker]);
     expect(tree.map((row) => row.key)).toEqual([homeKey, conversationKey]);
-    expect(tree[0]?.children).toEqual([]);
+    expect(tree[0]?.children.map((row) => row.key)).toEqual([workerKey]);
     expect(tree[1]?.isChild).toBe(false);
     expect(conversation.parentSessionKey).toBe(homeKey);
   });

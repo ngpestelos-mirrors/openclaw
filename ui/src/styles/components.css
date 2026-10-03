@@ -5558,14 +5558,16 @@ td.data-table-key-col {
   pointer-events: none;
 }
 
-.sidebar-session-fork-indicator {
+.sidebar-session-fork-indicator,
+.sidebar-session-subagent-indicator {
   display: inline-flex;
   margin-right: 4px;
   color: var(--muted);
   vertical-align: -2px;
 }
 
-.sidebar-session-fork-indicator svg {
+.sidebar-session-fork-indicator svg,
+.sidebar-session-subagent-indicator svg {
   width: 14px;
   height: 14px;
   fill: none;

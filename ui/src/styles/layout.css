@@ -2204,6 +2204,16 @@ openclaw-settings-save-indicator:empty {
   outline-offset: -2px;
 }
 
+.sidebar-home-session-row {
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-home-session-row > .nav-item--home {
+  flex: 1;
+  min-width: 0;
+}
+
 .sidebar-child-session-toggle {
   display: inline-flex;
   align-items: center;
@@ -3597,6 +3607,10 @@ a:is(
   align-items: center;
   justify-content: flex-end;
   padding: 0 8px 0 12px;
+}
+
+.sidebar-nav:has(.sidebar-home-session-row > .sidebar-child-session-toggle) .sidebar-nav__head {
+  right: var(--sidebar-child-session-toggle-width, 31px);
 }
 
 .sidebar-nav__head-action {

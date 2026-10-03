@@ -125,6 +125,28 @@ describe("AppSidebar session ownership filtering", () => {
       { type: "human", id: "profile-ada", label: "Ada" },
       { type: "human", id: "profile-bob", label: "Bob" },
     ];
+    const workerKey = "agent:main:subagent:owned-worker";
+    const descendantKey = "agent:main:dashboard:owned-descendant";
+    bob.childSessions = [workerKey];
+    result.sessions.push(
+      {
+        key: workerKey,
+        kind: "direct",
+        label: "Owned worker",
+        updatedAt: 12,
+        spawnedBy: bob.key,
+        childSessions: [descendantKey],
+        owner: ada.owner,
+      },
+      {
+        key: descendantKey,
+        kind: "direct",
+        label: "Independent continuation",
+        updatedAt: 13,
+        spawnedBy: workerKey,
+        owner: ada.owner,
+      },
+    );
     harness.publish({ groups: ["Research", "Operations"] });
     const { sidebar } = await mountSidebar(gateway, harness.sessions);
     harness.publishList({ result, agentId: "main" });
@@ -135,6 +157,8 @@ describe("AppSidebar session ownership filtering", () => {
 
     expect(sidebar.querySelector('[data-session-key="agent:main:ada"]')).not.toBeNull();
     expect(sidebar.querySelector('[data-session-key="agent:main:bob"]')).toBeNull();
+    expect(sidebar.querySelector(`[data-session-key="${workerKey}"]`)).toBeNull();
+    expect(sidebar.querySelector(`[data-session-key="${descendantKey}"]`)).not.toBeNull();
     expect(sidebar.querySelector('[data-session-section="category:Research"]')).not.toBeNull();
     expect(sidebar.querySelector('[data-session-section="category:Operations"]')).toBeNull();
     expect(

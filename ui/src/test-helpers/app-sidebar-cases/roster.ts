@@ -148,7 +148,7 @@ describe("AppSidebar agent roster", () => {
       ),
     ),
   )(
-    "promotes Home descendants through parent-owned hidden-run lists ($mode, cached=$cached, category=$category)",
+    "keeps persistent Home descendants in sections beside nested subagents ($mode, cached=$cached, category=$category)",
     async ({ mode, cached, category }) => {
       const agentId = mode === "chip" ? "main" : "working";
       const runKey = `agent:${agentId}:subagent:bridge`;
@@ -170,7 +170,9 @@ describe("AppSidebar agent roster", () => {
         cached ? descendants : undefined,
       );
       sidebar.sidebarAgentsMode = mode;
-      await vi.waitFor(() => expect(sessionKeys(sidebar)).toEqual([childKey]));
+      await vi.waitFor(() =>
+        expect(sessionKeys(sidebar)).toEqual(mode === "roster" ? [runKey, childKey] : [childKey]),
+      );
       expect(sidebar.querySelector("[data-child-session-error]")).toBeNull();
       if (mode === "chip" && category) {
         const section = sidebar
