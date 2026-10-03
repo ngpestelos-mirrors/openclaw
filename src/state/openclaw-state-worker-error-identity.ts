@@ -26,6 +26,7 @@ import {
   SecretStoreValidationError,
   isSecretStoreValidationCode,
 } from "../secrets/store/secret-store-validation-error.js";
+import { SkillLibraryError, type SkillLibraryErrorCode } from "../skills/library/errors.js";
 import { SkillUploadRequestError } from "../skills/lifecycle/upload-store-error.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
@@ -42,9 +43,9 @@ type StateMigrationKind = ConstructorParameters<
 >[0];
 
 export type ErrorIdentity =
-  | { type: "session-mutation-conflict"; operationLabel: string }
   | { type: "secret-store-validation"; secretCode: SecretStoreValidationError["code"] }
   | { type: "session-goal-operation"; goalCode: SessionGoalOperationErrorCode }
+  | { type: "session-mutation-conflict"; operationLabel: string }
   | { type: "worker-session-already-attached"; sessionId: string; environmentId: string }
   | {
       type: "workspace-alias-repointed";
@@ -71,6 +72,7 @@ export type ErrorIdentity =
   | { type: "ownership-metadata"; databasePath: string }
   | { type: "external-ownership"; databasePath: string; managerId: string }
   | { type: "state-lease"; leaseCode: OpenClawStateLeaseErrorCode }
+  | { type: "skill-library"; libraryCode: SkillLibraryErrorCode; currentRevision?: string }
   | {
       type: "plugin-blob";
       blobCode: PluginBlobStoreError["code"];
@@ -87,6 +89,13 @@ export type ErrorIdentity =
   | { type: "agent-media-migration"; pathname: string; schemaVersion: number };
 
 export function identifyError(error: Error): ErrorIdentity {
+  if (error instanceof SkillLibraryError) {
+    return {
+      type: "skill-library",
+      libraryCode: error.code,
+      ...(error.currentRevision === undefined ? {} : { currentRevision: error.currentRevision }),
+    };
+  }
   if (error instanceof SecretStoreValidationError) {
     return { type: "secret-store-validation", secretCode: error.code };
   }
@@ -211,11 +220,33 @@ function isBlobOperation(value: unknown): value is PluginBlobStoreError["operati
   );
 }
 
+function isSkillLibraryCode(value: unknown): value is SkillLibraryErrorCode {
+  return (
+    value === "IDENTITY_REQUIRED" ||
+    value === "FORBIDDEN" ||
+    value === "NOT_FOUND" ||
+    value === "CONFLICT" ||
+    value === "NAME_CONFLICT" ||
+    value === "INVALID_BUNDLE" ||
+    value === "POLICY_BLOCKED" ||
+    value === "AUTHORITY_EXPIRED" ||
+    value === "LIMIT"
+  );
+}
+
 export function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined {
   switch (node.type) {
-    case "session-mutation-conflict":
-      return typeof node.operationLabel === "string"
-        ? { type: node.type, operationLabel: node.operationLabel }
+    case "skill-library":
+      return isSkillLibraryCode(node.libraryCode) &&
+        node.code === node.libraryCode &&
+        (node.currentRevision === undefined || typeof node.currentRevision === "string")
+        ? {
+            type: node.type,
+            libraryCode: node.libraryCode,
+            ...(typeof node.currentRevision === "string"
+              ? { currentRevision: node.currentRevision }
+              : {}),
+          }
         : undefined;
     case "secret-store-validation":
       return isSecretStoreValidationCode(node.secretCode) && node.code === node.secretCode
@@ -253,6 +284,10 @@ export function parseIdentity(node: Record<string, unknown>): ErrorIdentity | un
       const goalCode = SESSION_GOAL_OPERATION_ERROR_CODES.find((code) => code === node.goalCode);
       return goalCode && node.code === goalCode ? { type: node.type, goalCode } : undefined;
     }
+    case "session-mutation-conflict":
+      return typeof node.operationLabel === "string"
+        ? { type: node.type, operationLabel: node.operationLabel }
+        : undefined;
     case "session-metadata":
       return (node.reason === "schema-missing" || node.reason === "table-missing") &&
         Array.isArray(node.missingTables) &&
@@ -311,6 +346,8 @@ function unreachableErrorNode(node: never): never {
 
 export function createError(node: ErrorIdentity & { message: string }): Error {
   switch (node.type) {
+    case "skill-library":
+      return new SkillLibraryError(node.libraryCode, node.message, node.currentRevision);
     case "secret-store-validation":
       return new SecretStoreValidationError(node.secretCode, node.message);
     case "duplicate-agent":
