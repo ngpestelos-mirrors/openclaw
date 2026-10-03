@@ -147,7 +147,9 @@ export function normalizeCompatibilityConfigValues(
   if (stripRetiredTuningKnobs(tuningCandidate, changes)) {
     next = tuningCandidate;
   }
-  const channelMigrations = applyChannelDoctorCompatibilityMigrations(next);
+  const channelMigrations = applyChannelDoctorCompatibilityMigrations(next, {
+    historicalWebhookListeners: true,
+  });
   warnings.push(...(channelMigrations.warnings ?? []));
   if (channelMigrations.changes.length > 0) {
     next = channelMigrations.next;

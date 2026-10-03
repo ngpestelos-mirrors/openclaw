@@ -212,6 +212,7 @@ describe("Gateway queued session rotation", () => {
           defaults: {
             workspace: path.join(fixtureDir, "workspace"),
             model: { primary: modelRef },
+            modelPolicy: { allow: [modelRef] },
             models: { [modelRef]: { agentRuntime: { id: "openclaw" } } },
             skills: [],
             skipBootstrap: true,
@@ -312,6 +313,7 @@ describe("Gateway queued session rotation", () => {
           defaults: {
             workspace: path.join(fixtureDir, "workspace"),
             model: { primary: modelRef },
+            modelPolicy: { allow: [modelRef] },
             models: { [modelRef]: { agentRuntime: { id: "openclaw" } } },
             skills: [],
             skipBootstrap: true,
