@@ -400,6 +400,27 @@ describe("captured module conditions", () => {
     const plugin = load(root, "index.cjs", true).value as { read(name: string): unknown };
     expect(await outcome(plugin)).toEqual(expected);
   });
+  it.each(["import", "require"])("preserves package-import array fallback for %s", async (mode) => {
+    const root = temp.make("plugin-import-array-fallback-");
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ imports: { "#builtin": ["bun:sqlite", "./fallback.cjs"] } }),
+    );
+    fs.writeFileSync(path.join(root, "fallback.cjs"), "exports.Database = 'fallback';");
+    fs.writeFileSync(
+      path.join(root, "index.cjs"),
+      mode === "import"
+        ? "exports.read = name => import(name).then(value => typeof value.Database);"
+        : "exports.read = name => typeof require(name).Database;",
+    );
+    // Built-in URL targets are invalid inside arrays, which retain Node's fallback semantics.
+    const native = nativeRequire(path.join(root, "index.cjs")) as {
+      read(name: string): string | Promise<string>;
+    };
+    expect(await native.read("#builtin")).toBe("string");
+    const plugin = load(root, "index.cjs", true).value as typeof native;
+    expect(await plugin.read("#builtin")).toBe("string");
+  });
 });
 
 it("retains the first observed absence of a computed package alias", () => {
