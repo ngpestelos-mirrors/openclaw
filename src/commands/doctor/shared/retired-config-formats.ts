@@ -84,6 +84,7 @@ export function findRetiredConfigUpgradeRequirement(
       checkQueueMode(mode, `messages.queue.byChannel.${channel}`);
     }
   }
+  checkKeys(config.talk, "talk", ["mode", "transport", "brain", "model", "voice"]);
   const channels = isRecord(config.channels) ? config.channels : {};
   checkKeys(config.gateway, "gateway", ["webchat"]);
   checkKeys(channels, "channels", ["webchat"]);
@@ -127,6 +128,9 @@ export function findRetiredConfigUpgradeRequirement(
         checkKeys(direct, `${configPath}.direct.${chatId}`, ["threadReplies"]);
       }
     }
+  });
+  visitChannelEntries(config, "nextcloud-talk", (scope, configPath) => {
+    checkKeys(scope, configPath, ["allowPrivateNetwork"]);
   });
   visitChannelEntries(config, "matrix", (scope, configPath) => {
     checkKeys(scope, configPath, ["allowPrivateNetwork"]);

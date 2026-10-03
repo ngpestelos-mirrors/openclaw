@@ -17,8 +17,9 @@ paths are migration debt, not a pattern to extend. The
 candidate main-thread paths from SQL already executing in workers.
 
 Inventory classifications describe counted operations, not whole-module runtime
-safety. Reviewed mixed modules use named operation paths rather than line numbers;
-unreviewed operations retain their conservative file classification. Trace every
+safety. Reviewed mixed modules use named operation paths, optionally narrowed to
+a variable initializer, rather than line numbers. Initializer exceptions exclude
+nested function bodies; unreviewed sites retain their conservative classification. Trace every
 production caller before adding an operation exception, and update existing
 reviewed overrides instead of shadowing them with worker-module entries. The
 ratchet applies the same classification rules to the base and candidate sources,
@@ -30,6 +31,13 @@ provenance's counted CLI writes do not cover its raw Gateway SQL reads. Shared
 incognito category readers and native approval SDK compatibility retain their
 existing classifications. A metadata reclassification changes neither execution
 nor update behavior.
+
+Placement claim/result mutations and notifying event cursor operations have
+reviewed worker-only entries. The event recorder's `registeredWatcherKeys`
+initializer is classified separately from its native event/head SQL. Native
+creation, compaction, adoption, and child-spawn producers are non-notifying;
+child-spawn cursor seeding remains T1. Placement restart clearing remains T2,
+while synchronous result compatibility readers and transition guards remain T1.
 
 Runtime cache-TTL, bootstrap, prompt-error, and provider replay markers append
 through the existing transcript writer worker. Custom-message appends use the
@@ -308,6 +316,20 @@ Incognito, maintenance, opaque plugin callbacks, and unclassified internal guard
 retain native transactions and yielding writer admission. Arbitrary async plugin
 updaters retain their existing nested-admission behavior. Schemas, durability,
 public callback contracts, and update behavior are unchanged.
+
+Durable transcript turns append messages, consume pending inputs, evaluate typed
+latest-assistant and active-entry predicates, update entries, and commit goal
+receipts in one agent-executor transaction. Host preparation uses worker-read
+idempotency facts; the transaction rechecks those facts before applying prepared
+messages. Runtime target selection uses the existing history reader, retaining
+the captured store, canonical session key, and selected lifecycle.
+Acknowledged custody and final transcript cursors install before row
+observers, then identity and message-completion callbacks settle within the same
+physical writer FIFO. Lost replies reconcile through the existing entry-patch
+transfer and native COMMIT receipt; uncertain outcomes never replay. Opaque
+released SDK callbacks and dependent callback batches retain their synchronous
+transaction visibility, and process-held incognito retains its existing owner. Reset remains a separate
+cutover. This changes no schema, durability, retention, or update behavior.
 
 Channel setup awaits a fresh policy read after the agent-selection prompt.
 Deferred plugin migration rows are read by the shared-state worker, and setup
