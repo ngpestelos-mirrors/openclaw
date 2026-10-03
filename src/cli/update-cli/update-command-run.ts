@@ -23,6 +23,7 @@ import {
   UPDATE_RUN_ID_ENV,
 } from "../../infra/update-control-plane-sentinel.js";
 import { readDevUpdateTarget } from "../../infra/update-dev-target.js";
+import { normalizeUpdateFailureResult } from "../../infra/update-failure-result.js";
 import {
   createFreeBsdPkgOwnershipInspection,
   type FreeBsdPkgOwnershipInspection,
@@ -510,7 +511,7 @@ export function completeUpdateCommandRun(
   run: UpdateCommandOptions["run"],
   completion: { rolledBack?: boolean; downtimeMs?: number } = {},
 ): UpdateRunResult {
-  const result = normalizeControlPlaneUpdateResult(input);
+  const result = normalizeUpdateFailureResult(normalizeControlPlaneUpdateResult(input));
   if (!run) {
     return result;
   }
@@ -531,7 +532,7 @@ export function completeUpdateCommandRun(
     getUpdateRun(run.runId, { env: run.env })?.status === recovery.terminal.status
   ) {
     // Read the atomic durable outcome; diagnostics never authorize retention cleanup.
-    return {
+    return normalizeUpdateFailureResult({
       ...result,
       status: recovery.terminal.status === "succeeded" ? "ok" : "error",
       reason:
@@ -539,15 +540,15 @@ export function completeUpdateCommandRun(
           ? undefined
           : (recovery.primaryFailure?.code ?? "update-rolled-back"),
       runId: run.runId,
-    };
+    });
   }
   if (recovery) {
-    return {
+    return normalizeUpdateFailureResult({
       ...result,
       status: "error",
       reason: result.reason ?? "update-recovery-pending",
       runId: run.runId,
-    };
+    });
   }
   const recordOptions = { env: run.env, redactPaths: result.root ? [result.root] : [] };
   // Both finalization and outer CLI unwind come here. A verified restored generation
