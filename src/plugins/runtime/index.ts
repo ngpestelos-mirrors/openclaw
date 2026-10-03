@@ -1,3 +1,4 @@
+import { captureSandboxStateOwner } from "../../agents/sandbox/state-owner.js";
 import { resolveSandboxWorkspaceAuthority } from "../../agents/sandbox/workspace-authority.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
@@ -185,6 +186,7 @@ function createRuntimeSandbox(agent: PluginRuntime["agent"]): PluginRuntime["san
   return {
     resolveWorkspaceAuthority,
     async prepareWorkspaceAuthority(params) {
+      const assertCurrent = captureSandboxStateOwner();
       const authority = resolveWorkspaceAuthority(params);
       if (!authority.sandboxed || authority.confinementError) {
         return authority;
@@ -196,7 +198,9 @@ function createRuntimeSandbox(agent: PluginRuntime["agent"]): PluginRuntime["san
         sessionKey: params.sessionKey,
         workspaceDir: params.workspaceDir,
         requireCurrentConfig: true,
+        assertCurrent,
       });
+      assertCurrent();
       return authority;
     },
   };

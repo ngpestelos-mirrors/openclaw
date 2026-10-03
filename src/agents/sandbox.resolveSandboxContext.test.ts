@@ -13,6 +13,8 @@ import { ensureSandboxWorkspaceForSession, resolveSandboxContext } from "./sandb
 import { isSandboxProvisioningError } from "./sandbox/provisioning-error.js";
 
 const updateRegistryMock = vi.hoisted(() => vi.fn());
+// Provisioning cases start after process-owner admission, covered by state-owner integration tests.
+vi.mock("./sandbox/state-owner.js", () => ({ captureSandboxStateOwner: () => () => {} }));
 const readRegisteredSandboxRuntimeIdsMock = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const syncSkillsToWorkspaceMock = vi.hoisted(() =>
   vi.fn<typeof import("../skills/loading/workspace-skill-sync.runtime.js").syncWorkspaceSkills>(

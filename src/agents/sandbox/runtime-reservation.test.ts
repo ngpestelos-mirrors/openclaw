@@ -24,6 +24,8 @@ import * as registry from "./registry.js";
 import { readRegistry, readRegistryEntry, updateRegistry } from "./registry.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./shared.js";
 
+vi.mock("./state-owner.js", () => ({ captureSandboxStateOwner: () => () => {} }));
+
 vi.mock("../../skills/loading/workspace-skill-sync.runtime.js", () => ({
   syncWorkspaceSkills: async () => [],
 }));

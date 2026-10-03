@@ -36,6 +36,7 @@ import { readRegisteredSandboxRuntimeIds } from "./registry.js";
 import { resolveSandboxRuntimeStatus } from "./runtime-status.js";
 import { assertSshSandboxSecretOwnerAvailable } from "./secret-owner.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./shared.js";
+import { captureSandboxStateOwner } from "./state-owner.js";
 import type { SandboxContext, SandboxWorkspaceInfo } from "./types.js";
 import { ensureSandboxWorkspace } from "./workspace.js";
 
@@ -494,7 +495,15 @@ async function resolveProvisionedSandboxContext(
 export async function resolveSandboxContext(
   params: ResolveSandboxContextParams,
 ): Promise<SandboxContext | null> {
-  const resolved = resolveSandboxSession(params);
+  const assertStateOwner = captureSandboxStateOwner();
+  const assertCallerCurrent = params.assertCurrent;
+  const assertCurrent = () => {
+    assertStateOwner();
+    assertCallerCurrent?.();
+    assertStateOwner();
+  };
+  const ownedParams = { ...params, assertCurrent };
+  const resolved = resolveSandboxSession(ownedParams);
   if (!resolved) {
     return null;
   }
@@ -503,7 +512,9 @@ export async function resolveSandboxContext(
   // registry, and filesystem-bridge setup so model fallback never retries it.
   try {
     assertSandboxSessionSecretOwnerAvailable(params.config, resolved);
-    return await resolveProvisionedSandboxContext(params, resolved);
+    const context = await resolveProvisionedSandboxContext(ownedParams, resolved);
+    assertStateOwner();
+    return context;
   } catch (error) {
     throw toSandboxProvisioningError(error, resolved.cfg.backend);
   }

@@ -393,5 +393,19 @@ Catalog list publishers use `createSessionCatalogSourceActorProjector({ pluginId
     only exact tool names whose registered implementations the calling plugin
     confines; wildcard prefixes do not prove tool ownership.
 
+    Workspace preparation requires the current process to retain the selected
+    state root's Gateway or offline embedded owner. This applies to
+    `prepareWorkspaceAuthority(...)` and `resolveSandboxContext(...)` from
+    `openclaw/plugin-sdk/agent-harness-runtime`. Foreign processes and standalone
+    calls without retained ownership reject with `code: "GATEWAY_STATE_OWNER_REQUIRED"`
+    before session reads or workspace mutation. Run the call inside the owning
+    Gateway plugin/runtime, or stop the Gateway and use an offline embedded
+    lifetime such as `openclaw agent --local`. Keep that lifetime until workspace
+    use and cleanup finish; preparation does not acquire a temporary lock or
+    forward permission callbacks over RPC. Released parameters and return types
+    are unchanged. Older SDK binaries and other state roots remain outside this
+    same-root gate; database freshness checks still apply. No migration or update
+    step is required.
+
   </Accordion>
 </AccordionGroup>
