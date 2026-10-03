@@ -15,17 +15,15 @@ import { getSubCliEntriesCore } from "./subcli-descriptors.js";
 export type RootHelpRenderOptions = Pick<PluginLoadOptions, "pluginSdkResolution"> & {
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
-  includePluginDescriptors?: boolean;
 };
 
 async function buildRootHelpProgram(renderOptions?: RootHelpRenderOptions): Promise<Command> {
   const program = new Command();
-  const pluginDescriptors =
-    renderOptions?.includePluginDescriptors === true || renderOptions?.config
-      ? await getPluginCliCommandDescriptors(renderOptions.config, renderOptions.env, {
-          pluginSdkResolution: renderOptions.pluginSdkResolution,
-        })
-      : [];
+  const pluginDescriptors = renderOptions?.config
+    ? await getPluginCliCommandDescriptors(renderOptions.config, renderOptions.env, {
+        pluginSdkResolution: renderOptions.pluginSdkResolution,
+      })
+    : [];
   configureProgramHelp(
     program,
     { programVersion: VERSION },
