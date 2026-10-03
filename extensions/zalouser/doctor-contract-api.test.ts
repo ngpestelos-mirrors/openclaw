@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
@@ -33,6 +34,10 @@ import {
   ZALOUSER_CREDENTIALS_NAMESPACE,
   type StoredZaloCredentials,
 } from "./src/session-state.js";
+
+type AuthoredAgents = NonNullable<OpenClawConfig["agents"]>;
+// Doctor state migrations receive raw pre-migration config, including retired rosters.
+type RawLegacyDoctorAgents = AuthoredAgents & { list?: Array<{ id: string }> };
 
 function createDoctorContext(env: NodeJS.ProcessEnv): PluginDoctorStateMigrationContext {
   return {
@@ -178,12 +183,12 @@ describe("zalouser doctor state migration", () => {
     }
   });
 
-  it.each([
+  it.each<{ roster: string; agentId: string; agents: RawLegacyDoctorAgents }>([
     { roster: "implicit main", agentId: "main", agents: {} },
     {
       roster: "legacy list",
       agentId: "worker-1",
-      agents: { entries: { "worker-1": {} } },
+      agents: { list: [{ id: "worker-1" }] },
     },
     {
       roster: "keyed entries",
