@@ -1398,7 +1398,7 @@ describe("codex command", () => {
         agentId: "worker",
         sessionKey: "global",
         config: {
-          agents: { list: [{ id: "main", default: true }, { id: "worker" }] },
+          agents: { entries: { main: {}, worker: {} } },
           session: { store: storePath, scope: "global" },
         },
       },

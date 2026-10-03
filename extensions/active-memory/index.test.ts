@@ -1250,12 +1250,11 @@ describe("active-memory plugin", () => {
         defaults: {
           model: { primary: "github-copilot/gpt-5.4-mini" },
         },
-        list: [
-          {
-            id: "main",
+        entries: {
+          main: {
             memory: { search: { rememberAcrossConversations: true } },
           },
-        ],
+        },
       },
     };
     const context = {
@@ -1347,7 +1346,7 @@ describe("active-memory plugin", () => {
     configFile = {
       ...configFile,
       agents: {
-        list: [{ id: "personal", memory: { search: { rememberAcrossConversations: true } } }],
+        entries: { personal: { memory: { search: { rememberAcrossConversations: true } } } },
       },
     };
     hoisted.sessionStore[testCase.sessionKey] = { sessionId: "s-personal", updatedAt: 0 };
@@ -1372,14 +1371,13 @@ describe("active-memory plugin", () => {
   it("runs product recall by default for a personal install without Active Memory config", async () => {
     configFile = {
       agents: {
-        list: [
-          {
-            id: "personal",
+        entries: {
+          personal: {
             model: { primary: "openai/gpt-5.5" },
             workspace: "/tmp/live-personal-workspace",
             agentDir: "/tmp/live-personal-agent",
           },
-        ],
+        },
       },
       plugins: { entries: {} },
     };
@@ -1415,13 +1413,12 @@ describe("active-memory plugin", () => {
     configFile = {
       ...configFile,
       agents: {
-        list: [
-          {
-            id: "personal",
+        entries: {
+          personal: {
             model: { primary: "github-copilot/gpt-5.4-mini" },
             memory: { search: { rememberAcrossConversations: true } },
           },
-        ],
+        },
       },
     };
     const directSessionKey = "agent:personal:telegram:direct:owner";
@@ -2104,7 +2101,7 @@ describe("active-memory plugin", () => {
         defaults: {
           model: { primary: "github-copilot/gpt-5.4-mini" },
         },
-        list: [{ id: "main", fastModeDefault: true }],
+        entries: { main: { fastModeDefault: true } },
       },
     };
     hoisted.sessionStore["agent:main:main"] = {

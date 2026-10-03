@@ -174,6 +174,7 @@ vi.mock("../prepared-model-runtime.js", async () => {
     const workspaceDir = discoveryContext.resolveModelWorkspaceDir(
       input.config,
       input.workspaceDir,
+      input.agentId,
     );
     const key = `${input.agentId ?? ""}\u0000${input.agentDir}\u0000${workspaceDir ?? ""}`;
     const current = preparedSnapshotState.snapshots.get(key);
@@ -621,15 +622,17 @@ describe("resolveModel", () => {
     fs.mkdirSync(defaultAgentDir, { recursive: true });
     const cfg = makeOpenClawConfigFixture({
       agents: {
-        list: [
-          { id: "main", default: true, agentDir: defaultAgentDir },
-          { id: "worker", agentDir },
-        ],
+        defaults: { authInheritance: { agentId: "main" } },
+        entries: {
+          main: { agentDir: defaultAgentDir },
+          worker: { agentDir },
+        },
       },
     });
     mockMinimalModelDiscovery("openai", "gpt-5.5");
 
     const first = await resolveModelAsync("openai", "gpt-5.5", agentDir, cfg, {
+      agentId: "worker",
       runtimeHooks: createRuntimeHooks(),
     });
     saveAuthProfileStore(
@@ -641,6 +644,7 @@ describe("resolveModel", () => {
       { filterExternalAuthProfiles: false, syncExternalCli: false },
     );
     const second = await resolveModelAsync("openai", "gpt-5.5", agentDir, cfg, {
+      agentId: "worker",
       runtimeHooks: createRuntimeHooks(),
     });
 
@@ -655,7 +659,7 @@ describe("resolveModel", () => {
     fs.mkdirSync(agentDir, { recursive: true });
     const cfg = makeOpenClawConfigFixture({
       agents: {
-        list: [{ id: "workspace-agent", default: true, agentDir, workspace: state.workspaceDir }],
+        entries: { "workspace-agent": { agentDir, workspace: state.workspaceDir } },
       },
     });
     mockMinimalModelDiscovery("openai", "gpt-5.5");

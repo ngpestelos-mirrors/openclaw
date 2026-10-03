@@ -453,7 +453,8 @@ export class EmbeddedTuiBackend implements TuiBackend {
         continue;
       }
       if (opts.sessionKey === "global") {
-        const defaultAgentId = resolveDefaultAgentId(getRuntimeConfig());
+        const defaultAgentId =
+          opts.agentId && run.agentId ? undefined : resolveDefaultAgentId(getRuntimeConfig());
         const requestedAgentId = opts.agentId ? normalizeAgentId(opts.agentId) : defaultAgentId;
         const runAgentId = run.agentId ? normalizeAgentId(run.agentId) : defaultAgentId;
         if (runAgentId !== requestedAgentId) {

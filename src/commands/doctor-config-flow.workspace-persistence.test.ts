@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { readAgentRosterProperty } from "../agents/agent-roster.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope-config.js";
 import { readConfigFileSnapshot } from "../config/config.js";
 import { writeOpenClawConfig } from "../config/test-helpers.js";
@@ -267,7 +268,10 @@ describe("Doctor workspace persistence", () => {
             });
             const before = await readConfigFileSnapshot();
             expect(before.valid).toBe(false);
-            expect(before.sourceConfig.agents?.list?.[0]?.id).toBe(legacyId);
+            expect(readAgentRosterProperty(before.sourceConfig)).toEqual({
+              kind: "list",
+              value: [{ id: legacyId }, { id: "other" }],
+            });
 
             const ctx = await prepareDoctorContext(configPath);
             await runInitialConfigWriteHealth(ctx);
@@ -305,7 +309,7 @@ describe("Doctor workspace persistence", () => {
         });
         const before = await readConfigFileSnapshot();
         expect(before.valid).toBe(false);
-        expect(before.sourceConfig.agents?.list).toHaveLength(1);
+        expect(readAgentRosterProperty(before.sourceConfig)?.value).toHaveLength(1);
 
         const ctx = await prepareDoctorContext(configPath);
         expect(ctx.configResult.shouldWriteConfig).toBe(true);

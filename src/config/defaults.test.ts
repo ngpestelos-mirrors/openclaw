@@ -10,10 +10,12 @@ import {
   DEFAULT_SUBAGENT_MAX_CONCURRENT,
   resolveAgentMaxConcurrent,
 } from "./agent-limits.js";
+import { attachAgentListProjection } from "./agent-list-projection.js";
 import {
   applyAgentDefaults,
   applyContextPruningDefaults,
   applyMessageDefaults,
+  applyModelDefaults,
 } from "./defaults.js";
 import { materializeRuntimeConfig } from "./materialize.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "./runtime-snapshot.js";
@@ -149,16 +151,15 @@ describe("config defaults", () => {
   it("defaults ackReactionScope without deriving other message fields", () => {
     const next = applyMessageDefaults({
       agents: {
-        list: [
-          {
-            id: "main",
+        entries: {
+          main: {
             identity: {
               name: "Samantha",
               theme: "helpful sloth",
               emoji: "🦥",
             },
           },
-        ],
+        },
       },
       messages: {},
     } as never);
@@ -186,6 +187,45 @@ describe("config defaults", () => {
     expect(next.agents?.defaults?.subagents?.archiveAfterMinutes).toBe(0);
     expect(next.agents?.defaults?.subagents?.maxConcurrent).toBe(DEFAULT_SUBAGENT_MAX_CONCURRENT);
   });
+
+  it.each([false, true])(
+    "normalizes keyed agent models without authoring a legacy list (projection: %s)",
+    (withProjection) => {
+      const config: OpenClawConfig = {
+        agents: {
+          ownership: "explicit",
+          entries: {
+            worker: {
+              model: {
+                primary: "google/gemini-3-pro-preview",
+                fallbacks: ["google/gemini-3-pro-preview"],
+              },
+              models: { "google/gemini-3-pro-preview": { alias: "worker-model" } },
+            },
+            helper: { model: "google/gemini-3-pro-preview" },
+          },
+        },
+      };
+      if (withProjection) {
+        attachAgentListProjection(config);
+      }
+
+      const next = applyModelDefaults(config, { manifestRegistry: { plugins: [] } });
+
+      expect(next.agents?.entries).toEqual({
+        worker: {
+          model: {
+            primary: "google/gemini-3.1-pro-preview",
+            fallbacks: ["google/gemini-3.1-pro-preview"],
+          },
+          models: { "google/gemini-3.1-pro-preview": { alias: "worker-model" } },
+        },
+        helper: { model: "google/gemini-3.1-pro-preview" },
+      });
+      expect(Object.keys(next.agents ?? {})).not.toContain("list");
+      expect(JSON.parse(JSON.stringify(next))).not.toHaveProperty("agents.list");
+    },
+  );
 });
 
 describe("applyModelDefaults catalog seeding", () => {

@@ -56,7 +56,7 @@ export function writeLegacySessionsFixture(params: {
 export function createConfig(): OpenClawConfig {
   return {
     agents: {
-      list: [{ id: "worker-1", default: true }],
+      entries: { "worker-1": {} },
     },
     session: {
       mainKey: "desk",

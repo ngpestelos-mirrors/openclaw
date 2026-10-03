@@ -197,7 +197,7 @@ test("projects.list exposes checkout details only at write scope", async () => {
     await registerProjectRegistry({ path: repo, name: "Registered" });
     const cfg = {
       agents: {
-        list: [{ id: "main", default: true, workspace: "/workspace/alpha" }],
+        entries: { main: { workspace: "/workspace/alpha" } },
       },
     };
 
@@ -300,7 +300,7 @@ test("registered projects.list reads recents and observed session rows off the c
     const repo = await initializeRepository(state.root);
     const profile = ensureProfileForEmail("projects-worker@example.test");
     const cfg = {
-      agents: { list: [{ id: "main", default: true, workspace: state.workspaceDir }] },
+      agents: { entries: { main: { workspace: state.workspaceDir } } },
     };
     replaceSessionEntrySync(
       { agentId: "main", sessionKey: "agent:main:project-worker" },
@@ -361,7 +361,7 @@ test.each(["write scope", "session access", "registry access", "probe access"])(
     try {
       const profile = ensureProfileForEmail("projects-scope@example.test");
       const cfg = {
-        agents: { list: [{ id: "main", default: true, workspace: state.workspaceDir }] },
+        agents: { entries: { main: { workspace: state.workspaceDir } } },
       };
       replaceSessionEntrySync(
         { agentId: "main", sessionKey: "agent:main:scope" },
@@ -593,7 +593,7 @@ test("projects.remove refuses to delete a cloned checkout configured as an agent
       originUrl,
     });
     const cfg = {
-      agents: { list: [{ id: "main", default: true, workspace: repo }] },
+      agents: { entries: { main: { workspace: repo } } },
     } as OpenClawConfig;
 
     expect(
@@ -625,7 +625,7 @@ test("projects.remove refuses to delete a cloned checkout used by a live direct 
       { sessionId: "project-session", spawnedCwd: repo, updatedAt: 1 },
     );
     const cfg = {
-      agents: { list: [{ id: "main", default: true, workspace: state.workspaceDir }] },
+      agents: { entries: { main: { workspace: state.workspaceDir } } },
     } as OpenClawConfig;
 
     expect(

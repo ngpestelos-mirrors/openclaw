@@ -42,9 +42,8 @@ beforeEach(() => {
 function createCoreConfig(workspace: string): OpenClawConfig {
   return {
     agents: {
-      list: [
-        {
-          id: "voice",
+      entries: {
+        voice: {
           workspace,
           identity: {
             name: "Claw Voice",
@@ -52,7 +51,7 @@ function createCoreConfig(workspace: string): OpenClawConfig {
             theme: "bright",
           },
         },
-      ],
+      },
     },
   };
 }

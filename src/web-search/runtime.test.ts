@@ -455,7 +455,7 @@ describe("web search runtime", () => {
       runWebSearch({
         config: {
           agents: {
-            list: [{ id: "main", default: true, agentDir }],
+            entries: { main: { agentDir } },
           },
         },
         args: { query: "oauth-backed web search" },
@@ -495,10 +495,11 @@ describe("web search runtime", () => {
     ]);
     const config = {
       agents: {
-        list: [
-          { id: "main", default: true, agentDir: defaultAgentDir },
-          { id: "side", agentDir: activeAgentDir },
-        ],
+        defaults: { systemAgent: { agentId: "main" } },
+        entries: {
+          main: { agentDir: defaultAgentDir },
+          side: { agentDir: activeAgentDir },
+        },
       },
     } satisfies OpenClawConfig;
 

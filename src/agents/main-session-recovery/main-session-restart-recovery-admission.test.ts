@@ -357,7 +357,7 @@ describe("startup recovery admission", () => {
       .mockResolvedValueOnce({ runId: "run-resumed" });
 
     const recovery = scheduleRestartAbortedMainSessionRecovery({
-      getConfig: () => ({ agents: { entries: { main: { default: true } } } }),
+      getConfig: () => ({ agents: { entries: { main: {} } } }),
       delayMs: 0,
       maxRetries: 1,
       stateDir: tmpDir,
@@ -407,7 +407,7 @@ describe("startup recovery admission", () => {
         return { status: "timeout" };
       });
       const recovery = scheduleRestartAbortedMainSessionRecovery({
-        getConfig: () => ({ agents: { entries: { ops: { default: true } } } }),
+        getConfig: () => ({ agents: { entries: { ops: {} } } }),
         delayMs: 0,
         maxRetries: 1,
         stateDir: tmpDir,

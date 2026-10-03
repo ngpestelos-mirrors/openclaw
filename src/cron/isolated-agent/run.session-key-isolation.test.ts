@@ -352,7 +352,7 @@ describe("runCronIsolatedAgentTurn — skill filter", () => {
     );
 
     await runSkillFilterCase({
-      cfg: { agents: { list: [{ id: "weather-bot", skills: ["weather", "meme-factory"] }] } },
+      cfg: { agents: { entries: { "weather-bot": { skills: ["weather", "meme-factory"] } } } },
       agentId: "weather-bot",
     });
     expect(buildWorkspaceSkillSnapshotMock).not.toHaveBeenCalled();

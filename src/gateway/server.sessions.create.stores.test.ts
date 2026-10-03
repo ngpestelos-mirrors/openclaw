@@ -92,7 +92,7 @@ test("publishes an explicit non-main session before the next socket describe and
 
 test("sessions.create scopes the main alias to the requested agent", async () => {
   const { storePath } = await createSessionStoreDir();
-  testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "longmemeval" }] };
+  testState.agentsConfig = { entries: { main: {}, longmemeval: {} } };
   testState.agentConfig = { sessionStore: { agentId: "longmemeval" } };
 
   const created = await directSessionReq<CreatedSessionPayload>("sessions.create", {
@@ -118,7 +118,7 @@ test("sessions.create scopes the main alias to the requested agent", async () =>
 
 test("sessions.create replaces a dead main entry with a fresh session id", async () => {
   const { storePath } = await createSessionStoreDir();
-  testState.agentsConfig = { list: [{ id: "ops", default: true }] };
+  testState.agentsConfig = { entries: { ops: {} } };
   try {
     await writeSessionStore({
       agentId: "ops",
@@ -158,7 +158,7 @@ test("sessions.create replaces a dead main entry with a fresh session id", async
 
 test("sessions.create preserves global and unknown sentinel keys", async () => {
   const { storePath } = await createSessionStoreDir();
-  testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "longmemeval" }] };
+  testState.agentsConfig = { entries: { main: {}, longmemeval: {} } };
   testState.agentConfig = { sessionStore: { agentId: "longmemeval" } };
 
   const sessionIds = new Map<string, string | undefined>();

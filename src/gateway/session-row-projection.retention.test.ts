@@ -15,7 +15,7 @@ function createCollectionControl() {
 
 it("collects superseded resident rows and their materializations after metadata refreshes", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const cfg = { agents: { list: [{ id: "main", default: true }] } };
+    const cfg = { agents: { entries: { main: {} } } };
     setRuntimeConfigSnapshot(cfg);
     const keys = Array.from({ length: 4 }, (_, index) => `agent:main:retention-${index}`);
     const write = (key: string, revision: number) =>

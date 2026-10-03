@@ -166,14 +166,14 @@ function remotePromptCalls() {
 }
 
 function modelConfig(primary: string): OpenClawConfig {
-  return { agents: { defaults: { model: { primary } }, entries: { main: { default: true } } } };
+  return { agents: { defaults: { model: { primary } }, entries: { main: {} } } };
 }
 
 function modelConfigWithApiKey(apiKey: string, agentDir: string): OpenClawConfig {
   return {
     agents: {
       defaults: { model: { primary: "openai/gpt-5.5" } },
-      entries: { main: { default: true, agentDir } },
+      entries: { main: { agentDir } },
     },
     auth: {
       profiles: { "openai:default": { provider: "openai", mode: "api_key" } },
@@ -907,8 +907,9 @@ describe("runSetupWizard", () => {
         ? {
             wizard: { securityAcknowledgedAt: "2026-06-30T00:00:00.000Z" },
             agents: {
-              defaults: { workspace: currentWorkspace },
-              list: [{ id: "main", default: true }, { id: "ops" }],
+              ownership: "explicit",
+              defaults: { workspace: currentWorkspace, systemAgent: { agentId: "main" } },
+              entries: { main: {}, ops: {} },
             },
           }
         : {
@@ -1192,7 +1193,7 @@ describe("runSetupWizard", () => {
       if (flow === "quickstart") {
         readConfigFileSnapshot.mockResolvedValueOnce(
           configSnapshot({
-            agents: { entries: { main: { default: true } } },
+            agents: { entries: { main: {} } },
             gateway: {
               port: 19111,
               bind: "loopback",

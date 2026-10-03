@@ -2,6 +2,7 @@ import path from "node:path";
 import { vi } from "vitest";
 import { resolveAgentEntry } from "../agents/agent-scope-config.js";
 import * as configModule from "../config/config.js";
+import type { OpenClawConfigWithLegacyRoster } from "../config/legacy.roster.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -11,7 +12,7 @@ type ConfigSnapshot = {
   path: string;
   hash: string | null;
   parsed: unknown;
-  sourceConfigBeforeMigrations?: OpenClawConfig;
+  sourceConfigBeforeMigrations?: OpenClawConfigWithLegacyRoster;
   config: OpenClawConfig;
   sourceConfig: OpenClawConfig;
   runtimeConfig?: OpenClawConfig;
@@ -124,7 +125,7 @@ export const runtime: RuntimeEnv = {
 
 export function snapshot(
   hash: string | null,
-  sourceConfig: OpenClawConfig,
+  sourceConfig: OpenClawConfigWithLegacyRoster,
   runtimeConfig: OpenClawConfig = sourceConfig,
 ): ConfigSnapshot {
   return {

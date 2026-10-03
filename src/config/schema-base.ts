@@ -40,7 +40,7 @@ function applyFieldDocumentation(node: JsonSchemaObject, prefixes: readonly stri
     }
   }
   // Handle array items. Help/labels may use either "[]" notation
-  // (bindings[].type) or wildcard "*" notation (agents.list.*.skills).
+  // (bindings[].type) or wildcard "*" notation (agents.entries.*.skills).
   if (node.items) {
     const itemsObj = asSchemaObject(node.items);
     if (itemsObj) {

@@ -239,7 +239,7 @@ describe("visible session placement and authority", () => {
         session: { store: storePath },
         agents: {
           defaults: { subagents: { model: "mock-provider/child@child-profile" } },
-          list: [{ id: "main" }],
+          entries: { main: {} },
         },
         cloudWorkers: { profiles: { build: { provider: "fixture", settings: {} } } },
       },
@@ -386,7 +386,7 @@ describe("visible session placement and authority", () => {
       agentSessionKey: "agent:main:main",
       config: {
         session: { store: storePath },
-        agents: { list: [{ id: "main" }] },
+        agents: { entries: { main: {} } },
         cloudWorkers: { profiles: { build: { provider: "fixture", settings: {} } } },
       },
       callGateway: callGateway as never,

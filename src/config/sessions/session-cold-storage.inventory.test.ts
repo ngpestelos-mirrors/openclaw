@@ -65,7 +65,7 @@ it("reports configured shared and missing stores without parent SQLite", async (
   const observer = observeParentSqlite();
   try {
     const config = maintenanceConfig(fixture.scope.storePath);
-    config.agents = { list: [{ id: "main" }, { id: "other" }] };
+    config.agents = { entries: { main: {}, other: {} } };
     const result = await getSessionColdStorageStatus(config);
     expect(result).toEqual([
       {
@@ -102,7 +102,7 @@ it("reports configured shared and missing stores without parent SQLite", async (
 it("counts a configured incognito store through its existing native owner without creating a file", async () => {
   const storePath = resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env: state.env });
   const config = maintenanceConfig(storePath);
-  config.agents = { list: [{ id: "main" }, { id: "other" }] };
+  config.agents = { entries: { main: {}, other: {} } };
   const empty = {
     agentId: "main",
     storePath,

@@ -1,14 +1,13 @@
 // Load the shared migration mocks before their production consumers.
 // oxfmt-ignore
-import { legacyConfig, useDoctorLegacyConfigFixture } from "./doctor/shared/legacy-config-fixture.test-support.js";
+import { useDoctorLegacyConfigFixture } from "./doctor/shared/legacy-config-fixture.test-support.js";
 import { describe, expect, it } from "vitest";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { applyLegacyDoctorMigrations } from "./doctor/shared/legacy-config-compat.js";
 import { normalizeCompatibilityConfigValues } from "./doctor/shared/legacy-config-core-migrate.js";
 
-function migrateContextBudgetThenNormalize(config: OpenClawConfig) {
+function migrateContextBudgetThenNormalize(config: unknown) {
   const early = applyLegacyDoctorMigrations(config, { sourceConfigBeforeMigrations: config });
-  const normalized = normalizeCompatibilityConfigValues(legacyConfig(early.next ?? config));
+  const normalized = normalizeCompatibilityConfigValues(early.next ?? config);
   return {
     ...normalized,
     changes: [...early.changes, ...normalized.changes],
@@ -43,7 +42,7 @@ describe("Ollama context-budget Doctor migrations", () => {
       model: { params: { num_ctx: 16_384 } },
     },
   ])("preserves current Ollama contextTokens with $label", ({ provider, model }) => {
-    const input = legacyConfig({
+    const input = {
       models: {
         providers: {
           localOllama: {
@@ -54,7 +53,7 @@ describe("Ollama context-budget Doctor migrations", () => {
           },
         },
       },
-    });
+    };
     const expected = structuredClone(input);
     const result = normalizeCompatibilityConfigValues(input);
 
@@ -68,39 +67,37 @@ describe("Ollama context-budget Doctor migrations", () => {
   it.each(["ollama", "openai-completions"] as const)(
     "migrates legacy Ollama siblings without pinning a current %s model",
     (api) => {
-      const result = normalizeCompatibilityConfigValues(
-        legacyConfig({
-          models: {
-            providers: {
-              localOllama: {
-                baseUrl: "http://localhost:11434",
-                api: "ollama",
-                maxTokens: 8192,
-                models: [
-                  ollamaModel({
-                    id: "current",
-                    api,
-                    contextWindow: 262_144,
-                    contextTokens: 32_768,
-                    params: { temperature: 0.2 },
-                  }),
-                  ollamaModel({ id: "legacy", contextWindow: 65_536 }),
-                  ollamaModel({
-                    id: "legacy-inherited",
-                    contextWindow: undefined,
-                    maxTokens: undefined,
-                  }),
-                  ollamaModel({
-                    id: "compatible",
-                    api: "openai-completions",
-                    params: { temperature: 0.1 },
-                  }),
-                ],
-              },
+      const result = normalizeCompatibilityConfigValues({
+        models: {
+          providers: {
+            localOllama: {
+              baseUrl: "http://localhost:11434",
+              api: "ollama",
+              maxTokens: 8192,
+              models: [
+                ollamaModel({
+                  id: "current",
+                  api,
+                  contextWindow: 262_144,
+                  contextTokens: 32_768,
+                  params: { temperature: 0.2 },
+                }),
+                ollamaModel({ id: "legacy", contextWindow: 65_536 }),
+                ollamaModel({
+                  id: "legacy-inherited",
+                  contextWindow: undefined,
+                  maxTokens: undefined,
+                }),
+                ollamaModel({
+                  id: "compatible",
+                  api: "openai-completions",
+                  params: { temperature: 0.1 },
+                }),
+              ],
             },
           },
-        }),
-      );
+        },
+      });
       const provider = result.config.models?.providers?.localOllama;
       expect(provider?.params).toBeUndefined();
       expect(provider?.models?.[0]).toMatchObject({
@@ -121,22 +118,20 @@ describe("Ollama context-budget Doctor migrations", () => {
   );
 
   it("keeps retired provider contextTokens usable without adding an Ollama num_ctx pin", () => {
-    const result = migrateContextBudgetThenNormalize(
-      legacyConfig({
-        models: {
-          providers: {
-            ollama: {
-              baseUrl: "http://localhost:11434",
-              api: "ollama",
-              contextTokens: 32_768,
-              contextWindow: 262_144,
-              maxTokens: 8192,
-              models: [ollamaModel({ contextWindow: undefined })],
-            },
+    const result = migrateContextBudgetThenNormalize({
+      models: {
+        providers: {
+          ollama: {
+            baseUrl: "http://localhost:11434",
+            api: "ollama",
+            contextTokens: 32_768,
+            contextWindow: 262_144,
+            maxTokens: 8192,
+            models: [ollamaModel({ contextWindow: undefined })],
           },
         },
-      }),
-    );
+      },
+    });
     const provider = result.config.models?.providers?.ollama;
     expect(provider).not.toHaveProperty("contextTokens");
     expect(provider).not.toHaveProperty("contextWindow");
@@ -215,20 +210,18 @@ describe("Ollama context-budget Doctor migrations", () => {
       contextWindow: undefined,
       maxTokens: 4096,
     });
-    const res = migrateContextBudgetThenNormalize(
-      legacyConfig({
-        models: {
-          providers: {
-            ollama: {
-              baseUrl: "http://localhost:11434",
-              api: "ollama",
-              contextWindow: 65536,
-              models: [modelWithoutContextWindow],
-            },
+    const res = migrateContextBudgetThenNormalize({
+      models: {
+        providers: {
+          ollama: {
+            baseUrl: "http://localhost:11434",
+            api: "ollama",
+            contextWindow: 65536,
+            models: [modelWithoutContextWindow],
           },
         },
-      }),
-    );
+      },
+    });
 
     expect(res.config.models?.providers?.ollama?.models?.[0]?.params).toEqual({
       num_ctx: 65536,
@@ -244,20 +237,18 @@ describe("Ollama context-budget Doctor migrations", () => {
   });
 
   it("removes provider contextWindow when no explicit Ollama model can receive it", () => {
-    const res = migrateContextBudgetThenNormalize(
-      legacyConfig({
-        models: {
-          providers: {
-            ollama: {
-              baseUrl: "http://localhost:11434",
-              api: "ollama",
-              contextWindow: 65536,
-              models: [],
-            },
+    const res = migrateContextBudgetThenNormalize({
+      models: {
+        providers: {
+          ollama: {
+            baseUrl: "http://localhost:11434",
+            api: "ollama",
+            contextWindow: 65536,
+            models: [],
           },
         },
-      }),
-    );
+      },
+    });
 
     expect(res.config.models?.providers?.ollama?.params).toBeUndefined();
     expect(res.config.models?.providers?.ollama).not.toHaveProperty("contextWindow");
@@ -268,24 +259,22 @@ describe("Ollama context-budget Doctor migrations", () => {
   });
 
   it("keeps explicit model windows ahead of retired provider defaults", () => {
-    const res = migrateContextBudgetThenNormalize(
-      legacyConfig({
-        models: {
-          providers: {
-            ollama: {
-              baseUrl: "http://localhost:11434",
-              api: "ollama",
-              contextWindow: 65536,
-              models: [
-                ollamaModel({
-                  contextWindow: 32768,
-                }),
-              ],
-            },
+    const res = migrateContextBudgetThenNormalize({
+      models: {
+        providers: {
+          ollama: {
+            baseUrl: "http://localhost:11434",
+            api: "ollama",
+            contextWindow: 65536,
+            models: [
+              ollamaModel({
+                contextWindow: 32768,
+              }),
+            ],
           },
         },
-      }),
-    );
+      },
+    });
 
     expect(res.config.models?.providers?.ollama?.params).toBeUndefined();
     expect(res.config.models?.providers?.ollama?.models?.[0]?.params).toEqual({
@@ -311,26 +300,24 @@ describe("Ollama context-budget Doctor migrations", () => {
       value: { keep_alive: "forever" },
     });
 
-    const res = migrateContextBudgetThenNormalize(
-      legacyConfig({
-        models: {
-          providers: {
-            ollama: {
-              baseUrl: "http://localhost:11434",
-              api: "ollama",
-              contextWindow: 65536,
-              params: providerParams,
-              models: [
-                ollamaModel({
-                  contextWindow: 32768,
-                  params: modelParams,
-                }),
-              ],
-            },
+    const res = migrateContextBudgetThenNormalize({
+      models: {
+        providers: {
+          ollama: {
+            baseUrl: "http://localhost:11434",
+            api: "ollama",
+            contextWindow: 65536,
+            params: providerParams,
+            models: [
+              ollamaModel({
+                contextWindow: 32768,
+                params: modelParams,
+              }),
+            ],
           },
         },
-      }),
-    );
+      },
+    });
 
     const nextProviderParams = res.config.models?.providers?.ollama?.params as Record<
       string,
@@ -355,28 +342,26 @@ describe("Ollama context-budget Doctor migrations", () => {
   });
 
   it("keeps existing provider num_ctx while materializing the model budget", () => {
-    const res = migrateContextBudgetThenNormalize(
-      legacyConfig({
-        models: {
-          providers: {
-            ollama: {
-              baseUrl: "http://localhost:11434",
-              api: "ollama",
-              contextWindow: 65536,
-              params: {
-                num_ctx: 32768,
-              },
-              models: [
-                ollamaModel({
-                  contextWindow: undefined,
-                  maxTokens: undefined,
-                }),
-              ],
+    const res = migrateContextBudgetThenNormalize({
+      models: {
+        providers: {
+          ollama: {
+            baseUrl: "http://localhost:11434",
+            api: "ollama",
+            contextWindow: 65536,
+            params: {
+              num_ctx: 32768,
             },
+            models: [
+              ollamaModel({
+                contextWindow: undefined,
+                maxTokens: undefined,
+              }),
+            ],
           },
         },
-      }),
-    );
+      },
+    });
 
     expect(res.config.models?.providers?.ollama?.params).toEqual({
       num_ctx: 32768,

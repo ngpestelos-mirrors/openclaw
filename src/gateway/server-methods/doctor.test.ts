@@ -341,10 +341,10 @@ describe("doctor.memory.status", () => {
           systemAgent: { agentId: "main" },
           userTimezone: "America/Los_Angeles",
         },
-        list: [
-          { id: "main", workspace: mainWorkspaceDir },
-          { id: "alpha", workspace: alphaWorkspaceDir },
-        ],
+        entries: {
+          main: { workspace: mainWorkspaceDir },
+          alpha: { workspace: alphaWorkspaceDir },
+        },
       },
       plugins: {
         entries: {
@@ -547,7 +547,7 @@ describe("doctor.memory.status", () => {
     );
     getRuntimeConfig.mockReturnValue({
       agents: {
-        list: [{ id: "alpha", workspace: alphaWorkspaceDir }],
+        entries: { alpha: { workspace: alphaWorkspaceDir } },
       },
       plugins: {
         entries: {
@@ -694,10 +694,10 @@ describe("doctor.memory.status", () => {
 
       agents: {
         defaults: { systemAgent: { agentId: "main" } },
-        list: [
-          { id: "main", workspace: mainWorkspaceDir },
-          { id: "alpha", workspace: alphaWorkspaceDir },
-        ],
+        entries: {
+          main: { workspace: mainWorkspaceDir },
+          alpha: { workspace: alphaWorkspaceDir },
+        },
       },
       plugins: {
         entries: {

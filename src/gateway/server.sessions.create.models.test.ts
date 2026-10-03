@@ -61,7 +61,8 @@ function installSessionCatalog(
 
 test("sessions.create persists model selection and parent linkage for a key-derived agent", async () => {
   const { storePath } = await createSessionStoreDir();
-  testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "ops-agent" }] };
+  testState.agentsConfig = { entries: { main: {}, "ops-agent": {} } };
+  testState.agentConfig = { sessionStore: { agentId: "main" } };
   const key = "agent:ops-agent:dashboard:direct:subagent-orchestrator";
   agentDiscoveryMock.enabled = true;
   agentDiscoveryMock.models = [{ id: "gpt-test-a", name: "A", provider: "openai" }];
@@ -235,7 +236,7 @@ test("sessions.create rejects a caller-supplied key for a catalog target", async
 test("sessions.create authorizes a catalog target for the requested agent", async () => {
   await createSessionStoreDir();
   testState.agentsConfig = {
-    list: [{ id: "main", default: true }, { id: "research" }],
+    entries: { main: {}, research: {} },
   };
   const resolveCreateSession = vi.fn(({ agentId }: { agentId?: string }) =>
     agentId === "research"

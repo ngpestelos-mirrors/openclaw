@@ -7,6 +7,7 @@ import { expect, vi } from "vitest";
 import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { ReplyBackendHandle } from "../../auto-reply/reply/reply-run-registry.contracts.js";
+import { inheritLegacyDefaultAgentId } from "../../config/legacy.default-agent-owner.js";
 import {
   loadExactSessionEntryCandidates,
   replaceSessionEntry,
@@ -45,13 +46,13 @@ type ChatDirectiveSessionState = {
 export function readChatDirectiveConfig(
   state: Pick<ChatDirectiveSessionState, "config" | "mainSessionKey">,
 ): OpenClawConfig {
-  return {
+  return inheritLegacyDefaultAgentId(state.config, {
     ...state.config,
     session: {
       ...(state.config.session as Record<string, unknown> | undefined),
       mainKey: state.mainSessionKey,
     },
-  };
+  });
 }
 
 export function createChatDirectiveSuiteResources() {

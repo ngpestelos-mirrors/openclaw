@@ -716,7 +716,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     const cfg = retainLegacyDefaultAgentId(
       {
         agents: {
-          list: [{ id: "main" }, { id: "ops" }],
+          entries: { main: {}, ops: {} },
         },
       },
       "main",

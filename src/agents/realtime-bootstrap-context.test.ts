@@ -22,7 +22,7 @@ function makeConfig(workspaceDir: string): OpenClawConfig {
   return {
     agents: {
       defaults: { workspace: workspaceDir },
-      list: [{ id: "main", default: true }],
+      entries: { main: {} },
     },
   };
 }
@@ -144,11 +144,11 @@ describe("resolveRealtimeVoiceAgentContextInstructions", () => {
 
   it("keeps the paragraph when profile files are disabled and identity is not selected or empty", async () => {
     const config = makeConfig(makeWorkspace());
-    config.agents!.list![0]!.identity = { name: "Wilfred" };
+    config.agents!.entries!.main!.identity = { name: "Wilfred" };
     expect(
       await resolveRealtimeVoiceAgentContextInstructions({ config, agentId: "main", files: [] }),
     ).toBe(REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS);
-    config.agents!.list![0]!.identity = { name: " ", emoji: "" };
+    config.agents!.entries!.main!.identity = { name: " ", emoji: "" };
     expect(
       await resolveRealtimeVoiceAgentContextInstructions({
         config,
@@ -172,7 +172,7 @@ describe("resolveRealtimeVoiceAgentContextInstructions", () => {
       await resolveRealtimeVoiceAgentContextInstructions({ config, agentId: "main", warn }),
     ).toBe(REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("profile unavailable"));
-    config.agents!.list![0]!.identity = { name: "Wilfred" };
+    config.agents!.entries!.main!.identity = { name: "Wilfred" };
     expect(
       await resolveRealtimeVoiceAgentContextInstructions({
         config,

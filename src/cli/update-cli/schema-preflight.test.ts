@@ -128,7 +128,7 @@ describe("target-release database schema preflight", () => {
   ])("$outcome agent schemas committed to active WAL", async ({ version, refusal }) => {
     const stateDir = fs.realpathSync.native(tempDirs.make("openclaw-update-wal-state-"));
     const env = { OPENCLAW_STATE_DIR: stateDir };
-    const config: OpenClawConfig = { agents: { list: [{ id: "main" }] } };
+    const config: OpenClawConfig = { agents: { entries: { main: {} } } };
     openOpenClawStateDatabase({ env });
     const agentPath = openOpenClawAgentDatabase({ agentId: "main", env }).path;
     closeOpenClawAgentDatabasesForTest();
@@ -205,7 +205,7 @@ describe("target-release database schema preflight", () => {
   it("refuses v2026.8.1 before mutating v2026.7.1-2 shared state when an agent store is unreadable", async () => {
     const stateDir = fs.realpathSync.native(tempDirs.make("openclaw-update-7-to-8-state-"));
     const env = { OPENCLAW_STATE_DIR: stateDir };
-    const config: OpenClawConfig = { agents: { list: [{ id: "main" }, { id: "worker" }] } };
+    const config: OpenClawConfig = { agents: { entries: { main: {}, worker: {} } } };
     const statePath = openOpenClawStateDatabase({ env }).path;
     const agentPath = openOpenClawAgentDatabase({ agentId: "worker", env }).path;
     closeOpenClawAgentDatabasesForTest();
@@ -243,7 +243,7 @@ describe("target-release database schema preflight", () => {
     const customDir = fs.realpathSync.native(tempDirs.make("openclaw-update-preflight-custom-"));
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const config: OpenClawConfig = {
-      agents: { list: [{ id: "main" }, { id: "configured" }] },
+      agents: { entries: { main: {}, configured: {} } },
     };
     openOpenClawStateDatabase({ env });
     const configuredPath = openOpenClawAgentDatabase({ agentId: "configured", env }).path;
@@ -292,7 +292,7 @@ describe("target-release database schema preflight", () => {
     const customDir = fs.realpathSync.native(tempDirs.make("openclaw-update-custom-root-"));
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const config: OpenClawConfig = {
-      agents: { list: [{ id: "main" }, { id: "ops" }] },
+      agents: { entries: { main: {}, ops: {} } },
       session: { store: path.join(customDir, "{agentId}", "sessions.json") },
     };
     openOpenClawStateDatabase({ env });

@@ -13,6 +13,7 @@ import { createChannelIngressQueue } from "../channels/message/ingress-queue.js"
 import * as channelRegistry from "../channels/plugins/registry.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
+import type { OpenClawConfigWithLegacyRoster } from "../config/legacy.roster.js";
 import {
   loadSessionEntryReadOnly,
   upsertSessionEntryCore,
@@ -727,7 +728,7 @@ describe("state migrations", () => {
     const { root, env } = createMigrationContext(await createTempDir());
     const workspaceDir = path.join(root, "workspace");
     const cfg: OpenClawConfig = {
-      agents: { entries: { main: { default: true, workspace: workspaceDir } } },
+      agents: { entries: { main: { workspace: workspaceDir } } },
     };
     const sourcePath = path.join(workspaceDir, ".openclaw", "workspace-state.json");
     const completedAt = "2026-07-15T10:01:00.000Z";
@@ -969,7 +970,7 @@ describe("state migrations", () => {
     async (workshopTables) => {
       const { root, stateDir, env } = createMigrationContext(await createTempDir());
       const cfg = createConfig();
-      cfg.agents = { list: [{ id: "main" }] };
+      cfg.agents = { entries: { main: {} } };
       const databasePath = openOpenClawStateDatabase({ env }).path;
       let bundle: { path: string; content: string } | undefined;
       if (workshopTables === "present with a retained bundle") {
@@ -1902,7 +1903,7 @@ describe("state migrations", () => {
     const eventPath = path.join(workspaceDir, "memory", ".dreams", "events.jsonl");
     const env = createEnv(stateDir);
     const cfg = {
-      agents: { list: [{ id: "main", default: true, workspace: workspaceDir }] },
+      agents: { entries: { main: { workspace: workspaceDir } } },
     } as OpenClawConfig;
     const event = {
       type: "memory.recall.recorded",
@@ -2223,7 +2224,7 @@ describe("state migrations", () => {
     );
     const cfg = {
       session: { mainKey: "work" },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
     } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
 
@@ -2262,10 +2263,10 @@ describe("state migrations", () => {
       }),
       "utf8",
     );
-    const cfg = {
+    const cfg: OpenClawConfigWithLegacyRoster = {
       session: { mainKey: "work", store: configuredStorePath },
       agents: { list: [{ id: "ops", default: true }, { id: "research" }] },
-    } as OpenClawConfig;
+    };
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
     expect(detected.sessions.preserveAmbiguousKeys).toBe(true);
 
@@ -2306,7 +2307,7 @@ describe("state migrations", () => {
       }),
       "utf8",
     );
-    const cfg = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
+    const cfg = { agents: { entries: { main: {} } } } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
 
     const result = await runLegacyStateMigrations({ detected, config: cfg, now: () => 1234 });
@@ -2335,7 +2336,7 @@ describe("state migrations", () => {
     );
     const cfg = {
       session: { store: configuredStorePath },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
     } as OpenClawConfig;
     const realStatSync = fsSync.statSync.bind(fsSync);
     const statSpy = vi.spyOn(fsSync, "statSync").mockImplementation((candidate) => {
@@ -2374,7 +2375,7 @@ describe("state migrations", () => {
       "utf8",
     );
     const cfg = {
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
     } as OpenClawConfig;
     const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
     const realSaveSessionStore = sessionStore.saveLegacySessionStore;
@@ -2431,7 +2432,7 @@ describe("state migrations", () => {
       configuredStorePath = path.join(stateDir, "configured-sessions.json");
       await fs.link(targetStorePath, configuredStorePath);
       const cfg = {
-        agents: { list: [{ id: "worker-1", default: true }] },
+        agents: { entries: { "worker-1": {} } },
         session: { mainKey: "desk", store: configuredStorePath },
         plugins: {
           entries: {
@@ -2504,7 +2505,7 @@ describe("state migrations", () => {
     const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
     await fs.mkdir(path.dirname(storePath), { recursive: true });
     await fs.symlink(outsideStorePath, storePath);
-    const cfg = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
+    const cfg = { agents: { entries: { main: {} } } } as OpenClawConfig;
 
     const result = await autoMigrateLegacyState({
       cfg,
@@ -2554,7 +2555,7 @@ describe("state migrations", () => {
     await fs.symlink(outsideStorePath, configuredStorePath);
     const cfg = {
       session: { store: configuredStorePath },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
     } as OpenClawConfig;
 
     const result = await autoMigrateLegacyState({
@@ -2608,7 +2609,7 @@ describe("state migrations", () => {
     await fs.link(targetStorePath, configuredStorePath);
     const cfg = {
       session: { store: configuredStorePath },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
     } as OpenClawConfig;
 
     const result = await autoMigrateLegacyState({
@@ -2654,7 +2655,7 @@ describe("state migrations", () => {
     await fs.link(targetStorePath, configuredStorePath);
     const cfg = {
       session: { scope: "global", store: configuredStorePath },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
     } as OpenClawConfig;
 
     const result = await autoMigrateLegacyState({
@@ -2706,7 +2707,7 @@ describe("state migrations", () => {
     );
     const cfg = {
       session: { scope: "global", ...(templated ? { store: storeTemplate } : {}) },
-      agents: { list: [{ id: templated ? "main" : "voice", default: true }] },
+      agents: { entries: { [templated ? "main" : "voice"]: {} } },
       plugins: {
         entries: {
           "voice-call": { config: { agentId: "voice" } },
@@ -2784,7 +2785,7 @@ describe("state migrations", () => {
     );
     const cfg = {
       session: { store: storeTemplate },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
       plugins: {
         entries: {
           "voice-call": { config: { agentId: "voice" } },
@@ -2886,7 +2887,7 @@ describe("state migrations", () => {
     await fs.writeFile(legacyStorePath, "{}\n", "utf8");
     const cfg = {
       session: { store: storeTemplate },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
       acp: { allowedAgents: ["voice"] },
     } as OpenClawConfig;
 
@@ -2954,7 +2955,7 @@ describe("state migrations", () => {
     const storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
     await fs.mkdir(path.dirname(storePath), { recursive: true });
     await fs.symlink(outsideStorePath, storePath);
-    const cfg = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
+    const cfg = { agents: { entries: { main: {} } } } as OpenClawConfig;
 
     const result = await autoMigrateLegacyState({
       cfg,
@@ -3002,7 +3003,7 @@ describe("state migrations", () => {
       "utf8",
     );
 
-    const cfg: OpenClawConfig = { agents: { list: [{ id: "main", default: true }] } };
+    const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
     const originalBytes = await fs.readFile(storePath);
     const readFile = vi.spyOn(fsSync, "readFileSync");
     try {
@@ -3108,10 +3109,10 @@ describe("state migrations", () => {
       }),
       "utf8",
     );
-    const cfg = {
+    const cfg: OpenClawConfigWithLegacyRoster = {
       session: { mainKey: "desk", store: storeTemplate },
       agents: { list: [{ id: "main", default: true }, { id: "voice" }] },
-    } as OpenClawConfig;
+    };
 
     const result = await autoMigrateLegacyState({
       cfg,
@@ -3906,7 +3907,7 @@ describe("state migrations", () => {
 
   it("reports plugin detector failures in read-only legacy state detection", async () => {
     const { root, env } = createMigrationContext(await createTempDir());
-    const cfg = { ...createConfig(), agents: { list: 42 } } as unknown as OpenClawConfig;
+    const cfg = createConfig();
     pluginDoctorStateMigrationEntries.entries = [
       {
         pluginId: "msteams",
@@ -3929,9 +3930,9 @@ describe("state migrations", () => {
     ]);
   });
 
-  it("continues plugin doctor migrations when one detector rejects malformed config", async () => {
+  it("continues plugin doctor migrations when one detector throws", async () => {
     const { root, env } = createMigrationContext(await createTempDir());
-    const cfg = { ...createConfig(), agents: { list: 42 } } as unknown as OpenClawConfig;
+    const cfg = createConfig();
     const migrateLegacyState = vi.fn(() => ({
       changes: ["healthy plugin state migrated"],
       warnings: [],

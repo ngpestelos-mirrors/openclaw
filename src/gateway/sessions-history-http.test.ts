@@ -789,7 +789,10 @@ describe("session history HTTP endpoints", () => {
       "agents/{agentId}/sessions/sessions.json",
     );
     testState.sessionConfig = { store: storeTemplate };
-    testState.agentsConfig = { list: [{ id: AGENT_ID, default: true }, { id: agentId }] };
+    testState.agentsConfig = {
+      ownership: "explicit",
+      entries: { [AGENT_ID]: {}, [agentId]: {} },
+    };
     await writeSessionStore({ entries: {}, storePath });
     const sessionKey = `agent:${agentId}:missing`;
     const missingDatabasePath = resolveSqliteTargetFromSessionStorePath(

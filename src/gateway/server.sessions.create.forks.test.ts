@@ -228,7 +228,7 @@ test("sessions.create does not parent the main session to itself", async () => {
 
 test("sessions.create rejects unknown parentSessionKey", async () => {
   await createSessionStoreDir();
-  testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "ops" }] };
+  testState.agentsConfig = { entries: { main: {}, ops: {} } };
 
   const created = await directSessionReq("sessions.create", {
     agentId: "ops",
@@ -619,7 +619,7 @@ test("sessions.create resolves an agent-qualified fork from the parent store", a
   const workDir = path.dirname(workStorePath);
   testState.sessionStorePath = storeTemplate;
   testState.sessionConfig = { scope: "per-sender" };
-  testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "work" }] };
+  testState.agentsConfig = { entries: { main: {}, work: {} } };
   try {
     await fs.mkdir(workDir, { recursive: true });
     const parent = await createCompactedSessionFixture(workDir);
@@ -651,6 +651,7 @@ test("sessions.create resolves an agent-qualified fork from the parent store", a
         forkedFromParent?: boolean;
       };
     }>("sessions.create", {
+      agentId: "main",
       parentSessionKey: "agent:work:main",
       fork: true,
     });
@@ -689,7 +690,7 @@ test("sessions.create resolves an agent-qualified fork from the parent store", a
 
 test("sessions.create rejects replacing its parent key", async () => {
   await createSessionStoreDir();
-  testState.agentsConfig = { list: [{ id: "main", default: true }] };
+  testState.agentsConfig = { entries: { main: {} } };
   await writeSessionStore({ entries: { main: sessionStoreEntry("sess-parent-task") } });
 
   const created = await directSessionReq("sessions.create", {

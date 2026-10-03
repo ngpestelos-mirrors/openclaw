@@ -237,13 +237,16 @@ describe("resolveMemoryHostAgentWorkspaceDir", () => {
       expected: { main: "shared", support: "shared/support" },
     },
     {
-      name: "marked legacy default",
-      agents: { list: [{ id: "first" }, { id: "support", default: true }] },
+      name: "explicit secondary workspace ownership",
+      agents: {
+        ownership: "explicit",
+        entries: { first: {}, support: { workspace: "~/shared" } },
+      },
       expected: { first: "shared/first", support: "shared" },
     },
     {
-      name: "optional legacy list id and explicit workspace",
-      agents: { list: [{ workspace: "~/anonymous" }, { id: "support" }] },
+      name: "explicit main workspace",
+      agents: { entries: { main: { workspace: "~/anonymous" }, support: {} } },
       expected: { main: "anonymous", support: "shared/support" },
     },
   ])("preserves $name", ({ agents, expected }) => {

@@ -204,7 +204,7 @@ describe("worker transcript commit application", () => {
     sessionsDir = path.join(root, "agents", "main", "sessions");
     storePath = path.join(sessionsDir, "sessions.json");
     cfg = {
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
       session: {
         mainKey: "main",
         store: path.join(root, "agents", "{agentId}", "sessions", "sessions.json"),
@@ -412,13 +412,13 @@ describe("worker transcript commit application", () => {
     expect(reopened.getLeafId()).toBe(outcome.result.newLeafId);
   });
 
-  it("commits a non-default agent's global session", async () => {
+  it("commits a global session for an explicitly selected agent", async () => {
     const updates: Parameters<Parameters<typeof onSessionTranscriptUpdate>[0]>[0][] = [];
     unsubscribe = onSessionTranscriptUpdate((update) => updates.push(update));
     const workStorePath = path.join(root, "agents", "work", "sessions", "sessions.json");
     cfg = {
       agents: {
-        list: [{ id: "main", default: true }, { id: "work" }],
+        entries: { main: {}, work: {} },
       },
       session: {
         scope: "global",

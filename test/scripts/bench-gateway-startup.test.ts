@@ -802,10 +802,10 @@ server.listen(port, "127.0.0.1", () => {
       }
       const configPath = testing.writeConfig(root, benchCase);
       const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-        agents?: { list?: Array<{ id: string; workspace: string }> };
+        agents?: { entries?: Record<string, { workspace: string }> };
         plugins?: { allow?: string[] };
       };
-      const agents = config.agents?.list ?? [];
+      const agents = Object.values(config.agents?.entries ?? {});
       expect(agents).toHaveLength(12);
       expect(new Set(agents.slice(0, 11).map((agent) => agent.workspace)).size).toBe(1);
       expect(agents[11]?.workspace).not.toBe(agents[0]?.workspace);

@@ -1567,7 +1567,7 @@ describe("maybeMigrateAuthProfileJsonStoresToSqlite", () => {
           auth: { profiles: { "agent-work": { key: "sk-config" } } },
           agents: {
             entries: {
-              main: { default: true },
+              main: {},
               ops: {
                 models: {
                   "openai/gpt-5.5": {
@@ -1621,7 +1621,6 @@ describe("maybeMigrateAuthProfileJsonStoresToSqlite", () => {
       agents: {
         entries: {
           main: {
-            default: true,
             models: {
               "openai/gpt-5.5": {
                 agentRuntime: { authProfileId: "ambiguous" },
@@ -2590,12 +2589,13 @@ describe("legacy OpenAI auth profiles through the canonical migration owner", ()
     const state = await makeTestState();
     const cfg: OpenClawConfig = {
       agents: {
-        list: [
-          { id: "main", default: true },
-          { id: "failed" },
-          { id: "inherited" },
-          { id: "dedup" },
-        ],
+        defaults: { authInheritance: { agentId: "main" } },
+        entries: {
+          main: {},
+          failed: {},
+          inherited: {},
+          dedup: {},
+        },
       },
     };
     const sharedCredential = {

@@ -336,7 +336,7 @@ describe("runDoctorSessionSqlite", () => {
 
     const report = await runDoctorSessionSqlite({
       allAgents: true,
-      cfg: { agents: { list: agentIds.map((id) => ({ id })) } },
+      cfg: { agents: { entries: Object.fromEntries(agentIds.map((id) => [id, {}])) } },
       env,
       mode: "import",
     });
@@ -413,7 +413,7 @@ describe("runDoctorSessionSqlite", () => {
 
     const report = await runDoctorSessionSqlite({
       allAgents: true,
-      cfg: { agents: { list: [{ id: "drifted" }] } },
+      cfg: { agents: { entries: { drifted: {} } } },
       env,
       mode: "import",
     });

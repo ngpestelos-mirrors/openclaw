@@ -2337,9 +2337,13 @@ describe("agent event handler", () => {
     expect(agentCall?.[1].session).toMatchObject({ key: "global", sessionId: "main-global" });
   });
 
-  it("routes hidden bare global chat events to the configured default agent subscriber", () => {
+  it("routes hidden bare global chat events to the configured system agent subscriber", () => {
     vi.mocked(getRuntimeConfig).mockReturnValue({
-      agents: { list: [{ id: "main" }, { id: "ops", default: true }] },
+      agents: {
+        ownership: "explicit",
+        defaults: { systemAgent: { agentId: "ops" } },
+        entries: { main: {}, ops: {} },
+      },
     });
     const h = createHarness();
     h.sessionMessageSubscribers.subscribe("conn-main", "agent:main:global");
@@ -2940,7 +2944,7 @@ describe("agent event handler", () => {
     async (stream, data) => {
       const hidden = stream !== "lifecycle";
       const config = {
-        agents: { ownership: "explicit" as const, list: [{ id: "main" }, { id: "work" }] },
+        agents: { ownership: "explicit" as const, entries: { main: {}, work: {} } },
       };
       vi.mocked(getRuntimeConfig).mockReturnValue(config);
       const runId = `run-owned-${stream}`;

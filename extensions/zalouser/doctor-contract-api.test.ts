@@ -166,7 +166,7 @@ describe("zalouser doctor state migration", () => {
   it("does not inspect agent session stores when zalouser has never been configured", async () => {
     const migration = findMigration("zalouser-direct-session-keys");
     const context = createDoctorContext(env);
-    const config = { agents: { list: [{ id: "worker-1" }] } };
+    const config = { agents: { entries: { "worker-1": {} } } };
 
     await expect(
       migration.detectLegacyState({ config, env, stateDir, oauthDir: stateDir, context }),
@@ -183,7 +183,7 @@ describe("zalouser doctor state migration", () => {
     {
       roster: "legacy list",
       agentId: "worker-1",
-      agents: { list: [{ id: "worker-1" }] },
+      agents: { entries: { "worker-1": {} } },
     },
     {
       roster: "keyed entries",

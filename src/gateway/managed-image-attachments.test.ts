@@ -44,6 +44,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { createCanonicalAgentConfigFixture } from "../test-utils/config-roster.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   createFixture,
@@ -1857,7 +1858,7 @@ describe("cleanupManagedOutgoingImageRecords", () => {
 
   it("retains other selected-agent global records during scoped cleanup", async () => {
     getRuntimeConfigMock.mockReturnValue({
-      agents: { list: [{ id: "main" }, { id: "work" }] },
+      agents: { entries: { main: {}, work: {} } },
       session: { store: path.join(stateDir, "sessions.sqlite") },
     });
     await replaceTestSessionEntry(
@@ -1915,7 +1916,7 @@ describe("cleanupManagedOutgoingImageRecords", () => {
       ...(recordAgentId ? { agentId: recordAgentId } : {}),
     });
     getRuntimeConfigMock.mockReturnValue({
-      agents: { list: [{ id: "main" }, { id: "work" }] },
+      agents: { entries: { main: {}, work: {} } },
       session: { store: path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json") },
     });
     prepareAgentSessionStore(stateDir, "work");
@@ -1952,9 +1953,9 @@ describe("cleanupManagedOutgoingImageRecords", () => {
   });
 
   it("treats legacy unscoped global records as the configured default agent", async () => {
-    const config = {
+    const { config } = createCanonicalAgentConfigFixture({
       agents: { list: [{ id: "main" }, { id: "work", default: true }] },
-    };
+    });
     getRuntimeConfigMock.mockReturnValue(config);
     prepareAgentSessionStore(stateDir, "work");
     await replaceTestSessionEntry(
@@ -2010,7 +2011,7 @@ describe("cleanupManagedOutgoingImageRecords", () => {
 
   it("retains ownerless global records when no compatibility owner exists", async () => {
     getRuntimeConfigMock.mockReturnValue({
-      agents: { list: [{ id: "main" }, { id: "work" }] },
+      agents: { entries: { main: {}, work: {} } },
     });
     const fixture = await createFixture(stateDir, {
       sessionKey: "global",

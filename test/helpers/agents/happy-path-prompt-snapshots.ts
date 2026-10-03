@@ -301,7 +301,7 @@ const baseConfig: OpenClawConfig = {
         every: "30m",
       },
     },
-    entries: { main: { default: true } },
+    entries: { main: {} },
   },
 };
 

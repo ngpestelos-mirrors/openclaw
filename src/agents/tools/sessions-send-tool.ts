@@ -42,7 +42,10 @@ import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNonNegativeIntegerParam, readToolStringParam } from "./common.js";
 import { wrapGatewayPersonalToolExecution } from "./gateway-caller-context.js";
 import { callAgentToolGatewayRequest } from "./in-process-gateway.js";
-import { runWithScopedSessionAccess } from "./scoped-session-access.js";
+import {
+  resolveSessionToolTargetAgentId,
+  runWithScopedSessionAccess,
+} from "./scoped-session-access.js";
 import {
   createSessionVisibilityRowChecker,
   formatSessionToolAccessDenial,
@@ -286,9 +289,12 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
       }
       const resolutionAccess = createSessionVisibilityRowChecker({
         action: "send",
-        defaultAgentId:
-          resolvedSession.agentId ??
-          resolveSessionAgentId({ config: cfg, sessionKey: resolvedSession.key }),
+        defaultAgentId: resolveSessionToolTargetAgentId({
+          cfg,
+          targetSessionKey: resolvedSession.key,
+          resolvedAgentId: resolvedSession.agentId,
+          requesterAgentId,
+        }),
         requesterAgentId,
         requesterSessionKey: effectiveRequesterKey,
         mainSessionKey,

@@ -80,7 +80,7 @@ describe("secrets runtime provider and media surfaces", () => {
     };
     try {
       const config = asConfig({
-        agents: { list: [{ id: "main", default: true }] },
+        agents: { entries: { main: {} } },
         secrets: {
           providers: {
             default: { source: "file", path: secretsPath, mode: "json" },
@@ -168,7 +168,7 @@ describe("secrets runtime provider and media surfaces", () => {
 
   it("patches env shorthand model refs into the pinned runtime config", async () => {
     const config = asConfig({
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
       models: {
         providers: {
           openai: {
@@ -222,7 +222,7 @@ describe("secrets runtime provider and media surfaces", () => {
 
   it("retries provider auth publication after a queued runtime config mutation", async () => {
     const initialConfig = asConfig({
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
       gateway: { port: 19_040 },
     });
     const initial = await prepareSecretsRuntimeSnapshot({
@@ -557,8 +557,8 @@ describe("secrets runtime provider and media surfaces", () => {
 
         agents: {
           defaults: {},
-          list: [
-            {
+          entries: {
+            main: {
               enabled: true,
               memory: {
                 search: {
@@ -566,7 +566,7 @@ describe("secrets runtime provider and media surfaces", () => {
                 },
               },
             },
-          ],
+          },
         },
       }),
       env: {},
@@ -671,17 +671,16 @@ describe("secrets runtime provider and media surfaces", () => {
 
         agents: {
           defaults: {},
-          list: [
-            { id: "cold", default: true },
-            {
-              id: "healthy",
+          entries: {
+            cold: {},
+            healthy: {
               memory: {
                 search: {
                   remote: { apiKey: healthyRef, headers: { "X-Memory-Value": healthyRef } },
                 },
               },
             },
-          ],
+          },
         },
       }),
       env: { HEALTHY_TEST_VALUE: healthyValue },
@@ -690,8 +689,10 @@ describe("secrets runtime provider and media surfaces", () => {
       allowUnavailableSecretOwners: true,
     });
 
-    expect(snapshot.config.agents?.list?.[1]?.memory?.search?.remote?.apiKey).toBe(healthyValue);
-    expect(snapshot.config.agents?.list?.[1]?.memory?.search?.remote?.headers).toEqual({
+    expect(snapshot.config.agents?.entries?.healthy?.memory?.search?.remote?.apiKey).toBe(
+      healthyValue,
+    );
+    expect(snapshot.config.agents?.entries?.healthy?.memory?.search?.remote?.headers).toEqual({
       "X-Memory-Value": healthyValue,
     });
     expect(snapshot.degradedOwners).toMatchObject([

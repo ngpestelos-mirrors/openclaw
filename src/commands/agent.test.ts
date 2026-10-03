@@ -279,7 +279,7 @@ function mockConfig(
   storePath: string,
   agentOverrides?: Partial<NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>>,
   telegramOverrides?: Partial<NonNullable<NonNullable<OpenClawConfig["channels"]>["telegram"]>>,
-  agentsList?: NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>,
+  agentEntries?: NonNullable<NonNullable<OpenClawConfig["agents"]>["entries"]>,
 ) {
   const cfg = {
     meta: { migrations: { modelPolicyAllowlist: true } },
@@ -290,7 +290,8 @@ function mockConfig(
         workspace: path.join(home, "openclaw"),
         ...agentOverrides,
       },
-      list: agentsList,
+      entries: agentEntries,
+      ...(Object.keys(agentEntries ?? {}).length > 1 ? { ownership: "explicit" as const } : {}),
     },
     session: { store: storePath, mainKey: "main" },
     channels: {
@@ -471,9 +472,7 @@ describe("agentCommand", () => {
     async (fail) => {
       await withTempHome(async (home) => {
         const storePath = path.join(home, "sessions.json");
-        const cfg = mockConfig(home, storePath, undefined, undefined, [
-          { id: "main", default: true },
-        ]);
+        const cfg = mockConfig(home, storePath, undefined, undefined, { main: {} });
         const workspaceDir = path.join(home, "openclaw");
         fs.mkdirSync(workspaceDir, { recursive: true });
         fs.writeFileSync(path.join(workspaceDir, "BOOT.md"), "Check status.");
@@ -797,9 +796,9 @@ describe("agentCommand", () => {
       execFileSync("git", ["-C", repository, "init", "-b", "main"]);
       fs.writeFileSync(path.join(repository, "README.md"), "base\n");
       execFileSync("git", ["-C", repository, "add", "README.md"]);
-      mockConfig(home, store, { workspace: configuredWorkspace }, undefined, [
-        { id: "codex", runtime: { type: "acp", acp: { agent: "codex" } } },
-      ]);
+      mockConfig(home, store, { workspace: configuredWorkspace }, undefined, {
+        codex: { runtime: { type: "acp", acp: { agent: "codex" } } },
+      });
       const actualWorkspace =
         await vi.importActual<typeof import("../agents/workspace.js")>("../agents/workspace.js");
       vi.mocked(ensureAgentWorkspace).mockImplementationOnce((params) =>
@@ -1528,7 +1527,7 @@ describe("agentCommand", () => {
           thinkingDefault: "high",
         },
         undefined,
-        [{ id: "main", default: true, thinkingDefault: "off" }],
+        { main: { thinkingDefault: "off" } },
       );
 
       await agentCommandFromIngress(
@@ -2429,7 +2428,7 @@ describe("agentCommand", () => {
   it("passes routing context to embedded runs", async () => {
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
-      mockConfig(home, store, undefined, undefined, [{ id: "ops" }]);
+      mockConfig(home, store, undefined, undefined, { ops: {} });
 
       await agentCommand(
         { message: "hi", agentId: "ops", replyChannel: "slack", thinking: "low" },
@@ -2476,7 +2475,7 @@ describe("agentCommand", () => {
   it("routes explicit agent recipients through channel session contracts", async () => {
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
-      const cfg = mockConfig(home, store, undefined, undefined, [{ id: "ops" }]);
+      const cfg = mockConfig(home, store, undefined, undefined, { ops: {} });
 
       installThinkingTestProviders([
         {
@@ -2554,7 +2553,7 @@ describe("agentCommand", () => {
     );
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
-      mockConfig(home, store, undefined, undefined, [{ id: "main" }, { id: "ops" }]);
+      mockConfig(home, store, undefined, undefined, { main: {}, ops: {} });
 
       await agentCommand({ message: "hi", sessionKey: "agent:ops:incident-42" }, runtime);
 
@@ -2622,7 +2621,7 @@ describe("agentCommand", () => {
       await writeSessionStoreSeed(store, {
         [sessionKey]: { sessionId: "wechat-session", updatedAt: Date.now() },
       });
-      mockConfig(home, store, undefined, undefined, [{ id: "main" }, { id: "work" }]);
+      mockConfig(home, store, undefined, undefined, { main: {}, work: {} });
 
       await expect(
         agentCommand({ message: "hi", agentId: "work", to: sessionKey }, runtime),
@@ -2675,7 +2674,13 @@ describe("agentCommand", () => {
     );
     await withTempHome(async (home) => {
       const store = path.join(home, "sessions.json");
-      mockConfig(home, store, undefined, undefined, [{ id: "ops", default: true }, { id: "main" }]);
+      mockConfig(
+        home,
+        store,
+        { systemAgent: { agentId: "ops" }, sessionStore: { agentId: "ops" } },
+        undefined,
+        { ops: {}, main: {} },
+      );
 
       await agentCommand({ message: "hi", sessionKey: "incident-42" }, runtime);
 

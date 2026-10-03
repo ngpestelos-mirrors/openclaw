@@ -32,7 +32,7 @@ export const visitorTestStateOptions = {
 
 export function createVisitorGatewayConfig(workspaceDir: string): OpenClawConfig {
   return {
-    agents: { defaults: { workspace: workspaceDir }, list: [{ id: "main" }] },
+    agents: { defaults: { workspace: workspaceDir }, entries: { main: {} } },
     gateway: {
       roles: {
         default: "guest",

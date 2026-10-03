@@ -87,7 +87,7 @@ describe("runCronIsolatedAgentTurn invocation ownership", () => {
     const result = await runCronIsolatedAgentTurn(
       makeIsolatedAgentParamsFixture({
         cfg: {
-          agents: { entries: { main: { default: true }, research: {} } },
+          agents: { entries: { main: {}, research: {} } },
           session: { scope: "global" },
         },
         agentId: "research",

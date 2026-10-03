@@ -212,7 +212,12 @@ it.each([
       operation: "gateway-startup",
       config:
         scope === "scoped"
-          ? { agents: { entries: { main: { default: true }, worker: {} } } }
+          ? {
+              agents: {
+                entries: { main: {}, worker: {} },
+                defaults: { systemAgent: { agentId: "main" } },
+              },
+            }
           : config,
     });
   const failure = await (

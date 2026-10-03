@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { toAgentEntriesRecord } from "../agents/agent-scope-config.js";
 import { materializeClawToolProfile } from "./tool-profile-consent.js";
 import {
   pushResolvedAgentCapabilityChanges,
@@ -80,7 +81,7 @@ function collectChanges(params: {
       memory: params.memory,
       agents: {
         defaults: params.defaults,
-        list: [params.currentAgent],
+        entries: toAgentEntriesRecord([params.currentAgent]),
       },
     },
     desiredAgent: params.desiredAgent,
@@ -139,7 +140,7 @@ describe("pushResolvedAgentCapabilityChanges", () => {
       changes,
       agentId: "main",
       config: {
-        agents: { list: [{ id: "main", heartbeat: { every: "1h" } }] },
+        agents: { entries: { main: { heartbeat: { every: "1h" } } } },
       },
       desiredAgent: { id: "main" },
     });
@@ -159,7 +160,7 @@ describe("pushResolvedAgentCapabilityChanges", () => {
     pushResolvedAgentCapabilityChanges({
       changes,
       agentId: "worker",
-      config: { agents: { list: [{ id: "worker" }, { id: "other" }] } },
+      config: { agents: { entries: { worker: {}, other: {} } } },
       desiredAgent: { id: "worker" },
     });
     expect(changes.filter((change) => change.path.startsWith("agent.heartbeat."))).toEqual([]);
@@ -547,7 +548,7 @@ describe("pushResolvedAgentCapabilityChanges", () => {
       pushResolvedAgentCapabilityChanges({
         changes,
         agentId: "worker",
-        config: { agents: { list: [] } },
+        config: { agents: { entries: {} } },
         desiredAgent: { id: "worker", tools: { [field]: ["exec"] } },
       });
       expect(changes).toContainEqual(
@@ -568,7 +569,7 @@ describe("pushResolvedAgentCapabilityChanges", () => {
       config: {
         agents: {
           defaults: { sandbox: { mode: "all" }, heartbeat: { every: "1h" } },
-          list: [],
+          entries: {},
         },
       },
       desiredAgent: { id: "worker" },

@@ -1911,7 +1911,7 @@ describe("createTelegramBot", () => {
       messages: { inbound: { debounceMs: 0 } },
       commands: { native: true, ownerAllowFrom: ["9"] },
       channels: { telegram: { dmPolicy: "pairing" } },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
     });
 
     try {
@@ -2575,7 +2575,7 @@ describe("createTelegramBot", () => {
         },
       },
       agents: {
-        list: [{ id: "topic-a", default: true }, { id: "topic-b" }],
+        entries: { "topic-a": {}, "topic-b": {} },
       },
       bindings: [{ agentId: "topic-a", match: { channel: "telegram", accountId: "default" } }],
     });
@@ -2616,7 +2616,7 @@ describe("createTelegramBot", () => {
     const chatId = -100123456700;
     loadConfig.mockReturnValue({
       messages: { inbound: { debounceMs: 0 } },
-      agents: { list: [{ id: "channel-topic-agent" }] },
+      agents: { entries: { "channel-topic-agent": {} } },
       channels: {
         telegram: {
           groupPolicy: "allowlist",

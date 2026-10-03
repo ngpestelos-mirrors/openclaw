@@ -370,7 +370,7 @@ describe("host-prepared embedded tool authority", () => {
         defaultAgentId: "main",
       });
     const admission = prepareAgentRunAdmission({
-      cfg: { agents: { list: [{ id: "main", default: true }, { id: "ops" }] } },
+      cfg: { agents: { entries: { main: {}, ops: {} } } },
       operationalRunInstance: createOperationalRunInstanceRef(params.runId),
       facts: {
         agentId: params.agentId,

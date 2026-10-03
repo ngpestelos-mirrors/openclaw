@@ -5,8 +5,10 @@ describe("plugin argument restoration", () => {
   it("reuses frozen fleet input analysis across agent calls and plugin instances", async () => {
     const config = Object.freeze({
       agents: Object.freeze({
-        list: Object.freeze(
-          Array.from({ length: 200 }, (_, id) => Object.freeze({ id: `agent-${id}` })),
+        entries: Object.freeze(
+          Object.fromEntries(
+            Array.from({ length: 200 }, (_, id) => [`agent-${id}`, Object.freeze({})]),
+          ),
         ),
       }),
     });
@@ -23,9 +25,9 @@ describe("plugin argument restoration", () => {
     );
     const ownKeys = vi.spyOn(Reflect, "ownKeys");
     try {
-      for (const agent of config.agents.list) {
+      for (const agentId of Object.keys(config.agents.entries)) {
         consume.forEach((invoke, index) =>
-          invoke({ config, handle: views[index]!, agentDir: `/agents/${agent.id}` }),
+          invoke({ config, handle: views[index]!, agentDir: `/agents/${agentId}` }),
         );
       }
       expect(ownKeys.mock.calls.filter(([value]) => value === config)).toHaveLength(1);

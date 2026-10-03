@@ -130,7 +130,7 @@ describe("board authenticated GitHub Actions", () => {
     state.envVars.GITHUB_TOKEN = undefined;
     state.applyEnv();
     config = {
-      agents: { entries: { main: { default: true } } },
+      agents: { entries: { main: {} } },
       tools: { exec: { mode: "full" }, github: { profileId } },
       gateway: { controlUi: { github: { token: "synthetic-preview-only" } } },
     };
@@ -283,7 +283,7 @@ describe("board authenticated GitHub Actions", () => {
           controller.abort();
         }
         if (changed === "agent") {
-          config.agents = { entries: { other: { default: true } } };
+          config.agents = { entries: { other: {} } };
         }
         if (changed === "routing") {
           config.session = { scope: "global", mainKey: `runs-${caseNumber}` };
@@ -509,7 +509,7 @@ describe("board authenticated GitHub Actions", () => {
       if (changed === "token") {
         await writeCredential("system", profileId, "synthetic-rotated-token");
       } else {
-        config.agents = { entries: { other: { default: true } } };
+        config.agents = { entries: { other: {} } };
       }
       release.resolve();
       expect((await pending).mock.calls[0]?.[0]).toBe(false);

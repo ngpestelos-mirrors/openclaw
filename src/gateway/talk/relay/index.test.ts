@@ -92,7 +92,7 @@ function createTalkRealtimeRelaySession(
     tools = [],
     ...request
   } = params;
-  const cfg = params.cfg ?? { agents: { entries: { main: { default: true } } } };
+  const cfg = params.cfg ?? { agents: { entries: { main: {} } } };
   const capabilities = resolveRealtimeVoiceProviderCapabilities({
     provider: params.provider,
     providerConfig,
@@ -1037,7 +1037,8 @@ describe("talk realtime gateway relay", () => {
     );
     setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
     let runtimeConfig: OpenClawConfig = {
-      agents: { entries: { main: { default: true }, ops: {} } },
+      agents: { entries: { main: {}, ops: {} } },
+      talk: { agentId: "main" },
     };
     try {
       const session = createTalkRealtimeRelaySessionRaw({
@@ -1057,7 +1058,8 @@ describe("talk realtime gateway relay", () => {
       });
       activeRelaySessions.set(session.relaySessionId, "conn-owner-pin");
       runtimeConfig = {
-        agents: { entries: { main: {}, ops: { default: true } } },
+        agents: { entries: { main: {}, ops: {} } },
+        talk: { agentId: "ops" },
       };
 
       ensureTalkRealtimeRelayVoiceSession({
@@ -1095,7 +1097,8 @@ describe("talk realtime gateway relay", () => {
           broadcastToConnIds: vi.fn(),
           chatAbortControllers: new Map(),
           getRuntimeConfig: () => ({
-            agents: { entries: { main: {}, ops: { default: true } } },
+            agents: { entries: { main: {}, ops: {} } },
+            talk: { agentId: "ops" },
           }),
           logGateway: { warn: vi.fn() },
         } as never,
@@ -1105,7 +1108,7 @@ describe("talk realtime gateway relay", () => {
         instructions: "brief",
         tools: [],
         sessionTarget: prepareTalkSessionTarget(
-          { agents: { entries: { main: {}, ops: { default: true } } } },
+          { agents: { entries: { main: {}, ops: {} } }, talk: { agentId: "ops" } },
           " agent:main:main ",
         ),
       });

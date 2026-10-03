@@ -653,7 +653,7 @@ describe("sessions.assignOwner", () => {
         },
       );
       const cfg = {
-        agents: { list: [{ id: "main", default: true }, { id: "research" }] },
+        agents: { entries: { main: {}, research: {} } },
       } as OpenClawConfig;
       const target = resolveSessionSharingTarget({ cfg, sessionKey, agentId: "main" });
       if (!target) {
@@ -711,7 +711,7 @@ describe("sessions.assignOwner", () => {
         },
       );
       const cfg = {
-        agents: { list: [{ id: "main", default: true }, { id: "research" }] },
+        agents: { entries: { main: {}, research: {} } },
       } as OpenClawConfig;
       const target = resolveSessionSharingTarget({ cfg, sessionKey, agentId: "main" });
       if (!target) {
@@ -773,10 +773,10 @@ describe("sessions.assignOwner", () => {
       );
       const cfg = {
         agents: {
-          list: [
-            { id: "main", default: true },
-            { id: "research", identity: { name: "Research" } },
-          ],
+          entries: {
+            main: {},
+            research: { identity: { name: "Research" } },
+          },
         },
       } as OpenClawConfig;
       const requestContext = context(cfg);
@@ -835,10 +835,10 @@ describe("sessions.assignOwner", () => {
         );
         const cfg = {
           agents: {
-            list: [
-              { id: "main", default: true },
-              { id: "research", identity: { name: "Research" } },
-            ],
+            entries: {
+              main: {},
+              research: { identity: { name: "Research" } },
+            },
           },
         } as OpenClawConfig;
         vi.spyOn(Date, "now").mockReturnValue(4242);
@@ -920,7 +920,7 @@ describe("sessions.assignOwner", () => {
         },
       );
       const cfg = {
-        agents: { list: [{ id: "main", default: true }, { id: "research" }] },
+        agents: { entries: { main: {}, research: {} } },
       } as OpenClawConfig;
       const request = { key: sessionKey, owner: { type: "agent", id: "research" } };
       const hidden = await invoke({ cfg, client: client("profile-viewer"), request });

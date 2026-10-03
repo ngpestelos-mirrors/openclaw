@@ -107,7 +107,7 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
               skills: [],
               timeoutSeconds: 240,
             },
-            entries: { main: { default: true } },
+            entries: { main: {} },
           },
           tools: {
             allow: ["exec", "process", "dashboard", "show_widget"],

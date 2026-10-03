@@ -36,7 +36,7 @@ describe("qualified session accessor projection", () => {
   async function captureGlobalSession(entry: SessionEntry) {
     const cfg: OpenClawConfig = {
       session: { store: storePath, scope: "global" },
-      agents: { entries: { main: { default: true } } },
+      agents: { entries: { main: {} } },
     };
     const physical = { agentId: "main", storePath, sessionKey: "global" };
     await replaceSessionEntry(physical, entry);
@@ -74,7 +74,7 @@ describe("qualified session accessor projection", () => {
           scope: global ? "global" : undefined,
           mainKey: global ? undefined : "primary",
         },
-        agents: { entries: { research: { default: true }, ops: {} } },
+        agents: { entries: { research: {}, ops: {} } },
       };
       const physical = {
         agentId: "research",
@@ -125,7 +125,7 @@ describe("qualified session accessor projection", () => {
     async (sessionKey) => {
       const cfg: OpenClawConfig = {
         session: { store: path.join(tempDir, "{agentId}.json"), scope: "global" },
-        agents: { entries: { research: { default: true } } },
+        agents: { entries: { research: {} } },
       };
       const physical = { agentId: "research", storePath: path.join(tempDir, "research.json") };
       for (const { key, sessionId } of [
@@ -152,7 +152,7 @@ describe("qualified session accessor projection", () => {
   it("does not select a qualified conversation when its old alias row is absent", async () => {
     const cfg: OpenClawConfig = {
       session: { store: path.join(tempDir, "{agentId}.json"), scope: "global" },
-      agents: { entries: { research: { default: true } } },
+      agents: { entries: { research: {} } },
     };
     const physical = {
       agentId: "research",
@@ -176,7 +176,7 @@ describe("qualified session accessor projection", () => {
     const cfg: OpenClawConfig = {
       session: { store: shared, scope: "global" },
       agents: {
-        entries: { research: {}, ops: { default: true } },
+        entries: { research: {}, ops: {} },
         defaults: { sessionStore: { agentId: "ops" } },
       },
     };
@@ -276,7 +276,7 @@ describe("qualified session accessor projection", () => {
   it("accepts reopening the same physical file while preserving raw list, ID and lineage addresses", async () => {
     const cfg: OpenClawConfig = {
       session: { store: storePath, scope: "global" },
-      agents: { entries: { main: { default: true } } },
+      agents: { entries: { main: {} } },
     };
     const physical = { agentId: "main", storePath, sessionKey: "global" };
     await replaceSessionEntry(physical, {
@@ -348,7 +348,7 @@ describe("qualified session accessor projection", () => {
   it.each([false, true])(
     "rejects retired incognito capture without creating a replacement when recreated=%s",
     async (recreated) => {
-      const cfg: OpenClawConfig = { agents: { entries: { main: { default: true } } } };
+      const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
       const physical = {
         agentId: "main",
         storePath,

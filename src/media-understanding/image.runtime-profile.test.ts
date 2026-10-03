@@ -386,13 +386,12 @@ describe("describeImageWithModelCore", () => {
     );
     const cfg = {
       agents: {
-        list: [
-          {
-            id: "vision-agent",
+        entries: {
+          "vision-agent": {
             agentDir: "/tmp/openclaw-agent",
             workspace: "/tmp/openclaw-workspace",
           },
-        ],
+        },
       },
     };
 

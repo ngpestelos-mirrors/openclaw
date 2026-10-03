@@ -282,8 +282,9 @@ describe("createVoiceCallRuntime lifecycle", () => {
       agentId: "OPERATOR",
     },
     {
-      name: "legacy default owner",
-      coreConfig: { agents: { list: [{ id: "support" }, { id: "operator", default: true }] } },
+      name: "explicit owner after another agent",
+      coreConfig: { agents: { entries: { support: {}, operator: {} } } },
+      agentId: "operator",
     },
   ])("preserves the $name for phone-call startup", async ({ coreConfig, agentId }) => {
     const runtime = await createVoiceCallRuntime({
@@ -422,6 +423,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
   it("builds realtime instructions for the agent frozen on each call", async () => {
     const config = createBaseConfig();
     config.realtime.enabled = true;
+    config.agentId = "operator";
     config.realtime.agentContext = {
       enabled: true,
       maxChars: 6000,
@@ -431,10 +433,10 @@ describe("createVoiceCallRuntime lifecycle", () => {
     };
     const fullConfig: OpenClawConfig = {
       agents: {
-        list: [
-          { id: "operator", default: true, identity: { name: "Main Voice" } },
-          { id: "support", identity: { name: "Support Voice" } },
-        ],
+        entries: {
+          operator: { identity: { name: "Main Voice" } },
+          support: { identity: { name: "Support Voice" } },
+        },
       },
     };
     const runtime = await createVoiceCallRuntime({

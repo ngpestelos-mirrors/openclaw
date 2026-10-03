@@ -9,6 +9,7 @@ import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
 import { resolveDiscoveredChannelSetupPromotionSurface } from "../../../channels/plugins/setup-promotion-discovery.js";
 import { resolveSingleAccountPromotion } from "../../../channels/plugins/setup-promotion-helpers.js";
 import { resolveNormalizedProviderModelMaxTokens } from "../../../config/defaults.js";
+import type { OpenClawConfigWithLegacyRoster } from "../../../config/legacy.roster.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { DEFAULT_GOOGLE_API_BASE_URL } from "../../../infra/google-api-base-url.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
@@ -523,9 +524,9 @@ function normalizeLegacyRuntimeAgentContainer(
 }
 
 function normalizeLegacyCodexCliProviderRuntimePins(
-  cfg: OpenClawConfig,
+  cfg: OpenClawConfigWithLegacyRoster,
   changes: string[],
-): OpenClawConfig {
+): OpenClawConfigWithLegacyRoster {
   if (!isRecord(cfg.models)) {
     return cfg;
   }
@@ -568,12 +569,14 @@ function normalizeLegacyCodexCliProviderRuntimePins(
 
 /** Move legacy runtime-tagged model/provider refs onto current agentRuntime policy fields. */
 export function normalizeLegacyRuntimeModelRefs(
-  cfg: OpenClawConfig,
+  cfg: OpenClawConfigWithLegacyRoster,
   changes: string[],
   blockedModelIdentities?: ReadonlySet<LegacyCodexModelIdentity>,
-): OpenClawConfig {
+): OpenClawConfigWithLegacyRoster {
   const cfgWithProviders = normalizeLegacyCodexCliProviderRuntimePins(cfg, changes);
-  const rewriteRemainingSlots = (config: OpenClawConfig): OpenClawConfig =>
+  const rewriteRemainingSlots = (
+    config: OpenClawConfigWithLegacyRoster,
+  ): OpenClawConfigWithLegacyRoster =>
     rewriteModelRefs(config, "config", changes, (modelRef) => {
       const migrated = migrateUnblockedLegacyRuntimeModelRef(modelRef, blockedModelIdentities);
       return migrated &&
@@ -582,7 +585,7 @@ export function normalizeLegacyRuntimeModelRefs(
           migrated.legacyProvider === "google-gemini-cli")
         ? migrated.ref
         : null;
-    }).value as OpenClawConfig; // SAFETY: Rewriting model-ref strings and map keys preserves the config's value and container types.
+    }).value as OpenClawConfigWithLegacyRoster; // SAFETY: Rewriting model-ref strings and map keys preserves the config's value and container types.
   const rawAgents = cfgWithProviders.agents;
   if (!isRecord(rawAgents)) {
     return rewriteRemainingSlots(cfgWithProviders);
@@ -604,7 +607,8 @@ export function normalizeLegacyRuntimeModelRefs(
   }
 
   if (Array.isArray(rawAgents.list)) {
-    const nextList = rawAgents.list.map((entry, index) => {
+    const list: unknown[] = rawAgents.list;
+    const nextList = list.map((entry, index) => {
       if (!isRecord(entry)) {
         return entry;
       }
@@ -652,7 +656,7 @@ export function normalizeLegacyRuntimeModelRefs(
   const nextCfg = changed
     ? {
         ...cfgWithProviders,
-        agents: nextAgents as OpenClawConfig["agents"],
+        agents: nextAgents as OpenClawConfigWithLegacyRoster["agents"],
       }
     : cfgWithProviders;
   return rewriteRemainingSlots(nextCfg);

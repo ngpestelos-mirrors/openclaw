@@ -203,7 +203,7 @@ describe("profile-owned skill publication and selection", () => {
         cfg: {
           agents: {
             defaults: { skills: [saved.entry.name] },
-            list: [{ id: "main", workspace: stateDir }],
+            entries: { main: { workspace: stateDir } },
           },
         },
         agentIds: ["main"],

@@ -132,7 +132,7 @@ describe("runtime conversation binding route", () => {
     (mainKey) => {
       const ordinaryRoute = resolveAgentRoute({
         cfg: {
-          agents: { list: [{ id: "main" }, { id: "review" }] },
+          agents: { entries: { main: {}, review: {} } },
           bindings: [{ agentId: "main", match: { channel: "demo" } }],
           session: { mainKey },
         },

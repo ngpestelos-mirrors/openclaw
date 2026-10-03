@@ -57,7 +57,7 @@ function createConfig(): OpenClawConfig {
           },
         },
       },
-      list: [],
+      entries: {},
     },
   };
 }

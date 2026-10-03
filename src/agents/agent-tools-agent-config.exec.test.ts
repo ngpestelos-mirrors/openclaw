@@ -28,18 +28,22 @@ function createExecHostDefaultsConfig(
       },
     },
     agents: {
-      list: agents.map((agent) => ({
-        id: agent.id,
-        ...(agent.execHost
-          ? {
-              tools: {
-                exec: {
-                  host: agent.execHost,
-                },
-              },
-            }
-          : {}),
-      })),
+      entries: Object.fromEntries(
+        agents.map((agent) => [
+          agent.id,
+          {
+            ...(agent.execHost
+              ? {
+                  tools: {
+                    exec: {
+                      host: agent.execHost,
+                    },
+                  },
+                }
+              : {}),
+          },
+        ]),
+      ),
     },
   };
 }
@@ -89,7 +93,7 @@ describe("Agent-specific exec tool defaults", () => {
       const config: OpenClawConfig = {
         tools: { exec: { timeoutSeconds: 45 } },
         agents: {
-          list: [{ id: "main", tools: { exec: { timeoutSeconds: 120 } } }, { id: "helper" }],
+          entries: { main: { tools: { exec: { timeoutSeconds: 120 } } }, helper: {} },
         },
       };
       const tools = createOpenClawCodingTools({
@@ -113,7 +117,7 @@ describe("Agent-specific exec tool defaults", () => {
       tools: { exec: { host: "gateway", mode: "full", cleanupMs: 60_000 } },
       agents: {
         ownership: "explicit",
-        list: [{ id: "main", tools: { exec: { cleanupMs: 180_000 } } }, { id: "helper" }],
+        entries: { main: { tools: { exec: { cleanupMs: 180_000 } } }, helper: {} },
       },
     };
     const toolsFor = (agentId: string) =>
@@ -350,16 +354,15 @@ describe("Agent-specific exec tool defaults", () => {
           },
         },
         agents: {
-          list: [
-            {
-              id: "main",
+          entries: {
+            main: {
               tools: {
                 exec: {
                   mode: "allowlist",
                 },
               },
             },
-          ],
+          },
         },
       },
       sessionKey: "agent:main:main",

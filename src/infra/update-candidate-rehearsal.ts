@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { OpenClawConfigWithLegacyRoster } from "../config/legacy.roster.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveUserPath } from "./home-dir.js";
 import { tryListenOnPort } from "./ports-probe.js";
@@ -43,13 +43,13 @@ export type UpdateCandidateRehearsal = {
 };
 
 function isolatedConfig(
-  config: OpenClawConfig,
+  config: OpenClawConfigWithLegacyRoster,
   sourceRoot: string,
   stateDir: string,
   port: number,
   sourceEnv: NodeJS.ProcessEnv,
   pluginPaths: Record<string, string>,
-): OpenClawConfig {
+): OpenClawConfigWithLegacyRoster {
   const copied = structuredClone(config);
   const projectPluginPath = (value: string) => {
     const projected = pluginPaths[resolveUserPath(value, sourceEnv)];
@@ -129,7 +129,7 @@ function isolatedConfig(
 
 /** Prepare one disposable generation for candidate diagnostics. */
 export async function prepareUpdateCandidateRehearsal(params: {
-  config: OpenClawConfig;
+  config: OpenClawConfigWithLegacyRoster;
   candidateRoot: string;
   stateDir: string;
   env?: NodeJS.ProcessEnv;

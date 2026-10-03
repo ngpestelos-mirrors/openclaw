@@ -155,7 +155,9 @@ it("copies a workspace catalog once while materializing every agent's configured
       },
     };
   });
-  const config: OpenClawConfig = { agents: { list: agents } };
+  const config: OpenClawConfig = {
+    agents: { entries: Object.fromEntries(agents.map(({ id, ...entry }) => [id, entry])) },
+  };
   const prepared = await prepareImplicitProviderStaticCatalog({
     config,
     env: {},

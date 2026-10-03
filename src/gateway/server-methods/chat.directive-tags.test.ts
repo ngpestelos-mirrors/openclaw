@@ -55,6 +55,7 @@ import {
 } from "../../sessions/session-lifecycle-admission.js";
 import { projectAssistantDisplayContent } from "../../shared/assistant-display-content.js";
 import { extractFirstTextBlock } from "../../shared/chat-message-content.js";
+import { createCanonicalAgentConfigFixture } from "../../test-utils/config-roster.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { withTempDir } from "../../test-utils/temp-dir.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
@@ -844,10 +845,10 @@ function useChatTestModel(model: "vision-model" | "text-only", configured = fals
 }
 
 async function createGlobalTranscriptFixture(prefix: string, agentId = "main") {
-  mockState.config = {
+  mockState.config = createCanonicalAgentConfigFixture({
     agents: { list: [{ id: "main", default: true }, { id: "work" }] },
     session: { scope: "global" },
-  };
+  }).config;
   return await createTranscriptFixture(prefix, { agentId, sessionKey: "global" });
 }
 
@@ -2527,7 +2528,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     );
   });
 
-  it("registers default global tool-event recipients for unscoped global sends", async () => {
+  it("registers migrated default global tool-event recipients for unscoped global sends", async () => {
     await createGlobalTranscriptFixture("openclaw-chat-send-global-tool-events-");
     mockState.finalText = "ok";
     mockState.triggerAgentRunStart = true;
@@ -4923,17 +4924,14 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.finalText = "ok";
     mockState.config = {
       agents: {
-        list: [
-          {
-            id: "vision",
-            default: true,
+        entries: {
+          vision: {
             model: "test-provider/vision-model",
           },
-          {
-            id: "writer",
+          writer: {
             model: "test-provider/text-only",
           },
-        ],
+        },
       },
     };
     mockState.modelCatalog = [

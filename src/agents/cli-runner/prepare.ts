@@ -313,7 +313,7 @@ async function prepareCliRunContextWithinReadFence(
         ...runConfig,
         agents: {
           ...runConfig.agents,
-          entries: { [sessionOwner]: { default: true } },
+          entries: { [sessionOwner]: {} },
         },
       } satisfies OpenClawConfig);
   const { started, startedMonotonicMs } = captureCliRunStartTime();

@@ -286,12 +286,12 @@ describe("FaceTime talk driver consult delivery", () => {
     },
   );
 
-  it("routes the main session key to the configured default agent", async () => {
+  it("routes the main session key to the sole configured agent", async () => {
     mocks.consult.mockResolvedValueOnce({ text: "I know my SOUL.md." });
     await startReadyFaceTimeTalkDriver(
       startParams({
         fullConfig: {
-          agents: { list: [{ id: "lobster", default: true }] },
+          agents: { entries: { lobster: {} } },
         },
       }),
     );
@@ -325,7 +325,7 @@ describe("FaceTime talk driver consult delivery", () => {
       startParams({
         callUUID: "17BC43FD-5800-4B54-86DB-698C49253C42",
         fullConfig: {
-          agents: { list: [{ id: "lobster", default: true }] },
+          agents: { entries: { lobster: {} } },
         },
       }),
     );

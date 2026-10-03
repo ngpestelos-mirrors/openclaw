@@ -1,7 +1,9 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { resolveAgentHarnessPolicy } from "../../../agents/harness/policy.js";
+import type { OpenClawConfigWithLegacyRoster } from "../../../config/legacy.roster.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
+import type { ModelDefinitionConfig } from "../../../config/types.models.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 
 const mocks = vi.hoisted(() => ({
@@ -45,6 +47,13 @@ const CODEX_PLUGIN_REPAIR_CHANGES = [
   "Enabled plugins.entries.codex because configured agent routes use Codex runtime.",
   "Added codex to plugins.allow because configured agent routes use Codex runtime.",
 ];
+const MODEL_CATALOG_METADATA = {
+  name: "Test model",
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  maxTokens: 4096,
+} satisfies Omit<ModelDefinitionConfig, "id">;
 
 type CodexRouteWarningOptions = Omit<
   Parameters<typeof collectCodexRouteWarningsUnderTest>[0],
@@ -55,22 +64,27 @@ type CodexRouteRepairOptions = Omit<
   "cfg" | "shouldRepair"
 >;
 
-// These fixtures intentionally exercise raw legacy shapes that current config validation rejects.
-const asLegacyConfig = (cfg: unknown): OpenClawConfig => cfg as OpenClawConfig;
-
-function collectCodexRouteWarnings(cfg: unknown, options: CodexRouteWarningOptions = {}): string[] {
-  return collectCodexRouteWarningsUnderTest({ cfg: asLegacyConfig(cfg), ...options });
+function collectCodexRouteWarnings(
+  cfg: OpenClawConfigWithLegacyRoster,
+  options: CodexRouteWarningOptions = {},
+): string[] {
+  return collectCodexRouteWarningsUnderTest({ cfg, ...options });
 }
 
-function maybeRepairCodexRoutes(cfg: unknown, options: CodexRouteRepairOptions = {}) {
+function maybeRepairCodexRoutes(
+  cfg: OpenClawConfigWithLegacyRoster,
+  options: CodexRouteRepairOptions = {},
+) {
   return maybeRepairCodexRoutesUnderTest({
-    cfg: asLegacyConfig(cfg),
+    cfg,
     shouldRepair: true,
     ...options,
   });
 }
 
-function repairDefaultAgent(defaults: unknown) {
+function repairDefaultAgent(
+  defaults: NonNullable<OpenClawConfigWithLegacyRoster["agents"]>["defaults"],
+) {
   return maybeRepairCodexRoutes({ agents: { defaults } });
 }
 
@@ -104,7 +118,7 @@ function expectCodexPluginDisabled(result: CodexRouteRepairResult) {
   expect(result.cfg.plugins?.entries?.codex?.enabled).toBe(false);
 }
 
-function itReenablesCodexPlugin(title: string, cfg: Record<string, unknown>) {
+function itReenablesCodexPlugin(title: string, cfg: OpenClawConfigWithLegacyRoster) {
   it(title, () => {
     expectCodexPluginEnabled(
       maybeRepairCodexRoutes({ plugins: REPAIRABLE_CODEX_PLUGIN_CONFIG, ...cfg }),
@@ -112,7 +126,7 @@ function itReenablesCodexPlugin(title: string, cfg: Record<string, unknown>) {
   });
 }
 
-function itKeepsCodexPluginDisabled(title: string, cfg: Record<string, unknown>) {
+function itKeepsCodexPluginDisabled(title: string, cfg: OpenClawConfigWithLegacyRoster) {
   it(title, () => {
     expectCodexPluginDisabled(
       maybeRepairCodexRoutes({ plugins: DISABLED_CODEX_PLUGIN_CONFIG, ...cfg }),
@@ -337,7 +351,7 @@ describe("collectCodexRouteWarnings", () => {
     const cfg = {
       plugins: DISABLED_CODEX_PLUGIN_CONFIG,
       agents: { defaults: { model: { primary: "openai/gpt-5.4-nano" } } },
-    } as unknown as OpenClawConfig;
+    } satisfies OpenClawConfigWithLegacyRoster;
 
     expect(
       collectCodexRouteWarnings(cfg, {
@@ -506,7 +520,11 @@ describe("collectCodexRouteWarnings", () => {
     const result = maybeRepairCodexRoutes({
       models: {
         providers: {
-          openai: { baseUrl: "https://proxy.example.test/v1", agentRuntime: { id: "openclaw" } },
+          openai: {
+            baseUrl: "https://proxy.example.test/v1",
+            models: [],
+            agentRuntime: { id: "openclaw" },
+          },
         },
       },
       agents: {
@@ -543,7 +561,7 @@ describe("collectCodexRouteWarnings", () => {
   it("canonicalizes inherited Lossless summary models when migration is blocked", () => {
     const result = maybeRepairCodexRoutes({
       models: {
-        providers: { openai: { baseUrl: "https://proxy.example.test/v1" } },
+        providers: { openai: { baseUrl: "https://proxy.example.test/v1", models: [] } },
       },
       plugins: { slots: { contextEngine: "custom-context" } },
       agents: {
@@ -655,9 +673,7 @@ describe("collectCodexRouteWarnings", () => {
           {
             id: "worker",
             model: "anthropic/claude-sonnet-4-6",
-            ...({
-              compaction: { model: "anthropic/claude-haiku-4-6" },
-            } as Record<string, unknown>),
+            compaction: { model: "anthropic/claude-haiku-4-6" },
           },
         ],
       },
@@ -680,10 +696,14 @@ describe("collectCodexRouteWarnings", () => {
       models: {
         providers: {
           openai: {
-            models: [{ id: "gpt-5.6-sol", api: "openai-responses" }],
+            baseUrl: "",
+            models: [{ ...MODEL_CATALOG_METADATA, id: "gpt-5.6-sol", api: "openai-responses" }],
           },
           "openai-codex": {
-            models: [{ id: "gpt-5.6-sol", api: "openai-chatgpt-responses" }],
+            baseUrl: "",
+            models: [
+              { ...MODEL_CATALOG_METADATA, id: "gpt-5.6-sol", api: "openai-chatgpt-responses" },
+            ],
           },
         },
       },
@@ -898,7 +918,8 @@ describe("collectCodexRouteWarnings", () => {
       models: {
         providers: {
           anthropic: {
-            models: [{ id: "claude-sonnet-4-6" }],
+            baseUrl: "",
+            models: [{ ...MODEL_CATALOG_METADATA, id: "claude-sonnet-4-6" }],
           },
         },
       },
@@ -993,7 +1014,8 @@ describe("collectCodexRouteWarnings", () => {
       models: {
         providers: {
           "qwen-dashscope": {
-            models: [{ id: "Qwen-Max" }],
+            baseUrl: "",
+            models: [{ ...MODEL_CATALOG_METADATA, id: "Qwen-Max" }],
           },
         },
       },
@@ -1039,7 +1061,7 @@ describe("collectCodexRouteWarnings", () => {
   });
 
   it("preserves listed-agent legacy model-map runtime pins while repairing listed-agent refs", () => {
-    const cfg = {
+    const cfg: OpenClawConfigWithLegacyRoster = {
       agents: {
         list: [
           {
@@ -1051,7 +1073,7 @@ describe("collectCodexRouteWarnings", () => {
           },
         ],
       },
-    } as unknown as OpenClawConfig;
+    };
 
     expectAgentRuntime(cfg, "openclaw", { provider: "openai-codex", agentId: "worker" });
 
@@ -1075,7 +1097,7 @@ describe("collectCodexRouteWarnings", () => {
         },
         list: [{ id: "worker", model: "openai-codex/gpt-5.4" }],
       },
-    } as unknown as OpenClawConfig;
+    } satisfies OpenClawConfigWithLegacyRoster;
 
     expectAgentRuntime(cfg, "openclaw", { provider: "openai-codex", agentId: "worker" });
 
@@ -1095,12 +1117,15 @@ describe("collectCodexRouteWarnings", () => {
       models: {
         providers: {
           "openai-codex": {
-            models: [{ id: "gpt-5.4", agentRuntime: { id: "openclaw" } }],
+            baseUrl: "",
+            models: [
+              { ...MODEL_CATALOG_METADATA, id: "gpt-5.4", agentRuntime: { id: "openclaw" } },
+            ],
           },
         },
       },
       agents: { defaults: { model: "openai-codex/gpt-5.4" } },
-    } as unknown as OpenClawConfig;
+    } satisfies OpenClawConfigWithLegacyRoster;
 
     expectAgentRuntime(cfg, "openclaw", { provider: "openai-codex" });
 
@@ -1117,7 +1142,7 @@ describe("collectCodexRouteWarnings", () => {
     const cfg = {
       models: {
         providers: {
-          "openai-codex": { agentRuntime: { id: "openclaw" } },
+          "openai-codex": { baseUrl: "", models: [], agentRuntime: { id: "openclaw" } },
         },
       },
       agents: {
@@ -1127,7 +1152,7 @@ describe("collectCodexRouteWarnings", () => {
           { id: "regular", model: "openai/gpt-5.4" },
         ],
       },
-    } as unknown as OpenClawConfig;
+    } satisfies OpenClawConfigWithLegacyRoster;
 
     expectAgentRuntime(cfg, "openclaw", { provider: "openai-codex", agentId: "main" });
     expectAgentRuntime(cfg, "codex", { agentId: "regular" });
@@ -1157,7 +1182,7 @@ describe("collectCodexRouteWarnings", () => {
         },
         list: [{ id: "worker", model: "openai-codex/gpt-5.4" }],
       },
-    } as unknown as OpenClawConfig;
+    } satisfies OpenClawConfigWithLegacyRoster;
 
     expectAgentRuntime(cfg, "auto", { provider: "openai-codex", agentId: "worker" });
 

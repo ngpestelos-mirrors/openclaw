@@ -263,7 +263,7 @@ describe("gateway startup log", () => {
             defaults: {
               model: "openai/gpt-5.5",
             },
-            list: [{ id: "main", default: true, fastModeDefault: true }],
+            entries: { main: { fastModeDefault: true } },
           },
         },
         provider: "openai",
@@ -346,7 +346,7 @@ describe("gateway startup log", () => {
                 "openai/gpt-5.5": { params: { fastMode: false } },
               },
             },
-            list: [{ id: "alpha", default: true, thinkingDefault: "high", fastModeDefault: true }],
+            entries: { alpha: { thinkingDefault: "high", fastModeDefault: true } },
           },
         },
         provider: "openai",

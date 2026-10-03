@@ -284,7 +284,10 @@ describe("runDoctorSessionSqlite", () => {
     const report = await runDoctorSessionSqlite({
       agent: "main",
       cfg: {
-        agents: { list: [{ default: true, id: "main" }, { id: "work" }] },
+        agents: {
+          defaults: { sessionStore: { agentId: "main" } },
+          entries: { main: {}, work: {} },
+        },
         session: { store: storePath },
       },
       env,
@@ -447,7 +450,10 @@ describe("runDoctorSessionSqlite", () => {
       const report = await runDoctorSessionSqlite({
         allAgents: true,
         cfg: {
-          agents: { list: [{ default: true, id: "main" }, { id: "work" }] },
+          agents: {
+            defaults: { sessionStore: { agentId: "main" } },
+            entries: { main: {}, work: {} },
+          },
           session: { store: storePath },
         },
         env,

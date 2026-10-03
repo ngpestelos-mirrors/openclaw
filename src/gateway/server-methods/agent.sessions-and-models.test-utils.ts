@@ -17,6 +17,7 @@ import {
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import { attachErrorDiagnostic } from "../../infra/error-diagnostics.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
+import { createCanonicalAgentConfigFixture } from "../../test-utils/config-roster.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { waitForAgentJob } from "../agent-turn/agent-job.js";
 import { dispatchAgentRunFromGateway } from "../agent-turn/agent-run-dispatch.js";
@@ -192,7 +193,7 @@ describe("gateway agent handler", () => {
               "anthropic/claude-sonnet-4-6": { agentRuntime: { id: "claude-cli" } },
             },
           },
-          list: [{ id: "main", default: true }, { id: "work" }],
+          entries: { main: {}, work: {} },
         },
       } satisfies typeof mocks.loadConfigReturn;
       mocks.listAgentIds.mockReturnValue(["main", "work"]);
@@ -329,7 +330,7 @@ describe("gateway agent handler", () => {
         cfg: {
           session: { mainKey: "main", scope: "per-sender" },
           agents: {
-            list: [{ id: "main", default: true }, { id: "work" }],
+            entries: { main: {}, work: {} },
           },
         },
         runId: "plugin-subagent-current-requester",
@@ -473,7 +474,7 @@ describe("gateway agent handler", () => {
         } as const;
         const cfg = {
           session: { mainKey: "main", scope: "per-sender" },
-          agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+          agents: { entries: { main: {}, work: {} } },
         } satisfies typeof mocks.loadConfigReturn;
         mocks.listAgentIds.mockReturnValue(["main", "work"]);
         mocks.loadConfigReturn = cfg;
@@ -578,7 +579,7 @@ describe("gateway agent handler", () => {
         const originalRequester = "agent:main:telegram:direct:777";
         const cfg = {
           session: { mainKey: "main", scope: "per-sender" as const },
-          agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+          agents: { entries: { main: {}, work: {} } },
         };
         await seedPersistedSubagentRunForAgentTest({
           runId: "plugin-subagent-paused",
@@ -2130,12 +2131,12 @@ describe("gateway agent handler", () => {
     }
   });
 
-  it("routes bare global session keys to the configured default agent", async () => {
+  it("routes bare global session keys to the migrated default agent", async () => {
     mocks.listAgentIds.mockReturnValue(["main", "ops"]);
-    mocks.loadConfigReturn = {
+    mocks.loadConfigReturn = createCanonicalAgentConfigFixture({
       agents: { list: [{ id: "main" }, { id: "ops", default: true }] },
       session: { scope: "global" },
-    };
+    }).config;
     mocks.loadSessionEntry.mockReturnValue({
       cfg: mocks.loadConfigReturn,
       storePath: "/tmp/sessions.json",
@@ -2184,7 +2185,7 @@ describe("gateway agent handler", () => {
   it("infers selected-global agent id from agent-prefixed session aliases", async () => {
     mocks.listAgentIds.mockReturnValue(["main", "work"]);
     mocks.loadConfigReturn = {
-      agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+      agents: { entries: { main: {}, work: {} } },
       session: { scope: "global" },
     };
     mocks.loadSessionEntry.mockReturnValue({
@@ -2231,7 +2232,7 @@ describe("gateway agent handler", () => {
   it("registers tool event recipients for active selected-global alias runs", async () => {
     mocks.listAgentIds.mockReturnValue(["main", "work"]);
     mocks.loadConfigReturn = {
-      agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+      agents: { entries: { main: {}, work: {} } },
       session: { scope: "global" },
     };
     mocks.loadSessionEntry.mockReturnValue({
@@ -2288,7 +2289,7 @@ describe("gateway agent handler", () => {
   it("honors selected-global agent id when the request uses the main alias", async () => {
     mocks.listAgentIds.mockReturnValue(["main", "work"]);
     mocks.loadConfigReturn = {
-      agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+      agents: { entries: { main: {}, work: {} } },
       session: { scope: "global" },
     };
     mocks.loadSessionEntry.mockReturnValue({
@@ -2337,7 +2338,7 @@ describe("gateway agent handler", () => {
     const context = makeContext();
     mocks.listAgentIds.mockReturnValue(["main", "work"]);
     mocks.loadConfigReturn = {
-      agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+      agents: { entries: { main: {}, work: {} } },
       session: { scope: "global" },
     };
     mocks.agentCommand.mockClear();

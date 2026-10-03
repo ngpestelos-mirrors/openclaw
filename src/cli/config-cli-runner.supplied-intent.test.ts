@@ -271,11 +271,11 @@ describe("ordered runner supplied intent after deletion", () => {
     const result = await apply(
       {
         agents: {
-          list: [
-            { id: "0", name: "zero" },
-            { id: "1", name: "one" },
-            { id: "2", name: "two" },
-          ],
+          entries: {
+            "0": { name: "zero" },
+            "1": { name: "one" },
+            "2": { name: "two" },
+          },
         },
       },
       [
@@ -293,7 +293,7 @@ describe("ordered runner supplied intent after deletion", () => {
 
   it("rebases a nested array below a canonical agent ID", async () => {
     const result = await apply(
-      { agents: { list: [{ id: "1", tools: { allow: ["first", "second", "third"] } }] } },
+      { agents: { entries: { "1": { tools: { allow: ["first", "second", "third"] } } } } },
       [
         op("set", ["agents", "list", "0", "tools", "allow", "2"], "edited"),
         op("delete", ["agents", "list", "0", "tools", "allow", "0"]),

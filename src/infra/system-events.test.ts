@@ -111,18 +111,20 @@ describe("system events (session routing)", () => {
   });
 
   it.each(["main", "global", "unknown"])(
-    "resolves legacy SDK %s only at its configured owner boundary",
+    "resolves SDK %s only at its explicitly selected owner boundary",
     (alias) => {
       const previous = getRuntimeConfigSnapshot();
       try {
         setRuntimeConfigSnapshot({
-          agents: { entries: { alpha: { default: true }, beta: {} } },
+          agents: { entries: { alpha: {}, beta: {} } },
           session: { mainKey: "work" },
         });
         expect(() => enqueueSystemEvent("Unbound", { sessionKey: alias })).toThrow(
           "agent-qualified",
         );
-        expect(enqueueSdkSystemEvent("Legacy caller", { sessionKey: alias })).toBe(true);
+        expect(
+          enqueueSdkSystemEvent("Legacy caller", { sessionKey: alias, agentId: "alpha" }),
+        ).toBe(true);
         const suffix = alias === "main" ? "work" : alias;
         expect(peekSystemEvents(`agent:alpha:${suffix}`)).toEqual(["Legacy caller"]);
         expect(peekSystemEvents(`agent:beta:${suffix}`)).toEqual([]);
@@ -130,7 +132,7 @@ describe("system events (session routing)", () => {
         expect(peekSdkSystemEventEntries(alias, " BETA ").map((event) => event.text)).toEqual([
           "Owned caller",
         ]);
-        expect(peekSdkSystemEventEntries(alias).map((event) => event.text)).toEqual([
+        expect(peekSdkSystemEventEntries(alias, "alpha").map((event) => event.text)).toEqual([
           "Legacy caller",
         ]);
         expect(
@@ -171,7 +173,7 @@ describe("system events (session routing)", () => {
     const previous = getRuntimeConfigSnapshot();
     try {
       setRuntimeConfigSnapshot({
-        agents: { entries: { main: { default: true }, beta: {} } },
+        agents: { entries: { main: {}, beta: {} } },
         session: { scope: "global" },
       });
       enqueueSystemEvent("Main canary", { sessionKey: "agent:main:global" });
@@ -201,7 +203,7 @@ describe("system events (session routing)", () => {
     (sessionKey) => {
       const previous = getRuntimeConfigSnapshot();
       try {
-        setRuntimeConfigSnapshot({ agents: { entries: { "beta-team": { default: true } } } });
+        setRuntimeConfigSnapshot({ agents: { entries: { "beta-team": {} } } });
         expect(enqueueSdkSystemEvent("Team event", { sessionKey, agentId: " Beta Team " })).toBe(
           true,
         );

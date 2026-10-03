@@ -229,7 +229,7 @@ describe("embedded run retry dispatch", () => {
         agents: {
           ownership: "explicit",
           defaults: { sandbox: { mode: "off" } },
-          list: [{ id: "main" }, { id: "marketing" }],
+          entries: { main: {}, marketing: {} },
         },
       };
       input.runInput.runParams.sessionKey = "global";

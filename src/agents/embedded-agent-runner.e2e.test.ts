@@ -194,13 +194,21 @@ let sessionStorePath: string;
 let sessionCounter = 0;
 let runCounter = 0;
 
-const createEmbeddedAgentRunnerOpenAiConfig = (modelIds: string[]) => {
+const createEmbeddedAgentRunnerOpenAiConfig = (
+  modelIds: string[],
+): ReturnType<typeof createBaseEmbeddedAgentRunnerOpenAiConfig> => {
   const config = createBaseEmbeddedAgentRunnerOpenAiConfig(modelIds);
-  const mainAgent = config.agents?.list?.find((entry) => entry.id === "main");
-  if (mainAgent) {
-    mainAgent.default = true;
-  }
-  return { ...config, session: { store: sessionStorePath } };
+  return {
+    ...config,
+    agents: {
+      ...config.agents,
+      defaults: {
+        ...config.agents?.defaults,
+        sessionStore: { agentId: "main" },
+      },
+    },
+    session: { store: sessionStorePath },
+  };
 };
 
 beforeAll(async () => {
@@ -460,7 +468,7 @@ describe("runEmbeddedAgent", () => {
             primary: "openrouter/global-default",
           },
         },
-        list: [{ id: "research", model: "openrouter/research-default" }],
+        entries: { research: { model: "openrouter/research-default" } },
       },
     };
     mockSuccessfulEmbeddedAttempt();
@@ -496,6 +504,7 @@ describe("runEmbeddedAgent", () => {
       agents: {
         ...baseConfig.agents,
         defaults: {
+          ...baseConfig.agents?.defaults,
           model: {
             primary: "openrouter/runtime-default",
           },
@@ -538,12 +547,7 @@ describe("runEmbeddedAgent", () => {
         defaults: {
           model: { primary: "openai/mock-1" },
         },
-        list: [
-          {
-            id: "research",
-            model: { primary: "anthropic/claude-opus-4-7" },
-          },
-        ],
+        entries: { research: { model: { primary: "anthropic/claude-opus-4-7" } } },
       },
     };
     mockSuccessfulEmbeddedAttempt();
@@ -664,6 +668,7 @@ describe("runEmbeddedAgent", () => {
       agents: {
         ...baseConfig.agents,
         defaults: {
+          ...baseConfig.agents?.defaults,
           models: {
             "openai/mock-1": {
               agentRuntime: { id: "openclaw" },
@@ -735,6 +740,7 @@ describe("runEmbeddedAgent", () => {
       agents: {
         ...baseConfig.agents,
         defaults: {
+          ...baseConfig.agents?.defaults,
           models: {
             "openai/gpt-5.5": {
               agentRuntime: { id: "codex" },
@@ -926,6 +932,7 @@ describe("runEmbeddedAgent", () => {
       agents: {
         ...baseConfig.agents,
         defaults: {
+          ...baseConfig.agents?.defaults,
           models: {
             "openai/gpt-5.3-codex": {
               agentRuntime: { id: "codex" },

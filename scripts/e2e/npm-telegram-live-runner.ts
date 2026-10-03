@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { QaProviderMode } from "../../extensions/qa-lab/src/run-config.ts";
 import type { QaSuiteRoundTripProbe } from "../../extensions/qa-lab/src/suite-round-trip.ts";
 import { normalizeCsvOrLooseStringList } from "../../packages/normalization-core/src/string-normalization.ts";
+import type { OpenClawConfigWithLegacyRoster } from "../../src/config/legacy.roster.ts";
 import { isStrictAffirmativeValue } from "../lib/arg-utils.mts";
 import { compareReleaseVersions } from "../lib/release-version.mjs";
 
@@ -53,19 +54,23 @@ const EXTENDED_STABLE_2026_7_34 = "2026.7.34";
 const EXTENDED_STABLE_2026_7_35 = "2026.7.35";
 const LEGACY_CONFIG_CUTOFF = "2026.7.2-beta.4";
 
-function projectFrozenExtendedStableQaConfig(cfg: OpenClawConfig): OpenClawConfig {
+function projectFrozenExtendedStableQaConfig(cfg: OpenClawConfig): OpenClawConfigWithLegacyRoster {
   const { entries, ...agents } = cfg.agents ?? {};
   const { mediaModels, modelPolicy: _modelPolicy, ...defaults } = agents.defaults ?? {};
+  const memory: NonNullable<OpenClawConfig["memory"]> & { backend: "builtin" } = {
+    backend: "builtin",
+  };
+  const plugins: NonNullable<OpenClawConfig["plugins"]> & { bundledDiscovery: "compat" } = {
+    ...cfg.plugins,
+    bundledDiscovery: "compat",
+  };
 
   return {
     ...cfg,
     // The frozen candidate validates the pre-entries config shape. Keep this
     // projection at the package harness boundary so current runtime stays canonical.
-    memory: { backend: "builtin" },
-    plugins: {
-      ...cfg.plugins,
-      bundledDiscovery: "compat",
-    },
+    memory,
+    plugins,
     agents: {
       ...agents,
       defaults: {
@@ -74,19 +79,16 @@ function projectFrozenExtendedStableQaConfig(cfg: OpenClawConfig): OpenClawConfi
       },
       list: Object.entries(entries ?? {}).map(([id, agent]) => Object.assign({ id }, agent)),
     },
-  } as OpenClawConfig;
+  };
 }
 
-function projectLegacyPackageQaConfig(cfg: OpenClawConfig): OpenClawConfig {
+function projectLegacyPackageQaConfig(cfg: OpenClawConfig): OpenClawConfigWithLegacyRoster {
   const { entries, ...agents } = cfg.agents ?? {};
   const { modelPolicy: _modelPolicy, ...legacyDefaults } = agents.defaults ?? {};
-  const memory = cfg.memory as
-    | (Record<string, unknown> & {
-        backend?: unknown;
-        citations?: unknown;
-        qmd?: unknown;
-      })
-    | undefined;
+  const memory:
+    | (NonNullable<OpenClawConfig["memory"]> & { backend?: unknown; qmd?: unknown })
+    | undefined = cfg.memory;
+  const legacyMemoryKeys: Array<"backend" | "citations" | "qmd"> = ["backend", "citations", "qmd"];
 
   return {
     ...cfg,
@@ -101,12 +103,12 @@ function projectLegacyPackageQaConfig(cfg: OpenClawConfig): OpenClawConfig {
     },
     memory: memory
       ? Object.fromEntries(
-          ["backend", "citations", "qmd"]
+          legacyMemoryKeys
             .filter((key) => memory[key] !== undefined)
             .map((key) => [key, memory[key]]),
         )
       : memory,
-  } as OpenClawConfig;
+  };
 }
 
 function resolvePackageConfigMutation(env: NodeJS.ProcessEnv = process.env) {

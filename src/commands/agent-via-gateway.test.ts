@@ -21,6 +21,7 @@ import { loggingState } from "../logging/state.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE } from "../sessions/agent-harness-session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { createCanonicalAgentConfigFixture } from "../test-utils/config-roster.js";
 import { agentCliCommand, agentViaGatewayTesting } from "./agent-via-gateway.js";
 import { createLocalGatewayLockOptions } from "./agent-via-gateway.test-support.js";
 import type { agentCommand as AgentCommand } from "./agent.js";
@@ -80,7 +81,6 @@ function mockConfig(storePath: string, overrides?: Partial<OpenClawConfig>) {
         ...overrides?.agents?.defaults,
       },
       ...(overrides?.agents?.ownership ? { ownership: overrides.agents.ownership } : {}),
-      ...(overrides?.agents?.list ? { list: overrides.agents.list } : {}),
       ...(overrides?.agents?.entries ? { entries: overrides.agents.entries } : {}),
     },
     session: {
@@ -496,7 +496,7 @@ describe("agentCliCommand", () => {
         expect(agentCommand).not.toHaveBeenCalled();
         expect(jsonRuntime.writeJson).toHaveBeenCalledOnce();
       },
-      { agents: { list: [{ id: "main" }, { id: "ops" }] } },
+      { agents: { entries: { main: {}, ops: {} } } },
     );
   });
 
@@ -588,7 +588,7 @@ describe("agentCliCommand", () => {
           ...remoteGatewayConfig,
           agents: {
             ownership: "explicit",
-            list: [{ id: "ops" }, { id: "research" }],
+            entries: { ops: {}, research: {} },
           },
         },
       );
@@ -631,10 +631,10 @@ describe("agentCliCommand", () => {
           sessionKey: "agent:ops:work",
         });
       },
-      {
+      createCanonicalAgentConfigFixture({
         agents: { list: [{ id: "ops", default: true }, { id: "research" }] },
         session: { mainKey: "work", scope: "per-sender" },
-      },
+      }).config,
     );
   });
 
@@ -651,10 +651,10 @@ describe("agentCliCommand", () => {
           sessionKey: undefined,
         });
       },
-      {
+      createCanonicalAgentConfigFixture({
         agents: { list: [{ id: "ops", default: true }, { id: "research" }] },
         session: { scope: "global" },
-      },
+      }).config,
     );
   });
 
@@ -675,7 +675,7 @@ describe("agentCliCommand", () => {
         agents: {
           ownership: "explicit",
           defaults: { sessionStore: { agentId: "ops" } },
-          list: [{ id: "ops" }, { id: "research" }],
+          entries: { ops: {}, research: {} },
         },
         session: { scope: "global" },
       },
@@ -743,7 +743,7 @@ describe("agentCliCommand", () => {
           agents: {
             ...loadRuntimeConfig().agents,
             ownership: "explicit",
-            list: [{ id: "ops" }, { id: "research" }],
+            entries: { ops: {}, research: {} },
           },
         });
 
@@ -753,7 +753,7 @@ describe("agentCliCommand", () => {
         expect(agentCommand).not.toHaveBeenCalled();
       },
       {
-        agents: { list: [{ id: "ops" }, { id: "research" }] },
+        agents: { entries: { ops: {}, research: {} } },
         session: { scope: "global" },
       },
     );
@@ -1156,7 +1156,7 @@ describe("agentCliCommand", () => {
         expect(params.agentId).toBe("ops");
         expect(params.sessionKey).toBe("agent:ops:incident-42");
       },
-      { agents: { list: [{ id: "main" }, { id: "ops" }] } },
+      { agents: { entries: { main: {}, ops: {} } } },
     );
   });
 
@@ -1179,7 +1179,7 @@ describe("agentCliCommand", () => {
         expect(params.agentId).toBe("ops");
         expect(params.sessionKey).toBe("agent:OPS:incident-42");
       },
-      { agents: { list: [{ id: "main" }, { id: "ops" }] } },
+      { agents: { entries: { main: {}, ops: {} } } },
     );
   });
 
@@ -1199,7 +1199,13 @@ describe("agentCliCommand", () => {
         expect(params.agentId).toBeUndefined();
         expect(params.sessionKey).toBe("agent:ops:incident-42");
       },
-      { agents: { list: [{ id: "ops", default: true }, { id: "main" }] } },
+      {
+        agents: {
+          ownership: "explicit",
+          defaults: { systemAgent: { agentId: "ops" } },
+          entries: { ops: {}, main: {} },
+        },
+      },
     );
   });
 
@@ -1232,7 +1238,7 @@ describe("agentCliCommand", () => {
         expect(params.sessionId).toBe("existing-main-session");
         expect(params.sessionKey).toBe("agent:ops:incident-42");
       },
-      { agents: { list: [{ id: "main" }, { id: "ops" }] } },
+      { agents: { entries: { main: {}, ops: {} } } },
     );
   });
 
@@ -1254,7 +1260,7 @@ describe("agentCliCommand", () => {
           expect(params.agentId).toBe("ops");
           expect(params.sessionKey).toBe(sessionKey);
         },
-        { agents: { list: [{ id: "main" }, { id: "ops" }] } },
+        { agents: { entries: { main: {}, ops: {} } } },
       );
     },
   );
@@ -1275,7 +1281,13 @@ describe("agentCliCommand", () => {
         expect(params.agentId).toBeUndefined();
         expect(params.sessionKey).toBe("global");
       },
-      { agents: { list: [{ id: "ops", default: true }, { id: "main" }] } },
+      {
+        agents: {
+          ownership: "explicit",
+          defaults: { systemAgent: { agentId: "ops" } },
+          entries: { ops: {}, main: {} },
+        },
+      },
     );
   });
 
@@ -1297,7 +1309,7 @@ describe("agentCliCommand", () => {
         agents: {
           ownership: "explicit",
           defaults: { sessionStore: { agentId: "ops" } },
-          list: [{ id: "ops" }, { id: "research" }],
+          entries: { ops: {}, research: {} },
         },
       },
     );
@@ -1319,7 +1331,13 @@ describe("agentCliCommand", () => {
         expect(params.agentId).toBeUndefined();
         expect(params.sessionKey).toBe("unknown");
       },
-      { agents: { list: [{ id: "ops", default: true }, { id: "main" }] } },
+      {
+        agents: {
+          ownership: "explicit",
+          defaults: { systemAgent: { agentId: "ops" } },
+          entries: { ops: {}, main: {} },
+        },
+      },
     );
   });
 
@@ -1528,7 +1546,7 @@ describe("agentCliCommand", () => {
         });
       },
       {
-        agents: { list: [{ id: "main" }, { id: "ops" }] },
+        agents: { entries: { main: {}, ops: {} } },
         session: { dmScope: "per-channel-peer" },
       },
     );

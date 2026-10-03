@@ -277,7 +277,7 @@ it("reuses the same original capture across Doctor continuations without recaptu
 it("shares one fleet preflight with Doctor admission and its health contribution", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const cfg: OpenClawConfig = {
-      agents: { entries: { main: { default: true }, second: {}, third: {}, fourth: {} } },
+      agents: { entries: { main: {}, second: {}, third: {}, fourth: {} } },
     };
     await state.writeConfig(cfg);
     mocks.config.mockReturnValue(cfg);
@@ -345,7 +345,7 @@ it.each(["copy", "hardlink", "relocated-copy"] as const)(
       const cfg: OpenClawConfig = {
         agents: {
           entries: {
-            main: { default: true },
+            main: {},
             cleaner: { agentDir: path.join(configuredAlias, "agent") },
           },
         },

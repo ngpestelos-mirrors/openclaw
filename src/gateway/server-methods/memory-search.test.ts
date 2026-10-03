@@ -46,7 +46,7 @@ function createConfig(workspaceDir: string): OpenClawConfig {
     },
     agents: {
       defaults: { workspace: workspaceDir },
-      list: [{ id: "main", default: true }],
+      entries: { main: {} },
     },
   };
 }
@@ -175,7 +175,7 @@ describe("memory.search gateway method", () => {
     cfg.agents = {
       ...cfg.agents,
       ownership: "explicit",
-      list: [{ id: "ops" }, { id: "research" }],
+      entries: { ops: {}, research: {} },
     };
     resolveDefaultAgentId.mockImplementationOnce(() => {
       throw new AgentSelectionRequiredError(["ops", "research"], {
@@ -240,7 +240,7 @@ describe("memory.search gateway method", () => {
     const cfg = createConfig(testState.workspaceDir);
     cfg.agents = {
       ...cfg.agents,
-      list: [{ id: "main", default: true }, { id: configured }],
+      entries: { main: {}, [configured]: {} },
     };
     const result = {
       path: "memory/project-lantern.md",

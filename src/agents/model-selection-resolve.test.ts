@@ -108,14 +108,13 @@ describe("model-selection-resolve OpenRouter compat aliases", () => {
           },
           modelPolicy: { allow: ["approved"] },
         },
-        list: [
-          {
-            id: "worker",
+        entries: {
+          worker: {
             models: {
               "anthropic/claude-sonnet-4-6": { alias: "approved" },
             },
           },
-        ],
+        },
       },
     } as OpenClawConfig;
     const catalog = [
@@ -154,13 +153,12 @@ describe("model-selection-resolve OpenRouter compat aliases", () => {
           models: { "openai/gpt-5.5": { alias: "approved" } },
           modelPolicy: { allow: ["approved"] },
         },
-        list: [
-          {
-            id: "worker",
+        entries: {
+          worker: {
             models: { "anthropic/claude-sonnet-4-6": { alias: "approved" } },
             modelPolicy: { allow: ["approved"] },
           },
-        ],
+        },
       },
     } as OpenClawConfig;
     const catalog = [

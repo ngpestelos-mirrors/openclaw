@@ -214,7 +214,7 @@ it.skipIf(!isLiveTestEnabled() || process.platform === "win32")(
               timeoutSeconds: 600,
               subagents: { allowAgents: ["*"], runTimeoutSeconds: 600, announceTimeoutMs: 180_000 },
             },
-            entries: { main: { default: true } },
+            entries: { main: {} },
           },
           tools: {
             allow: ["sessions_spawn", "sessions_yield", "exec", "process"],

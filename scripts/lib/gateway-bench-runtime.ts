@@ -386,7 +386,7 @@ export function writeGatewayBenchConfig(
   root: string,
   config: Record<string, unknown>,
   options: {
-    agentList?: Array<{ id: string; default?: boolean; workspace: string }> | undefined;
+    agentList?: Array<{ id: string; workspace: string }> | undefined;
     pluginFixtures?: PluginFixtureResult | null | undefined;
   },
 ): string {
@@ -396,7 +396,17 @@ export function writeGatewayBenchConfig(
       ? {
           agents: {
             ...(config.agents as Record<string, unknown> | undefined),
-            list: options.agentList,
+            entries: Object.fromEntries(options.agentList.map(({ id, ...entry }) => [id, entry])),
+            ...(options.agentList.length > 1
+              ? {
+                  ownership: "explicit",
+                  defaults: {
+                    ...(config.agents as { defaults?: Record<string, unknown> } | undefined)
+                      ?.defaults,
+                    systemAgent: { agentId: options.agentList[0]!.id },
+                  },
+                }
+              : {}),
           },
         }
       : {}),

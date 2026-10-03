@@ -48,7 +48,7 @@ async function withResidentRows(
 it("lists admitted sessions across cached targets while preserving a refused database", async () => {
   await withOpenClawTestState({ label: "combined-admission" }, async (state) => {
     const cfg: OpenClawConfig = {
-      agents: { entries: { main: { default: true }, cleaner: {} } },
+      agents: { entries: { main: {}, cleaner: {} } },
     };
     for (const agentId of ["main", "cleaner"]) {
       replaceSessionEntrySync(
@@ -122,7 +122,7 @@ it.each(["ops", "main"])(
         { sessionId: "ops-session", updatedAt: 1 },
       );
       const cfg: OpenClawConfig = {
-        agents: { entries: { ops: { default: true } } },
+        agents: { entries: { ops: {} } },
         session: { store: state.statePath("{agentId}.sqlite") },
       };
       const opts = { agentId: "ops", projection: "list" as const };
@@ -162,7 +162,7 @@ it.each(["global", "unknown"])("projects the recorded aggregate %s owner", async
       session: { scope: "global" },
       agents: {
         entries: {
-          main: { default: true, model: { primary: "openai/gpt-5.4" } },
+          main: { model: { primary: "openai/gpt-5.4" } },
           research: { model: { primary: "openai/gpt-5.5" } },
         },
       },
@@ -374,7 +374,7 @@ it.each([
       const cfg: OpenClawConfig = {
         session: { scope: "global", mainKey: "home" },
         agents: {
-          entries: { main: { default: true }, work: {} },
+          entries: { main: {}, work: {} },
           defaults: { model: { primary: "ollama/llama3.1:8b" } },
         },
       };
@@ -433,8 +433,12 @@ it.each(["global", "per-sender"] as const)(
       const cfg: OpenClawConfig = {
         session: { scope, mainKey: "work" },
         agents: {
-          entries: { alpha: { default: true }, main: {} },
-          defaults: { model: { primary: "ollama/llama3.1:8b" } },
+          ownership: "explicit",
+          entries: { alpha: {}, main: {} },
+          defaults: {
+            sessionStore: { agentId: "alpha" },
+            model: { primary: "ollama/llama3.1:8b" },
+          },
         },
       };
       await state.writeConfig(cfg);
@@ -551,7 +555,11 @@ it.each([false, true])(
   async (present) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const cfg: OpenClawConfig = {
-        agents: { entries: { ops: { default: true }, work: {} } },
+        agents: {
+          ownership: "explicit",
+          entries: { ops: {}, work: {} },
+          defaults: { systemAgent: { agentId: "ops" }, sessionStore: { agentId: "ops" } },
+        },
       };
       await state.writeConfig(cfg);
       state.applyEnv();
@@ -836,7 +844,7 @@ it.skipIf(process.platform === "win32")(
 it("omits retained prompt payloads unless a caller opts into the full projection", async () => {
   await withOpenClawTestState({ label: "combined-store-projection" }, async () => {
     const cfg: OpenClawConfig = {
-      agents: { entries: { main: { default: true } } },
+      agents: { entries: { main: {} } },
     };
     replaceSessionEntrySync(
       { agentId: "main", sessionKey: "agent:main:main" },

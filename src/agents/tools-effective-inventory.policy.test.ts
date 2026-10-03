@@ -61,9 +61,9 @@ describe("tool access diagnostics", () => {
   it.each<{ agents: NonNullable<OpenClawConfig["agents"]>; toolsPath: string }>([
     {
       agents: {
-        list: [{ id: "other" }, { id: " Assistant ", tools: { profile: "messaging" } }],
+        entries: { other: {}, " Assistant ": { tools: { profile: "messaging" } } },
       },
-      toolsPath: "agents.list[1].tools",
+      toolsPath: 'agents.entries[" Assistant "].tools',
     },
     {
       agents: { entries: { " Assistant ": { tools: { profile: "messaging" } } } },

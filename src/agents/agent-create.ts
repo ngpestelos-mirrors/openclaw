@@ -500,7 +500,6 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
                 agents: {
                   ...currentConfig.agents,
                   entries: {},
-                  list: undefined,
                 },
               }
             : (params.stagedConfig?.config ?? currentConfig);
@@ -516,7 +515,6 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
                 })
               : creationBase;
           if (params.entry || template) {
-            const { default: _retiredDefault, ...stagedEntry } = params.entry ?? {};
             const list = listAgentEntries(nextConfig);
             const index = findAgentEntryIndex(list, agentId);
             list[index] = {
@@ -532,18 +530,17 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
                         : { allowAgents: [] },
                   }
                 : {}),
-              ...stagedEntry,
+              ...params.entry,
               id: agentId,
               name: safeName,
               workspace: workspaceDir,
               agentDir,
               identity,
             };
-            const { list: _legacyList, ...agentsConfig } = nextConfig.agents ?? {};
             nextConfig = {
               ...nextConfig,
               agents: {
-                ...agentsConfig,
+                ...nextConfig.agents,
                 entries: toAgentEntriesRecord(list),
               },
             };
@@ -604,10 +601,9 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
                 id: agentId,
                 workspace: workspace.dir,
               };
-              const { list: _legacyList, ...agentsConfig } = nextConfig.agents ?? {};
               nextConfig = {
                 ...nextConfig,
-                agents: { ...agentsConfig, entries: toAgentEntriesRecord(entries) },
+                agents: { ...nextConfig.agents, entries: toAgentEntriesRecord(entries) },
               };
             }
           }

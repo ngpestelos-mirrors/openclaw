@@ -50,7 +50,7 @@ describe("readUtilityModelSetting", () => {
     const cfg = {
       agents: {
         defaults: { utilityModel: "openai/gpt-5.4-mini" },
-        list: [{ id: "ops", utilityModel: "" }],
+        entries: { ops: { utilityModel: "" } },
       },
     } as OpenClawConfig;
 
