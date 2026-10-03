@@ -6,7 +6,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vite
 import { readSessionEntryResetRecallCutoff } from "../../packages/memory-host-sdk/src/host/session-files.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { createIncognitoSessionComputeReader } from "../config/sessions/session-incognito-compute-read.js";
 import type { IncognitoSessionAuthority } from "../config/sessions/session-incognito-contract.js";
 import type { IncognitoLifecycleEntry } from "../config/sessions/session-incognito-lifecycle-contract.js";
 import { SessionTranscriptReadFenceError } from "../config/sessions/session-transcript-read-fence.js";
@@ -132,9 +131,9 @@ async function hold(owner = actor) {
   return { release, held };
 }
 
-function computeReader(target: IncognitoLifecycleEntry, owner = actor, grant = authority) {
+async function computeReader(target: IncognitoLifecycleEntry, owner = actor, grant = authority) {
   const scope = { ...targetInput(target), agentId: owner.agentId, storePath: owner.path };
-  const reader = createIncognitoSessionComputeReader({
+  const reader = await captureOpenClawAgentDatabaseExecution.createIncognitoSessionComputeReader({
     actor: owner,
     authority: grant,
     target: scope,
@@ -144,7 +143,7 @@ function computeReader(target: IncognitoLifecycleEntry, owner = actor, grant = a
 
 it("projects Memory and Codex snapshots after committed actor writes without host SQL", async () => {
   const target = await create("memory-codex-fifo");
-  const { reader, scope } = computeReader(target);
+  const { reader, scope } = await computeReader(target);
   const barrier = await hold();
   try {
     const write = append(target, "committed for Memory and Codex");
@@ -175,13 +174,18 @@ it("projects Memory and Codex snapshots after committed actor writes without hos
 it("refuses Memory and Codex disclosure when caller authority is revoked during a FIFO wait", async () => {
   const target = await create("memory-codex-revoked");
   let current = true;
-  const { reader, scope } = computeReader(target, actor, {
+  const grant: IncognitoSessionAuthority = {
     assertCurrent() {
       if (!current) {
         throw new Error("compute caller revoked");
       }
     },
-  });
+  };
+  const pending = computeReader(target, actor, grant);
+  current = false;
+  await expect(pending).rejects.toThrow("compute caller revoked");
+  current = true;
+  const { reader, scope } = await computeReader(target, actor, grant);
   const barrier = await hold();
   try {
     const refused = [
@@ -203,8 +207,8 @@ it("keeps Memory and Codex history isolated for identical session IDs in differe
   const other = await create("memory-codex-shared", lossActor, "loss");
   await append(main, "main private content");
   await append(other, "other private content", lossActor);
-  const own = computeReader(main);
-  const foreign = computeReader(other, lossActor);
+  const own = await computeReader(main);
+  const foreign = await computeReader(other, lossActor);
   for (const [binding, content] of [
     [own, "main private content"],
     [foreign, "other private content"],
@@ -236,7 +240,7 @@ it("keeps Memory and Codex history isolated for identical session IDs in differe
 it("revalidates Codex history after asynchronous consumption and joins it before release", async () => {
   const target = await create("codex-consumption");
   await append(target, "snapshot content");
-  const { reader, scope } = computeReader(target);
+  const { reader, scope } = await computeReader(target);
   await expect(
     reader.nativeContext(scope, async (messages) => {
       const result = [...messages];
@@ -253,7 +257,7 @@ it("revalidates Codex history after asynchronous consumption and joins it before
     existingOnly: true,
   });
   assert(borrowed);
-  const bound = computeReader(target, borrowed);
+  const bound = await computeReader(target, borrowed);
   const ready = createDeferredCore();
   const resume = createDeferredCore();
   const work = bound.reader.nativeContext(bound.scope, async () => {
@@ -562,7 +566,7 @@ it("composes matching RPC and HTTP pages while rechecking disclosure after displ
 
 it("ends queued history reads with the typed error when their actor is lost", async () => {
   const target = await create("actor-loss", lossActor, "loss");
-  const { reader, scope } = computeReader(target, lossActor);
+  const { reader, scope } = await computeReader(target, lossActor);
   const barrier = await hold(lossActor);
   const rejected = Promise.all(
     [

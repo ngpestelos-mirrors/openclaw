@@ -224,9 +224,11 @@ export function createIncognitoHistoryWorker(
           runWithSessionTranscriptReadFence(admission, () => {
             try {
               if (command.type === "session.history.native-context-current") {
-                admission
-                  ? validateSessionTranscriptContextAdmission(target, admission)
-                  : validateSessionTranscriptContextVersion(target, command.input.version);
+                if (admission) {
+                  validateSessionTranscriptContextAdmission(target, admission);
+                } else {
+                  validateSessionTranscriptContextVersion(target, command.input.version);
+                }
                 return { ok: true, value: undefined };
               }
               const value = readSessionTranscriptContextMessages(
