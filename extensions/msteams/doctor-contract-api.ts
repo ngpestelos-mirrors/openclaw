@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-paths";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { stateFileArchiveDirectory, stateFileBackupResources } from "./doctor-backup-resources.js";
 import {
   MSTEAMS_DELEGATED_TOKEN_KEY,
   MSTEAMS_DELEGATED_TOKEN_LEGACY_FILENAME,
@@ -100,6 +101,7 @@ function retiredJsonMigration(
   return {
     id: `msteams-${name}-json-to-plugin-state`,
     label: `Microsoft Teams ${label}`,
+    collectBackupResources: () => [],
     async detectLegacyState(params) {
       return (await hasSource(params)) ? { preview: [guidance] } : null;
     },
@@ -122,6 +124,8 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
   {
     id: "msteams-delegated-token-json-to-plugin-state",
     label: "Microsoft Teams delegated OAuth token",
+    collectBackupResources: ({ stateDir }) =>
+      stateFileBackupResources(stateDir, MSTEAMS_DELEGATED_TOKEN_LEGACY_FILENAME),
     async detectLegacyState(params) {
       const filePath = path.join(params.stateDir, MSTEAMS_DELEGATED_TOKEN_LEGACY_FILENAME);
       try {
@@ -195,6 +199,7 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
       changes.push(`Migrated ${MSTEAMS_PLUGIN_ID} delegated OAuth token -> plugin state`);
       await archiveLegacyStateSource({
         filePath,
+        archiveDirectory: stateFileArchiveDirectory(filePath),
         label: `${MSTEAMS_PLUGIN_ID} delegated OAuth token`,
         changes,
         warnings,

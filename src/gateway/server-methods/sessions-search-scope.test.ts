@@ -6,11 +6,13 @@ import {
   persistSessionTranscriptTurn,
   upsertSessionEntryCore,
   replaceSessionEntry,
+  replaceSessionEntrySync,
 } from "../../config/sessions/session-accessor.js";
 import { runSessionColdStorageMaintenance } from "../../config/sessions/session-cold-storage.js";
 import * as transcriptSearch from "../../config/sessions/session-transcript-search.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import {
   resolveOpenClawAgentSqlitePath,
@@ -119,13 +121,25 @@ test("scope search reaches beyond 200 sessions and four agents with bounded matc
     const owner = ensureProfileForEmail("search-owner@example.test").id;
     const agents = ["main", "second", "third", "fourth", "fifth"];
     const cfg: OpenClawConfig = {
-      agents: { entries: Object.fromEntries(agents.map((id) => [id, {}])) },
+      agents: {
+        ownership: "explicit",
+        entries: Object.fromEntries(agents.map((id) => [id, {}])),
+        defaults: { sessionStore: { agentId: "main" } },
+      },
     };
+    // These nonmatching roster rows exercise search scope, not asynchronous mutation admission.
     for (let index = 0; index < 205; index++) {
-      await seed(
-        expectDefined(agents[index % agents.length], "fixture agent"),
-        `roster-${index}`,
-        owner,
+      const agentId = expectDefined(agents[index % agents.length], "fixture agent");
+      const name = `roster-${index}`;
+      replaceSessionEntrySync(
+        { agentId, sessionKey: `agent:${agentId}:${name}` },
+        {
+          sessionId: `${agentId}-${name}`,
+          updatedAt: Date.now(),
+          displayName: name,
+          createdActor: { type: "human", source: "profile", id: owner },
+          visibility: "shared",
+        },
       );
     }
     const key = await seed("fifth", "old-target", owner, "distant uniqueneedle", {
@@ -139,6 +153,7 @@ test("scope search reaches beyond 200 sessions and four agents with bounded matc
     expect(result.ok, result.error?.message).toBe(true);
     expect(result.payload).toMatchObject({ results: [{ sessionKey: key }], sessions: [{ key }] });
     expect(result.payload?.results).toHaveLength(1);
+    expect(result.payload?.sessions).toHaveLength(1);
     expect(result.payload).not.toHaveProperty("indexing");
     expect(result.payload).not.toHaveProperty("truncated");
   });
@@ -245,7 +260,11 @@ test("scope search preserves physical shared-store ownership, agent filters, and
     const storePath = path.join(stateDir, "shared-search.sqlite");
     const owner = ensureProfileForEmail("shared-search@example.test").id;
     const cfg: OpenClawConfig = {
-      agents: { entries: { main: {}, work_team: {}, workxteam: {} } },
+      agents: {
+        ownership: "explicit",
+        entries: { main: {}, work_team: {}, workxteam: {} },
+        defaults: { sessionStore: { agentId: "main" } },
+      },
       session: { store: storePath },
     };
     await seed("main", "physical-owner", owner, undefined, {}, storePath);
@@ -433,10 +452,11 @@ test("search discards hits and page metadata when sharing is revoked during its 
   });
 });
 
-test("search materializes archived hits and rechecks visibility after exact preparation", async () => {
+test("search prepares the full scope and rechecks visibility while materializing archived hits", async () => {
   await withSearchState(async () => {
     const viewer = ensureProfileForEmail("archived-search@example.test").id;
     const key = await seed("main", "archived-hit", "foreign", "needle", { archivedAt: 1 });
+    const sibling = await seed("main", "non-hit", viewer, "different text", { archivedAt: 1 });
     const context = requestContext({ agents: { entries: { main: {} } } });
     const client = identifiedClient(viewer);
     const params = { query: "needle", scope: { archived: "all" } };
@@ -446,6 +466,28 @@ test("search materializes archived hits and rechecks visibility after exact prep
     });
     const projection = expectDefined(getSessionRowProjection(context), "search projection");
     const prepare = projection.withPreparedExactRows.bind(projection);
+    vi.spyOn(projection, "withPreparedExactRows").mockImplementationOnce(
+      (queries, consume, options) =>
+        projection.withSelectionPreparation(async () => {
+          // A category owner can lose its publication reply while this search is awaiting rows.
+          sessionChanges.emit({ sessionKey: sibling, factsInvalidated: "category" });
+          const query = { agentId: "main", key: sibling };
+          expect(projection.sharingTargetState(query)).toEqual({ status: "pending" });
+          return prepare(
+            queries,
+            (read) => {
+              const result = consume(read);
+              expect(projection.sharingTargetState(query)).toMatchObject({ status: "ready" });
+              return result;
+            },
+            options,
+          );
+        }),
+    );
+    expect(await search(context, client, params)).toMatchObject({
+      ok: true,
+      payload: { results: [{ sessionKey: key }], sessions: [{ key }] },
+    });
     vi.spyOn(projection, "withPreparedExactRows").mockImplementationOnce(
       async (queries, consume, options) => {
         await upsertSessionEntryCore({ agentId: "main", sessionKey: key }, { visibility: "draft" });

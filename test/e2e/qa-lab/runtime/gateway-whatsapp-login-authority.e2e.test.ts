@@ -44,11 +44,7 @@ describe("Gateway WhatsApp login authority", () => {
             entries: { whatsapp: { enabled: true } },
           },
           agents: {
-            entries: {
-              main: {
-                tools: { allow: ["whatsapp_login"] },
-              },
-            },
+            entries: { main: { tools: { allow: ["whatsapp_login"] } } },
           },
           gateway: { tools: { allow: ["whatsapp_login"] } },
         },

@@ -506,6 +506,7 @@ describe("plugin cron registry ownership e2e", () => {
             workspace: mainWorkspace,
             systemAgent: { agentId: "main" },
             model: { primary: modelRef },
+            modelPolicy: { allow: [modelRef] },
             models: { [modelRef]: { agentRuntime: { id: "openclaw" } } },
             skills: [],
           },
