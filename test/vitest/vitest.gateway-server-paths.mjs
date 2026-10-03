@@ -11,6 +11,9 @@ export const gatewayPluginTestFiles = [
 
 // Native database consumers retain lifecycle cleanup within each forked process.
 export const gatewayDatabaseWorkerTestFiles = [
+  "src/gateway/skill-library-authoring.test.ts",
+  "src/gateway/server-methods/skills-library.test.ts",
+  "src/gateway/server-methods/skills.remote.test.ts",
   "src/gateway/approval-fixture.test.ts",
   "src/gateway/board-http.test.ts",
   "src/gateway/board-store.test.ts",

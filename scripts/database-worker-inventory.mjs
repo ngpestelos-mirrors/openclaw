@@ -342,6 +342,25 @@ const reviewedOperations = new Map([
     ],
   ],
   [
+    "src/skills/library/store.ts",
+    [
+      {
+        tier: "W",
+        operations: [
+          "ensureSkillLibrarySchema",
+          "requireSelectedSkillLibraryUpload",
+          "selectSkillLibraryRow",
+          "selectSkillLibraryRevision",
+          "selectSkillLibraryRevisionMetadata",
+          "assertSkillLibraryNameAvailable",
+          "recordSkillLibraryEvent",
+        ],
+        evidence:
+          "Library row, revision, upload, and mutation kernels run only through the shared-state reader/writer; the SDK metadata batch remains in selection-read.kernel.ts",
+      },
+    ],
+  ],
+  [
     "src/skills/library/selection-read.kernel.ts",
     [
       {
@@ -450,6 +469,7 @@ const reviewedOperations = new Map([
   ],
 ]);
 const workerModules = new Set([
+  "src/skills/library/import.kernel.ts", // Upload commands execute only in the shared-state writer.
   "src/skills/library/service.kernel.ts", // Library catalog and revision reads use the shared-state read registry.
   "src/config/sessions/conversation-delivery-store.kernel.ts", // Agent execution registry writes and session transcript worker reads only.
   "extensions/memory-core/src/memory-entry-origin-reads.ts", // Memory search worker origin-read commands only.
