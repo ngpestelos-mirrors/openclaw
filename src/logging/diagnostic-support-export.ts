@@ -656,19 +656,19 @@ function resolveOutputPath(options: {
 }
 
 export async function writeDiagnosticSupportExport(
-  options: DiagnosticSupportExportOptions = {},
+  input: DiagnosticSupportExportOptions = {},
 ): Promise<WriteDiagnosticSupportExportResult> {
-  const env = options.env ?? process.env;
-  const stateDir = options.stateDir ?? resolveStateDir(env);
-  const now = options.now ?? new Date();
+  const env = input.env ?? process.env;
+  const stateDir = input.stateDir ?? resolveStateDir(env);
+  const now = input.now ?? new Date();
   const outputPath = resolveOutputPath({
-    outputPath: options.outputPath,
-    cwd: options.cwd ?? process.cwd(),
+    outputPath: input.outputPath,
+    cwd: input.cwd ?? process.cwd(),
     env,
     stateDir,
     now,
   });
-  options = { ...options, env, stateDir, now };
+  const options = { ...input, env, stateDir, now };
   const generatedAt = now.toISOString();
   const configPath = resolveConfigPath(env, stateDir);
   const stability = readStabilityBundle(options.stabilityBundle, stateDir);

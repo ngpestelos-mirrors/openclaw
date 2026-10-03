@@ -924,11 +924,10 @@ async function executeSystemRunPhase(
         message: response.error.message,
       });
       return;
-    } else {
-      const result: ExecHostRunResult = response.payload;
-      await sendSystemRunCompleted(opts, phase.execution, result, JSON.stringify(result));
-      return;
     }
+    const result: ExecHostRunResult = response.payload;
+    await sendSystemRunCompleted(opts, phase.execution, result, JSON.stringify(result));
+    return;
   }
 
   if (phase.needsScreenRecording) {

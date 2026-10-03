@@ -891,8 +891,8 @@ export function presentationToInteractiveReply(
     }
     if (block.type === "buttons") {
       const buttons: InteractiveReplyButton[] = [];
-      for (const button of block.buttons.filter((button) =>
-        resolveMessagePresentationButtonAction(button, { modelPicker: true }),
+      for (const button of block.buttons.filter((candidate) =>
+        resolveMessagePresentationButtonAction(candidate, { modelPicker: true }),
       )) {
         const action = button.action;
         const value = action ? resolveMessagePresentationActionValue(action) : button.value;

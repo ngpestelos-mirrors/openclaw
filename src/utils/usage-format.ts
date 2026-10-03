@@ -153,10 +153,10 @@ function getProviderCostIndex(
   ) {
     const sources: ProviderCostIndex["sources"] = new Map();
     for (const { providerKey, model, modelId } of structure) {
-      const key = normalizeKey(providerKey, modelId);
-      const rows = sources.get(key) ?? [];
+      const modelKey = normalizeKey(providerKey, modelId);
+      const rows = sources.get(modelKey) ?? [];
       rows.push(model);
-      sources.set(key, rows);
+      sources.set(modelKey, rows);
     }
     index = { entries: new Map(), sources, structure };
     cache.set(providers, index);
