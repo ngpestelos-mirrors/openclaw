@@ -362,6 +362,44 @@ describe("captured module conditions", () => {
     };
     expect(await plugin.read("#selected/leaf.js")).toBe("specific");
   });
+  it.each(
+    ["import", "require"].flatMap((mode) =>
+      ["bun:sqlite", "bun:missing-builtin", "bun:sqlite?invalid", "node:path"].map((target) => ({
+        mode,
+        target,
+      })),
+    ),
+  )("preserves native $mode package-import validation for $target", async ({ mode, target }) => {
+    const root = temp.make("plugin-native-builtin-alias-");
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ imports: { "#builtin": target } }),
+    );
+    fs.writeFileSync(
+      path.join(root, "index.cjs"),
+      mode === "import"
+        ? "exports.read = name => import(name).then(value => typeof value.Database);"
+        : "exports.read = name => typeof require(name).Database;",
+    );
+    const outcome = async (plugin: { read(name: string): unknown }) => {
+      try {
+        return { value: await plugin.read("#builtin") };
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error)) {
+          throw error;
+        }
+        return { code: error.code };
+      }
+    };
+    const expected = await outcome(nativeRequire(path.join(root, "index.cjs")));
+    if (target !== "bun:sqlite") {
+      expect(expected).toEqual({ code: "ERR_INVALID_PACKAGE_TARGET" });
+    } else if ("value" in expected) {
+      expect(expected.value).toBe("function");
+    }
+    const plugin = load(root, "index.cjs", true).value as { read(name: string): unknown };
+    expect(await outcome(plugin)).toEqual(expected);
+  });
 });
 
 it("retains the first observed absence of a computed package alias", () => {

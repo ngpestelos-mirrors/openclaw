@@ -558,6 +558,7 @@ admission; already prepared modules need no new acquisition.
 Package imports that select a dependency promote its retained files together,
 including physical aliases of a prefetched entry. Compiler previews of deferred
 `require` calls do not acquire nested dependency bodies before the call executes.
+Bun keeps ownership of built-in package-import targets and their native validation.
 
 When using Jiti's TypeScript path settings, keep the original tsconfig files and
 configuration dependencies available while the plugin is active. Loaded modules
