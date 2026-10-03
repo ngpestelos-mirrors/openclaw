@@ -1,6 +1,9 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { sql } from "kysely";
-import type { TranscriptDisplayPosition } from "../../chat/transcript-display-position.js";
+import type {
+  SessionTranscriptDisplayDeltaResult,
+  SessionTranscriptMessageByIdOptions,
+} from "../../gateway/session-transcript-read.types.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { hasSqlitePostCommitScope } from "../../infra/sqlite-post-commit.js";
@@ -14,7 +17,6 @@ import type { TranscriptReadWindowOptions } from "../../sessions/transcript-read
 import { isVisibleTranscriptRecord } from "../../sessions/transcript-visible-record.js";
 import type {
   SessionTranscriptRawDeltaLimits,
-  SessionTranscriptRawDeltaResult,
   TranscriptEvent,
 } from "./session-accessor.sqlite-contract.js";
 import { positionTranscriptDisplayEvents } from "./session-accessor.sqlite-display-position.js";
@@ -227,9 +229,7 @@ type SessionTranscriptMessageById = SessionTranscriptMessageEvent & {
 type HistoryEventById =
   | SessionTranscriptMessageById
   | { historical: NonNullable<ReturnType<typeof readDisplayableActiveEventById>> };
-export type SessionTranscriptMessageByIdOptions =
-  | { currentOnly?: false; maxBytes?: never }
-  | { currentOnly: true; maxBytes: number };
+export type { SessionTranscriptMessageByIdOptions } from "../../gateway/session-transcript-read.types.js";
 
 function resolveHistoryEventById(
   projection: CurrentTranscriptProjection,
@@ -276,19 +276,7 @@ function resolveHistoryEventById(
       };
 }
 
-type SessionTranscriptRawDeltaPage = Extract<SessionTranscriptRawDeltaResult, { kind: "page" }>;
-
-export type SessionTranscriptDisplayDeltaResult =
-  | (Omit<SessionTranscriptRawDeltaPage, "events"> & {
-      activeLeafEntryId: string | null;
-      events: Array<
-        SessionTranscriptRawDeltaPage["events"][number] & {
-          messageSeq?: number;
-          displayPosition?: TranscriptDisplayPosition;
-        }
-      >;
-    })
-  | Exclude<SessionTranscriptRawDeltaResult, { kind: "page" }>;
+export type { SessionTranscriptDisplayDeltaResult } from "../../gateway/session-transcript-read.types.js";
 
 /** Raw cursor progress carries the same reset-relative ordinals as pages and live messages. */
 export function readTranscriptDisplayDeltaFromProjection(
