@@ -171,6 +171,12 @@ the container exits. It preserves Docker's other restrictions and does not
 change the default profile or kernel settings. Loading requires an available
 `apparmor_parser` and noninteractive permission to load profiles.
 
+The subagent probe also enables Codex's V2 native children by default. Explicit
+`OPENCLAW_CODEX_APP_SERVER_ARGS` overrides are forwarded unchanged; disabling the
+subagent probe leaves the native argument defaults unchanged. Manual compaction
+configurations supply explicit native arguments that take precedence over this
+environment default.
+
 Restart and history stress:
 
 ```bash
