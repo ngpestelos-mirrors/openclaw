@@ -112,7 +112,7 @@ export interface CreateAgentSessionOptions {
 
 type CreateAgentSessionInternalOptions = Pick<
   AgentSessionConfig,
-  "cleanupProviderSessionResourcesOnDispose" | "contextOverflowRecoveryOwner"
+  "contextOverflowRecoveryOwner" | "resolveCompactionThinkingLevel"
 > & { beforeToolBatch?: InternalBeforeToolBatchHook };
 
 /** Result from createAgentSession */
@@ -532,19 +532,16 @@ async function createAgentSessionImpl(
     }
     return withSessionManagerWrite(sessionManager, async () => {
       assertInitialSessionCurrent();
-      if (hasExistingSession) {
-        await appendInitialThinking();
+      if (!hasExistingSession && model) {
+        await appendInitialMetadata(
+          { type: "model_change", provider: model.provider, modelId: model.id },
+          () => sessionManager.appendModelChange(model.provider, model.id),
+        );
         assertInitialSessionCurrent();
-      } else {
-        // Persist initial settings before exposing the new session to callers.
-        if (model) {
-          await appendInitialMetadata(
-            { type: "model_change", provider: model.provider, modelId: model.id },
-            () => sessionManager.appendModelChange(model.provider, model.id),
-          );
-          assertInitialSessionCurrent();
-        }
-        await appendInitialThinking();
+      }
+      await appendInitialThinking();
+      if (hasExistingSession) {
+        assertInitialSessionCurrent();
       }
     });
   };
@@ -588,6 +585,7 @@ async function createAgentSessionImpl(
     sessionStartEvent: options.sessionStartEvent,
     withSessionWriteSettlement: options.withSessionWriteSettlement,
     contextOverflowRecoveryOwner: internalOptions.contextOverflowRecoveryOwner,
+    resolveCompactionThinkingLevel: internalOptions.resolveCompactionThinkingLevel,
     cleanupProviderSessionResourcesOnDispose,
   });
   const extensionsResult = resourceLoader.getExtensions();
@@ -629,5 +627,5 @@ async function createDefaultSdkSessionManager(
   if (!created.ok) {
     throw new Error(`Failed to initialize SDK session transcript: ${created.error}`);
   }
-  return SessionManager.open(target, cwd);
+  return await SessionManager.openAsync(target, cwd);
 }

@@ -21,6 +21,7 @@ import {
   renewAgentDatabaseMaintenanceAuthorityIfPresent,
 } from "../state/openclaw-agent-db-lease.js";
 import { agentDatabaseLifecycle } from "../state/openclaw-agent-db-lifecycle.js";
+import { withAgentDatabaseMaintenanceLease } from "../state/openclaw-agent-db-maintenance-lease.js";
 import { assertOpenClawAgentDatabaseOwner } from "../state/openclaw-agent-db-maintenance.js";
 import {
   registerOpenClawAgentDatabase,
@@ -34,11 +35,11 @@ import {
   ensureOpenClawAgentDatabaseSchemaSteps,
   migrateOpenClawAgentDatabaseToMediaPrerequisiteSchemaSteps,
 } from "../state/openclaw-agent-db-schema.js";
+import { assertSupportedAgentMigrationSchemas } from "../state/openclaw-agent-db-session-migrations.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import {
   OPENCLAW_AGENT_SCHEMA_VERSION,
   clearOpenClawAgentDatabaseOpenFailure,
-  withAgentDatabaseMaintenanceLease,
 } from "../state/openclaw-agent-db.js";
 import { withLegacySessionParticipantsSchema } from "../state/openclaw-agent-participants-migration.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../state/openclaw-agent-schema.js";
@@ -111,7 +112,6 @@ async function migrateAgentDatabase(params: {
   maintenance: OpenClawStateLeaseContext;
   preparedArchives?: ReadonlySet<string>;
 }) {
-  invalidateOpenClawAgentDatabaseIntegrityBeforeMutation(params.pathname);
   const database = openNodeSqliteDatabase(params.pathname);
   const schemaOptions = { agentId: params.agentId, path: params.pathname, env: params.env };
   const runSchema = (operation: Parameters<typeof runSqliteIntegrityOperationInWorker>[0]) =>
@@ -144,6 +144,10 @@ async function migrateAgentDatabase(params: {
     });
     assertSupportedAgentSchemaVersion(database, params.pathname);
     let userVersion = readSqliteUserVersion(database);
+    if (userVersion < OPENCLAW_AGENT_SCHEMA_VERSION) {
+      assertSupportedAgentMigrationSchemas(database, params.pathname, userVersion);
+    }
+    invalidateOpenClawAgentDatabaseIntegrityBeforeMutation(params.pathname);
     const initialVersion = userVersion;
     const prepareSchema = async () => {
       userVersion = readSqliteUserVersion(database);
