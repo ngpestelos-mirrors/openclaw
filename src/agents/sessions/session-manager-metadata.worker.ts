@@ -7,7 +7,6 @@ import type {
   SessionTranscriptWriteScope,
   TranscriptAppendRefusal,
 } from "../../config/sessions/session-accessor.sqlite-contract.js";
-import { readExactSessionEntryRow } from "../../config/sessions/session-accessor.sqlite-entry-read.js";
 import { ensureSessionEntryInTransaction } from "../../config/sessions/session-accessor.sqlite-initial-entry.js";
 import { readTranscriptMutationAtSync } from "../../config/sessions/session-accessor.sqlite-metadata-read.js";
 import {
@@ -24,7 +23,6 @@ import {
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import type { PreparedTranscriptMessageAppend } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
-import { resolveTranscriptAppendRefusal } from "../../config/sessions/session-accessor.sqlite-transcript-write-guard.js";
 import {
   appendTranscriptEventSnapshotSync,
   appendTranscriptMessageSnapshotSync,
@@ -42,7 +40,6 @@ import type {
   SessionMetadataWorkerOperations,
   SessionMetadataMessageControl,
 } from "../../config/sessions/session-manager-write-contract.js";
-import { readSessionTranscriptMaintenance } from "../../config/sessions/session-transcript-maintenance-read.js";
 import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { prepareTranscriptPayloadForReuse } from "../../config/sessions/transcript-payload.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
@@ -239,25 +236,6 @@ export function bindSqliteWorkerBackend(
     scope.storePath = context.databasePath;
     resolved.path = context.databasePath;
     options.path = context.databasePath;
-    if (command.type === "session.metadata.maintenance") {
-      const database = {
-        agentId: resolved.agentId,
-        path: context.databasePath,
-        db: context.database,
-      };
-      const refusal = resolveTranscriptAppendRefusal(
-        readExactSessionEntryRow(database, resolved.sessionKey)?.entry,
-        resolved,
-        scope,
-      );
-      if (refusal) {
-        throw new SessionTranscriptWriterClaimReboundError(refusal);
-      }
-      return {
-        ok: true,
-        value: readSessionTranscriptMaintenance(database, scope, command.input.request),
-      };
-    }
     if (command.type === "session.metadata.mutation") {
       return { ok: true, value: readTranscriptMutationAtSync(scope) };
     }

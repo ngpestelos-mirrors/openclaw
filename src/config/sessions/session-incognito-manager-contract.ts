@@ -22,9 +22,7 @@ export function isIncognitoManagerCommand(command: {
 }
 
 export function isIncognitoManagerWrite(type: keyof IncognitoManagerOperations): boolean {
-  return (
-    type !== "session.manager.metadata.mutation" && type !== "session.manager.metadata.maintenance"
-  );
+  return type !== "session.manager.metadata.mutation";
 }
 
 export function toIncognitoManagerCommand<

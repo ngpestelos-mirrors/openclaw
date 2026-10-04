@@ -29,10 +29,6 @@ import type {
 } from "./session-accessor.sqlite-pending-inputs.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
 import type { PreparedSessionTranscriptHydration as PreparedSessionTranscriptReload } from "./session-history-read.types.js";
-import type {
-  SessionTranscriptMaintenanceRead,
-  SessionTranscriptMaintenanceFacts,
-} from "./session-transcript-hydration.types.js";
 import type { SessionTranscriptWriterFence } from "./transcript-write-context.js";
 import type { InternalSessionEntry } from "./types.js";
 
@@ -193,10 +189,6 @@ export type SessionMetadataOperations = SessionMaintenanceOperations &
           OpenClawStateWorkerErrorPayload | undefined
         >;
       };
-    };
-    "session.metadata.maintenance": {
-      input: { scope: MetadataTarget; request: SessionTranscriptMaintenanceRead };
-      output: SessionTranscriptMaintenanceFacts;
     };
     "session.metadata.mutation": {
       input: { scope: MetadataTarget };
