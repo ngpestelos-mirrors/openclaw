@@ -20,7 +20,7 @@ import { createGatewayMetadataCloseFixture } from "./server-close.metadata.test-
 
 const initializeRepository = useManagedWorktreeTestRepository();
 
-// Upstream polling imports an unrelated agent runtime during Gateway startup.
+// mock-isolation: Keep upstream polling and its agent runtime out of this close-order fixture.
 vi.mock("../sessions/session-upstream-monitor.js", () => ({
   startSessionUpstreamMonitor: () => ({ stop: () => Promise.resolve() }),
 }));
