@@ -1,6 +1,6 @@
 import { AsyncResource } from "node:async_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
 import type { SessionPlacementTurnParams } from "../../agents/session-placement-admission.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import {
@@ -539,7 +539,9 @@ describe("worker detached model-context branch parity", () => {
     },
   );
 
-  it("retains the initial-setup writer fence across the asynchronous context read", async () => {
+  it("retains the initial-setup writer fence across the asynchronous context read", async ({
+    signal,
+  }) => {
     seedPrevious();
     const paused = createDeferredCore();
     const finishSetup = createDeferredCore();
@@ -599,15 +601,19 @@ describe("worker detached model-context branch parity", () => {
           const pending = launchProbe(
             {
               ...request("writer-after-initial-setup"),
+              abortSignal: signal,
               suppressNextUserMessagePersistence: true,
             },
             callerCurrent,
             waitForInitialPlacement,
           );
-          await awaitGateBeforeSettlement(
-            setupWaitStarted.promise,
-            pending,
-            "turn skipped the initial-setup admission wait",
+          await withinTest(
+            awaitGateBeforeSettlement(
+              setupWaitStarted.promise,
+              pending,
+              "turn skipped the initial-setup admission wait",
+            ),
+            signal,
           );
           finishSetup.resolve();
           return pending;
