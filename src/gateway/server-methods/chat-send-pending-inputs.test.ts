@@ -423,6 +423,7 @@ describe("ordinary chat input admission", () => {
   it("commits an existing idle session input before ACK through restart-safe admission", async () => {
     const fixture = await createBrowserFollowupFixture({ active: false });
     const clone = vi.spyOn(globalThis, "structuredClone");
+    const sql = observeHostDataSql();
     let transcriptAtAck: ReturnType<typeof loadTranscriptEventsSync> | undefined;
     const respond = vi.fn<RespondFn>((ok) => {
       if (ok) {
@@ -431,6 +432,9 @@ describe("ordinary chat input admission", () => {
     });
     try {
       await fixture.send(respond);
+      expect(sql.queries.filter((query) => /\bworker_session_placements\b/u.test(query))).toEqual(
+        [],
+      );
       expect(respond).toHaveBeenCalledWith(
         true,
         expect.objectContaining({ status: "started", messageSeq: 2 }),
@@ -452,6 +456,7 @@ describe("ordinary chat input admission", () => {
         ).length,
       ).toBeLessThanOrEqual(1);
     } finally {
+      sql.restore();
       clone.mockRestore();
       await fixture.cleanup();
     }
@@ -478,8 +483,12 @@ describe("ordinary chat input admission", () => {
         patch: { workerBundleHash: "a".repeat(64) },
       });
       fixture.context.workerSessionPlacementService = placements;
+      const sql = observeHostDataSql();
       try {
         const respond = await fixture.send();
+        expect(sql.queries.filter((query) => /\bworker_session_placements\b/u.test(query))).toEqual(
+          [],
+        );
         expect(respond).toHaveBeenCalledWith(
           true,
           expect.objectContaining({ status: "started" }),
@@ -493,6 +502,7 @@ describe("ordinary chat input admission", () => {
           items: [{ state: "queued", runId: fixture.params.idempotencyKey }],
         });
       } finally {
+        sql.restore();
         await fixture.cleanup();
       }
     },
