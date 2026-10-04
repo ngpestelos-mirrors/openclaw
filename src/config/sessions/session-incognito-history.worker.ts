@@ -28,6 +28,7 @@ import type { IncognitoHistoryOperations } from "./session-incognito-history-con
 import { readPendingInputHistoryInDatabase } from "./session-pending-input-history.kernel.js";
 import { readSessionTranscriptAccountingFromProjection } from "./session-transcript-accounting.js";
 import { readSessionTranscriptAnchorFactsInDatabase } from "./session-transcript-anchor-read.kernel.js";
+import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
 import { readSessionTranscriptMaintenance } from "./session-transcript-maintenance-read.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import {
@@ -215,12 +216,26 @@ export function createIncognitoHistoryWorker(
         break;
       case "session.history.search": {
         const { query, limit, match, role, order } = command.input;
-        request = {
-          kind: "transcript-search",
-          database: physical,
-          params: { ...target, sessionKeys: [sessionKey], query, limit, match, role, order },
-        };
-        break;
+        const { searchSessionTranscriptsReadOnlySync } =
+          await import("./session-transcript-search.js");
+        prepared = prepareHistoryRead(command.type, () => {
+          const {
+            found: _found,
+            revision: _revision,
+            ...result
+          } = searchSessionTranscriptsReadOnlySync(
+            { ...target, sessionKeys: [sessionKey], query, limit, match, role, order },
+            { ...physical, env },
+          );
+          return {
+            kind: "transcript-search",
+            result: {
+              ...result,
+              indexing: sessionTranscriptIndexNeedsReconcile(database.db, sessionId),
+            },
+          };
+        });
+        return;
       }
       case "session.history.watermark":
         request = { kind: "transcript-watermark", database: physical, scope: target };

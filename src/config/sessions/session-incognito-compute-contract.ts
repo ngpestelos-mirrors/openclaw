@@ -2,16 +2,12 @@ import type { UsageCostWorkerHostEffects } from "../../infra/session-cost-usage-
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
 import type { RegisteredAgentWorkerOperations } from "../../state/openclaw-agent-execution-operations.js";
 import type { IncognitoHistoryTarget } from "./session-incognito-history-contract.js";
-import type { TranscriptProjectionPublicationOperations } from "./session-transcript-projection-publication.worker.js";
+import type { TranscriptProjectionRebuildOperations } from "./session-transcript-projection-publication.worker.js";
 import type { MemoryTranscriptProjectionFrame } from "./session-transcript-reconcile-memory.js";
 
 export type IncognitoUsageCacheOperations = Pick<
   RegisteredAgentWorkerOperations,
   Extract<keyof RegisteredAgentWorkerOperations, `usageCache.${string}`>
->;
-type ProjectionOperations = Pick<
-  TranscriptProjectionPublicationOperations,
-  "claim" | "deleteChunk" | "appendChunk" | "finalize"
 >;
 export type IncognitoComputeTarget = Omit<IncognitoHistoryTarget, "admission"> & {
   /** Store inventory may select a retained window under its current session owner. */
@@ -47,12 +43,12 @@ type SessionComputeOperations = {
     output: IncognitoUsageCacheOperations[Key]["output"];
   };
 } & {
-  [Key in keyof ProjectionOperations as `session.compute.projection.${Key}`]: {
+  [Key in keyof TranscriptProjectionRebuildOperations as `session.compute.projection.${Key}`]: {
     input: IncognitoComputeTarget & {
       sourceId: string;
-      request: ProjectionOperations[Key]["input"];
+      request: TranscriptProjectionRebuildOperations[Key]["input"];
     };
-    output: ProjectionOperations[Key]["output"];
+    output: TranscriptProjectionRebuildOperations[Key]["output"];
   };
 } & {
   "session.compute.status": { input: IncognitoComputeTarget; output: boolean };

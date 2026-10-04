@@ -4,7 +4,7 @@ import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.pa
 import type { IncognitoSessionActor } from "./session-incognito-actor.js";
 import type { IncognitoComputeTarget } from "./session-incognito-compute-contract.js";
 import type { IncognitoSessionAuthority } from "./session-incognito-contract.js";
-import type { TranscriptProjectionPublicationOperations } from "./session-transcript-projection-publication.worker.js";
+import type { TranscriptProjectionRebuildOperations } from "./session-transcript-projection-publication.worker.js";
 import type { ProjectionPublisher } from "./session-transcript-projection-writer.js";
 import type { MemoryTranscriptProjectionFrame } from "./session-transcript-reconcile-memory.js";
 
@@ -15,9 +15,9 @@ export type IncognitoProjectionBinding = {
 };
 export type IncognitoProjectionSource = {
   sessionIds: string[];
-  storeWide: boolean;
   publication: ProjectionPublisher;
   read(sessionId: string): Promise<MemoryTranscriptProjectionFrame>;
+  sweep?(): Promise<void>;
 };
 
 /** Retain compute custody while individual frames and publications take their own FIFO turn. */
@@ -56,9 +56,9 @@ export function withIncognitoProjection<T>(
       await compute.execute({ type: "session.compute.source.open", input: source });
     }
     const publishers: {
-      [Key in keyof TranscriptProjectionPublicationOperations]: (
-        input: TranscriptProjectionPublicationOperations[Key]["input"],
-      ) => Promise<TranscriptProjectionPublicationOperations[Key]["output"]>;
+      [Key in keyof TranscriptProjectionRebuildOperations]: (
+        input: TranscriptProjectionRebuildOperations[Key]["input"],
+      ) => Promise<TranscriptProjectionRebuildOperations[Key]["output"]>;
     } = {
       claim: (request) =>
         compute.execute({
@@ -80,20 +80,22 @@ export function withIncognitoProjection<T>(
           type: "session.compute.projection.finalize",
           input: { ...sourceFor(request.plan.sessionId), request },
         }),
-      preflight: () => {
-        throw new Error("Incognito projection does not admit store-wide operations");
-      },
-      sweep: () => compute.execute({ type: "session.compute.store.sweep", input: {} }),
     };
     const publication: ProjectionPublisher = {
       execute: ({ type, input }) => publishers[type](input),
     };
     return operation({
       sessionIds: [...sources.keys()],
-      storeWide: !target,
       publication,
       read: (sessionId) =>
         compute.execute({ type: "session.compute.source.read", input: sourceFor(sessionId) }),
+      ...(target
+        ? {}
+        : {
+            async sweep() {
+              await compute.execute({ type: "session.compute.store.sweep", input: {} });
+            },
+          }),
     });
   });
 }
