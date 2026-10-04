@@ -379,6 +379,11 @@ export async function prepareGatewayLifecycle(params: {
   let mediaCleanupStopPromise: ReturnType<typeof runtimeState.stopMediaCleanup> | null = null;
   const stopMediaCleanupForClose = () =>
     (mediaCleanupStopPromise ??= runtimeState.stopMediaCleanup());
+  let modelAccountStopPromise: Promise<void> | undefined;
+  const stopModelAccountsForClose = () =>
+    (modelAccountStopPromise ??= runtime
+      .resolvePluginGatewayContext()
+      ?.modelAccountConnectService?.stop());
   // Connect, RPC, and maintenance refreshes share a Gateway owner, not a socket lifetime.
   const healthWork = new AsyncWorkScope();
   const markClosePreludeStarted = (options?: GatewayCloseOptions) => {
@@ -392,6 +397,7 @@ export async function prepareGatewayLifecycle(params: {
     authRateLimiter.dispose();
     browserAuthRateLimiter.dispose();
     worktreeRunEnd.beginClose();
+    void stopModelAccountsForClose();
     void closeAuthProfileUsage(params.sdkResourceHost);
     runtime.scheduler.beginClose();
     void runtimeState.maintenance?.stopPeriodicTasks();
@@ -429,6 +435,7 @@ export async function prepareGatewayLifecycle(params: {
     await Promise.all([
       closeAuthProfileUsage(params.sdkResourceHost),
       requestEntryLifetime.waitForPendingEntries(),
+      stopModelAccountsForClose(),
       stopDeliveryRecoveryForClose(),
       stopMediaCleanupForClose(),
       runtimeState.stopGatewayUpdateCheck(),
