@@ -5,6 +5,7 @@ import {
   createSqliteWorkerOperationAdmission,
   type SqliteWorkerAdmissionFactory,
   type SqliteWorkerOperationAdmission,
+  type SqliteWorkerAdmissionRequest,
 } from "../../infra/sqlite-worker-operation-admission.js";
 import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
 import { SqliteWorkerError, type SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
@@ -185,6 +186,8 @@ export function createIncognitoSessionFacts(
         signal?: AbortSignal,
         companion?: LifecycleSettlement,
         cleanup = false,
+        restrict?: (request: SqliteWorkerAdmissionRequest) => SqliteWorkerAdmissionRequest,
+        onCommitted?: (value: IncognitoSessionOperations[Key]["output"]) => void,
       ) => {
         // Capture caller-owned input before queue waits.
         const captured = structuredClone(command);
@@ -240,8 +243,14 @@ export function createIncognitoSessionFacts(
                     if (!postimage || !isDeepStrictEqual(receipt, postimage)) {
                       unknownOutcome("Incognito commit receipt differs from its grant");
                     }
-                    // Revocation cannot undo COMMIT. Publish while FIFO custody is still held.
-                    postimage.forEach(install);
+                    try {
+                      if (outcome.ok && native.admission.settlement?.kind === "completed") {
+                        onCommitted?.(outcome.value);
+                      }
+                    } finally {
+                      // Revocation cannot undo COMMIT. Publish while FIFO custody is still held.
+                      postimage.forEach(install);
+                    }
                   } else if (changing && (commitGranted || outcome.ok)) {
                     unknownOutcome("Incognito mutation has no confirmed commit receipt");
                   }
@@ -286,8 +295,9 @@ export function createIncognitoSessionFacts(
           signal,
           (retained) => {
             let phase: "prepare" | "transaction" | "commit" = "prepare";
-            const admission = createSqliteWorkerOperationAdmission((request, grant) =>
+            const admission = createSqliteWorkerOperationAdmission((requested, grant) =>
               withGrant(() => {
+                const request = restrict ? restrict(requested) : requested;
                 authority.assertCurrent();
                 assertActorCurrent();
                 signal?.throwIfAborted();
@@ -498,6 +508,8 @@ export function createIncognitoSessionFacts(
           authority: IncognitoSessionAuthority,
           command: { type: Key; input: IncognitoTranscriptOperations[Key]["input"] },
           signal?: AbortSignal,
+          restrict?: (request: SqliteWorkerAdmissionRequest) => SqliteWorkerAdmissionRequest,
+          onCommitted?: (value: IncognitoTranscriptOperations[Key]["output"]) => void,
         ): Promise<IncognitoTranscriptOperations[Key]["output"]> =>
           perform(
             authority,
@@ -505,6 +517,10 @@ export function createIncognitoSessionFacts(
             isIncognitoTranscriptWrite(command.type),
             (result) => result.value,
             signal,
+            undefined,
+            false,
+            restrict,
+            onCommitted ? (result) => onCommitted(result.value) : undefined,
           ),
         outbox: <Key extends keyof IncognitoOutboxOperations>(
           authority: IncognitoSessionAuthority,

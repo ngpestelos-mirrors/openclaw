@@ -350,6 +350,30 @@ must do the same. Detached SessionManager getters, `inMemory`, `fromEntries`, an
 ordinary current-turn traversal remain synchronous because they use loaded views.
 No synchronous bridge, fire-and-forget persistence, or fallback database is allowed.
 
+### Incognito SessionManager composition (P7a, inactive)
+
+SessionManager can retain the captured incognito actor for admission, hydration,
+metadata and message writes, compaction accounting, suffix removal, rewrite, and branching. Its existing
+connection-bound metadata backend runs on that actor's sole connection. Planning
+stays outside transactions; transaction and commit grants recheck current host
+authority and transaction-local session facts. Pending-input custody and committed
+view/identity publication remain with their existing owners. Acknowledged replies
+survive later authority or projection failures without replay, and reconciliation
+uses the actor's existing compute composition. Static notes prepare redacted bytes
+before dispatch and refuse changed secret-registry revisions or logging patterns
+using in-memory facts inside grants. Re-preparation remains outside the transaction;
+even an unrelated registry revision change refuses the captured write.
+
+The internal composition entry point is inactive. Production still selects the
+host owner; P7d must install the actor binding and remove the retained native
+arms together. Deprecated synchronous refusals and ended-session errors propagate
+through replay and extension adapters. Synchronous preflight, general history
+routing, and the other activation checklist items remain part of the atomic
+cutover. The binding accepts the enclosing owner's close signal for new admission;
+accepted writes retain their grants and settle without inheriting that cancellation.
+This preparation changes no schema, retention, durability, configuration,
+or update behavior and claims no T1 reduction.
+
 ### Existing worker flows
 
 Shared-state transaction diagnostics inherit the executing worker command name

@@ -23,6 +23,7 @@ import {
 } from "../infra/sqlite-worker-store.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { captureAgentDatabaseAdmission } from "./agent-database-admission.js";
+import { IncognitoSessionEndedError } from "./incognito-session-error.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
 import {
   agentDatabaseLifecycle,
@@ -33,12 +34,11 @@ import {
   assertIncognitoAgentDatabasePathAvailable,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "./openclaw-agent-db.paths.js";
-import {
-  IncognitoSessionEndedError,
-  type AgentDatabaseIncognitoAuthority,
-  type AgentDatabaseIncognitoIdentity,
-  type AgentDatabaseIncognitoOpen,
-  type AgentDatabaseIncognitoOperations,
+import type {
+  AgentDatabaseIncognitoAuthority,
+  AgentDatabaseIncognitoIdentity,
+  AgentDatabaseIncognitoOpen,
+  AgentDatabaseIncognitoOperations,
 } from "./openclaw-agent-execution-contract.js";
 import { runOpenClawAgentWorkerWrite } from "./openclaw-agent-write-admission.js";
 import { registerOpenClawStateDatabaseAsyncResource } from "./openclaw-state-db-cache.js";

@@ -9,6 +9,7 @@ import type {
   SessionLeafControl,
   SessionMessageEntry,
 } from "../../agents/sessions/session-manager-types.js";
+import type { SqliteWorkerStore } from "../../infra/sqlite-worker-contract.js";
 import type { Message } from "../../llm/types.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "../../state/openclaw-state-worker-error.js";
@@ -28,11 +29,26 @@ import type {
 } from "./session-accessor.sqlite-pending-inputs.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
 import type { PreparedSessionTranscriptHydration as PreparedSessionTranscriptReload } from "./session-history-read.types.js";
+import type {
+  SessionTranscriptMaintenanceRead,
+  SessionTranscriptMaintenanceFacts,
+} from "./session-transcript-hydration.types.js";
 import type { SessionTranscriptWriterFence } from "./transcript-write-context.js";
 import type { InternalSessionEntry } from "./types.js";
 
 type MetadataTarget = Omit<SessionTranscriptWriteScope, "env"> & SessionTranscriptRuntimeTarget;
 type SessionManagerBoundedContextLimits = { maxBytes: number; maxEvents: number };
+
+/** Host metadata capability; SDK-visible admissions do not expose the actor's other domains. */
+export type SessionManagerIncognitoDatabase = {
+  readonly path: string;
+  readonly identity: { readonly incarnation: string };
+  withMetadata<T>(
+    assertCurrent: () => void,
+    operation: (scope: Pick<SqliteWorkerStore<SessionMetadataOperations>, "execute">) => Promise<T>,
+    controls?: { beforeFreshMessageCommit?: () => void },
+  ): Promise<T>;
+};
 
 export type InitialSessionEntryCommit = {
   owned: boolean;
@@ -177,6 +193,10 @@ export type SessionMetadataOperations = SessionMaintenanceOperations &
           OpenClawStateWorkerErrorPayload | undefined
         >;
       };
+    };
+    "session.metadata.maintenance": {
+      input: { scope: MetadataTarget; request: SessionTranscriptMaintenanceRead };
+      output: SessionTranscriptMaintenanceFacts;
     };
     "session.metadata.mutation": {
       input: { scope: MetadataTarget };
