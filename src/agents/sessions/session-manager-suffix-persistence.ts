@@ -10,6 +10,7 @@ import {
   resolveSqliteTranscriptReadScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
+import type { SessionMaintenanceOperations } from "../../config/sessions/session-manager-write-contract.js";
 import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
 import type {
   SessionTranscriptMaintenanceRead,
@@ -29,7 +30,6 @@ import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { recordModelFallbackStop } from "../model-fallback-stop.js";
 import { isIndexedSessionEntry, parseOpaqueLeafEntry } from "./session-manager-codec.js";
-import type { SessionMaintenanceOperations } from "./session-manager-maintenance.worker.js";
 import { SessionManagerPersistence } from "./session-manager-persistence.js";
 import type { SessionEntry } from "./session-manager-types.js";
 import { withSessionManagerWrite } from "./session-manager-write-admission.js";

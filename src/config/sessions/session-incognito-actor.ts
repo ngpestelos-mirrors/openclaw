@@ -62,6 +62,15 @@ export type IncognitoSessionClaim = {
   authorize(authority: IncognitoSessionAuthority, stage: "transaction" | "commit"): void;
 };
 
+/** Borrowed session operations; execution lifetime and ACP orchestration stay with their owner. */
+export type IncognitoSessionActor = {
+  readonly agentId: string;
+  readonly path: string;
+  readonly identity: AgentDatabaseIncognitoIdentity;
+  readonly sessions: ReturnType<ReturnType<typeof createIncognitoSessionFacts>["bind"]>;
+  assertCurrent(): void;
+};
+
 function authorizeSessionFacts(
   authority: IncognitoSessionAuthority,
   stage: "transaction" | "commit",

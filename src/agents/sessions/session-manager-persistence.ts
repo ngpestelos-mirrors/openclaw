@@ -11,6 +11,7 @@ import {
   appendTranscriptEventSnapshotSync,
   appendTranscriptMessageSnapshotSync,
 } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
+import type { SessionMetadataWorkerOperations } from "../../config/sessions/session-manager-write-contract.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import {
@@ -38,7 +39,6 @@ import {
 } from "./session-compaction-persistence.js";
 import { isIndexedSessionEntry, parseOpaqueLeafEntry } from "./session-manager-codec.js";
 import { SessionManagerCore } from "./session-manager-core.js";
-import type { SessionMetadataWorkerOperations } from "./session-manager-metadata.worker.js";
 import {
   adoptCommittedMessagePayload,
   canonicalizeSessionEntry,

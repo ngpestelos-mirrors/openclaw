@@ -4,6 +4,7 @@ import type { IncognitoAcpSessionAccess } from "../acp/runtime/session-meta-inco
 import { resolveStateDir } from "../config/paths.js";
 import {
   createIncognitoSessionFacts,
+  type IncognitoSessionActor,
   type IncognitoSessionRunner,
 } from "../config/sessions/session-incognito-actor.js";
 import { forkIncognitoSessionFromParent } from "../config/sessions/session-incognito-lifecycle.js";
@@ -44,13 +45,8 @@ import { registerOpenClawStateDatabaseAsyncResource } from "./openclaw-state-db-
 import { captureOpenClawStateReadWorkerContext } from "./openclaw-state-worker-context.js";
 
 type Store = SqliteWorkerStore<AgentDatabaseIncognitoOperations>;
-export type IncognitoAgentDatabaseExecution = {
-  readonly agentId: string;
-  readonly path: string;
-  readonly identity: AgentDatabaseIncognitoIdentity;
-  readonly sessions: ReturnType<ReturnType<typeof createIncognitoSessionFacts>["bind"]>;
+export type IncognitoAgentDatabaseExecution = IncognitoSessionActor & {
   readonly acp: IncognitoAcpSessionAccess;
-  assertCurrent(): void;
   /** Retains the actor across preparation/publication, independently of its writer turn. */
   run<T>(
     authority: AgentDatabaseIncognitoAuthority,

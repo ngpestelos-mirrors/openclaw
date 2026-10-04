@@ -1,4 +1,8 @@
 import type { Result } from "@openclaw/normalization-core/result";
+import type {
+  SessionMetadataOperations,
+  SessionMetadataWorkerOperations,
+} from "../../config/sessions/session-manager-write-contract.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
@@ -12,10 +16,6 @@ import type {
 } from "../../state/openclaw-agent-db.js";
 import { openOpenClawAgentSqliteWorkerStore } from "../../state/openclaw-agent-worker-store.js";
 import { captureSessionMessageAdmission } from "./session-manager-message-admission.js";
-import type {
-  SessionMetadataOperations,
-  SessionMetadataWorkerOperations,
-} from "./session-manager-metadata.worker.js";
 
 const moduleUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionManagerMetadata);
 const log = createSubsystemLogger("agents/session-metadata");
