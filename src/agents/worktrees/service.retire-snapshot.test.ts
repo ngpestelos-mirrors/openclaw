@@ -17,13 +17,9 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import * as worktreeGit from "./git.js";
-import {
-  getRegistryWorktree,
-  getRegistryWorktreeProvisionedChunk,
-  insertRegistryWorktree,
-  insertRegistryWorktreeProvisionedChunk,
-  updateRegistryWorktree,
-} from "./registry.js";
+import { insertRegistryWorktreeProvisionedChunk } from "./provisioned-snapshot.test-support.js";
+import { getRegistryWorktreeProvisionedChunk } from "./registry-read.js";
+import { getRegistryWorktree, insertRegistryWorktree, updateRegistryWorktree } from "./registry.js";
 import { resolveRepository } from "./service-preparation.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
 import { retireManagedWorktreeSnapshotById } from "./snapshot-host.js";

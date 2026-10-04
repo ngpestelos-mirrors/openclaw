@@ -1,6 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Insertable, Selectable } from "kysely";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  getNodeSqliteKysely,
+  sqliteStringSet,
+} from "../../infra/kysely-sync.js";
 import {
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
   withExistingOpenClawStateDatabaseCurrentReadOnly,
@@ -36,14 +40,12 @@ import type {
 
 export { WorktreeRemovalContentionError } from "./errors.js";
 export {
-  clearRegistryWorktreeProvisionedChunks,
-  insertRegistryWorktreeProvisionedChunk,
   claimWorktreeRemovalRow,
   finalizeWorktreeRemovalRows,
   abortWorktreeRemovalRow,
 } from "./registry-run-end.js";
+export { clearRegistryWorktreeProvisionedChunks } from "./provisioned-snapshot-store.js";
 export {
-  getRegistryWorktreeProvisionedChunk,
   getRegistryWorktreeProvisionedPaths,
   getRegistryWorktreeProvisionedState,
 } from "./registry-read.js";
@@ -373,27 +375,36 @@ export function deleteRegistryWorktree(
   );
 }
 
-/** Synchronous lock primitive: a lost removal claim must never be reacquired implicitly. */
-export function assertWorktreeRemovalClaim(
+/** Batch lock-primitive read: one JSON binding avoids per-claim SQL and SQLite bind limits. */
+export function createWorktreeRemovalClaimsGuard(
   env: NodeJS.ProcessEnv,
-  worktreeId: string,
+  worktreeIds: readonly string[],
   token: string,
-): void {
-  const db = dbFor(env);
-  const row = executeSqliteQuerySync(
-    db,
-    kyselyFor(db)
-      .selectFrom("state_leases")
-      .select("owner")
-      .where("scope", "=", worktreeRunLeaseScope(worktreeId))
-      .where("lease_key", "=", WORKTREE_REMOVING_LEASE_KEY),
-  ).rows[0];
-  if (row?.owner !== token) {
-    throw new WorktreeRemovalContentionError(
-      "busy",
-      "Worktree removal claim changed; checkout preserved",
-    );
-  }
+): () => void {
+  const ids = [...new Set(worktreeIds)];
+  const count = ids.length;
+  const scopes = sqliteStringSet(ids.map(worktreeRunLeaseScope));
+  return () => {
+    if (count === 0) {
+      return;
+    }
+    const db = dbFor(env);
+    const held = executeSqliteQuerySync(
+      db,
+      kyselyFor(db)
+        .selectFrom("state_leases")
+        .select((eb) => eb.fn.countAll<number>().as("held"))
+        .where("state_leases.scope", "in", scopes)
+        .where("state_leases.lease_key", "=", WORKTREE_REMOVING_LEASE_KEY)
+        .where("state_leases.owner", "=", token),
+    ).rows[0]?.held;
+    if (held !== count) {
+      throw new WorktreeRemovalContentionError(
+        "busy",
+        "Worktree removal claim changed; checkout preserved",
+      );
+    }
+  };
 }
 
 export function releaseWorktreeRunLeaseRow(

@@ -9,16 +9,19 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
+import { insertRegistryWorktreeProvisionedChunk } from "./provisioned-snapshot.test-support.js";
+import { getRegistryWorktreeProvisionedChunk } from "./registry-read.js";
 import {
+  abortWorktreeRemovalRow,
+  claimWorktreeRemovalRow,
   clearRegistryWorktreeProvisionedChunks,
+  createWorktreeRemovalClaimsGuard,
   deleteRegistryWorktree,
-  getRegistryWorktreeProvisionedChunk,
   findLiveRegistryWorktreeByOwner,
   findLiveRegistryWorktreeByPath,
   getRegistryWorktree,
   getRegistryWorktreeProvisionedPaths,
   getRegistryWorktreeProvisionedState,
-  insertRegistryWorktreeProvisionedChunk,
   insertRegistryWorktree,
   listLegacyRegistryWorktreesForMigration,
   listRegistryWorktrees,
@@ -58,6 +61,27 @@ describe("managed worktree registry", () => {
     closeOpenClawStateDatabaseForTest();
     vi.unstubAllEnvs();
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("checks every captured removal claim in the current database generation", async () => {
+    const token = "synthetic-shared-removal-token";
+    for (const id of ["first", "second", "unrelated"]) {
+      insertRegistryWorktree(env, { ...isolatedWorktreeRecord(root), id });
+      await claimWorktreeRemovalRow(env, {
+        worktreeId: id,
+        token,
+        pid: process.pid,
+        startTime: null,
+        now: 1,
+      });
+    }
+    const assertClaims = createWorktreeRemovalClaimsGuard(env, ["first", "second", "first"], token);
+    expect(assertClaims).not.toThrow();
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
+    expect(assertClaims).not.toThrow();
+    await abortWorktreeRemovalRow(env, "second", token);
+    expect(assertClaims).toThrow("Worktree removal claim changed");
   });
 
   it("keeps explicit-state writes independent of a read-only ambient database", async () => {

@@ -76,7 +76,11 @@ function isMessageOnlyErrorIdentity(node: { type?: unknown }): node is MessageOn
 
 export type ErrorIdentity =
   | { type: "session-worktree-owner-mismatch" }
-  | { type: "worktree-removal-contention"; kind: "busy" | "finalized" }
+  | {
+      type: "worktree-removal-contention";
+      kind: "busy" | "finalized";
+      blockedByRun?: { worktreeId: string; pid: number };
+    }
   | { type: "worktree-removal-lock"; kind: "busy" | "foreign-lock" }
   | { type: "secret-store-validation"; secretCode: SecretStoreValidationError["code"] }
   | MessageOnlyErrorIdentity
@@ -126,7 +130,11 @@ export function identifyError(error: Error): ErrorIdentity {
     return { type: "session-worktree-owner-mismatch" };
   }
   if (error instanceof WorktreeRemovalContentionError) {
-    return { type: "worktree-removal-contention", kind: error.kind };
+    return {
+      type: "worktree-removal-contention",
+      kind: error.kind,
+      ...(error.blockedByRun ? { blockedByRun: error.blockedByRun } : {}),
+    };
   }
   if (error instanceof WorktreeRemovalLockError) {
     return { type: "worktree-removal-lock", kind: error.kind };
@@ -276,10 +284,29 @@ export function parseIdentity(node: Record<string, unknown>): ErrorIdentity | un
   switch (node.type) {
     case "session-worktree-owner-mismatch":
       return { type: node.type };
-    case "worktree-removal-contention":
-      return node.kind === "busy" || node.kind === "finalized"
-        ? { type: node.type, kind: node.kind }
-        : undefined;
+    case "worktree-removal-contention": {
+      if (node.kind !== "busy" && node.kind !== "finalized") {
+        return undefined;
+      }
+      if (node.blockedByRun === undefined) {
+        return { type: node.type, kind: node.kind };
+      }
+      const blocked = node.blockedByRun;
+      if (
+        !isRecord(blocked) ||
+        typeof blocked.worktreeId !== "string" ||
+        typeof blocked.pid !== "number" ||
+        !Number.isSafeInteger(blocked.pid) ||
+        blocked.pid <= 0
+      ) {
+        return undefined;
+      }
+      return {
+        type: node.type,
+        kind: node.kind,
+        blockedByRun: { worktreeId: blocked.worktreeId, pid: blocked.pid },
+      };
+    }
     case "worktree-removal-lock":
       return node.kind === "busy" || node.kind === "foreign-lock"
         ? { type: node.type, kind: node.kind }
@@ -437,7 +464,7 @@ export function createError(node: ErrorIdentity & { message: string }): Error {
     case "session-worktree-owner-mismatch":
       return new SessionWorktreeLifecycleError(node.message, "owner-mismatch");
     case "worktree-removal-contention":
-      return new WorktreeRemovalContentionError(node.kind, node.message);
+      return new WorktreeRemovalContentionError(node.kind, node.message, node.blockedByRun);
     case "worktree-removal-lock":
       return new WorktreeRemovalLockError(node.kind, node.message);
     case "plugin-state":

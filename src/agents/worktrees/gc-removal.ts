@@ -12,7 +12,7 @@ import {
 import type { WorktreeGcProgress } from "./gc-progress.js";
 import { deferWorktreeCleanup, retireMissingRegistryWorktree } from "./registry-retirement.js";
 import {
-  assertWorktreeRemovalClaim,
+  createWorktreeRemovalClaimsGuard,
   getRegistryWorktree,
   updateRegistryWorktree,
   WorktreeRemovalContentionError,
@@ -182,7 +182,7 @@ export async function deferWorktreeGcRecord(
     reason !== null
   ) {
     log.warn(
-      `cleanup deferred for ${record.id}: ${reason}; checkout preserved at ${record.path}. After repair, run openclaw worktrees gc to retry.`,
+      `cleanup deferred for ${record.id}: ${reason}; checkout preserved at ${record.path}. After repair, run openclaw worktrees gc --retry-deferred to retry.`,
     );
   }
 }
@@ -271,6 +271,7 @@ export function createWorktreeGcErrorHandler(context: {
                 assertCurrent: guard.commitGuard,
                 workerAuthority: guard.workerAuthority,
               });
+              const assertClaim = createWorktreeRemovalClaimsGuard(env, [record.id], token);
               try {
                 if (!(await hasMissingManagedWorktreeGitdir(record))) {
                   throw new WorktreeRemovalLockError(
@@ -280,7 +281,7 @@ export function createWorktreeGcErrorHandler(context: {
                 }
                 const retired = await retireMissingRegistryWorktree(env, record, now, () => {
                   guard.commitGuard?.();
-                  assertWorktreeRemovalClaim(env, record.id, token);
+                  assertClaim();
                 });
                 if (retired.protection) {
                   progress.protect(stage, record.id, retired.protection);
@@ -325,7 +326,7 @@ export function createWorktreeGcErrorHandler(context: {
         await deferWorktreeGcRecord(
           env,
           record,
-          "Git metadata unavailable; repair and run openclaw worktrees gc",
+          "Git metadata unavailable; repair and run openclaw worktrees gc --retry-deferred",
           assertCurrent,
         );
       }

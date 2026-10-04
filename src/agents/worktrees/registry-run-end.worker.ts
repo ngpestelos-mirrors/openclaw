@@ -1,5 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  getNodeSqliteKysely,
+  sqliteStringSet,
+} from "../../infra/kysely-sync.js";
 import {
   deferSqliteWorkerCommitReceipt,
   requestSqliteWorkerOperationAdmission,
@@ -26,10 +30,7 @@ import {
 } from "./run-lease-owner.js";
 import type { WorktreeRegistryPredicate } from "./types.js";
 
-const query = (db: DatabaseSync) =>
-  getNodeSqliteKysely<Pick<DB, "worktrees" | "worktree_provisioned_file_chunks" | "state_leases">>(
-    db,
-  );
+const query = (db: DatabaseSync) => getNodeSqliteKysely<Pick<DB, "worktrees" | "state_leases">>(db);
 export type WorktreeRunEndInput<T> = {
   value: T;
   receipt: string;
@@ -57,6 +58,28 @@ function assertRemovalToken(db: DatabaseSync, id: string, token: string) {
 function assertPredicate(db: DatabaseSync, predicate: WorktreeRegistryPredicate) {
   if (predicate.kind === "removal-claim") {
     return assertRemovalToken(db, predicate.id, predicate.token);
+  }
+  if (predicate.kind === "removal-claims") {
+    const ids = [...new Set(predicate.ids)];
+    if (ids.length === 0) {
+      return;
+    }
+    const held = executeSqliteQuerySync(
+      db,
+      query(db)
+        .selectFrom("state_leases")
+        .select((eb) => eb.fn.countAll<number>().as("held"))
+        .where("scope", "in", sqliteStringSet(ids.map(worktreeRunLeaseScope)))
+        .where("lease_key", "=", WORKTREE_REMOVING_LEASE_KEY)
+        .where("owner", "=", predicate.token),
+    ).rows[0]?.held;
+    if (held !== ids.length) {
+      throw new WorktreeRemovalContentionError(
+        "busy",
+        "Worktree removal claim changed; checkout preserved",
+      );
+    }
+    return;
   }
   const observed = "record" in predicate ? predicate.record : predicate;
   const current =
@@ -217,31 +240,6 @@ export function worktreeRunEndMutation<Input>(
   };
 }
 
-export function clearWorktreeProvisionedChunksInDatabase(
-  db: DatabaseSync,
-  { worktreeId }: { worktreeId: string },
-): void {
-  executeSqliteQuerySync(
-    db,
-    query(db).deleteFrom("worktree_provisioned_file_chunks").where("worktree_id", "=", worktreeId),
-  );
-}
-
-export function insertWorktreeProvisionedChunkInDatabase(
-  db: DatabaseSync,
-  input: { worktreeId: string; path: string; chunkIndex: number; data: Uint8Array },
-): void {
-  executeSqliteQuerySync(
-    db,
-    query(db).insertInto("worktree_provisioned_file_chunks").values({
-      worktree_id: input.worktreeId,
-      path: input.path,
-      chunk_index: input.chunkIndex,
-      data: input.data,
-    }),
-  );
-}
-
 export type WorktreeRemovalRowInput = {
   worktreeId: string;
   token: string;
@@ -284,6 +282,7 @@ export function claimWorktreeRemovalInDatabase(
     throw new WorktreeRemovalContentionError(
       "busy",
       `worktree is busy: locked by live pid ${livePids[0]}`,
+      { worktreeId: params.worktreeId, pid: livePids[0]! },
     );
   }
   if (removingToken !== undefined && removingToken !== params.token) {

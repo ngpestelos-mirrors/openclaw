@@ -2,6 +2,7 @@ import type {
   WorkerOperationHandlers,
   WorkerOperations,
 } from "../../state/worker-operation-registry.js";
+import { writeProvisionedSnapshotInDatabase } from "./provisioned-snapshot.worker.js";
 import {
   getRegistryWorktreeInDatabase,
   getRegistryWorktreeProvisionedChunkInDatabase,
@@ -17,8 +18,6 @@ import {
 } from "./registry-retirement.worker.js";
 import {
   worktreeRunEndMutation,
-  clearWorktreeProvisionedChunksInDatabase,
-  insertWorktreeProvisionedChunkInDatabase,
   claimWorktreeRemovalInDatabase,
   finalizeWorktreeRemovalInDatabase,
   abortWorktreeRemovalInDatabase,
@@ -31,14 +30,6 @@ import {
 import { worktreeRunLeaseOperation } from "./run-lease-store.worker.js";
 
 export const worktreeOperations = {
-  "worktrees.clearProvisionedChunks": worktreeRunEndMutation(
-    "worktrees.clearProvisionedChunks",
-    clearWorktreeProvisionedChunksInDatabase,
-  ),
-  "worktrees.insertProvisionedChunk": worktreeRunEndMutation(
-    "worktrees.insertProvisionedChunk",
-    insertWorktreeProvisionedChunkInDatabase,
-  ),
   "worktrees.claimRemoval": worktreeRunEndMutation(
     "worktrees.claimRemoval",
     claimWorktreeRemovalInDatabase,
@@ -65,6 +56,10 @@ export const worktreeOperations = {
     input: Parameters<typeof getRegistryWorktreeProvisionedChunkInDatabase>[1],
     { open },
   ) => getRegistryWorktreeProvisionedChunkInDatabase(open().db, input),
+  "worktrees.writeProvisionedSnapshot": worktreeRunEndMutation(
+    "worktrees.writeProvisionedSnapshot",
+    writeProvisionedSnapshotInDatabase,
+  ),
   "worktrees.retireMissing": (
     input: Parameters<typeof retireMissingWorktreeInWorker>[0],
     { open, stateOptions },

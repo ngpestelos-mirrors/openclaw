@@ -20,6 +20,7 @@ import {
   SessionWorktreeSourceChangedError,
   WorktreeRemovalLockError,
 } from "./errors.js";
+import { insertRegistryWorktreeProvisionedChunk } from "./provisioned-snapshot.test-support.js";
 import {
   abortWorktreeRemovalRow,
   claimWorktreeRemovalRow,
@@ -27,7 +28,6 @@ import {
   finalizeWorktreeRemovalRows,
   getRegistryWorktree,
   insertRegistryWorktree,
-  insertRegistryWorktreeProvisionedChunk,
   WorktreeRemovalContentionError,
   updateRegistryWorktree,
 } from "./registry.js";
@@ -183,6 +183,10 @@ it("settles snapshot chunks and exclusive removal claims without caller-thread S
       token: "second",
     }),
   ).rejects.toMatchObject({ kind: "finalized" });
+  await expect(claimWorktreeRemovalRow(env, claim)).rejects.toMatchObject({
+    kind: "busy",
+    blockedByRun: { worktreeId: claim.worktreeId, pid: process.pid },
+  });
   expect(
     database.db
       .prepare("SELECT lease_key FROM state_leases WHERE scope = ?")
@@ -269,7 +273,7 @@ it("preserves committed bytes after reply loss, rolls back refused commits, and 
           operation({
             execute: async (command, executeOptions) => {
               const result = await scope.execute(command, executeOptions);
-              if (command.type === "worktrees.insertProvisionedChunk") {
+              if (command.type === "worktrees.writeProvisionedSnapshot") {
                 writes += 1;
                 throw new Error("Synthetic lost command reply");
               }
@@ -327,7 +331,7 @@ it("preserves committed bytes after reply loss, rolls back refused commits, and 
         (scope) =>
           operation({
             execute: async (command, executeOptions) => {
-              if (command.type === "worktrees.insertProvisionedChunk") {
+              if (command.type === "worktrees.writeProvisionedSnapshot") {
                 unknownWrites += 1;
               }
               return scope.execute(command, executeOptions);

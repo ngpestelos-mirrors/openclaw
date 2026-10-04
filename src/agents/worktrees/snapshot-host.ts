@@ -8,14 +8,15 @@ import { requireWorktreeDiskSpace } from "./capacity.js";
 import type { WorktreeGitPolicy } from "./checkout-git-config.js";
 import { removeUnusedEmptyWorktreeSource } from "./empty-source.js";
 import { requireGit, worktreePathExists, commandError, listGitWorktrees, runGit } from "./git.js";
-import { snapshotProvisionedFiles } from "./provisioned-files.js";
+import { createProvisionedSnapshotWriter } from "./provisioned-snapshot-store.js";
 import {
   deleteRegistryWorktree,
   assertRegistrySnapshotRetirement,
-  assertWorktreeRemovalClaim,
+  createWorktreeRemovalClaimsGuard,
   getRegistryWorktree,
 } from "./registry.js";
 import { assertExactStateSourceIdentity } from "./removal-git.js";
+import { withWorktreeRunEnd } from "./run-end-lifecycle.js";
 import { abortWorktreeRemoval, claimWorktreeRemoval } from "./run-lease.js";
 import { resolveRepository } from "./service-preparation.js";
 import type { ExactStateRetirement } from "./snapshot-exact-state-contract.js";
@@ -40,75 +41,74 @@ export async function captureManagedWorktreeSnapshot(params: {
   assertCurrent?: () => void;
   workerAuthority?: WorktreeWorkerAuthority;
 }) {
-  const { record, env, provisionedPaths } = params;
-  const exactState =
-    params.exactState && params.retirementName
-      ? {
-          branch: record.branch,
-          expected: params.exactState,
-          retirementName: params.retirementName,
-        }
-      : undefined;
-  if (params.exactState && !exactState) {
-    throw new Error("Exact-state capture lacks retirement custody");
-  }
-  return await runGitWorkerOperation(
-    {
-      type: "worktree.snapshot",
-      input: {
-        worktreeId: record.id,
-        checkoutPath: record.path,
-        repoRoot: record.repoRoot,
-        reason: params.reason,
-        provisionedPaths,
-        ...(exactState ? { exactState } : {}),
+  return withWorktreeRunEnd(params.env, async () => {
+    const { record, env, provisionedPaths } = params;
+    const writeProvisioned = createProvisionedSnapshotWriter(env, record.id, {
+      ...params.workerAuthority,
+      assertCurrent: () => {
+        params.signal?.throwIfAborted();
+        (params.workerAuthority ? params.workerAuthority.assertCurrent : params.assertCurrent)?.();
       },
-    },
-    {
-      signal: params.signal,
-      assertCurrent: params.assertCurrent,
-      git: params.git.worker,
-      onEffect: async (effect, { signal }) => {
-        const assertCurrent = () => {
-          signal.throwIfAborted();
-          params.assertCurrent?.();
-        };
-        assertCurrent();
-        switch (effect.type) {
-          case "worktree.assert-current":
-            return undefined;
-          case "worktree.snapshot-capacity":
-            requireWorktreeDiskSpace(
-              [
-                ...effect.input.demands,
-                ...(effect.input.stateBytes === undefined
-                  ? []
-                  : [{ path: resolveStateDir(env), bytes: effect.input.stateBytes }]),
-              ],
-              effect.input.purpose,
-              true,
-            );
-            return undefined;
-          case "worktree.snapshot-provisioned":
-            return await snapshotProvisionedFiles(env, record.id, record.path, provisionedPaths, {
-              signal,
-              assertCurrent,
-              expected: effect.input.expected,
-              workerAuthority: {
-                ...params.workerAuthority,
-                assertCurrent: () => {
-                  signal.throwIfAborted();
-                  (params.workerAuthority
-                    ? params.workerAuthority.assertCurrent
-                    : params.assertCurrent)?.();
-                },
-              },
-            });
-        }
-        return undefined;
+    });
+    const exactState =
+      params.exactState && params.retirementName
+        ? {
+            branch: record.branch,
+            expected: params.exactState,
+            retirementName: params.retirementName,
+          }
+        : undefined;
+    if (params.exactState && !exactState) {
+      throw new Error("Exact-state capture lacks retirement custody");
+    }
+    return await runGitWorkerOperation(
+      {
+        type: "worktree.snapshot",
+        input: {
+          worktreeId: record.id,
+          checkoutPath: record.path,
+          repoRoot: record.repoRoot,
+          reason: params.reason,
+          provisionedPaths,
+          ...(exactState ? { exactState } : {}),
+        },
       },
-    },
-  );
+      {
+        signal: params.signal,
+        assertCurrent: params.assertCurrent,
+        git: params.git.worker,
+        onEffect: async (effect, { signal }) => {
+          const assertCurrent = () => {
+            signal.throwIfAborted();
+            params.assertCurrent?.();
+          };
+          assertCurrent();
+          switch (effect.type) {
+            case "worktree.assert-current":
+              return undefined;
+            case "worktree.snapshot-capacity":
+              requireWorktreeDiskSpace(
+                [
+                  ...effect.input.demands,
+                  ...(effect.input.stateBytes === undefined
+                    ? []
+                    : [{ path: resolveStateDir(env), bytes: effect.input.stateBytes }]),
+                ],
+                effect.input.purpose,
+                true,
+              );
+              return undefined;
+            case "worktree.snapshot-provisioned-reset":
+            case "worktree.snapshot-provisioned-chunk":
+              return await writeProvisioned(effect, () => signal.throwIfAborted());
+            case "worktree.eviction-fence":
+            case "worktree.eviction-admit":
+              throw new Error("Snapshot capture cannot authorize worktree eviction");
+          }
+        },
+      },
+    );
+  });
 }
 
 export async function verifyManagedWorktreeExactSnapshot(params: {
@@ -367,13 +367,16 @@ export async function retireManagedWorktreeSnapshot(params: {
   }
   const exactRecord = record.snapshotRef?.startsWith("refs/openclaw/snapshots/exact-");
   const expirationToken = exactRecord ? randomUUID() : undefined;
+  const assertClaim = expirationToken
+    ? createWorktreeRemovalClaimsGuard(env, [record.id], expirationToken)
+    : undefined;
   let claimed = false;
   const assertCurrent = () => {
     params.assertCurrent();
     if (exactRecord) {
       assertExactSnapshotRecordCurrent(env, record);
       if (claimed && expirationToken) {
-        assertWorktreeRemovalClaim(env, record.id, expirationToken);
+        assertClaim?.();
       }
     }
   };

@@ -9,6 +9,7 @@ import {
   withOpenClawStateLeaseWorkerAdmission,
   type WorkerLeaseScope,
 } from "../../state/openclaw-state-lease-worker-owner.js";
+import type { OpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.types.js";
 import type { WorktreeWorkerOperations } from "./dispatch.worker.js";
 import type {
   WorktreeRemovalRowInput,
@@ -23,15 +24,14 @@ import type { WorktreeWorkerAuthority } from "./types.js";
 
 type RunEndCommands = Pick<
   WorktreeWorkerOperations,
-  | "worktrees.clearProvisionedChunks"
-  | "worktrees.insertProvisionedChunk"
+  | "worktrees.writeProvisionedSnapshot"
   | "worktrees.claimRemoval"
   | "worktrees.finalizeRemoval"
   | "worktrees.abortRemoval"
 >;
 
-function runCommand(
-  env: NodeJS.ProcessEnv,
+export function runWorktreeRunEndCommand(
+  context: OpenClawStateWorkerContext,
   command: SqliteWorkerCommand<RunEndCommands>,
   authority: WorktreeWorkerAuthority = {},
 ): Promise<void> {
@@ -39,8 +39,8 @@ function runCommand(
   const predicates = structuredClone(authority.predicates);
   const assertCurrent = authority.assertCurrent;
   const heldLease = authority.lease;
-  return withWorktreeRunEnd(env, async () => {
-    const context = captureWorktreeRunEndContext(env);
+  return withWorktreeRunEnd(context.environment, async () => {
+    context.admission.assertCurrent();
     const execute = async (lease?: WorkerLeaseScope) => {
       let admission: SqliteWorkerOperationAdmission | undefined;
       let settled: Promise<SqliteWorkerOperationSettlement> | undefined;
@@ -116,36 +116,6 @@ function runCommand(
   });
 }
 
-export function clearRegistryWorktreeProvisionedChunks(
-  env: NodeJS.ProcessEnv,
-  worktreeId: string,
-  authority?: WorktreeWorkerAuthority,
-): Promise<void> {
-  return runCommand(
-    env,
-    {
-      type: "worktrees.clearProvisionedChunks",
-      input: { value: { worktreeId }, receipt: randomUUID() },
-    },
-    authority,
-  );
-}
-
-export function insertRegistryWorktreeProvisionedChunk(
-  env: NodeJS.ProcessEnv,
-  value: { worktreeId: string; path: string; chunkIndex: number; data: Uint8Array },
-  authority?: WorktreeWorkerAuthority,
-): Promise<void> {
-  return runCommand(
-    env,
-    {
-      type: "worktrees.insertProvisionedChunk",
-      input: { value: { ...value, data: Uint8Array.from(value.data) }, receipt: randomUUID() },
-    },
-    authority,
-  );
-}
-
 export function claimWorktreeRemovalRow(
   env: NodeJS.ProcessEnv,
   params: WorktreeRemovalRowInput & {
@@ -155,8 +125,8 @@ export function claimWorktreeRemovalRow(
 ): Promise<void> {
   const { assertCurrent, workerAuthority, ...value } = params;
   assertCurrent?.();
-  return runCommand(
-    env,
+  return runWorktreeRunEndCommand(
+    captureWorktreeRunEndContext(env),
     { type: "worktrees.claimRemoval", input: { value, receipt: randomUUID() } },
     workerAuthority ?? { assertCurrent },
   );
@@ -167,8 +137,8 @@ export function finalizeWorktreeRemovalRows(
   value: WorktreeRemovalFinalization,
   authority?: WorktreeWorkerAuthority,
 ): Promise<void> {
-  return runCommand(
-    env,
+  return runWorktreeRunEndCommand(
+    captureWorktreeRunEndContext(env),
     { type: "worktrees.finalizeRemoval", input: { value, receipt: randomUUID() } },
     authority,
   );
@@ -179,7 +149,7 @@ export function abortWorktreeRemovalRow(
   worktreeId: string,
   token: string,
 ): Promise<void> {
-  return runCommand(env, {
+  return runWorktreeRunEndCommand(captureWorktreeRunEndContext(env), {
     type: "worktrees.abortRemoval",
     input: { value: { worktreeId, token }, receipt: randomUUID() },
   });

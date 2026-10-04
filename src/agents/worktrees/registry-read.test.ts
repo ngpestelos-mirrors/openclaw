@@ -9,14 +9,17 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
-import { readLiveRegistryWorktreeIds, readRegistryWorktrees } from "./registry-read.js";
+import { insertRegistryWorktreeProvisionedChunk } from "./provisioned-snapshot.test-support.js";
+import {
+  getRegistryWorktreeProvisionedChunk,
+  readLiveRegistryWorktreeIds,
+  readRegistryWorktrees,
+} from "./registry-read.js";
 import {
   getRegistryWorktree,
-  getRegistryWorktreeProvisionedChunk,
   getRegistryWorktreeProvisionedPaths,
   getRegistryWorktreeProvisionedState,
   insertRegistryWorktree,
-  insertRegistryWorktreeProvisionedChunk,
   updateRegistryWorktree,
 } from "./registry.js";
 import { ManagedWorktreeService } from "./service.js";
