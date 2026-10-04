@@ -408,7 +408,7 @@ describe("ManagedWorktreeService provisioned state", () => {
     await fs.writeFile(path.join(created.path, "README.md"), "preserved edit\n");
     const oldChunk = { worktreeId: created.id, path: "old.local", chunkIndex: 0 };
     const oldBytes = new TextEncoder().encode("old");
-    insertRegistryWorktreeProvisionedChunk(env, { ...oldChunk, data: oldBytes });
+    await insertRegistryWorktreeProvisionedChunk(env, { ...oldChunk, data: oldBytes });
     const guard = vi.fn();
     const commands = vi.spyOn(commandSpawner, "spawnCommandWithInvocation");
     try {

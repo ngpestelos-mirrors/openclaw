@@ -69,11 +69,11 @@ describe("managed worktree registry", () => {
     try {
       insertRegistryWorktree(env, record, { provisionedPaths: [chunk.path] });
       expect(getRegistryWorktree(env, record.id)).toEqual(record);
-      insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
+      await insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
       expect(Buffer.from((await getRegistryWorktreeProvisionedChunk(env, chunk))!)).toEqual(bytes);
-      clearRegistryWorktreeProvisionedChunks(env, record.id);
+      await clearRegistryWorktreeProvisionedChunks(env, record.id);
       expect(await getRegistryWorktreeProvisionedChunk(env, chunk)).toBeUndefined();
-      insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
+      await insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
       updateRegistryWorktree(env, record.id, { lastActiveAt: 20 });
       expect(getRegistryWorktree(env, record.id)?.lastActiveAt).toBe(20);
       deleteRegistryWorktree(env, record.id);
@@ -90,7 +90,7 @@ describe("managed worktree registry", () => {
     const chunk = { worktreeId: record.id, path: "sample.txt", chunkIndex: 0 };
     const bytes = Buffer.from("preserved snapshot bytes");
     insertRegistryWorktree(env, record, { provisionedPaths: [chunk.path] });
-    insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
+    await insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
     const { db } = openOpenClawStateDatabase({ env });
     db.exec(`
       CREATE TEMP TRIGGER registry_delete_fault BEFORE DELETE ON worktrees
@@ -172,7 +172,7 @@ describe("managed worktree registry", () => {
     expect(await getRegistryWorktreeProvisionedState(env, "first")).toEqual([
       { path: ".env.local", mode: 0o600, chunks: 1 },
     ]);
-    insertRegistryWorktreeProvisionedChunk(env, {
+    await insertRegistryWorktreeProvisionedChunk(env, {
       worktreeId: "first",
       path: ".env.local",
       chunkIndex: 0,

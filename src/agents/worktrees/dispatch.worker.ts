@@ -15,6 +15,14 @@ import {
   retireMissingWorktreeInWorker,
   deferWorktreeCleanupInWorker,
 } from "./registry-retirement.worker.js";
+import {
+  worktreeRunEndMutation,
+  clearWorktreeProvisionedChunksInDatabase,
+  insertWorktreeProvisionedChunkInDatabase,
+  claimWorktreeRemovalInDatabase,
+  finalizeWorktreeRemovalInDatabase,
+  abortWorktreeRemovalInDatabase,
+} from "./registry-run-end.worker.js";
 import { reapWorktreeRunLeasesInDatabase } from "./run-lease-owner.js";
 import {
   admitWorktreeRunLeaseInDatabase,
@@ -33,6 +41,26 @@ import {
 import { worktreeTemplateMutation } from "./template-registry.worker.js";
 
 export const worktreeOperations = {
+  "worktrees.clearProvisionedChunks": worktreeRunEndMutation(
+    "worktrees.clearProvisionedChunks",
+    clearWorktreeProvisionedChunksInDatabase,
+  ),
+  "worktrees.insertProvisionedChunk": worktreeRunEndMutation(
+    "worktrees.insertProvisionedChunk",
+    insertWorktreeProvisionedChunkInDatabase,
+  ),
+  "worktrees.claimRemoval": worktreeRunEndMutation(
+    "worktrees.claimRemoval",
+    claimWorktreeRemovalInDatabase,
+  ),
+  "worktrees.finalizeRemoval": worktreeRunEndMutation(
+    "worktrees.finalizeRemoval",
+    finalizeWorktreeRemovalInDatabase,
+  ),
+  "worktrees.abortRemoval": worktreeRunEndMutation(
+    "worktrees.abortRemoval",
+    abortWorktreeRemovalInDatabase,
+  ),
   "worktrees.get": ({ id }: { id: string }, { open }) =>
     getRegistryWorktreeInDatabase(open().db, id),
   "worktrees.list": (input: WorktreeRegistryListOptions, { open }) =>

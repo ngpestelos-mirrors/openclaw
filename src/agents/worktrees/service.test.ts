@@ -707,7 +707,7 @@ describe("ManagedWorktreeService", () => {
 
       let contention: unknown;
       try {
-        claimWorktreeRemoval(env, {
+        await claimWorktreeRemoval(env, {
           worktreeId: staleRecord.id,
           token: "late-remover",
         });

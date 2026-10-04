@@ -44,7 +44,19 @@ export async function withWorktreeSource<T>(
       params.rollbackGuard();
       source.assertCheckoutCurrent?.();
     };
-    return run({ ...operation, signal, commitGuard, rollbackGuard });
+    const workerAuthority = {
+      ...params.workerAuthority,
+      assertCurrent: () => {
+        signal?.throwIfAborted();
+        (params.workerAuthority ? params.workerAuthority.assertCurrent : params.commitGuard)?.();
+        (source.workerAuthority ? source.workerAuthority.assertCurrent : source.assertCurrent)?.();
+      },
+      predicates: [
+        ...(params.workerAuthority?.predicates ?? []),
+        ...(source.workerAuthority?.predicates ?? []),
+      ],
+    };
+    return run({ ...operation, signal, commitGuard, rollbackGuard, workerAuthority });
   });
 }
 

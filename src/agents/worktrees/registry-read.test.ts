@@ -115,7 +115,7 @@ describe("managed worktree registry worker reads", () => {
     updateRegistryWorktree(env, older.id, { provisionedState });
     const chunks = [Uint8Array.from([0, 255, 10]), Uint8Array.from([127, 0, 1])];
     for (const [chunkIndex, data] of chunks.entries()) {
-      insertRegistryWorktreeProvisionedChunk(env, {
+      await insertRegistryWorktreeProvisionedChunk(env, {
         worktreeId: older.id,
         path: "synthetic.bin",
         chunkIndex,

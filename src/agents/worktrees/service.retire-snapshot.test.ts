@@ -329,9 +329,9 @@ describe("Exact removed worktree snapshot retirement", () => {
         updateRegistryWorktree(env, record.id, {
           provisionedState: [{ path: chunk.path, mode: 0o600, chunks: 1 }],
         });
-        insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
+        await insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
       } else {
-        insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
+        await insertRegistryWorktreeProvisionedChunk(env, { ...chunk, data: bytes });
       }
       await expect(retireManagedWorktreeSnapshotById(request)).rejects.toThrow(
         /retains provisioned data/,

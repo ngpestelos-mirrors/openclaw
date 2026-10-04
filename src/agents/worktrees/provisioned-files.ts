@@ -5,6 +5,7 @@ import path from "node:path";
 import { writeFileWindowFully } from "../../infra/file-descriptor.js";
 import { root as fsRoot, FsSafeError, type Root } from "../../infra/fs-safe.js";
 import { runGitWorkerOperation } from "../../infra/git-worker.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import { gitPathspecBatches, splitNullBuffer } from "./git-path-inventory.js";
 import { lstatIfExists, requireGitBuffer } from "./git.js";
 import {
@@ -18,8 +19,9 @@ import {
   getRegistryWorktreeProvisionedChunk,
   insertRegistryWorktreeProvisionedChunk,
 } from "./registry.js";
+import { withWorktreeRunEnd } from "./run-end-lifecycle.js";
 import type { ExactProvisionedSnapshot } from "./snapshot-exact-state-contract.js";
-import type { ProvisionedFileState } from "./types.js";
+import type { ProvisionedFileState, WorktreeWorkerAuthority } from "./types.js";
 
 async function copyProvisionedFile(params: {
   sourceRoot: Root;
@@ -203,7 +205,20 @@ export async function snapshotProvisionedFiles(
     signal?: AbortSignal;
     assertCurrent?: () => void;
     expected?: ExactProvisionedSnapshot;
+    workerAuthority?: WorktreeWorkerAuthority;
   } = {},
+): Promise<ProvisionedFileState[]> {
+  return withWorktreeRunEnd(env, () =>
+    snapshotProvisionedFilesAccepted(env, worktreeId, worktreePath, provisionedPaths, options),
+  );
+}
+
+async function snapshotProvisionedFilesAccepted(
+  env: NodeJS.ProcessEnv,
+  worktreeId: string,
+  worktreePath: string,
+  provisionedPaths: readonly string[] | undefined,
+  options: NonNullable<Parameters<typeof snapshotProvisionedFiles>[4]>,
 ): Promise<ProvisionedFileState[]> {
   const commitGuard = () => {
     options.signal?.throwIfAborted();
@@ -225,7 +240,11 @@ export async function snapshotProvisionedFiles(
   }
   if (files.every((file) => file.mode === null)) {
     commitGuard();
-    clearRegistryWorktreeProvisionedChunks(env, worktreeId);
+    await clearRegistryWorktreeProvisionedChunks(
+      env,
+      worktreeId,
+      options.workerAuthority ?? { assertCurrent: commitGuard },
+    );
     return files.map((file) => ({ path: file.path, mode: null, chunks: 0 }));
   }
   const presentPaths = files.filter((file) => file.mode !== null).map((file) => file.path);
@@ -235,7 +254,11 @@ export async function snapshotProvisionedFiles(
     { signal: options.signal, beforeRun: commitGuard },
   );
   commitGuard();
-  clearRegistryWorktreeProvisionedChunks(env, worktreeId);
+  await clearRegistryWorktreeProvisionedChunks(
+    env,
+    worktreeId,
+    options.workerAuthority ?? { assertCurrent: commitGuard },
+  );
   const states: ProvisionedFileState[] = [];
   try {
     for (const file of files) {
@@ -287,12 +310,16 @@ export async function snapshotProvisionedFiles(
           }
           digest?.update(buffer.subarray(0, bytesRead));
           commitGuard();
-          insertRegistryWorktreeProvisionedChunk(env, {
-            worktreeId,
-            path: file.path,
-            chunkIndex,
-            data: buffer.subarray(0, bytesRead),
-          });
+          await insertRegistryWorktreeProvisionedChunk(
+            env,
+            {
+              worktreeId,
+              path: file.path,
+              chunkIndex,
+              data: buffer.subarray(0, bytesRead),
+            },
+            options.workerAuthority ?? { assertCurrent: commitGuard },
+          );
           offset += bytesRead;
           chunkIndex += 1;
         }
@@ -311,7 +338,14 @@ export async function snapshotProvisionedFiles(
     }
     return states;
   } catch (error) {
-    clearRegistryWorktreeProvisionedChunks(env, worktreeId);
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
+    await clearRegistryWorktreeProvisionedChunks(env, worktreeId, {
+      predicates: options.workerAuthority?.predicates?.filter(
+        (predicate) => predicate.kind === "removal-claim",
+      ),
+    });
     throw error;
   }
 }

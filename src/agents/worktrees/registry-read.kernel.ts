@@ -212,3 +212,20 @@ export function getRegistryWorktreeProvisionedChunkInDatabase(
     .where("chunk_index", "=", params.chunkIndex);
   return executeSqliteQuerySync(db, query).rows[0]?.data;
 }
+
+export function findLiveRegistryWorktreeByOwnerInDatabase(
+  db: DatabaseSync,
+  ownerKind: ManagedWorktreeOwnerKind,
+  ownerId: string,
+): ManagedWorktreeRecord | undefined {
+  const query = getNodeSqliteKysely<Pick<OpenClawStateKyselyDatabase, "worktrees">>(db)
+    .selectFrom("worktrees")
+    .select(WORKTREE_RECORD_COLUMNS)
+    .where("owner_kind", "=", ownerKind)
+    .where("owner_id", "=", ownerId)
+    .where("removed_at", "is", null)
+    .orderBy("created_at", "desc")
+    .limit(1);
+  const row = executeSqliteQuerySync(db, query).rows[0];
+  return row ? rowToRecord(row) : undefined;
+}

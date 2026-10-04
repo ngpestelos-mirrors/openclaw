@@ -302,8 +302,11 @@ src/agents/worktrees/owner.ts
 src/agents/worktrees/provisioned-file-inspection.ts
 src/agents/worktrees/registry-read.kernel.ts
 src/agents/worktrees/registry-read.ts
+src/agents/worktrees/registry-run-end.ts
+src/agents/worktrees/registry-run-end.worker.ts
 src/agents/worktrees/registry.ts
 src/agents/worktrees/repository-paths.ts
+src/agents/worktrees/run-end-lifecycle.ts
 src/agents/worktrees/run-lease-owner.ts
 src/agents/worktrees/run-lease-store.kernel.ts
 src/agents/worktrees/service-preparation.ts

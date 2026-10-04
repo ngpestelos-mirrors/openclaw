@@ -21,7 +21,11 @@ import { resolveRepository } from "./service-preparation.js";
 import type { ExactStateRetirement } from "./snapshot-exact-state-contract.js";
 import { readExactStateSnapshot } from "./snapshot-exact-state.js";
 import { clearExactRestoreReceipt, readExactRestoreReceipt } from "./snapshot-restore-exact.js";
-import type { ManagedWorktreeRecord, RetireManagedWorktreeSnapshotParams } from "./types.js";
+import type {
+  ManagedWorktreeRecord,
+  RetireManagedWorktreeSnapshotParams,
+  WorktreeWorkerAuthority,
+} from "./types.js";
 
 /** Existing snapshot worker and effect owners, supplied with this operation's Git policy. */
 export async function captureManagedWorktreeSnapshot(params: {
@@ -34,6 +38,7 @@ export async function captureManagedWorktreeSnapshot(params: {
   git: WorktreeGitPolicy;
   signal?: AbortSignal;
   assertCurrent?: () => void;
+  workerAuthority?: WorktreeWorkerAuthority;
 }) {
   const { record, env, provisionedPaths } = params;
   const exactState =
@@ -89,6 +94,15 @@ export async function captureManagedWorktreeSnapshot(params: {
               signal,
               assertCurrent,
               expected: effect.input.expected,
+              workerAuthority: {
+                ...params.workerAuthority,
+                assertCurrent: () => {
+                  signal.throwIfAborted();
+                  (params.workerAuthority
+                    ? params.workerAuthority.assertCurrent
+                    : params.assertCurrent)?.();
+                },
+              },
             });
         }
         return undefined;
@@ -181,6 +195,7 @@ export async function retireManagedWorktreeSnapshotById(
       env,
       signal: guard.signal,
       assertCurrent: () => guard.commitGuard(),
+      workerAuthority: guard.workerAuthority,
       expected: params,
     });
     return { retired: true as const, id: record.id };
@@ -318,6 +333,7 @@ export async function retireManagedWorktreeSnapshot(params: {
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   assertCurrent: () => void;
+  workerAuthority?: WorktreeWorkerAuthority;
   expected?: RetireManagedWorktreeSnapshotParams;
 }) {
   const { record, env, signal } = params;
@@ -365,11 +381,21 @@ export async function retireManagedWorktreeSnapshot(params: {
     throw new Error("Exact-state source repository unavailable; recovery and registry preserved");
   }
   if (expirationToken) {
-    claimWorktreeRemoval(env, {
+    await claimWorktreeRemoval(env, {
       worktreeId: record.id,
       token: expirationToken,
       retiredExact: true,
       assertCurrent,
+      workerAuthority: {
+        ...params.workerAuthority,
+        assertCurrent: params.workerAuthority
+          ? params.workerAuthority.assertCurrent
+          : params.assertCurrent,
+        predicates: [
+          ...(params.workerAuthority?.predicates ?? []),
+          { kind: "exact-snapshot", record },
+        ],
+      },
     });
     claimed = true;
   }
@@ -489,7 +515,7 @@ export async function retireManagedWorktreeSnapshot(params: {
     deleteRegistryWorktree(env, record.id, { assertCurrent, removalToken: expirationToken });
   } finally {
     if (expirationToken && claimed) {
-      abortWorktreeRemoval(env, record.id, expirationToken);
+      await abortWorktreeRemoval(env, record.id, expirationToken);
     }
   }
 }
