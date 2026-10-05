@@ -78,26 +78,25 @@ async function awaitWithinCompletionBoundary<T>(params: {
     }
     params.boundary.assertCurrent?.();
   };
-  // Start only after the abort listener exists. Pool/session factories may
-  // synchronously trip cancellation before returning their promise.
-  const operation = Promise.resolve()
-    .then(() => {
-      assertCurrent();
-      return params.start(remainingMs);
-    })
-    .then((value) => {
-      try {
-        assertCurrent();
-        return value;
-      } catch (error) {
-        // Retirement can reject an acquired resource before its caller owns cleanup.
-        startBestEffortCleanup(async () => await params.cleanupLate?.(value));
-        throw error;
-      }
-    });
+  // Arm cancellation before queuing SDK work so an abort can prevent dispatch.
   try {
     return await raceWithTimeout(
-      operation,
+      () =>
+        Promise.resolve()
+          .then(() => {
+            assertCurrent();
+            return params.start(remainingMs);
+          })
+          .then((value) => {
+            try {
+              assertCurrent();
+              return value;
+            } catch (error) {
+              // Retirement can reject an acquired resource before its caller owns cleanup.
+              startBestEffortCleanup(async () => await params.cleanupLate?.(value));
+              throw error;
+            }
+          }),
       remainingMs,
       () => rejectBoundary(createTimeoutError(params.boundary.timeoutMs)),
       {
