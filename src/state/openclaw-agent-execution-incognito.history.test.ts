@@ -418,7 +418,8 @@ it("revalidates Codex history after asynchronous consumption and joins it before
     const releasing = borrowed.release().then(() => {
       released = true;
     });
-    await append(target, "release barrier");
+    // Settle another FIFO turn without invalidating the captured transcript.
+    await actor.run(authority, async () => undefined);
     expect(released).toBe(false);
     resume.resolve();
     await Promise.all([releasing, rejected]);

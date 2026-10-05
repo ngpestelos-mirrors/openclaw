@@ -17,6 +17,12 @@ import type { Row } from "./session-row-projection-record.js";
 import { buildSessionListRowMetadataContext } from "./session-utils-projection.js";
 import { presentSessionRow } from "./session-utils-row.js";
 
+// Two retained private actors plus shared-state reads need three broker slots.
+vi.mock("node:os", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:os")>()),
+  availableParallelism: () => 24,
+}));
+
 it("materializes actor-prepared private entries and lineage without host SQLite", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const cfg = { agents: { entries: { main: {}, work: {} } } };
