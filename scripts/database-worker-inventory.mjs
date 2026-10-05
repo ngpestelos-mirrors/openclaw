@@ -1892,6 +1892,7 @@ const reviewedOperations = new Map([
   ],
 ]);
 const workerModules = new Set([
+  "src/gateway/worker-environments/local-workspace-store.kernel.ts", // Projection read/write workers and worktree retirement worker only.
   "src/skills/library/import.kernel.ts", // Upload commands execute only in the shared-state writer.
   "src/skills/library/service.kernel.ts", // Library catalog and revision reads use the shared-state read registry.
   "src/config/sessions/conversation-delivery-store.kernel.ts", // Agent execution registry writes and session transcript worker reads only.

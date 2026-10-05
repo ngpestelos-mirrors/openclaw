@@ -38,8 +38,9 @@ export async function prepareLocalSandboxWorkspace(params: {
             commitGuard: owner.assertCurrent,
           },
           (allocation) =>
-            withLocalWorkspaceProjection(owner, (state) =>
-              state.prepare({ sandbox: params.sandbox, allocation }),
+            withLocalWorkspaceProjection(
+              { ...owner, workerAuthority: allocation.workerAuthority },
+              (state) => state.prepare({ sandbox: params.sandbox, allocation }),
             ),
         ));
   owner.assertCurrent();
