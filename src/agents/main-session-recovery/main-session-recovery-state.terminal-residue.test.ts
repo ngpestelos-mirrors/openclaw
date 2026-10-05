@@ -1,7 +1,6 @@
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type {
   InternalSessionEntry as SessionEntry,
   MainRestartRecoveryState,
@@ -19,6 +18,7 @@ import { recoverStore } from "./main-session-restart-recovery-store.js";
 // instead of blocking the session forever with "changed while starting work".
 
 const sessionKey = "agent:main:main";
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const unusedGatewayRuntime: GatewayRecoveryRuntime = {
   dispatchSessionMethod: async () => {
     throw new Error("terminal residue must not dispatch session methods");
@@ -131,7 +131,7 @@ describe("main session recovery terminal-only residue", () => {
   it.each(["terminal-only", "failed", "killed", "failed-with-delivery"] as const)(
     "settles %s custody through persisted startup recovery",
     async (outcome) => {
-      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-terminal-residue-"));
+      const tempDir = tempDirs.make("openclaw-terminal-residue-");
       const storePath = path.join(tempDir, "sessions.json");
       const initialEntry: SessionEntry =
         outcome === "terminal-only"
@@ -194,13 +194,12 @@ describe("main session recovery terminal-only residue", () => {
         }
       } finally {
         await cleanupSessionStateForTest({ stateDir: tempDir });
-        await fs.rm(tempDir, { force: true, recursive: true });
       }
     },
   );
 
   it("retires terminal residue before orphan marking without touching a current owner", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-terminal-marking-"));
+    const tempDir = tempDirs.make("openclaw-terminal-marking-");
     const storePath = path.join(tempDir, "sessions.json");
     const liveSessionKey = "agent:main:live";
     const startupCheckedStorePaths = new Set<string>();
@@ -248,7 +247,6 @@ describe("main session recovery terminal-only residue", () => {
       });
     } finally {
       await cleanupSessionStateForTest({ stateDir: tempDir });
-      await fs.rm(tempDir, { force: true, recursive: true });
     }
   });
 

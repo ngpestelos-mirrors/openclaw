@@ -257,7 +257,7 @@ describe("createChatSendMessageInjectionStarter admission fence", () => {
         sourceTurnIdOrigin: "active-run",
         sessionKey: "agent:main:dashboard:s",
         sessionId: "session-1",
-        sessionStatus: "running",
+        sessionStatus: undefined,
         recoveryRunId: "recovery-1",
         recoverySourceTurnId: "source-1",
       },

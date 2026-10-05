@@ -21,7 +21,7 @@ import {
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { clearCommandRecoveryClaim } from "../command/cleanup.js";
+import { finishAgentCommandCleanup } from "../command/cleanup.js";
 import { createAgentRunRestartAbortError } from "../run-termination.js";
 import { createRecoveryRuntimeFixture } from "./main-session-recovery-runtime.test-support.js";
 import { mainSessionRecoveryLog } from "./main-session-restart-recovery-shared.js";
@@ -131,8 +131,15 @@ it.each(["before settlement", "after settlement", "persisted interruption"] as c
           sessionReboundDuringRun: false,
           trackedRestartRecoveryDeliveryClaim: true,
           terminalEvent: { data: { phase: "error", error, stopReason: "restart" } },
+          lifecycleGeneration,
+          beforeTerminalDelivery: undefined,
+          reportCommitted: () => {},
+          preparedRunAdmission: undefined,
+          sessionWorkAdmission: undefined,
+          cleanupInternalModelRunTargets: async () => {},
+          releaseForeground: undefined,
         };
-        await clearCommandRecoveryClaim(cleanup);
+        await finishAgentCommandCleanup(cleanup);
         await persistGatewaySessionLifecycleEvent({
           sessionKey,
           event: {

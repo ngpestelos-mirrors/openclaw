@@ -112,7 +112,8 @@ it.each(["cold", "warm", "warm-cap", "removal"] as const)(
         (request) => observation.run(true, () => kick(request)),
       );
       const { DatabaseSync, StatementSync } = requireNodeSqlite();
-      const counts = { prepare: 0, exec: 0, get: 0, all: 0, run: 0, iterate: 0 };
+      const emptyCounts = { prepare: 0, exec: 0, get: 0, all: 0, run: 0, iterate: 0 };
+      const counts = { ...emptyCounts };
       const preparedSql: string[] = [];
       const executedSql: string[] = [];
       // oxlint-disable-next-line typescript/unbound-method -- Forward the native operation with its exact database receiver.
@@ -176,14 +177,7 @@ it.each(["cold", "warm", "warm-cap", "removal"] as const)(
         ),
       ).toEqual([]);
       if (!remove) {
-        expect(counts).toEqual({
-          prepare: 0,
-          exec: 0,
-          get: 0,
-          all: 0,
-          run: 0,
-          iterate: 0,
-        });
+        expect(counts).toEqual(emptyCounts);
         expect(preservation).not.toHaveBeenCalled();
       }
       expect(loadSessionEntry(active)?.label).toBe("updated");

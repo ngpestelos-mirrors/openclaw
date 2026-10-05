@@ -2936,7 +2936,6 @@
 ["src/agents/main-session-recovery/main-session-restart-dispatch-start.test.ts","../../gateway/server-methods/request-authorization.js","54591962670acca23e7070637e22213e27db44818f31200efd093dcba839a565",1]
 ["src/agents/main-session-recovery/main-session-restart-recovery-admission.test.ts","../../gateway/call.js","0d102b90f0b8aab2d0a0ae64bf43807408ca0407a23d4828c43c08f637a724f9",1]
 ["src/agents/main-session-recovery/main-session-restart-recovery-discovery.test.ts","../../config/sessions.js","2576c504ceba4e25e81a466f386291892b20fb03d732046ed61e5d33aa8bc6d9",1]
-["src/agents/main-session-recovery/main-session-restart-recovery-discovery.test.ts","../../config/sessions/session-accessor.js","634ad12b8f5748b559032253ae782b5467950a7823618b3de2efb40ffa646161",1]
 ["src/agents/main-session-recovery/main-session-restart-recovery-discovery.test.ts","../../config/sessions/session-store-target-inventory.js","0197edb5551c3274e49ce730c06bd8418cab345f0542e9ba81075ce3cafa1e1d",1]
 ["src/agents/main-session-recovery/main-session-restart-recovery-discovery.test.ts","../../config/sessions/session-store-target-runtime.js","65b746a110a3152aed5dc1100232b7c6edcd0d16dbcea40b36acc6184b10cfaa",1]
 ["src/agents/main-session-recovery/main-session-restart-recovery-discovery.test.ts","../../state/agent-database-admission.js","a3f52548a238fcdb07bcb5f3bf511a1affcf3dbe7836e72c0de6ae1419eecff8",1]

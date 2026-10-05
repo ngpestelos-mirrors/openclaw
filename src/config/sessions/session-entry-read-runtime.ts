@@ -72,7 +72,7 @@ import type {
 } from "./session-transcript-worker.types.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
-export function captureSessionEntryReadScope(input: SessionEntryReadScope) {
+function captureSessionEntryReadScope(input: SessionEntryReadScope) {
   const env = cloneEnvWithPlatformSemantics(input.env ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
   const scope = {
