@@ -10,15 +10,11 @@ import type {
 import {
   buildRestartRecoveryClaimCleanupPatch,
   hasMainSessionRecoveryClaim,
+  isMainRestartRecoveryCandidate,
   hasRestartRecoveryTerminalRun,
   isRetryableUnadoptedChatClaim,
 } from "../../config/sessions/restart-recovery-state.js";
 import { isTerminalSessionStatus } from "../../config/sessions/types.js";
-import {
-  isAcpSessionKey,
-  isCronSessionKey,
-  isSubagentSessionKey,
-} from "../../routing/session-key.js";
 import { interruptAdmittedMainSessionRecovery } from "./main-session-recovery-admitted-interruption.js";
 import {
   buildMainSessionRecoveryClearPatch,
@@ -146,20 +142,6 @@ export function recordLifecycleFence(
     ...(entry.restartRecoveryRuns ?? []),
     run,
   ]);
-}
-
-export function isMainRestartRecoveryCandidate(entry: SessionEntry, sessionKey: string): boolean {
-  if (typeof entry.spawnDepth === "number" && entry.spawnDepth > 0) {
-    return false;
-  }
-  if (entry.subagentRole != null) {
-    return false;
-  }
-  return (
-    !isSubagentSessionKey(sessionKey) &&
-    !isCronSessionKey(sessionKey) &&
-    !isAcpSessionKey(sessionKey)
-  );
 }
 
 export function isMainSessionRecoveryPending(entry: SessionEntry, sessionKey: string): boolean {

@@ -585,7 +585,6 @@ describe("subagent parent recovery — durable yielded continuation", () => {
           { storePath, sessionKey: entry.childSessionKey },
           {
             ...loadSessionEntryReadOnly({ storePath, sessionKey: entry.childSessionKey })!,
-            status: "running",
             activeWriterRunId: entry.runId,
             lifecycleRunId: entry.runId,
           },

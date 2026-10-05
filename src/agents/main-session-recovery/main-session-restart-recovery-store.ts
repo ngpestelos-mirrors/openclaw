@@ -7,6 +7,7 @@ import {
 import {
   buildRestartRecoveryClaimCleanupPatch,
   hasMainSessionRecoveryClaim,
+  isMainRestartRecoveryCandidate,
 } from "../../config/sessions/restart-recovery-state.js";
 import {
   loadExactSessionEntry,
@@ -31,7 +32,6 @@ import { createCurrentProcessOwnerLookup } from "./main-session-recovery-live-ow
 import {
   getMainSessionRecoveryRetryCount,
   isMainRestartRecoveryTerminalOnly,
-  isMainRestartRecoveryCandidate,
 } from "./main-session-recovery-state.js";
 import {
   commitMainSessionRecovery,

@@ -48,8 +48,9 @@ including turns without a channel route. An interrupted outcome alone does not
 authorize resumption or delivery. See [Restart recovery](/gateway/restart-recovery).
 
 Doctor and startup share a one-time normalization of legacy persisted `running`
-and `queued` entries to `interrupted`, before canonical session reads. Claims,
-transcripts, and activity timestamps remain intact. This changes no table or schema
+and `queued` entries to `interrupted`, before canonical session reads. Eligible
+legacy `running` entries acquire recovery custody if they lack a claim; existing
+claims, transcripts, and activity timestamps remain intact. This changes no table or schema
 version: the existing SQL status index still projects `interrupted` as `failed`;
 canonical entry JSON retains the distinct outcome. Older releases still infer
 activity from their persisted flag, so they cannot provide the new liveness or

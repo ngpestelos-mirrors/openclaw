@@ -7,6 +7,7 @@ import type {
 } from "../../config/sessions.js";
 import {
   hasMainSessionRecoveryClaim,
+  isMainRestartRecoveryCandidate,
   isRetryableUnadoptedChatClaim,
 } from "../../config/sessions/restart-recovery-state.js";
 import {
@@ -32,7 +33,6 @@ import { captureGatewaySessionWorkAdmissions } from "../../sessions/session-life
 import { createCurrentProcessOwnerLookup } from "./main-session-recovery-live-owners.js";
 import {
   isMainRestartRecoveryTerminalOnly,
-  isMainRestartRecoveryCandidate,
   normalizeMainSessionRecoveryRunFences,
   transitionMainSessionRecovery,
 } from "./main-session-recovery-state.js";

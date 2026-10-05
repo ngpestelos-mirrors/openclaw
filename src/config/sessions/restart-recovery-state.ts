@@ -3,6 +3,11 @@ import { asOptionalObjectRecord, isRecord } from "@openclaw/normalization-core/r
 import { normalizeOptionalString as normalizeRunId } from "@openclaw/normalization-core/string-coerce";
 import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import {
+  isAcpSessionKey,
+  isCronSessionKey,
+  isSubagentSessionKey,
+} from "../../routing/session-key.js";
+import {
   normalizeDeliveryContext,
   type DeliveryContext,
 } from "../../utils/delivery-context.shared.js";
@@ -16,6 +21,23 @@ import type {
 import type { InternalSessionEntry, SessionEntry } from "./types.js";
 
 const MAX_TERMINAL_RUN_IDS = 64;
+
+export function isMainRestartRecoveryCandidate(
+  entry: { spawnDepth?: unknown; subagentRole?: unknown },
+  sessionKey: string,
+): boolean {
+  if (typeof entry.spawnDepth === "number" && entry.spawnDepth > 0) {
+    return false;
+  }
+  if (entry.subagentRole != null) {
+    return false;
+  }
+  return (
+    !isSubagentSessionKey(sessionKey) &&
+    !isCronSessionKey(sessionKey) &&
+    !isAcpSessionKey(sessionKey)
+  );
+}
 
 type RestartRecoveryChannelAuthority = {
   deliveryContext: DeliveryContext & { channel: string; to: string };

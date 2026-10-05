@@ -575,6 +575,8 @@ time while retaining the recovery owner's claims.
 Before readiness, startup invokes the shared Doctor transform to normalize older
 persisted `running` or `queued` values to `interrupted` once. It logs the repaired
 count, preserves recovery claims and transcripts, and retains activity timestamps.
+Eligible legacy `running` entries without a claim receive recovery custody before
+their old status is removed, preserving their existing automatic resume path.
 The saved end time is preserved or falls back to the entry's last durable update.
 
 Archiving drains and cancels the session's work before committing the archive.

@@ -4164,7 +4164,6 @@
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/harness/hook-helpers.js","88d4d48d6e4d14cb359a1a1905e3c44cf9acf8aacf96f9b70060cd145ddcfe5d",1]
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/harness/selection-decision.js","a5912b62208d819bb517e441759f135e44b6c7a70d84d5b773b0d1f39fececc1",1]
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/main-session-recovery/main-session-recovery-owner-release.js","6e6e80d226c0afc3e8fe4015a44ec7d130a4c5b5cb597bc336d5017848e21d1a",1]
-["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/main-session-recovery/main-session-recovery-state.js","54ae3b1e00c6ca747ba88693aca249da19e0ba8f9e83a2581509b037c26eaf94",1]
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/main-session-recovery/main-session-recovery-store.js","f484bfdfbac5fe9f28600cd17f785fe414af1120b8611fcbe7f1bc5a0fcdb625",1]
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/model-selection.js","9cbbc31c59fdd19b644e6240482839e63309424dfd4b768c7c8651ac4edd4e67",1]
 ["src/auto-reply/reply/get-reply-run.media-only.test.ts","../../agents/session-runtime-compat.js","60c28b1c2064903ca8b6b75f6d78718014b6fd5024c5e2e75e052bdbf52c7cb8",1]

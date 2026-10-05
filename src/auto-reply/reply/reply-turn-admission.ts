@@ -1,7 +1,6 @@
 import { addAbortListener } from "node:events";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
-import { isMainRestartRecoveryCandidate } from "../../agents/main-session-recovery/main-session-recovery-state.js";
 import {
   claimMainSessionRecoveryOwner,
   releaseMainSessionRecoveryOwner,
@@ -17,7 +16,10 @@ import {
   SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE,
   SessionRestartRecoveryTombstoneError,
 } from "../../config/sessions/lifecycle.js";
-import { hasMainSessionRecoveryClaim } from "../../config/sessions/restart-recovery-state.js";
+import {
+  hasMainSessionRecoveryClaim,
+  isMainRestartRecoveryCandidate,
+} from "../../config/sessions/restart-recovery-state.js";
 import type { SessionAdmissionDatabaseClaim } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { normalizeStoreSessionKey } from "../../config/sessions/store-entry.js";

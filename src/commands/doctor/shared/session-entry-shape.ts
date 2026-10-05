@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { asNonNegativeFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { validateSessionId } from "../../../config/sessions/paths.js";
+import { isMainRestartRecoveryCandidate } from "../../../config/sessions/restart-recovery-state.js";
 import {
   hasLegacySessionProviderState,
   LEGACY_SESSION_ENTRY_STATE_FIELDS,
@@ -14,7 +16,7 @@ import {
   projectCanonicalSessionEntryShape,
 } from "../../../config/sessions/store-entry-shape.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
-import { parseAgentSessionKey } from "../../../routing/session-key.js";
+import { isIncognitoSessionKey, parseAgentSessionKey } from "../../../routing/session-key.js";
 
 function normalizeOptionalTimestamp(value: unknown): number | undefined {
   return value === undefined ? undefined : (asNonNegativeFiniteNumber(value) ?? 0);
@@ -28,6 +30,8 @@ function normalizeCount(value: unknown): number | undefined {
 /** A previous Gateway's persisted activity is an interrupted outcome, never current liveness. */
 export function migrateLegacySessionRunOutcome(
   value: Record<string, unknown>,
+  sessionKey?: string,
+  updatedAt: unknown = value.updatedAt,
 ): Record<string, unknown> {
   if (value.status !== "running" && value.status !== "queued") {
     return value;
@@ -36,8 +40,7 @@ export function migrateLegacySessionRunOutcome(
     ...value,
     status: "interrupted",
     abortedLastRun: true,
-    endedAt:
-      asNonNegativeFiniteNumber(value.endedAt) ?? asNonNegativeFiniteNumber(value.updatedAt) ?? 0,
+    endedAt: asNonNegativeFiniteNumber(value.endedAt) ?? asNonNegativeFiniteNumber(updatedAt) ?? 0,
     lastRunError:
       normalizeOptionalString(value.lastRunError) ??
       "Run interrupted by a Gateway restart or loss.",
@@ -45,6 +48,13 @@ export function migrateLegacySessionRunOutcome(
   const runId = normalizeOptionalString(value.lifecycleRunId);
   const terminalRuns = value.restartRecoveryTerminalRunIds;
   const delivered = value.restartRecoveryTerminalDeliveryEvidence;
+  const hasNoTerminalEvidence =
+    delivered === undefined ||
+    (Array.isArray(delivered) &&
+      delivered.every(
+        (evidence) =>
+          isRecord(evidence) && evidence.runId !== runId && evidence.transcriptRunId !== runId,
+      ));
   if (
     value.abortedLastRun === true &&
     runId &&
@@ -58,18 +68,31 @@ export function migrateLegacySessionRunOutcome(
     !value.pendingFinalDelivery &&
     Array.isArray(terminalRuns) &&
     terminalRuns.includes(runId) &&
-    (delivered === undefined ||
-      (Array.isArray(delivered) &&
-        delivered.every(
-          (evidence) =>
-            isRecord(evidence) && evidence.runId !== runId && evidence.transcriptRunId !== runId,
-        )))
+    hasNoTerminalEvidence
   ) {
     // Older command cleanup retired this exact undelivered source before recording its restart.
     next.restartRecoveryDeliveryRunId = runId;
     next.restartRecoveryDeliverySourceRunId = runId;
     const remaining = terminalRuns.filter((terminalRunId) => terminalRunId !== runId);
     next.restartRecoveryTerminalRunIds = remaining.length ? remaining : undefined;
+  }
+  if (
+    value.status === "running" &&
+    sessionKey &&
+    value.archivedAt === undefined &&
+    value.incognito !== true &&
+    !isIncognitoSessionKey(sessionKey) &&
+    isMainRestartRecoveryCandidate(value, sessionKey) &&
+    !next.mainRestartRecovery &&
+    !next.restartRecoveryDeliveryRunId &&
+    !next.pendingFinalDelivery &&
+    (next.restartRecoveryRuns === undefined ||
+      (Array.isArray(next.restartRecoveryRuns) && next.restartRecoveryRuns.length === 0)) &&
+    !(runId && Array.isArray(terminalRuns) && terminalRuns.includes(runId)) &&
+    hasNoTerminalEvidence
+  ) {
+    // The previous writer used running as admission custody; transfer it before removing that signal.
+    next.mainRestartRecovery = { cycleId: randomUUID(), revision: 1, chargedAttempts: 0 };
   }
   return next;
 }
@@ -78,6 +101,7 @@ export function migrateLegacySessionRunOutcome(
 export function migrateLegacySessionEntryState(
   value: Record<string, unknown>,
   updatedAt: unknown = value.updatedAt,
+  sessionKey?: string,
 ): Record<string, unknown> {
   const next = { ...value };
   if (hasLegacySessionProviderState(value)) {
@@ -136,7 +160,7 @@ export function migrateLegacySessionEntryState(
       next.memoryFlush = { kind: "succeeded", compactionCount };
     }
   }
-  return migrateLegacySessionRunOutcome(next);
+  return migrateLegacySessionRunOutcome(next, sessionKey, updatedAt);
 }
 
 // Persisted stores may contain old or malformed ids; reject path-like ids before use.
@@ -169,7 +193,9 @@ export function normalizePersistedSessionEntryShape(
   }
 
   const modelSelectionLocked = value.modelSelectionLocked === true;
-  let next = projectCanonicalSessionEntryShape(migrateLegacySessionEntryState(value));
+  let next = projectCanonicalSessionEntryShape(
+    migrateLegacySessionEntryState(value, value.updatedAt, options.sessionKey),
+  );
   if (value.sessionId !== undefined) {
     if (!isSafeSessionId(value.sessionId)) {
       return undefined;

@@ -45,6 +45,7 @@ it("settles legacy liveness once before startup returns, preserving recovery cla
           name: "abort-only",
           fields: { abortedLastRun: true, restartRecoveryForceSafeTools: true },
         },
+        { name: "archived-unclaimed", fields: { archivedAt: 15 } },
         {
           name: "archived",
           fields: {
@@ -61,6 +62,12 @@ it("settles legacy liveness once before startup returns, preserving recovery cla
           sessionId: "main-run",
           status: "running",
           fields: recovery,
+        },
+        {
+          sessionKey: "agent:main:dashboard:unclaimed-queued",
+          sessionId: "unclaimed-queued",
+          status: "queued",
+          fields: {},
         },
         ...["dashboard:work", "subagent:child"].flatMap((kind) =>
           (["running", "queued"] as const).map((status) => ({
@@ -135,6 +142,15 @@ it("settles legacy liveness once before startup returns, preserving recovery cla
             abortedLastRun: true,
             endedAt: before.get(fixture.sessionKey)?.endedAt ?? 20,
             lastRunError: expect.stringMatching(/interrupt|restart|Gateway/i),
+            ...(fixture.sessionId === "abort-only"
+              ? {
+                  mainRestartRecovery: {
+                    cycleId: expect.any(String),
+                    revision: 1,
+                    chargedAttempts: 0,
+                  },
+                }
+              : {}),
           });
         } else {
           expect(entry).toEqual(before.get(fixture.sessionKey));
@@ -144,7 +160,7 @@ it("settles legacy liveness once before startup returns, preserving recovery cla
       expect(log.warn).not.toHaveBeenCalled();
       const notices = log.info.mock.calls.filter(([message]) => /interrupt/i.test(message));
       expect(notices).toHaveLength(1);
-      expect(notices[0]?.[0]).toMatch(/\b9\b/);
+      expect(notices[0]?.[0]).toMatch(/\b11\b/);
 
       log.info.mockClear();
       await closeOpenClawAgentDatabasesAsync(stateDir);

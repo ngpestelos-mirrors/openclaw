@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
+import { isMainRestartRecoveryCandidate } from "../../config/sessions/restart-recovery-state.js";
 import { applySessionEntryReplacements } from "../../config/sessions/session-accessor.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
@@ -7,7 +8,6 @@ import {
   scheduleMainSessionRecoveryMutation,
 } from "./main-session-recovery-lifecycle.js";
 import {
-  isMainRestartRecoveryCandidate,
   isMainSessionRecoveryPending,
   transitionMainSessionRecovery,
   type MainSessionRecoveryCommand,

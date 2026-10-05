@@ -7,12 +7,10 @@ import {
   type AgentRunTerminalOutcome,
 } from "../agents/agent-run-terminal-outcome.js";
 import { projectMainSessionRecoveryLifecycle } from "../agents/main-session-recovery/main-session-recovery-lifecycle.js";
-import {
-  isMainRestartRecoveryCandidate,
-  recordLifecycleFence,
-} from "../agents/main-session-recovery/main-session-recovery-state.js";
+import { recordLifecycleFence } from "../agents/main-session-recovery/main-session-recovery-state.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions.js";
 import { buildUpdatedSessionGoalStatus } from "../config/sessions/goals-transitions.js";
+import { isMainRestartRecoveryCandidate } from "../config/sessions/restart-recovery-state.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import { withOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";

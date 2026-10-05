@@ -145,6 +145,7 @@ it("backs up original rows and migrates pending delivery state before canonical 
     ...recoveryClaims,
   });
   const queued = seedEntry("queued", { status: "queued", endedAt: -1 });
+  const unclaimed = seedEntry("unclaimed", { status: "running", lifecycleRunId: "legacy-run" });
   const interruptedWriter = {
     status: "running",
     abortedLastRun: true,
@@ -175,7 +176,7 @@ it("backs up original rows and migrates pending delivery state before canonical 
   expect(() => loadExactSessionEntryReadOnly(legacy.scope)).toThrow(/run openclaw doctor --fix/);
   expect(() => loadExactSessionEntryReadOnly(routing.scope)).toThrow(/run openclaw doctor --fix/);
   expect(await repairLegacySessionEntryStates({ apply: false, cfg: {}, env: state.env })).toEqual({
-    found: 11,
+    found: 12,
     repaired: 0,
     scannedStores: 1,
   });
@@ -186,7 +187,15 @@ it("backs up original rows and migrates pending delivery state before canonical 
     run: (authority) =>
       repairLegacySessionEntryStates({ apply: true, cfg: {}, env: state!.env, authority }),
   });
-  expect(report).toMatchObject({ found: 11, repaired: 11 });
+  expect(report).toMatchObject({ found: 12, repaired: 12 });
+  expect(JSON.parse(String(unclaimed.readRaw()))).toMatchObject({
+    status: "interrupted",
+    mainRestartRecovery: { cycleId: expect.any(String), revision: 1, chargedAttempts: 0 },
+  });
+  expect(JSON.parse(String(unclaimed.readRaw()))).not.toHaveProperty(
+    "restartRecoveryDeliveryRunId",
+  );
+  expect(JSON.parse(String(queued.readRaw()))).not.toHaveProperty("mainRestartRecovery");
   expect(JSON.parse(String(retiredSource.readRaw()))).toMatchObject({
     status: "interrupted",
     restartRecoveryDeliveryRunId: "interrupted-writer",
@@ -305,7 +314,7 @@ it("backs up original rows and migrates pending delivery state before canonical 
       .prepare("SELECT entry_json FROM session_nodes WHERE session_key = ?")
       .get(routing.sessionKey)?.entry_json,
   ).toBe(routing.raw);
-  for (const legacyRun of [running, queued, retiredSource, ...deliveredSources]) {
+  for (const legacyRun of [running, queued, unclaimed, retiredSource, ...deliveredSources]) {
     expect(
       backup
         .prepare("SELECT entry_json FROM session_nodes WHERE session_key = ?")
