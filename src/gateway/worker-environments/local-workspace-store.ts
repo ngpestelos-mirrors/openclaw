@@ -131,8 +131,8 @@ export function withLocalWorkspaceStore<T>(
                   guard: WorktreeWorkerAuthority = params.workerAuthority ?? {},
                 ) => {
                   assertCurrent();
-                  mutation = structuredClone(mutation);
-                  next = next && Object.freeze(structuredClone(next));
+                  const capturedMutation = structuredClone(mutation);
+                  const postimage = next && Object.freeze(structuredClone(next));
                   const receipt = randomUUID();
                   let admission: SqliteWorkerOperationAdmission | undefined;
                   let settled: Promise<SqliteWorkerOperationSettlement> | undefined;
@@ -154,7 +154,7 @@ export function withLocalWorkspaceStore<T>(
                               type: "localWorkspace.mutate",
                               input: {
                                 id: params.worktreeId,
-                                mutation,
+                                mutation: capturedMutation,
                                 predicates,
                                 leases: write.identities,
                                 receipt,
@@ -176,7 +176,7 @@ export function withLocalWorkspaceStore<T>(
                   } catch (error) {
                     const outcome = await settled;
                     if (outcome?.kind === "completed" && admission?.committed?.facts === receipt) {
-                      row = next;
+                      row = postimage;
                     } else {
                       active = false;
                       retainWorktreeRunEndFailure(error);

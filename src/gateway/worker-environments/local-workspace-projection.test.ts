@@ -179,14 +179,12 @@ describe("local sandbox workspace reconciliation", () => {
   it("installs additive owner state without changing the database version", async () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", path.join(root, "state"));
     const [
-      { openOpenClawStateDatabase },
       { tableExists },
       { OPENCLAW_STATE_SCHEMA_SQL },
       { FIRST_USE_STATE_TABLES },
       { extractSqliteTableSchema },
       { assertSqliteSchemaContains },
     ] = await Promise.all([
-      import("../../state/openclaw-state-db.js"),
       import("../../state/openclaw-state-db-schema-helpers.js"),
       import("../../state/openclaw-state-schema.js"),
       import("../../state/openclaw-state-db-contract.js"),
