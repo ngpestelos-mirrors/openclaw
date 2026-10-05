@@ -788,6 +788,7 @@ src/infra/container-environment.ts
 src/infra/crypto-digest.ts
 src/infra/dedupe.ts
 src/infra/deep-merge.ts
+src/infra/deferred-plugin-migrations.contract.ts
 src/infra/deferred-plugin-migrations.ts
 src/infra/delivery-queue-sqlite-bound.ts
 src/infra/delivery-queue-sqlite.types.ts
@@ -843,7 +844,6 @@ src/infra/format-time/format-duration-exact.ts
 src/infra/format-time/format-duration-internal.ts
 src/infra/fs-safe-copy.worker.ts
 src/infra/fs-safe-env.ts
-src/infra/fs-safe-file-copy.ts
 src/infra/fs-safe-remove.ts
 src/infra/fs-safe.ts
 src/infra/gateway-lock-process.ts
