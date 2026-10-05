@@ -70,10 +70,6 @@ type ClawHubInstallFailure = {
   version?: string;
 };
 
-type ClawHubRuntimeIdResolution =
-  | { ok: true; expectedPluginId?: string }
-  | Extract<InstallPluginResult, { ok: false }>;
-
 type ClawHubFileEntryLike = {
   path?: unknown;
   sha256?: unknown;
@@ -313,38 +309,6 @@ function mapClawHubRequestError(
     );
   }
   return buildClawHubInstallFailure(formatErrorMessage(error));
-}
-
-function resolveClawHubExpectedRuntimeId(params: {
-  detail: ClawHubPackageDetail;
-  expectedPluginId?: string;
-}): ClawHubRuntimeIdResolution {
-  const packageRuntimeId = normalizeOptionalString(params.detail.package?.runtimeId);
-  const capabilitiesRuntimeId = normalizeOptionalString(
-    params.detail.package?.capabilities?.runtimeId,
-  );
-  if (packageRuntimeId && capabilitiesRuntimeId && packageRuntimeId !== capabilitiesRuntimeId) {
-    return {
-      ok: false,
-      error: `ClawHub package runtime id mismatch: package advertises "${sanitizeTerminalText(packageRuntimeId)}" but capabilities advertise "${sanitizeTerminalText(capabilitiesRuntimeId)}".`,
-      code: PLUGIN_INSTALL_ERROR_CODE.PLUGIN_ID_MISMATCH,
-    };
-  }
-
-  const advertisedRuntimeId = packageRuntimeId ?? capabilitiesRuntimeId;
-  const expectedPluginId = normalizeOptionalString(params.expectedPluginId);
-  if (expectedPluginId && advertisedRuntimeId && expectedPluginId !== advertisedRuntimeId) {
-    return {
-      ok: false,
-      error: `ClawHub package runtime id mismatch: expected "${sanitizeTerminalText(expectedPluginId)}", got "${sanitizeTerminalText(advertisedRuntimeId)}".`,
-      code: PLUGIN_INSTALL_ERROR_CODE.PLUGIN_ID_MISMATCH,
-    };
-  }
-  const resolvedExpectedPluginId = expectedPluginId ?? advertisedRuntimeId;
-  return {
-    ok: true,
-    ...(resolvedExpectedPluginId ? { expectedPluginId: resolvedExpectedPluginId } : {}),
-  };
 }
 
 function isMissingArtifactResolverRoute(error: unknown): boolean {
@@ -898,25 +862,37 @@ export async function installPluginFromClawHub(
     if (!validation.ok) {
       return validation;
     }
-    const runtimeIdResolution = resolveClawHubExpectedRuntimeId({
-      detail,
-      expectedPluginId: params.expectedPluginId,
-    });
-    if (!runtimeIdResolution.ok) {
-      return runtimeIdResolution;
+    const packageRuntimeId = normalizeOptionalString(detail.package?.runtimeId);
+    const capabilitiesRuntimeId = normalizeOptionalString(detail.package?.capabilities?.runtimeId);
+    if (packageRuntimeId && capabilitiesRuntimeId && packageRuntimeId !== capabilitiesRuntimeId) {
+      return {
+        ok: false as const,
+        error: `ClawHub package runtime id mismatch: package advertises "${sanitizeTerminalText(packageRuntimeId)}" but capabilities advertise "${sanitizeTerminalText(capabilitiesRuntimeId)}".`,
+        code: PLUGIN_INSTALL_ERROR_CODE.PLUGIN_ID_MISMATCH,
+      };
+    }
+
+    const advertisedRuntimeId = packageRuntimeId ?? capabilitiesRuntimeId;
+    const expectedPluginId = normalizeOptionalString(params.expectedPluginId);
+    if (expectedPluginId && advertisedRuntimeId && expectedPluginId !== advertisedRuntimeId) {
+      return {
+        ok: false as const,
+        error: `ClawHub package runtime id mismatch: expected "${sanitizeTerminalText(expectedPluginId)}", got "${sanitizeTerminalText(advertisedRuntimeId)}".`,
+        code: PLUGIN_INSTALL_ERROR_CODE.PLUGIN_ID_MISMATCH,
+      };
     }
     return {
       ok: true as const,
       detail,
       versionState,
-      runtimeIdResolution,
+      expectedPluginId: expectedPluginId ?? advertisedRuntimeId,
       clawhubFamily: validation.family,
     };
   });
   if (!resolved.ok) {
     return resolved;
   }
-  const { detail, versionState, runtimeIdResolution, clawhubFamily } = resolved;
+  const { detail, versionState, expectedPluginId, clawhubFamily } = resolved;
   const expectedClawPackSha256 = resolveClawHubClawPackArtifactSha256(versionState.clawpack);
   const canonicalPackageName = detail.package?.name ?? parsed.name;
   const officialClawHubPackage = detail.package
@@ -1117,7 +1093,7 @@ export async function installPluginFromClawHub(
         timeoutMs: params.timeoutMs,
         workTimeoutMs: params.workTimeoutMs,
         dryRun: params.dryRun,
-        expectedPluginId: runtimeIdResolution.expectedPluginId,
+        expectedPluginId,
         beforePersistentApply: params.beforePersistentApply,
         onBeforePluginArtifactCommit: params.onBeforePluginArtifactCommit
           ? (artifact) =>

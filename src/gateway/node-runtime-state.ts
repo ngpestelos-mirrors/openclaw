@@ -21,14 +21,14 @@ const pendingNodeActionsById = resolveGlobalMap<string, PendingNodeAction[]>(
   "close-and-restart",
 );
 
-export function listPendingNodeActions(params: {
+function prunePendingNodeActions(params: {
   nodeId: string;
-  nowMs?: number;
+  nowMs: number;
   ttlMs: number;
   pairingGeneration?: string;
 }): PendingNodeAction[] {
   const queue = pendingNodeActionsById.get(params.nodeId) ?? [];
-  const minTimestampMs = (params.nowMs ?? Date.now()) - params.ttlMs;
+  const minTimestampMs = params.nowMs - params.ttlMs;
   const live = queue.filter((entry) => entry.enqueuedAtMs >= minTimestampMs);
   if (live.length === 0) {
     pendingNodeActionsById.delete(params.nodeId);
@@ -47,7 +47,7 @@ export function replacePendingNodeActionsForGeneration(params: {
   ttlMs: number;
   nowMs?: number;
 }): void {
-  const live = listPendingNodeActions({
+  const live = prunePendingNodeActions({
     nodeId: params.nodeId,
     nowMs: params.nowMs ?? Date.now(),
     ttlMs: params.ttlMs,
@@ -74,7 +74,12 @@ export function enqueuePendingNodeAction(params: {
   nowMs?: number;
 }): { action: PendingNodeAction; created: boolean } {
   const nowMs = params.nowMs ?? Date.now();
-  const queue = listPendingNodeActions({ ...params, nowMs });
+  const queue = prunePendingNodeActions({
+    nodeId: params.nodeId,
+    nowMs,
+    ttlMs: params.ttlMs,
+    pairingGeneration: params.pairingGeneration,
+  });
   const existing = queue.find((entry) => entry.idempotencyKey === params.idempotencyKey);
   if (existing) {
     return { action: existing, created: false };
@@ -102,13 +107,32 @@ export function enqueuePendingNodeAction(params: {
   return { action, created: true };
 }
 
+export function listPendingNodeActions(params: {
+  nodeId: string;
+  pairingGeneration?: string;
+  ttlMs: number;
+  nowMs?: number;
+}): PendingNodeAction[] {
+  return prunePendingNodeActions({
+    nodeId: params.nodeId,
+    nowMs: params.nowMs ?? Date.now(),
+    ttlMs: params.ttlMs,
+    pairingGeneration: params.pairingGeneration,
+  });
+}
+
 export function acknowledgePendingNodeActions(params: {
   nodeId: string;
   pairingGeneration: string;
   ids: readonly string[];
   ttlMs: number;
 }): PendingNodeAction[] {
-  const pending = listPendingNodeActions(params);
+  const pending = prunePendingNodeActions({
+    nodeId: params.nodeId,
+    pairingGeneration: params.pairingGeneration,
+    nowMs: Date.now(),
+    ttlMs: params.ttlMs,
+  });
   if (params.ids.length === 0) {
     return pending;
   }
@@ -127,7 +151,12 @@ export function removePendingNodeAction(params: {
   actionId: string;
   ttlMs: number;
 }): void {
-  const pending = listPendingNodeActions(params);
+  const pending = prunePendingNodeActions({
+    nodeId: params.nodeId,
+    pairingGeneration: params.pairingGeneration,
+    nowMs: Date.now(),
+    ttlMs: params.ttlMs,
+  });
   const remaining = pending.filter((entry) => entry.id !== params.actionId);
   if (remaining.length === pending.length) {
     return;

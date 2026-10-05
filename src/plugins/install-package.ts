@@ -274,8 +274,8 @@ async function installPluginFromSourceDir(
       depsLogMessage: "Installing plugin dependencies…",
       onBeforePluginArtifactCommit: params.onBeforePluginArtifactCommit,
       beforePersistentApply: params.beforePersistentApply,
-      afterInstall: async (installedDir) => {
-        return await scanAndLinkInstalledPackage({
+      afterInstall: (installedDir) =>
+        scanAndLinkInstalledPackage({
           runtime,
           installedDir,
           pluginId: plugin.pluginId,
@@ -290,8 +290,7 @@ async function installPluginFromSourceDir(
           requestedSpecifier: params.installPolicyRequest?.requestedSpecifier,
           source: params.installPolicyRequest?.source,
           logger,
-        });
-      },
+        }),
     }),
   );
   return result.ok ? { ...result, artifactInspection: inspectNativePluginArtifact() } : result;
