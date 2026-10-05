@@ -426,31 +426,38 @@ describe("gateway lock", () => {
     }
   });
 
-  it("keeps a live SQLite maintenance owner when the requested gateway port is free", async () => {
-    const env = await makeEnv();
-    const lock = expectGatewayLock(
-      await acquireForTest(env, {
-        ...({ role: "sqlite-maintenance" } as GatewayLockOptions),
-        platform: "darwin",
-      }),
-    );
-    const connectSpy = createPortProbeConnectionSpy("refused");
-
-    try {
-      await expect(
-        acquireForTest(env, {
+  it.each([
+    ["doctor", "--state-sqlite", "compact"],
+    ["sessions", "cleanup", "--enforce"],
+  ])(
+    "keeps a live %s maintenance owner when the requested gateway port is free",
+    async (...args) => {
+      const env = await makeEnv();
+      const lock = expectGatewayLock(
+        await acquireForTest(env, {
+          ...({ role: "sqlite-maintenance" } as GatewayLockOptions),
           platform: "darwin",
-          port: 18789,
-          timeoutMs: 15,
-          readProcessCmdline: () => ["openclaw", "doctor", "--state-sqlite", "compact"],
         }),
-      ).rejects.toBeInstanceOf(GatewayLockError);
-      expect(connectSpy).not.toHaveBeenCalled();
-    } finally {
-      connectSpy.mockRestore();
-      await lock.release();
-    }
-  });
+      );
+      const connectSpy = createPortProbeConnectionSpy("refused");
+
+      try {
+        await expect(
+          acquireForTest(env, {
+            platform: "darwin",
+            port: 18789,
+            timeoutMs: 15,
+            readProcessCmdline: () => ["openclaw", ...args],
+            readProcessStartTime: () => null,
+          }),
+        ).rejects.toBeInstanceOf(GatewayLockError);
+        expect(connectSpy).not.toHaveBeenCalled();
+      } finally {
+        connectSpy.mockRestore();
+        await lock.release();
+      }
+    },
+  );
 
   it.each([
     { state: "missing", file: "config", expected: "absent" },

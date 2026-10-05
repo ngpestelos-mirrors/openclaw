@@ -77,7 +77,7 @@ export function registerReplyAdmissionCases({
     "settles a tracked reply after lifecycle rotation during %s completion",
     async (stage) => {
       const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
-        status: "running",
+        status: undefined,
         restartRecoveryDeliveryRunId: "msg",
       });
       let operation: ReplyOperation | undefined;
@@ -222,14 +222,14 @@ export function registerReplyAdmissionCases({
         updatedAt: sessionEntry.updatedAt + 1,
         ...(orphanedRecovery
           ? {
-              status: "running" as const,
+              status: undefined,
               abortedLastRun: false,
               restartRecoveryRuns: [{ runId: "orphaned-run", lifecycleGeneration: "retired" }],
             }
           : {}),
         ...(claimedRecovery
           ? {
-              status: "running" as const,
+              status: undefined,
               abortedLastRun: true,
               mainRestartRecovery: { cycleId: "admitted-cycle", revision: 1, chargedAttempts: 0 },
             }

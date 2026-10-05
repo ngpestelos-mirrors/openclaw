@@ -238,7 +238,7 @@ export function registerHarnessCompletionRecoveryCases(
           await expectRecovery({ started: 0, settled: 0, failed: 1, skipped: 0 });
           expect(callGateway).not.toHaveBeenCalled();
           expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({
-            status: "running",
+            status: "interrupted",
             abortedLastRun: true,
             restartRecoveryHarnessCompletion: binding,
             restartRecoveryDeliverySourceRunId: sourceRunId,
@@ -260,7 +260,7 @@ export function registerHarnessCompletionRecoveryCases(
           expect(
             loadSessionEntry({ sessionKey, storePath: path.join(sessionsDir, "sessions.json") }),
           ).toMatchObject({
-            status: "running",
+            status: "interrupted",
             restartRecoveryHarnessCompletion: binding,
             restartRecoveryDeliverySourceRunId: sourceRunId,
           });
@@ -313,7 +313,7 @@ export function registerHarnessCompletionRecoveryCases(
     await expectRecovery({ started: 0, settled: 0, failed: 1, skipped: 0 });
     expect(callGateway).not.toHaveBeenCalled();
     expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({
-      status: "running",
+      status: "interrupted",
       abortedLastRun: true,
       pendingFinalDelivery,
     });
@@ -463,7 +463,10 @@ export function registerHarnessCompletionRecoveryCases(
     const sessionKey = "agent:main:telegram:group:-100:topic:41818";
     await writeStore(sessionsDir, {
       [sessionKey]: {
-        ...runningSessionEntry("topic-41818-session"),
+        ...runningSessionEntry("topic-41818-session", {
+          status: "interrupted",
+          restartRecoveryDeliveryRunId: "human-run-2",
+        }),
         abortedLastRun: true,
         restartRecoveryRuns: [{ runId: "human-run-2", lifecycleGeneration: "generation-old" }],
       },

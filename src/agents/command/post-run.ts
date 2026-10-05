@@ -28,7 +28,7 @@ import { OPENCLAW_AGENT_RUNTIME_ID } from "../agent-runtime-id.js";
 import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compaction-successor.js";
 import { buildMainSessionRecoveryClearPatch } from "../main-session-recovery/main-session-recovery-clear.js";
-import { inspectRecoveryLifecycleEvent } from "../main-session-recovery/main-session-recovery-lifecycle.js";
+import { inspectMainSessionRecoveryLifecycleEvent } from "../main-session-recovery/main-session-recovery-lifecycle.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import type { AgentRunSessionTarget } from "../run-session-target.types.js";
 import {
@@ -156,7 +156,8 @@ export async function finalizeEmbeddedAgentCommand(params: {
   } = params.attempt;
   const { skillsSnapshot, runContext } = params.embeddedSessionState;
   const interruptedForRestart = () =>
-    inspectRecoveryLifecycleEvent({
+    inspectMainSessionRecoveryLifecycleEvent({
+      currentLifecycleGeneration: lifecycleGeneration,
       event: { data: { phase: "end", ...terminal.outcome } },
       abortSignal: deferredLifecycle.signal,
     }).interrupted;

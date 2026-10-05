@@ -1390,7 +1390,6 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
           const runId = "recovery-run";
           const { entry } = setupStoredSession(
             {
-              status: "running",
               lifecycleRunId: runId,
               restartRecoveryRuns: [{ runId, lifecycleGeneration: "test-generation" }],
               mainRestartRecovery: { cycleId: "recovery-cycle", revision: 4, chargedAttempts: 3 },
@@ -3836,11 +3835,19 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       await runBasicAgentCommand();
 
       if (locked) {
-        const writes = state.persistSessionEntryMock.mock.calls.filter(([params]) => {
-          const entry = (params as { entry?: SessionEntry }).entry;
-          return entry?.modelOverrideSource === "auto" && entry?.modelOverride === "claude";
-        });
-        expect(writes).toHaveLength(0);
+        const lockedSelection = {
+          modelSelectionLocked: true,
+          providerOverride: "openai",
+          modelOverride: "claude",
+          modelOverrideSource: "auto",
+          modelOverrideFallbackOriginProvider: "anthropic",
+          modelOverrideFallbackOriginModel: "claude",
+        };
+        for (const [params] of state.persistSessionEntryMock.mock.calls) {
+          expectRecordFields(requireRecord(params, "post-probe write").entry, lockedSelection);
+        }
+        expectRecordFields(store["agent:main:main"], lockedSelection);
+        expect(store["agent:main:main"]?.restartRecoveryDeliveryRunId).toBeUndefined();
       } else {
         expectRecordFields(store["agent:main:main"], {
           providerOverride: "google",

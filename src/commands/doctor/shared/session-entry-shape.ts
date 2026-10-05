@@ -25,6 +25,55 @@ function normalizeCount(value: unknown): number | undefined {
   return number === undefined ? undefined : Math.floor(number);
 }
 
+/** A previous Gateway's persisted activity is an interrupted outcome, never current liveness. */
+export function migrateLegacySessionRunOutcome(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  if (value.status !== "running" && value.status !== "queued") {
+    return value;
+  }
+  const next: Record<string, unknown> = {
+    ...value,
+    status: "interrupted",
+    abortedLastRun: true,
+    endedAt:
+      asNonNegativeFiniteNumber(value.endedAt) ?? asNonNegativeFiniteNumber(value.updatedAt) ?? 0,
+    lastRunError:
+      normalizeOptionalString(value.lastRunError) ??
+      "Run interrupted by a Gateway restart or loss.",
+  };
+  const runId = normalizeOptionalString(value.lifecycleRunId);
+  const terminalRuns = value.restartRecoveryTerminalRunIds;
+  const delivered = value.restartRecoveryTerminalDeliveryEvidence;
+  if (
+    value.abortedLastRun === true &&
+    runId &&
+    value.lifecycleRunId === runId &&
+    value.activeWriterRunId === runId &&
+    isRecord(value.delivery) &&
+    value.delivery.kind === "internal" &&
+    !value.mainRestartRecovery &&
+    !value.restartRecoveryDeliveryRunId &&
+    !value.restartRecoveryDeliverySourceRunId &&
+    !value.pendingFinalDelivery &&
+    Array.isArray(terminalRuns) &&
+    terminalRuns.includes(runId) &&
+    (delivered === undefined ||
+      (Array.isArray(delivered) &&
+        delivered.every(
+          (evidence) =>
+            isRecord(evidence) && evidence.runId !== runId && evidence.transcriptRunId !== runId,
+        )))
+  ) {
+    // Older command cleanup retired this exact undelivered source before recording its restart.
+    next.restartRecoveryDeliveryRunId = runId;
+    next.restartRecoveryDeliverySourceRunId = runId;
+    const remaining = terminalRuns.filter((terminalRunId) => terminalRunId !== runId);
+    next.restartRecoveryTerminalRunIds = remaining.length ? remaining : undefined;
+  }
+  return next;
+}
+
 /** Doctor preserves July routing and scalar-state contracts before removing their old keys. */
 export function migrateLegacySessionEntryState(
   value: Record<string, unknown>,
@@ -87,7 +136,7 @@ export function migrateLegacySessionEntryState(
       next.memoryFlush = { kind: "succeeded", compactionCount };
     }
   }
-  return next;
+  return migrateLegacySessionRunOutcome(next);
 }
 
 // Persisted stores may contain old or malformed ids; reject path-like ids before use.

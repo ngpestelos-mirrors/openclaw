@@ -2,13 +2,14 @@ import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion"
 import { buildRestartRecoveryClaimCleanupPatch } from "../../config/sessions/restart-recovery-state.js";
 import type { RestartRecoveryTerminalDeliveryEvidenceResult } from "../../config/sessions/restart-recovery-types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { SessionWorkAdmissionLease } from "../../sessions/session-lifecycle-admission.js";
 import type { prepareAgentCommandExecutionIdentity } from "../agent-command-execution-identity.js";
 import { shouldPersistRestartRecoveryCleanup } from "../agent-command-restart-recovery.js";
 import { buildMainSessionRecoveryClearPatch } from "../main-session-recovery/main-session-recovery-clear.js";
-import { inspectRecoveryLifecycleEvent } from "../main-session-recovery/main-session-recovery-lifecycle.js";
+import { inspectMainSessionRecoveryLifecycleEvent } from "../main-session-recovery/main-session-recovery-lifecycle.js";
 import { createAgentRunRestartAbortError } from "../run-termination.js";
 import { persistAgentSession } from "./attempt-execution.shared.js";
 import type { PreparedAgentCommandExecution } from "./prepare.js";
@@ -26,13 +27,16 @@ export async function clearCommandRecoveryClaim(params: {
   sessionReboundDuringRun: boolean;
   trackedRestartRecoveryDeliveryClaim: boolean;
   terminalDeliveryEvidence?: RestartRecoveryTerminalDeliveryEvidenceResult;
-  terminalEvent: Parameters<typeof inspectRecoveryLifecycleEvent>[0]["event"];
+  terminalEvent: Parameters<typeof inspectMainSessionRecoveryLifecycleEvent>[0]["event"];
   abortSignal?: AbortSignal;
 }): Promise<void> {
   const { sessionStore, sessionKey, storePath, runId } = params.prepared;
   const interruptedForRestart = () =>
-    inspectRecoveryLifecycleEvent({ event: params.terminalEvent, abortSignal: params.abortSignal })
-      .interrupted;
+    inspectMainSessionRecoveryLifecycleEvent({
+      currentLifecycleGeneration: getAgentEventLifecycleGeneration(),
+      event: params.terminalEvent,
+      abortSignal: params.abortSignal,
+    }).interrupted;
   if (
     params.sessionReboundDuringRun ||
     !params.trackedRestartRecoveryDeliveryClaim ||

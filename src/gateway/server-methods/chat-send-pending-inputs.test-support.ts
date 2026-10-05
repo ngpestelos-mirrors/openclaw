@@ -63,7 +63,7 @@ export function useBrowserFollowupFixture() {
         main: {
           sessionId: scope.sessionId,
           updatedAt: Date.now(),
-          status: active ? "running" : "done",
+          status: active ? undefined : "done",
           ...(options.createdActor ? { createdActor: options.createdActor } : {}),
           ...(options.sandbox ? { sandbox: options.sandbox } : {}),
         },

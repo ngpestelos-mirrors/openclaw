@@ -28,19 +28,19 @@ export function interruptAdmittedMainSessionRecovery(
   if (entry.lifecycleRunId !== command.runId) {
     // A committed restoration may lose its response. Only that exact pending
     // attempt is repeatable; retained run fences do not authorize newer work.
-    return entry.status === "running" &&
-      entry.abortedLastRun === true &&
+    return entry.abortedLastRun === true &&
       entry.lifecycleRunId === undefined &&
       entry.restartRecoveryDeliveryRunId === undefined
       ? { kind: "no_change" }
       : { kind: "rejected", reason: "stale_reservation" };
   }
-  entry.status = "running";
+  entry.status = "interrupted";
   entry.lifecycleRunId = undefined;
   entry.lastRunId = undefined;
   entry.abortedLastRun = true;
   entry.startedAt = undefined;
-  entry.endedAt = undefined;
+  entry.endedAt = command.now;
+  entry.lastRunError = "Run interrupted before restart recovery could start.";
   entry.runtimeMs = undefined;
   if (entry.restartRecoveryDeliveryRunId === command.runId) {
     // Rotate the failed RPC id on retry so dedupe cannot replay its terminal failure.

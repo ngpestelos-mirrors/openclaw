@@ -179,7 +179,6 @@ it("caps only the oldest eligible activity ties without decoding unrelated paylo
     ["started", { sessionStartedAt: now }],
     ["pinned", { pinnedAt: old }],
     ["locked", { modelSelectionLocked: true }],
-    ["running", { status: "running" }],
     ["group", { chatType: "group" }],
     ["recent", { lastActivityAt: now }],
     ["live", {}],

@@ -4,12 +4,16 @@ import {
   resolveSessionWorkStartError,
   type InternalSessionEntry as SessionEntry,
 } from "../../config/sessions.js";
-import { buildRestartRecoveryClaimCleanupPatch } from "../../config/sessions/restart-recovery-state.js";
 import {
-  listSessionEntriesByStatus,
+  buildRestartRecoveryClaimCleanupPatch,
+  hasMainSessionRecoveryClaim,
+} from "../../config/sessions/restart-recovery-state.js";
+import {
   loadExactSessionEntry,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import { readSessionEntrySummariesInWorker } from "../../config/sessions/session-entry-read-runtime.js";
+import { isTerminalSessionStatus } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import { readSessionMessagesAsync } from "../../gateway/session-transcript-readers.js";
@@ -22,10 +26,11 @@ import {
 import { resolveExecDefaults } from "../exec-defaults.js";
 import type { MainSessionRecoveryAdmission } from "./main-session-recovery-admission.js";
 import type { MainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
+import { buildMainSessionRecoveryClearPatch } from "./main-session-recovery-clear.js";
 import { createCurrentProcessOwnerLookup } from "./main-session-recovery-live-owners.js";
 import {
   getMainSessionRecoveryRetryCount,
-  isMainRestartRecoveryAggregateTerminalOnly,
+  isMainRestartRecoveryTerminalOnly,
   isMainRestartRecoveryCandidate,
 } from "./main-session-recovery-state.js";
 import {
@@ -94,7 +99,8 @@ async function completePendingFinalRecoveryWithNotice(
   entry: SessionEntry,
   target: MainSessionRecoveryStoreTarget,
 ): Promise<boolean> {
-  const endedAt = Date.now();
+  const completedOutcome = isTerminalSessionStatus(entry.status) && entry.status !== "interrupted";
+  const endedAt = completedOutcome ? (entry.endedAt ?? Date.now()) : Date.now();
   let completed = false;
   await updateSessionEntry(
     target,
@@ -112,10 +118,13 @@ async function completePendingFinalRecoveryWithNotice(
           entry: current,
           recordTerminalSource: true,
         }),
+        ...buildMainSessionRecoveryClearPatch(current),
         abortedLastRun: false,
         endedAt,
         lifecycleRunId: undefined,
-        lastRunId: resolveRestartRecoveryTerminalClientRunId(current),
+        lastRunId: completedOutcome
+          ? current.lastRunId
+          : resolveRestartRecoveryTerminalClientRunId(current),
         pendingFinalDelivery: undefined,
         ...(pending?.context &&
         pending.intentId &&
@@ -136,7 +145,7 @@ async function completePendingFinalRecoveryWithNotice(
           typeof current.startedAt === "number"
             ? Math.max(0, endedAt - current.startedAt)
             : undefined,
-        status: "done" as const,
+        status: completedOutcome ? current.status : ("done" as const),
         updatedAt: endedAt,
       };
     },
@@ -156,7 +165,7 @@ export function loadExpectedRestartRecoveryTarget(params: {
   });
   const entry = exact?.sessionKey === params.expected.sessionKey ? exact.entry : undefined;
   return entry?.sessionId === params.expected.sessionId &&
-    entry.status === "running" &&
+    hasMainSessionRecoveryClaim(entry) &&
     entry.abortedLastRun === true &&
     (params.expected.claim
       ? normalizeOptionalString(entry.restartRecoveryDeliveryRunId) ===
@@ -228,10 +237,10 @@ export async function recoverStore(params: {
       });
       entries = entry ? [{ sessionKey: params.expectedTarget.sessionKey, entry }] : [];
     } else {
-      entries = await listSessionEntriesByStatus(
-        { agentId: params.storeAgentId, storePath: params.storePath },
-        ["running"],
-      );
+      entries = await readSessionEntrySummariesInWorker({
+        agentId: params.storeAgentId,
+        storePath: params.storePath,
+      });
     }
   } catch (err) {
     mainSessionRecoveryLog.warn(`failed to load session store ${params.storePath}: ${String(err)}`);
@@ -247,8 +256,11 @@ export async function recoverStore(params: {
     }
     let entry = loadedEntry;
     if (
-      entry.status !== "running" ||
-      (entry.abortedLastRun !== true && !isMainRestartRecoveryAggregateTerminalOnly(entry))
+      entry.mainRestartRecovery?.tombstone ||
+      !hasMainSessionRecoveryClaim(entry) ||
+      (entry.abortedLastRun !== true &&
+        !isMainRestartRecoveryTerminalOnly(entry) &&
+        !(isTerminalSessionStatus(entry.status) && entry.status !== "interrupted"))
     ) {
       continue;
     }
@@ -442,7 +454,8 @@ export async function recoverStore(params: {
         params.handledSessionKeys.add(resumeDedupeKey);
         skip("invalid_harness_completion");
       } else if (
-        reconciliation.entry?.status === "running" &&
+        reconciliation.entry &&
+        hasMainSessionRecoveryClaim(reconciliation.entry) &&
         reconciliation.entry.abortedLastRun === true
       ) {
         result.failed++;
@@ -530,6 +543,7 @@ export async function recoverStore(params: {
           : {}),
         forceRestartSafeTools:
           pendingAction === "fail" ||
+          (isTerminalSessionStatus(entry.status) && entry.status !== "interrupted") ||
           entry.restartRecoveryForceSafeTools === true ||
           hasReplaySafeCodeModeCheckpointInCurrentTurn(messages),
       };

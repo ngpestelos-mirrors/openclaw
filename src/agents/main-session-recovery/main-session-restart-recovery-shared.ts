@@ -7,7 +7,6 @@ import {
   type InternalSessionEntry as SessionEntry,
   type SessionStoreTarget,
 } from "../../config/sessions.js";
-import { hasSessionEntriesByStatusReadOnly } from "../../config/sessions/session-accessor.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target-paths.js";
 import { prepareSessionStoreTargetInventory } from "../../config/sessions/session-store-target-inventory.js";
 import { prepareSessionStoreTargetInventoryRead } from "../../config/sessions/session-store-target-runtime.js";
@@ -45,7 +44,6 @@ export async function discoverRestartRecoveryStoreTargets(params: {
   cfg?: OpenClawConfig;
   agentIds?: ReadonlySet<string>;
   stateDir?: string;
-  statuses?: Parameters<typeof hasSessionEntriesByStatusReadOnly>[1];
   shouldContinue?: () => boolean;
 }): Promise<SessionStoreTarget[]> {
   if (params.shouldContinue?.() === false) {
@@ -97,29 +95,15 @@ export async function discoverRestartRecoveryStoreTargets(params: {
       });
     }
   }
-  const eligibleTargets: SessionStoreTarget[] = [];
-  for (const target of storeTargets) {
-    if (!params.cfg && params.agentIds && !params.agentIds.has(target.agentId)) {
-      continue;
-    }
-    if (params.shouldContinue?.() === false) {
-      return [];
-    }
-    if (readAgentDatabaseAdmissionRefusal(target.agentId, { env })) {
-      continue;
-    }
-    const hasStatus =
-      !params.statuses ||
-      (await hasSessionEntriesByStatusReadOnly({ ...target, env }, params.statuses));
-    if (params.shouldContinue?.() === false) {
-      return [];
-    }
-    if (hasStatus) {
-      eligibleTargets.push(target);
-    }
+  if (params.shouldContinue?.() === false) {
+    return [];
   }
-  return eligibleTargets
-    .filter((target) => !readAgentDatabaseAdmissionRefusal(target.agentId, { env }))
+  return storeTargets
+    .filter(
+      (target) =>
+        (params.cfg !== undefined || !params.agentIds || params.agentIds.has(target.agentId)) &&
+        !readAgentDatabaseAdmissionRefusal(target.agentId, { env }),
+    )
     .toSorted(
       (a, b) => a.storePath.localeCompare(b.storePath) || a.agentId.localeCompare(b.agentId),
     );

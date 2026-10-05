@@ -10,11 +10,16 @@ import {
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { callGateway } from "../../gateway/call.js";
 import { buildRestartSafeChatTranscriptState } from "../../gateway/server-methods/chat-restart-recovery.js";
+import { prepareGatewayStartupSessions } from "../../gateway/server-startup-session-migration.js";
 import { persistGatewaySessionLifecycleEvent } from "../../gateway/session-lifecycle-state.js";
 import {
   getAgentEventLifecycleGeneration,
   rotateAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { clearCommandRecoveryClaim } from "../command/cleanup.js";
 import { createAgentRunRestartAbortError } from "../run-termination.js";
@@ -35,6 +40,20 @@ vi.mock("../../gateway/call.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../gateway/call.js")>()),
   callGateway: vi.fn(async () => ({ runId: "resumed-chat-run" })),
 }));
+
+async function migrateLegacyInterruption(sessionKey: string, stateDir: string) {
+  const { db } = openOpenClawAgentDatabase({ agentId: "main" });
+  // Restore the previous writer's certified bytes; current writers accept outcomes only.
+  db.prepare(
+    "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.status', 'running') WHERE session_key = ?",
+  ).run(sessionKey);
+  db.prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?").run(sessionKey);
+  await closeOpenClawAgentDatabasesAsync(stateDir);
+  await prepareGatewayStartupSessions({
+    cfg: { agents: { entries: { main: {} } } },
+    log: { info: vi.fn(), warn: vi.fn() },
+  });
+}
 
 it.each(["before settlement", "after settlement", "persisted interruption"] as const)(
   "resumes restart-safe Control UI work when shutdown marking runs %s",
@@ -83,6 +102,9 @@ it.each(["before settlement", "after settlement", "persisted interruption"] as c
           { cwd: state.workspaceDir, message },
         );
       }
+      if (order === "persisted interruption") {
+        await migrateLegacyInterruption(sessionKey, state.stateDir);
+      }
       const mark = (isActive: boolean) =>
         markRestartAbortedMainSessions({
           resolveGatewayContext: () => undefined,
@@ -126,7 +148,7 @@ it.each(["before settlement", "after settlement", "persisted interruption"] as c
         }
         const interrupted = loadSessionEntry(target);
         expect.soft(interrupted).toMatchObject({
-          status: "running",
+          status: "interrupted",
           abortedLastRun: true,
           restartRecoveryDeliveryRunId: runId,
           restartRecoveryDeliverySourceRunId: runId,
@@ -159,7 +181,9 @@ it.each(["before settlement", "after settlement", "persisted interruption"] as c
               }),
             ).toEqual({ started: 0, settled: 0, failed: 0, skipped: 1 });
             expect(dispatch).not.toHaveBeenCalled();
-            expect(loadSessionEntry(target)?.restartRecoveryTerminalRunIds).toContain(runId);
+            expect(loadSessionEntry(target)?.restartRecoveryTerminalRunIds).toEqual([
+              "previous-completed-run",
+            ]);
             expect(info).toHaveBeenCalledExactlyOnceWith(
               "main-session restart recovery startup complete: started=0 settled=0 failed=0 skipped=1 skipReasons=live_owner:1",
             );
@@ -225,13 +249,14 @@ it("preserves a terminal receipt recorded under the interrupted continuation's s
     await replaceSessionEntry(target, {
       sessionId,
       updatedAt: 100,
-      status: "running",
+      status: "interrupted",
       abortedLastRun: true,
       activeWriterRunId: runId,
       lifecycleRunId: runId,
       delivery: { kind: "internal" },
       ...terminal,
     });
+    await migrateLegacyInterruption(sessionKey, state.stateDir);
 
     expect(await markStartupOrphanedMainSessionsForRecovery({ stateDir: state.stateDir })).toEqual({
       marked: 0,

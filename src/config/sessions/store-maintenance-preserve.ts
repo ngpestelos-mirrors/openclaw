@@ -1,5 +1,7 @@
 // Maintenance preserve providers protect runtime-owned sessions from pruning/capping.
 import type { SubagentMaintenanceDurableBasis } from "../../agents/subagents/registry/subagent-registry-read.types.js";
+import { iterateProjectedAgentRunSessionKeys } from "../../infra/agent-run-projection.js";
+import { buildProjectedAgentRunIndex } from "../../infra/agent-run-registry.js";
 import {
   collectActiveSessionWorkAdmissions,
   collectActiveSessionLifecycleMutationIdentities,
@@ -46,6 +48,10 @@ export function collectSessionMaintenancePreserveKeys(
   baseKeys?: Iterable<string | undefined>,
 ): Set<string> | undefined {
   const keys = new Set<string>();
+  addSessionMaintenancePreserveKeys(
+    keys,
+    iterateProjectedAgentRunSessionKeys(buildProjectedAgentRunIndex()),
+  );
   addSessionMaintenancePreserveKeys(keys, baseKeys);
   for (const provider of preserveKeysProviders.keys()) {
     try {
@@ -135,6 +141,10 @@ export async function prepareSessionMaintenancePreservation(storePath: string): 
       capture() {
         assertProvidersCurrent();
         const keys = new Set<string>();
+        addSessionMaintenancePreserveKeys(
+          keys,
+          iterateProjectedAgentRunSessionKeys(buildProjectedAgentRunIndex()),
+        );
         for (const { provider, facts } of prepared) {
           addSessionMaintenancePreserveKeys(keys, facts ? facts.capture() : provider());
         }

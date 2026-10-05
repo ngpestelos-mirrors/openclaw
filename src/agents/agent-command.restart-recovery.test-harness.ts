@@ -211,7 +211,6 @@ export function registerAgentCommandRecoveryCases(
           expect(state.deliverAgentCommandResultMock).not.toHaveBeenCalled();
         },
         {
-          status: "running",
           activeWriterRunId: runId,
           lifecycleRunId: runId,
           restartRecoveryDeliveryRunId: runId,

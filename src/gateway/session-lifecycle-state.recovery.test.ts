@@ -79,7 +79,7 @@ const cases: RecoveryCase[] = [
       },
     }),
     expected: {
-      status: "running",
+      status: "interrupted",
       abortedLastRun: true,
       restartRecoveryRuns: [{ runId: "restart-run", lifecycleGeneration: "pre-restart" }],
       mainRestartRecovery: recovery,
@@ -120,7 +120,7 @@ const cases: RecoveryCase[] = [
       event: { data: { phase: "end", endedAt: 1_800 } },
     }),
     expected: {
-      status: "running",
+      status: "interrupted",
       abortedLastRun: true,
       restartRecoveryRuns: [{ runId: "restart-run", lifecycleGeneration: "pre-restart" }],
       mainRestartRecovery: recovery,
@@ -192,7 +192,7 @@ const cases: RecoveryCase[] = [
       },
     }),
     expected: {
-      status: "running",
+      status: "interrupted",
       abortedLastRun: true,
       lifecycleRunId: "foreground-run",
       restartRecoveryRuns: [interrupted],
@@ -205,7 +205,7 @@ it.each(cases)("$name", async ({ input, expected, clearsRecovery, clearsOwner, w
   const { entry, event } = input(getAgentEventLifecycleGeneration());
   loggerMocks.warn.mockClear();
   const persisted = await persistLifecycle(
-    { status: "running", abortedLastRun: true, mainRestartRecovery: recovery, ...entry },
+    { status: "interrupted", abortedLastRun: true, mainRestartRecovery: recovery, ...entry },
     event,
   );
   expect(persisted).toMatchObject(expected);

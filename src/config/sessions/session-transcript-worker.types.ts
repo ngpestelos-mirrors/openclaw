@@ -41,10 +41,7 @@ import type {
   SessionBranchSummaryReadRequest,
   SessionBranchSummaryReadResult,
 } from "./session-accessor.sqlite-branches.js";
-import type {
-  SessionEntryStatusSelection,
-  TranscriptEvent,
-} from "./session-accessor.sqlite-contract.js";
+import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import type {
   SessionIdentityEvidenceIdentity,
   SessionIdentityEvidenceResult,
@@ -330,7 +327,6 @@ type SessionExactEntriesWorkerRequest = SessionExactEntriesWorkerSelection & {
   /** Omitted retains the complete entry; an empty selection reads metadata only. */
   snapshotFields?: readonly SessionEntrySnapshotField[];
   env: NodeJS.ProcessEnv;
-  statusSelection?: SessionEntryStatusSelection;
   lifecycleSessionKey?: string;
   /** Reply initialization reads the current row's model parent in this same snapshot. */
   replyInitializationSessionKey?: string;
@@ -347,7 +343,6 @@ export type SessionExactEntriesWorkerResult = {
   entries: SessionEntrySummary[];
   lifecycleTimestamps: SessionLifecycleTimestamps;
   pendingArchives?: boolean;
-  statusFound?: boolean;
   databaseIdentity?: {
     identity: string;
     incarnation: string;

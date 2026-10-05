@@ -4,6 +4,7 @@ import path from "node:path";
 import type { DatabaseSync, StatementSync as NativeStatement } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
+import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import * as workerIdentity from "../../infra/sqlite-worker-identity.js";
 import {
@@ -286,107 +287,154 @@ it.runIf(process.platform !== "win32")(
   },
 );
 
-it.each(["provider", "work-key", "work-id", "lifecycle-key", "lifecycle-id", "ancestor"] as const)(
-  "preserves %s protection through automatic worker planning",
-  async (protection) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const storePath = path.join(state.sessionsDir(), "sessions.json");
-      const active = { sessionKey: "agent:main:maintenance-protection-active", storePath };
-      const protectedKey = "agent:main:subagent:maintenance-protected";
-      const protectedId = "maintenance-protected-id";
-      const aliasKey = "agent:main:subagent:maintenance-protected-alias";
-      const sibling = "agent:main:subagent:maintenance-unprotected";
-      replaceSessionEntrySync(active, { sessionId: "active", updatedAt: Date.now() });
+it.each([
+  "registry",
+  "recovery-cycle",
+  "recovery-run",
+  "provider",
+  "work-key",
+  "work-id",
+  "lifecycle-key",
+  "lifecycle-id",
+  "ancestor",
+] as const)("preserves %s protection through automatic worker planning", async (protection) => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const storePath = path.join(state.sessionsDir(), "sessions.json");
+    const active = { sessionKey: "agent:main:maintenance-protection-active", storePath };
+    const protectedKey = protection.startsWith("recovery")
+      ? "agent:main:hook:maintenance-protected"
+      : "agent:main:subagent:maintenance-protected";
+    const protectedId = "maintenance-protected-id";
+    const aliasKey = "agent:main:subagent:maintenance-protected-alias";
+    const sibling = "agent:main:subagent:maintenance-unprotected";
+    replaceSessionEntrySync(active, { sessionId: "active", updatedAt: Date.now() });
+    replaceSessionEntrySync(
+      { sessionKey: protectedKey, storePath },
+      {
+        sessionId: protectedId,
+        updatedAt: 1,
+        ...(protection === "recovery-cycle"
+          ? {
+              mainRestartRecovery: { cycleId: "waiting", revision: 1, chargedAttempts: 0 },
+            }
+          : protection === "recovery-run"
+            ? {
+                restartRecoveryRuns: [
+                  { runId: "awaiting-recovery", lifecycleGeneration: "previous-gateway" },
+                ],
+              }
+            : {}),
+      },
+    );
+    if (protection.endsWith("-id")) {
       replaceSessionEntrySync(
-        { sessionKey: protectedKey, storePath },
+        { sessionKey: aliasKey, storePath },
         {
           sessionId: protectedId,
           updatedAt: 1,
         },
       );
-      if (protection.endsWith("-id")) {
-        replaceSessionEntrySync(
-          { sessionKey: aliasKey, storePath },
-          {
-            sessionId: protectedId,
-            updatedAt: 1,
-          },
-        );
-      }
-      replaceSessionEntrySync(
-        { sessionKey: sibling, storePath },
+    }
+    replaceSessionEntrySync(
+      { sessionKey: sibling, storePath },
+      {
+        sessionId: "unprotected",
+        updatedAt: 1,
+        ...(protection === "recovery-cycle"
+          ? {
+              mainRestartRecovery: {
+                cycleId: "finished",
+                revision: 1,
+                chargedAttempts: 0,
+                tombstone: { reason: "exhausted" },
+              },
+            }
+          : protection === "recovery-run"
+            ? {
+                restartRecoveryRuns: [
+                  { runId: "terminal", lifecycleGeneration: "previous-gateway" },
+                ],
+                restartRecoveryTerminalRunIds: ["terminal"],
+              }
+            : {}),
+      },
+    );
+    const run = async () => {
+      const completed = observeMaintenance();
+      await patchSessionEntryCore(
+        active,
+        () => ({
+          label: "protected",
+          ...(protection === "ancestor" ? { parentSessionKey: protectedKey } : {}),
+        }),
         {
-          sessionId: "unprotected",
-          updatedAt: 1,
+          maintenanceConfig: resolveMaintenanceConfigFromInput({
+            mode: "enforce",
+            maxEntries: 100,
+            pruneAfter: "1s",
+          }),
         },
       );
-      const run = async () => {
-        const completed = observeMaintenance();
-        await patchSessionEntryCore(
-          active,
-          () => ({
-            label: "protected",
-            ...(protection === "ancestor" ? { parentSessionKey: protectedKey } : {}),
-          }),
-          {
-            maintenanceConfig: resolveMaintenanceConfigFromInput({
-              mode: "enforce",
-              maxEntries: 100,
-              pruneAfter: "1s",
-            }),
-          },
-        );
-        await completed;
-        expect(loadSessionEntry({ sessionKey: protectedKey, storePath })?.sessionId).toBe(
-          protectedId,
-        );
-        expect(loadSessionEntry({ sessionKey: sibling, storePath })).toBeUndefined();
-        if (protection.endsWith("-id")) {
-          expect(loadSessionEntry({ sessionKey: aliasKey, storePath })?.sessionId).toBe(
-            protectedId,
-          );
-        }
-      };
-      if (protection === "provider") {
-        let reverse = false;
-        const unregister = registerSessionMaintenancePreserveKeysProvider(() => {
-          reverse = !reverse;
-          const keys = [protectedKey.toUpperCase(), active.sessionKey];
-          return reverse ? keys.toReversed() : keys;
+      await completed;
+      expect(loadSessionEntry({ sessionKey: protectedKey, storePath })?.sessionId).toBe(
+        protectedId,
+      );
+      expect(loadSessionEntry({ sessionKey: sibling, storePath })).toBeUndefined();
+      if (protection.endsWith("-id")) {
+        expect(loadSessionEntry({ sessionKey: aliasKey, storePath })?.sessionId).toBe(protectedId);
+      }
+    };
+    if (protection === "provider") {
+      let reverse = false;
+      const unregister = registerSessionMaintenancePreserveKeysProvider(() => {
+        reverse = !reverse;
+        const keys = [protectedKey.toUpperCase(), active.sessionKey];
+        return reverse ? keys.toReversed() : keys;
+      });
+      try {
+        await run();
+      } finally {
+        unregister();
+      }
+    } else if (protection === "registry") {
+      registerAgentRunContext("maintenance-live-run", {
+        agentId: "main",
+        sessionKey: protectedKey,
+        sessionId: protectedId,
+        projectSessionActive: true,
+      });
+      try {
+        await run();
+      } finally {
+        clearAgentRunContext("maintenance-live-run");
+      }
+    } else if (protection === "ancestor" || protection.startsWith("recovery")) {
+      await run();
+    } else {
+      const identity = protection.endsWith("-key") ? protectedKey : protectedId;
+      if (protection.startsWith("lifecycle")) {
+        await runExclusiveSessionLifecycleMutation("archive", {
+          scope: storePath,
+          identities: [identity],
+          run,
+        });
+      } else {
+        const lease = await beginSessionWorkAdmission({
+          scope: storePath,
+          identities: [identity],
+          assertAllowed: () => {},
         });
         try {
           await run();
         } finally {
-          unregister();
-        }
-      } else if (protection === "ancestor") {
-        await run();
-      } else {
-        const identity = protection.endsWith("-key") ? protectedKey : protectedId;
-        if (protection.startsWith("lifecycle")) {
-          await runExclusiveSessionLifecycleMutation("archive", {
-            scope: storePath,
-            identities: [identity],
-            run,
-          });
-        } else {
-          const lease = await beginSessionWorkAdmission({
-            scope: storePath,
-            identities: [identity],
-            assertAllowed: () => {},
-          });
-          try {
-            await run();
-          } finally {
-            lease.release();
-          }
+          lease.release();
         }
       }
-    });
-  },
-);
+    }
+  });
+});
 
-it("rolls back archive metadata when protection changes at planning commit", async () => {
+it("rolls back archive metadata when a run registers at planning commit", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const storePath = path.join(state.sessionsDir(), "sessions.json");
     const active = { sessionKey: "agent:main:maintenance-live-protection", storePath };
@@ -402,9 +450,6 @@ it("rolls back archive metadata when protection changes at planning commit", asy
       { sessionId: "stale", updatedAt: 1 },
     );
     let protectedNow = false;
-    const unregister = registerSessionMaintenancePreserveKeysProvider(() =>
-      protectedNow ? [protectedKey] : [],
-    );
     observeSessionMaintenancePlanningWorker({
       beforeAdmission(request) {
         const facts = request.facts;
@@ -416,6 +461,11 @@ it("rolls back archive metadata when protection changes at planning commit", asy
           facts.publication.changedKeys.includes(protectedKey)
         ) {
           protectedNow = true;
+          registerAgentRunContext("maintenance-live-run", {
+            agentId: "main",
+            sessionKey: protectedKey,
+            projectSessionActive: true,
+          });
         }
       },
     });
@@ -435,7 +485,7 @@ it("rolls back archive metadata when protection changes at planning commit", asy
         expect.any(Number),
       );
     } finally {
-      unregister();
+      clearAgentRunContext("maintenance-live-run");
     }
   });
 });

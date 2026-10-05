@@ -18,7 +18,7 @@ describe("restart recovery terminal delivery receipt", () => {
       { sessionKey, storePath: fixture.storePath() },
       {
         sessionId: params?.sessionId ?? "session-1",
-        status: "running",
+        status: undefined,
         restartRecoveryDeliveryRunId: "recovery-1",
         restartRecoveryDeliverySourceRunId: params?.sourceTurnId ?? "source-1",
         updatedAt: 1,
@@ -145,7 +145,7 @@ describe("restart recovery steering block reasons", () => {
     expect(
       resolveRestartRecoverySteeringBlockReason(
         entry({
-          status: "running",
+          status: undefined,
           restartRecoveryDeliveryRunId: "recovery-1",
           restartRecoveryDeliverySourceRunId: "source-1",
           restartRecoveryDeliveryReceiptState: "terminal-pending",
@@ -161,7 +161,7 @@ describe("restart recovery steering block reasons", () => {
     expect(
       resolveRestartRecoverySteeringBlockReason(
         entry({
-          status: "running",
+          status: undefined,
           restartRecoveryDeliveryRunId: "recovery-1",
           restartRecoveryDeliverySourceRunId: "source-1",
           restartRecoveryDeliveryReceiptState: "delivered-terminal",
@@ -177,7 +177,7 @@ describe("restart recovery steering block reasons", () => {
     expect(
       resolveRestartRecoverySteeringBlockReason(
         entry({
-          status: "running",
+          status: undefined,
           restartRecoveryDeliveryRunId: "recovery-1",
           restartRecoveryDeliverySourceRunId: "source-1",
           restartRecoveryDeliveryToolCallId: "message-call-2",
@@ -191,7 +191,7 @@ describe("restart recovery steering block reasons", () => {
   it("is fail-closed for a terminal-source tombstone on the active source turn", () => {
     expect(
       resolveRestartRecoverySteeringBlockReason(
-        entry({ status: "running", restartRecoveryTerminalRunIds: ["source-1"] }),
+        entry({ status: undefined, restartRecoveryTerminalRunIds: ["source-1"] }),
         "session-1",
         "source-1",
       ),
@@ -203,7 +203,7 @@ describe("restart recovery steering block reasons", () => {
     // source must not fence a safe active source into follow-up mode.
     expect(
       resolveRestartRecoverySteeringBlockReason(
-        entry({ status: "running", restartRecoveryTerminalRunIds: ["source-old"] }),
+        entry({ status: undefined, restartRecoveryTerminalRunIds: ["source-old"] }),
         "session-1",
         "source-1",
       ),
@@ -216,7 +216,7 @@ describe("restart recovery steering block reasons", () => {
     // fail-closes to queue rather than risk a refused terminal send.
     expect(
       resolveRestartRecoverySteeringBlockReason(
-        entry({ status: "running", restartRecoveryTerminalRunIds: ["source-old"] }),
+        entry({ status: undefined, restartRecoveryTerminalRunIds: ["source-old"] }),
         "session-1",
         "",
       ),
@@ -229,7 +229,7 @@ describe("restart recovery steering block reasons", () => {
         entry({
           status: "done",
           restartRecoveryDeliveryRunId: "recovery-1",
-          restartRecoveryDeliverySourceRunId: "source-1",
+          restartRecoveryDeliverySourceRunId: "source-2",
         }),
         "session-1",
         "source-1",
@@ -241,7 +241,7 @@ describe("restart recovery steering block reasons", () => {
     expect(
       resolveRestartRecoverySteeringBlockReason(
         entry({
-          status: "running",
+          status: undefined,
           sessionId: "session-2",
           restartRecoveryTerminalRunIds: ["source-1"],
         }),
@@ -253,23 +253,26 @@ describe("restart recovery steering block reasons", () => {
 
   it("is not fail-closed for a claimless fresh entry", () => {
     expect(
-      resolveRestartRecoverySteeringBlockReason(entry({ status: "running" }), "session-1", ""),
+      resolveRestartRecoverySteeringBlockReason(entry({ status: undefined }), "session-1", ""),
     ).toBeUndefined();
   });
 
-  it("is not fail-closed for a startable live claim", () => {
-    expect(
-      resolveRestartRecoverySteeringBlockReason(
-        entry({
-          status: "running",
-          restartRecoveryDeliveryRunId: "recovery-1",
-          restartRecoveryDeliverySourceRunId: "source-1",
-        }),
-        "session-1",
-        "source-1",
-      ),
-    ).toBeUndefined();
-  });
+  it.each([undefined, "done", "interrupted"] as const)(
+    "uses the exact source claim independently of outcome %s",
+    (status) => {
+      expect(
+        resolveRestartRecoverySteeringBlockReason(
+          entry({
+            status,
+            restartRecoveryDeliveryRunId: "recovery-1",
+            restartRecoveryDeliverySourceRunId: "source-1",
+          }),
+          "session-1",
+          "source-1",
+        ),
+      ).toBeUndefined();
+    },
+  );
 
   it("is not fail-closed without a session entry", () => {
     expect(

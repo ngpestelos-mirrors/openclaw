@@ -111,7 +111,7 @@ export function registerSteeringReceiptCases({
     const actualQueue = await vi.importActual<typeof import("./queue.js")>("./queue.js");
     vi.mocked(parkSteerCandidate).mockImplementation(actualQueue.parkSteerCandidate);
     const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
-      status: "running",
+      status: undefined,
       restartRecoveryDeliveryRunId: "active-recovery",
       restartRecoveryDeliverySourceRunId: "active-source",
     });
@@ -213,7 +213,7 @@ export function registerSteeringReceiptCases({
   for (const receiptState of ["terminal-pending", "delivered-terminal"] as const) {
     it(`queues instead of steering while the active turn holds a ${receiptState} source-reply receipt`, async () => {
       const sessionEntry = makeSessionEntry({
-        status: "running",
+        status: undefined,
         restartRecoveryDeliveryRunId: "recovery-run-1",
         restartRecoveryDeliverySourceRunId: "source-turn-1",
         restartRecoveryDeliveryReceiptState: receiptState,
@@ -265,7 +265,7 @@ export function registerSteeringReceiptCases({
     // The claim was cleaned after the terminal send; the source turn stays
     // tombstoned so a steered send resolves to already-delivered (#128971).
     const sessionEntry = makeSessionEntry({
-      status: "running",
+      status: undefined,
       restartRecoveryTerminalRunIds: ["source-turn-1"],
     });
     const sessionStore = { main: sessionEntry };
@@ -312,7 +312,7 @@ export function registerSteeringReceiptCases({
     // finished earlier source must not fence a safe steer into the active run:
     // only the active source turn's own tombstone fail-closes delivery.
     const sessionEntry = makeSessionEntry({
-      status: "running",
+      status: undefined,
       restartRecoveryTerminalRunIds: ["source-turn-1"],
     });
     const sessionStore = { main: sessionEntry };
@@ -357,7 +357,7 @@ export function registerSteeringReceiptCases({
     // beginTerminalSourceReplyDelivery fail-closes any send while a terminal
     // tool-call id is armed, even without a receipt state (delivery-ambiguous).
     const sessionEntry = makeSessionEntry({
-      status: "running",
+      status: undefined,
       restartRecoveryDeliveryRunId: "recovery-run-1",
       restartRecoveryDeliverySourceRunId: "source-turn-1",
       restartRecoveryDeliveryToolCallId: "message-call-2",
@@ -445,7 +445,7 @@ export function registerSteeringReceiptCases({
   it("does not replay an accepted steer after terminal delivery", async () => {
     // Accepted input is already owned by its injection target. A later receipt cannot authorize replay.
     const sessionEntry = makeSessionEntry({
-      status: "running",
+      status: undefined,
       restartRecoveryDeliveryRunId: "recovery-run-1",
       restartRecoveryDeliverySourceRunId: "source-turn-1",
       restartRecoveryDeliveryReceiptState: "terminal-pending",

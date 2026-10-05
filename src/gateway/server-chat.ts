@@ -18,12 +18,16 @@ import {
 } from "../agents/agent-run-terminal-outcome.js";
 import { isActiveEmbeddedRunId } from "../agents/embedded-agent-runner/runs.js";
 import { isTimeoutError, resolveFailoverReasonFromError } from "../agents/failover-error.js";
-import { isMainSessionRecoveryLifecycleEvent } from "../agents/main-session-recovery/main-session-recovery-lifecycle.js";
+import { inspectMainSessionRecoveryLifecycleEvent } from "../agents/main-session-recovery/main-session-recovery-lifecycle.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
 import { normalizeVerboseLevel } from "../auto-reply/thinking.js";
 import { normalizeAgentPlanSteps } from "../channels/streaming.js";
 import { getRuntimeConfig } from "../config/io.js";
-import type { AgentEventPayload, AgentEventRuntimePayload } from "../infra/agent-events.js";
+import {
+  getAgentEventLifecycleGeneration,
+  type AgentEventPayload,
+  type AgentEventRuntimePayload,
+} from "../infra/agent-events.js";
 import { getAgentRunContext, getAgentRunContextOwnerStatus } from "../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { boundedJsonUtf8Bytes } from "../infra/json-utf8-bytes.js";
@@ -349,7 +353,11 @@ export function createAgentEventHandler({
         ...(agentId ? { agentId } : {}),
         clone: false,
       });
-      return { suppress: isMainSessionRecoveryLifecycleEvent({ entry, event }) };
+      return inspectMainSessionRecoveryLifecycleEvent({
+        currentLifecycleGeneration: getAgentEventLifecycleGeneration(),
+        entry,
+        event,
+      });
     } catch {
       return { suppress: false };
     }

@@ -76,7 +76,6 @@ export type MainSessionRecoveryCommand =
       cycleId: string;
       now: number;
       runs?: RestartRecoveryRun[];
-      resetRuntime?: boolean;
     }
   | {
       kind: "observe";

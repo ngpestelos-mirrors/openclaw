@@ -11,6 +11,7 @@ import { drainSessionStoreWriterQueuesForTest } from "../../config/sessions/stor
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { buildGatewaySessionRow } from "../../gateway/session-utils-row.js";
+import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   disposeOpenClawAgentDatabaseByPath,
@@ -231,7 +232,6 @@ it.each([false, true])(
       activeModel: "plain",
     });
     for (const changed of [
-      { status: "running" as const },
       { lastRunId: "another-run" },
       { sessionId: "another-session" },
       { providerOverride: "another-provider", modelOverride: "another-model" },
@@ -239,6 +239,21 @@ it.each([false, true])(
       const row = project({ ...stored, ...changed });
       expect(row.activeModel, JSON.stringify(changed)).toBeUndefined();
       expect(row.activeModelProvider, JSON.stringify(changed)).toBeUndefined();
+    }
+
+    const activeRunId = `${context.runId}-active`;
+    registerAgentRunContext(activeRunId, {
+      agentId: "main",
+      sessionId: entry.sessionId,
+      sessionKey: context.sessionKey,
+      projectSessionActive: true,
+    });
+    try {
+      const row = project(stored);
+      expect(row.activeModel).toBeUndefined();
+      expect(row.activeModelProvider).toBeUndefined();
+    } finally {
+      clearAgentRunContext(activeRunId);
     }
 
     const recoveryRunId = `${context.runId}-recovery`;

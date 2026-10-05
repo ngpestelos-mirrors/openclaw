@@ -27,7 +27,6 @@ describe("subagent registry restart recovery", () => {
     const serialized = JSON.stringify({
       sessionId: "retained-session",
       lifecycleRevision: "retained-revision",
-      status: "running",
       updatedAt: Date.now(),
       skillsSnapshot: { prompt: "x".repeat(1024 * 1024), skills: [] },
     });
@@ -163,7 +162,7 @@ describe("subagent registry restart recovery", () => {
     });
   });
 
-  describe("orphaned running sessions", () => {
+  describe("orphaned session executions", () => {
     it.each([60_000, 3 * 24 * 60 * 60_000])(
       "reconciles a hard-kill orphan last observed %i ms ago",
       async (ageMs) => {
@@ -171,7 +170,7 @@ describe("subagent registry restart recovery", () => {
         const updatedAt = Date.now() - ageMs;
         entry.execution.lifecycleGeneration = getAgentEventLifecycleGeneration();
         Object.assign(mocks.entries[childSessionKey]!, {
-          status: "running",
+          status: undefined,
           lifecycleRunId: entry.runId,
           abortedLastRun: false,
           updatedAt,
@@ -200,7 +199,7 @@ describe("subagent registry restart recovery", () => {
         rotateAgentEventLifecycleGeneration();
       }
       Object.assign(mocks.entries[childSessionKey]!, {
-        status: scenario.startsWith("completed session") ? "done" : "running",
+        status: scenario.startsWith("completed session") ? "done" : undefined,
         lifecycleRunId: scenario === "different run" ? "newer-run" : entry.runId,
         abortedLastRun: scenario === "completed session with stale abort marker",
       });
@@ -225,7 +224,7 @@ describe("subagent registry restart recovery", () => {
         entry.execution.lifecycleGeneration = getAgentEventLifecycleGeneration();
         rotateAgentEventLifecycleGeneration();
         Object.assign(mocks.entries[childSessionKey]!, {
-          status: "running",
+          status: undefined,
           lifecycleRunId: recovered ? "steered-source" : entry.runId,
           abortedLastRun: false,
           subagentRecovery: recovered
@@ -271,7 +270,7 @@ describe("subagent registry restart recovery", () => {
         rotateAgentEventLifecycleGeneration();
       }
       Object.assign(mocks.entries[childSessionKey]!, {
-        status: "running",
+        status: undefined,
         lifecycleRunId: scenario === "newer visible run" ? "visible-run" : "original-task-run",
         abortedLastRun: false,
         subagentRecovery: {
@@ -301,7 +300,7 @@ describe("subagent registry restart recovery", () => {
         entry.execution.lifecycleGeneration = getAgentEventLifecycleGeneration();
         rotateAgentEventLifecycleGeneration();
         Object.assign(mocks.entries[childSessionKey]!, {
-          status: "running",
+          status: undefined,
           lifecycleRunId: replacementKind === "visible turn" ? "steered-source" : entry.runId,
           abortedLastRun: false,
           subagentRecovery: {

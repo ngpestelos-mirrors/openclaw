@@ -56,8 +56,6 @@ import type {
   AbortedSessionTranscriptPartialResult,
   TranscriptReport,
   TranscriptReportWorkerOperations,
-  StartupSessionSettlement,
-  StartupSessionSettlementOutcome,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { TranscriptReportWorkerTarget } from "./session-accessor.sqlite-transcript-reports.worker.js";
 import { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transcript-write-guard.js";
@@ -81,7 +79,6 @@ import {
   captureOwnedTranscriptWriteAssertion,
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWriterFence,
-  withSessionTranscriptWriteAssertion,
 } from "./transcript-write-context.js";
 
 const log = createSubsystemLogger("sessions/transcript-reports");
@@ -165,9 +162,6 @@ function withIncognitoReportWorker<T>(
           type: "session.report.assistant",
           input: { ...target, report },
         }),
-      startupSettlement: async () => {
-        throw new Error("Startup settlement requires a durable session");
-      },
       abortedPartial: (report) =>
         actor.sessions.transcript(authority, {
           type: "session.report.abortedPartial",
@@ -596,33 +590,6 @@ export async function readLatestSessionTranscriptReport(
     },
     undefined,
     incognito,
-  );
-}
-
-/** Startup recovery supplies data; the existing worker owns the atomic entry/report settlement. */
-export async function settleStartupSession(
-  scope: SessionTranscriptWriteScope,
-  input: StartupSessionSettlement,
-  assertCommitAllowed: () => void,
-): Promise<Result<StartupSessionSettlementOutcome, TranscriptAppendRefusal>> {
-  if (isProcessHeldTranscript(scope)) {
-    throw new Error("Startup settlement requires a durable session");
-  }
-  return withSessionTranscriptWriteAssertion(scope, assertCommitAllowed, () =>
-    withReportWorker<StartupSessionSettlementOutcome>(
-      scope,
-      "append",
-      async (operation, _assertCurrent, publish) => {
-        const result = await operation.execute({ type: "startupSettlement", input });
-        if (!result.ok) {
-          return result;
-        }
-        if (result.value.committed) {
-          publish(result.value);
-        }
-        return ok(result.value.outcome);
-      },
-    ),
   );
 }
 

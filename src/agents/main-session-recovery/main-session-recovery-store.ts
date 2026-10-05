@@ -154,6 +154,8 @@ export async function commitMainSessionRecovery(params: {
       }
       const entry = candidate.entry;
       const previousRecoveryState = entry.mainRestartRecovery;
+      const previousRecoveryRuns = entry.restartRecoveryRuns;
+      const previousDeliveryRunId = entry.restartRecoveryDeliveryRunId;
       const command =
         (params.command.kind === "claim_foreground" ||
           params.command.kind === "observe" ||
@@ -164,6 +166,8 @@ export async function commitMainSessionRecovery(params: {
       const transition = transitionMainSessionRecovery(entry, command);
       const changed =
         previousRecoveryState !== entry.mainRestartRecovery ||
+        previousRecoveryRuns !== entry.restartRecoveryRuns ||
+        previousDeliveryRunId !== entry.restartRecoveryDeliveryRunId ||
         (transition.kind !== "foreground_validated" &&
           transition.kind !== "no_change" &&
           transition.kind !== "observed" &&

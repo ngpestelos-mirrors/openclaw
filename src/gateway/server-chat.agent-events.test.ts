@@ -1597,7 +1597,7 @@ describe("agent event handler", () => {
       {
         sessionId: "session-recovery",
         updatedAt: 2_000,
-        status: "running",
+        status: "interrupted",
         abortedLastRun: true,
         restartRecoveryRuns: [
           {
@@ -1660,7 +1660,7 @@ describe("agent event handler", () => {
       {
         sessionId: "session-recovery",
         updatedAt: 2_000,
-        status: "running",
+        status: "interrupted",
         abortedLastRun: true,
         restartRecoveryRuns,
       },
@@ -1812,7 +1812,7 @@ describe("agent event handler", () => {
       {
         sessionId: sessionKey,
         updatedAt: 2_000,
-        status: "running",
+        status: "interrupted",
         restartRecoveryRuns: [{ runId, lifecycleGeneration: "pre-restart" }],
       },
       sessionKey,

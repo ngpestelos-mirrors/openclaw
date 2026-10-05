@@ -13,7 +13,7 @@ import type {
   RestartRecoveryTerminalDeliveryEvidenceResult,
   SessionRestartRecoveryState,
 } from "./restart-recovery-types.js";
-import type { SessionEntry } from "./types.js";
+import type { InternalSessionEntry, SessionEntry } from "./types.js";
 
 const MAX_TERMINAL_RUN_IDS = 64;
 
@@ -479,6 +479,36 @@ export function hasRestartRecoveryTerminalRun(
   );
 }
 
+/** An unadopted input retains same-ID retry custody until execution claims it. */
+export function isRetryableUnadoptedChatClaim(
+  entry: InternalSessionEntry | undefined,
+  clientRunId = entry?.restartRecoveryDeliveryRunId,
+): entry is InternalSessionEntry & { restartRecoveryDeliveryRequestFingerprint: string } {
+  return Boolean(
+    entry &&
+    clientRunId !== undefined &&
+    entry.abortedLastRun !== true &&
+    (entry.status === "failed" || entry.status === "killed") &&
+    entry.restartRecoveryDeliveryContext === undefined &&
+    entry.restartRecoveryDeliveryRunId === clientRunId &&
+    entry.restartRecoveryDeliverySourceRunId === clientRunId &&
+    entry.restartRecoveryDeliveryRequestFingerprint &&
+    !entry.mainRestartRecovery &&
+    !entry.pendingFinalDelivery &&
+    !entry.restartRecoveryRuns?.some((run) => !hasRestartRecoveryTerminalRun(entry, run.runId)),
+  );
+}
+
+/** Recovery custody survives process loss independently of the last run's outcome. */
+export function hasMainSessionRecoveryClaim(entry: InternalSessionEntry | undefined): boolean {
+  return Boolean(
+    entry?.mainRestartRecovery ||
+    entry?.restartRecoveryRuns?.some((run) => !hasRestartRecoveryTerminalRun(entry, run.runId)) ||
+    entry?.restartRecoveryDeliveryRunId ||
+    entry?.pendingFinalDelivery,
+  );
+}
+
 /** Matches durable source ownership regardless of the surrounding run status. */
 export function hasRestartRecoverySourceClaim(
   entry: SessionEntry | null | undefined,
@@ -490,13 +520,6 @@ export function hasRestartRecoverySourceClaim(
     normalizeRunId(entry?.restartRecoveryDeliveryRunId) !== undefined &&
     normalizeRunId(entry?.restartRecoveryDeliverySourceRunId) === normalizedSourceTurnId
   );
-}
-
-export function hasActiveRestartRecoverySourceClaim(
-  entry: SessionEntry | null | undefined,
-  sourceTurnId: string,
-): entry is SessionEntry {
-  return entry?.status === "running" && hasRestartRecoverySourceClaim(entry, sourceTurnId);
 }
 
 /** Clears exact active ownership and optionally records its client source as terminal. */

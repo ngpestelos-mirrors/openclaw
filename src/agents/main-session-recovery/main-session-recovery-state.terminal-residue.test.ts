@@ -49,7 +49,6 @@ function settledEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
     sessionId: "session-1",
     updatedAt: 100,
-    status: "running",
     abortedLastRun: false,
     mainRestartRecovery: recoveryState(),
     restartRecoveryRuns: [{ runId: "settled-run", lifecycleGeneration: "dead-generation" }],
@@ -80,7 +79,8 @@ describe("main session recovery terminal-only residue", () => {
     });
 
     expect(claimForeground(entry)).toEqual({ kind: "applied" });
-    expect(entry).toMatchObject({ status: "running", abortedLastRun: false });
+    expect(entry.abortedLastRun).toBe(false);
+    expect(entry.status).toBeUndefined();
     expect(entry.restartRecoveryRuns).toBeUndefined();
     expect(entry.mainRestartRecovery).toBeUndefined();
   });
@@ -128,30 +128,76 @@ describe("main session recovery terminal-only residue", () => {
     expect(entry.restartRecoveryDeliveryRunId).toBe("pending-delivery");
   });
 
-  it("retires terminal-only residue through the persisted startup scan", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-terminal-residue-"));
-    const storePath = path.join(tempDir, "sessions.json");
-    try {
-      await replaceSessionEntry({ sessionKey, storePath }, settledEntry());
+  it.each(["terminal-only", "failed", "killed", "failed-with-delivery"] as const)(
+    "settles %s custody through persisted startup recovery",
+    async (outcome) => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-terminal-residue-"));
+      const storePath = path.join(tempDir, "sessions.json");
+      const initialEntry: SessionEntry =
+        outcome === "terminal-only"
+          ? settledEntry()
+          : {
+              sessionId: "retryable-session",
+              updatedAt: 100,
+              status: outcome === "failed-with-delivery" ? "failed" : outcome,
+              abortedLastRun: false,
+              restartRecoveryDeliveryRunId: "unadopted-run",
+              restartRecoveryDeliverySourceRunId: "unadopted-run",
+              restartRecoveryDeliveryRequestFingerprint: "accepted-request",
+              restartRecoverySourceIngress: "control-ui",
+              ...(outcome === "failed-with-delivery"
+                ? {
+                    pendingFinalDelivery: {
+                      kind: "replayable" as const,
+                      text: "An older source still owns this delivery",
+                      createdAt: 100,
+                    },
+                  }
+                : {}),
+            };
+      try {
+        await replaceSessionEntry({ sessionKey, storePath }, initialEntry);
 
-      await expect(
-        recoverStore({
-          activeSessionIds: [],
-          activeSessionKeys: [],
-          gatewayRuntime: unusedGatewayRuntime,
-          handledSessionKeys: new Set(),
-          storePath,
-        }),
-      ).resolves.toEqual({ started: 0, settled: 0, failed: 0, skipped: 1 });
+        await expect(
+          recoverStore({
+            activeSessionIds: [],
+            activeSessionKeys: [],
+            gatewayRuntime: unusedGatewayRuntime,
+            handledSessionKeys: new Set(),
+            storePath,
+          }),
+        ).resolves.toEqual({ started: 0, settled: 0, failed: 0, skipped: 1 });
 
-      const entry = loadSessionEntry({ readConsistency: "latest", sessionKey, storePath });
-      expect(entry?.mainRestartRecovery).toBeUndefined();
-      expect(entry?.restartRecoveryRuns).toBeUndefined();
-    } finally {
-      await cleanupSessionStateForTest({ stateDir: tempDir });
-      await fs.rm(tempDir, { force: true, recursive: true });
-    }
-  });
+        const entry = loadSessionEntry({ readConsistency: "latest", sessionKey, storePath });
+        expect(entry?.mainRestartRecovery).toBeUndefined();
+        expect(entry?.restartRecoveryRuns).toBeUndefined();
+        if (outcome !== "terminal-only") {
+          expect(entry).toMatchObject(initialEntry);
+          expect(entry?.restartRecoveryTerminalRunIds).toBeUndefined();
+        }
+        await expect(
+          markStartupOrphanedMainSessionsForRecovery({
+            cfg: { session: { store: storePath } },
+            stateDir: tempDir,
+          }),
+        ).resolves.toEqual({ marked: Number(outcome === "failed-with-delivery"), skipped: 0 });
+        const marked = loadSessionEntry({ readConsistency: "latest", sessionKey, storePath });
+        if (outcome === "failed-with-delivery") {
+          expect(marked).toMatchObject({
+            ...initialEntry,
+            abortedLastRun: true,
+            updatedAt: expect.any(Number),
+          });
+          expect(marked?.mainRestartRecovery).toBeDefined();
+        } else {
+          expect(marked).toEqual(entry);
+        }
+      } finally {
+        await cleanupSessionStateForTest({ stateDir: tempDir });
+        await fs.rm(tempDir, { force: true, recursive: true });
+      }
+    },
+  );
 
   it("retires terminal residue before orphan marking without touching a current owner", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-terminal-marking-"));
