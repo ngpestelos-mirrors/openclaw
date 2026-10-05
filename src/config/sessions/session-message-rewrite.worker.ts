@@ -38,9 +38,9 @@ import {
 } from "./session-accessor.sqlite-transcript-state.js";
 import { rewriteSqliteTranscriptEventRowsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { assertLockedTranscriptWriteAllowed } from "./session-accessor.sqlite-transcript-write-guard.js";
-import { SqliteTranscriptMutationConflictError } from "./session-accessor.sqlite-transcript-write-snapshot.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { transferSessionEntryWorkerCandidate } from "./session-entry-patch.worker.js";
+import { SqliteTranscriptMutationConflictError } from "./session-mutation-conflict-error.js";
 import { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import { transcriptEventJsonSql } from "./transcript-payload.js";
