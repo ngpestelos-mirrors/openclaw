@@ -213,13 +213,12 @@ describe("durable transcript mirror corrections", () => {
       await withFixture(async ({ scope, snapshot, indexed }) => {
         const retained = snapshot().map((event) =>
           isRecord(event) && event.id === "selected"
-            ? {
-                ...event,
+            ? Object.assign({}, event, {
                 message: {
                   role: "assistant",
                   content: [{ type: "text", text: "New authoritative delivery." }],
                 },
-              }
+              })
             : event,
         );
         let replaced = false;
