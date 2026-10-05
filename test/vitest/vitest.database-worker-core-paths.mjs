@@ -1,5 +1,10 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/gateway/server-methods/chat-transcript-persistence.mirrors.test.ts",
+  "src/gateway/server-methods/chat-transcript-persistence.generated-media.test.ts",
+  "src/config/sessions/session-message-rewrite.test.ts",
+  "src/gateway/server-methods/chat-send-reply-dispatch.test.ts",
+  "src/gateway/server-methods/chat-send-commentary-media.test.ts",
   "src/model-catalog/remote-refresh.test.ts",
   "src/model-catalog/remote-store.test.ts",
   "src/agents/subagents/spawn/acp-parent-stream-store.sqlite.test.ts",
