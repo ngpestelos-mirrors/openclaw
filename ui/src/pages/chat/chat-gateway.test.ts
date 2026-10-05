@@ -2123,22 +2123,19 @@ describe("loadChatHistory retry handling", () => {
   });
 
   it("preserves streamed timestamps and causal placement after the user prompt", async () => {
+    const streamedText = "Partial answer before history catch-up.";
     const persistedUser = textMessage("user", "first", { seq: 1 }, 200);
     const { state } = createHistorySnapshot([persistedUser], {
       chatMessages: [persistedUser],
       chatRunId: null,
-      chatStream: "Partial answer before history catch-up.",
+      chatStream: streamedText,
       chatStreamStartedAt: 100,
     });
 
     await loadChatHistory(state);
     expect(state.chatMessages).toHaveLength(2);
     expect(state.chatMessages[0]).toEqual(persistedUser);
-    expectTextMessage(
-      state.chatMessages[1],
-      "assistant",
-      "Partial answer before history catch-up.",
-    );
+    expectTextMessage(state.chatMessages[1], "assistant", streamedText);
     expect(state.chatMessages[1]).toMatchObject({
       timestamp: 100,
       openclawStreamFallback: { afterSequence: 1 },
