@@ -3248,7 +3248,6 @@
 ["src/agents/sandbox/prune.test.ts","../../runtime.js","c8df2e7514eedbc95fecabf4278b9981cb151e8a0b1ddbe55d38c7a4cd15d4f9",1]
 ["src/agents/sandbox/prune.test.ts","./backend.js","0b9af7c27132c7de8ce17e8ff89f334bb0e82d704eb4925f2342298623b2f47f",1]
 ["src/agents/sandbox/prune.test.ts","./docker-backend.js","a36f2e6bd9e71ba1f1a6e340b9d085549c01ac2100f26f644bc6246f29532073",1]
-["src/agents/sandbox/prune.test.ts","./registry.js","75fc2a00687ced02edab0191008d57752fb45cfec2d000bfc632da9d15ce236a",1]
 ["src/agents/sandbox/runtime-reservation.test.ts","../../skills/loading/workspace-skill-sync.runtime.js","8c3d264b70130a5cea7ebf55f163e8694a8bf90ca4c8c59c01bf7e3694786f3d",1]
 ["src/agents/sandbox/runtime-reservation.test.ts","../../skills/runtime/remote.js","bcea83f165482d728dcc93364c5b2de8dc10131f572194a816bf7689cfea157f",1]
 ["src/agents/sandbox/runtime-reservation.test.ts","../exec-defaults.js","aff1a49842589eabc43bb2b5af2d358b0773ca255ff11f888e70a59a8304c35c",1]
