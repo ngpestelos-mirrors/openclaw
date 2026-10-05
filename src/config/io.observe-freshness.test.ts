@@ -17,6 +17,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
+import { listConfigAuditRecordsForTests } from "./io.audit.test-support.js";
 import {
   captureConfigHealthStateStore,
   readConfigHealthStateFromStore,
@@ -46,6 +47,7 @@ it.each([
   { phase: "after dispatch", present: true, suspicious: false, producer: "sync" },
   { phase: "after dispatch", present: false, suspicious: false, producer: "sync" },
   { phase: "after dispatch", present: true, suspicious: true, producer: "sync" },
+  { phase: "audit dispatched", present: true, suspicious: true, producer: "sync" },
 ])(
   "preserves a newer $producer observation $phase (existing row: $present, suspicious: $suspicious)",
   async ({ phase, present, suspicious, producer }) => {
@@ -192,7 +194,9 @@ it.each([
           isRecord(command.input) &&
           (phase === "basis dispatched"
             ? command.type === "config.health.read"
-            : command.type === "config.health.patch" && command.input.configPath === configPath)
+            : phase === "audit dispatched"
+              ? command.type === "diagnostic.register" && command.input.scope === "config-audit"
+              : command.type === "config.health.patch" && command.input.configPath === configPath)
         ) {
           // Hold the ordinary SQLite writer before dispatch. The synchronous observer
           // commits after postMessage, before the worker can admit its write transaction.
@@ -225,6 +229,13 @@ it.each([
       expect(expected).toBeDefined();
       expect(options.logger.warn.mock.calls).toHaveLength(expectedWarnings);
       expect(readConfigHealthStateFromStore(options)).toEqual(expected);
+      if (phase === "audit dispatched") {
+        expect(
+          listConfigAuditRecordsForTests(options).flatMap((record) =>
+            record.event === "config.observe" ? [record.hash] : [],
+          ),
+        ).toEqual([hashConfigRaw(newerRaw)]);
+      }
       expect(expected?.entries?.[siblingPath]).toEqual(baseline.entries?.[siblingPath]);
       await closeOpenClawStateDatabaseAsync();
       expect(readConfigHealthStateFromStore(options)).toEqual(expected);
