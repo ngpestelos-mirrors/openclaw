@@ -82,6 +82,10 @@ export function mutateLocalWorkspaceProjection(
 }
 
 export const localWorkspaceReadOperations = {
+  "localWorkspace.exists": (input: { id: string }, db: DatabaseSync) => ({
+    type: "localWorkspace.exists" as const,
+    exists: hasLocalWorkspaceProjectionInDatabase(db, input.id),
+  }),
   "localWorkspace.get": (input: { id: string }, db: DatabaseSync) => ({
     type: "localWorkspace.get" as const,
     row: readLocalWorkspaceProjectionInDatabase(db, input.id),

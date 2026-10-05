@@ -1,6 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { configHealthReadOperations } from "../config/io.health-state.kernel.js";
 import type { MentionReadOperations } from "../gateway/mention-inbox.worker-contract.js";
 import type { localWorkspaceReadOperations } from "../gateway/worker-environments/local-workspace-store.kernel.js";
+import type { deferredPluginMigrationReadOperations } from "../infra/deferred-plugin-migrations.js";
 import type { RestartSentinelReadOperations } from "../infra/restart-sentinel.read.worker-contract.js";
 import type { DiagnosticReadOperations } from "../infra/sqlite-audit-record.read-contract.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
@@ -9,8 +11,10 @@ import type { PairingReadOperations } from "../pairing/pairing-store.types.js";
 import type { SecretStoreReadOperations } from "../secrets/store/secret-store.types.js";
 import type { SessionStateReadOperations } from "../sessions/session-state-events.read.worker-contract.js";
 import type { SkillLibraryReadOperations } from "../skills/library/read.contract.js";
-import type { WorkerOperations } from "./worker-operation-registry.js";
-import { createWorkerOperationRegistry } from "./worker-operation-registry.js";
+import {
+  createWorkerOperationRegistry,
+  type WorkerOperations,
+} from "./worker-operation-registry.js";
 
 type Operations = WorkerOperations<typeof localWorkspaceReadOperations> &
   DiagnosticReadOperations &
@@ -20,7 +24,9 @@ type Operations = WorkerOperations<typeof localWorkspaceReadOperations> &
   SkillLibraryReadOperations &
   RestartSentinelReadOperations &
   SessionStateReadOperations &
-  SecretStoreReadOperations;
+  SecretStoreReadOperations &
+  WorkerOperations<typeof configHealthReadOperations> &
+  WorkerOperations<typeof deferredPluginMigrationReadOperations>;
 export type RegisteredStateReadCommand = SqliteWorkerCommand<Operations>;
 export type RegisteredStateReadResult = Operations[keyof Operations]["output"];
 
@@ -28,6 +34,12 @@ export const stateReadRegistry = createWorkerOperationRegistry<Operations, Datab
   localWorkspace: () =>
     import("../gateway/worker-environments/local-workspace-store.kernel.js").then(
       (m) => m.localWorkspaceReadOperations,
+    ),
+  config: () =>
+    import("../config/io.health-state.kernel.js").then((m) => m.configHealthReadOperations),
+  plugins: () =>
+    import("../infra/deferred-plugin-migrations.js").then(
+      (m) => m.deferredPluginMigrationReadOperations,
     ),
   generatedHtmlProvenance: () =>
     import("../media/generated-html-provenance.worker.js").then(

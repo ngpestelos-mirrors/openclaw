@@ -19,6 +19,21 @@ import type {
 
 export type { LocalWorkspaceProjection } from "./local-workspace-store.kernel.js";
 
+export async function hasLocalWorkspaceProjection(id: string, env?: NodeJS.ProcessEnv) {
+  const reply = await executeExistingOpenClawStateRead(
+    { env },
+    { type: "localWorkspace.exists", input: { id } },
+    { current: true, live: true },
+  );
+  if (!reply) {
+    return false;
+  }
+  if (!reply.ok || reply.type !== "localWorkspace.exists") {
+    throw new Error("Unexpected local workspace result");
+  }
+  return reply.exists;
+}
+
 export async function readLocalWorkspaceProjection(id: string, env?: NodeJS.ProcessEnv) {
   const reply = await executeExistingOpenClawStateRead(
     { env },
@@ -58,6 +73,7 @@ export function withLocalWorkspaceStore<T>(
     env?: NodeJS.ProcessEnv;
     assertCurrent?: () => void;
     workerAuthority?: WorktreeWorkerAuthority;
+    requireAbsent?: boolean;
   },
   run: (store: LocalWorkspaceStore) => Promise<T>,
 ): Promise<T> {
@@ -117,14 +133,30 @@ export function withLocalWorkspaceStore<T>(
               async () => {
                 const reply = await executeExistingOpenClawStateRead(
                   { path: context.admission.databasePath, env: context.environment },
-                  { type: "localWorkspace.get", input: { id: params.worktreeId } },
+                  {
+                    type: params.requireAbsent ? "localWorkspace.exists" : "localWorkspace.get",
+                    input: { id: params.worktreeId },
+                  },
                   { context, current: true, live: true },
                 );
-                if (reply && (!reply.ok || reply.type !== "localWorkspace.get")) {
+                if (
+                  reply &&
+                  (!reply.ok ||
+                    reply.type !==
+                      (params.requireAbsent ? "localWorkspace.exists" : "localWorkspace.get"))
+                ) {
                   throw new Error("Unexpected local workspace result");
                 }
-                let row = reply?.row && Object.freeze(reply.row);
                 assertCurrent();
+                if (reply?.type === "localWorkspace.exists" && reply.exists) {
+                  throw new Error(
+                    "Snapshot retains local workspace projection custody; preserve its recovery data",
+                  );
+                }
+                let row =
+                  reply?.type === "localWorkspace.get" && reply.row
+                    ? Object.freeze(reply.row)
+                    : undefined;
                 const mutate = async (
                   mutation: LocalWorkspaceMutation,
                   next: LocalWorkspaceProjection | undefined,

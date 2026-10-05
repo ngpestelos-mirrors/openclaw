@@ -13,6 +13,7 @@ import {
 import { observeLocalWorkspaceStoreSql } from "../../gateway/worker-environments/local-workspace-store.test-support.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { defaultRuntime } from "../../runtime.js";
+import * as stateRead from "../../state/openclaw-state-db-readonly.js";
 import type { DB } from "../../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -404,9 +405,23 @@ describe("Exact removed worktree snapshot retirement", () => {
     const reads = observeLocalWorkspaceStoreSql();
     try {
       reads.calibrate();
+      const executeRead = stateRead.executeExistingOpenClawStateRead;
+      const projectionReplyBytes: number[] = [];
+      const readReply = vi
+        .spyOn(stateRead, "executeExistingOpenClawStateRead")
+        .mockImplementation(async (options, command, readOptions) => {
+          const reply = await executeRead(options, command, readOptions);
+          if (command.type.startsWith("localWorkspace.")) {
+            projectionReplyBytes.push(Buffer.byteLength(JSON.stringify(reply)));
+          }
+          return reply;
+        });
       await expect(retireManagedWorktreeSnapshotById(request)).rejects.toThrow(
         /projection custody/,
       );
+      readReply.mockRestore();
+      expect(projectionReplyBytes.length).toBeGreaterThan(0);
+      expect(Math.max(...projectionReplyBytes)).toBeLessThan(1024);
       reads.expectIdle();
     } finally {
       reads.restore();

@@ -370,27 +370,25 @@ async function retireManagedWorktreeSnapshot(params: {
   if (params.expected) {
     const { withLocalWorkspaceStore } =
       await import("../../gateway/worker-environments/local-workspace-store.js");
-    await withLocalWorkspaceStore({ ...params, worktreeId: record.id }, async (store) => {
-      const assertCurrent = () => {
-        store.assertCurrent();
-        assertRegistrySnapshotRetirement(env, record);
-        if (store.get()) {
-          throw new Error(
-            "Snapshot retains local workspace projection custody; preserve its recovery data",
-          );
-        }
-      };
-      assertCurrent();
-      const retireSnapshot = await prepareExactSnapshotRetirement({
-        record,
-        expected: params.expected!,
-        signal,
-        assertCurrent,
-      });
-      await retireSnapshot(assertCurrent);
-      assertCurrent();
-      deleteRegistryWorktree(env, record.id, { assertCurrent, expectedRetired: record });
-    });
+    await withLocalWorkspaceStore(
+      { ...params, worktreeId: record.id, requireAbsent: true },
+      async (store) => {
+        const assertCurrent = () => {
+          store.assertCurrent();
+          assertRegistrySnapshotRetirement(env, record);
+        };
+        assertCurrent();
+        const retireSnapshot = await prepareExactSnapshotRetirement({
+          record,
+          expected: params.expected!,
+          signal,
+          assertCurrent,
+        });
+        await retireSnapshot(assertCurrent);
+        assertCurrent();
+        deleteRegistryWorktree(env, record.id, { assertCurrent, expectedRetired: record });
+      },
+    );
     // Retained source refs remain owned, including an otherwise empty source repository.
     return;
   }
