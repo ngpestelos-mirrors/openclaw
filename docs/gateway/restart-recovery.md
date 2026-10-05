@@ -245,9 +245,15 @@ new work is fenced and admitted work gets the computed grace period, still cappe
 by the native shutdown deadline. Deferral time does not spend that shutdown budget.
 For a supervisor's SIGTERM restart, a shorter requested drain limits when active
 runs are interrupted, not when database cleanup must finish: cleanup can use the
-remaining native stop budget. The Gateway still exits before the supervisor's
-deadline. Clean database restart proof is published only after writer leases,
-checkpointing, and native connection closure settle.
+remaining native stop budget. After an interrupted external restart, the Gateway
+joins final chat persistence, drains Memory's database borrows, and closes agent
+databases before exiting. It skips plugin and channel teardown that could retain
+the process until the deadline. Database admission stays fenced through lock
+release and log flushing, which have a final five-second exit window. Shutdown
+logs report the elapsed time for these steps. The supervisor deadline remains
+the hard upper bound. Clean database restart proof is published only after writer
+leases, checkpointing, and native connection closure settle; one database's idle
+receipt alone does not authorize process exit.
 A restart without a supervisor handoff uses the existing shutdown
 deadline for cleanup. This includes foreground Gateways inside another service's
 cgroup, restarts with `OPENCLAW_NO_RESPAWN=1`, and standalone updates that must
@@ -609,6 +615,10 @@ Three complementary mechanisms mark sessions whose turn did not finish:
   hard crashes and kills where no shutdown code ran. Stale transcript lock
   files are cleaned up at the same time.
 
+Agents still undergoing database startup inspection retain their recovery work.
+When admission finishes, the same startup recovery owner scans their stores with
+the original cutoff, so newly admitted turns are not mistaken for crash orphans.
+
 A failed store scan leaves that store eligible for the scheduled retry while
 other stores continue recovery. `openclaw status` and `openclaw doctor` show
 outstanding startup recovery failures from the running Gateway; the warning clears
@@ -713,6 +723,13 @@ Every retry reuses one durable dispatch identifier, so an ambiguous connection
 failure cannot start the same recovery twice. Completed Control UI turns also
 retain bounded durable idempotency tombstones, allowing a reconnecting outbox
 to retire them without re-executing the request.
+
+When a pending final has no remaining queue owner and its delivery outcome is
+uncertain, recovery records a notice for the next turn on the same route when
+the saved final has a delivery context and intent ID. Settling that turn clears
+its recovery ownership together with its delivery claim, so the next agent turn
+can proceed. The notice and terminal deduplication evidence survive another
+restart; completed work is not replayed.
 
 Message-tool-only replies use a second durable correlation. Before a terminal
 same-conversation send reaches the channel, the gateway records an unresolved
@@ -865,19 +882,13 @@ update with no continuation does not wake the model to deliver the report.
 
 The sentinel's typed SQLite columns are authoritative for restart handling.
 Its `payload_json` value is a replay/debug shadow only. Runtime reads, writes,
-and clears SQLite state without a file fallback. Doctor and restart recovery
-share the bounded importer for `restart-sentinel.json`. Restart recovery imports
-only update notices, after readiness; unrelated legacy repair still requires Doctor.
-
-The `2026.6.1` RPC updater writes its notice after candidate Doctor finishes.
-Its managed updater can publish the final outcome after restart health succeeds.
-Recovery checks that same pending handoff through its existing retry window and
-preserves its delivery route and continuation. A final legacy outcome can replace
-only its own imported pending notification; newer canonical state wins.
-Recorded source generations are not replayed when their files reappear.
-Incomplete notices stay on disk for recovery or explicit Doctor repair.
-The `2026.6.34` and `2026.9.2` updaters write native SQLite state instead.
-For pre-June installations, use the [bridge upgrade procedure](/install/updating#upgrading-very-old-versions).
+and clears SQLite state without a file fallback. The pre-July
+`restart-sentinel.json` format and its `.doctor-importing` claim are retired.
+Doctor, update admission, and restart recovery leave these files and any current
+SQLite notification unchanged, and require an intermediate upgrade through
+`2026.9.7` with `openclaw doctor --fix` before retrying. Supported updaters,
+including `2026.6.34` and `2026.9.2`, write native SQLite state and retain their
+existing restart delivery and continuation behavior.
 
 ## Safety valves and observability
 

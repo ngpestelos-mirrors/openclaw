@@ -320,13 +320,13 @@ export async function createGatewaySession(
   }
 
   const targetSessionKey = explicitTargetKey ?? buildDashboardSessionKey(agentId, { incognito });
-  const creationTarget = await resolveGatewaySessionStoreTargetInWorker({
+  const target = await resolveGatewaySessionStoreTargetInWorker({
     cfg: params.cfg,
     key: targetSessionKey,
     agentId,
     assertActive: commitGuard,
   });
-  if (explicitTargetKey && creationTarget.canonicalKey === canonicalParentSessionKey) {
+  if (explicitTargetKey && target.canonicalKey === canonicalParentSessionKey) {
     return invalidSessionRequest("sessions.create key must differ from parentSessionKey");
   }
   if (explicitTargetKey && !params.initialEntry) {
@@ -337,7 +337,7 @@ export async function createGatewaySession(
         ok: false,
         error: errorShape(
           ErrorCodes.UNAVAILABLE,
-          `Session ${creationTarget.canonicalKey} is still initializing; retry creation later.`,
+          `Session ${target.canonicalKey} is still initializing; retry creation later.`,
         ),
       };
     }
@@ -358,7 +358,7 @@ export async function createGatewaySession(
 
   const authorityTargets = params.operatorAuthority
     ? [
-        { target: creationTarget, entry: initialTargetEntry },
+        { target, entry: initialTargetEntry },
         ...(parentSessionTarget
           ? [{ target: parentSessionTarget, entry: parentSessionEntry }]
           : []),
@@ -582,13 +582,13 @@ export async function createGatewaySession(
       creation: params.creation,
       parent: currentParentSessionEntry,
     });
-    const target = creationTarget;
-    const targetRead = readSessionCreateTarget(
-      params,
+    const targetRead = await readSessionCreateTarget(
+      { ...params, commitGuard },
       target,
       initialTargetEntry?.sessionId,
       targetLifecycleIdentities,
     );
+    commitGuard?.();
     if (!targetRead.ok) {
       return targetRead;
     }
@@ -848,12 +848,6 @@ export async function createGatewaySession(
               ? "initial agentHarnessId must be non-empty"
               : "trusted initial session state requires an authorized owner",
           );
-        }
-        if (
-          params.initialEntry?.modelSelectionLocked !== undefined &&
-          !params.initialEntry.modelSelectionLocked
-        ) {
-          return invalidSessionRequest("initial modelSelectionLocked must be true when provided");
         }
         const catalogResolvedModel = params.catalogTarget
           ? resolveSessionModelRef(params.cfg, patched.entry, target.agentId)
@@ -1220,14 +1214,14 @@ export async function createGatewaySession(
   };
 
   const targetLifecycleIdentities = [
-    creationTarget.canonicalKey,
-    ...creationTarget.storeKeys,
+    target.canonicalKey,
+    ...target.storeKeys,
     ...(requestedKey ? [requestedKey] : []),
     ...(initialTargetEntry?.sessionId ? [initialTargetEntry.sessionId] : []),
   ];
   const lifecycleTargets = [
     {
-      scope: creationTarget.storePath,
+      scope: target.storePath,
       identities: targetLifecycleIdentities,
     },
   ];
