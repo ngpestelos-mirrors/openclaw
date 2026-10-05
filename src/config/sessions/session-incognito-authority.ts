@@ -1,4 +1,4 @@
-import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { authorizeSessionFacts } from "./session-incognito-admission.js";
 import type {
   IncognitoSessionAuthority,
   IncognitoSessionFacts,
@@ -10,18 +10,6 @@ export type IncognitoSessionClaim = {
   assertCurrent(this: void): void;
   authorize(authority: IncognitoSessionAuthority, stage: "transaction" | "commit"): void;
 };
-
-export function authorizeSessionFacts(
-  authority: IncognitoSessionAuthority,
-  stage: "transaction" | "commit",
-  facts: IncognitoSessionFacts,
-) {
-  const authorization: unknown = authority.authorize?.(stage, structuredClone(facts));
-  if (isPromiseLike(authorization)) {
-    void Promise.resolve(authorization).catch(() => undefined);
-    throw new Error("Incognito session grants must remain synchronous");
-  }
-}
 
 /** Claims consume the actor's live projection; they never own a second copy of its state. */
 export function createIncognitoSessionClaims(owner: {

@@ -597,6 +597,7 @@ src/acp/runtime/session-meta-keys.ts
 src/acp/runtime/session-meta-readonly.ts
 src/acp/runtime/session-meta-read.types.ts
 src/config/sessions/session-incognito-actor.ts
+src/config/sessions/session-incognito-admission.ts
 src/config/sessions/session-incognito-authority.ts
 src/config/sessions/session-collaboration-scope.ts
 src/config/sessions/session-incognito-compute-contract.ts
@@ -819,6 +820,7 @@ src/infra/errno.ts
 src/infra/error-graph-internal.ts
 src/infra/errors.ts
 src/infra/exec-allowlist-pattern.ts
+src/infra/exec-approval-action.types.ts
 src/infra/exec-approvals-core.ts
 src/infra/exec-command-resolution.ts
 src/infra/exec-safe-bin-policy-profiles.ts
@@ -1556,6 +1558,7 @@ src/skills/discovery/agent-filter.ts
 src/skills/discovery/filter.ts
 src/skills/skill-library-error.ts
 src/skills/lifecycle/upload-store-error.ts
+src/skills/runtime/refresh-watch-targets.types.ts
 src/state/agent-creation-claim.ts
 src/state/agent-database-admission.ts
 src/state/agent-database-startup.ts
@@ -1817,5 +1820,3 @@ scripts/github/security-sensitive-guard.mjs
 scripts/lib/bounded-response.mjs
 scripts/pr-lib/merge-prior-ci-cancellation.mjs
 scripts/pr-lib/merge-prior-ci-security.mjs
-src/infra/exec-approval-action.types.ts
-src/skills/runtime/refresh-watch-targets.types.ts

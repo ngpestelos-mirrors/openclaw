@@ -5,9 +5,9 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { makeUserMessage } from "../../test/helpers/user-message.js";
-import { withSessionManagerIncognitoActor } from "../agents/sessions/session-manager-incognito-scope.js";
 import { appendSessionTranscriptNote } from "../agents/sessions/session-manager-write-admission.js";
 import { loadSessionEntryForAdmission } from "../config/sessions/session-accessor.sqlite-entry-admission.js";
+import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
 import type { IncognitoSessionAuthority } from "../config/sessions/session-incognito-contract.js";
 import {
   SessionReactionMessageMissingError,
@@ -56,7 +56,7 @@ async function fixture(name: string, source = authority) {
     sessionKey: scope.sessionKey,
     entry: { sessionId: name, lifecycleRevision: "initial", updatedAt: 1, incognito: true },
   });
-  const appended = await withSessionManagerIncognitoActor(actor, () =>
+  const appended = await withIncognitoSessionActor(actor, () =>
     appendSessionTranscriptNote(target, makeUserMessage("Private message", 1)),
   );
   assert(appended);
