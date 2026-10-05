@@ -10601,7 +10601,6 @@
 ["test/scripts/realtime-talk-live-smoke.test.ts","../../extensions/openai/speech-provider.ts","1b7309b3fec0fa9797fd2c7e92bfb8733b6bfd70dbe2d16f766ccfda656e8631",1]
 ["test/scripts/run-node-boundary.test-support.ts","../../scripts/lib/qa-codex-auth-env.mts","a0d7ac4754fe5e526e5f142bd0c9338ee61c641b77548f9bf77227164c3e04ac",1]
 ["test/scripts/run-node.test-support.ts","../../src/cli/update-cli/update-command-service-publication.js","c3670fd69a37a8f5847fa5a8a08f31327184a7e0389411a38b5cf2f6ae179dcf",1]
-["test/scripts/semantic-check-admission.test.ts","../../scripts/lib/process-memory.mts","c6b0182fcffdb662a1b1db2f13f1930281a8e7b79a674af00e76aa132f96a812",1]
 ["test/scripts/test-projects-build-admission.test.ts","../../src/infra/control-ui-assets.ts","4542098d6b53be6cb36ec687d6a21cb20da2150286769f23d1de09b34bf1c8fd",1]
 ["test/scripts/tsgo-performance.test.ts","../../scripts/lib/managed-child-process.mts","d55ca4243ee5ed07528d667754c9ed2fe7b4dbe495f1aa53963dd9cc2ddddea2",1]
 ["test/scripts/update-clawtributors.test.ts","../../scripts/lib/plain-gh.mjs","995c931bf4fbce1754966076c7af74f0571b8c949e297105a2848623cab899ad",1]
