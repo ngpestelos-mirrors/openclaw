@@ -36,8 +36,6 @@ import {
   MEET_URL_EN,
   stubMeetArtifactsApi,
   testBridgeProcess,
-  type GoogleMeetJoinResult,
-  type MeetRealtimeAudioSpawn,
 } from "./src/test-support/fixtures.test-helpers.js";
 import {
   createGoogleMeetToolGatewayForTest,
@@ -53,8 +51,9 @@ import {
   normalizeDialInNumber,
   prefixDtmfWait,
 } from "./src/transports/twilio.js";
-import type { GoogleMeetSession } from "./src/transports/types.js";
 import { testing as googleMeetPluginTesting } from "./test-api.js";
+
+type GoogleMeetJoinResult = Awaited<ReturnType<ReturnType<typeof meetRuntime>["join"]>>;
 
 let meetingTestState: ReturnType<typeof useMeetingTestState>;
 
@@ -82,6 +81,9 @@ function createIsolatedTestDir(prefix: string): string {
   return dir;
 }
 
+type MeetRealtimeAudioSpawn = NonNullable<
+  Parameters<typeof createLocalMeetingRealtimeAudioTransport>[0]["spawn"]
+>;
 type TestMeetVoiceBridgeRequest = Parameters<RealtimeVoiceProviderPlugin["createBridge"]>[0];
 
 function createTestMeetVoiceProvider(
@@ -3133,7 +3135,7 @@ describe("google-meet plugin", () => {
     })) as {
       found: boolean;
       spoken: boolean;
-      session?: GoogleMeetSession;
+      session?: GoogleMeetJoinResult["session"];
     };
 
     expect(retry.found).toBe(true);
