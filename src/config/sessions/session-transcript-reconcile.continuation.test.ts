@@ -1,3 +1,4 @@
+import type { WorkerOptions } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -20,9 +21,40 @@ import {
 } from "./session-transcript-reconcile.js";
 import { useReconcileWorkerObserver } from "./session-transcript-reconcile.test-support.js";
 
-vi.mock("node:worker_threads", async () =>
-  (await import("./session-transcript-reconcile.test-support.js")).createObservedWorkerThreads(),
-);
+vi.mock("node:worker_threads", async () => {
+  const observed = await (
+    await import("./session-transcript-reconcile.test-support.js")
+  ).createObservedWorkerThreads();
+  return {
+    ...observed,
+    Worker: class extends observed.Worker {
+      constructor(filename: string | URL, options: WorkerOptions = {}) {
+        if (!String(filename).includes("sqlite-store.worker")) {
+          super(filename, options);
+          return;
+        }
+        // Inject the native failure on its writer connection without changing the main schema.
+        super(
+          `const { DatabaseSync } = require('node:sqlite');
+          const prepare = DatabaseSync.prototype.prepare;
+          DatabaseSync.prototype.prepare = function(sql) {
+            const statement = prepare.call(this, sql);
+            if (sql.startsWith('delete from "session_transcript_fts_rows"')) {
+              const run = statement.run.bind(statement), database = this;
+              statement.run = (...args) => {
+                database.exec("CREATE TEMP TRIGGER IF NOT EXISTS refuse_orphan_cleanup BEFORE DELETE ON main.session_transcript_fts_rows WHEN OLD.session_id = 'orphan-sweep-failure' BEGIN SELECT RAISE(ABORT, 'fixture sweep deletion refused'); END;");
+                return run(...args);
+              };
+            }
+            return statement;
+          };
+          void import(${JSON.stringify(String(filename))});`,
+          { ...options, eval: true },
+        );
+      }
+    },
+  };
+});
 const observer = useReconcileWorkerObserver();
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -65,11 +97,6 @@ it.each([
     }
     await waitForSessionTranscriptIndexReconcile(options);
     const database = openOpenClawAgentDatabase(options);
-    if (failsBeforeCancellation) {
-      database.db.exec(`CREATE TRIGGER refuse_orphan_cleanup BEFORE DELETE
-        ON session_transcript_fts_rows WHEN OLD.session_id = 'orphan-sweep-failure'
-        BEGIN SELECT RAISE(ABORT, 'fixture sweep deletion refused'); END;`);
-    }
     const dirty = database.db.prepare(
       "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",
     );

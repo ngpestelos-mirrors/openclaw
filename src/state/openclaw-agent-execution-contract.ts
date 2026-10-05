@@ -21,7 +21,7 @@ import type { RegisteredAgentWorkerOperations } from "./openclaw-agent-execution
 /** A retired owner refused new work; an admitted command's failure is never classified here. */
 export const AgentDatabaseExecutionAdmissionClosedError = resolveGlobalSingleton(
   Symbol.for("openclaw.agentDatabaseExecutionAdmissionClosedError"),
-  () => class AgentDatabaseExecutionAdmissionClosedError extends Error {},
+  () => class AdmissionClosedError extends Error {},
 );
 
 /** Recorded by the native owner; a descriptor never grants access to that owner. */
