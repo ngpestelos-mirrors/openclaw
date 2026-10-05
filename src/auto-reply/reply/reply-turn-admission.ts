@@ -92,9 +92,6 @@ const log = createSubsystemLogger("auto-reply/reply-turn-admission");
 async function releaseReplyRecoveryOwner(
   lease: MainSessionRecoveryOwnerLease | undefined,
 ): Promise<MainSessionRecoveryPendingTarget | undefined> {
-  if (!lease) {
-    return undefined;
-  }
   try {
     return await releaseMainSessionRecoveryOwner(lease);
   } catch (error) {
