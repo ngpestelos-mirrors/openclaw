@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type {
+  createLocalMeetingRealtimeAudioTransport,
   MeetingRealtimeAudioEngineHealth,
   MeetingRealtimeAudioTransport,
 } from "openclaw/plugin-sdk/meeting-runtime";
@@ -9,6 +10,11 @@ import { vi } from "vitest";
 import { resolveGoogleMeetConfig } from "../config.js";
 import { GoogleMeetRuntime } from "../runtime.js";
 import type { GoogleMeetSession } from "../transports/types.js";
+
+export type GoogleMeetJoinResult = Awaited<ReturnType<GoogleMeetRuntime["join"]>>;
+export type MeetRealtimeAudioSpawn = NonNullable<
+  Parameters<typeof createLocalMeetingRealtimeAudioTransport>[0]["spawn"]
+>;
 
 export const MEET_URL = "https://meet.google.com/abc-defg-hij";
 export const MEET_URL_EN = `${MEET_URL}?hl=en`;
