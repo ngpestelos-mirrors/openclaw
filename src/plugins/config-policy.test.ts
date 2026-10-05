@@ -1,14 +1,12 @@
 // Covers plugin config policy validation and ownership decisions.
 import { describe, expect, it } from "vitest";
-import {
-  normalizePluginsConfigWithResolver,
-  resolvePolicyPluginActivationState,
-} from "./config-policy.js";
+import { resolvePluginActivationStateShared } from "./config-activation-shared.js";
+import { normalizePluginsConfigWithResolverCore } from "./config-normalization-shared.js";
 import { resolveEffectivePluginActivationState } from "./config-state.js";
 
-describe("normalizePluginsConfigWithResolver", () => {
+describe("normalizePluginsConfigWithResolverCore", () => {
   it("uses case-normalized resolved identities for allow deny and entry keys", () => {
-    const normalized = normalizePluginsConfigWithResolver(
+    const normalized = normalizePluginsConfigWithResolverCore(
       {
         allow: [" alpha "],
         deny: [" beta "],
@@ -27,7 +25,7 @@ describe("normalizePluginsConfigWithResolver", () => {
   });
 });
 
-describe("resolvePolicyPluginActivationState", () => {
+describe("resolvePluginActivationStateShared", () => {
   it.each([
     {
       name: "keeps metadata allowlists strict while runtime honors explicit channel activation",
@@ -49,7 +47,7 @@ describe("resolvePolicyPluginActivationState", () => {
     const params = {
       id: "telegram",
       origin: "bundled" as const,
-      config: normalizePluginsConfigWithResolver(rootConfig.plugins),
+      config: normalizePluginsConfigWithResolverCore(rootConfig.plugins),
       rootConfig,
     };
 
@@ -58,7 +56,7 @@ describe("resolvePolicyPluginActivationState", () => {
       activated: runtime.enabled,
       explicitlyEnabled: true,
     });
-    expect(resolvePolicyPluginActivationState(params)).toEqual({
+    expect(resolvePluginActivationStateShared(params)).toEqual({
       ...policy,
       activated: policy.enabled,
       explicitlyEnabled: true,

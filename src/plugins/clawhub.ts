@@ -3,6 +3,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import { formatTerminalLink } from "../../packages/terminal-core/src/terminal-link.js";
 import {
   ARCHIVE_LIMIT_ERROR_CODE,
   ArchiveLimitError,
@@ -19,7 +20,7 @@ import {
   isDefaultClawHubBaseUrl,
   resolveClawHubBaseUrl,
 } from "../infra/clawhub-client.js";
-import { formatClawHubReleaseLabel } from "../infra/clawhub-display.js";
+import { encodeClawHubPackagePath, formatClawHubReleaseLabel } from "../infra/clawhub-display.js";
 import { checkClawHubPackageTrust } from "../infra/clawhub-install-trust.js";
 import {
   normalizeClawHubSha256Integrity,
@@ -48,14 +49,9 @@ import { resolveCompatibilityHostVersion } from "../version.js";
 import type { RuntimeVersionEnv } from "../version.js";
 import { CLAWHUB_INSTALL_ERROR_CODE, type ClawHubInstallErrorCode } from "./clawhub-error-codes.js";
 import type { ClawHubPluginInstallRecordFields } from "./clawhub-install-records.js";
-import {
-  formatClawHubSpecifier,
-  logClawHubPackageSummary,
-  type PluginInstallLogger,
-} from "./clawhub-presentation.js";
 import type { InstallSafetyOverrides } from "./install-security-scan.js";
 import { copyPluginInstallTransactionRequest } from "./install-transaction.js";
-import type { PluginInstallArtifactConsentHandler } from "./install-types.js";
+import type { PluginInstallArtifactConsentHandler, PluginInstallLogger } from "./install-types.js";
 import {
   installPluginFromArchive,
   PLUGIN_INSTALL_ERROR_CODE,
@@ -195,16 +191,6 @@ function isTrustedSourceLinkedOfficialPackage(pkg: NonNullable<ClawHubPackageDet
     (sourceRepo === "openclaw/openclaw" ||
       sourceRepo === "github.com/openclaw/openclaw" ||
       sourceRepo === "https://github.com/openclaw/openclaw")
-  );
-}
-
-function isDefaultOfficialClawHubPackage(params: {
-  baseUrl?: string;
-  pkg: NonNullable<ClawHubPackageDetail["package"]>;
-}): boolean {
-  return (
-    isDefaultClawHubBaseUrl(params.baseUrl) &&
-    (params.pkg.channel === "official" || params.pkg.isOfficial)
   );
 }
 
@@ -369,18 +355,6 @@ function isMissingArtifactResolverRoute(error: unknown): boolean {
   );
 }
 
-function formatClawHubClawPackDownloadError(params: {
-  error: unknown;
-  packageName: string;
-  version: string;
-}): string {
-  const message = formatErrorMessage(params.error);
-  if (!(params.error instanceof ClawHubRequestError)) {
-    return message;
-  }
-  return `ClawHub artifact download for "${params.packageName}@${params.version}" is not available yet (${message}). Use "npm:${params.packageName}@${params.version}" for launch installs while ClawHub artifact routing is being rolled out.`;
-}
-
 function isClawHubArtifactDownloadPolicyBlock(error: unknown): boolean {
   if (!(error instanceof ClawHubRequestError)) {
     return false;
@@ -395,31 +369,6 @@ function isClawHubArtifactDownloadPolicyBlock(error: unknown): boolean {
     body.includes("quarantine") ||
     body.includes("revoked")
   );
-}
-
-function formatClawHubArtifactDownloadPolicyBlock(params: {
-  error: unknown;
-  packageName: string;
-  version: string;
-}): string {
-  return `ClawHub blocked artifact download for "${params.packageName}@${params.version}"; install was not started. ${formatErrorMessage(params.error)}`;
-}
-
-function formatClawHubMissingArtifactMetadataError(params: {
-  packageName: string;
-  version: string;
-}): string {
-  return `ClawHub package "${params.packageName}@${params.version}" does not expose a downloadable plugin artifact yet. Use "npm:${params.packageName}@${params.version}" for launch installs while ClawHub artifact routing is being rolled out.`;
-}
-
-function resolveRequestedVersion(params: {
-  detail: ClawHubPackageDetail;
-  requestedVersion?: string;
-}): string | null {
-  if (params.requestedVersion) {
-    return params.detail.package?.tags?.[params.requestedVersion] ?? params.requestedVersion;
-  }
-  return resolveLatestVersionFromPackage(params.detail);
 }
 
 function validateClawHubRelativePath(value: unknown): { path: string } | { error: string } {
@@ -684,7 +633,9 @@ async function resolveCompatiblePackageVersion(params: {
   token?: string;
   timeoutMs?: number;
 }): Promise<({ ok: true } & ClawHubInstallArtifactDecision) | ClawHubInstallFailure> {
-  const requestedVersion = resolveRequestedVersion(params);
+  const requestedVersion = params.requestedVersion
+    ? (params.detail.package?.tags?.[params.requestedVersion] ?? params.requestedVersion)
+    : resolveLatestVersionFromPackage(params.detail);
   if (!requestedVersion) {
     return buildClawHubInstallFailure(
       `ClawHub package "${params.detail.package?.name ?? "unknown"}" has no installable version.`,
@@ -869,7 +820,7 @@ function validateClawHubPluginPackage(params: {
 
 export async function installPluginFromClawHub(
   params: InstallSafetyOverrides &
-    TimedInstallModeOptions<PluginInstallLogger> & {
+    TimedInstallModeOptions<PluginInstallLogger & { terminalLinks?: boolean }> & {
       spec: string;
       baseUrl?: string;
       token?: string;
@@ -910,7 +861,9 @@ export async function installPluginFromClawHub(
     );
   }
 
-  params.logger?.info?.(`Resolving ${formatClawHubSpecifier(parsed)}…`);
+  params.logger?.info?.(
+    `Resolving clawhub:${parsed.name}${parsed.version ? `@${parsed.version}` : ""}…`,
+  );
   const resolved = await withInstallActivity(params.logger, "resolve", async () => {
     let detail: ClawHubPackageDetail;
     try {
@@ -967,15 +920,41 @@ export async function installPluginFromClawHub(
   const expectedClawPackSha256 = resolveClawHubClawPackArtifactSha256(versionState.clawpack);
   const canonicalPackageName = detail.package?.name ?? parsed.name;
   const officialClawHubPackage = detail.package
-    ? isDefaultOfficialClawHubPackage({ baseUrl: params.baseUrl, pkg: detail.package })
+    ? isDefaultClawHubBaseUrl(params.baseUrl) &&
+      (detail.package.channel === "official" || detail.package.isOfficial)
     : false;
-  logClawHubPackageSummary({
-    detail,
-    version: versionState.version,
-    compatibility: versionState.compatibility,
-    baseUrl: params.baseUrl,
-    logger: params.logger,
-  });
+  const summaryPackage = detail.package;
+  if (summaryPackage) {
+    const familyLabel = summaryPackage.family === "code-plugin" ? "plugin" : summaryPackage.family;
+    const compatibilityParts = [
+      versionState.compatibility?.pluginApiRange
+        ? `pluginApi ${versionState.compatibility.pluginApiRange}`
+        : null,
+      versionState.compatibility?.minGatewayVersion
+        ? `minGateway ${versionState.compatibility.minGatewayVersion}`
+        : null,
+    ].filter(Boolean);
+    const pluginUrl = sanitizeTerminalText(
+      `${resolveClawHubBaseUrl(params.baseUrl)}/plugins/${encodeClawHubPackagePath(summaryPackage.name)}`,
+    );
+    params.logger?.info?.(
+      [
+        `  ${"Package".padEnd(9)} ${formatClawHubReleaseLabel(summaryPackage.name, versionState.version)}`,
+        `  ${"Type".padEnd(9)} ${familyLabel}`,
+        compatibilityParts.length > 0
+          ? `  ${"Requires".padEnd(9)} ${compatibilityParts.join(" · ")}`
+          : null,
+        `  ${"ClawHub".padEnd(9)} ${formatTerminalLink("view plugin", pluginUrl, {
+          fallback: pluginUrl,
+          ...(params.logger?.terminalLinks !== undefined
+            ? { force: params.logger.terminalLinks }
+            : {}),
+        })}`,
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
+    );
+  }
   const trustResult = officialClawHubPackage
     ? null
     : await checkClawHubPackageTrust({
@@ -995,10 +974,7 @@ export async function installPluginFromClawHub(
   }
   if (!versionState.verification && !expectedClawPackSha256) {
     return buildClawHubInstallFailure(
-      formatClawHubMissingArtifactMetadataError({
-        packageName: canonicalPackageName,
-        version: versionState.version,
-      }),
+      `ClawHub package "${canonicalPackageName}@${versionState.version}" does not expose a downloadable plugin artifact yet. Use "npm:${canonicalPackageName}@${versionState.version}" for launch installs while ClawHub artifact routing is being rolled out.`,
       CLAWHUB_INSTALL_ERROR_CODE.ARTIFACT_UNAVAILABLE,
     );
   }
@@ -1022,11 +998,7 @@ export async function installPluginFromClawHub(
   } catch (error) {
     if (isClawHubArtifactDownloadPolicyBlock(error)) {
       return buildClawHubInstallFailure(
-        formatClawHubArtifactDownloadPolicyBlock({
-          error,
-          packageName: canonicalPackageName,
-          version: versionState.version,
-        }),
+        `ClawHub blocked artifact download for "${canonicalPackageName}@${versionState.version}"; install was not started. ${formatErrorMessage(error)}`,
         CLAWHUB_INSTALL_ERROR_CODE.CLAWHUB_DOWNLOAD_BLOCKED,
         undefined,
         versionState.version,
@@ -1034,14 +1006,11 @@ export async function installPluginFromClawHub(
     }
     // Fix-me(clawhub): remove this npm hint once ClawHub ClawPack artifact
     // routing is live for official package installs.
+    const message = formatErrorMessage(error);
     return buildClawHubInstallFailure(
-      expectedClawPackSha256
-        ? formatClawHubClawPackDownloadError({
-            error,
-            packageName: canonicalPackageName,
-            version: versionState.version,
-          })
-        : formatErrorMessage(error),
+      expectedClawPackSha256 && error instanceof ClawHubRequestError
+        ? `ClawHub artifact download for "${canonicalPackageName}@${versionState.version}" is not available yet (${message}). Use "npm:${canonicalPackageName}@${versionState.version}" for launch installs while ClawHub artifact routing is being rolled out.`
+        : message,
       expectedClawPackSha256 &&
         error instanceof ClawHubRequestError &&
         error.status === 404 &&

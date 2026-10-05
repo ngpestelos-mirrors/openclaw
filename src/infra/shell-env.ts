@@ -123,13 +123,6 @@ function createLoginShellExecSpec(params: LoginShellExecParams) {
   return { shell: params.shell, args, options };
 }
 
-function execLoginShellEnvZero(
-  params: LoginShellExecParams & { exec: typeof execFileSync },
-): Buffer {
-  const { shell, args, options } = createLoginShellExecSpec(params);
-  return params.exec(shell, args, options);
-}
-
 function execLoginShellEnvZeroAsync(params: LoginShellExecParams): Promise<Buffer> {
   const { shell, args, options } = createLoginShellExecSpec(params);
   return new Promise((resolve, reject) => {
@@ -295,14 +288,13 @@ function probeLoginShellEnv(params: {
   }
 
   try {
-    const stdout = execLoginShellEnvZero({
+    const { args, options } = createLoginShellExecSpec({
       shell,
       env: execEnv,
-      exec,
       timeoutMs,
       purpose: params.purpose,
     });
-    const shellEnv = parseShellEnv(stdout);
+    const shellEnv = parseShellEnv(exec(shell, args, options));
     // Failed startup can recover on the next lookup; retain only successful probes.
     loginShellEnvProbeCache.set(cacheKey, [...shellEnv.entries()]);
     return { ok: true, shellEnv };

@@ -464,17 +464,13 @@ export async function consumeUpdatePostInstallDoctorResult(
   }
   try {
     const raw = await fs.readFile(safeResultPath, "utf8");
-    return parseUpdatePostInstallDoctorResult(JSON.parse(raw));
+    const parsed = UpdatePostInstallDoctorResultSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? normalizeUpdatePostInstallDoctorResult(parsed.data) : null;
   } catch {
     return null;
   } finally {
     await fs.rm(safeResultPath, { force: true }).catch(() => {});
   }
-}
-
-function parseUpdatePostInstallDoctorResult(value: unknown): UpdatePostInstallDoctorResult | null {
-  const parsed = UpdatePostInstallDoctorResultSchema.safeParse(value);
-  return parsed.success ? normalizeUpdatePostInstallDoctorResult(parsed.data) : null;
 }
 
 function normalizeUpdatePostInstallDoctorResult({

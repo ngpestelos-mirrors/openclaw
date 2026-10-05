@@ -25,27 +25,6 @@ let activeProxyLoopbackMode: ActiveManagedProxyLoopbackMode | undefined;
 let activeProxyTlsOptions: ManagedProxyTlsOptions | undefined;
 let activeProxyRegistrationCount = 0;
 
-function parseActiveManagedProxyLoopbackMode(
-  value: string | undefined,
-): ActiveManagedProxyLoopbackMode | undefined {
-  if (value === "gateway-only" || value === "proxy" || value === "block") {
-    return value;
-  }
-  return undefined;
-}
-
-function readInheritedActiveManagedProxyLoopbackMode(): ActiveManagedProxyLoopbackMode | undefined {
-  if (process.env["OPENCLAW_PROXY_ACTIVE"] !== "1") {
-    return undefined;
-  }
-  // Child processes inherit loopback policy through env even when they do not
-  // own the in-process proxy registration.
-  return (
-    parseActiveManagedProxyLoopbackMode(process.env["OPENCLAW_PROXY_LOOPBACK_MODE"]) ??
-    "gateway-only"
-  );
-}
-
 /** Registers the active managed proxy, sharing identical nested registrations. */
 export function registerActiveManagedProxyUrl(
   proxyUrl: URL,
@@ -108,7 +87,15 @@ export function stopActiveManagedProxyRegistration(
 
 /** Returns local loopback policy from in-process state or inherited proxy env. */
 export function getActiveManagedProxyLoopbackMode(): ActiveManagedProxyLoopbackMode | undefined {
-  return activeProxyLoopbackMode ?? readInheritedActiveManagedProxyLoopbackMode();
+  if (activeProxyLoopbackMode !== undefined) {
+    return activeProxyLoopbackMode;
+  }
+  if (process.env["OPENCLAW_PROXY_ACTIVE"] !== "1") {
+    return undefined;
+  }
+  // Child processes inherit loopback policy through env even without an in-process registration.
+  const mode = process.env["OPENCLAW_PROXY_LOOPBACK_MODE"];
+  return mode === "proxy" || mode === "block" ? mode : "gateway-only";
 }
 
 /** Returns the in-process managed proxy URL, if this process owns the proxy. */

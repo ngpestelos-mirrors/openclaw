@@ -276,17 +276,6 @@ function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
-function isAmbientGlobalFetch(params: {
-  fetchImpl: FetchLike | undefined;
-  globalFetch: FetchLike | undefined;
-}): boolean {
-  return (
-    typeof params.fetchImpl === "function" &&
-    typeof params.globalFetch === "function" &&
-    params.fetchImpl === params.globalFetch
-  );
-}
-
 async function prepareGuardedFetchCapture(params: GuardedFetchOptions, fetchImpl: FetchLike) {
   if (params.capture === false || !isTruthyEnvValue(process.env[OPENCLAW_DEBUG_PROXY_ENABLED])) {
     return { fetchImpl };
@@ -297,13 +286,6 @@ async function prepareGuardedFetchCapture(params: GuardedFetchOptions, fetchImpl
     fetchImpl: resolveDebugProxyFetchTransport(fetchImpl),
     capture: prepareHttpCaptureForTransport(),
   };
-}
-
-function retainSafeHeadersForCrossOriginRedirect(init?: RequestInit): RequestInit | undefined {
-  if (!init?.headers) {
-    return init;
-  }
-  return { ...init, headers: retainSafeRedirectHeaders(init.headers) };
 }
 
 function resolveRetainedAuthorizationForRedirect(params: {
@@ -329,18 +311,6 @@ function resolveRetainedAuthorizationForRedirect(params: {
     return undefined;
   }
   return new Headers(normalizedInit.headers).get("authorization") ?? undefined;
-}
-
-function restoreRedirectAuthorization(params: {
-  init?: RequestInit;
-  authorization?: string;
-}): RequestInit | undefined {
-  if (!params.authorization) {
-    return params.init;
-  }
-  const headers = new Headers(params.init?.headers);
-  headers.set("Authorization", params.authorization);
-  return { ...params.init, headers };
 }
 
 function dropBodyHeaders(headers?: HeadersInit): HeadersInit | undefined {
@@ -431,7 +401,11 @@ async function fetchWithSsrFGuardInternal(
   const isUsingMockedFetch = isMockedFetch(defaultFetch);
   const supportsDispatcherInit =
     (params.fetchImpl !== undefined &&
-      !isAmbientGlobalFetch({ fetchImpl: params.fetchImpl, globalFetch })) ||
+      !(
+        typeof params.fetchImpl === "function" &&
+        typeof globalFetch === "function" &&
+        params.fetchImpl === globalFetch
+      )) ||
     isUsingMockedFetch;
   // Admission precedes DNS and transport awaits. Capture must not resolve a new
   // session after a delayed request outlives its original capture generation.
@@ -724,11 +698,17 @@ async function fetchWithSsrFGuardInternal(
           allowUnsafeReplay: params.allowCrossOriginUnsafeRedirectReplay === true,
         });
         if (crossOrigin) {
-          currentInit = retainSafeHeadersForCrossOriginRedirect(currentInit);
-          currentInit = restoreRedirectAuthorization({
-            init: currentInit,
-            authorization: retainedAuthorization,
-          });
+          if (currentInit?.headers) {
+            currentInit = {
+              ...currentInit,
+              headers: retainSafeRedirectHeaders(currentInit.headers),
+            };
+          }
+          if (retainedAuthorization) {
+            const headers = new Headers(currentInit?.headers);
+            headers.set("Authorization", retainedAuthorization);
+            currentInit = { ...currentInit, headers };
+          }
         }
         const nextVisitKey = getRedirectVisitKey(nextUrl, currentInit);
         if (visited.has(nextVisitKey)) {

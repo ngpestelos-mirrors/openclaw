@@ -6,13 +6,6 @@ import type { ManagedProxyTlsOptions } from "./proxy-tls.js";
 
 export { resolveActiveManagedProxyTlsOptions } from "./active-managed-proxy-tls.js";
 
-function readProxyTlsRecord(options: object | undefined): Record<string, unknown> | undefined {
-  if (!options || !("proxyTls" in options)) {
-    return undefined;
-  }
-  return isProxyTlsRecord(options.proxyTls) ? options.proxyTls : undefined;
-}
-
 function readProxyUrlFromOptions(options: object | undefined): string | undefined {
   if (!options) {
     return undefined;
@@ -72,7 +65,10 @@ export function addActiveManagedProxyTlsOptions<TOptions extends object>(
   if (!proxyTls) {
     return options;
   }
-  const existingProxyTls = readProxyTlsRecord(options);
+  const existingProxyTls =
+    options && "proxyTls" in options && isProxyTlsRecord(options.proxyTls)
+      ? options.proxyTls
+      : undefined;
   // Caller-supplied proxyTls wins over managed defaults so explicit TLS policy
   // is not overwritten while still inheriting missing managed CA fields.
   return {
