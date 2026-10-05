@@ -69,6 +69,7 @@ export async function readSessionTranscriptAnchorsAsync(
     entryIds: [...selection.entryIds],
     afterSeq: selection.afterSeq,
     includeSession: selection.includeSession,
+    includeHeader: selection.includeHeader,
     contextValidation: selection.contextValidation && structuredClone(selection.contextValidation),
     replayValidation: selection.replayValidation && { ...selection.replayValidation },
   };

@@ -19,6 +19,7 @@ export type SessionTranscriptAnchorSelection = {
   entryIds: readonly string[];
   afterSeq?: number;
   includeSession?: boolean;
+  includeHeader?: boolean;
   contextValidation?: Parameters<typeof validateSessionTranscriptContextInDatabase>[2];
   replayValidation?: Pick<
     SessionTranscriptWriteScope,
@@ -29,6 +30,7 @@ export type SessionTranscriptAnchorSelection = {
 export type SessionTranscriptAnchorFacts = {
   anchors: TranscriptEntryAnchor[];
   session?: { sessionId: string; lifecycleRevision?: string };
+  header?: unknown;
   contextValidated?: true;
   replayValidated?: "current" | "initial";
   tail?: {
@@ -89,6 +91,14 @@ export function readSessionTranscriptAnchorFactsInDatabase(
         ? { sessionId: entry.sessionId, lifecycleRevision: entry.lifecycleRevision }
         : undefined;
       const sessionFacts = selection.includeSession ? { session } : {};
+      const header: Pick<SessionTranscriptAnchorFacts, "header"> = {};
+      if (selection.includeHeader) {
+        try {
+          header.header = readTranscriptHeaderFromDatabase(database, resolved.sessionId);
+        } catch {
+          // Lifecycle header metadata is best effort; reader admission and owner checks still fail closed.
+        }
+      }
       const anchors = new Map<string, TranscriptEntryAnchor | undefined>();
       const readAnchor = (entryId: string) => {
         if (!anchors.has(entryId)) {
@@ -101,7 +111,7 @@ export function readSessionTranscriptAnchorFactsInDatabase(
       };
       const selected = selection.entryIds.flatMap((entryId) => readAnchor(entryId) ?? []);
       if (selection.afterSeq === undefined) {
-        return { anchors: selected, ...validated, ...sessionFacts };
+        return { anchors: selected, ...validated, ...sessionFacts, ...header };
       }
       const rows = loadTranscriptEventRowsAfterSeqInDatabase(
         database,
@@ -131,6 +141,7 @@ export function readSessionTranscriptAnchorFactsInDatabase(
         anchors: selected,
         ...validated,
         ...sessionFacts,
+        ...header,
         tail: { lastSeq: rows.at(-1)?.seq, entries },
       };
     },
