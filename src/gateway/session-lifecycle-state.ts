@@ -194,13 +194,13 @@ export function deriveGatewaySessionLifecycleSnapshot(params: {
     ? "interrupted"
     : terminal
       ? SESSION_STATUS_BY_TERMINAL_CLASSIFICATION[classifyAgentRunTerminalOutcome(terminal)]
-      : "done";
+      : undefined;
   return {
     updatedAt,
     status,
     lastRunError: interruptedForRestart
       ? "Run interrupted by a Gateway restart."
-      : terminal
+      : terminal && status
         ? resolveSessionRunError({ ...terminal, errorKind: params.event.data?.errorKind }, status)
         : undefined,
     startedAt,

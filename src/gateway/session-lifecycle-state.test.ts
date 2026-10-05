@@ -504,7 +504,7 @@ describe("session lifecycle state", () => {
     expect(restarted.lastRunError).toBeUndefined();
   });
 
-  it("records a yielded outcome while retaining continuation custody", async () => {
+  it("retains yielded continuation custody without recording a terminal outcome", async () => {
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const restartRecoveryRuns = [{ runId: "yielded-recovery-run", lifecycleGeneration }];
     loggerMocks.info.mockClear();
@@ -534,13 +534,13 @@ describe("session lifecycle state", () => {
     );
 
     expect(yielded).toMatchObject({
-      status: "done",
       endedAt: 1_800,
       runtimeMs: 750,
       abortedLastRun: false,
       lifecycleRunId: "yielded-recovery-run",
       restartRecoveryRuns,
     });
+    expect(yielded.status).toBeUndefined();
     expect(loggerMocks.info).not.toHaveBeenCalled();
     expect(loggerMocks.warn).not.toHaveBeenCalled();
 

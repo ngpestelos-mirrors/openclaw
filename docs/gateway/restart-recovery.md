@@ -807,6 +807,7 @@ Turns with only superseded children need no requester settlement.
 
 If a parent yielded while waiting for children, its saved batch collects both
 completed and interrupted results and wakes the parent once the batch settles.
+Yielded turns leave the persisted outcome unset while their continuation still owns unfinished work.
 A parent already working on those results resumes through ordinary main-session
 recovery. A child result or an `announce:` run identifier does not make unfinished
 parent work disposable. Both recovery paths give the parent the interrupted

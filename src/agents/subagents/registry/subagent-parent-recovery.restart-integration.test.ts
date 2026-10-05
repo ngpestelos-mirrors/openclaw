@@ -152,6 +152,7 @@ describe("subagent parent recovery — durable yielded continuation", () => {
       });
     }
     const now = Date.now();
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const parentKey = globalParent ? "global" : "agent:main:yielded-parent-recovery";
     const parentRunId = "yielded-parent-original-run";
     const childKey = "agent:main:subagent:yielded-parent-child";
@@ -175,6 +176,7 @@ describe("subagent parent recovery — durable yielded continuation", () => {
       event: {
         runId: parentRunId,
         sessionId: "yielded-parent-session",
+        lifecycleGeneration,
         ts: now - 2_000,
         data: { phase: "start", startedAt: now - 2_000 },
       },
@@ -207,6 +209,7 @@ describe("subagent parent recovery — durable yielded continuation", () => {
       event: {
         runId: parentRunId,
         sessionId: "yielded-parent-session",
+        lifecycleGeneration,
         ts: now - 1_000,
         data: {
           phase: "end",
@@ -223,6 +226,7 @@ describe("subagent parent recovery — durable yielded continuation", () => {
         event: {
           runId: "new-foreground-run",
           sessionId: "yielded-parent-session",
+          lifecycleGeneration,
           ts: now,
           data: { phase: "start", startedAt: now },
         },
@@ -230,6 +234,10 @@ describe("subagent parent recovery — durable yielded continuation", () => {
     }
     const before = loadSessionEntryReadOnly({ storePath: parentStorePath, sessionKey: parentKey })!;
     expect(before.endedAt).toBe(newForeground ? undefined : now - 1_000);
+    expect(before.restartRecoveryRuns).toContainEqual({
+      runId: newForeground ? "new-foreground-run" : parentRunId,
+      lifecycleGeneration,
+    });
     if (scenario === "waiting") {
       // The parent may still be registered while its completed turn tears down.
       // Shutdown must not replace the durable batch's continuation with main recovery.
@@ -359,6 +367,7 @@ describe("subagent parent recovery — durable yielded continuation", () => {
         event: {
           runId: parentRunId,
           sessionId: before.sessionId,
+          lifecycleGeneration,
           ts: now,
           data: {
             phase: "error",
@@ -387,11 +396,25 @@ describe("subagent parent recovery — durable yielded continuation", () => {
     expect(after?.abortedLastRun === true).toBe(
       shouldMark || scenario === "marked pending final" || scenario === "reserved waiting cycle",
     );
-    expect(after?.status).toBe(scenario === "provider timeout" ? "timeout" : "running");
+    expect(after?.status).toBe(
+      scenario === "provider timeout"
+        ? "timeout"
+        : [
+              "new foreground",
+              "already marked",
+              "pending final",
+              "marked pending final",
+              "reserved waiting cycle",
+              "settled batch",
+              "unrelated agent",
+            ].includes(scenario)
+          ? "interrupted"
+          : undefined,
+    );
     if (scenario === "already marked") {
       expect(after?.mainRestartRecovery).toBeUndefined();
       expect(after?.restartRecoveryRuns).toBeUndefined();
-      expect(after?.endedAt).toBe(now - 1_000);
+      expect(after?.endedAt).toBe(before.endedAt);
     }
     if (scenario === "pending final" || scenario === "marked pending final") {
       expect(after?.pendingFinalDelivery).toEqual(before.pendingFinalDelivery);
@@ -497,8 +520,11 @@ describe("subagent parent recovery — durable yielded continuation", () => {
           agentId: "main",
           sessionKey: child.childSessionKey,
         });
-        expect(recoveredSession).toMatchObject({ status: "interrupted" });
-        expect(recoveredSession?.lastRunError).toBeUndefined();
+        expect(recoveredSession).toMatchObject({
+          status: "interrupted",
+          abortedLastRun: true,
+          lastRunError: "Run interrupted by a Gateway restart.",
+        });
         expect(
           await loadTranscriptEvents({
             agentId: "main",
