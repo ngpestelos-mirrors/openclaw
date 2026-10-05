@@ -1,5 +1,4 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { withSessionManagerIncognitoActor } from "../agents/sessions/session-manager-incognito-scope.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import type { SessionTranscriptReadScope } from "../config/sessions/session-accessor.js";
 import { readRecentSessionTranscriptHistoryEvents } from "../config/sessions/session-accessor.sqlite-history-events.js";
@@ -10,7 +9,8 @@ import {
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { prepareSessionTranscriptReadTargetCore } from "../config/sessions/session-accessor.transcript-read-target.js";
 import { resolveSessionTranscriptReadTarget } from "../config/sessions/session-accessor.transcript-target.js";
-import { authorizeIncognitoSessionFacts } from "../config/sessions/session-incognito-contract.js";
+import { authorizeSessionFacts } from "../config/sessions/session-incognito-admission.js";
+import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
 import {
   prepareIncognitoSessionHistoryRead,
   type IncognitoSessionHistoryBinding,
@@ -50,8 +50,8 @@ export async function readSessionPreviewItemsFromTranscriptAsync(
             authority.assertCurrent();
           },
           authorize(stage, facts) {
-            authorizeIncognitoSessionFacts(managerAuthority, stage, facts);
-            authorizeIncognitoSessionFacts(authority, stage, facts);
+            authorizeSessionFacts(managerAuthority, stage, facts);
+            authorizeSessionFacts(authority, stage, facts);
           },
         },
         command,
@@ -74,7 +74,7 @@ export async function readSessionPreviewItemsFromTranscriptAsync(
                 input: { ...target, maxItems, maxChars },
               })
             ).items
-          : await withSessionManagerIncognitoActor(
+          : await withIncognitoSessionActor(
               { ...actor, sessions: { ...actor.sessions, history } },
               () => readSessionModelPreviewItems(modelTarget, maxItems, maxChars),
             );

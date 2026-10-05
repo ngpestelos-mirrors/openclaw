@@ -427,6 +427,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
     const errorContext =
       request.stateContext ??
       (request.type === "execute-frame" ? stateContexts.get(request.actor) : undefined);
+    // Canonical error identities also belong to context-free ephemeral actors.
     const sharedState = !executed
       ? encodeOpenClawStateWorkerError(failure, { includeOrdinary: Boolean(errorContext) })
       : undefined;

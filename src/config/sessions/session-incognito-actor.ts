@@ -2,28 +2,28 @@ import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   createSqliteWorkerOperationAdmission,
-  type SqliteWorkerAdmissionFactory,
   type SqliteWorkerOperationAdmission,
   type SqliteWorkerAdmissionRequest,
 } from "../../infra/sqlite-worker-operation-admission.js";
 import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
-import { SqliteWorkerError, type SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
-import type {
-  AgentDatabaseIncognitoIdentity,
-  AgentDatabaseIncognitoOperations,
-} from "../../state/openclaw-agent-execution-contract.js";
+import { SqliteWorkerError } from "../../infra/sqlite-worker-store.js";
+import type { AgentDatabaseIncognitoIdentity } from "../../state/openclaw-agent-execution-contract.js";
+import {
+  authorizeSessionFacts,
+  readIncognitoGrantFacts,
+  type IncognitoSessionRunner,
+} from "./session-incognito-admission.js";
 import {
   isIncognitoComputeWrite,
   type IncognitoComputeTarget,
 } from "./session-incognito-compute-contract.js";
 import { withIncognitoCompute, type IncognitoComputeScope } from "./session-incognito-compute.js";
-import {
-  authorizeIncognitoSessionFacts,
-  type IncognitoSessionAuthority,
-  type IncognitoSessionCreate,
-  type IncognitoSessionFacts,
-  type IncognitoSessionRead,
-  type IncognitoSessionOperations,
+import type {
+  IncognitoSessionAuthority,
+  IncognitoSessionCreate,
+  IncognitoSessionFacts,
+  IncognitoSessionRead,
+  IncognitoSessionOperations,
 } from "./session-incognito-contract.js";
 import {
   incognitoHistoryKeys,
@@ -60,14 +60,7 @@ import type {
   PendingInputRead,
 } from "./session-pending-input-operations.types.js";
 
-type Scope = Pick<SqliteWorkerStore<AgentDatabaseIncognitoOperations>, "execute">;
-export type IncognitoSessionRunner = <T>(
-  authority: IncognitoSessionAuthority,
-  operation: (scope: Scope) => Promise<T>,
-  signal?: AbortSignal,
-  admission?: SqliteWorkerAdmissionFactory,
-  cleanup?: boolean,
-) => Promise<T>;
+export type { IncognitoSessionRunner } from "./session-incognito-admission.js";
 
 export type IncognitoSessionClaim = {
   readonly identity: AgentDatabaseIncognitoIdentity;
@@ -160,7 +153,7 @@ export function createIncognitoSessionFacts(
           if (!facts) {
             throw new Error("Incognito session facts are unavailable");
           }
-          authorizeIncognitoSessionFacts(authority, stage, facts);
+          authorizeSessionFacts(authority, stage, facts);
           authority.assertCurrent();
           assertCurrent();
         });
@@ -304,7 +297,7 @@ export function createIncognitoSessionFacts(
                   authority.assertCurrent();
                   assertActorCurrent();
                   for (const facts of value.facts) {
-                    authorizeIncognitoSessionFacts(authority, "commit", facts);
+                    authorizeSessionFacts(authority, "commit", facts);
                   }
                   authority.assertCurrent();
                   assertActorCurrent();
@@ -354,20 +347,7 @@ export function createIncognitoSessionFacts(
                     throw new Error("Incognito session authority requested out of order");
                   }
                   const received = request.facts.sessions;
-                  if (
-                    !Array.isArray(received) ||
-                    received.some(
-                      (facts: unknown) =>
-                        !isRecord(facts) ||
-                        !isDeepStrictEqual(facts.identity, identity) ||
-                        typeof facts.sessionKey !== "string" ||
-                        !Number.isSafeInteger(facts.revision),
-                    )
-                  ) {
-                    throw new Error("Incognito session grant differs from its captured target");
-                  }
-                  // SAFETY: the private, typed worker sends these bounded publication envelopes.
-                  const facts = received as IncognitoSessionFacts[];
+                  const facts = readIncognitoGrantFacts(received, identity);
                   const keys = facts.map((entry) => entry.sessionKey);
                   const lifecycleKeys = isIncognitoLifecycleCommand(captured)
                     ? incognitoLifecycleKeys(captured, identity)
@@ -393,7 +373,7 @@ export function createIncognitoSessionFacts(
                     }
                   }
                   for (const entry of facts) {
-                    authorizeIncognitoSessionFacts(
+                    authorizeSessionFacts(
                       authority,
                       request.stage === "prepare" ? "transaction" : request.stage,
                       entry,

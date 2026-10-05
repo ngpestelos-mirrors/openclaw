@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it } from "vitest";
 import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
-import { withSessionManagerIncognitoActor } from "../agents/sessions/session-manager-incognito-scope.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { listSessionBranches } from "../config/sessions/session-accessor.sqlite-branch-list.js";
+import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
 import type { IncognitoSessionAuthority } from "../config/sessions/session-incognito-contract.js";
 import type { IncognitoHistoryTarget } from "../config/sessions/session-incognito-history-contract.js";
 import type { IncognitoLifecycleEntry } from "../config/sessions/session-incognito-lifecycle-contract.js";
@@ -311,7 +311,7 @@ export function registerIncognitoHistoryWiringTests(fixture: HistoryWiringFixtur
     const { actor, env } = fixture;
     const session = await create("raw-visitor");
     const target = { ...targetInput(session), agentId: actor.agentId, storePath: actor.path, env };
-    await withSessionManagerIncognitoActor(actor, async () => {
+    await withIncognitoSessionActor(actor, async () => {
       const manager = await SessionManager.openAsync(target);
       await manager.appendMessageAsync({ role: "user", content: "before reset", timestamp: 1 });
       await manager.appendResetBoundaryAsync("reset");

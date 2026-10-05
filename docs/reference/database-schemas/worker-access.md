@@ -598,6 +598,27 @@ remain covered by its native mutation witness. No new worker service, schema,
 retention, durability, environment switch, or update behavior is introduced.
 Native routes and T1 counts remain unchanged until the atomic P7 cutover.
 
+### Incognito shared binding and SDK preflight (P7h1, inactive)
+
+SessionManager and Codex history consume one captured actor binding. The binding
+validates the physical namespace before yielding and never adopts a successor
+or selects native storage after revocation. Production acquisition still
+supplies no binding; the final atomic activation must install it together with
+the remaining domain and history adapters.
+
+Synchronous SessionManager persistence and Codex context access refuse a bound
+actor before native SQL, detached-view changes, or tool-result hooks. Detached
+getters and unbound durable SDK compatibility retain their existing behavior.
+The binding retains actor lifetime through accepted work and cleanup. Registered
+worker errors retain their canonical identity for ephemeral actors too.
+
+Actor admission validation and pending-history receipt decoding live together
+outside the session-facts owner. This extraction preserves live grants, FIFO
+settlement, and publication order. This prerequisite keeps native routes,
+retires no T1 sites, and changes no schema, retention, durability, expiry,
+configuration, or update behavior. Public creation and generic entry-patch
+composition remain a separate inactive prerequisite.
+
 ### Existing worker flows
 
 Remote model catalog refreshes capture the shared store before downloading and
