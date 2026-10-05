@@ -584,8 +584,8 @@ export function createSystemAgentTool(options: SystemAgentToolOptions): AnyAgent
       }
       const lines: string[] = [];
       const capture: RuntimeEnv = {
-        log: (...args) => lines.push(args.join(" ")),
-        error: (...args) => lines.push(args.join(" ")),
+        log: (...values) => lines.push(values.join(" ")),
+        error: (...values) => lines.push(values.join(" ")),
         exit: (code) => {
           throw new Error(`openclaw operation exited with code ${String(code)}`);
         },
