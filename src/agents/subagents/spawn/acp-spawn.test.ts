@@ -91,7 +91,8 @@ vi.mock("../../../acp/control-plane/spawn.js", () => ({
   cleanupFailedAcpSpawn: hoisted.cleanupFailedAcpSpawnMock,
 }));
 
-vi.mock("../../../acp/runtime/session-meta-resume.js", () => ({
+vi.mock("../../../acp/runtime/session-meta-resume.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../acp/runtime/session-meta-resume.js")>()),
   readAcpResumeSessionOwner: (params: unknown) => hoisted.readAcpResumeSessionOwnerMock(params),
 }));
 

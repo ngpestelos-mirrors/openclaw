@@ -1,5 +1,5 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
-import { readAcpSessionCommand } from "../acp/runtime/session-meta-read.kernel.js";
+import { readAcpSessionCommand } from "../acp/runtime/session-meta-read.worker.js";
 import {
   loadSubagentMaintenanceRunsInDatabase,
   loadVersionedSubagentRunsInDatabase,

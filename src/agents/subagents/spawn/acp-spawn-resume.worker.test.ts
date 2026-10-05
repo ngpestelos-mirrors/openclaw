@@ -20,6 +20,8 @@ it("resolves resume ownership off-thread, preserving backend, order, and lifecyc
       name: string,
       options: {
         agentId?: string;
+        sessionKey?: string;
+        metadataKey?: string;
         backend?: string;
         owner?: string;
         parent?: string;
@@ -31,7 +33,9 @@ it("resolves resume ownership off-thread, preserving backend, order, and lifecyc
       } = {},
     ) => {
       const agentId = options.agentId ?? "coder";
-      const sessionKey = `agent:${agentId}:${name === "incognito-private" ? "dashboard" : "acp"}:${name}`;
+      const sessionKey =
+        options.sessionKey ??
+        `agent:${agentId}:${name === "incognito-private" ? "dashboard" : "acp"}:${name}`;
       const scope = { agentId, sessionKey, env: state.env, skipMaintenance: true };
       const entry = options.missing
         ? undefined
@@ -59,7 +63,7 @@ it("resolves resume ownership off-thread, preserving backend, order, and lifecyc
         },
       };
       writeAcpSessionMetaForMigration({
-        sessionKey: buildAcpDatabaseSessionKey(sessionKey, agentId),
+        sessionKey: buildAcpDatabaseSessionKey(options.metadataKey ?? sessionKey, agentId),
         lifecycleRevision: options.binding ?? entry?.lifecycleRevision ?? "deleted",
         meta,
         env: state.env,
@@ -77,6 +81,9 @@ it("resolves resume ownership off-thread, preserving backend, order, and lifecyc
     await seed("reset", { binding: "session-reset", startedAt: 110 });
     await seed("missing", { missing: true });
     await seed("incognito-private");
+    await seed("unqualified", { sessionKey: "agent:coder:main", metadataKey: "main" });
+    await seed("alias", { metadataKey: "agent:CODER:acp:alias" });
+    await seed("internal", { sessionKey: "agent:coder:internal-session-effects:fixture" });
     await seed("whitespace", { resume: "\t\u00a0 trimmed \ufeff\n", backend: " FIXTURE " });
     await seed("a-stale", { resume: "duplicate-live", binding: "old" });
     await seed("b-live", { resume: "duplicate-live" });
@@ -100,6 +107,9 @@ it("resolves resume ownership off-thread, preserving backend, order, and lifecyc
       ["reset", false],
       ["missing", false],
       ["incognito-private", false],
+      ["unqualified", false],
+      ["alias", false],
+      ["internal", false],
       ["absent", false],
       ["trimmed", true],
       ["duplicate-live", true],
@@ -178,7 +188,9 @@ it("resolves resume ownership off-thread, preserving backend, order, and lifecyc
           ...input,
           resumeSessionId: "replacement",
           assertCurrent() {
-            if (!active) throw new Error("request retired");
+            if (!active) {
+              throw new Error("request retired");
+            }
           },
         }),
       ).rejects.toThrow("request retired");

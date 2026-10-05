@@ -1,6 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { sql } from "kysely";
+import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
+import { resolveSqliteSessionKey } from "../../config/sessions/session-accessor.sqlite-scope-helpers.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { isIncognitoSessionKey, normalizeAgentId } from "../../routing/session-key.js";
 import type { OpenClawStateReadCommand } from "../../state/openclaw-state-read.types.js";
@@ -59,7 +61,10 @@ function selectAcpResumeSessions(
   return rows
     .flatMap((row) => {
       const key = parseAcpDatabaseSessionKey(row.session_key);
+      // Point readers accept aliases; orphan metadata must not reattach through that coercion.
       return key?.agentId === agentId &&
+        key.storeSessionKey === resolveSqliteSessionKey(key.storeSessionKey, agentId) &&
+        !isInternalSessionEffectsKey(key.storeSessionKey) &&
         !isIncognitoSessionKey(key.storeSessionKey) &&
         (!backendId || normalizeOptionalLowercaseString(row.backend) === backendId)
         ? [
@@ -71,7 +76,7 @@ function selectAcpResumeSessions(
           ]
         : [];
     })
-    .sort((a, b) => Buffer.compare(Buffer.from(a.sessionKey), Buffer.from(b.sessionKey)));
+    .toSorted((a, b) => Buffer.compare(Buffer.from(a.sessionKey), Buffer.from(b.sessionKey)));
 }
 
 export function readAcpSessionCommand(

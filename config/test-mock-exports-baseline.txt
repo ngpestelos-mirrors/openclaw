@@ -3445,7 +3445,6 @@
 ["src/agents/subagents/spawn/acp-spawn.authority.test.ts","../../runtime-plugins.js","33740a8dae1d21e5745ef571db4f65882aae9ccdb026425df0f5693f24466f6a",1]
 ["src/agents/subagents/spawn/acp-spawn.test.ts","../../../acp/control-plane/manager.js","bd5a7942fec050a81f6070a667fc0f8cf21e915c13f269ee7c472b6fc69b6b3f",1]
 ["src/agents/subagents/spawn/acp-spawn.test.ts","../../../acp/control-plane/spawn.js","779a41a6724dda3cdd4ac03ff62669aee187560d4a344cb9748adc59610ae08a",1]
-["src/agents/subagents/spawn/acp-spawn.test.ts","../../../acp/runtime/session-meta.js","6f366f66d9613a54c26b42954f67352b4b6785ca36f5d259d2682296729b1e3d",1]
 ["src/agents/subagents/spawn/acp-spawn.test.ts","../../../channels/plugins/index.js","a337cb121758a76419e047fd9f886678cc198ffa554e104eedc51e5e81731e8e",1]
 ["src/agents/subagents/spawn/acp-spawn.test.ts","../../../channels/plugins/registry.js","a8f453c13c37ccbb29dcb4d40016e6b44a59853d36025c174d022c26463158e1",1]
 ["src/agents/subagents/spawn/acp-spawn.test.ts","../../../config/config.js","4fcca137323c21cf3dfc635ed4e0ca5239631e94dd01cb7b0927f893ec1466dc",1]

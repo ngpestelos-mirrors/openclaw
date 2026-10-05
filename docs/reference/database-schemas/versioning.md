@@ -79,7 +79,8 @@ ACP resume lookups use two nonunique expression indexes on the existing
 `acp_sessions.identity_json` agent and ACPX session IDs. The shared-state worker
 selects only matching identities, and canonical session reads retain requester,
 backend, and lifecycle checks. Duplicate IDs retain session-key ordering; stale
-lifecycles do not authorize resume. The writable schema owner installs the indexes
+lifecycles do not authorize resume. Unresolved aliases and internal sessions stay
+ineligible, as in the canonical session listing. The writable schema owner installs the indexes
 on existing databases without changing the schema version or canonical rows.
 Construction scans ACP metadata once and uses temporary disk; subsequent metadata
 writes maintain both indexes. Older same-version readers ignore the extra indexes,

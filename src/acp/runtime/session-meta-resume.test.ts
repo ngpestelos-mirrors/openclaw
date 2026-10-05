@@ -6,7 +6,7 @@ import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js"
 import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { buildAcpDatabaseSessionKey, upsertAcpSessionMetaRow } from "./session-meta-keys.js";
-import { readAcpSessionCommand } from "./session-meta-read.kernel.js";
+import { readAcpSessionCommand } from "./session-meta-read.worker.js";
 import { bindAcpSessionMeta } from "./session-meta-write.kernel.js";
 
 it("matches randomized identities using index searches, including malformed and non-string identities", () => {
@@ -53,7 +53,9 @@ it("matches randomized identities using index searches, including malformed and 
     let selectSql = "";
     const prepare = db.prepare.bind(db);
     const spy = vi.spyOn(db, "prepare").mockImplementation((query) => {
-      if (query.startsWith("select") && query.includes('from "acp_sessions"')) selectSql = query;
+      if (query.startsWith("select") && query.includes('from "acp_sessions"')) {
+        selectSql = query;
+      }
       return prepare(query);
     });
     try {
@@ -64,8 +66,9 @@ it("matches randomized identities using index searches, including malformed and 
       ]) {
         const expected = fixtures
           .filter((fixture) => {
-            if (fixture.agentId !== "coder" || fixture.backend.trim().toLowerCase() !== "fixture")
+            if (fixture.agentId !== "coder" || fixture.backend.trim().toLowerCase() !== "fixture") {
               return false;
+            }
             let identity: { agentSessionId?: unknown; acpxSessionId?: unknown };
             try {
               identity = JSON.parse(fixture.identity);
