@@ -180,6 +180,12 @@ export function readSessionEntryReadOnlyInWorker(
   });
 }
 
+/** Envelope timestamps are descriptive reads; missing stores remain absent. */
+export async function readSessionUpdatedAtInWorker(input: SessionAccessScope) {
+  const entry = await readSessionEntryReadOnlyInWorker({ ...input, projection: "list" });
+  return entry?.updatedAt;
+}
+
 /** Diagnostic identities name the default agent store, not a logical store locator. */
 export async function withSessionDiagnosticTextInWorker(
   input: { agentId: string; sessionKey: string; sessionId: string },

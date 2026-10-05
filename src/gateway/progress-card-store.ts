@@ -1,4 +1,3 @@
-import type { ProgressCard, ProgressCardStep } from "../../packages/gateway-protocol/src/index.js";
 import {
   resolveSqliteScope,
   toDatabaseOptions,
@@ -39,20 +38,7 @@ import {
 } from "../state/openclaw-state-worker-error.js";
 import { captureGatewaySessionStoreScope } from "./board-store.js";
 
-export type ProgressCardStore = {
-  get(sessionKey: string, agentId?: string): Promise<ProgressCard | null>;
-  put(
-    sessionKey: string,
-    input: {
-      markdown?: string;
-      steps?: ProgressCardStep[];
-      expectedRevision?: number;
-      // The storage owner checks authority inside its write transaction.
-      assertCurrent?: () => void;
-    },
-    agentId?: string,
-  ): Promise<{ card: ProgressCard | null }>;
-};
+export type ProgressCardStore = typeof progressCardStore;
 
 /**
  * The activation owner captures routing and supplies live, SQL-free authority.
@@ -127,8 +113,8 @@ export function createIncognitoProgressCardStore(
   };
 }
 
-export const progressCardStore: ProgressCardStore = {
-  async get(sessionKey, agentId) {
+export const progressCardStore = {
+  async get(sessionKey: string, agentId?: string) {
     const env = captureSessionTranscriptStorageEnvironment(process.env);
     const scope = captureGatewaySessionStoreScope(sessionKey, agentId);
     const unsuffixed = resolveUnsuffixedSqliteTargetFromSessionStorePath(scope.storePath);
@@ -148,7 +134,14 @@ export const progressCardStore: ProgressCardStore = {
       (owner) => owner.readProgressCard({ sessionKey: scope.sessionKey, env }),
     );
   },
-  async put(sessionKey, input, agentId) {
+  async put(
+    sessionKey: string,
+    input: Parameters<typeof writeSessionProgressCard>[2] & {
+      // The storage owner checks authority inside its write transaction.
+      assertCurrent?: () => void;
+    },
+    agentId?: string,
+  ) {
     const resolved = captureGatewaySessionStoreScope(sessionKey, agentId);
     const env = captureSessionTranscriptStorageEnvironment(process.env);
     const capturedInput = structuredClone({

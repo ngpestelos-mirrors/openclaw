@@ -1,7 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
-  "src/gateway/progress-card-store.incognito.test.ts",
-  "src/gateway/session-incognito-lifetime.actor.test.ts",
+  "src/channels/inbound-event/envelope.worker.test.ts",
   "src/model-catalog/remote-refresh.test.ts",
   "src/model-catalog/remote-store.test.ts",
   "src/agents/subagents/spawn/acp-parent-stream-store.sqlite.test.ts",
@@ -11,6 +10,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-agent-execution-incognito.pending-history.test.ts",
   "src/state/openclaw-agent-execution-incognito.pending-input.test.ts",
   "src/config/sessions/session-sharing-store.incognito.test.ts",
+  "src/gateway/progress-card-store.incognito.test.ts",
+  "src/gateway/session-incognito-lifetime.actor.test.ts",
   "src/state/openclaw-agent-pending-inputs-schema.test.ts",
   "src/agents/bash-tools.visible-subagent-notify.test.ts",
   "src/agents/agent-command.compaction-rotation.test.ts",

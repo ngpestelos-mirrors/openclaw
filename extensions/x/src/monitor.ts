@@ -1,10 +1,10 @@
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
-import { resolveChannelInboundRouteEnvelope } from "openclaw/plugin-sdk/channel-inbound";
 import {
   bindIngressLifecycleToReplyOptions,
   createChannelIngressError,
   createChannelIngressMonitor,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { resolveXAccount, type ResolvedXAccount } from "./accounts.js";
 import { XAllowlistChangedError } from "./allowlist.js";
@@ -178,7 +178,7 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
         currentCfg: typeof cfg,
       ) => {
         const guestAccount = resolveXAccount(currentCfg, account.accountId);
-        const { route: guestRoute } = resolveChannelInboundRouteEnvelope({
+        const guestRoute = resolveAgentRoute({
           cfg: currentCfg,
           channel: "x",
           accountId: account.accountId,
@@ -238,7 +238,7 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
         signal: lifecycle.abortSignal,
       });
       cfg = readConfig();
-      const { route } = resolveChannelInboundRouteEnvelope({
+      const route = resolveAgentRoute({
         cfg,
         channel: "x",
         accountId: account.accountId,
