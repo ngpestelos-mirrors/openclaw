@@ -124,7 +124,6 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/approval.legacy-authority.test.ts",
   "src/gateway/server-methods/approval.request-authority.test.ts",
   "src/gateway/server-methods/approval.settlement.test.ts",
-  "src/gateway/server-methods/chat-send-commentary-media.test.ts",
   "src/gateway/server-methods/chat-send-synthetic-repair.integration.test.ts",
   "src/gateway/server-methods/chat.abort-live-proof.test.ts",
   "src/gateway/server-methods/chat.oauth-refresh-cancel.integration.test.ts",
