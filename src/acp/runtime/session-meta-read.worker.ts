@@ -5,7 +5,6 @@ import { isInternalSessionEffectsKey } from "../../config/sessions/internal-sess
 import { resolveSqliteSessionKey } from "../../config/sessions/session-accessor.sqlite-scope-helpers.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { isIncognitoSessionKey, normalizeAgentId } from "../../routing/session-key.js";
-import type { OpenClawStateReadCommand } from "../../state/openclaw-state-read.types.js";
 import {
   acpSessionRowMatchesEntry,
   selectAcpSessionRows,
@@ -14,16 +13,15 @@ import {
   getAcpSessionKysely,
   parseAcpDatabaseSessionKey,
 } from "./session-meta-keys.js";
-
-export type AcpResumeSessionRow = {
-  sessionKey: string;
-  session_id: string | null;
-  updated_at: number;
-};
+import type {
+  AcpResumeSessionRow,
+  AcpSessionReadCommand,
+  AcpSessionReadResult,
+} from "./session-meta-read.types.js";
 
 function selectAcpResumeSessions(
   db: DatabaseSync,
-  input: { agentId: string; backendId?: string; resumeSessionId: string; sessionKey?: string },
+  input: Extract<AcpSessionReadCommand, { type: "acpSessions.resume" }>,
 ): AcpResumeSessionRow[] {
   // Match String.trim(), including historical whitespace, without decoding metadata on the host.
   // These expressions must match the canonical resume indexes.
@@ -81,13 +79,8 @@ function selectAcpResumeSessions(
 
 export function readAcpSessionCommand(
   db: DatabaseSync,
-  command: Extract<
-    OpenClawStateReadCommand,
-    {
-      type: "acpSessions.list" | "acpSessions.metadata" | "acpSessions.resume";
-    }
-  >,
-) {
+  command: AcpSessionReadCommand,
+): AcpSessionReadResult {
   if (command.type === "acpSessions.list") {
     return { type: command.type, rows: selectAcpSessionRows(db) };
   }
