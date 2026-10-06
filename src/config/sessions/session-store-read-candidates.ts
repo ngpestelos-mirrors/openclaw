@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { resolveIdentityPathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
@@ -88,9 +89,27 @@ function resolveCapturedSessionStoreReadCandidatePhysicalPath(
 ): string {
   // Family custody is anchored to its captured physical directory. Re-resolving that anchor
   // would accept a directory that was replaced with a symlink after capture.
-  return candidate.scope
-    ? candidate.physicalPath
-    : resolveIdentityPathViaExistingAncestorSync(candidate.physicalPath);
+  if (candidate.scope || !isSymlinkFreeWindowsShortPath(candidate.physicalPath)) {
+    return candidate.physicalPath;
+  }
+  return resolveIdentityPathViaExistingAncestorSync(candidate.physicalPath);
+}
+
+function isSymlinkFreeWindowsShortPath(pathname: string): boolean {
+  if (process.platform !== "win32" || !/(?:^|[\\/])[^\\/]*~\d+(?=[\\/]|$)/iu.test(pathname)) {
+    return false;
+  }
+  const resolved = path.resolve(pathname);
+  const parsed = path.parse(resolved);
+  let cursor = parsed.root;
+  for (const segment of resolved.slice(parsed.root.length).split(path.sep)) {
+    cursor = path.join(cursor, segment);
+    const stat = fs.lstatSync(cursor, { throwIfNoEntry: false });
+    if (!stat || stat.isSymbolicLink()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Native discovery may use only the captured lexical and physical family together. */
