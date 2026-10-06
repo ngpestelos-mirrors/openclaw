@@ -470,7 +470,6 @@ async function executeAgentTurnInternalLoop(
           applyLiveModelSwitchToRun(effectiveRun, switchError);
         }
       }
-      continue;
     }
   }
 
