@@ -39,6 +39,7 @@ describe("X work-session publication admission", () => {
       cfg.channels!.x!.autoPublishWorkSessions = kind !== "off";
       if (kind === "guest") {
         cfg.channels!.x!.guests = { enabled: true };
+        cfg.messages = { queue: { mode: "collect" } };
         cfg.agents = {
           entries: { maintainer: { skills: [], tools: { fs: { workspaceOnly: true } } } },
         };
