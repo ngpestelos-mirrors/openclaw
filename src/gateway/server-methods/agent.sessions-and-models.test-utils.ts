@@ -36,6 +36,7 @@ import {
 import {
   confirmedAcpMeta,
   createPluginSubagentTestLifetime,
+  mockGlobalSessionAgentRoster,
   mockSpawnedChildSessionEntry,
   nativeSubagentClient,
   seedPersistedSubagentRunForAgentTest,
@@ -64,14 +65,6 @@ import {
 } from "./agent.test-harness.js";
 
 const mocks = getAgentTestMocks();
-
-function mockGlobalSessionAgentRoster() {
-  mocks.listAgentIds.mockReturnValue(["main", "work"]);
-  mocks.loadConfigReturn = {
-    agents: { entries: { main: {}, work: {} } },
-    session: { scope: "global" },
-  };
-}
 
 describe("gateway agent handler", () => {
   afterEach(describe0AfterEach0);
@@ -339,6 +332,7 @@ describe("gateway agent handler", () => {
         },
         runId: "plugin-subagent-current-requester",
         childSessionKey,
+        childAgentId: "work",
         task: "background plugin subagent task",
         requester,
         pluginId: "memory-core",
@@ -373,6 +367,8 @@ describe("gateway agent handler", () => {
         await seedPersistedSubagentRunForAgentTest({
           runId: previousRunId,
           childSessionKey,
+          childAgentId: "main",
+          childSessionIdentity: { sessionId: "spawned-child-session" },
           requesterSessionKey: "agent:main:main",
           requesterDisplayKey: "main",
           task: "Wait",
@@ -603,6 +599,7 @@ describe("gateway agent handler", () => {
           cfg,
           runId: "plugin-subagent-sibling",
           childSessionKey,
+          childAgentId: "work",
           task: "deliver to me instead",
           requester: {
             sessionKey: "agent:main:telegram:direct:555",
@@ -616,6 +613,7 @@ describe("gateway agent handler", () => {
           cfg,
           runId: "plugin-subagent-default-followup",
           childSessionKey,
+          childAgentId: "work",
           task: "the remote job finished",
           pluginId: "memory-core",
         });

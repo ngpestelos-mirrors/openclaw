@@ -15,7 +15,9 @@ import type { SessionStateWorkerOperations } from "../../../sessions/session-sta
 import type { OpenClawStateDatabase } from "../../../state/openclaw-state-db-contract.js";
 import { ensureColumn } from "../../../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../../state/openclaw-state-db.generated.js";
+import { rowToSubagentRunRecord } from "./subagent-registry.store.codec.js";
 import { subagentRunRowVersion, type SubagentRunSqliteRow } from "./subagent-registry.store.row.js";
+import { isSubagentRunGenerationCandidate } from "./subagent-run-generation.js";
 
 type SubagentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "subagent_runs">;
 // Eight bound columns per row keep each statement within 1,024 parameters.
@@ -26,6 +28,11 @@ export type SubagentRegistryWrite = {
   values: readonly SubagentRunSqliteRow[];
   deleteRunIds: readonly string[];
   versions: readonly { runId: string; version: string | null }[];
+  registrationCohort?: {
+    childSessionKey: string;
+    childAgentId: string;
+    runIds: readonly string[];
+  };
   terminalEvents?: readonly Pick<
     SessionStateWorkerOperations["sessionState.record"]["input"],
     "event" | "now" | "acpControl" | "sessionEntryCurrentSource"
@@ -56,6 +63,36 @@ export function conflictingSubagentRunVersions(
   return versions.flatMap(({ runId, version }) =>
     (current.get(toUSVString(runId)) ?? null) === version ? [] : [runId],
   );
+}
+
+export function conflictingSubagentRegistrationCohort(
+  database: OpenClawStateDatabase,
+  cohort: SubagentRegistryWrite["registrationCohort"],
+): string[] {
+  if (!cohort) {
+    return [];
+  }
+  const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(database.db);
+  const actual = new Set(
+    executeSqliteQuerySync(
+      database.db,
+      stateDb
+        .selectFrom("subagent_runs")
+        .selectAll()
+        .where("child_session_key", "=", toUSVString(cohort.childSessionKey)),
+    ).rows.flatMap((row) => {
+      const entry = rowToSubagentRunRecord(row);
+      return !entry ||
+        isSubagentRunGenerationCandidate(entry, cohort.childSessionKey, cohort.childAgentId)
+        ? [row.run_id]
+        : [];
+    }),
+  );
+  const expected = new Set(cohort.runIds.map(toUSVString));
+  return [
+    ...[...actual].filter((runId) => !expected.has(runId)),
+    ...[...expected].filter((runId) => !actual.has(runId)),
+  ];
 }
 
 const parentStoreSchemas = new WeakMap<SqliteSchemaFacts, boolean>();

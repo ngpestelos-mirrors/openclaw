@@ -15,15 +15,17 @@ import { emitSessionLifecycleEvent } from "../../../sessions/session-lifecycle-e
 import { AgentDatabaseAdmissionError } from "../../../state/agent-database-admission.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
-import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { applySubagentLaunchAuthorization } from "../spawn/subagent-launch-authorization.js";
 import { retrySubagentCleanup } from "../spawn/subagent-spawn-cleanup.js";
 import { readGatewayRunId } from "../spawn/subagent-spawn-gateway.js";
 import { resolveSwarmConfig } from "../swarm/swarm-config.js";
 import { bindSwarmRunReservation, enqueueSwarmRun } from "../swarm/swarm-scheduler.js";
+import {
+  resolveSubagentChildAgentId,
+  resolveSubagentChildAuthorityError,
+} from "./subagent-child-owner-match.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
 import { callSubagentRegistryGateway } from "./subagent-registry-deps.js";
-import { updateSubagentArchiveAtMs } from "./subagent-registry-helpers.js";
 import type { SubagentLifecycleOptions } from "./subagent-registry-lifecycle-context.js";
 import type { SubagentLifecycleController } from "./subagent-registry-lifecycle.js";
 import {
@@ -38,6 +40,7 @@ import {
 import { getLatestSubagentRunForChild } from "./subagent-registry-queries.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 import { isRetiredSubagentSessionOwner } from "./subagent-registry-restart-recovery-helpers.js";
+import { restoreSubagentRunMetadata } from "./subagent-registry-restore-metadata.js";
 import { settleRestoredRequesterTurns } from "./subagent-registry-restore-requester.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run-generation.js";
@@ -293,8 +296,9 @@ export function createSubagentRegistryRestorer(config: {
       let selectedOwner = getCurrentSubagentRunOwner(runs, snapshot);
       let sessionEntry;
       while (selectedOwner && selectedOwner.runId === runId) {
-        // Restart recovery retains exclusive custody of these source rows.
+        // Preserve unresolved records and rows held by restart or kill recovery.
         if (
+          resolveSubagentChildAuthorityError(selectedOwner) ||
           selectedOwner.execution.restartRecovery ||
           selectedOwner.killIntent ||
           selectedOwner.killReconciliation
@@ -319,7 +323,7 @@ export function createSubagentRegistryRestorer(config: {
         continue;
       }
       if (entry.collect && entry.execution.status === "queued") {
-        const cleanupSessionEntry = sessionEntry;
+        const cleanupSessionEntry = entry.childSessionIdentity;
         const launch = entry.queuedLaunch;
         if (!launch) {
           const cleanupLifecycleGeneration = getAgentEventLifecycleGeneration();
@@ -508,26 +512,7 @@ export function createSubagentRegistryRestorer(config: {
           await completeRestore();
           return;
         }
-        const cfg = getRuntimeConfig();
-        await mutateSubagentRuns(
-          [...runs.keys()],
-          (rows) => {
-            const postimages = new Map<string, SubagentRunRecord>();
-            for (const [runId, entry] of rows) {
-              const draft = { ...entry };
-              const requesterAgentId = resolveSubagentRequesterAgentId(cfg, draft);
-              const ownerChanged = !draft.requesterAgentId && requesterAgentId !== undefined;
-              if (ownerChanged) {
-                draft.requesterAgentId = requesterAgentId;
-              }
-              if (updateSubagentArchiveAtMs(draft, cfg) || ownerChanged) {
-                postimages.set(runId, draft);
-              }
-            }
-            return { value: undefined, postimages };
-          },
-          { runs, context: stateContext, assertCurrent },
-        );
+        await restoreSubagentRunMetadata(runs, stateContext, assertCurrent);
         assertCurrent();
         await completeRestore();
       } catch (err) {
@@ -570,6 +555,9 @@ export function createSubagentRegistryRestorer(config: {
       warn(message, { runId, childSessionKey: entry.childSessionKey, error: failure });
     // Root custody includes the terminal commit and final cleanup publication.
     return runWithGatewayIndependentRootWorkAdmission(async () => {
+      if (resolveSubagentChildAuthorityError(entry)) {
+        return false;
+      }
       // Descriptorless restore failures enter here without onStartFailure; their
       // provisional session must survive the same pending cancellation receipt.
       for (
@@ -643,12 +631,8 @@ export function createSubagentRegistryRestorer(config: {
       let sessionCleanup: Awaited<ReturnType<typeof deleteSubagentSessionForCleanup>> | undefined;
       try {
         const cleanupComplete = await (async () => {
-          if (!ownsCleanup()) {
+          if (!ownsCleanup() || !expectedSessionId || !expectedLifecycleRevision) {
             return false;
-          }
-          if (!expectedSessionId || !expectedLifecycleRevision) {
-            sessionCleanup = "changed";
-            return true;
           }
           const cleanupSettled = await retrySubagentCleanup(
             async () => {
@@ -660,7 +644,7 @@ export function createSubagentRegistryRestorer(config: {
                 gatewayBinding: { resolveGatewayContext: getEntryGatewayContextResolver(entry) },
                 isCurrent: ownsCleanup,
                 childSessionKey: entry.childSessionKey,
-                childAgentId: entry.childAgentId,
+                childAgentId: resolveSubagentChildAgentId(entry),
                 expectedSessionId,
                 expectedLifecycleRevision,
                 onError: (cleanupError) => {

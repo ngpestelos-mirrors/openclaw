@@ -167,6 +167,7 @@ export async function runManagerTurn(params: {
         await recordSubagentTerminalState(
           {
             childSessionKey: sessionKey,
+            agentId,
             runId: input.requestId,
             requesterSessionKey: spawnedByWatcher,
             outcomeStatus: cancelled
@@ -213,6 +214,7 @@ export async function runManagerTurn(params: {
         await recordSubagentTerminalState(
           {
             childSessionKey: sessionKey,
+            agentId,
             runId: input.requestId,
             requesterSessionKey: spawnedByWatcher,
             outcomeStatus:
@@ -480,6 +482,7 @@ export async function runManagerTurn(params: {
             await recordSubagentTerminalState(
               {
                 childSessionKey: sessionKey,
+                agentId,
                 runId: input.requestId,
                 requesterSessionKey: spawnedByWatcher,
                 outcomeStatus: cancelled ? "cancelled" : "ok",

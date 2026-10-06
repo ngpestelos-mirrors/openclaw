@@ -1,8 +1,31 @@
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
+import type { createDeferredCore } from "../../../shared/deferred.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import type { DomainScope } from "../../../state/openclaw-state-worker-store.types.js";
 import type { SubagentRunMutation } from "./subagent-registry-mutation.types.js";
+import type { SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+
+export type PendingRegistryWrite = {
+  runIds: ReadonlySet<string>;
+  admission: OpenClawStateWorkerContext["admission"];
+  settled: ReturnType<typeof createDeferredCore<void>>;
+  uncertain?: SubagentRegistryWriteError;
+  killClaim?: SubagentRunRecord;
+  rekeys?: Array<{
+    from: string;
+    to: string;
+    owner: object;
+    sourceIdentity: string;
+    destinationIdentity: string;
+  }>;
+};
+
+export type RegistrySourceQueue = {
+  admission: OpenClawStateWorkerContext["admission"];
+  tails: Map<string, Promise<void>>;
+  restore?: Promise<void>;
+};
 
 export type SubagentRegistryWriteAuthority = {
   assertCurrent: () => void;
@@ -11,6 +34,7 @@ export type SubagentRegistryWriteAuthority = {
 
 export type SubagentRunMutationOptions<P extends SubagentRunMutation<unknown>> = {
   runs?: Map<string, SubagentRunRecord>;
+  preparedRows?: ReadonlyMap<string, SubagentRunRecord>;
   context?: OpenClawStateWorkerContext;
   assertCurrent?: () => void;
   pendingKillClaim?: SubagentRunRecord;

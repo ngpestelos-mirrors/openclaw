@@ -20,7 +20,6 @@ type OutputTestDeps = Pick<
   | "getRuntimeConfig"
   | "readSubagentSessionEntry"
   | "readSessionMessagesAsync"
-  | "resolveAgentIdFromSessionKey"
   | "resolveSessionStorePathCore"
 > & {
   callGateway: AnnounceTestDeps["callGateway"];
@@ -141,13 +140,6 @@ function replaceOverrides(scope: Scope, overrides?: Overrides) {
       announceRuntime.readSessionMessagesAsync,
       () => vi.spyOn(announceRuntime, "readSessionMessagesAsync"),
       current.readSessionMessagesAsync,
-    );
-  }
-  if (current.resolveAgentIdFromSessionKey) {
-    install(
-      announceRuntime.resolveAgentIdFromSessionKey,
-      () => vi.spyOn(announceRuntime, "resolveAgentIdFromSessionKey"),
-      current.resolveAgentIdFromSessionKey,
     );
   }
   if (current.resolveSessionStorePathCore) {
