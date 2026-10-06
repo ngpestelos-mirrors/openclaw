@@ -38,6 +38,7 @@ import {
 import { roundTripWorkerLaunchDescriptor } from "../../worker/launch-descriptor.test-support.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import { WorkerRunnerCapacityError, type WorkerTunnelHandle } from "./tunnel-contract.js";
+import { registerWorkerTurnInferenceTests } from "./worker-turn-execution.inference.suite.js";
 import {
   acknowledgeCompletedWorkerTurn,
   createWorkerTurnTunnel,
@@ -421,7 +422,8 @@ describe("worker turn execution", () => {
           {
             ...input,
             abortSignal: abort.signal,
-            onExecutionStarted: async () => {
+            onExecutionStarted: async (info) => {
+              expect(info?.backend).toBe("cloud-worker");
               // Earlier workspace recovery and externally owned writes retain their own ordering.
               hydration.mockClear();
               acquireTurnCredential.mockClear();
@@ -848,6 +850,8 @@ describe("worker turn execution", () => {
       });
     },
   );
+
+  registerWorkerTurnInferenceTests();
 
   it.each([
     [WORKER_LAUNCH_V2_PROTOCOL_FEATURE],

@@ -31,6 +31,7 @@ import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { resolveSpawnAdmission } from "../spawn-plan.js";
 import { resolveSpawnedWorkspaceInheritance } from "../spawned-context.js";
 import type { SpawnedToolContext } from "../spawned-context.js";
+import { prepareSubagentSessionListReadCache } from "../subagents/registry/subagent-registry-state.js";
 import {
   countActiveRunsForSession,
   registerSubagentRun,
@@ -308,6 +309,9 @@ export async function maybeSpawnVisibleSession(params: {
       error:
         'context="fork" currently requires the same target agent as the requester; use context="isolated" for cross-agent spawns.',
     };
+  }
+  if (!params.options?.countActiveRuns) {
+    await prepareSubagentSessionListReadCache();
   }
   const resolveAdmission = (pendingChildren = 0) =>
     resolveSpawnAdmission({

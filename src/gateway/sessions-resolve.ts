@@ -60,13 +60,6 @@ function resolveSessionVisibilityFilterOptions(p: SessionsResolveParams) {
   };
 }
 
-function noSessionFoundResult(params: { p: SessionsResolveParams; message: string }) {
-  if (params.p.allowMissing) {
-    return { ok: true, missing: true } as const;
-  }
-  return invalidSessionRequest(params.message);
-}
-
 /** Rejects sessions whose owning agent no longer exists in config (#65524). */
 function validateSessionAgentExists(
   cfg: OpenClawConfig,
@@ -79,10 +72,6 @@ function validateSessionAgentExists(
     return null;
   }
   return invalidSessionRequest(`Agent "${deletedAgentId}" no longer exists in configuration`);
-}
-
-function normalizeShortSessionId(shortId: string): string | null {
-  return SHORT_SESSION_ID_RE.test(shortId) ? shortId.toLowerCase() : null;
 }
 
 function sessionResolveCandidate(
@@ -159,6 +148,8 @@ export function resolveSessionKeyFromResolveParams(params: {
   publicOnly?: boolean;
 }): SessionsResolveResult {
   const { client, p, projection } = params;
+  const noSessionFoundResult = (message: string): SessionsResolveResult =>
+    p.allowMissing ? { ok: true, missing: true } : invalidSessionRequest(message);
   const { cfg, policyConfig } = projection.state;
   const entryFilter = params.publicOnly
     ? (key: string, entry: SessionEntry) =>
@@ -306,7 +297,7 @@ export function resolveSessionKeyFromResolveParams(params: {
     const selected = matches[0];
     return selected
       ? { ok: true, ...selected }
-      : noSessionFoundResult({ p, message: `No session found: ${p.reference.key}` });
+      : noSessionFoundResult(`No session found: ${p.reference.key}`);
   }
 
   if (hasKey) {
@@ -317,7 +308,7 @@ export function resolveSessionKeyFromResolveParams(params: {
       return requestedAgent;
     }
     if (authorizeIncognitoSessionTarget({ client, sessionKey: key, target: null })) {
-      return noSessionFoundResult({ p, message: `No session found: ${key}` });
+      return noSessionFoundResult(`No session found: ${key}`);
     }
     const target = projection.describe({ agentId: requestedAgent.agentId, key });
     if (target?.entry) {
@@ -331,7 +322,7 @@ export function resolveSessionKeyFromResolveParams(params: {
             ([candidate]) => candidate === target.key,
           ))
       ) {
-        return noSessionFoundResult({ p, message: `No session found: ${key}` });
+        return noSessionFoundResult(`No session found: ${key}`);
       }
       return (
         prepareAgentChecks([[target.key, entry]], () => target)(target.key, entry) ?? {
@@ -341,7 +332,7 @@ export function resolveSessionKeyFromResolveParams(params: {
         }
       );
     }
-    return noSessionFoundResult({ p, message: `No session found: ${key}` });
+    return noSessionFoundResult(`No session found: ${key}`);
   }
 
   if (hasSessionId) {
@@ -403,7 +394,7 @@ export function resolveSessionKeyFromResolveParams(params: {
     const { matches, getTarget } = sessionIdMatches(p.agentId);
     const selection = resolveSessionIdMatchSelection(matches, sessionId);
     if (selection.kind === "none") {
-      return noSessionFoundResult({ p, message: `No session found: ${sessionId}` });
+      return noSessionFoundResult(`No session found: ${sessionId}`);
     }
     if (selection.kind === "ambiguous") {
       return invalidSessionRequest(
@@ -430,10 +421,10 @@ export function resolveSessionKeyFromResolveParams(params: {
   }
 
   if (hasShortId) {
-    const shortId = normalizeShortSessionId(rawShortId);
-    if (!shortId) {
+    if (!SHORT_SESSION_ID_RE.test(rawShortId)) {
       return invalidSessionRequest("shortId must be 8-32 hexadecimal characters");
     }
+    const shortId = rawShortId.toLowerCase();
     const prepared = prepare();
     const matchingEntries = filterAndSortSessionEntries({
       ...prepared,
@@ -460,7 +451,7 @@ export function resolveSessionKeyFromResolveParams(params: {
     // A stale display-name hint may narrow a tie, but it must never invalidate the id.
     const narrowed = slugMatches.length > 0 ? slugMatches : matches;
     if (narrowed.length === 0) {
-      return noSessionFoundResult({ p, message: `No session found: ${shortId}` });
+      return noSessionFoundResult(`No session found: ${shortId}`);
     }
     if (narrowed.length > 1) {
       // Bound the ambiguity payload; callers treat a full ten rows as possibly truncated.
@@ -486,10 +477,7 @@ export function resolveSessionKeyFromResolveParams(params: {
     },
   });
   if (matches.length === 0) {
-    return noSessionFoundResult({
-      p,
-      message: `No session found with label: ${parsedLabel.label}`,
-    });
+    return noSessionFoundResult(`No session found with label: ${parsedLabel.label}`);
   }
   if (matches.length > 1) {
     const keys = matches.map(([matchKey]) => matchKey).join(", ");
