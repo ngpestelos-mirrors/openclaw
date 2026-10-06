@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Root } from "@openclaw/fs-safe";
 import { getFsSafeNativeConfig } from "@openclaw/fs-safe/config";
-import { FsSafeError } from "@openclaw/fs-safe/errors";
+import { FsSafeError, isNoReplaceUnsupported } from "@openclaw/fs-safe/errors";
 import {
   pinDirectory,
   publishFileExclusive,
@@ -84,21 +84,26 @@ export async function moveLegacyMigrationFileNoReplace(
     await root.move(from, to);
     return;
   } catch (error) {
+    if (getFsSafeNativeConfig().mode === "require") {
+      throw error;
+    }
+    if (isNoReplaceUnsupported(error)) {
+      // fs-safe owns native fallback; preserve Doctor's recoverable refusal without retrying.
+      throw new LegacyMigrationMoveUnavailableError(
+        path.resolve(root.rootReal, from),
+        error.code,
+        error,
+      );
+    }
     // The portable publisher cannot revalidate mutation-specific Root policies.
     if (
       !(error instanceof FsSafeError) ||
       error.code !== "helper-unavailable" ||
-      getFsSafeNativeConfig().mode === "require" ||
+      error.message !== "native fs-safe helper is unavailable" ||
       path.dirname(from) !== path.dirname(to) ||
       root.defaults.assertBeforeMutation ||
       root.defaults.denyMutations ||
-      root.defaults.mutationSymlinks ||
-      (error.cause !== undefined &&
-        // fs-safe reports loader failures before native admission or dispatch.
-        error.message !== "native fs-safe helper is unavailable" &&
-        !["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"].some((code) =>
-          hasErrnoCode(error.cause, code),
-        ))
+      root.defaults.mutationSymlinks
     ) {
       throw error;
     }
