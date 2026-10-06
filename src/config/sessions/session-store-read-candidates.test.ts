@@ -1,9 +1,13 @@
 import fs from "node:fs";
+import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   assertSessionStoreReadCandidate,
   isSessionStoreReadCandidateCurrent,
 } from "./session-store-read-candidates.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -27,6 +31,23 @@ test("keeps custody when a captured alias later resolves to the same file", () =
   const candidate = { path: capturedAlias, physicalPath: capturedAlias };
   expect(isSessionStoreReadCandidateCurrent(candidate)).toBe(true);
   expect(assertSessionStoreReadCandidate(capturedAlias, [candidate])).toBe(canonicalPath);
+});
+
+test("keeps custody when Windows preserves distinct short and long spellings for one file", () => {
+  const root = tempDirs.make("session-store-windows-alias-");
+  const shortDir = path.join(root, "RUNNER~1");
+  const longDir = path.join(root, "runneradmin");
+  fs.mkdirSync(shortDir);
+  fs.mkdirSync(longDir);
+  const shortPath = path.join(shortDir, "openclaw-agent.sqlite");
+  const longPath = path.join(longDir, "openclaw-agent.sqlite");
+  fs.writeFileSync(shortPath, "");
+  fs.linkSync(shortPath, longPath);
+  vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+  const candidate = { path: longPath, physicalPath: shortPath };
+  expect(isSessionStoreReadCandidateCurrent(candidate)).toBe(true);
+  expect(assertSessionStoreReadCandidate(longPath, [candidate])).toBe(longPath);
 });
 
 test("rejects a Windows short-path candidate redirected through a symlink", () => {

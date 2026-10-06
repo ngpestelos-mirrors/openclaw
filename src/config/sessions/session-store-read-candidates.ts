@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveIdentityPathViaExistingAncestorSync } from "../../infra/boundary-path.js";
-import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
+import {
+  inspectDatabasePathIdentitySync,
+  readDatabasePathIdentitySync,
+} from "../../infra/sqlite-worker-identity.js";
 import {
   matchesAgentDatabaseReadCandidatePath,
   type OpenClawAgentDatabaseReadCandidateResource,
@@ -81,7 +84,20 @@ export function isSessionStoreReadCandidateCurrent(candidate: SessionStoreReadCa
     candidate.path,
     candidate.scope,
   ).physicalPath;
-  return currentPhysicalPath === resolveCapturedSessionStoreReadCandidatePhysicalPath(candidate);
+  const capturedPhysicalPath = resolveCapturedSessionStoreReadCandidatePhysicalPath(candidate);
+  if (currentPhysicalPath === capturedPhysicalPath) {
+    return true;
+  }
+  if (candidate.scope || !isSymlinkFreeWindowsShortPath(candidate.physicalPath)) {
+    return false;
+  }
+  const currentIdentity = inspectDatabasePathIdentitySync(currentPhysicalPath);
+  const capturedIdentity = inspectDatabasePathIdentitySync(capturedPhysicalPath);
+  return (
+    currentIdentity?.key.startsWith("file:") === true &&
+    currentIdentity.key === capturedIdentity?.key &&
+    currentIdentity.birthtime === capturedIdentity.birthtime
+  );
 }
 
 function resolveCapturedSessionStoreReadCandidatePhysicalPath(
@@ -121,10 +137,11 @@ export function assertSessionStoreReadCandidate(
   for (const candidate of candidates) {
     if (
       matchesAgentDatabaseReadCandidatePath(candidate, pathname) &&
-      matchesAgentDatabaseReadCandidatePath(
-        { ...candidate, path: resolveCapturedSessionStoreReadCandidatePhysicalPath(candidate) },
-        physicalPath,
-      ) &&
+      (!candidate.scope ||
+        matchesAgentDatabaseReadCandidatePath(
+          { ...candidate, path: resolveCapturedSessionStoreReadCandidatePhysicalPath(candidate) },
+          physicalPath,
+        )) &&
       isSessionStoreReadCandidateCurrent(candidate)
     ) {
       return physicalPath;
