@@ -74,6 +74,15 @@ export function captureSessionStoreReadCandidate(
   return { path: capturedPath, physicalPath, ...(scope ? { scope } : {}) };
 }
 
+/** Re-resolve both sides so aliases that converge after file creation remain in custody. */
+export function isSessionStoreReadCandidateCurrent(candidate: SessionStoreReadCandidate): boolean {
+  const currentPhysicalPath = captureSessionStoreReadCandidate(
+    candidate.path,
+    candidate.scope,
+  ).physicalPath;
+  return currentPhysicalPath === resolveIdentityPathViaExistingAncestorSync(candidate.physicalPath);
+}
+
 /** Native discovery may use only the captured lexical and physical family together. */
 export function assertSessionStoreReadCandidate(
   pathname: string,
@@ -87,8 +96,7 @@ export function assertSessionStoreReadCandidate(
         { ...candidate, path: candidate.physicalPath },
         physicalPath,
       ) &&
-      captureSessionStoreReadCandidate(candidate.path, candidate.scope).physicalPath ===
-        candidate.physicalPath
+      isSessionStoreReadCandidateCurrent(candidate)
     ) {
       return physicalPath;
     }
