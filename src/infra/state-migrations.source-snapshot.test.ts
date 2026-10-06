@@ -186,7 +186,9 @@ describe("doctor legacy migration source contract", () => {
           : {},
       );
       vi.spyOn(stateRoot, "move").mockRejectedValue(refusal);
-      if (scenario === "required") configureFsSafeNative({ mode: "require" });
+      if (scenario === "required") {
+        configureFsSafeNative({ mode: "require" });
+      }
       const claim = createClaim(stateRoot, stateDir, sourcePath);
       const snapshot = await claim.read();
       await expect(claim.claim({ snapshot, mismatchMessage: "source changed" })).rejects.toBe(
