@@ -80,7 +80,17 @@ export function isSessionStoreReadCandidateCurrent(candidate: SessionStoreReadCa
     candidate.path,
     candidate.scope,
   ).physicalPath;
-  return currentPhysicalPath === resolveIdentityPathViaExistingAncestorSync(candidate.physicalPath);
+  return currentPhysicalPath === resolveCapturedSessionStoreReadCandidatePhysicalPath(candidate);
+}
+
+function resolveCapturedSessionStoreReadCandidatePhysicalPath(
+  candidate: SessionStoreReadCandidate,
+): string {
+  // Family custody is anchored to its captured physical directory. Re-resolving that anchor
+  // would accept a directory that was replaced with a symlink after capture.
+  return candidate.scope
+    ? candidate.physicalPath
+    : resolveIdentityPathViaExistingAncestorSync(candidate.physicalPath);
 }
 
 /** Native discovery may use only the captured lexical and physical family together. */
@@ -93,7 +103,7 @@ export function assertSessionStoreReadCandidate(
     if (
       matchesAgentDatabaseReadCandidatePath(candidate, pathname) &&
       matchesAgentDatabaseReadCandidatePath(
-        { ...candidate, path: candidate.physicalPath },
+        { ...candidate, path: resolveCapturedSessionStoreReadCandidatePhysicalPath(candidate) },
         physicalPath,
       ) &&
       isSessionStoreReadCandidateCurrent(candidate)

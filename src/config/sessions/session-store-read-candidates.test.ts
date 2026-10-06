@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import { afterEach, expect, test, vi } from "vitest";
-import { isSessionStoreReadCandidateCurrent } from "./session-store-read-candidates.js";
+import {
+  assertSessionStoreReadCandidate,
+  isSessionStoreReadCandidateCurrent,
+} from "./session-store-read-candidates.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -17,12 +20,47 @@ test("keeps custody when a captured alias later resolves to the same file", () =
     return value;
   });
 
+  const candidate = { path: capturedAlias, physicalPath: capturedAlias };
+  expect(isSessionStoreReadCandidateCurrent(candidate)).toBe(true);
+  expect(assertSessionStoreReadCandidate(capturedAlias, [candidate])).toBe(canonicalPath);
+});
+
+test("keeps sibling-family custody scoped to the captured directory", () => {
+  const familyPath = "/tmp/custom/openclaw-agent.sqlite";
+  vi.spyOn(fs.realpathSync, "native").mockImplementation((pathname) => {
+    const value = String(pathname);
+    if (value === familyPath) {
+      return "/tmp/database-target/openclaw-agent.sqlite";
+    }
+    return value;
+  });
+
   expect(
     isSessionStoreReadCandidateCurrent({
-      path: capturedAlias,
-      physicalPath: capturedAlias,
+      path: familyPath,
+      physicalPath: familyPath,
+      scope: "sibling-family",
     }),
   ).toBe(true);
+});
+
+test("rejects a sibling-family candidate whose directory target changed", () => {
+  const familyPath = "/tmp/custom/openclaw-agent.sqlite";
+  vi.spyOn(fs.realpathSync, "native").mockImplementation((pathname) => {
+    const value = String(pathname);
+    if (value === "/tmp/custom") {
+      return "/tmp/replacement";
+    }
+    return value;
+  });
+
+  expect(
+    isSessionStoreReadCandidateCurrent({
+      path: familyPath,
+      physicalPath: familyPath,
+      scope: "sibling-family",
+    }),
+  ).toBe(false);
 });
 
 test("rejects a candidate whose lexical target changed", () => {
