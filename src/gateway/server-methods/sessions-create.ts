@@ -9,6 +9,7 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
+import { resolveSessionPublicShare } from "../../config/sessions/session-public-share.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
@@ -120,6 +121,26 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         false,
         undefined,
         errorShape(ErrorCodes.INVALID_REQUEST, "spawn parent must match the trusted agent caller"),
+      );
+      return;
+    }
+    if (
+      sessionCreation.childSessionPublication &&
+      (sessionCreation.via !== "spawn" ||
+        spawnRequesterSessionKey !== parentSessionKey ||
+        sessionCreation.childSessionPublication.requesterSessionKey !== parentSessionKey ||
+        p.fork === true ||
+        p.forkFrom !== undefined ||
+        p.incognito === true ||
+        p.visibility === "draft")
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "Public ingress requires a fresh isolated, non-private child.",
+        ),
       );
       return;
     }
@@ -461,6 +482,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         return prepared;
       };
     }
+    let publicRead = false;
     let runPayload: Record<string, unknown> | undefined;
     let initialTurnSourceAccepted = false;
     let runError: unknown;
@@ -531,6 +553,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       resetMainWhenUnspecified: !hasInitialTurn,
       commandSource: "webchat",
       creation: sessionCreation,
+      childSessionPublication: sessionCreation.childSessionPublication,
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
       armSessionDiffBaselineCapture: !repository,
       loadGatewayModelCatalogSnapshot: () =>
@@ -543,6 +566,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
           source,
         ),
       onCreatedSessionCommitted: (committed) => {
+        publicRead = Boolean(resolveSessionPublicShare(committed.entry));
         sessionMutationAuthorization?.recordCreatedSession?.({
           agentId: committed.agentId,
           sessionKey: committed.key,
@@ -631,6 +655,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       sessionId: created.entry.sessionId,
       entry: responseEntry,
       runStarted,
+      publicRead,
       ...(!created.resetExisting && runPayload ? runPayload : {}),
       ...(!created.resetExisting && runError ? { runError } : {}),
       resolved: created.resolved,

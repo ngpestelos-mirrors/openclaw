@@ -3,7 +3,7 @@ import { asOptionalRecord as record } from "openclaw/plugin-sdk/string-coerce-ru
 
 const X_API_ORIGIN = "https://api.x.com";
 const POST_FIELDS =
-  "author_id,conversation_id,created_at,in_reply_to_user_id,referenced_tweets,entities";
+  "author_id,conversation_id,created_at,in_reply_to_user_id,referenced_tweets,entities,withheld";
 
 export type XPost = {
   id: string;
@@ -11,11 +11,12 @@ export type XPost = {
   author_id: string;
   conversation_id: string;
   created_at?: string;
+  withheld?: boolean;
   in_reply_to_user_id?: string;
   referenced_tweets?: { type: "replied_to" | "quoted" | "retweeted"; id: string }[];
   entities?: { mentions?: { id?: string; username: string }[] };
 };
-export type XUser = { id: string; username: string; name?: string };
+export type XUser = { id: string; username: string; name?: string; protected?: boolean };
 export type XPage = {
   data: XPost[];
   includes: { users: XUser[]; tweets: XPost[] };
@@ -88,6 +89,7 @@ export function parseXPost(input: unknown): XPost | undefined {
     text: row.text,
     author_id: row.author_id,
     conversation_id: row.conversation_id,
+    ...(row.withheld !== undefined ? { withheld: true } : {}),
     ...(typeof row.created_at === "string" ? { created_at: row.created_at } : {}),
     ...(typeof row.in_reply_to_user_id === "string"
       ? { in_reply_to_user_id: row.in_reply_to_user_id }
@@ -106,6 +108,7 @@ function parseUser(value: unknown): XUser | undefined {
     ? {
         id: row.id,
         username: row.username,
+        ...(typeof row.protected === "boolean" ? { protected: row.protected } : {}),
         ...(typeof row.name === "string" ? { name: row.name } : {}),
       }
     : undefined;
@@ -365,18 +368,19 @@ export function createXApiClient(options: {
     path: string,
     query: Record<string, string | undefined>,
     signal?: AbortSignal,
+    appOnly = false,
   ) {
     const params = new URLSearchParams({
       "tweet.fields": POST_FIELDS,
       expansions: "author_id,referenced_tweets.id",
-      "user.fields": "username,name",
+      "user.fields": "username,name,protected",
     });
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) {
         params.set(key, value);
       }
     }
-    return parsePage(await readJson(await request(`${path}?${params}`, { signal })));
+    return parsePage(await readJson(await request(`${path}?${params}`, { signal, appOnly })));
   }
 
   return {
@@ -396,6 +400,13 @@ export function createXApiClient(options: {
         throw new Error("X post lookup requires 1–100 post ids");
       }
       return page("/2/tweets", { ids: ids.join(",") }, signal);
+    },
+    // App-only lookup has no user/follower entitlement: it proves public availability.
+    getPublicPosts: (ids: string[], signal?: AbortSignal) => {
+      if (!options.bearerToken || !ids.length || ids.length > 100) {
+        throw new Error("Public X lookup requires an app-only bearer token and 1–100 post ids");
+      }
+      return page("/2/tweets", { ids: ids.join(",") }, signal, true);
     },
     searchConversation: (params: {
       conversationId: string;

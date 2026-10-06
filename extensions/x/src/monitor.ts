@@ -7,10 +7,13 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import type { ResolvedXAccount } from "./accounts.js";
+import { resolveXAccount } from "./accounts.js";
+import { openXAllowlist } from "./allowlist.js";
 import { parseXPost, parseXPostEnvelope, type XPostEnvelope } from "./api.js";
 import { getXApi, getXTokenState } from "./client.js";
 import { runXEvents, type XEventStatus } from "./events.js";
 import { resolveXIngress, xMentionFacts } from "./ingress.js";
+import { verifyPublicXThread } from "./public-thread.js";
 import type { XVisibleWorkSession } from "./reply.js";
 import { getXRuntime } from "./runtime.js";
 import { sendXDelivery } from "./send.js";
@@ -116,12 +119,40 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
         accountId: account.accountId,
         peer: { kind: "group", id: post.conversation_id },
       });
-      const channelIngress = await resolveXIngress(account.accountId, post, cfg, {
-        agentId: route.agentId,
-        sessionKey: route.sessionKey,
-        messageId: post.id,
-        inboundEventKind: "user_request",
-      });
+      const assertAllowlistCurrent = openXAllowlist(core).captureCurrent(account.accountId);
+      const publicThread =
+        resolveXAccount(cfg, account.accountId).config.autoPublishWorkSessions === true &&
+        (await verifyPublicXThread(api, thread.posts, lifecycle.abortSignal, post.conversation_id));
+      const publication = publicThread
+        ? {
+            audience: "public" as const,
+            assertCurrent: () => {
+              lifecycle.abortSignal.throwIfAborted();
+              assertCurrent();
+              assertAllowlistCurrent();
+              // Any config publication retires the captured routing/access decision.
+              if (
+                readConfig() !== cfg ||
+                resolveXAccount(readConfig(), account.accountId).config.autoPublishWorkSessions !==
+                  true
+              ) {
+                throw new Error("X work-session publication policy changed; send a new mention.");
+              }
+            },
+          }
+        : undefined;
+      const channelIngress = await resolveXIngress(
+        account.accountId,
+        post,
+        cfg,
+        {
+          agentId: route.agentId,
+          sessionKey: route.sessionKey,
+          messageId: post.id,
+          inboundEventKind: "user_request",
+        },
+        publication,
+      );
       if (cfg !== readConfig()) {
         throw new Error("X routing configuration changed during admission; retrying mention");
       }

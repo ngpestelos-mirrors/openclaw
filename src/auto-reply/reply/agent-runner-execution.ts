@@ -557,6 +557,7 @@ async function executeAgentTurnInternal(
     readChannelContextGatewayContextResolver(params.sessionCtx) ??
     getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
   const preparedRunAdmission = prepareChannelRunAdmission({
+    sourceContext: params.followupRun.run,
     cfg: resolveQueuedReplyRuntimeConfig(params.followupRun.run.config),
     runId,
     agentId: params.followupRun.run.agentId,

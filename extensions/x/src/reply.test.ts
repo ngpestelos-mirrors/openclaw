@@ -33,7 +33,7 @@ describe("X public reply delivery", () => {
       text: "界".repeat(145),
       replyToId: "x:90",
       signature: "— signed 🦞",
-      visibleWorkSessions: [{ sessionKey: "work", url }],
+      visibleWorkSessions: [{ sessionKey: "work", url, publicRead: true }],
     });
     expect(result.postIds).toEqual(["101", "102"]);
     expect(sent.map((post) => post.reply.in_reply_to_tweet_id)).toEqual(["90", "101"]);

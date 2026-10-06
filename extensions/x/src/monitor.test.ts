@@ -89,6 +89,14 @@ function fixture(options: {
     getPosts: vi.fn(async (ids: string[]) =>
       page(options.posts.filter((value) => ids.includes(value.id))),
     ),
+    getPublicPosts: vi.fn(async (ids: string[]) => ({
+      ...page(
+        [post("500", "10", "Original thread"), ...options.posts].filter((value) =>
+          ids.includes(value.id),
+        ),
+      ),
+      includes: { tweets: [], users: [{ id: "10", username: "author", protected: false }] },
+    })),
     searchConversation: vi.fn(async () => page([post("500", "10", "Original thread")])),
     getUserByUsername: vi.fn(async () => {
       throw new Error("Unexpected user lookup");
@@ -201,6 +209,39 @@ afterEach(() => {
 });
 
 describe("X account monitor", () => {
+  it.each(["off", "public", "protected"])(
+    "attaches publication intent only for opted-in public context: %s",
+    async (kind) => {
+      const completed = Promise.withResolvers<void>();
+      const cfg: OpenClawConfig = structuredClone(config);
+      if (kind !== "off") {
+        cfg.channels!.x!.autoPublishWorkSessions = true;
+      }
+      const test = fixture({
+        cfg,
+        posts: [post("501", "10")],
+        queue: createQueue<Payload>({ onCompleted: () => completed.resolve() }),
+      });
+      if (kind === "protected") {
+        test.api.getPublicPosts.mockResolvedValue({
+          ...page([post("500", "10", "Original thread"), post("501", "10")]),
+          includes: { tweets: [], users: [{ id: "10", username: "author", protected: true }] },
+        });
+      }
+      test.start();
+      try {
+        await completed.promise;
+        const admission = test.resolveStable.mock.calls.find(
+          ([input]) => input.contextBinding,
+        )?.[0];
+        expect(Boolean(admission?.childSessionPublication)).toBe(kind === "public");
+        expect(test.api.getPublicPosts).toHaveBeenCalledTimes(kind === "off" ? 0 : 1);
+      } finally {
+        await test.stop();
+      }
+    },
+  );
+
   it("classifies unsupported inbound media as not dispatched", async () => {
     const completed = Promise.withResolvers<void>();
     const test = fixture({
@@ -305,8 +346,14 @@ describe("X account monitor", () => {
         mode: "poll",
       });
       expect(test.replies).toEqual([
-        { parent: "501", text: "I am on it.\nhttps://example.test/work/42" },
-        { parent: "503", text: "I am on it.\nhttps://example.test/work/42" },
+        {
+          parent: "501",
+          text: "I am on it.\nWork session (sign-in required): https://example.test/work/42",
+        },
+        {
+          parent: "503",
+          text: "I am on it.\nWork session (sign-in required): https://example.test/work/42",
+        },
       ]);
       const turn = test.dispatch.mock.calls[0]![0];
       expect(turn.route).toEqual({

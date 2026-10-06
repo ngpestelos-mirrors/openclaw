@@ -23,7 +23,36 @@ export function normalizeXUserId(value: string): string | undefined {
   return /^[0-9]+$/.test(id) ? id : undefined;
 }
 
+const authorityRevisions = new WeakMap<
+  object,
+  Map<string, { revision: number; pending: number }>
+>();
+
 export function openXAllowlist(runtime: { state: Pick<PluginRuntime["state"], "openKeyedStore"> }) {
+  let revisions = authorityRevisions.get(runtime);
+  if (!revisions) {
+    revisions = new Map();
+    authorityRevisions.set(runtime, revisions);
+  }
+  const revisionFor = (accountId: string) => {
+    let current = revisions.get(accountId);
+    if (!current) {
+      current = { revision: 0, pending: 0 };
+      revisions.set(accountId, current);
+    }
+    return current;
+  };
+  const mutate = async <T>(accountId: string, run: () => Promise<T>): Promise<T> => {
+    const current = revisionFor(accountId);
+    current.revision++;
+    current.pending++;
+    try {
+      return await run();
+    } finally {
+      current.pending--;
+      current.revision++;
+    }
+  };
   const store = runtime.state.openKeyedStore<XAllowlistEntry>({
     namespace: "x.allowlist",
     maxEntries: 10_000,
@@ -39,16 +68,29 @@ export function openXAllowlist(runtime: { state: Pick<PluginRuntime["state"], "o
   };
   return {
     list,
+    captureCurrent(accountId: string): () => void {
+      const current = revisionFor(accountId);
+      const revision = current.revision;
+      return () => {
+        if (current.pending || current.revision !== revision) {
+          throw new Error("X allowlist changed; send a new mention before publishing work.");
+        }
+      };
+    },
     async readAllowFrom(accountId: string): Promise<string[]> {
       return (await list(accountId)).map((entry) => entry.userId);
     },
     async put(accountId: string, entry: XAllowlistEntry, assertCurrent?: () => void) {
-      await store.register(`${accountPrefix(accountId)}${entry.userId}`, entry, {
-        assertCurrent,
-      });
+      await mutate(accountId, () =>
+        store.register(`${accountPrefix(accountId)}${entry.userId}`, entry, {
+          assertCurrent,
+        }),
+      );
     },
     async remove(accountId: string, userId: string, assertCurrent?: () => void) {
-      return await store.delete(`${accountPrefix(accountId)}${userId}`, { assertCurrent });
+      return await mutate(accountId, () =>
+        store.delete(`${accountPrefix(accountId)}${userId}`, { assertCurrent }),
+      );
     },
   };
 }

@@ -78,6 +78,35 @@ For multiple bots, put account-specific values under
 `channels.x.accounts.<accountId>`. Root fields are shared defaults; the default
 account ID is `default`.
 
+## Public work sessions
+
+Set `channels.x.accounts.<accountId>.autoPublishWorkSessions: true` (or the
+shared root default `channels.x.autoPublishWorkSessions`) to publish fresh,
+isolated visible work sessions spawned directly by each admitted X mention. This
+is **off by default**. It exposes that child's conversation to anonymous readers
+at the same canonical `/chat` link; it does not change Team collaboration rights.
+Only enable it for an agent whose work is intended to be public.
+
+Publication requires a configured **app-only** `bearerToken`. Before admission,
+the plugin looks up every post included in the supplied thread context using
+application-only authentication and requires explicit `protected: false`
+author metadata. Missing, edited, protected, withheld, or unavailable posts and
+failed lookups deny automatic publication. A permalink or successful
+user-context lookup is not proof of a public audience.
+
+The permission belongs only to that incoming invocation: it is not stored on
+the X conversation, inherited by grandchildren, or accepted in model-authored
+spawn arguments. Forks, private/draft sessions, incognito sessions, and existing
+sessions cannot be automatically published. Changing the account configuration
+or allowlist retires in-flight publication authority. The creation owner commits
+the public grant with the child before its first turn, and the spawn receipt
+reports `publicRead` only for the committed grant. Links without that receipt
+are labeled as requiring sign-in. This lane requires the live in-process Gateway;
+it does not downgrade to a transport that loses the invocation's authority.
+
+Manual publication remains governed by the existing creator/administrator
+sharing controls. No X identity is promoted to a Team profile or administrator.
+
 ## Manage the allowlist
 
 Open **X replies** in the Control UI as an administrator. The page shows the
