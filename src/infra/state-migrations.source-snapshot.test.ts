@@ -296,26 +296,41 @@ describe("doctor legacy migration source contract", () => {
     expect(fs.statSync(claim.claimPath).ino).toBe(snapshot.ino);
   });
 
-  it("preserves a linked claim when the Root revokes recovery authority", async () => {
-    const { sourcePath, stateDir } = createSource();
-    const refusal = new Error("Migration authority was revoked.");
-    const stateRoot = await root(stateDir, {
-      hardlinks: "reject",
-      symlinks: "reject",
-      assertBeforeMutation: () => {
+  it.each(["claim", "recovery"] as const)(
+    "preserves source state when the Root revokes %s authority",
+    async (operation) => {
+      const { sourcePath, stateDir } = createSource();
+      const refusal = new Error("Migration authority was revoked.");
+      const assertAuthority = vi.fn(() => {
         throw refusal;
-      },
-    });
-    const claim = createClaim(stateRoot, stateDir, sourcePath);
-    const snapshot = await claim.read();
-    fs.linkSync(sourcePath, claim.claimPath);
+      });
+      const stateRoot = await root(stateDir, {
+        hardlinks: "reject",
+        symlinks: "reject",
+        assertBeforeMutation: assertAuthority,
+      });
+      const claim = createClaim(stateRoot, stateDir, sourcePath);
+      const snapshot = await claim.read();
+      if (operation === "recovery") {
+        fs.linkSync(sourcePath, claim.claimPath);
+      }
 
-    await expect(claim.recoverLinkedMove()).rejects.toBe(refusal);
+      await expect(
+        operation === "claim"
+          ? claim.claim({ snapshot, mismatchMessage: "source changed" })
+          : claim.recoverLinkedMove(),
+      ).rejects.toBe(refusal);
 
-    expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
-    expect(fs.statSync(sourcePath).nlink).toBe(2);
-    expect(fs.statSync(claim.claimPath).ino).toBe(snapshot.ino);
-  });
+      expect(assertAuthority).toHaveBeenCalledOnce();
+      expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
+      expect(fs.statSync(sourcePath).nlink).toBe(operation === "recovery" ? 2 : 1);
+      if (operation === "recovery") {
+        expect(fs.statSync(claim.claimPath).ino).toBe(snapshot.ino);
+      } else {
+        expect(fs.existsSync(claim.claimPath)).toBe(false);
+      }
+    },
+  );
 
   it("preserves both generations if the migration root is rebound before source removal", async () => {
     const { sourcePath, stateDir } = createSource();
@@ -365,6 +380,53 @@ describe("doctor legacy migration source contract", () => {
       }
       expect(fs.readFileSync(sourcePath)).toEqual(snapshot.buffer);
       expect(fs.statSync(sourcePath).ino).toBe(snapshot.ino);
+    },
+  );
+
+  it.each(["claim", "batch"] as const)(
+    "does not move a directory substituted at the %s mutation boundary",
+    async (operation) => {
+      const { sourcePath, stateDir } = createSource();
+      const retainedPath = `${sourcePath}.retained`;
+      const assertAuthority = vi.fn(() => {});
+      const stateRoot = await root(stateDir, {
+        hardlinks: "reject",
+        symlinks: "reject",
+        assertBeforeMutation: assertAuthority,
+      });
+      const claim = createClaim(stateRoot, stateDir, sourcePath);
+      const snapshot = await claim.read();
+      let swapped = false;
+      __setFsSafeTestHooksForTest({
+        beforeRootFallbackMutation: (kind) => {
+          if (kind !== "move" || swapped) {
+            return;
+          }
+          swapped = true;
+          fs.renameSync(sourcePath, retainedPath);
+          fs.mkdirSync(sourcePath);
+          fs.writeFileSync(path.join(sourcePath, "nested.txt"), "operator directory contents");
+        },
+      });
+      const attempt =
+        operation === "claim"
+          ? claim.claim({ snapshot, mismatchMessage: "source changed" })
+          : claimLegacyMigrationSourceClaims([{ claim, snapshot }], {
+              mismatchMessage: "source changed",
+            });
+
+      await expect(attempt).rejects.toMatchObject(
+        operation === "claim" ? { code: "invalid-path" } : { cause: { code: "invalid-path" } },
+      );
+      expect(swapped).toBe(true);
+      expect(assertAuthority).toHaveBeenCalledOnce();
+      expect(fs.readFileSync(retainedPath)).toEqual(snapshot.buffer);
+      expect(fs.readFileSync(path.join(sourcePath, "nested.txt"), "utf8")).toBe(
+        "operator directory contents",
+      );
+      expect(fs.existsSync(claim.claimPath)).toBe(false);
+      expect(await claim.restore()).toBeNull();
+      expect(fs.existsSync(claim.claimPath)).toBe(false);
     },
   );
 

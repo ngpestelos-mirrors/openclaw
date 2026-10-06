@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Root } from "@openclaw/fs-safe";
+import { statRegularFileSync } from "@openclaw/fs-safe/advanced";
 import { getFsSafeNativeConfig } from "@openclaw/fs-safe/config";
 import { FsSafeError, isNoReplaceUnsupported } from "@openclaw/fs-safe/errors";
 import {
@@ -9,7 +10,7 @@ import {
   requireDirectorySync,
   type PinnedDirectory,
 } from "./directory-durability.js";
-import { hasErrnoCode } from "./errno.js";
+import { hasErrnoCode, isErrno } from "./errno.js";
 
 type MigrationMoveRoot = Pick<
   Root,
@@ -81,7 +82,25 @@ export async function moveLegacyMigrationFileNoReplace(
   to: string,
 ): Promise<void> {
   try {
-    await root.move(from, to);
+    await root.move(from, to, {
+      assertBeforeMutation: () => {
+        // Root composes its default authority check and rechecks source identity after this.
+        let source;
+        try {
+          source = statRegularFileSync(path.resolve(root.rootReal, from));
+        } catch (cause) {
+          if (isErrno(cause)) {
+            throw cause;
+          }
+          throw new FsSafeError("invalid-path", "legacy migration move requires a regular file", {
+            cause,
+          });
+        }
+        if (source.missing) {
+          throw new FsSafeError("not-found", "legacy migration source no longer exists");
+        }
+      },
+    });
     return;
   } catch (error) {
     if (getFsSafeNativeConfig().mode === "require") {
