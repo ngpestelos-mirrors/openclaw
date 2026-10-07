@@ -10,12 +10,23 @@ import {
   prepareGitHubPublicationAvailability,
 } from "./github-publication-availability.js";
 
-const mocks = vi.hoisted(() => ({ session: vi.fn(), sessionRead: vi.fn(), identity: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  session: vi.fn(),
+  sessionRead: vi.fn(),
+  admittedSessionRead: vi.fn(),
+  config: vi.fn(),
+  identity: vi.fn(),
+}));
 // mock-isolation: Keep session-owner SQL outside the worktree-read measurement.
 vi.mock("./session-utils.js", () => ({ loadGatewaySessionEntryReadOnly: mocks.session }));
 // mock-isolation: Keep session-worker state outside the worktree-read measurement.
 vi.mock("./session-utils-store-worker.js", () => ({
   loadGatewaySessionEntryReadOnlyInWorker: mocks.sessionRead,
+}));
+// mock-isolation: Supply fresh row facts from the admitted physical session reader.
+vi.mock("../config/sessions/session-entry-read-runtime.js", () => ({
+  readSessionEntriesFromStoreInWorker: mocks.admittedSessionRead,
+  readSessionEntryReadOnlyInWorker: async () => mocks.session().entry,
 }));
 // mock-isolation: Use the synthetic registry without starting managed-worktree services.
 vi.mock("../agents/worktrees/service.js", () => ({
@@ -41,7 +52,7 @@ vi.mock("./github-oauth-lifecycle.js", () => ({
   requestCurrentGitHubOAuthRefresh: async () => {},
 }));
 // mock-isolation: Use synthetic configuration without loading operator configuration.
-vi.mock("../config/config.js", () => ({ getRuntimeConfig: () => ({}) }));
+vi.mock("../config/config.js", () => ({ getRuntimeConfig: mocks.config }));
 // mock-isolation: Exclude process-wide secret materialization from this reader fixture.
 vi.mock("../secrets/runtime-state.js", () => ({
   getActiveSecretsRuntimeConfigSnapshot: () => undefined,
@@ -65,6 +76,7 @@ const worktree: ManagedWorktreeRecord = {
 
 beforeEach(async () => {
   vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("publication-worktree-read-"));
+  mocks.config.mockReset().mockReturnValue({});
   mocks.session.mockReset().mockReturnValue({
     canonicalKey: session.sessionKey,
     agentId: session.agentId,
@@ -75,6 +87,9 @@ beforeEach(async () => {
     },
   });
   mocks.sessionRead.mockReset().mockImplementation(async () => mocks.session());
+  mocks.admittedSessionRead.mockReset().mockImplementation(async () => ({
+    entries: [{ sessionKey: session.sessionKey, entry: mocks.session().entry }],
+  }));
   mocks.identity.mockReset().mockResolvedValue({ source: "system-configured" });
   await insertRegistryWorktree(process.env, worktree);
 });
@@ -93,7 +108,12 @@ it.each([true, false])(
     }
     const sql = observeMainThreadSql();
     sql.calibrate();
-    expect(await prepareGitHubPublicationAvailability(session)).toBe(present);
+    expect(
+      await prepareGitHubPublicationAvailability({
+        ...session,
+        sessionTarget: { ...session, storePath: "/synthetic/admitted.sqlite" },
+      }),
+    ).toBe(present);
     sql.expectIdle();
   },
 );
@@ -110,12 +130,93 @@ it("rejects an unbound session without dispatching a worktree read", async () =>
   expect(execute).not.toHaveBeenCalled();
 });
 
+it.each(["unbound", "replaced-session", "replaced-lifecycle", "replaced-writer"])(
+  "uses the admitted store's current %s row instead of rediscovering another store",
+  async (kind) => {
+    const entry = { ...mocks.session().entry, activeWriterRunId: "writer" };
+    if (kind === "unbound") {
+      delete entry.worktree;
+    } else if (kind === "replaced-session") {
+      entry.sessionId = "replacement";
+    } else if (kind === "replaced-lifecycle") {
+      entry.lifecycleRevision = "replacement";
+    } else {
+      entry.activeWriterRunId = "replacement";
+    }
+    mocks.admittedSessionRead.mockResolvedValue({
+      entries: [{ sessionKey: session.sessionKey, entry }],
+    });
+    expect(
+      await prepareGitHubPublicationAvailability({
+        ...session,
+        sessionTarget: {
+          ...session,
+          storePath: "/synthetic/admitted.sqlite",
+          expectedLifecycleRevision: "lifecycle",
+          expectedWriterRunId: "writer",
+        },
+      }),
+    ).toBe(false);
+    expect(mocks.sessionRead).not.toHaveBeenCalled();
+    expect(mocks.admittedSessionRead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: session.agentId,
+        sessionKeys: [session.sessionKey],
+        storePath: "/synthetic/admitted.sqlite",
+        projection: "exact",
+        snapshotFields: [],
+      }),
+      expect.any(Function),
+    );
+  },
+);
+
 it("rejects a worktree retired while publication identity is prepared", async () => {
   mocks.identity.mockImplementationOnce(async () => {
     await updateRegistryWorktree(process.env, worktree.id, { removedAt: 2 });
     return { source: "system-configured" };
   });
   expect(await prepareGitHubPublicationAvailability(session)).toBe(false);
+});
+
+it("keeps an admitted stored main alias under its canonical publication owner", async () => {
+  mocks.config.mockReturnValue({ session: { scope: "global" } });
+  const aliasWorktree = {
+    ...worktree,
+    id: "publication-global-worktree",
+    path: "/synthetic/global-publication",
+    branch: "openclaw/global-publication",
+    ownerId: "global",
+  };
+  await insertRegistryWorktree(process.env, aliasWorktree);
+  mocks.session.mockReturnValue({
+    ...mocks.session(),
+    canonicalKey: "global",
+    entry: {
+      ...mocks.session().entry,
+      worktree: {
+        id: aliasWorktree.id,
+        branch: aliasWorktree.branch,
+        repoRoot: aliasWorktree.repoRoot,
+      },
+    },
+  });
+  const storedKey = "agent:main:main";
+  mocks.admittedSessionRead.mockResolvedValue({
+    entries: [{ sessionKey: storedKey, entry: mocks.session().entry }],
+  });
+  expect(
+    await prepareGitHubPublicationAvailability({
+      ...session,
+      sessionKey: "global",
+      sessionTarget: {
+        ...session,
+        sessionKey: storedKey,
+        storePath: "/synthetic/admitted.sqlite",
+      },
+    }),
+  ).toBe(true);
+  expect(mocks.sessionRead).not.toHaveBeenCalled();
 });
 
 it.each(["session", "identity"] as const)(
