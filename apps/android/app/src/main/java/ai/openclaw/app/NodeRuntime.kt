@@ -2638,7 +2638,7 @@ class NodeRuntime internal constructor(
 
   fun refreshSessionCatalog(agentId: String?) = launchGatewayRefresh { refreshSessionCatalogFromGateway(agentId) }
 
-  fun loadMoreSessionCatalog(catalogId: String) = launchGatewayRefresh { sessionCatalogListMutex.withLock { loadMoreSessionCatalogLocked(catalogId) } }
+  fun loadMoreSessionCatalog(catalogId: String) = launchGatewayRefresh { loadMoreSessionCatalogFromGateway(catalogId) }
 
   suspend fun continueSessionCatalogEntry(entry: SessionCatalogEntry): Boolean {
     if (!sessionCatalogContinueMutex.tryLock()) return false
@@ -5939,86 +5939,88 @@ class NodeRuntime internal constructor(
     }
   }
 
-  private suspend fun loadMoreSessionCatalogLocked(catalogId: String) {
-    val normalizedCatalogId = catalogId.trim()
-    if (normalizedCatalogId.isEmpty()) return
-    val current: SessionCatalogState
-    val cursors: Map<String, String>
-    val requestSeq: Long
-    val gatewayScope: GatewayDataScope
-    // Cursors and their loading marker belong to the same refresh, including across agent changes.
-    synchronized(gatewayDataScopeLock) {
-      current = _sessionCatalogState.value
-      if (current.loading || normalizedCatalogId in current.loadingMoreCatalogIds) return
-      val catalog = current.catalogs.firstOrNull { it.id == normalizedCatalogId } ?: return
-      cursors =
-        catalog.hosts
-          .mapNotNull { host ->
-            host.nextCursor?.takeIf(String::isNotEmpty)?.let { host.hostId to it }
-          }.toMap()
-      if (cursors.isEmpty()) return
-      requestSeq = sessionCatalogRefreshSeq.get()
-      gatewayScope = captureGatewayDataScope() ?: return
-      _sessionCatalogState.value =
-        current.copy(
-          loadingMoreCatalogIds = current.loadingMoreCatalogIds + normalizedCatalogId,
-          errorText = null,
-        )
-    }
-    try {
-      val response =
-        requestGatewayData(
-          gatewayScope,
-          "sessions.catalog.list",
-          sessionCatalogPageParams(current.agentId, normalizedCatalogId, cursors),
-        )
-      val page = parseSessionCatalogs(response, current.agentId, json).firstOrNull { it.id == normalizedCatalogId }
-      publishGatewayData(gatewayScope) {
-        if (sessionCatalogRefreshSeq.get() == requestSeq) {
-          val latest = _sessionCatalogState.value
-          val pageMerge =
-            if (page == null) {
-              null
-            } else {
-              latest.catalogs
-                .firstOrNull { it.id == normalizedCatalogId }
-                ?.let { mergeSessionCatalogPage(it, page, cursors) }
-            }
-          _sessionCatalogState.value =
-            latest.copy(
-              catalogs =
-                if (pageMerge == null) {
-                  latest.catalogs
-                } else {
-                  latest.catalogs.map { existing ->
-                    if (existing.id == normalizedCatalogId) pageMerge.catalog else existing
-                  }
-                },
-              loadedPageDepthsByHost =
-                if (pageMerge == null) {
-                  latest.loadedPageDepthsByHost
-                } else {
-                  incrementSessionCatalogPageDepths(
-                    latest.loadedPageDepthsByHost,
-                    normalizedCatalogId,
-                    pageMerge.advancedHostIds,
-                  )
-                },
-              loadingMoreCatalogIds = latest.loadingMoreCatalogIds - normalizedCatalogId,
-            )
-        }
+  private suspend fun loadMoreSessionCatalogFromGateway(catalogId: String) {
+    sessionCatalogListMutex.withLock {
+      val normalizedCatalogId = catalogId.trim()
+      if (normalizedCatalogId.isEmpty()) return
+      val current: SessionCatalogState
+      val cursors: Map<String, String>
+      val requestSeq: Long
+      val gatewayScope: GatewayDataScope
+      // Cursors and their loading marker belong to the same refresh, including across agent changes.
+      synchronized(gatewayDataScopeLock) {
+        current = _sessionCatalogState.value
+        if (current.loading || normalizedCatalogId in current.loadingMoreCatalogIds) return
+        val catalog = current.catalogs.firstOrNull { it.id == normalizedCatalogId } ?: return
+        cursors =
+          catalog.hosts
+            .mapNotNull { host ->
+              host.nextCursor?.takeIf(String::isNotEmpty)?.let { host.hostId to it }
+            }.toMap()
+        if (cursors.isEmpty()) return
+        requestSeq = sessionCatalogRefreshSeq.get()
+        gatewayScope = captureGatewayDataScope() ?: return
+        _sessionCatalogState.value =
+          current.copy(
+            loadingMoreCatalogIds = current.loadingMoreCatalogIds + normalizedCatalogId,
+            errorText = null,
+          )
       }
-    } catch (err: CancellationException) {
-      throw err
-    } catch (_: Throwable) {
-      publishGatewayData(gatewayScope) {
-        if (sessionCatalogRefreshSeq.get() == requestSeq) {
-          val latest = _sessionCatalogState.value
-          _sessionCatalogState.value =
-            latest.copy(
-              loadingMoreCatalogIds = latest.loadingMoreCatalogIds - normalizedCatalogId,
-              errorText = nativeString("Could not load more sessions."),
-            )
+      try {
+        val response =
+          requestGatewayData(
+            gatewayScope,
+            "sessions.catalog.list",
+            sessionCatalogPageParams(current.agentId, normalizedCatalogId, cursors),
+          )
+        val page = parseSessionCatalogs(response, current.agentId, json).firstOrNull { it.id == normalizedCatalogId }
+        publishGatewayData(gatewayScope) {
+          if (sessionCatalogRefreshSeq.get() == requestSeq) {
+            val latest = _sessionCatalogState.value
+            val pageMerge =
+              if (page == null) {
+                null
+              } else {
+                latest.catalogs
+                  .firstOrNull { it.id == normalizedCatalogId }
+                  ?.let { mergeSessionCatalogPage(it, page, cursors) }
+              }
+            _sessionCatalogState.value =
+              latest.copy(
+                catalogs =
+                  if (pageMerge == null) {
+                    latest.catalogs
+                  } else {
+                    latest.catalogs.map { existing ->
+                      if (existing.id == normalizedCatalogId) pageMerge.catalog else existing
+                    }
+                  },
+                loadedPageDepthsByHost =
+                  if (pageMerge == null) {
+                    latest.loadedPageDepthsByHost
+                  } else {
+                    incrementSessionCatalogPageDepths(
+                      latest.loadedPageDepthsByHost,
+                      normalizedCatalogId,
+                      pageMerge.advancedHostIds,
+                    )
+                  },
+                loadingMoreCatalogIds = latest.loadingMoreCatalogIds - normalizedCatalogId,
+              )
+          }
+        }
+      } catch (err: CancellationException) {
+        throw err
+      } catch (_: Throwable) {
+        publishGatewayData(gatewayScope) {
+          if (sessionCatalogRefreshSeq.get() == requestSeq) {
+            val latest = _sessionCatalogState.value
+            _sessionCatalogState.value =
+              latest.copy(
+                loadingMoreCatalogIds = latest.loadingMoreCatalogIds - normalizedCatalogId,
+                errorText = nativeString("Could not load more sessions."),
+              )
+          }
         }
       }
     }
