@@ -38,6 +38,22 @@ Codex buffers the input for the next model boundary.
 Use `/queue followup` or `/queue collect` when messages should queue
 by default instead of steering. See [Steering queue](/concepts/queue-steering).
 
+## Configuration and policy warnings
+
+Global Codex warnings still reach each native thread, including warnings about
+unknown enterprise policy features. Once a thread has successfully projected a
+warning, later turns on that thread do not replay that same saved notification.
+A new native notification remains visible even when its text is identical; so do
+thread-specific warnings and warnings from a new app-server connection. Failed
+or not-yet-bound turns do not consume the saved notification.
+
+Replay receipts are connection-local and bounded to 256 threads per retained
+warning. After an older receipt is evicted, that thread can see the warning again.
+This changes only duplicate delivery, not Codex feature support or enterprise
+policy enforcement. The managed-app-server Doctor check validates the selected
+binary and version; a passing result does not certify that Codex recognizes every
+feature in the account's policy.
+
 ## Diagnostic-log warnings
 
 If Codex reports a process-wide failure to save its diagnostic logs, OpenClaw

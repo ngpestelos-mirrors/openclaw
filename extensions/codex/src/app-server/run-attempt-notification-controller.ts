@@ -82,7 +82,7 @@ export function createCodexAttemptNotificationController(
       : undefined;
   const handleNotification = async (notification: CodexServerNotification) => {
     if (state.projectionClosed) {
-      return;
+      return false;
     }
     const projector = projectorRef.current;
     const turnId = turnIdRef.current;
@@ -90,7 +90,7 @@ export function createCodexAttemptNotificationController(
       if (notification.method === "error") {
         state.latestStartupErrorNotification = notification;
       }
-      return;
+      return false;
     }
     const isCurrentTurn = isCodexNotificationForTurn(
       notification.params,
@@ -105,7 +105,7 @@ export function createCodexAttemptNotificationController(
       // Cleanup's interrupt confirms stop; it cannot replace the result or
       // usage already owned by an execution deadline or terminal tool.
       completeTurn();
-      return;
+      return false;
     }
     state.activeLocalProjections += 1;
     try {
@@ -168,11 +168,13 @@ export function createCodexAttemptNotificationController(
       ) {
         await maybeAnnounceFastModeAutoOff();
       }
+      return true;
     } catch (error) {
       embeddedAgentLog.debug("codex app-server projector notification threw", {
         method: notification.method,
         error,
       });
+      return false;
     } finally {
       state.activeLocalProjections -= 1;
       if (isCurrentTurn && notification.method === "item/completed") {
@@ -255,7 +257,7 @@ export function createCodexAttemptNotificationController(
       method: notification.method,
       ...scope,
     });
-    await handleNotification(notification);
+    return await handleNotification(notification);
   };
   const drainNotificationQueue = async () => {
     await resourceState.turnRoute?.drain();
