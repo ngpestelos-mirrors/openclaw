@@ -199,6 +199,7 @@ function createSessionMembersListHandler(
             storePath: managed.storePath,
           }),
       );
+      access.assertCurrent();
       if (!entry) {
         throw new Error("session changed before sharing read");
       }
