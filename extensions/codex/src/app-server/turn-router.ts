@@ -3,7 +3,6 @@ import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { CodexAppServerClient } from "./client.js";
 import { redactCodexEventKind } from "./event-projector-diagnostics.js";
-import { CodexGlobalWarnings, type CodexGlobalWarning } from "./global-warning.js";
 import { CodexMcpRequestRoutes, type CodexMcpToolCallOptions } from "./mcp-request-route.js";
 import { readCodexNotificationScope } from "./notification-correlation.js";
 import { readCodexTurnCompletedNotification } from "./protocol-validators.js";
@@ -16,14 +15,14 @@ import type {
 } from "./turn-router.types.js";
 
 const DEFAULT_PREBIND_NOTIFICATION_LIMIT = 256;
+const DEFAULT_GLOBAL_WARNING_LIMIT = 32;
 export const CODEX_APP_SERVER_NATIVE_TURN_WAIT_TIMEOUT_MS = 30_000;
 
 export type { CodexAppServerServerRequest, CodexThreadRouteScope } from "./turn-router.types.js";
-// Only an explicit true acknowledges projection of a retained global warning.
 type CodexThreadNotificationHandler = (
   notification: CodexServerNotification,
   scope: CodexThreadRouteScope,
-) => Promise<boolean | void> | boolean | void;
+) => Promise<void> | void;
 type CodexThreadNotificationReceivedHandler = (
   notification: CodexServerNotification,
   scope: CodexThreadRouteScope,
@@ -72,7 +71,6 @@ type CodexNativeTurnCompletionWatch = {
 type Deferred = ReturnType<typeof createDeferred<void>>;
 type PendingNotification = {
   notification: CodexServerNotification;
-  globalWarning?: CodexGlobalWarning;
   receivedAtMs: number;
   scope: CodexThreadRouteScope;
   receiptObserved?: true;
@@ -125,7 +123,7 @@ export function getCodexAppServerTurnRouter(
 class ClientTurnRouter {
   private readonly routes = new Map<string, Route>();
   private readonly mcpRequests = new CodexMcpRequestRoutes();
-  private readonly globalWarnings = new CodexGlobalWarnings();
+  private readonly globalWarnings: CodexServerNotification[] = [];
   private readonly nativeTurnCompletionWatchers = new Map<
     string,
     Set<NativeTurnCompletionWatcher>
@@ -172,9 +170,8 @@ class ClientTurnRouter {
       ended: createDeferred<void>(),
       activated: createDeferred<void>(),
       gate: "open",
-      pending: this.globalWarnings.pendingFor(threadId).map((globalWarning) => ({
-        notification: globalWarning.notification,
-        globalWarning,
+      pending: this.globalWarnings.map((notification) => ({
+        notification,
         receivedAtMs: Date.now(),
         scope: { threadId },
       })),
@@ -407,15 +404,12 @@ class ClientTurnRouter {
       !scope.threadId &&
       (notification.method === "configWarning" || notification.method === "warning")
     ) {
-      const globalWarning = this.globalWarnings.record(notification);
+      if (this.globalWarnings.length === DEFAULT_GLOBAL_WARNING_LIMIT) {
+        this.globalWarnings.shift();
+      }
+      this.globalWarnings.push(notification);
       for (const route of this.routes.values()) {
-        this.bufferNotification(
-          route,
-          notification,
-          { threadId: route.threadId },
-          Date.now(),
-          globalWarning,
-        );
+        this.bufferNotification(route, notification, { threadId: route.threadId }, Date.now());
         if (route.gate === "bound") {
           this.flushNotifications(route);
         }
@@ -599,13 +593,7 @@ class ClientTurnRouter {
       if (route.notificationPause) {
         route.pending.push(pending);
       } else {
-        this.enqueueNotification(
-          route,
-          handler,
-          pending.notification,
-          pending.scope,
-          pending.globalWarning,
-        );
+        this.enqueueNotification(route, handler, pending.notification, pending.scope);
       }
     }
   }
@@ -652,9 +640,8 @@ class ClientTurnRouter {
     notification: CodexServerNotification,
     scope: CodexThreadRouteScope,
     receivedAtMs: number,
-    globalWarning?: CodexGlobalWarning,
   ): void {
-    const pending = { notification, receivedAtMs, scope, globalWarning };
+    const pending = { notification, receivedAtMs, scope };
     if (route.gate === "bound") {
       this.observeNotificationReceipt(route, pending);
     }
@@ -674,18 +661,12 @@ class ClientTurnRouter {
     handler: CodexThreadNotificationHandler,
     notification: CodexServerNotification,
     scope: CodexThreadRouteScope,
-    globalWarning?: CodexGlobalWarning,
   ): void {
     if (route.released && !this.canDrainClosedTurn(route, route.turnId)) {
       return;
     }
     route.notificationTail = route.notificationTail
-      .then(() =>
-        globalWarning
-          ? globalWarning.deliver(route.threadId, () => handler(notification, scope))
-          : handler(notification, scope),
-      )
-      .then(() => undefined)
+      .then(() => handler(notification, scope))
       .catch((error: unknown) => {
         if (!route.released) {
           embeddedAgentLog.warn("codex app-server keyed notification handler failed", {

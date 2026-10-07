@@ -70,7 +70,7 @@ export class CodexEphemeralTurn {
             }
           }
         }
-        return await options.onNotification?.(notification, scope);
+        await options.onNotification?.(notification, scope);
       },
     });
     // Reserve and arm synchronously before turn/start can emit requests or notifications.
