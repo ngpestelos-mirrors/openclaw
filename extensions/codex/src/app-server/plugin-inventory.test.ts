@@ -5,6 +5,7 @@ import { codexAppInventoryResponse } from "./app-inventory.test-helpers.js";
 import {
   CODEX_PLUGINS_MARKETPLACE_NAME,
   CODEX_PLUGINS_WORKSPACE_MARKETPLACE_NAME,
+  resolveCodexPluginsPolicy,
 } from "./config.js";
 import { readCodexPluginInventory } from "./plugin-inventory.js";
 import {
@@ -24,7 +25,7 @@ describe("Codex plugin inventory", () => {
     const appCache = await cachedApps(appInfo("google-calendar-app", true));
     const calls: string[] = [];
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         "google-calendar": curatedPlugin("google-calendar"),
         slack: curatedPlugin("slack", { enabled: false }),
       }),
@@ -68,7 +69,7 @@ describe("Codex plugin inventory", () => {
     const metadataCache = new CodexPluginMetadataCache();
     const calls: Array<{ method: string; params: unknown }> = [];
     const params = {
-      pluginConfig: pluginConfig({ github: curatedPlugin("github") }),
+      policy: pluginPolicy({ github: curatedPlugin("github") }),
       appCacheKey: "runtime",
       configCwd: "/repo/project",
       metadataCache,
@@ -101,7 +102,7 @@ describe("Codex plugin inventory", () => {
   it("reads the curated catalog only for an explicitly requested missing plugin", async () => {
     const calls: Array<{ method: string; params: unknown }> = [];
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({ calendar: curatedPlugin("calendar") }),
+      policy: pluginPolicy({ calendar: curatedPlugin("calendar") }),
       request: async (method, params) => {
         calls.push({ method, params });
         if (method === "plugin/installed") {
@@ -140,7 +141,7 @@ describe("Codex plugin inventory", () => {
       }),
     ]);
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({ github: curatedPlugin("github") }),
+      policy: pluginPolicy({ github: curatedPlugin("github") }),
       appCache,
       appCacheKey: "runtime",
       nowMs: 1,
@@ -193,7 +194,7 @@ describe("Codex plugin inventory", () => {
     } satisfies v2.PluginListResponse;
 
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         "google-calendar": curatedPlugin("google-calendar"),
       }),
       appCache,
@@ -238,7 +239,7 @@ describe("Codex plugin inventory", () => {
     } satisfies v2.PluginInstalledResponse;
 
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         "google-calendar": curatedPlugin("google-calendar"),
       }),
       appCache,
@@ -268,7 +269,7 @@ describe("Codex plugin inventory", () => {
     "normalizes configured %s aliases to the canonical curated marketplace",
     async (configuredMarketplaceName) => {
       const inventory = await readCodexPluginInventory({
-        pluginConfig: {
+        policy: resolveCodexPluginsPolicy({
           codexPlugins: {
             enabled: true,
             plugins: {
@@ -278,7 +279,7 @@ describe("Codex plugin inventory", () => {
               },
             },
           },
-        },
+        }),
         request: async (method) => {
           if (method === "plugin/installed") {
             return pluginInstalled([pluginSummary("github", { installed: true, enabled: true })]);
@@ -307,7 +308,7 @@ describe("Codex plugin inventory", () => {
     });
 
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         workspaceData: workspacePlugin("workspace-data@workspace-directory"),
       }),
       appCache,
@@ -351,7 +352,7 @@ describe("Codex plugin inventory", () => {
   it("fails closed before plugin/read when a workspace summary lacks remotePluginId", async () => {
     const calls: string[] = [];
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         workspaceData: workspacePlugin("workspace-data@workspace-directory"),
       }),
       request: async (method) => {
@@ -380,7 +381,7 @@ describe("Codex plugin inventory", () => {
   it("diagnoses every missing workspace owner from the canonical installed snapshot", async () => {
     const calls: Array<{ method: string; params: unknown }> = [];
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         github: curatedPlugin("github"),
         workspaceData: workspacePlugin("workspace-data@workspace-directory"),
         workspaceMetrics: workspacePlugin("workspace-metrics@workspace-directory"),
@@ -429,7 +430,7 @@ describe("Codex plugin inventory", () => {
     const failure = new Error("plugin/installed transport closed");
     await expect(
       readCodexPluginInventory({
-        pluginConfig: pluginConfig({
+        policy: pluginPolicy({
           workspaceData: workspacePlugin("workspace-data@workspace-directory"),
         }),
         request: async (method) => {
@@ -456,7 +457,7 @@ describe("Codex plugin inventory", () => {
           ),
       });
       const inventory = await readCodexPluginInventory({
-        pluginConfig: pluginConfig({
+        policy: pluginPolicy({
           "google-calendar": curatedPlugin("google-calendar"),
         }),
         appCache,
@@ -491,7 +492,7 @@ describe("Codex plugin inventory", () => {
     const appCache = await cachedApps(disabledApp);
 
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         "google-calendar": curatedPlugin("google-calendar"),
       }),
       appCache,
@@ -525,7 +526,7 @@ describe("Codex plugin inventory", () => {
     });
 
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         "google-calendar": curatedPlugin("google-calendar"),
       }),
       appCache,
@@ -556,7 +557,7 @@ describe("Codex plugin inventory", () => {
   it("fails closed when the app inventory cache is missing", async () => {
     const appCache = new CodexAppInventoryCache();
     const inventory = await readCodexPluginInventory({
-      pluginConfig: pluginConfig({
+      policy: pluginPolicy({
         "google-calendar": curatedPlugin("google-calendar"),
       }),
       appCache,
@@ -592,8 +593,8 @@ type ConfiguredPlugin = {
   pluginName: string;
 };
 
-function pluginConfig(plugins: Record<string, ConfiguredPlugin>) {
-  return { codexPlugins: { enabled: true, plugins } };
+function pluginPolicy(plugins: Record<string, ConfiguredPlugin>) {
+  return resolveCodexPluginsPolicy({ codexPlugins: { enabled: true, plugins } });
 }
 
 function curatedPlugin(pluginName: string, options: { enabled?: boolean } = {}): ConfiguredPlugin {

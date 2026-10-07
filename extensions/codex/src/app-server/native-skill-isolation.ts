@@ -92,6 +92,11 @@ async function collectPersonalSkillRealPaths(
     depth: 0,
   }));
   let entryCount = 0;
+  const recordScanError = (error: unknown) => {
+    if (!isMissingPathError(error)) {
+      complete = false;
+    }
+  };
   const recordSkillFile = async (filePath: string, onlyEscapedStateTargets: boolean) => {
     try {
       const skillRealPath = await fs.realpath(filePath);
@@ -99,9 +104,7 @@ async function collectPersonalSkillRealPaths(
         skillPaths.add(skillRealPath);
       }
     } catch (error) {
-      if (!isMissingPathError(error)) {
-        complete = false;
-      }
+      recordScanError(error);
     }
   };
   for (const current of queue) {
@@ -109,10 +112,7 @@ async function collectPersonalSkillRealPaths(
     try {
       realDir = await fs.realpath(current.dir);
     } catch (error) {
-      if (isMissingPathError(error)) {
-        continue;
-      }
-      complete = false;
+      recordScanError(error);
       continue;
     }
     if (seenDirectories.has(realDir)) {
@@ -127,9 +127,7 @@ async function collectPersonalSkillRealPaths(
     try {
       directory = await fs.opendir(current.dir);
     } catch (error) {
-      if (!isMissingPathError(error)) {
-        complete = false;
-      }
+      recordScanError(error);
       continue;
     }
     try {
@@ -152,9 +150,7 @@ async function collectPersonalSkillRealPaths(
             isFile = stat.isFile();
             isDirectory = stat.isDirectory();
           } catch (error) {
-            if (!isMissingPathError(error)) {
-              complete = false;
-            }
+            recordScanError(error);
             continue;
           }
         }
@@ -175,9 +171,7 @@ async function collectPersonalSkillRealPaths(
         }
       }
     } catch (error) {
-      if (!isMissingPathError(error)) {
-        complete = false;
-      }
+      recordScanError(error);
     }
   }
   return { complete, skillPaths };

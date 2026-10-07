@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { CodexAppInventoryCache } from "./app-inventory-cache.js";
 import { codexAppInventoryResponse } from "./app-inventory.test-helpers.js";
+import { resolveCodexPluginsPolicy } from "./config.js";
 import { readCodexPluginInventory } from "./plugin-inventory.js";
 import {
   appInfo,
@@ -19,12 +20,12 @@ function configuredPlugin(
   pluginName: string,
   configKey = `${pluginName}@${marketplaceName}`,
 ) {
-  return {
+  return resolveCodexPluginsPolicy({
     codexPlugins: {
       enabled: true,
       plugins: { [configKey]: { marketplaceName, pluginName } },
     },
-  };
+  });
 }
 
 describe("Codex marketplace-qualified plugin inventory", () => {
@@ -39,7 +40,7 @@ describe("Codex marketplace-qualified plugin inventory", () => {
     const calls: Array<{ method: string; params: unknown }> = [];
 
     const inventory = await readCodexPluginInventory({
-      pluginConfig: configuredPlugin("company-tools", "security-review"),
+      policy: configuredPlugin("company-tools", "security-review"),
       appCache,
       appCacheKey: "runtime",
       configCwd: "/repo/company",
@@ -87,7 +88,7 @@ describe("Codex marketplace-qualified plugin inventory", () => {
 
   it("never admits the same plugin name from a different marketplace", async () => {
     const inventory = await readCodexPluginInventory({
-      pluginConfig: configuredPlugin("trusted-company", "audit"),
+      policy: configuredPlugin("trusted-company", "audit"),
       configCwd: "/repo/company",
       request: async (method, params) => {
         expect(params).toEqual({ cwds: ["/repo/company"] });
@@ -114,7 +115,7 @@ describe("Codex marketplace-qualified plugin inventory", () => {
 
   it("selects the authorized marketplace when two catalogs contain the same plugin name", async () => {
     const inventory = await readCodexPluginInventory({
-      pluginConfig: configuredPlugin("trusted-company", "audit"),
+      policy: configuredPlugin("trusted-company", "audit"),
       request: async (method, params) => {
         if (method === "plugin/installed") {
           return {
@@ -156,7 +157,7 @@ describe("Codex marketplace-qualified plugin inventory", () => {
   it("discovers an uninstalled repository plugin with its current conversation cwd", async () => {
     const calls: Array<{ method: string; params: unknown }> = [];
     const inventory = await readCodexPluginInventory({
-      pluginConfig: configuredPlugin("company-tools", "security-review"),
+      policy: configuredPlugin("company-tools", "security-review"),
       configCwd: "/repo/company",
       request: async (method, params) => {
         calls.push({ method, params });
@@ -204,7 +205,7 @@ describe("Codex marketplace-qualified plugin inventory", () => {
 
   it("uses the opaque remote id for installed shared-marketplace plugins", async () => {
     const inventory = await readCodexPluginInventory({
-      pluginConfig: configuredPlugin(
+      policy: configuredPlugin(
         "workspace-shared-with-me",
         "audit@workspace-shared-with-me",
         "audit@workspace-shared-with-me",
@@ -245,7 +246,7 @@ describe("Codex marketplace-qualified plugin inventory", () => {
     const metadataCache = new CodexPluginMetadataCache();
     let catalogCalls = 0;
     const inventory = await readCodexPluginInventory({
-      pluginConfig: {
+      policy: resolveCodexPluginsPolicy({
         codexPlugins: {
           enabled: true,
           plugins: {
@@ -259,7 +260,7 @@ describe("Codex marketplace-qualified plugin inventory", () => {
             },
           },
         },
-      },
+      }),
       appCacheKey: "runtime",
       configCwd: "/repo/company",
       metadataCache,
@@ -297,7 +298,7 @@ describe("Codex marketplace-qualified plugin inventory", () => {
   it("never exposes plugins disabled by an administrator", async () => {
     const calls: string[] = [];
     const inventory = await readCodexPluginInventory({
-      pluginConfig: configuredPlugin("enterprise", "audit"),
+      policy: configuredPlugin("enterprise", "audit"),
       request: async (method, params) => {
         calls.push(method);
         if (method === "plugin/installed") {
