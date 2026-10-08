@@ -45,18 +45,6 @@ function pollingLeaseRegistry(): TelegramPollingLeaseRegistry {
   return proc[TELEGRAM_POLLING_LEASES_KEY];
 }
 
-function createDuplicatePollingError(params: {
-  accountId: string;
-  existing: TelegramPollingLeaseEntry;
-  tokenFingerprint: string;
-}): Error {
-  const ageMs = Math.max(0, Date.now() - params.existing.startedAt);
-  const ageSeconds = Math.round(ageMs / 1000);
-  return new Error(
-    `Telegram polling already active for bot token ${params.tokenFingerprint} on account "${params.existing.accountId}" (${ageSeconds}s old); refusing duplicate poller for account "${params.accountId}". Stop the existing OpenClaw gateway/poller or use a different bot token.`,
-  );
-}
-
 async function waitForPreviousRelease(params: {
   done: Promise<void>;
   signal?: AbortSignal;
@@ -77,41 +65,6 @@ async function waitForPreviousRelease(params: {
   );
 }
 
-function createLease(params: {
-  accountId: string;
-  abortSignal?: AbortSignal;
-  registry: TelegramPollingLeaseRegistry;
-  tokenFingerprint: string;
-  waitedForPrevious: boolean;
-  replacedStoppingPrevious: boolean;
-}): TelegramPollingLease {
-  let resolveDone!: () => void;
-  const done = new Promise<void>((resolve) => {
-    resolveDone = resolve;
-  });
-  const entry: TelegramPollingLeaseEntry = {
-    accountId: params.accountId,
-    abortSignal: params.abortSignal,
-    done,
-    resolveDone,
-    startedAt: Date.now(),
-  };
-  params.registry.set(params.tokenFingerprint, entry);
-
-  return {
-    tokenFingerprint: params.tokenFingerprint,
-    waitedForPrevious: params.waitedForPrevious,
-    replacedStoppingPrevious: params.replacedStoppingPrevious,
-    release: () => {
-      const current = params.registry.get(params.tokenFingerprint);
-      if (current === entry) {
-        params.registry.delete(params.tokenFingerprint);
-      }
-      resolveDone();
-    },
-  };
-}
-
 export async function acquireTelegramPollingLease(
   opts: AcquireTelegramPollingLeaseOpts,
 ): Promise<TelegramPollingLease> {
@@ -128,11 +81,11 @@ export async function acquireTelegramPollingLease(
     }
 
     if (!existing.abortSignal?.aborted) {
-      throw createDuplicatePollingError({
-        accountId: opts.accountId,
-        existing,
-        tokenFingerprint: fingerprint,
-      });
+      const ageMs = Math.max(0, Date.now() - existing.startedAt);
+      const ageSeconds = Math.round(ageMs / 1000);
+      throw new Error(
+        `Telegram polling already active for bot token ${fingerprint} on account "${existing.accountId}" (${ageSeconds}s old); refusing duplicate poller for account "${opts.accountId}". Stop the existing OpenClaw gateway/poller or use a different bot token.`,
+      );
     }
 
     waitedForPrevious = true;
@@ -154,14 +107,28 @@ export async function acquireTelegramPollingLease(
     replacedStoppingPrevious = true;
     break;
   }
-  return createLease({
+  const { promise: done, resolve: resolveDone } = Promise.withResolvers<void>();
+  const entry: TelegramPollingLeaseEntry = {
     accountId: opts.accountId,
     abortSignal: opts.abortSignal,
-    registry,
+    done,
+    resolveDone,
+    startedAt: Date.now(),
+  };
+  registry.set(fingerprint, entry);
+
+  return {
     tokenFingerprint: fingerprint,
     waitedForPrevious,
     replacedStoppingPrevious,
-  });
+    release: () => {
+      const current = registry.get(fingerprint);
+      if (current === entry) {
+        registry.delete(fingerprint);
+      }
+      resolveDone();
+    },
+  };
 }
 
 export async function releaseStoppedTelegramPollingLease(
