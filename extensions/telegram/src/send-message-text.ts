@@ -196,9 +196,7 @@ export function createTelegramTextSender(config: {
 
     const partialDeliveryResult = () => {
       const receipt = buildReceipt();
-      return {
-        ...(receipt ? { receipt } : {}),
-      };
+      return receipt ? { receipt } : {};
     };
 
     const tracking = {
