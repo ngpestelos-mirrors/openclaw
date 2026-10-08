@@ -681,7 +681,7 @@ export async function createFullModelCatalogAccess(
     return promise;
   };
   const retryFailedDiscovery = retry.createFailedDiscoveryRetry(
-    params.isCurrent,
+    params.retirementSignal,
     () => (pending ? undefined : published.inventory),
     acquireCatalog,
   );

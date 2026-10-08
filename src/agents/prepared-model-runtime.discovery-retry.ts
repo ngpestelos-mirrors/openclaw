@@ -50,7 +50,7 @@ export function recordFailedDiscovery(
  * `readIdleInventory` returns nothing while an acquisition is pending.
  */
 export function createFailedDiscoveryRetry(
-  isCurrent: () => boolean,
+  retirementSignal: AbortSignal,
   readIdleInventory: () => PreparedModelCatalogInventory | undefined,
   acquire: (
     options: PreparedModelCatalogRefreshOptions,
@@ -58,28 +58,36 @@ export function createFailedDiscoveryRetry(
   ) => Promise<unknown>,
 ) {
   let timer: NodeJS.Timeout | undefined;
+  const failedDeadlines = () =>
+    [...(readIdleInventory()?.providers ?? [])].flatMap(([provider, facts]) =>
+      facts.discoveryFailures && facts.expiresAt !== undefined
+        ? [{ provider, expiresAt: facts.expiresAt }]
+        : [],
+    );
   const arm = (): void => {
     clearTimeout(timer);
-    const failed = [...(readIdleInventory()?.providers ?? [])].filter(
-      ([, facts]) => facts.discoveryFailures && facts.expiresAt !== undefined,
-    );
-    if (!isCurrent() || !failed.length) {
+    const failed = failedDeadlines();
+    if (retirementSignal.aborted || !failed.length) {
       return;
     }
-    const due = Math.min(...failed.map(([, facts]) => facts.expiresAt!));
+    const due = Math.min(...failed.map(({ expiresAt }) => expiresAt));
     timer = setTimeout(
       () => {
         const now = Date.now();
-        const providerIds = failed
-          .filter(([, facts]) => facts.expiresAt! <= now)
-          .map(([provider]) => provider);
-        if (isCurrent() && readIdleInventory()) {
-          void acquire({ providerIds, refresh: true }, false).catch(() => undefined);
+        const providerIds = failedDeadlines()
+          .filter(({ expiresAt }) => expiresAt <= now)
+          .map(({ provider }) => provider);
+        if (retirementSignal.aborted || !providerIds.length) {
+          arm();
+          return;
         }
+        // The acquisition re-arms when it settles.
+        void acquire({ providerIds, refresh: true }, false).catch(() => undefined);
       },
       Math.max(0, due - Date.now()),
     ).unref();
   };
+  retirementSignal.addEventListener("abort", () => clearTimeout(timer), { once: true });
   // A compatible reload retains failed facts; its new owner resumes their retry.
   arm();
   return arm;
