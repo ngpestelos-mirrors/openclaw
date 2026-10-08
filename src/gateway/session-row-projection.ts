@@ -224,8 +224,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     registryFactsReady: () => Boolean(inOwnerContext(subagents.snapshotIdentity)),
     acquireEntry,
     markRelated,
-    publishPlacement: (sessionId, change) => placementFacts.publish(sessionId, change),
-    invalidatePlacement: (sessionId) => placementFacts.invalidate(sessionId),
+    placement: placementFacts,
     invalidateFacts: (row, domain) => rowFacts.invalidate(row, domain),
     enqueue,
     defer(row) {
@@ -497,9 +496,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       epoch++;
       revisions.invalidate();
       revisions.publishFacts(row);
-      records.invalidateDatabaseFacts(row);
-      row.retainedDatabaseFacts = retained;
-      row.preparedAcpMeta = retained?.acpMeta;
+      records.invalidateDatabaseFacts(row, retained);
       dirty.add(id);
       void ensureMaterialized().catch(() => {});
     },
