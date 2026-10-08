@@ -211,6 +211,10 @@ export function createReefRejectionRecovery(
   const parsePeerState = (value: unknown): ReefPeerStateSnapshot =>
     value === undefined ? { revision: 0 } : ReefPeerStateSchema.parse(value);
   const capturedRecipient = { ...recipient };
+  const rows = [
+    { store: 0, key: peerKey },
+    { store: 1, key: deliveryKey },
+  ];
   return {
     assertCurrent: createReefPeerAssertion(
       batch,
@@ -226,12 +230,14 @@ export function createReefRejectionRecovery(
     async reserve(state) {
       const expected = ReefPeerIdentitySchema.parse(capturedRecipient);
       const notice = ReefRejectionNoticeStateSchema.parse(state);
+      const observations = await batch.observeExisting(rows);
+      assertActive();
+      if (!observations) {
+        throw new Error(`Reef rejection ${id} lost its durable delivery state`);
+      }
       return applyReefStateBatch(
         batch,
-        [
-          { store: 0, key: peerKey },
-          { store: 1, key: deliveryKey },
-        ],
+        rows,
         ([peerValue, value]) => {
           if (!matchesReefPeerIdentity(parsePeerState(peerValue).trust, expected)) {
             throw new Error(
@@ -264,16 +270,19 @@ export function createReefRejectionRecovery(
               : { kind: "reserved" as const },
           };
         },
+        observations,
       );
     },
     async complete(state) {
       const notice = ReefRejectionNoticeStateSchema.parse(state);
+      const observations = await batch.observeExisting(rows);
+      assertActive();
+      if (!observations) {
+        throw new Error(`Reef rejection ${id} lost its durable delivery state`);
+      }
       return applyReefStateBatch(
         batch,
-        [
-          { store: 0, key: peerKey },
-          { store: 1, key: deliveryKey },
-        ],
+        rows,
         ([peerValue, value]) => {
           const current = parsePeerState(peerValue);
           const previous = current.rejectionNotice;
@@ -298,6 +307,7 @@ export function createReefRejectionRecovery(
             value: deleted || value === undefined,
           };
         },
+        observations,
       );
     },
     prepareOutboundDelivery(nextId) {
