@@ -1,3 +1,4 @@
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
 import { raceWithTimeout } from "openclaw/plugin-sdk/time-runtime";
 import { fingerprintTelegramBotToken } from "./token-fingerprint.js";
@@ -107,7 +108,7 @@ export async function acquireTelegramPollingLease(
     replacedStoppingPrevious = true;
     break;
   }
-  const { promise: done, resolve: resolveDone } = Promise.withResolvers<void>();
+  const { promise: done, resolve: resolveDone } = createDeferred<void>();
   const entry: TelegramPollingLeaseEntry = {
     accountId: opts.accountId,
     abortSignal: opts.abortSignal,
