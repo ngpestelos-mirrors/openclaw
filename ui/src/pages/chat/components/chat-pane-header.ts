@@ -258,21 +258,13 @@ function renderProjectCrumb(
           >${copied ? t("chat.sessionHeader.copied") : props.workspaceLabel}</span
         >
       </button>
-      ${
-        props.canReveal && props.workspaceRoot
-          ? html`<wa-dropdown-item value="reveal">${revealLabel(props.platform)}</wa-dropdown-item>`
-          : nothing
-      }
-      ${
-        props.workspaceRoot
-          ? html`<wa-dropdown-item value="copy-path">${copyPathLabel}</wa-dropdown-item>`
-          : nothing
-      }
-      ${
-        props.branch
-          ? html`<wa-dropdown-item value="copy-branch">${copyBranchLabel}</wa-dropdown-item>`
-          : nothing
-      }
+      ${[
+        [props.canReveal && props.workspaceRoot, "reveal", revealLabel(props.platform)],
+        [props.workspaceRoot, "copy-path", copyPathLabel],
+        [props.branch, "copy-branch", copyBranchLabel],
+      ].map(([visible, value, label]) =>
+        visible ? html`<wa-dropdown-item value=${value}>${label}</wa-dropdown-item>` : nothing,
+      )}
     </wa-dropdown>
   `;
 }
@@ -509,17 +501,8 @@ export function renderChatPaneHeader(props: ChatPaneHeaderProps) {
                 ],
               ] as const
             ).map(([visible, className, label, icon, onClick]) =>
-              visible
-                ? html`<openclaw-tooltip .content=${t(label)}>
-                    <button
-                      class=${`btn btn--ghost btn--icon chat-icon-btn ${className}`}
-                      type="button"
-                      aria-label=${t(label)}
-                      @click=${onClick}
-                    >
-                      ${icon}
-                    </button>
-                  </openclaw-tooltip>`
+              visible && onClick
+                ? renderChatPanePanelToggle({ className, label: t(label), icon, onToggle: onClick })
                 : nothing,
             )}
             ${props.sessionMenuAction}

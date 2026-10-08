@@ -508,7 +508,6 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
     this.headerRenameSession = { key: row.key, sessionId: row.sessionId, label: row.label };
     this.headerRenameInitialValue = resolveSessionRenameValue(row);
     this.headerRenameValue = this.headerRenameInitialValue;
-    this.headerEditing = true;
     void this.updateComplete.then(() => {
       const input = this.querySelector<HTMLInputElement>(".chat-pane__session-title-input");
       input?.focus();
@@ -517,24 +516,22 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
   }
 
   protected cancelHeaderRename(): void {
-    this.headerEditing = false;
     this.headerRenameSession = null;
   }
 
   protected commitHeaderRename(): void {
-    if (!this.headerEditing) {
+    const session = this.headerRenameSession;
+    if (!session) {
       return;
     }
-    const session = this.headerRenameSession;
     const patch = resolveSessionRenamePatch(
       this.headerRenameValue,
       this.headerRenameInitialValue,
-      session?.label,
+      session.label,
     );
-    this.headerEditing = false;
     this.headerRenameSession = null;
     const state = this.state;
-    if (!session || !state || !patch) {
+    if (!state || !patch) {
       return;
     }
     const access = readSessionMethodAccess(this.context.gateway.snapshot, {
@@ -579,7 +576,7 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
     if (worktreeId && !immediateRoot) {
       const entry = this.headerWorktreePaths.get(worktreeId) ?? {};
       this.headerWorktreePaths.set(worktreeId, entry);
-      if (!entry.loaded && !entry.loading) {
+      if (entry.path === undefined && !entry.loading) {
         entry.loading = true;
         loads.push(
           client
@@ -589,11 +586,9 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
                 result.worktrees.find(
                   (candidate) => candidate.id === worktreeId && candidate.removedAt === undefined,
                 )?.path ?? null;
-              entry.loaded = true;
             })
             .catch(() => {
-              entry.path = null;
-              entry.loaded = false;
+              entry.path = undefined;
             })
             .finally(() => {
               entry.loading = false;

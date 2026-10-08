@@ -159,7 +159,10 @@ function detachChatMediaResourceSubscriber(
       !resource.pending
     ) {
       chatMediaResources.set(resourceKey, resource);
-      trimIdleChatMediaResources();
+      trimChatMediaResources(
+        (cachedResource) =>
+          cachedResource.retainUntil !== undefined && cachedResource.subscribers.size === 0,
+      );
     }
   }
   resource.abortController?.abort();
@@ -240,10 +243,8 @@ export function observeChatMediaResource<Value>(
   return resource;
 }
 
-function trimIdleChatMediaResources() {
-  const retained = [...chatMediaResources.entries()].filter(
-    ([, resource]) => resource.retainUntil !== undefined && resource.subscribers.size === 0,
-  );
+function trimChatMediaResources(eligible: (resource: ChatMediaResource<unknown>) => boolean) {
+  const retained = [...chatMediaResources.entries()].filter(([, resource]) => eligible(resource));
   for (const [resourceKey] of retained.slice(0, -CHAT_MEDIA_CACHE_MAX_ENTRIES)) {
     chatMediaResources.delete(resourceKey);
   }
@@ -313,14 +314,7 @@ export function observeChatMediaResourceSubscriber(owner: () => void, subscriber
   if (state.owner === owner) {
     return;
   }
-  if (state.owner) {
-    const previousOwner = state.owner;
-    const previous = chatMediaSubscribers.get(previousOwner);
-    if (previous) {
-      previous.children.delete(subscriber);
-      pruneChatMediaSubscriber(previousOwner, previous);
-    }
-  }
+  detachChatMediaSubscriberOwner(subscriber, state.owner);
   getChatMediaSubscriber(owner).children.add(subscriber);
   state.owner = owner;
 }
@@ -334,29 +328,28 @@ export function releaseChatMediaResourceSubscriber(subscriber: (() => void) | un
   for (const child of state.children) {
     releaseChatMediaResourceSubscriber(child);
   }
-  if (state.owner) {
-    const owner = chatMediaSubscribers.get(state.owner);
-    if (owner) {
-      owner.children.delete(subscriber);
-      pruneChatMediaSubscriber(state.owner, owner);
-    }
-  }
+  detachChatMediaSubscriberOwner(subscriber, state.owner);
   for (const resource of new Set(state.resources.values())) {
     detachChatMediaResourceSubscriber(resource, subscriber);
   }
 }
 
+function detachChatMediaSubscriberOwner(subscriber: () => void, owner: (() => void) | undefined) {
+  const state = owner && chatMediaSubscribers.get(owner);
+  if (owner && state) {
+    state.children.delete(subscriber);
+    pruneChatMediaSubscriber(owner, state);
+  }
+}
+
 export function trimManagedImageMissResources() {
-  const misses = [...chatMediaResources.entries()].filter(
-    ([, resource]) =>
+  trimChatMediaResources(
+    (resource) =>
       resource.kind === "managed-image" &&
       resource.value === null &&
       resource.subscribers.size === 0 &&
       !resource.pending,
   );
-  for (const [resourceKey] of misses.slice(0, -CHAT_MEDIA_CACHE_MAX_ENTRIES)) {
-    chatMediaResources.delete(resourceKey);
-  }
 }
 
 export function readManagedImageBlobUrl(cacheKey: string): string | undefined {
@@ -711,6 +704,12 @@ export function schedulePairingQrExpiryRefresh(
   );
 }
 
+export function omittedMediaReason(sizeBytes: number | undefined): string {
+  return sizeBytes === undefined
+    ? t("chat.attachments.omittedFromHistory")
+    : t("chat.attachments.omittedFromHistoryWithSize", { size: formatBytes(sizeBytes) });
+}
+
 // Reply previews and completed-run actions describe the media the bubble renders.
 export function extractMessageMediaText(
   message: unknown,
@@ -725,13 +724,7 @@ export function extractMessageMediaText(
       if (item.type !== "omitted_media") {
         return [];
       }
-      const reason =
-        item.media.sizeBytes === undefined
-          ? t("chat.attachments.omittedFromHistory")
-          : t("chat.attachments.omittedFromHistoryWithSize", {
-              size: formatBytes(item.media.sizeBytes),
-            });
-      return [`${t("chat.attachments.image")} · ${reason}`];
+      return [`${t("chat.attachments.image")} · ${omittedMediaReason(item.media.sizeBytes)}`];
     }),
     ...attachments.map(
       (item) => item.attachment.label.trim() || t("chat.attachments.attachedFile"),

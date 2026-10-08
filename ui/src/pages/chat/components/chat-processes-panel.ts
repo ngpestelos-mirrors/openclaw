@@ -1,66 +1,29 @@
-import { consume } from "@lit/context";
 import { html, nothing, type PropertyValues } from "lit";
-import { property, state } from "lit/decorators.js";
+import { state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import type { SessionProcessSummary } from "../../../../../packages/gateway-protocol/src/schema/session-processes.js";
-import { applicationContext, type ApplicationContext } from "../../../app/context.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
-import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import { ProcessesPanelData } from "../processes-panel-data.ts";
+import { ChatSessionPanel } from "./chat-session-panel.ts";
 import "../../../components/elapsed-time.ts";
 import "./chat-session-panels.css";
 import "./chat-processes-panel.css";
 
-class ChatProcessesPanel extends OpenClawLightDomElement {
-  @consume({ context: applicationContext, subscribe: true })
-  protected context!: ApplicationContext;
-  @property({ attribute: false }) sessionKey = "";
-  @property({ attribute: false }) agentId = "main";
-  @property({ type: Boolean }) presented = true;
+class ChatProcessesPanel extends ChatSessionPanel<ProcessesPanelData> {
   @state() private selected: string | null = null;
   @state() private finishedOpen = false;
-  private data: ProcessesPanelData | null = null;
-  private dataContext: ApplicationContext | null = null;
+  protected readonly dataType = ProcessesPanelData;
 
-  override disconnectedCallback(): void {
-    this.data?.dispose();
-    this.data = null;
-    super.disconnectedCallback();
+  protected override clearSelection(): void {
+    this.selected = null;
   }
 
   protected override willUpdate(changed: PropertyValues<this>): void {
-    const contextChanged = this.dataContext !== this.context;
-    const parentChanged = changed.has("sessionKey") || changed.has("agentId");
-    if (contextChanged || parentChanged) {
-      this.selected = null;
-    }
-    if (contextChanged) {
-      this.data?.dispose();
-      this.data = null;
-      this.dataContext = this.context;
-    }
-    if (this.context && !this.data) {
-      this.data = new ProcessesPanelData(this.context, () => this.requestUpdate());
-      this.syncData();
-    } else if (parentChanged || changed.has("presented")) {
-      this.syncData();
-    }
+    super.willUpdate(changed);
     if (this.data?.error && this.data.rows.length === 0) {
       this.selected = null;
     }
-  }
-
-  private syncData(): void {
-    this.data?.sync({
-      sessionKey: this.sessionKey,
-      agentId: this.agentId,
-      presented: this.presented,
-    });
-  }
-
-  async refresh(): Promise<void> {
-    await this.data?.refresh();
   }
 
   private status(row: SessionProcessSummary) {
@@ -127,6 +90,12 @@ class ChatProcessesPanel extends OpenClawLightDomElement {
     const selected = rows.find((row) => row.instanceId === this.selected);
     const running = rows.filter((row) => row.status === "running");
     const finished = rows.filter((row) => row.status !== "running");
+    const renderRows = (groupRows: SessionProcessSummary[]) =>
+      repeat(
+        groupRows,
+        (row) => row.instanceId,
+        (row) => this.row(row),
+      );
     const error = data?.error
       ? html`<div class="chat-processes__error" role="alert">
           ${data.error}<button class="btn btn--sm" type="button" @click=${() => this.refresh()}>
@@ -177,13 +146,7 @@ class ChatProcessesPanel extends OpenClawLightDomElement {
             </div>`
           : html` <section class="chat-processes__running">
                 <h3>${t("chat.processesPanel.running", { count: String(running.length) })}</h3>
-                <div role="list">
-                  ${repeat(
-                    running,
-                    (row) => row.instanceId,
-                    (row) => this.row(row),
-                  )}
-                </div>
+                <div role="list">${renderRows(running)}</div>
                 ${running.length ? nothing : html`<div class="chat-processes__empty">${t("chat.processesPanel.noRunning")}</div>`}
               </section>
               <section class="chat-processes__finished">
@@ -200,15 +163,7 @@ class ChatProcessesPanel extends OpenClawLightDomElement {
                   >${this.finishedOpen ? icons.chevronDown : icons.chevronRight}
                 </button>
                 <div role="list" ?hidden=${!this.finishedOpen}>
-                  ${
-                    this.finishedOpen
-                      ? repeat(
-                          finished,
-                          (row) => row.instanceId,
-                          (row) => this.row(row),
-                        )
-                      : nothing
-                  }
+                  ${this.finishedOpen ? renderRows(finished) : nothing}
                 </div>
               </section>`
       }

@@ -188,6 +188,10 @@ function persistCapturedChatComposerStateResult(
       draft,
       Object.hasOwn(options, "mentions") ? options.mentions : state.chatMentions,
     );
+    const matchesDraftMetadata = (saved: typeof session) =>
+      JSON.stringify(saved?.draftMentions ?? []) === JSON.stringify(mentions ?? []) &&
+      JSON.stringify(saved?.goalMode ?? null) === JSON.stringify(goalMode ?? null) &&
+      JSON.stringify(saved?.replyTarget ?? null) === JSON.stringify(replyTarget ?? null);
     const storedDraftRevision = session?.draftRevision;
     rememberDraftRevision(storage, target.key, storeSessionKey, storedDraftRevision);
     // Draft-only rows are bounded and may evict a clear tombstone. Retain the
@@ -201,11 +205,7 @@ function persistCapturedChatComposerStateResult(
     }
     const storedDraft = normalizeChatComposerDraft(session?.draft ?? "");
     // Draft interpretation shares the text revision; a retry cannot turn an objective into a command.
-    const sameDraft =
-      storedDraft === draft &&
-      JSON.stringify(session?.draftMentions ?? []) === JSON.stringify(mentions ?? []) &&
-      JSON.stringify(session?.goalMode ?? null) === JSON.stringify(goalMode ?? null) &&
-      JSON.stringify(session?.replyTarget ?? null) === JSON.stringify(replyTarget ?? null);
+    const sameDraft = storedDraft === draft && matchesDraftMetadata(session);
     const expectedDraftRevision = options.expectedDraftRevision;
     const committedMatchesExpected =
       expectedDraftRevision === undefined ||
@@ -236,9 +236,7 @@ function persistCapturedChatComposerStateResult(
     if (
       persisted?.draftRevision === draftRevision &&
       (persisted.draft ?? "") === draft &&
-      JSON.stringify(persisted.draftMentions ?? []) === JSON.stringify(mentions ?? []) &&
-      JSON.stringify(persisted.goalMode ?? null) === JSON.stringify(goalMode ?? null) &&
-      JSON.stringify(persisted.replyTarget ?? null) === JSON.stringify(replyTarget ?? null)
+      matchesDraftMetadata(persisted)
     ) {
       // Notify only on presence transitions: sidebar draft indicators consume
       // presence, and content-only notifies would let projection subscribers

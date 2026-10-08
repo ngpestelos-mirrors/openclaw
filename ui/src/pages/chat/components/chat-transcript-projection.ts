@@ -9,7 +9,7 @@ import { extractTextCached } from "../../../lib/chat/message-extract.ts";
 import { localParticipantIdentityKey } from "../../../lib/chat/sender-label.ts";
 import { chatItemGroups } from "../chat-agent-run-grouping.ts";
 import { messageRecoveryKey, resolveSourceMessageId } from "../chat-message-recovery.ts";
-import { resolveTurnRecap, type TurnRecap } from "../chat-progress.ts";
+import { resolveTurnRecap } from "../chat-progress.ts";
 import { projectSubagentStatus } from "../chat-subagent-wait.ts";
 import {
   assistantGroupCanOwnActiveRunStatus,
@@ -255,7 +255,8 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
     typeof props.presented === "object" ? props.presented.isPresented() : (props.presented ?? true);
   const threadContextWindow =
     activeSession?.contextTokens ?? props.sessions?.defaults?.contextTokens ?? null;
-  const turnRecapByGroupKey = new Map<string, TurnRecap>();
+  const recapForGroup = (key: string) =>
+    recapAttached && key === tailStatusOwner?.key ? (turnRecap ?? undefined) : undefined;
   const resolveReplyPreview = createReplyPreviewResolver(loadedReplySources, props);
   const sharedMessageRenderOptions = {
     entryRefFor: transcript.entryAnimations.refFor,
@@ -371,7 +372,7 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
       activeContinuation: continuation
         ? { parts: continuation, options: streamGroupOptions }
         : undefined,
-      turnRecap: turnRecapByGroupKey.get(item.key),
+      turnRecap: recapForGroup(item.key),
       latestAssistant: item.key === latestAssistantItemKey,
       searchResult: searchFiltering,
     } satisfies Parameters<typeof renderMessageGroup>[1];
@@ -386,7 +387,7 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
           part.kind === "stream-run" &&
           part.parts.some((streamPart) => streamPart.kind === "reading-indicator"),
       );
-      const recap = turnRecapByGroupKey.get(item.key);
+      const recap = recapForGroup(item.key);
       return `${hasWorkingIndicator ? workingUsageKey : ""}|${
         recap ? `${recap.runtimeMs}:${recap.outputTokens ?? ""}` : ""
       }|${item.key === latestAssistantItemKey ? "latest-assistant" : ""}`;
@@ -398,7 +399,7 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
       return "";
     }
     const continuation = continuations.get(item.key);
-    const recap = turnRecapByGroupKey.get(item.key);
+    const recap = recapForGroup(item.key);
     // Part keys stand in for the rest of the continuation: its remaining
     // options mirror props that already invalidate every row through the
     // shared render context.
@@ -457,7 +458,7 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
         renderGroupOptions,
         isWorkExpanded: (key) => expandedToolCards.get(key) ?? false,
         onToggleWork: toggleToolCardExpanded,
-        turnRecap: turnRecapByGroupKey.get(item.key),
+        turnRecap: recapForGroup(item.key),
       });
     }
     if (item.kind === "group") {
@@ -505,21 +506,20 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
       : null;
   transcript.entryAnimations.project(chatItems);
   transcript.syncMessageRows(messageRowKeysById, transcriptMessageKeys);
-  if (turnRecap !== null && tailStatusOwner?.runId === turnRecap.runId) {
-    turnRecapByGroupKey.set(tailStatusOwner.key, turnRecap);
-  }
+  const recapAttached = turnRecap !== null && tailStatusOwner?.runId === turnRecap.runId;
   const transcriptRows: TranscriptRow<ChatRenderItem>[] = workPreviews.size ? [] : rows.slice();
+  const appendContent = (key: string, content: unknown) =>
+    transcriptRows.push({ kind: "content", key, content });
   for (const row of workPreviews.size ? rows : []) {
     transcriptRows.push(row);
     const previews = workPreviews.get(row.key);
     if (previews && !(row.kind === "item" && row.item.kind === "work-group")) {
-      transcriptRows.push({
-        kind: "content",
-        key: `work-previews:${row.key}`,
-        content: html`<div class="chat-group tool chat-group--turn-block">
+      appendContent(
+        `work-previews:${row.key}`,
+        html`<div class="chat-group tool chat-group--turn-block">
           <div class="chat-group-messages">${previews}</div>
         </div>`,
-      });
+      );
     }
   }
   // Voice captions reconcile against unfiltered immutable history, not the
@@ -538,25 +538,16 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
     }),
   });
   if (realtimeConversation !== nothing) {
-    transcriptRows.push({
-      kind: "content",
-      key: "realtime-talk",
-      content: realtimeConversation,
-    });
+    appendContent("realtime-talk", realtimeConversation);
   }
-  if (turnRecap !== null && turnRecapByGroupKey.size === 0 && !isEmpty && !showLoadingSkeleton) {
-    transcriptRows.push({
-      kind: "content",
-      key: "turn-recap",
-      content: renderTurnRecapRow(turnRecap),
-    });
+  if (turnRecap !== null && !recapAttached && !isEmpty && !showLoadingSkeleton) {
+    appendContent("turn-recap", renderTurnRecapRow(turnRecap));
   }
   if (subagentWait && !subagents.placedWait && !searchFiltering) {
-    transcriptRows.push({
-      kind: "content",
-      key: "waiting-subagents",
-      content: renderUnplacedSubagentWait(props.sessionKey, subagentWait, streamGroupOptions),
-    });
+    appendContent(
+      "waiting-subagents",
+      renderUnplacedSubagentWait(props.sessionKey, subagentWait, streamGroupOptions),
+    );
   }
   const typingIndicator = renderChatTypingIndicator(
     props.typingActors,
@@ -564,7 +555,7 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
     props.typingOverflow,
   );
   if (typingIndicator) {
-    transcriptRows.push({ kind: "content", key: "presence:typing", content: typingIndicator });
+    appendContent("presence:typing", typingIndicator);
   }
   // Deferred palettes apply leaf branding after the preference snapshot.
   const appliedBranding = currentThemeBranding();

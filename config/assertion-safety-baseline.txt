@@ -2807,7 +2807,6 @@ ui/src/lit/subscriptions-controller.ts	1
 ui/src/local-storage.ts	2
 ui/src/main.ts	1
 ui/src/pages/activity/view.ts	2
-ui/src/pages/agents/memory/view.ts	1
 ui/src/pages/agents/model-config.ts	2
 ui/src/pages/agents/panels-overview.ts	2
 ui/src/pages/agents/panels-status-files.ts	1
@@ -2829,7 +2828,7 @@ ui/src/pages/chat/chat-thread-items.ts	1
 ui/src/pages/chat/components/chat-audio-player.ts	1
 ui/src/pages/chat/components/chat-composer-plus-menu.ts	1
 ui/src/pages/chat/components/chat-composer-view.ts	1
-ui/src/pages/chat/components/chat-composer.ts	5
+ui/src/pages/chat/components/chat-composer.ts	4
 ui/src/pages/chat/components/chat-effort-picker.ts	6
 ui/src/pages/chat/components/chat-header-session-menu.ts	1
 ui/src/pages/chat/components/chat-message-attachment-availability.ts	1
@@ -2887,7 +2886,7 @@ ui/src/pages/devices/view.ts	5
 ui/src/pages/labs/labs-registry.ts	4
 ui/src/pages/logs/view.ts	2
 ui/src/pages/memory-import/view.ts	2
-ui/src/pages/model-providers/view.ts	3
+ui/src/pages/model-providers/view.ts	2
 ui/src/pages/model-setup/provider-picker.ts	2
 ui/src/pages/model-setup/view.ts	2
 ui/src/pages/new-session/draft-place-browser.ts	2
@@ -2897,10 +2896,10 @@ ui/src/pages/plugin/logbook-view.ts	1
 ui/src/pages/plugin/route.ts	1
 ui/src/pages/portals/portal-reachability.ts	1
 ui/src/pages/profile/identity-section.ts	2
-ui/src/pages/secrets/view.ts	5
+ui/src/pages/secrets/view.ts	3
 ui/src/pages/sessions/view.ts	7
 ui/src/pages/skills/view.ts	2
-ui/src/pages/usage/view-details.ts	5
+ui/src/pages/usage/view-details.ts	4
 ui/src/pages/usage/view-overview.ts	2
 ui/src/pages/usage/view.ts	5
 ui/src/pages/worktrees/worktrees-page.ts	2
