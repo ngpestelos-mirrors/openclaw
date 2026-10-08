@@ -75,7 +75,7 @@ type AppearancePreferences = Required<
 > &
   Pick<UiSettings, "chatMessageMaxWidth" | "chatFollowUpMode">;
 
-export type ConfigProps = TabIconViewProps & AppearancePreferences & {
+export interface ConfigProps extends TabIconViewProps, AppearancePreferences {
   onAppearanceChange: (patch: Partial<AppearancePreferences>) => void;
   raw: string;
   originalRaw: string;
@@ -214,4 +214,4 @@ export type ConfigProps = TabIconViewProps & AppearancePreferences & {
   onWebPushTest?: () => void;
   onWebPushSetUserPreferences?: (preferences: WebPushNotificationPreferences) => void;
   onWebPushSetDevicePreferences?: (preferences: WebPushDevicePreferences) => void;
-};
+}

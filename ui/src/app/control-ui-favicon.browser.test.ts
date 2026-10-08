@@ -243,6 +243,13 @@ describe("favicon presentation ownership", () => {
         agentSelection: selection,
         sessions,
         overlays,
+        theme: { settings: {}, subscribe: () => () => {} },
+        agents: { state: { agentsList: null }, subscribe: () => () => {} },
+        agentIdentity: {
+          get: () => null,
+          ensure: async () => {},
+          subscribe: () => () => {},
+        },
       });
       await vi.waitFor(() => expect(warning).toHaveBeenCalledOnce());
       const styleReads = vi.spyOn(globalThis, "getComputedStyle");

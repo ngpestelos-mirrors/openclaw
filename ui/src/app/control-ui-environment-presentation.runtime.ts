@@ -5,7 +5,6 @@ import {
 import { getOrCreatePromise } from "../../../src/shared/lazy-promise.js";
 import { currentThemeBranding, neutralMarkSvg } from "../components/neutral-mark.ts";
 import { applyControlUiOperatorSeamColor } from "./control-ui-presentation.ts";
-import { inferControlUiPublicAssetPath } from "./public-assets.ts";
 
 export function applyControlUiPresentation(params: {
   environment: ControlUiEnvironment | null;
@@ -64,7 +63,7 @@ export function applyControlUiFaviconImage(image: HTMLImageElement | null): void
     return;
   }
   faviconImage = image;
-  faviconSources.clear();
+  // Decoded personal images never enter the cached default-source loader.
   syncControlUiFavicon();
 }
 let faviconPalette: ReturnType<typeof resolveFaviconPalette> | undefined;
@@ -132,11 +131,8 @@ function resolveFaviconPalette() {
   return { baseSvg, color, ring };
 }
 
-export function defaultControlUiFavicon(): string {
-  return (
-    (faviconPalette ??= resolveFaviconPalette()).baseSvg ??
-    inferControlUiPublicAssetPath("favicon.svg")
-  );
+export function controlUiFaviconBaseSvg(): string | null {
+  return (faviconPalette ??= resolveFaviconPalette()).baseSvg;
 }
 
 export function syncControlUiFavicon(): void {

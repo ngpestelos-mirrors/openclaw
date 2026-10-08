@@ -266,14 +266,9 @@ class OpenClawShell
           let disconnect: (() => void) | undefined;
           const runtime = createIdleImport(
             () => import("./control-ui-favicon-status.runtime.ts"),
-            ({ connectControlUiFavicon, connectControlUiFaviconArtwork }) => {
+            ({ connectControlUiFavicon }) => {
               if (active) {
-                const stopStatus = connectControlUiFavicon(this, context, startedAt);
-                const stopArtwork = connectControlUiFaviconArtwork(context);
-                disconnect = () => {
-                  stopArtwork();
-                  stopStatus();
-                };
+                disconnect = connectControlUiFavicon(this, context, startedAt);
               }
             },
           );

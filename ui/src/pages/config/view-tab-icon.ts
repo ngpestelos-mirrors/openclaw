@@ -1,6 +1,7 @@
 import { html } from "lit";
 import type { TabIconPreference } from "../../../../packages/gateway-protocol/src/schema/tab-icon.ts";
-import { defaultControlUiFavicon } from "../../app/control-ui-environment-presentation.runtime.ts";
+import { controlUiFaviconBaseSvg } from "../../app/control-ui-environment-presentation.runtime.ts";
+import { inferControlUiPublicAssetPath } from "../../app/public-assets.ts";
 import {
   identityAvatarClass,
   renderIdentityAvatarImage,
@@ -16,6 +17,7 @@ export type TabIconViewProps = {
 };
 
 export function renderTabIconSection(props: TabIconViewProps) {
+  const defaultSource = controlUiFaviconBaseSvg() ?? inferControlUiPublicAssetPath("favicon.svg");
   const optionLabel = (label: string, source: string | null) => {
     const view = { imageUrl: source, pending: false };
     return html`<span class="settings-tab-icon__option">
@@ -24,9 +26,7 @@ export function renderTabIconSection(props: TabIconViewProps) {
         aria-hidden="true"
       >
         ${renderIdentityAvatarImage({ view, fallbackSelector: ".settings-tab-icon__preview", className: "identity-avatar__image" })}
-        <span class="identity-avatar__fallback"
-          ><img src=${defaultControlUiFavicon()} alt=""
-        /></span> </span
+        <span class="identity-avatar__fallback"><img src=${defaultSource} alt="" /></span> </span
       >${label}
     </span>`;
   };
