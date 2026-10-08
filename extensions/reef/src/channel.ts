@@ -378,7 +378,7 @@ export const reefPlugin: ChannelPlugin<ReefAccount, unknown, unknown, 2> = {
             commandAuthorized: false,
             assertAuthority: () => {
               authority.signal.throwIfAborted();
-              trust.assertCurrent(notice.peer, notice.recipient);
+              notice.recovery.assertCurrent();
             },
             extraContext: {
               ReefDeliveryRejected: true,
@@ -413,24 +413,15 @@ export const reefPlugin: ChannelPlugin<ReefAccount, unknown, unknown, 2> = {
               replyTo: notice.messageId,
               expectedRecipient: notice.recipient,
               resendDisabled: true,
+              prepareDelivery: notice.recovery.prepareOutboundDelivery,
             });
           }
         },
         {
-          loadState: (peer) => trust.rejectionNoticeState(peer),
-          reserve: (rejection, noticeState) =>
-            trust.reserveOutboundRejectionNotice(
-              rejection.peer,
-              rejection.id,
-              rejection.recipient,
-              noticeState,
-            ),
+          loadState: (rejection) => rejection.recovery.loadState(),
+          reserve: (rejection, noticeState) => rejection.recovery.reserve(noticeState),
           complete: async (rejection, noticeState) => {
-            // Persist cooldown before deleting the reservation. A crash between
-            // those writes leaves stop-only recovery, never another resend grant.
-            if (
-              !(await trust.completeOutboundRejection(rejection.peer, rejection.id, noticeState))
-            ) {
+            if (!(await rejection.recovery.complete(noticeState))) {
               throw new Error(`Reef rejection ${rejection.id} lost its durable delivery state`);
             }
           },

@@ -8,6 +8,7 @@ import {
   ReefPeerTrustSchema,
   matchesReefPeerIdentity,
   sameReefPeerIdentity,
+  reefPeerIdentity,
   type ReefAutonomy,
   type ReefPeerIdentity,
   type ReefPeerTrust,
@@ -38,7 +39,12 @@ import {
   type ReefPeerStateSnapshot,
   ReefPeerTrustChangedError,
 } from "./trust-store-format.js";
-import type { ReefDeliveryRejection, ReefRejectionNoticeState, RelayFriend } from "./types.js";
+import type {
+  ReefDeliveryRejection,
+  ReefRejectionNoticeState,
+  ReefRejectionRecovery,
+  RelayFriend,
+} from "./types.js";
 
 type ReefTrustStores = {
   peers: PluginStateSyncKeyedStore<ReefPeerStateSnapshot>;
@@ -88,7 +94,16 @@ export class LegacyReefTrustStore {
     return this.snapshot(peer).trust;
   }
 
-  assertCurrent(peer: string, expected: ReefPeerIdentity, autonomy?: ReefAutonomy): void {
+  observePeer(peer: string) {
+    const trust = this.get(peer);
+    const expected = trust ? reefPeerIdentity(trust) : undefined;
+    const autonomy = trust?.autonomy;
+    return trust && expected
+      ? { trust, assertCurrent: () => this.#assertCurrent(peer, expected, autonomy) }
+      : undefined;
+  }
+
+  #assertCurrent(peer: string, expected: ReefPeerIdentity, autonomy?: ReefAutonomy): void {
     this.assertActive?.();
     const current = this.get(peer);
     if (
@@ -302,9 +317,11 @@ export class LegacyReefTrustStore {
     if (!trust) {
       return undefined;
     }
+    const expected = reefPeerIdentity(trust);
     let pending = true;
     return {
       trust,
+      assertCurrent: () => this.#assertCurrent(peer, expected),
       record: async (binding, options = {}) => {
         if (!pending) {
           throw new Error("Reef outbound preparation was already consumed");
@@ -401,6 +418,9 @@ export class LegacyReefTrustStore {
     };
     return {
       delivery,
+      recovery: this.#recovery(peer, id, expected.recipient),
+      currentPeer: async () => this.get(peer),
+      assertCurrent: () => this.#assertCurrent(peer, expected.recipient),
       consume: () =>
         settle(() =>
           this.#consumeOutboundDelivery(peer, id, expected)
@@ -523,6 +543,7 @@ export class LegacyReefTrustStore {
           {
             id,
             peer,
+            recovery: this.#recovery(peer, id, delivery.recipient),
             recipient: delivery.recipient,
             ...(delivery.textHash ? { textHash: delivery.textHash } : {}),
             ...(delivery.rejection.category ? { category: delivery.rejection.category } : {}),
@@ -533,7 +554,18 @@ export class LegacyReefTrustStore {
       .toSorted((left, right) => (left.id === right.id ? 0 : left.id < right.id ? -1 : 1));
   }
 
-  reserveOutboundRejectionNotice(
+  #recovery(peer: string, id: string, recipient: ReefPeerIdentity): ReefRejectionRecovery {
+    const expected = { ...recipient };
+    return {
+      assertCurrent: () => this.#assertCurrent(peer, expected),
+      loadState: async () => this.rejectionNoticeState(peer),
+      reserve: async (state) => this.#reserveOutboundRejectionNotice(peer, id, expected, state),
+      complete: async (state) => this.#completeOutboundRejection(peer, id, state),
+      prepareOutboundDelivery: async (nextId) => this.prepareOutboundDelivery(peer, nextId),
+    };
+  }
+
+  #reserveOutboundRejectionNotice(
     peer: string,
     id: string,
     recipient: ReefPeerIdentity,
@@ -581,7 +613,7 @@ export class LegacyReefTrustStore {
     return outcome;
   }
 
-  completeOutboundRejection(peer: string, id: string, state: ReefRejectionNoticeState): boolean {
+  #completeOutboundRejection(peer: string, id: string, state: ReefRejectionNoticeState): boolean {
     this.assertActive?.();
     const noticeState = ReefRejectionNoticeStateSchema.parse(state);
     this.#requireUpdate()(this.#key(peer), (value) => {

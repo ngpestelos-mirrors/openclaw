@@ -48,6 +48,8 @@ export type PluginStateBatchResult<T> =
 
 /** Source-bound cross-namespace operations over at most 10,000 unique keys. */
 export type PluginStateBatch<T = unknown> = {
+  /** Final-effect live assertion on the captured source; refuses session-restricted handles. */
+  assertCurrentValue(key: PluginStateBatchKey, assertion: (value: T | undefined) => void): void;
   /** Noncreating observations from the captured source; undefined means no physical database. */
   observeExisting(
     keys: readonly PluginStateBatchKey[],

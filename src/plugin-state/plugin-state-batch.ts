@@ -1,11 +1,15 @@
 import { toUSVString } from "node:util";
+import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import type { SessionEntriesCurrentCheck } from "../config/sessions/session-entry-current.types.js";
+import { assertDatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import {
   validatePluginStateComparison,
   type PluginStatePreparedComparison,
   type PluginStateComparisonLimits,
 } from "./plugin-state-store.comparison.js";
+import { withPluginStateDatabaseReadOnly } from "./plugin-state-store.database.js";
+import { lookupPluginStateEntry } from "./plugin-state-store.kernel.js";
 import { capturePluginStateNativeBindingStore } from "./plugin-state-store.native-binding.js";
 import type {
   PluginStateBatch,
@@ -129,6 +133,45 @@ export function createPluginStateBatch<T = unknown>(
       key,
     }));
   return {
+    assertCurrentValue(key, assertion) {
+      if (sessionEntryCurrent) {
+        throw invalidInput(
+          "Plugin state final authority does not support session-restricted stores.",
+        );
+      }
+      if (typeof assertion !== "function") {
+        throw invalidInput("Plugin state final authority requires a synchronous assertion.");
+      }
+      const [entry] = prepareReadKeys([key]);
+      const assertSource = () => {
+        assertActive();
+        context.maintenanceScope?.assertReadAdmission();
+        assertDatabasePathIdentity(context.admission.databasePath, context.admission.identity);
+      };
+      const read = () => {
+        assertSource();
+        const value = withPluginStateDatabaseReadOnly(
+          "lookup",
+          (store) => lookupPluginStateEntry(store, entry!),
+          { path: context.admission.databasePath, env: context.environment },
+          "current",
+        );
+        assertSource();
+        // SAFETY: The selected host-minted namespace owns the caller's JSON value type.
+        const result: unknown = assertion(value as T | undefined);
+        if (isPromiseLike(result)) {
+          void Promise.resolve(result).catch(() => {});
+          throw invalidInput("Plugin state final authority assertion must remain synchronous.");
+        }
+        assertSource();
+      };
+      const run = () => (context.maintenanceScope ? context.maintenanceScope.run(read) : read());
+      if (context.runInCapturedSchemaScope) {
+        context.runInCapturedSchemaScope(run);
+      } else {
+        run();
+      }
+    },
     async observeExisting(keys) {
       const entries = prepareReadKeys(keys);
       const observed = await observeExistingPluginStateBatchInWorker({ ...scope, entries });

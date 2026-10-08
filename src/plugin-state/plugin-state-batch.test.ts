@@ -1,12 +1,21 @@
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync, renameSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  observeHostDataSql,
+  observeSqliteReadSql,
+} from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { captureSessionEntryCurrentRead } from "../config/sessions/session-entry-current-runtime.js";
 import type { SessionEntryCurrentFacts } from "../config/sessions/session-entry-current.types.js";
 import { withSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
+import * as sqlite from "../infra/node-sqlite.js";
+import { runSqlitePinnedReadSnapshotSync } from "../infra/sqlite-pinned-read-snapshot.js";
 import * as mutationAdmission from "../infra/sqlite-worker-operation-admission.js";
-import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  isOpenClawStateDatabaseOpen,
+} from "../state/openclaw-state-db-cache.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import {
   createOpenClawTestState,
@@ -60,6 +69,9 @@ describe("plugin state cross-namespace batches", () => {
       ]),
     ).toBeUndefined();
     expect(await batch.entries(0)).toEqual([]);
+    batch.assertCurrentValue({ store: 0, key: "missing" }, (value) => {
+      expect(value).toBeUndefined();
+    });
     expect(existsSync(path)).toBe(false);
   });
 
@@ -251,6 +263,11 @@ describe("plugin state cross-namespace batches", () => {
     await expect(batch.observe([{ store: 0, key: "key" }])).rejects.toThrow(
       "creating action retired",
     );
+    const assertion = vi.fn();
+    expect(() => batch.assertCurrentValue({ store: 0, key: "key" }, assertion)).toThrow(
+      "creating action retired",
+    );
+    expect(assertion).not.toHaveBeenCalled();
   });
 
   it("rechecks action authority before returning read-only batch observations", async () => {
@@ -316,6 +333,9 @@ describe("plugin state cross-namespace batches", () => {
       { store: 0, key: "claim" },
       { store: 1, key: "claim" },
     ];
+    const finalAssertion = vi.fn();
+    expect(() => batch.assertCurrentValue(keys[0]!, finalAssertion)).toThrow("session-restricted");
+    expect(finalAssertion).not.toHaveBeenCalled();
     const observed = await batch.observe(keys);
     await upsertSessionEntryCore(target, { ...entry, lifecycleRevision: "successor" });
     await expect(
@@ -459,6 +479,7 @@ describe("plugin state cross-namespace batches", () => {
     await store.register("key", "original");
     const batch = store.createBatch([store]);
     env.OPENCLAW_STATE_DIR = state.path("redirected-state");
+    await store.register("key", "redirected source");
     const observed = (await batch.observeExisting([{ store: 0, key: "key" }]))?.[0];
     expect(observed?.value).toBe("original");
     expect(await batch.entries(0)).toEqual([
@@ -475,6 +496,149 @@ describe("plugin state cross-namespace batches", () => {
       ]),
     ).toEqual({ status: "applied" });
     expect(await open("captured-source").lookup("key")).toBe("same source");
-    expect(await store.lookup("key")).toBeUndefined();
+    batch.assertCurrentValue({ store: 0, key: "key" }, (value) => {
+      expect(value).toBe("same source");
+    });
+    expect(await store.lookup("key")).toBe("redirected source");
+  });
+
+  it("checks current final authority outside an inherited native snapshot", async () => {
+    await closeOpenClawStateDatabaseAsync();
+    const options = {
+      namespace: "final-pinned",
+      maxEntries: 10,
+      overflowPolicy: "reject-new" as const,
+      env: state.env,
+    };
+    const writer = createPluginStateSyncKeyedStore<string>("batch-test", options);
+    writer.register("key", "allowed");
+    const store = createPluginStateKeyedStore<string>("batch-test", options);
+    const batch = store.createBatch([store]);
+    const database = openOpenClawStateDatabase({ env: state.env });
+    const foreign = sqlite.openNodeSqliteDatabase(database.path);
+    try {
+      runSqlitePinnedReadSnapshotSync(database.db, () => {
+        expect(writer.lookup("key")).toBe("allowed");
+        foreign
+          .prepare(
+            "UPDATE plugin_state_entries SET value_json = ? WHERE plugin_id = ? AND namespace = ? AND entry_key = ?",
+          )
+          .run('"revoked"', "batch-test", options.namespace, "key");
+        expect(writer.lookup("key")).toBe("allowed");
+        const effect = vi.fn();
+        expect(() => {
+          batch.assertCurrentValue({ store: 0, key: "key" }, (value) => {
+            if (value !== "allowed") {
+              throw new Error("current authority revoked");
+            }
+          });
+          effect();
+        }).toThrow("current authority revoked");
+        expect(effect).not.toHaveBeenCalled();
+      });
+    } finally {
+      foreign.close();
+    }
+  });
+
+  it("refuses final authority after physical source replacement", async () => {
+    const env = { ...state.env, OPENCLAW_STATE_DIR: state.path("final-source") };
+    const replacementEnv = { ...state.env, OPENCLAW_STATE_DIR: state.path("final-replacement") };
+    const options = { namespace: "final-replacement", maxEntries: 10 };
+    const original = createPluginStateKeyedStore<string>("batch-test", { ...options, env });
+    const replacement = createPluginStateKeyedStore<string>("batch-test", {
+      ...options,
+      env: replacementEnv,
+    });
+    await original.register("key", "allowed");
+    await replacement.register("key", "allowed");
+    await closeOpenClawStateDatabaseAsync();
+    const batch = original.createBatch([original]);
+    const pathname = resolveOpenClawStateSqlitePath(env);
+    renameSync(pathname, `${pathname}.original`);
+    copyFileSync(resolveOpenClawStateSqlitePath(replacementEnv), pathname);
+    const assertion = vi.fn();
+    expect(() => batch.assertCurrentValue({ store: 0, key: "key" }, assertion)).toThrow(
+      "identity changed",
+    );
+    expect(assertion).not.toHaveBeenCalled();
+  });
+
+  it("reuses final guard admission without a host writer and sees foreign revocation", async () => {
+    const env = { ...state.env, OPENCLAW_STATE_DIR: state.path("final-worker-only") };
+    const store = createPluginStateKeyedStore<string>("batch-test", {
+      namespace: "worker-only-guard",
+      maxEntries: 10,
+      env,
+    });
+    await store.register("key", "allowed");
+    const pathname = resolveOpenClawStateSqlitePath(env);
+    expect(isOpenClawStateDatabaseOpen(pathname)).toBe(false);
+    const batch = store.createBatch([store]);
+    const check = () =>
+      batch.assertCurrentValue({ store: 0, key: "key" }, (value) => {
+        if (value !== "allowed") {
+          throw new Error("worker-only authority revoked");
+        }
+      });
+    check();
+    const opens = vi.spyOn(sqlite, "openNodeSqliteDatabase");
+    const observed = observeSqliteReadSql(sqlite.requireNodeSqlite().StatementSync.prototype);
+    try {
+      for (let index = 0; index < 3; index++) {
+        check();
+      }
+      expect(opens).not.toHaveBeenCalled();
+      expect(
+        observed.queries.filter((sql) => /from "plugin_state_entries"/iu.test(sql)),
+      ).toHaveLength(3);
+      expect(
+        observed.queries.filter((sql) =>
+          /\b(?:sqlite_schema|sqlite_master)\b|^PRAGMA\s+(?:schema_version|user_version|query_only|trusted_schema|busy_timeout)\b/iu.test(
+            sql,
+          ),
+        ),
+      ).toEqual([]);
+    } finally {
+      observed.restore();
+      opens.mockRestore();
+    }
+    const foreign = sqlite.openNodeSqliteDatabase(pathname);
+    try {
+      foreign
+        .prepare(
+          "UPDATE plugin_state_entries SET value_json = ? WHERE plugin_id = ? AND namespace = ? AND entry_key = ?",
+        )
+        .run('"revoked"', "batch-test", "worker-only-guard", "key");
+      expect(check).toThrow("worker-only authority revoked");
+    } finally {
+      foreign.close();
+    }
+    expect(isOpenClawStateDatabaseOpen(pathname)).toBe(false);
+  });
+
+  it("rejects authority closure during a final assertion and asynchronous assertions", async () => {
+    const store = open("final-assertion-lifetime");
+    await store.register("key", "allowed");
+    let current = true;
+    const batch = store.createBatch([store], {
+      assertCurrent() {
+        if (!current) {
+          throw new Error("final assertion owner closed");
+        }
+      },
+    });
+    const effect = vi.fn();
+    expect(() => {
+      batch.assertCurrentValue({ store: 0, key: "key" }, () => {
+        current = false;
+      });
+      effect();
+    }).toThrow("final assertion owner closed");
+    expect(effect).not.toHaveBeenCalled();
+    const unbound = store.createBatch([store]);
+    expect(() => unbound.assertCurrentValue({ store: 0, key: "key" }, async () => {})).toThrow(
+      "must remain synchronous",
+    );
   });
 });

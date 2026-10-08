@@ -20,7 +20,20 @@ const recipient: ReefPeerIdentity = {
 };
 
 function rejection(peer: string, id: string, category = "guard_deny"): ReefDeliveryRejection {
-  return { peer, id, recipient, textHash: "a".repeat(64), category };
+  return {
+    peer,
+    id,
+    recipient,
+    textHash: "a".repeat(64),
+    category,
+    recovery: {
+      assertCurrent() {},
+      loadState: async () => undefined,
+      reserve: async () => ({ kind: "reserved" }),
+      complete: async () => true,
+      prepareOutboundDelivery: async () => undefined,
+    },
+  };
 }
 
 async function consumeNotice(_notice: ReefRejectionNotice): Promise<void> {}
@@ -32,7 +45,7 @@ function createNoticeStore() {
   >();
   const key = (value: ReefDeliveryRejection) => `${value.peer}:${value.id}`;
   const store: ConstructorParameters<typeof ReefReceiptNotifier>[1] = {
-    loadState: (peer) => {
+    loadState: ({ peer }) => {
       let latest: ReefRejectionNoticeState | undefined;
       for (const record of records.values()) {
         if (record.peer !== peer) {
@@ -255,7 +268,7 @@ describe("ReefReceiptNotifier", () => {
     });
     await first.notifyRejections([rejection("alice", "01JZ0000000000000000000105")]);
 
-    expect(notices.store.loadState("alice")).toEqual({
+    expect(notices.store.loadState(rejection("alice", "cooldown"))).toEqual({
       lastRejectionAt: 10_000,
       lastResendAt: 10_000,
     });
@@ -296,7 +309,7 @@ describe("ReefReceiptNotifier", () => {
     const recovered = rejection("alice", "01JZ0000000000000000000131");
     const reservedNotice = { lastRejectionAt: 10_000, lastResendAt: 10_000 };
     await notices.store.reserve(recovered, reservedNotice);
-    const captured = await notices.store.loadState("alice");
+    const captured = await notices.store.loadState(rejection("alice", "cooldown"));
     const loadStarted = createDeferred<void>();
     const loadFinished = createDeferred<ReefRejectionNoticeState | undefined>();
     vi.spyOn(notices.store, "loadState").mockImplementationOnce(() => {
@@ -517,7 +530,7 @@ describe("ReefReceiptNotifier", () => {
       scheduler: createScheduler(),
       now: () => 11_000,
     });
-    const reservedNotice = await notices.store.loadState(pending.peer);
+    const reservedNotice = await notices.store.loadState(pending);
     expect(reservedNotice).toBeDefined();
     await restarted.notifyRejections([{ ...pending, reservedNotice: reservedNotice! }]);
 

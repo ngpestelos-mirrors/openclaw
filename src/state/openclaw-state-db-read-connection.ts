@@ -11,6 +11,7 @@ import {
   SqliteCoordinatorError,
   throwSqliteLifecycleErrors,
 } from "../infra/sqlite-lifecycle-errors.js";
+import { getSqlitePinnedReadSnapshot } from "../infra/sqlite-pinned-read-snapshot.js";
 import { retainSnapshotTempDirectory } from "../infra/sqlite-readonly-location-cleanup.js";
 import type { PreparedSqliteReadOnlyLocation } from "../infra/sqlite-readonly-location.types.js";
 import { admitSqliteSchema, runSqliteReadOperationSync } from "../infra/sqlite-schema-facts.js";
@@ -65,6 +66,7 @@ type RetainedReader = {
   connection: OpenClawStateReadConnection;
   identity: DatabasePathIdentity;
   retiring: boolean;
+  borrowed: boolean;
   idleTimer?: ReturnType<typeof setTimeout>;
 };
 const retainedReaders = new Map<string, RetainedReader>();
@@ -121,6 +123,7 @@ export function closeRetainedOpenClawStateReadConnections(identity?: string): vo
 function borrowStateReadConnection(
   pathname: string,
   expectedIdentity?: string,
+  requireUnpinned = false,
 ): OpenClawStateSettledRead<OpenClawStateReadConnection> {
   isExistingOpenClawStateSchema(pathname);
   const identity = readDatabasePathIdentitySync(pathname);
@@ -143,22 +146,34 @@ function borrowStateReadConnection(
     retireReader(reader);
     reader = undefined;
   }
+  if (
+    reader &&
+    (reader.borrowed ||
+      (requireUnpinned &&
+        (reader.connection.database.db.isTransaction ||
+          getSqlitePinnedReadSnapshot(reader.connection.database.db))))
+  ) {
+    // A nested current guard borrows fresh bytes without closing its caller's reader.
+    return openStateReadConnectionResult(pathname, pathname, identity.key);
+  }
   if (!reader) {
     const opening = openStateReadConnectionResult(pathname, pathname, identity.key);
     if (opening.status === "unavailable") {
       return opening;
     }
-    reader = { connection: opening.value, identity, retiring: false };
+    reader = { connection: opening.value, identity, retiring: false, borrowed: false };
     retainedReaders.set(identity.key, reader);
     unregisterExitClose ??= registerSqliteCacheExitClose(closeRetainedOpenClawStateReadConnections);
   }
   const retained = reader;
+  retained.borrowed = true;
   clearTimeout(retained.idleTimer);
   return {
     status: "available",
     value: {
       database: { db: retained.connection.database.db, path: pathname },
       close(keep) {
+        retained.borrowed = false;
         if (
           keep &&
           retained.connection.database.db.isOpen &&
@@ -213,7 +228,12 @@ function assertStateReadSchemaForPolicy(
 
 function admitStateReadSchemaFacts(database: DatabaseSync, pathname: string): void {
   try {
-    admitSqliteSchema(database);
+    admitSqliteSchema(database, (userVersion) =>
+      assertSupportedStateSchemaVersion(database, pathname, {
+        userVersion,
+        contentVersion: userVersion,
+      }),
+    );
   } catch (error) {
     // An unreadable newer catalog must not be mistaken for a repair this build can perform.
     let version: number;
@@ -241,7 +261,7 @@ export function withOpenClawStateReadOnlyLocation<T>(
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
   expectedIdentity?: string,
   snapshotRoot?: string,
-  retainConnection = false,
+  retainConnection: boolean | "unpinned" = false,
 ): T {
   const result = readOpenClawStateReadOnlyLocation(
     operation,
@@ -266,11 +286,11 @@ export function readOpenClawStateReadOnlyLocation<T>(
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
   expectedIdentity?: string,
   snapshotRoot?: string,
-  retainConnection = false,
+  retainConnection: boolean | "unpinned" = false,
 ): OpenClawStateSettledRead<T> {
   const opening =
     retainConnection && source === pathname && !snapshotRoot
-      ? borrowStateReadConnection(pathname, expectedIdentity)
+      ? borrowStateReadConnection(pathname, expectedIdentity, retainConnection === "unpinned")
       : openStateReadConnectionResult(pathname, source, expectedIdentity, snapshotRoot, true);
   if (opening.status === "unavailable") {
     return opening;

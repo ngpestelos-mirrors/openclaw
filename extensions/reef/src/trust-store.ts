@@ -10,16 +10,19 @@ import type { z } from "zod";
 import type { ReefChannelConfig } from "./config-schema.js";
 import {
   ReefAutonomySchema,
-  ReefPeerIdentitySchema,
   ReefPeerTrustSchema,
   matchesReefPeerIdentity,
-  sameReefPeerIdentity,
+  reefPeerIdentity,
   type ReefAutonomy,
-  type ReefPeerIdentity,
   type ReefPeerTrust,
 } from "./friend-types.js";
+import { createReefPeerAssertion } from "./trust-store-authority.js";
 import { applyReefStateBatch, REEF_STATE_KEEP as KEEP } from "./trust-store-batch.js";
-import { prepareReefOutboundDelivery, readReefOutboundDelivery } from "./trust-store-delivery.js";
+import {
+  createReefRejectionRecovery,
+  prepareReefOutboundDelivery,
+  readReefOutboundDelivery,
+} from "./trust-store-delivery.js";
 import {
   REEF_TRUST_STORE_MAX_ENTRIES,
   REEF_TRUST_STORE_NAMESPACE,
@@ -27,7 +30,6 @@ import {
   REEF_OUTBOUND_DELIVERY_MAX_ENTRIES,
   REEF_OUTBOUND_DELIVERY_TTL_MS,
   MESSAGE_ID_PATTERN,
-  ReefRejectionNoticeStateSchema,
   ReefOutboundDeliverySchema,
   ReefPeerStateSchema,
   createReefPairingApproval,
@@ -37,7 +39,6 @@ import {
   type ReefRequestSettlement,
   requirePeer,
   resolveReefIdentityScope,
-  ReefPeerTrustChangedError,
   type ReefPeerStateSnapshot,
   type ReefOutboundDelivery,
 } from "./trust-store-format.js";
@@ -101,15 +102,26 @@ class WorkerReefTrustStore {
     return (await this.snapshot(peer)).trust;
   }
 
-  assertCurrent(peer: string, expected: ReefPeerIdentity, autonomy?: ReefAutonomy): void {
+  async observePeer(peer: string) {
+    const key = { store: 0, key: this.#key(peer) };
+    const batch = this.stores.peers.createBatch!<unknown>([this.stores.peers], {
+      assertCurrent: () => this.assertActive?.(),
+    });
+    const observations = await batch.observeExisting([key]);
     this.assertActive?.();
-    const current = this.#parseState(this.currentPeers.lookup(this.#key(peer))).trust;
-    if (
-      !matchesReefPeerIdentity(current, expected) ||
-      (autonomy !== undefined && current?.autonomy !== autonomy)
-    ) {
-      throw new ReefPeerTrustChangedError(peer);
-    }
+    const trust = this.#parseState(observations?.[0]?.value).trust;
+    return trust
+      ? {
+          trust,
+          assertCurrent: createReefPeerAssertion(
+            batch,
+            key,
+            peer,
+            reefPeerIdentity(trust),
+            trust.autonomy,
+          ),
+        }
+      : undefined;
   }
 
   // Released ChannelPlugin policy and account-description adapters are synchronous.
@@ -412,10 +424,13 @@ class WorkerReefTrustStore {
   }
 
   readOutboundDelivery(peer: string, id: string) {
-    const batch = this.stores.deliveries.createBatch!<unknown>([this.stores.deliveries], {
-      assertCurrent: () => this.assertActive?.(),
-    });
-    return readReefOutboundDelivery(batch, this.#deliveryKey(peer, id), () =>
+    const batch = this.stores.peers.createBatch!<unknown>(
+      [this.stores.peers, this.stores.deliveries],
+      {
+        assertCurrent: () => this.assertActive?.(),
+      },
+    );
+    return readReefOutboundDelivery(batch, this.#key(peer), this.#deliveryKey(peer, id), peer, () =>
       this.assertActive?.(),
     );
   }
@@ -449,6 +464,15 @@ class WorkerReefTrustStore {
           {
             id,
             peer,
+            recovery: createReefRejectionRecovery(
+              batch,
+              this.#key(peer),
+              entry.key,
+              peer,
+              id,
+              delivery.recipient,
+              () => this.assertActive?.(),
+            ),
             recipient: delivery.recipient,
             ...(delivery.textHash ? { textHash: delivery.textHash } : {}),
             ...(delivery.rejection.category ? { category: delivery.rejection.category } : {}),
@@ -457,90 +481,6 @@ class WorkerReefTrustStore {
         ];
       })
       .toSorted((left, right) => (left.id === right.id ? 0 : left.id < right.id ? -1 : 1));
-  }
-
-  async reserveOutboundRejectionNotice(
-    peer: string,
-    id: string,
-    recipient: ReefPeerIdentity,
-    state: ReefRejectionNoticeState,
-  ): Promise<{ kind: "reserved" } | { kind: "existing"; state: ReefRejectionNoticeState }> {
-    const expected = ReefPeerIdentitySchema.parse(recipient);
-    const notice = ReefRejectionNoticeStateSchema.parse(state);
-    return this.#change(
-      [
-        { store: 0, key: this.#key(peer) },
-        { store: 1, key: this.#deliveryKey(peer, id) },
-      ],
-      ([peerValue, value]) => {
-        if (!matchesReefPeerIdentity(this.#parseState(peerValue).trust, expected)) {
-          throw new Error(`Reef peer @${requirePeer(peer)} changed keys before rejection recovery`);
-        }
-        const parsed = ReefOutboundDeliverySchema.safeParse(value);
-        if (
-          !parsed.success ||
-          !parsed.data.rejection ||
-          !sameReefPeerIdentity(parsed.data.recipient, expected)
-        ) {
-          throw new Error(`Reef rejection ${id} lost its durable delivery state`);
-        }
-        const existing = parsed.data.rejection.notice;
-        // Recovery renews retention even when it reuses an existing reservation.
-        return {
-          intents: [
-            KEEP,
-            {
-              operation: "update",
-              action: "set",
-              value: existing
-                ? parsed.data
-                : { ...parsed.data, rejection: { ...parsed.data.rejection, notice } },
-            },
-          ],
-          value: existing
-            ? { kind: "existing" as const, state: existing }
-            : { kind: "reserved" as const },
-        };
-      },
-    );
-  }
-
-  async completeOutboundRejection(
-    peer: string,
-    id: string,
-    state: ReefRejectionNoticeState,
-  ): Promise<boolean> {
-    const notice = ReefRejectionNoticeStateSchema.parse(state);
-    return this.#change(
-      [
-        { store: 0, key: this.#key(peer) },
-        { store: 1, key: this.#deliveryKey(peer, id) },
-      ],
-      ([peerValue, value]) => {
-        const current = this.#parseState(peerValue);
-        const previous = current.rejectionNotice;
-        const hasResendAt =
-          previous?.lastResendAt !== undefined || notice.lastResendAt !== undefined;
-        const next = {
-          ...current,
-          rejectionNotice: {
-            lastRejectionAt: Math.max(previous?.lastRejectionAt ?? 0, notice.lastRejectionAt),
-            ...(hasResendAt
-              ? { lastResendAt: Math.max(previous?.lastResendAt ?? 0, notice.lastResendAt ?? 0) }
-              : {}),
-          },
-        };
-        const delivery = ReefOutboundDeliverySchema.safeParse(value);
-        const deleted = delivery.success && delivery.data.rejection?.notice !== undefined;
-        return {
-          intents: [
-            { operation: "update", action: "set", value: next },
-            deleted ? { operation: "delete", action: "delete" } : KEEP,
-          ],
-          value: deleted || value === undefined,
-        };
-      },
-    );
   }
 
   async rejectionNoticeState(peer: string): Promise<ReefRejectionNoticeState | undefined> {

@@ -1,6 +1,6 @@
 import { toStringifiedError as asError } from "openclaw/plugin-sdk/error-runtime";
 import { buildTimeoutAbortSignal } from "openclaw/plugin-sdk/extension-shared";
-import { captureEffectAuthority } from "openclaw/plugin-sdk/fetch-runtime";
+import * as fetchRuntime from "openclaw/plugin-sdk/fetch-runtime";
 import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
 import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
@@ -329,7 +329,9 @@ export class ReefTransportClient {
     secrets: readonly string[] = [],
     assertCurrent?: () => void,
   ): Promise<T> {
-    const effect = captureEffectAuthority();
+    // Preserve the namespace in bundled output: supported older hosts omit this export.
+    const { captureEffectAuthority } = { ...fetchRuntime };
+    const effect = captureEffectAuthority === undefined ? null : captureEffectAuthority();
     const url = new URL(path, this.relayUrl).toString();
     const timeout = buildTimeoutAbortSignal({
       timeoutMs: this.requestTimeoutMs,
@@ -341,7 +343,7 @@ export class ReefTransportClient {
       let response: Response;
       let initiated = false;
       try {
-        response = await effect.initiate(() => {
+        const initiate = () => {
           timeout.signal?.throwIfAborted();
           // Host effect preparation may yield after the peer was last observed.
           assertCurrent?.();
@@ -355,7 +357,8 @@ export class ReefTransportClient {
             ...(bytes.length ? { body: bytes as BodyInit } : {}),
             signal: timeout.signal,
           });
-        });
+        };
+        response = await (effect === null ? initiate() : effect.initiate(initiate));
       } catch (error) {
         if (!initiated) {
           throw error;

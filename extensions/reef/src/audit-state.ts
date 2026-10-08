@@ -11,12 +11,7 @@ import type {
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 // Import from the defining module, not the protocol barrel: index.js re-exports
 // guard-adapters, whose provider-http graph doctor enumeration must not cold-load.
-import {
-  createAuditEntry,
-  verifyChainSegment,
-  type AuditEntry,
-  type AuditStore,
-} from "../protocol/audit.js";
+import { createAuditEntry, type AuditEntry, type AuditStore } from "../protocol/audit.js";
 import {
   REEF_AUDIT_NAMESPACE,
   REEF_AUDIT_HEAD_NAMESPACE,
@@ -32,6 +27,7 @@ import {
   parseAuditEntryRecord,
   parseAuditStateRecord,
   reefAuditEntryKey,
+  verifyReefAuditWindow,
   type ReefAuditHeadRecord,
   type ReefAuditStateRecord,
 } from "./audit-state-format.js";
@@ -49,6 +45,7 @@ export {
   REEF_AUDIT_MIGRATION_MAX_ENTRIES,
   parseReefAuditHead,
   reefAuditEntryKey,
+  verifyReefAuditWindow,
   type ReefAuditHeadRecord,
   type ReefAuditStateRecord,
 } from "./audit-state-format.js";
@@ -281,23 +278,7 @@ class ReefSqliteAuditStore implements AuditStore {
           reversed.push(entry);
           hash = entry.prevHash;
         }
-        const expectedEntries = Math.min(head.seq, this.#maxEntries);
-        if (reversed.length !== expectedEntries) {
-          throw new Error("Reef audit chain is shorter than its committed retention window");
-        }
-        const entries = reversed.toReversed();
-        const first = entries[0];
-        if (
-          !first ||
-          !verifyChainSegment(entries, {
-            previousHash: first.prevHash,
-            previousSeq: first.event.seq - 1,
-            head: head.hash,
-          })
-        ) {
-          throw new Error("invalid Reef audit chain state");
-        }
-        return structuredClone(entries);
+        return structuredClone(verifyReefAuditWindow(reversed, head, this.#maxEntries));
       }
       throw new Error("Reef audit read contention exceeded retry budget");
     });
@@ -318,7 +299,13 @@ export function openReefAuditStore(
   // Reef supports released hosts predating worker batches. Retire this adapter
   // with the next approved minimum-host increase; worker errors never select it.
   if (!head.createBatch) {
-    return new ReefLegacySqliteAuditStore(runtime, auditKey, randomBytes, maxEntries);
+    return new ReefLegacySqliteAuditStore(
+      runtime,
+      auditKey,
+      randomBytes,
+      maxEntries,
+      authoritySignal,
+    );
   }
   return new ReefSqliteAuditStore(
     runtime,

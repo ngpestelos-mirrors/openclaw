@@ -25,7 +25,13 @@ import { reefMessageTextHash } from "./rejection-resend.js";
 import { ReefDeliveredStore, ReviewApprovalStore } from "./state.js";
 import { ReefInboxEntryParkedError, ReefTransportClient } from "./transport.js";
 import { ReefPeerTrustChangedError, type ReefTrustStore } from "./trust-store.js";
-import type { InboxEntry, ReefDeliveryRejection, ReefIngressMessage, ReefKeys } from "./types.js";
+import type {
+  InboxEntry,
+  ReefDeliveryRejection,
+  ReefIngressMessage,
+  ReefKeys,
+  ReefOutboundDeliveryPreparation,
+} from "./types.js";
 
 /** Reserves a protocol-valid id before recipient-visible Reef delivery starts. */
 export const prepareReefMessageId = createMonotonicUlidFactory();
@@ -89,6 +95,7 @@ export class ReefMessageFlow {
       resendDisabled?: true;
       messageId?: string;
       onPlatformSendDispatch?: () => Promise<void>;
+      prepareDelivery?: (id: string) => Promise<ReefOutboundDeliveryPreparation | undefined>;
     } = {},
   ): Promise<string> {
     const signal = this.options.authoritySignal;
@@ -96,7 +103,9 @@ export class ReefMessageFlow {
     const from = formatHandleEpoch(this.requireHandle(), this.options.keys.keyEpoch);
     const senderSigningSecretKey = this.options.keys.signing.secretKey;
     const id = context.messageId ?? prepareReefMessageId();
-    const preparation = await this.options.trust.prepareOutboundDelivery(peer, id);
+    const preparation = await (context.prepareDelivery
+      ? context.prepareDelivery(id)
+      : this.options.trust.prepareOutboundDelivery(peer, id));
     const friend = preparation?.trust;
     signal?.throwIfAborted();
     if (
@@ -143,7 +152,7 @@ export class ReefMessageFlow {
     signal?.throwIfAborted();
     await this.options.transport.sendEnvelope(peer, result.envelope, signal, () => {
       signal?.throwIfAborted();
-      this.options.trust.assertCurrent(peer, recipient);
+      preparation.assertCurrent();
     });
     signal?.throwIfAborted();
     return id;
@@ -200,7 +209,7 @@ export class ReefMessageFlow {
         bodyHash: delivery.bodyHash,
         ...(delivery.rejection ? { status: "rejected" as const } : {}),
       });
-      if (!matchesReefPeerIdentity(await this.options.trust.get(peer), delivery.recipient)) {
+      if (!matchesReefPeerIdentity(await settlement.currentPeer(), delivery.recipient)) {
         await settlement.discard();
         return undefined;
       }
@@ -216,7 +225,7 @@ export class ReefMessageFlow {
         // so this snapshot stays authoritative until the consume below.
         if (delivery.overdueNotifiedAt !== undefined && !delivery.rejection) {
           this.options.authoritySignal?.throwIfAborted();
-          this.options.trust.assertCurrent(peer, delivery.recipient);
+          settlement.assertCurrent();
           await this.options.onOwnerNotice(
             `Reef message ${id} to @${peer} was delivered after the earlier delay notice; the peer's claw is reachable again.`,
           );
@@ -233,6 +242,7 @@ export class ReefMessageFlow {
       return {
         id: receipt.id,
         peer: peer,
+        recovery: settlement.recovery,
         recipient: delivery.recipient,
         ...(delivery.textHash ? { textHash: delivery.textHash } : {}),
         ...(pending.category ? { category: pending.category } : {}),
@@ -267,14 +277,19 @@ export class ReefMessageFlow {
     if (parsed.handle !== relayPeer) {
       throw new Error("relay peer does not match envelope sender");
     }
-    const friend = await this.options.trust.get(relayPeer);
-    if (!friend || friend.safetyNumberChanged || parsed.keyEpoch !== friend.keyEpoch) {
+    const observation = await this.options.trust.observePeer(relayPeer);
+    const friend = observation?.trust;
+    if (
+      !observation ||
+      !friend ||
+      friend.safetyNumberChanged ||
+      parsed.keyEpoch !== friend.keyEpoch
+    ) {
       throw new Error(`unapproved Reef sender @${relayPeer}`);
     }
-    const sender = reefPeerIdentity(friend);
     const assertCurrent = () => {
       this.options.authoritySignal?.throwIfAborted();
-      this.options.trust.assertCurrent(relayPeer, sender, friend.autonomy);
+      observation.assertCurrent();
     };
     let result;
     try {

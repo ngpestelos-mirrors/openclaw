@@ -1,4 +1,4 @@
-import type { AuditEntry } from "../protocol/audit.js";
+import { verifyChainSegment, type AuditEntry } from "../protocol/audit.js";
 
 export const REEF_AUDIT_NAMESPACE = "audit";
 export const REEF_AUDIT_HEAD_NAMESPACE = "audit-head";
@@ -81,4 +81,27 @@ export function parseAuditStateRecord(input: unknown): ReefAuditStateRecord {
     throw new Error("invalid Reef audit next pointer");
   }
   return value;
+}
+
+export function verifyReefAuditWindow(
+  reversed: AuditEntry[],
+  head: ReefAuditHeadRecord,
+  maxEntries: number,
+): AuditEntry[] {
+  if (reversed.length !== Math.min(head.seq, maxEntries)) {
+    throw new Error("Reef audit chain is shorter than its committed retention window");
+  }
+  const entries = reversed.toReversed();
+  const first = entries[0];
+  if (
+    !first ||
+    !verifyChainSegment(entries, {
+      previousHash: first.prevHash,
+      previousSeq: first.event.seq - 1,
+      head: head.hash,
+    })
+  ) {
+    throw new Error("invalid Reef audit chain state");
+  }
+  return entries;
 }

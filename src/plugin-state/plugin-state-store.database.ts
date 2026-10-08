@@ -1,7 +1,10 @@
 import { hasErrnoCode } from "../infra/errno.js";
 import { isTerminalSqliteIntegrityError } from "../infra/sqlite-integrity.js";
 import { isSqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
-import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
+import {
+  withExistingOpenClawStateDatabaseCurrentReadOnly,
+  withExistingOpenClawStateDatabaseReadOnly,
+} from "../state/openclaw-state-db-readonly.js";
 import { hasOpenClawStateTablesBeyondStartupCheckpoint } from "../state/openclaw-state-db-schema-helpers.js";
 import {
   isOpenClawStateDatabaseOpen,
@@ -82,25 +85,35 @@ export function withPluginStateDatabaseReadOnly<T>(
   operationName: PluginStateStoreOperation,
   operation: (store: PluginStateDatabase) => T,
   options: OpenClawStateDatabaseOptions = {},
+  selection: "ordinary" | "current" = "ordinary",
 ): T | undefined {
   const pathname = resolveDatabasePath(options);
   let operationStarted = false;
   try {
-    return withExistingOpenClawStateDatabaseReadOnly(({ db, path }) => {
-      operationStarted = true;
-      try {
-        return operation({ db, path });
-      } catch (error) {
-        if (isMissingPluginStateTableError(error)) {
-          // The lease bootstrap creates exactly schema_meta + state_leases before the first write;
-          // any other table means the missing plugin-state table is damage, not fresh state.
-          if (!hasOpenClawStateTablesBeyondStartupCheckpoint(db)) {
-            return undefined;
+    const read =
+      selection === "current"
+        ? withExistingOpenClawStateDatabaseCurrentReadOnly
+        : withExistingOpenClawStateDatabaseReadOnly;
+    return read(
+      ({ db, path }) => {
+        operationStarted = true;
+        try {
+          return operation({ db, path });
+        } catch (error) {
+          if (isMissingPluginStateTableError(error)) {
+            // The lease bootstrap creates exactly schema_meta + state_leases before the first write;
+            // any other table means the missing plugin-state table is damage, not fresh state.
+            if (!hasOpenClawStateTablesBeyondStartupCheckpoint(db)) {
+              return undefined;
+            }
           }
+          throw error;
         }
-        throw error;
-      }
-    }, options);
+      },
+      selection === "current"
+        ? { ...options, allowNativeRead: true, requireUnpinned: true }
+        : options,
+    );
   } catch (error) {
     if (!operationStarted) {
       throw wrapPluginStateError(

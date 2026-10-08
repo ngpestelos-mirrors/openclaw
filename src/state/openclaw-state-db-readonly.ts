@@ -21,6 +21,11 @@ import {
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
+  artifactPreservingReads,
+  isArtifactPreservingStateRead,
+  withArtifactPreservingStateReads,
+} from "./artifact-preserving-state-reads.js";
+import {
   captureOpenClawStateDatabaseReadAdmission,
   openClawStateDatabaseCache,
 } from "./openclaw-state-db-cache.js";
@@ -66,10 +71,10 @@ import type {
 } from "./openclaw-state-read.types.js";
 import { captureOpenClawStateReadWorkerContext } from "./openclaw-state-worker-context.js";
 
-const artifactPreservingReads = resolveGlobalSingleton(
-  Symbol.for("openclaw.artifactPreservingStateReads"),
-  () => new AsyncLocalStorage<boolean>(),
-);
+export {
+  isArtifactPreservingStateRead,
+  withArtifactPreservingStateReads,
+} from "./artifact-preserving-state-reads.js";
 
 const disposableStateReads = resolveGlobalSingleton(
   Symbol.for("openclaw.disposableStateReads"),
@@ -217,18 +222,9 @@ export async function withDisposableOpenClawStateReads<T>(
 
 function requiresArtifactPreservingSnapshot(pathname: string): boolean {
   return (
-    isArtifactPreservingStateRead() &&
+    isArtifactPreservingStateRead("shared", pathname) &&
     !disposableStateReads.getStore()?.some((scope) => scope.active && scope.path === pathname)
   );
-}
-
-/** Admission scopes every nested reader without changing normal live-read semantics. */
-export function withArtifactPreservingStateReads<T>(operation: () => T): T {
-  return artifactPreservingReads.run(true, operation);
-}
-
-export function isArtifactPreservingStateRead(): boolean {
-  return artifactPreservingReads.getStore() === true;
 }
 
 type ScopedRead = ReturnType<typeof openOpenClawStateReadOnlyLocation>;
@@ -249,6 +245,10 @@ export function withSynchronousArtifactPreservingStateSnapshot<T>(
     const pathname = resolveReadOnlyPath(options.current);
     const inherited = synchronousReadSnapshots.current;
     const inheritedAuthority = synchronousReadSnapshots.currentAuthorityPath;
+    if (inherited && inheritedAuthority === pathname) {
+      // A composite assertion already selected fresh bytes for this database.
+      return operation();
+    }
     return stateSnapshotReads.exit(() => {
       synchronousReadSnapshots.current = undefined;
       synchronousReadSnapshots.currentAuthorityPath = pathname;
@@ -292,6 +292,7 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
   operation: (database: OpenClawStateReadOnlyDatabase) => T,
   pathname: string,
   currentAuthority = false,
+  requireUnpinned = false,
 ): ReusedOpenClawStateReadOnlyDatabase<T> {
   const snapshot = stateSnapshotReads.getStore();
   if (snapshot?.active && snapshot.path === pathname) {
@@ -304,10 +305,17 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
       value: withOpenClawStateReadOnlyLocation(operation, pathname, snapshot.location),
     };
   }
+  if (
+    isArtifactPreservingStateRead("agent", pathname) &&
+    requiresArtifactPreservingSnapshot(pathname)
+  ) {
+    return { reused: false };
+  }
   return withCachedOpenClawStateDatabaseReadOnly(
     operation,
     pathname,
     currentAuthority || synchronousReadSnapshots.currentAuthorityPath === pathname,
+    requireUnpinned,
   );
 }
 
@@ -557,6 +565,8 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
   options: OpenClawStateDatabaseOptions & {
     /** Existing host mutation guards may read natively outside worker admission grants. */
     allowNativeRead?: true;
+    /** Effect guards must not reuse a transaction or implicit snapshot from another caller. */
+    requireUnpinned?: true;
   } = {},
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
 ): T | undefined {
@@ -564,7 +574,12 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
   return stateSnapshotReads.exit(() => {
     // Maintenance admission belongs to a fresh private reader, never a cached writer.
     if (!openStateSchemaReadAdmission) {
-      const reused = withOpenClawStateDatabaseReadOnlyIfOpen(operation, pathname, true);
+      const reused = withOpenClawStateDatabaseReadOnlyIfOpen(
+        operation,
+        pathname,
+        true,
+        options.requireUnpinned,
+      );
       if (reused.reused) {
         return reused.value;
       }
@@ -576,13 +591,16 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
       pathname,
       options.env ?? process.env,
     );
+    const live =
+      options.allowNativeRead && !isArtifactPreservingStateRead() && !openStateSchemaReadAdmission;
     return withOpenClawStateReadOnlyLocation(
       operation,
       pathname,
-      options.allowNativeRead && !isArtifactPreservingStateRead() && !openStateSchemaReadAdmission
-        ? pathname
-        : prepareSqliteReadOnlyLocationSync(pathname),
+      live ? pathname : prepareSqliteReadOnlyLocationSync(pathname),
       openStateSchemaReadAdmission,
+      undefined,
+      undefined,
+      live && options.requireUnpinned ? "unpinned" : false,
     );
   });
 }

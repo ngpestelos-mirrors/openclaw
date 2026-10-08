@@ -5,12 +5,7 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 // Import from the defining module, not the protocol barrel: index.js re-exports
 // guard-adapters, whose provider-http graph doctor enumeration must not cold-load.
-import {
-  createAuditEntry,
-  verifyChainSegment,
-  type AuditEntry,
-  type AuditStore,
-} from "../protocol/audit.js";
+import { createAuditEntry, type AuditEntry, type AuditStore } from "../protocol/audit.js";
 import {
   REEF_AUDIT_NAMESPACE,
   REEF_AUDIT_HEAD_NAMESPACE,
@@ -26,6 +21,7 @@ import {
   parseAuditEntryRecord,
   parseAuditStateRecord,
   reefAuditEntryKey,
+  verifyReefAuditWindow,
   type ReefAuditHeadRecord,
   type ReefAuditStateRecord,
 } from "./audit-state-format.js";
@@ -46,7 +42,9 @@ export class ReefLegacySqliteAuditStore implements AuditStore {
     auditKey: Uint8Array,
     rng: (length: number) => Uint8Array = randomBytes,
     maxEntries = REEF_AUDIT_MAX_ENTRIES,
+    private readonly authoritySignal?: AbortSignal,
   ) {
+    this.authoritySignal?.throwIfAborted();
     if (auditKey.length !== 32) {
       throw new Error("audit key must be 32 bytes");
     }
@@ -87,6 +85,7 @@ export class ReefLegacySqliteAuditStore implements AuditStore {
     }
     const owner = randomUUID();
     for (let attempt = 0; attempt < REEF_AUDIT_APPEND_ATTEMPTS; attempt++) {
+      this.authoritySignal?.throwIfAborted();
       let acquired = false;
       let staleEntryKey: string | undefined;
       let head: ReefAuditHeadRecord = { kind: "head", hash: "", seq: 0, oldestHash: "" };
@@ -115,6 +114,7 @@ export class ReefLegacySqliteAuditStore implements AuditStore {
       });
       if (!acquired) {
         await sleep(REEF_AUDIT_APPEND_RETRY_MS);
+        this.authoritySignal?.throwIfAborted();
         continue;
       }
 
@@ -123,6 +123,7 @@ export class ReefLegacySqliteAuditStore implements AuditStore {
       let inserted = false;
       let staleCleanupComplete = !staleEntryKey;
       try {
+        this.authoritySignal?.throwIfAborted();
         if (staleEntryKey) {
           if (!staleEntryKey.startsWith("entry:") || staleEntryKey.length === "entry:".length) {
             throw new Error("invalid Reef audit staged entry key");
@@ -169,6 +170,7 @@ export class ReefLegacySqliteAuditStore implements AuditStore {
           head = cleanedHead;
         }
         const entry = createAuditEntry(type, payload, ts, this.#auditKey, head, this.#rng);
+        this.authoritySignal?.throwIfAborted();
         entryHash = entry.entryHash;
         entryKey = reefAuditEntryKey(entry.entryHash);
         let staged = false;
@@ -263,6 +265,7 @@ export class ReefLegacySqliteAuditStore implements AuditStore {
         }
         return structuredClone(entry);
       } catch (error) {
+        // Revocation cannot strand a claimed append; its owner still settles staged state.
         const latestHead = parseReefAuditHead(this.#headStore.lookup(REEF_AUDIT_HEAD_KEY));
         const entryOwnedElsewhere =
           entryKey !== undefined &&
@@ -306,6 +309,7 @@ export class ReefLegacySqliteAuditStore implements AuditStore {
   }
 
   async entries(): Promise<AuditEntry[]> {
+    this.authoritySignal?.throwIfAborted();
     const head = parseReefAuditHead(this.#headStore.lookup(REEF_AUDIT_HEAD_KEY));
     if (head.seq === 0) {
       return [];
@@ -324,22 +328,6 @@ export class ReefLegacySqliteAuditStore implements AuditStore {
       reversed.push(entry);
       hash = entry.prevHash;
     }
-    const expectedEntries = Math.min(head.seq, this.#maxEntries);
-    if (reversed.length !== expectedEntries) {
-      throw new Error("Reef audit chain is shorter than its committed retention window");
-    }
-    const entries = reversed.toReversed();
-    const first = entries[0];
-    if (
-      !first ||
-      !verifyChainSegment(entries, {
-        previousHash: first.prevHash,
-        previousSeq: first.event.seq - 1,
-        head: head.hash,
-      })
-    ) {
-      throw new Error("invalid Reef audit chain state");
-    }
-    return structuredClone(entries);
+    return structuredClone(verifyReefAuditWindow(reversed, head, this.#maxEntries));
   }
 }

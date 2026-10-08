@@ -376,6 +376,17 @@ comparisons, only an explicit conflict permits recomputing a pure decision.
 Errors and unknown acknowledgments never authorize replay. Recheck live authority
 at the initiation of a later external effect.
 
+When a final authority decision depends on a stored row, call
+`batch.assertCurrentValue(key, assertion)` immediately before the effect. It reads
+that row synchronously from the batch's captured physical source, outside cached
+snapshots and pinned reads, then runs the synchronous assertion. A replaced
+database or revoked handle refuses the check. Use this narrow exception only at
+effect initiation; planning and ordinary reads belong on the worker. A prepared
+value cannot substitute for this live check while foreign or released native
+writers can revoke authority. This facet refuses batches containing
+`sessionEntryCurrent` restrictions; their native session checks belong to the
+asynchronous worker admission path.
+
 `createBatch` remains optional in both version 1 and version 2 store types for
 older hosts and third-party adapters. Detect
 that method before selecting a documented compatibility path; a failed batch

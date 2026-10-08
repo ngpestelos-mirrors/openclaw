@@ -146,43 +146,99 @@ export function trust(initial: Record<string, ReefPeerTrust>) {
     }
   >();
   const rejectionNotices = new Map<string, ReefRejectionNoticeState>();
+  const assertCurrent = (peer: string, expected: ReefPeerIdentity, autonomy?: ReefAutonomy) => {
+    const current = values.get(peer);
+    if (
+      !matchesReefPeerIdentity(current, expected) ||
+      (autonomy !== undefined && current?.autonomy !== autonomy)
+    ) {
+      throw new ReefPeerTrustChangedError(peer);
+    }
+  };
+  const prepareOutboundDelivery = (
+    peer: string,
+    id: string,
+  ): ReefOutboundDeliveryPreparation | undefined => {
+    const friend = values.get(peer);
+    if (!friend) {
+      return undefined;
+    }
+    const key = `${peer}:${id}`;
+    const expected = { ...friend };
+    return {
+      trust: structuredClone(friend),
+      assertCurrent: () => assertCurrent(peer, expected),
+      async record(binding, options = {}) {
+        if (!matchesReefPeerIdentity(values.get(peer), binding.recipient)) {
+          throw new ReefPeerTrustChangedError(peer);
+        }
+        if (deliveries.has(key)) {
+          throw new Error(`duplicate delivery ${id}`);
+        }
+        deliveries.set(key, structuredClone({ ...binding, ...options }));
+      },
+    };
+  };
+  const reserve = (
+    peer: string,
+    id: string,
+    recipient: ReefPeerIdentity,
+    noticeState: ReefRejectionNoticeState,
+  ) => {
+    const key = `${peer}:${id}`;
+    const current = deliveries.get(key);
+    if (!current?.rejection || !sameReefPeerIdentity(current.recipient, recipient)) {
+      throw new Error(`missing rejection ${id}`);
+    }
+    if (current.rejection.notice) {
+      return { kind: "existing" as const, state: current.rejection.notice };
+    }
+    deliveries.set(key, {
+      ...current,
+      rejection: {
+        ...current.rejection,
+        notice: noticeState,
+      },
+    });
+    return { kind: "reserved" as const };
+  };
+  const complete = (peer: string, id: string, noticeState: ReefRejectionNoticeState) => {
+    const key = `${peer}:${id}`;
+    const previous = rejectionNotices.get(peer);
+    rejectionNotices.set(peer, {
+      lastRejectionAt: Math.max(previous?.lastRejectionAt ?? 0, noticeState.lastRejectionAt),
+      ...(previous?.lastResendAt !== undefined || noticeState.lastResendAt !== undefined
+        ? {
+            lastResendAt: Math.max(previous?.lastResendAt ?? 0, noticeState.lastResendAt ?? 0),
+          }
+        : {}),
+    });
+    const current = deliveries.get(key);
+    if (!current) {
+      return true;
+    }
+    if (!current?.rejection?.notice) {
+      return false;
+    }
+    return deliveries.delete(key);
+  };
   return {
     values,
     deliveries,
     rejectionNotices,
     store: {
       get: (peer: string) => values.get(peer),
-      assertCurrent: (peer: string, expected: ReefPeerIdentity, autonomy?: ReefAutonomy) => {
-        const current = values.get(peer);
-        if (
-          !matchesReefPeerIdentity(current, expected) ||
-          (autonomy !== undefined && current?.autonomy !== autonomy)
-        ) {
-          throw new ReefPeerTrustChangedError(peer);
-        }
-      },
-      prepareOutboundDelivery: (
-        peer: string,
-        id: string,
-      ): ReefOutboundDeliveryPreparation | undefined => {
+      observePeer: (peer: string) => {
         const friend = values.get(peer);
-        if (!friend) {
-          return undefined;
-        }
-        const key = `${peer}:${id}`;
-        return {
-          trust: structuredClone(friend),
-          async record(binding, options = {}) {
-            if (!matchesReefPeerIdentity(values.get(peer), binding.recipient)) {
-              throw new ReefPeerTrustChangedError(peer);
+        const expected = friend ? { ...friend } : undefined;
+        return friend && expected
+          ? {
+              trust: structuredClone(friend),
+              assertCurrent: () => assertCurrent(peer, expected, expected.autonomy),
             }
-            if (deliveries.has(key)) {
-              throw new Error(`duplicate delivery ${id}`);
-            }
-            deliveries.set(key, structuredClone({ ...binding, ...options }));
-          },
-        };
+          : undefined;
       },
+      prepareOutboundDelivery,
       readOutboundDelivery: (peer: string, id: string): ReefDeliverySettlement | undefined => {
         const key = `${peer}:${id}`;
         const current = deliveries.get(key);
@@ -197,6 +253,15 @@ export function trust(initial: Record<string, ReefPeerTrust>) {
           sameReefPeerIdentity(value.recipient, delivery.recipient);
         return {
           delivery,
+          assertCurrent: () => assertCurrent(peer, delivery.recipient),
+          currentPeer: async () => values.get(peer),
+          recovery: {
+            assertCurrent: () => assertCurrent(peer, delivery.recipient),
+            loadState: async () => rejectionNotices.get(peer),
+            reserve: async (noticeState) => reserve(peer, id, delivery.recipient, noticeState),
+            complete: async (noticeState) => complete(peer, id, noticeState),
+            prepareOutboundDelivery: async (nextId) => prepareOutboundDelivery(peer, nextId),
+          },
           async consume() {
             const latest = deliveries.get(key);
             if (latest?.rejection) {
@@ -223,53 +288,6 @@ export function trust(initial: Record<string, ReefPeerTrust>) {
             return rejection;
           },
         };
-      },
-      reserveOutboundRejectionNotice: (
-        peer: string,
-        id: string,
-        recipient: ReefPeerIdentity,
-        noticeState: ReefRejectionNoticeState,
-      ) => {
-        const key = `${peer}:${id}`;
-        const current = deliveries.get(key);
-        if (!current?.rejection || !sameReefPeerIdentity(current.recipient, recipient)) {
-          throw new Error(`missing rejection ${id}`);
-        }
-        if (current.rejection.notice) {
-          return { kind: "existing" as const, state: current.rejection.notice };
-        }
-        deliveries.set(key, {
-          ...current,
-          rejection: {
-            ...current.rejection,
-            notice: noticeState,
-          },
-        });
-        return { kind: "reserved" as const };
-      },
-      completeOutboundRejection: (
-        peer: string,
-        id: string,
-        noticeState: ReefRejectionNoticeState,
-      ) => {
-        const key = `${peer}:${id}`;
-        const previous = rejectionNotices.get(peer);
-        rejectionNotices.set(peer, {
-          lastRejectionAt: Math.max(previous?.lastRejectionAt ?? 0, noticeState.lastRejectionAt),
-          ...(previous?.lastResendAt !== undefined || noticeState.lastResendAt !== undefined
-            ? {
-                lastResendAt: Math.max(previous?.lastResendAt ?? 0, noticeState.lastResendAt ?? 0),
-              }
-            : {}),
-        });
-        const current = deliveries.get(key);
-        if (!current) {
-          return true;
-        }
-        if (!current?.rejection?.notice) {
-          return false;
-        }
-        return deliveries.delete(key);
       },
       rejectionNoticeState: (peer: string) => rejectionNotices.get(peer),
     } as unknown as ReefTrustStore,

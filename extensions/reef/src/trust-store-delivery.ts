@@ -2,19 +2,31 @@ import type {
   PluginStateBatch,
   PluginStateCompareIntent,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { matchesReefPeerIdentity, sameReefPeerIdentity } from "./friend-types.js";
+import {
+  matchesReefPeerIdentity,
+  sameReefPeerIdentity,
+  reefPeerIdentity,
+  ReefPeerIdentitySchema,
+  type ReefPeerIdentity,
+} from "./friend-types.js";
+import { createReefPeerAssertion } from "./trust-store-authority.js";
 import { applyReefStateBatch, REEF_STATE_KEEP as KEEP } from "./trust-store-batch.js";
 import {
   ReefOutboundDeliveryBindingSchema,
   ReefOutboundDeliverySchema,
   ReefOutboundRejectionSchema,
   ReefPeerStateSchema,
+  ReefRejectionNoticeStateSchema,
+  MESSAGE_ID_PATTERN,
+  requirePeer,
   ReefPeerTrustChangedError,
   type ReefDeliverySettlement,
   type ReefOutboundDelivery,
+  type ReefPeerStateSnapshot,
   type ReefOutboundDeliveryBinding,
   type ReefOutboundDeliveryPreparation,
 } from "./trust-store-format.js";
+import type { ReefRejectionRecovery } from "./types.js";
 
 function matchesBinding(
   current: ReefOutboundDelivery,
@@ -49,6 +61,7 @@ export async function prepareReefOutboundDelivery(
   let pending = true;
   return {
     trust,
+    assertCurrent: createReefPeerAssertion(batch, rows[0]!, peer, reefPeerIdentity(trust)),
     async record(binding, options = {}) {
       if (!pending) {
         throw new Error("Reef outbound preparation was already consumed");
@@ -84,10 +97,12 @@ export async function prepareReefOutboundDelivery(
 
 export async function readReefOutboundDelivery(
   batch: PluginStateBatch<unknown>,
+  peerKey: string,
   key: string,
+  peer: string,
   assertCurrent: () => void,
 ): Promise<ReefDeliverySettlement | undefined> {
-  const rows = [{ store: 0, key }];
+  const rows = [{ store: 1, key }];
   const observations = await batch.observeExisting(rows);
   assertCurrent();
   const value = observations?.[0]?.value;
@@ -120,6 +135,26 @@ export async function readReefOutboundDelivery(
   };
   return {
     delivery,
+    recovery: createReefRejectionRecovery(
+      batch,
+      peerKey,
+      key,
+      peer,
+      key.slice(key.lastIndexOf(":") + 1),
+      expected.recipient,
+      assertCurrent,
+    ),
+    async currentPeer() {
+      const current = (await batch.observeExisting([{ store: 0, key: peerKey }]))?.[0]?.value;
+      assertCurrent();
+      return current === undefined ? undefined : ReefPeerStateSchema.parse(current).trust;
+    },
+    assertCurrent: createReefPeerAssertion(
+      batch,
+      { store: 0, key: peerKey },
+      peer,
+      expected.recipient,
+    ),
     consume: () =>
       settle<"consumed" | "unavailable" | "rejected">((current) => {
         const parsed = ReefOutboundDeliverySchema.safeParse(current);
@@ -160,6 +195,123 @@ export async function readReefOutboundDelivery(
           value: rejection,
         };
       });
+    },
+  };
+}
+
+export function createReefRejectionRecovery(
+  batch: PluginStateBatch<unknown>,
+  peerKey: string,
+  deliveryKey: string,
+  peer: string,
+  id: string,
+  recipient: ReefPeerIdentity,
+  assertActive: () => void,
+): ReefRejectionRecovery {
+  const parsePeerState = (value: unknown): ReefPeerStateSnapshot =>
+    value === undefined ? { revision: 0 } : ReefPeerStateSchema.parse(value);
+  const capturedRecipient = { ...recipient };
+  return {
+    assertCurrent: createReefPeerAssertion(
+      batch,
+      { store: 0, key: peerKey },
+      peer,
+      capturedRecipient,
+    ),
+    async loadState() {
+      const value = (await batch.observeExisting([{ store: 0, key: peerKey }]))?.[0]?.value;
+      assertActive();
+      return parsePeerState(value).rejectionNotice;
+    },
+    async reserve(state) {
+      const expected = ReefPeerIdentitySchema.parse(capturedRecipient);
+      const notice = ReefRejectionNoticeStateSchema.parse(state);
+      return applyReefStateBatch(
+        batch,
+        [
+          { store: 0, key: peerKey },
+          { store: 1, key: deliveryKey },
+        ],
+        ([peerValue, value]) => {
+          if (!matchesReefPeerIdentity(parsePeerState(peerValue).trust, expected)) {
+            throw new Error(
+              `Reef peer @${requirePeer(peer)} changed keys before rejection recovery`,
+            );
+          }
+          const parsed = ReefOutboundDeliverySchema.safeParse(value);
+          if (
+            !parsed.success ||
+            !parsed.data.rejection ||
+            !sameReefPeerIdentity(parsed.data.recipient, expected)
+          ) {
+            throw new Error(`Reef rejection ${id} lost its durable delivery state`);
+          }
+          const existing = parsed.data.rejection.notice;
+          // Recovery renews retention even when it reuses an existing reservation.
+          return {
+            intents: [
+              KEEP,
+              {
+                operation: "update",
+                action: "set",
+                value: existing
+                  ? parsed.data
+                  : { ...parsed.data, rejection: { ...parsed.data.rejection, notice } },
+              },
+            ],
+            value: existing
+              ? { kind: "existing" as const, state: existing }
+              : { kind: "reserved" as const },
+          };
+        },
+      );
+    },
+    async complete(state) {
+      const notice = ReefRejectionNoticeStateSchema.parse(state);
+      return applyReefStateBatch(
+        batch,
+        [
+          { store: 0, key: peerKey },
+          { store: 1, key: deliveryKey },
+        ],
+        ([peerValue, value]) => {
+          const current = parsePeerState(peerValue);
+          const previous = current.rejectionNotice;
+          const hasResendAt =
+            previous?.lastResendAt !== undefined || notice.lastResendAt !== undefined;
+          const next = {
+            ...current,
+            rejectionNotice: {
+              lastRejectionAt: Math.max(previous?.lastRejectionAt ?? 0, notice.lastRejectionAt),
+              ...(hasResendAt
+                ? { lastResendAt: Math.max(previous?.lastResendAt ?? 0, notice.lastResendAt ?? 0) }
+                : {}),
+            },
+          };
+          const delivery = ReefOutboundDeliverySchema.safeParse(value);
+          const deleted = delivery.success && delivery.data.rejection?.notice !== undefined;
+          return {
+            intents: [
+              { operation: "update", action: "set", value: next },
+              deleted ? { operation: "delete", action: "delete" } : KEEP,
+            ],
+            value: deleted || value === undefined,
+          };
+        },
+      );
+    },
+    prepareOutboundDelivery(nextId) {
+      if (!MESSAGE_ID_PATTERN.test(nextId)) {
+        throw new Error(`Invalid Reef delivery id: ${nextId}`);
+      }
+      return prepareReefOutboundDelivery(
+        batch,
+        peerKey,
+        `${peerKey}:${nextId}`,
+        peer,
+        nextId,
+        assertActive,
+      );
     },
   };
 }

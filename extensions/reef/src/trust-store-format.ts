@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ReefChannelConfig } from "./config-schema.js";
 import { normalizeReefTarget } from "./config-schema.js";
 import { ReefPeerIdentitySchema, ReefPeerTrustSchema, type ReefPeerTrust } from "./friend-types.js";
-import type { RelayFriend } from "./types.js";
+import type { RelayFriend, ReefRejectionRecovery } from "./types.js";
 
 export const REEF_TRUST_STORE_MAX_ENTRIES = 4_096;
 export const REEF_TRUST_STORE_NAMESPACE = "peer-state";
@@ -55,13 +55,13 @@ export type ReefPeerStateSnapshot = z.infer<typeof ReefPeerStateSchema>;
 export type ReefOutboundDeliveryBinding = z.infer<typeof ReefOutboundDeliveryBindingSchema>;
 export type ReefOutboundDelivery = z.infer<typeof ReefOutboundDeliverySchema>;
 
-export type ReefOutboundDeliveryPreparation = {
-  readonly trust: ReefPeerTrust;
-  record(binding: ReefOutboundDeliveryBinding, options?: { resendDisabled?: true }): Promise<void>;
-};
+export type { ReefPeerObservation, ReefOutboundDeliveryPreparation } from "./types.js";
 
 export type ReefDeliverySettlement = {
   readonly delivery: ReefOutboundDelivery;
+  readonly recovery: ReefRejectionRecovery;
+  currentPeer(): Promise<ReefPeerTrust | undefined>;
+  assertCurrent(): void;
   consume(): Promise<"consumed" | "unavailable" | "rejected">;
   discard(): Promise<boolean>;
   reject(category?: string): Promise<ReefOutboundDelivery["rejection"]>;
