@@ -140,7 +140,7 @@ function irRangeToRichText(ir: MarkdownIR, rangeStart: number, rangeEnd: number)
       slice,
       {
         styleMarkers: {},
-        escapeText: (text) => text,
+        escapeText: (value) => value,
         buildLink: (link, source, context) => {
           const action = resolveTelegramLinkAction(link, source, context);
           if (action) {
