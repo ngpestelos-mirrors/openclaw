@@ -541,6 +541,41 @@ describe("legacy provider catalog retention", () => {
     expect(result.entries).toContainEqual(expect.objectContaining(starter));
     expect(result.authoritative).toBe(false);
   });
+
+  it("retries failed provider discovery without a read or explicit refresh", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+        entries: [],
+        routeVariants: [],
+        staticEntries: [starter],
+        providerOutcomes: [{ provider: "custom", status: "unavailable" }],
+      });
+      const config: OpenClawConfig = { agents: { entries: { pro: {} } } };
+      const owner = await publishPreparedModelRuntimeSnapshot(fixture.agentInput("pro", config), {
+        catalogMode: "static",
+        provenance: "standalone",
+      });
+      const failed = await owner.loadFullModelCatalog!({ refresh: true });
+      expect(failed.entries.map(({ id }) => id)).toEqual(["starter"]);
+      const calls = mocks.runPreparedModelCatalogWorker.mock.calls.length;
+      mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+        entries: [learned],
+        routeVariants: [learned],
+        providerOutcomes: [{ provider: "custom", status: "ready" }],
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(calls + 1);
+      await vi.waitFor(() =>
+        expect(owner.readFullModelCatalog!()?.entries.map(({ id }) => id)).toEqual(["learned"]),
+      );
+      // A recovered provider returns to its ordinary renewal contract.
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(calls + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 it("preserves the primary publication error when terminal generation cleanup also fails", async () => {
